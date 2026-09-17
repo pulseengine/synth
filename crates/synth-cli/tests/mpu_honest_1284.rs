@@ -35,10 +35,13 @@ fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
 }
 
-fn one_mem_fixture() -> PathBuf {
+/// One fixture file PER TEST: the tests run in parallel threads, and a shared
+/// path let one test truncate the `.wat` while another was parsing it
+/// ("expected at least one module field").
+fn one_mem_fixture(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join("synth_mpu_honest_1284");
     std::fs::create_dir_all(&dir).expect("mkdir");
-    let p = dir.join("one_mem.wat");
+    let p = dir.join(format!("one_mem_{tag}.wat"));
     std::fs::write(&p, ONE_MEM).expect("write wat");
     p
 }
@@ -94,7 +97,7 @@ fn assert_refused(input: &Path, tag: &str, extra: &[&str], needles: &[&str]) {
 
 #[test]
 fn self_contained_arm_refuses_mpu_1284() {
-    let f = one_mem_fixture();
+    let f = one_mem_fixture("self_contained_arm_refuses_mpu_1284");
     for (tag, extra) in [
         ("cortex_m", vec!["--cortex-m", "--safety-bounds", "mpu"]),
         (
@@ -121,7 +124,7 @@ fn self_contained_arm_refuses_mpu_1284() {
 #[test]
 fn single_function_path_refuses_mpu_even_with_the_flag_1284() {
     assert_refused(
-        &one_mem_fixture(),
+        &one_mem_fixture("single_function_path_refuses_mpu_even_with_the_flag_1284"),
         "single_func",
         &[
             "--func-index",
@@ -137,7 +140,7 @@ fn single_function_path_refuses_mpu_even_with_the_flag_1284() {
 
 #[test]
 fn riscv_refuses_mpu_and_pmp_on_every_path_1284() {
-    let f = one_mem_fixture();
+    let f = one_mem_fixture("riscv_refuses_mpu_and_pmp_on_every_path_1284");
     assert_refused(
         &f,
         "rv_mpu",
@@ -168,7 +171,7 @@ fn riscv_refuses_mpu_and_pmp_on_every_path_1284() {
 #[test]
 fn pmp_is_never_an_alias_on_arm_1284() {
     assert_refused(
-        &one_mem_fixture(),
+        &one_mem_fixture("pmp_is_never_an_alias_on_arm_1284"),
         "arm_pmp",
         &[
             "--target",
@@ -186,7 +189,7 @@ fn pmp_is_never_an_alias_on_arm_1284() {
 #[test]
 fn relocatable_mpu_without_the_acknowledgment_is_refused_1284() {
     assert_refused(
-        &one_mem_fixture(),
+        &one_mem_fixture("relocatable_mpu_without_the_acknowledgment_is_refused_1284"),
         "reloc_noflag",
         &[
             "--target",
@@ -206,7 +209,7 @@ fn relocatable_mpu_without_the_acknowledgment_is_refused_1284() {
 #[test]
 fn embedder_mpu_without_mpu_is_refused_1284() {
     assert_refused(
-        &one_mem_fixture(),
+        &one_mem_fixture("embedder_mpu_without_mpu_is_refused_1284"),
         "flag_only",
         &[
             "--target",
@@ -223,7 +226,8 @@ fn embedder_mpu_without_mpu_is_refused_1284() {
 /// adds no guard and no programming — and the manifest names who programs it.
 #[test]
 fn relocatable_mpu_with_the_acknowledgment_is_accepted_and_recorded_1284() {
-    let f = one_mem_fixture();
+    let f =
+        one_mem_fixture("relocatable_mpu_with_the_acknowledgment_is_accepted_and_recorded_1284");
     let common = ["--target", "cortex-m3", "--all-exports", "--relocatable"];
     let (mpu, mpu_path) = bytes(
         &f,
