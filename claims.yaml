@@ -2819,14 +2819,24 @@ claims:
         glob: ['Cargo.toml']                 # gated / unlinked before this moves
         expect: 19
 
+  # #1281 (RQ-68-ORACLEABI): the number below is a COUNT OF DECLARATIONS
+  # (`^pub open spec fn `), and the verifier that would check them is run by no
+  # CI job and cannot currently load. A count is honest evidence only for a
+  # claim about declarations, so the pin binds the qualifier, not just the
+  # number: dropping "not a verification result" from the README, or "never
+  # verified" from the matrix, while the count stays green, reds this claim.
   - id: SYNTH-VERUS-SPECS
     doc: README.md
-    text: "Spec functions in `synth-synthesis/src/contracts.rs`"
+    text: "a count of spec DECLARATIONS, not a verification result"
     evidence:
       - kind: file-exists
         path: crates/synth-synthesis/src/contracts.rs
       - kind: status-field
         name: verus_spec_fns
+      - kind: count-eq
+        pattern: 'spec declarations — \*\*never verified\*\*'
+        glob: ['scripts/templates/feature_matrix.md.tmpl']
+        expect: 1
 
   # ---------------------------------------------------------------------------
   # #778 WCET — the SOUND-critical per-op cycle model constants. These numbers

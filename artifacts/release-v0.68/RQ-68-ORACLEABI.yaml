@@ -31,7 +31,7 @@ artifacts:
       Each fix is shown RED-FIRST: plant the defect the oracle exists to catch and
       confirm it now reds. #1276 in particular must demonstrate an out-of-bounds
       access that the corrected harness catches and the current one misses.
-    status: proposed
+    status: implemented
     release: v0.68
     tags:
       - gate-potency
@@ -57,12 +57,33 @@ artifacts:
       verification-track: differential
       issue: "#1276"
       done-when: "manual: the WCET oracles set R10 to a memory size consistent with the register contract and a planted out-of-bounds access is caught by the corrected harness and missed by the current one; oracle scripts read the linear-memory base from the emitted artifact rather than a literal, shown red-first by a moved base; verify_contracts is either run by CI or its claims.yaml evidence stops being a line count; the fixture generators gain a staleness gate that reds on a hand edit; the tested-not-shipped requirements are re-scoped to what the binary actually contains; any item that does not reproduce is closed with the measurement"
-      disposition: partial
+      verified-by: >-
+        Each item, by the check that would fail if it were not done. #1276: the
+        five emulating WCET oracles re-run to PASS with R10 = one wasm page
+        (phases 2-6); the planted-OOB red-first is inapplicable and recorded.
+        #1278: SYNTH-LINMEM-BASE-ORACLE-COPIES-1278 reds when the Rust constant
+        moves. #1281: SYNTH-VERUS-SPECS reds when either qualifier ("not a
+        verification result" in README, "never verified" in the matrix
+        template) is dropped. #1282: `check_generated_fixtures` reds on a hand
+        edit to either fixture family and on an unregistered generator (live
+        plant, three FAILs); a stubbed gate reddens 4 of its 6 unit tests.
+        #1277: SYNTH-UNLINKED-LIBRARIES-1277 reds on a planted dependency edge
+        from synth-cli and on removal of the crate-map wording; the census is
+        `cargo metadata` plus `nm` (0 symbols for the four crates, control
+        synth_backend 1294). All on the v0.68 base; claim_check 69/69, rivet
+        unchanged at 40 errors / 439 warnings.
       landed: >-
-        PARTIAL — four increments landed; the lane's close-out remains (the
-        done-when's Verus clause is only half met, see increment 1). Status
-        stays `proposed` with `disposition: partial` because the artifact's
-        outcome does not yet hold.
+        IMPLEMENTED — five increments (#1276/#1281, #1278, #1282, #1277, and the
+        #1281 close-out), each red-first where a red half exists. TWO DEVIATIONS
+        FROM THE DONE-WHEN'S LETTER, stated rather than hidden: (1) the planted
+        out-of-bounds red-first for the WCET oracles is INAPPLICABLE — none of
+        them compiles with --safety-bounds, so no guard exists to catch or miss
+        the access (increment 1); (2) oracle scripts do NOT read the base from
+        the emitted artifact — the image carries no symbol for it and adding one
+        changes every build's bytes — so both halves are pinned exactly instead,
+        and the pin IS red-first by a moved base (increment 2). Every other
+        clause is met as written, and every item reproduced (#1282 in its latent
+        form).
 
         INCREMENT 1 (#1276, #1281). #1276: FIVE of six WCET oracles ran with R10
         = the linear-memory BASE (phases 2-5 through phase 2's shared
@@ -150,3 +171,17 @@ artifacts:
         warned about the unrelated input-format requirement whose id is its
         suffix, suggesting a false trace) — filed as pulseengine/rivet#972; the prose
         was reworded to name no id, back to 439 / 40 errors, identical to base.
+
+        INCREMENT 5 (#1281 close-out). The done-when offered two exits: run the
+        verifier in CI, or stop letting a line count stand as its evidence. The
+        verifier cannot load on either platform (increment 1), so the second
+        exit is taken. The count is still derived (`^pub open spec fn ` over
+        contracts.rs), because a count is honest evidence for a claim about
+        DECLARATIONS; what changed is what it is allowed to claim. The generated
+        feature matrix listed it in the verification-tools table as "N spec
+        functions"; it now reads "N spec declarations — never verified" with the
+        reason. SYNTH-VERUS-SPECS pinned only the phrase "Spec functions in
+        contracts.rs", so the README's qualifier could be deleted with the count
+        still green; the claim now binds the qualifier in the README AND the
+        matrix template. Red-first: dropping the README qualifier reds it;
+        dropping the matrix qualifier and regenerating reds it.

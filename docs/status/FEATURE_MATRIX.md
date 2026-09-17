@@ -72,7 +72,7 @@ see [coq/STATUS.md](../../coq/STATUS.md) for the per-file matrix.
 | Model coverage (#867 phase 2) | 26 bridge-validated / 73 simplified-only / 4 UNCOVERED modelled `arm_instr` behaviours | The uncovered complement = candidate list for the next silent miscompile (`artifacts/model-coverage.json`, static heuristic labelled as one; complement is an under-approximation) |
 | WasmCert-Coq source anchor (VCR-WASM-001) | 104 Qed | `coq/Synth/WASM/WasmCertBridge.v` — i32 (19 ops) + i64 (22 ops) integer fragments refined against pinned WasmCert-Coq rules |
 | Kani (bounded model checking) | 18 harnesses | ARM encoder properties |
-| Verus (SMT contracts) | 8 spec functions | `synth-synthesis/src/contracts.rs` |
+| Verus (SMT contracts) | 8 spec declarations — **never verified** | `synth-synthesis/src/contracts.rs` — a count of declarations, not a result: no CI job runs the verifier, and it currently cannot load (see the README's Verus row) |
 
 ### Per-compilation validators (run at compile time, not proof time)
 
