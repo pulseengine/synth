@@ -1511,3 +1511,220 @@ fn a32_genuine_noops_are_allowed() {
         );
     }
 }
+
+// ===========================================================================
+// #1272 (RQ-68-NOPCLASS) — THE THUMB-2 TWIN. #615 closed the silent-NOP class
+// on the A32 encoder and never reached Thumb-2, which is the DEFAULT target.
+// There, a `_ =>` catch-all returned `0xBF00` (NOP) as `Ok` for any op without
+// a Thumb-2 arm, and six arms (MOV, AND, ORR, EOR, CMP, MVN) ended in an
+// `else` that did the same for an operand form they do not encode. RQ-67-
+// VFPREACH's two new ops compiled clean BEFORE their Thumb-2 arms existed and
+// would have emitted a save that saves nothing.
+//
+// These reuse `representatives()` — the exhaustive universe the A32 tripwire
+// already pins — rather than a second hand-kept list that could drift.
+// ===========================================================================
+
+/// The bare Thumb NOP halfword `0xBF00`, little-endian.
+const THUMB_NOP: [u8; 2] = [0x00, 0xBF];
+
+/// No representative of any `ArmOp` variant may come back from the Thumb-2
+/// encoder as a bare NOP, except the two that genuinely are one: `ArmOp::Nop`
+/// itself, and `I32WrapI64` when `rd == rnlo` (the value is already in place;
+/// this representative uses distinct registers, so it must encode a real MOV).
+/// An `Err` is fine — loud is the point.
+#[test]
+fn thumb2_encoder_has_no_silent_nop_for_any_variant() {
+    let fpu = ArmEncoder::new_thumb2_with_fpu(Some(synth_core::target::FPUPrecision::Double));
+    let mut silent = Vec::new();
+    for op in representatives() {
+        if matches!(op, ArmOp::Nop) {
+            continue;
+        }
+        if let Ok(bytes) = fpu.encode(&op)
+            && bytes == THUMB_NOP
+        {
+            silent.push(variant_name(&op));
+        }
+    }
+    assert!(
+        silent.is_empty(),
+        "#1272: these ArmOp variants come back from the Thumb-2 encoder as a \
+         bare NOP instead of an encoding or a loud Err — each is a silent \
+         miscompile on the default target: {silent:?}"
+    );
+}
+
+/// The six in-arm fallbacks, each driven with the operand form its arm does not
+/// encode. Before #1272 every one returned `Ok(0xBF00)`.
+#[test]
+fn thumb2_unencoded_operand_forms_refuse_loudly() {
+    let enc = ArmEncoder::new_thumb2();
+    let shifted = Operand2::RegShift {
+        rm: Reg::R2,
+        shift: synth_synthesis::ShiftType::LSL,
+        amount: 3,
+    };
+    let cases: Vec<(&str, ArmOp)> = vec![
+        (
+            "MOV",
+            ArmOp::Mov {
+                rd: Reg::R0,
+                op2: shifted.clone(),
+            },
+        ),
+        (
+            "AND",
+            ArmOp::And {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: shifted.clone(),
+            },
+        ),
+        (
+            "ORR",
+            ArmOp::Orr {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: shifted.clone(),
+            },
+        ),
+        (
+            "EOR",
+            ArmOp::Eor {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: shifted.clone(),
+            },
+        ),
+        (
+            "CMP",
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: shifted.clone(),
+            },
+        ),
+        (
+            "MVN",
+            ArmOp::Mvn {
+                rd: Reg::R0,
+                op2: Operand2::Imm(5),
+            },
+        ),
+    ];
+    for (mnem, op) in cases {
+        match enc.encode(&op) {
+            Err(e) => assert!(
+                e.to_string().contains("#1272"),
+                "{mnem}: refused, but not with the #1272 diagnostic: {e}"
+            ),
+            Ok(bytes) => panic!(
+                "#1272: Thumb-2 {mnem} with an unencoded operand form returned Ok({bytes:02x?}) \
+                 — a {}-byte silent emission where an error belongs",
+                bytes.len()
+            ),
+        }
+    }
+}
+
+/// #1289: `wcet_loops.rs` `may_move_sp` rests on `ArmOp::Call` never being
+/// encodable. That was true on A32 only; on Thumb-2 it hit the catch-all and
+/// became a NOP. This pins the premise on the target it actually runs on.
+#[test]
+fn thumb2_refuses_call_pseudo_op_so_the_wcet_premise_holds() {
+    let enc = ArmEncoder::new_thumb2();
+    let r = enc.encode(&ArmOp::Call {
+        rd: Reg::R0,
+        func_idx: 3,
+    });
+    assert!(
+        r.is_err(),
+        "#1289: ArmOp::Call must be refused by the Thumb-2 encoder — may_move_sp's \
+         soundness argument depends on it — got {r:?}"
+    );
+}
+
+// ===========================================================================
+// #1275 (RQ-68-NOPCLASS) — `liveness::vfp_word_effect` ends in a wildcard
+// asserting "an integer op provably touches no S-word". The claim is load-
+// bearing: the #881 across-call checker SCANS PAST an op whose footprint is
+// empty and STOPS at `None`. So a VFP-touching op wrongly classified empty is
+// scanned past, and a VFP value live across a call through it goes unseen.
+//
+// The obvious "fix" — `_ => None` — was tried and measured VACUOUS: it breaks
+// the scan at the integer `mov` that sets up nearly every call's arguments, so
+// the checker would never report again, while byte triage (652/652 identical)
+// and 771 lib tests stayed green because a checker that stops rejecting emits
+// nothing different. So the wildcard stays for genuine integer ops, and THIS
+// test derives which variants it must not absorb, from the SHIPPED ENCODER: an
+// op whose Thumb-2 encoding contains a coprocessor-10/11 (VFP) or Advanced-
+// SIMD/MVE instruction touches the VFP file, whatever its operand types say.
+// `representatives()` covers every variant (pinned by ARM_OP_VARIANT_COUNT),
+// so a future VFP-touching variant fails here instead of hiding in the wildcard.
+// ===========================================================================
+
+/// True if a Thumb-2 byte stream contains a VFP (coprocessor 10/11) or
+/// Advanced-SIMD/MVE instruction. Decoded halfword by halfword so a 16-bit
+/// instruction's bytes are never read as half of a 32-bit one.
+fn thumb_stream_touches_vfp(bytes: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        let hw1 = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+        let is32 = matches!(hw1 & 0xF800, 0xE800 | 0xF000 | 0xF800);
+        if is32 && i + 3 < bytes.len() {
+            let hw2 = u16::from_le_bytes([bytes[i + 2], bytes[i + 3]]);
+            let coproc_space = (hw1 & 0xEE00) == 0xEC00 || (hw1 & 0xFF00) == 0xEE00;
+            if coproc_space && (hw2 & 0x0E00) == 0x0A00 {
+                return true; // VFP: coprocessor 10 or 11
+            }
+            if (hw1 & 0xEF00) == 0xEF00 {
+                return true; // Advanced SIMD / MVE data-processing space
+            }
+            i += 4;
+        } else {
+            i += 2;
+        }
+    }
+    false
+}
+
+#[test]
+fn vfp_footprint_matches_encoder_1275() {
+    let enc = ArmEncoder::new_thumb2_with_fpu(Some(synth_core::target::FPUPrecision::Double));
+    let mut wrongly_empty = Vec::new();
+    let mut vfp_touching = 0usize;
+    for op in representatives() {
+        let Ok(bytes) = enc.encode(&op) else { continue };
+        if !thumb_stream_touches_vfp(&bytes) {
+            continue;
+        }
+        vfp_touching += 1;
+        if synth_synthesis::liveness::vfp_word_effect(&op) == Some((vec![], vec![])) {
+            wrongly_empty.push(variant_name(&op));
+        }
+    }
+    // Structural backstop for what the byte decoder cannot see: every MVE
+    // variant reads or writes Q registers, which alias the S-file, whether or
+    // not its encoding falls inside the coprocessor-space predicate above
+    // (MveLoad/MveStore do not). Names come from real constructed values.
+    for op in representatives() {
+        let name = variant_name(&op);
+        if name.starts_with("Mve")
+            && synth_synthesis::liveness::vfp_word_effect(&op) == Some((vec![], vec![]))
+            && !wrongly_empty.contains(&name)
+        {
+            wrongly_empty.push(name);
+        }
+    }
+    assert!(
+        vfp_touching > 0,
+        "potency: no representative encoded a VFP instruction — the decoder is broken"
+    );
+    assert!(
+        wrongly_empty.is_empty(),
+        "#1275: vfp_word_effect claims an EMPTY VFP footprint for {} variant(s) whose \
+         Thumb-2 encoding emits VFP/SIMD instructions — the #881 across-call checker \
+         scans past each one: {wrongly_empty:?}",
+        wrongly_empty.len()
+    );
+}

@@ -2844,8 +2844,13 @@ impl ArmEncoder {
                     let instr: u16 = 0x4600 | (d_bit << 7) | (rm_bits << 3) | (rd_bits & 0x7);
                     Ok(instr.to_le_bytes().to_vec())
                 } else {
-                    let instr: u16 = 0xBF00; // NOP fallback
-                    Ok(instr.to_le_bytes().to_vec())
+                    // #1272: this `else` used to return `0xBF00` (NOP) as `Ok` for an
+                    // operand form the arm does not encode (Imm and Reg only) -- #615's
+                    // silent-miscompile class, on the DEFAULT target. Refuse instead.
+                    Err(synth_core::Error::synthesis(format!(
+                        "Thumb-2 MOV with operand {op2:?} has no Thumb-2 encoding here (Imm and Reg \
+                         are encoded) — refusing to emit a silent NOP (#1272, the #615 class)"
+                    )))
                 }
             }
 
@@ -3187,9 +3192,13 @@ impl ArmEncoder {
                     bytes.extend_from_slice(&hw2.to_le_bytes());
                     Ok(bytes)
                 } else {
-                    // RegShift variant - fallback to NOP
-                    let instr: u16 = 0xBF00;
-                    Ok(instr.to_le_bytes().to_vec())
+                    // #1272: this `else` used to return `0xBF00` (NOP) as `Ok` for an
+                    // operand form the arm does not encode (Reg and Imm only) -- #615's
+                    // silent-miscompile class, on the DEFAULT target. Refuse instead.
+                    Err(synth_core::Error::synthesis(format!(
+                        "Thumb-2 AND with operand {op2:?} has no Thumb-2 encoding here (Reg and Imm \
+                         are encoded) — refusing to emit a silent NOP (#1272, the #615 class)"
+                    )))
                 }
             }
 
@@ -3226,8 +3235,13 @@ impl ArmEncoder {
                     bytes.extend_from_slice(&hw2.to_le_bytes());
                     Ok(bytes)
                 } else {
-                    let instr: u16 = 0xBF00;
-                    Ok(instr.to_le_bytes().to_vec())
+                    // #1272: this `else` used to return `0xBF00` (NOP) as `Ok` for an
+                    // operand form the arm does not encode (Reg and Imm only) -- #615's
+                    // silent-miscompile class, on the DEFAULT target. Refuse instead.
+                    Err(synth_core::Error::synthesis(format!(
+                        "Thumb-2 ORR with operand {op2:?} has no Thumb-2 encoding here (Reg and Imm \
+                         are encoded) — refusing to emit a silent NOP (#1272, the #615 class)"
+                    )))
                 }
             }
 
@@ -3263,8 +3277,13 @@ impl ArmEncoder {
                     bytes.extend_from_slice(&hw2.to_le_bytes());
                     Ok(bytes)
                 } else {
-                    let instr: u16 = 0xBF00;
-                    Ok(instr.to_le_bytes().to_vec())
+                    // #1272: this `else` used to return `0xBF00` (NOP) as `Ok` for an
+                    // operand form the arm does not encode (Reg and Imm only) -- #615's
+                    // silent-miscompile class, on the DEFAULT target. Refuse instead.
+                    Err(synth_core::Error::synthesis(format!(
+                        "Thumb-2 EOR with operand {op2:?} has no Thumb-2 encoding here (Reg and Imm \
+                         are encoded) — refusing to emit a silent NOP (#1272, the #615 class)"
+                    )))
                 }
             }
 
@@ -3493,8 +3512,13 @@ impl ArmEncoder {
                         Ok(instr.to_le_bytes().to_vec())
                     }
                 } else {
-                    let instr: u16 = 0xBF00;
-                    Ok(instr.to_le_bytes().to_vec())
+                    // #1272: this `else` used to return `0xBF00` (NOP) as `Ok` for an
+                    // operand form the arm does not encode (Imm and Reg only) -- #615's
+                    // silent-miscompile class, on the DEFAULT target. Refuse instead.
+                    Err(synth_core::Error::synthesis(format!(
+                        "Thumb-2 CMP with operand {op2:?} has no Thumb-2 encoding here (Imm and Reg \
+                         are encoded) — refusing to emit a silent NOP (#1272, the #615 class)"
+                    )))
                 }
             }
 
@@ -4263,8 +4287,13 @@ impl ArmEncoder {
                         Ok(bytes)
                     }
                 } else {
-                    let instr: u16 = 0xBF00;
-                    Ok(instr.to_le_bytes().to_vec())
+                    // #1272: this `else` used to return `0xBF00` (NOP) as `Ok` for an
+                    // operand form the arm does not encode (Reg only) -- #615's
+                    // silent-miscompile class, on the DEFAULT target. Refuse instead.
+                    Err(synth_core::Error::synthesis(format!(
+                        "Thumb-2 MVN with operand {op2:?} has no Thumb-2 encoding here (Reg \
+                         are encoded) — refusing to emit a silent NOP (#1272, the #615 class)"
+                    )))
                 }
             }
 
@@ -7008,10 +7037,11 @@ impl ArmEncoder {
             // turning it into a typed Err is a behaviour change across every
             // op that currently lands here, which needs its own byte-identity
             // evidence.
-            _ => {
-                let instr: u16 = 0xBF00; // NOP
-                Ok(instr.to_le_bytes().to_vec())
-            }
+            other => Err(synth_core::Error::synthesis(format!(
+                "{other:?} reached the Thumb-2 encoder with no Thumb-2 encoding — \
+                 refusing to emit a silent NOP (#1272; #615 closed this class on A32 \
+                 only, and Thumb-2 is the default target)"
+            ))),
         }
     }
 

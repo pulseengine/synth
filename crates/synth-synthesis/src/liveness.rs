@@ -5891,7 +5891,8 @@ fn vfp_reg_words(r: &crate::rules::VfpReg) -> Option<[Option<usize>; 2]> {
 /// guess, applied to the checker itself). Ops with NO VFP operands return
 /// `Some(empty)` — an integer op provably touches no S-word.
 #[allow(clippy::type_complexity)]
-fn vfp_word_effect(op: &ArmOp) -> Option<(Vec<usize>, Vec<usize>)> {
+#[doc(hidden)] // pub only so `vfp_footprint_matches_encoder_1275` can check it against the shipped encoder
+pub fn vfp_word_effect(op: &ArmOp) -> Option<(Vec<usize>, Vec<usize>)> {
     use ArmOp::*;
     let w = |r: &crate::rules::VfpReg| -> Option<Vec<usize>> {
         vfp_reg_words(r).map(|ws| ws.iter().flatten().copied().collect())
@@ -5979,7 +5980,46 @@ fn vfp_word_effect(op: &ArmOp) -> Option<(Vec<usize>, Vec<usize>)> {
         | MveExtractLaneF32 { .. }
         | MveReplaceLaneF32 { .. }
         | MveDivF32 { .. }
-        | MveSqrtF32 { .. } => None,
+        | MveSqrtF32 { .. }
+        // #1275 (RQ-68-NOPCLASS): the INTEGER MVE family. All 25 fell through
+        // to the wildcard below, which asserts "an integer op provably touches
+        // no S-word" — false for every one: each reads or writes Q registers,
+        // and on M-profile Q_n = D_2n:D_2n+1 = S_4n..S_4n+3. So the #881 checker
+        // scanned past them as if they could not touch a VFP value. Derived two
+        // ways, and the two agree: the SHIPPED Thumb-2 encoder emits VFP/SIMD
+        // instructions for 23 of them (`vfp_footprint_matches_encoder_1275`),
+        // and the enum's own `Mve*` variant set names 25 absorbed by the
+        // wildcard — the 2 the decoder misses are MveLoad/MveStore, whose load
+        // and store forms sit outside its coprocessor-space predicate.
+        // Classified exactly as their float siblings above, not with a new
+        // convention. `_ => None` for the wildcard itself was measured and
+        // REJECTED: it breaks the across-call scan at the integer `mov` that
+        // sets up nearly every call, so the checker would never report again.
+        | MveLoad { .. }
+        | MveStore { .. }
+        | MveConst { .. }
+        | MveAnd { .. }
+        | MveOrr { .. }
+        | MveEor { .. }
+        | MveMvn { .. }
+        | MveBic { .. }
+        | MveAddI { .. }
+        | MveSubI { .. }
+        | MveMulI { .. }
+        | MveNegI { .. }
+        | MveCmpEqI { .. }
+        | MveCmpNeI { .. }
+        | MveCmpLtS { .. }
+        | MveCmpLtU { .. }
+        | MveCmpGtS { .. }
+        | MveCmpGtU { .. }
+        | MveCmpLeS { .. }
+        | MveCmpLeU { .. }
+        | MveCmpGeS { .. }
+        | MveCmpGeU { .. }
+        | MveDup { .. }
+        | MveExtractLane { .. }
+        | MveInsertLane { .. } => None,
         // RQ-67-VFPREACH (#1267), found by the v0.67 built-but-untested audit
         // (#1275). These two were falling through to the wildcard below, which
         // this function's own doc defines as "an integer op PROVABLY touches no
