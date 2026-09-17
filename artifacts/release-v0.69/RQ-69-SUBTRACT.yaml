@@ -1,0 +1,42 @@
+artifacts:
+  - id: RQ-69-SUBTRACT
+    type: system-req
+    title: "v0.68 MEASURED select_default's 88 Helium-guarded arms production-dead by construction; this release DELETES them, or says why not with the measurement"
+    description: >
+      THE FOURTH LEVER, AND THE FIRST ONE THAT EXISTS. v0.66 and v0.67 each named a
+      lever that turned out not to exist, and v0.67's artifact was published as a
+      refutation. v0.68 stopped naming and measured: `select_default.rs` executes 34
+      of 1616 executable lines over the shipped CLI and corpus; the unexecuted
+      remainder is an UPPER BOUND and not a deletion set, because the fallthrough
+      forwards any unmatched op. Inside that bound one subset is dead BY
+      CONSTRUCTION rather than by coverage: 88 `if self.has_helium` arms, where
+      `set_helium(true)` occurs only inside `mod tests` and the decoder refuses every
+      SIMD operator on every target.
+
+      v0.68's cold review independently confirmed all three legs, and measured the
+      one that looked like an exception: a v128 module is refused at decode on
+      cortex-m55 exactly as on cortex-m4. There is no target on which these arms run.
+
+      SO THIS IS A DELETION WITH AN ORACLE, NOT A CLEANUP. The ratchet exists to make
+      subtraction visible: `selector_lines_code` fell 20224 -> 20201 in v0.68 from
+      ONESOURCE, not from this artifact. If the 88 arms come out, the pin moves
+      again and the movement is the evidence.
+
+      AND THE REFUSAL DIRECTION IS LOAD-BEARING: a deletion that moves emitted bytes
+      without an oracle proving the new bytes correct is refused, not explained. Byte
+      identity over the corpus gates this, exactly as it gated ONESOURCE.
+    status: proposed
+    release: v0.69
+    tags:
+      - subtraction
+      - ratchet
+      - selector
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#242"
+      done-when: "manual: the 88 Helium-guarded arms are deleted and `selector_lines_code` falls by the measured amount in the same PR, gated on byte-identity over the full corpus; any arm that cannot be deleted is NAMED with the reason it is reachable, and a measured 'fewer than 88 are truly dead' is a publishable outcome"

@@ -1,0 +1,52 @@
+artifacts:
+  - id: RQ-69-FALCON
+    type: system-req
+    title: "A real downstream module's EXPORTED entry point declines: falcon-cascade fails on #1069 spill-slot exhaustion, and its wasm-opt'd form adds six GI-FPU-002 failures"
+    description: >
+      REPRODUCED ON THE v0.68.0 TAG (bd81bc8c) with the reporter's own command line
+      (`--target cortex-m7 --relocatable --all-exports --embedder-data-init
+      --embedder-global-init`) and their two attached modules, before this artifact
+      was written:
+
+        fused.wasm  1 of 21 functions skipped — `pulseengine:falcon-cascade/
+                    controller@0.10.0#step`, the EXPORT, on "#1069: spill-slot pool
+                    exhausted while frame-homing a VFP local".
+        opt.wasm    7 of 17 functions skipped — `step` on #1069, plus func_4,
+                    func_5, func_8, func_10, func_11, func_12, all six on
+                    "GI-FPU-002: an integer operation peeked an f32 (VFP) stack
+                    value".
+
+      TWO NUMBERS THE REPORT ITSELF DID NOT HAVE, which is why they are re-derived
+      here: the optimized module skips SEVEN functions, not the two its excerpt
+      shows; and the optimized module fails MORE than the unoptimized one. The
+      second fact is the reason this is one artifact with TWO reproductions rather
+      than one defect seen twice — wasm-opt's output shape is what surfaces
+      GI-FPU-002, and #1069 is present in both.
+
+      BOTH ARE LOUD DECLINES, NOT MISCOMPILES. The affected functions are left out
+      of the object. That is the intended failure direction and it does not help the
+      reporter, whose needed export is the one declining. Reach, in the sense
+      CLAUDE.md's north star means it: a proof about input we refuse is worth
+      nothing.
+
+      #1069's retry already sizes a pool from the function's local count, and that
+      also fails here, so this is not "the first attempt was too small". Whether the
+      honest outcome is a raised ceiling or a NAMED ceiling is exactly what the lane
+      measures; a decline whose limit is documented and reported is a publishable
+      outcome, a claim that the module compiles when only some functions do is not.
+    status: proposed
+    release: v0.69
+    tags:
+      - reach
+      - downstream
+      - vfp
+      - register-allocation
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1318"
+      done-when: "manual: the reporter's fused.wasm and opt.wasm both compile with 0 skipped functions on their own command line, OR every remaining decline is reported with a NAMED ceiling the reporter can act on; the GI-FPU-002 half is discharged against an execution differential proving the lowered float path returns what wasmtime returns, never against 'it compiles now'; both modules are added to the corpus so the pair cannot regress silently"

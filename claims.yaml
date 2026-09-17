@@ -3592,14 +3592,14 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-STATUS-EVIDENCE-ANCHOR-1183
     doc: scripts/status_evidence_check.py
-    text: 'ANCHOR_TAG = "v0.67.0"'
+    text: 'ANCHOR_TAG = "v0.68.0"'
     evidence:
       - kind: count-eq                       # the two anchored counts, verbatim
-        pattern: '(?m)^ANCHOR_DELIVERY = 72$'
+        pattern: '(?m)^ANCHOR_DELIVERY = 80$'
         glob: ['scripts/status_evidence_check.py']
         expect: 1
       - kind: count-eq
-        pattern: '(?m)^ANCHOR_PROGRAMME = 424$'
+        pattern: '(?m)^ANCHOR_PROGRAMME = 433$'
         glob: ['scripts/status_evidence_check.py']
         expect: 1
       - kind: count-eq                       # the waiver channel is EMPTY

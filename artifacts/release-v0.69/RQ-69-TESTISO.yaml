@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-69-TESTISO
+    type: system-req
+    title: "The proven-safe #901 tests build fixture paths from a fixed name under the system temp dir, so two test processes on one machine share them"
+    description: >
+      VERIFIED AT SOURCE ON v0.68.0 before this artifact was written:
+
+        crates/synth-core/src/proven_safe.rs:485   temp_dir()/"proven_safe_901_unit"
+        crates/synth-core/src/proven_safe.rs:607   temp_dir()/"proven_safe_901_unit/definitely-absent.json"
+        crates/synth-cli/tests/proven_safe_bounds_901.rs:81  temp_dir()/"proven_safe_bounds_901"
+
+      Every process that runs these tests writes the same paths. Concurrent runs —
+      two cargo invocations locally, or two jobs on one self-hosted runner, which
+      this project has — can see each other's fixtures. The failure mode is a flaky
+      test, and a flaky test in a gate is a gate that gets ignored.
+
+      NOT YET OBSERVED FAILING, and that is stated rather than dressed up: this was
+      found by reading, filed as #1309 during v0.68, and is scoped here because the
+      shared self-hosted runners make it reachable rather than theoretical. The fix
+      is per-process unique directories with cleanup.
+    status: proposed
+    release: v0.69
+    tags:
+      - test-isolation
+      - ci
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1309"
+      done-when: "manual: no test fixture path is shared between processes — each run gets a unique directory it cleans up; demonstrated by running the affected tests concurrently in two processes and watching the current code fail or interfere first"

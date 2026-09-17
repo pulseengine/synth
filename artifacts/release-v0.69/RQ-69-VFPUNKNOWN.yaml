@@ -1,0 +1,48 @@
+artifacts:
+  - id: RQ-69-VFPUNKNOWN
+    type: system-req
+    title: "The #881 across-call VFP checker stops at an op whose footprint it cannot model and returns 'no violation' — and v0.68 routed 25 MVE ops into exactly that path"
+    description: >
+      VERIFIED AT SOURCE ON v0.68.0 before this artifact was written.
+      `liveness::vfp_word_effect` returns `None` for ops whose VFP footprint it does
+      not model. Its two callers disagree about what `None` means, and only one of
+      them is conservative:
+
+        - the spill-slot non-aliasing check WIDENS: `None` bumps the def-version of
+          every S-word. Unknown is treated as "could be anything" — the sound
+          direction.
+        - `check_vfp_caller_saved_across_calls` STOPS: both the backward producer
+          scan and the forward consumer scan do `None => break`, and the function
+          then returns `None`, which its caller reads as "no violation found".
+
+      A break before the producer means the producer is never seen; a break before
+      the consumer means the read-after-call is never seen. Either way the checker
+      reports the same thing it reports when the code is genuinely fine.
+
+      WHY NOW. RQ-68-NOPCLASS (#1275) stopped `vfp_word_effect` from asserting an
+      EMPTY footprint for 25 MVE variants — the wildcard that claimed "provably no
+      S-word footprint" is gone, and those ops now return `None`. That was the right
+      fix: an unmodelled op must not claim to touch nothing. But it also means 25 ops
+      now take the path that silently ends the scan. The v0.68 fix moved the
+      dishonesty rather than removing it, which is worth saying plainly.
+
+      THE RULE, and it is the same one the spill-slot caller already follows: a
+      checker that cannot decide must say so, not return the answer that means
+      "safe". Whether the honest form is widening (as the sibling does), a reported
+      UNKNOWN, or a refusal is the lane's measurement — but "stopped looking" and
+      "looked and found nothing" must stop being the same return value.
+    status: proposed
+    release: v0.69
+    tags:
+      - checker-potency
+      - vfp
+      - silent-drop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-track: differential
+      issue: "#1303"
+      done-when: "manual: a function with a VFP producer, an op `vfp_word_effect` does not model, a call, and a post-call read of that S-word no longer returns 'no violation'; red-first by constructing exactly that shape and watching the current checker pass it; the two callers' treatment of `None` is stated in one place and the sibling's widening behaviour is pinned so the pair cannot drift apart again"

@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-69-ARCHMODEL
+    type: system-req
+    title: "Feature-loop steps 1-2 (spar AADL -> WIT) are N/A again, carried on spar#445 — re-verified at cut with the observed state and date"
+    description: >
+      CARRIED, NOT FORGOTTEN. #1136 exists because a step marked N/A for the same
+      reason three releases running is a backlog item rather than an exemption. The
+      blocker is spar#445; at the v0.68 cut it was checked and recorded OPEN, last
+      updated 2026-09-03, with no comments.
+
+      THE COUNT IS THE `carried-from` CHAIN, NOT A REMEMBERED ORDINAL. Release
+      artifacts only exist from v0.63, so an ordinal like "the eighth N/A" cannot be
+      derived from the artifact set and must not be asserted from memory — v0.68
+      recorded the chain and the two prose recurrences it can actually cite.
+
+      THE OBLIGATION THIS RELEASE IS THE SAME SMALL ONE: re-verify spar#445 AT THE
+      CUT, record the observed state and the UTC date, and extend the chain. If it
+      has moved, the artifact stops being carried.
+    status: proposed
+    release: v0.69
+    tags:
+      - process
+      - carried
+      - spar
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1136"
+      done-when: "manual: spar#445 is re-checked at the v0.69 cut with its observed state and the UTC date recorded, and the carried-from chain is extended rather than an ordinal asserted"
