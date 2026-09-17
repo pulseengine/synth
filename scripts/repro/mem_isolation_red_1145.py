@@ -26,7 +26,9 @@ unicorn does not model the ARMv7-M MPU. It runs on an MPU-modeling venue:
 gale's Renode Cortex-M4 platform (Renode's own `tests/unit-tests/mpu.robot`
 passes Zephyr's mem_protect suite on stm32f4) or MPU-bearing silicon. gale ran
 it on Renode on 2026-09-06 (#1145: CONTAINED with regions programmed, ESCAPED
-without, nPRIV read back) — emulation, not silicon. Since RQ-68-MPUHONEST
+without, nPRIV read back) — emulation, not silicon; gale then repeated the
+matched pair on STM32WB55 silicon (NUCLEO-WB55RG, #1145, 2026-09-17),
+including from an object built on v0.68's main. Since RQ-68-MPUHONEST
 (#1284) `--safety-bounds mpu` is therefore ACCEPTED on this module, but only
 with `--embedder-mpu` (the caller states that its startup programs the MPU);
 without it the refusal stands (pinned below). This oracle landing green still

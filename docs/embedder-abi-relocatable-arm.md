@@ -262,7 +262,17 @@ load into R11 — one source, no drift.
    size-aligned reads exactly like *this platform has no MPU*. Before v0.68 the
    fix was placing the section by hand, e.g.
    `--section-start=.synth.wasm_mem_1=0x20030000`; a linker script that places
-   sections at explicit addresses still owns legality. What each profile
+   sections at explicit addresses still owns legality. **Alignment makes every
+   placement *valid*, not every placement *fit*:** on a part without spare RAM
+   the linker's orphan ordering can still overflow — gale relinked its 192 KiB
+   STM32WB55 image without `--section-start` and lld placed the aligned
+   `.synth.wasm_mem_1` ahead of the embedder's memory 0, overflowing RAM by
+   64 KiB. On a RAM-constrained part, place `.synth.wasm_mem_k` explicitly
+   (linker script or `--section-start`) relative to your own memory 0 and
+   stack. **Watch memory 0's section too:** if you place a region-aligned
+   memory 0 in `.bss`, its 64 KiB alignment raises the WHOLE `.bss` section's
+   alignment and can push other runtime data past the end of RAM — gale moved
+   memory 0 to a separate `.uninit` section. What each profile
    requires:
    - **PMSAv7 (Cortex-M3/M4/M7):** a region's size must be a power of two
      (≥ 32 B) and its base aligned to that size. A 1-page memory (64 KiB) is
@@ -284,6 +294,12 @@ load into R11 — one source, no drift.
    `.synth.wasm_mem_k` as PROGBITS (segment bytes at their offsets, rest
    zero) — your normal `.data` LMA→VMA startup copy must cover it before any
    export runs. A pure zero-init memory ships NOBITS — zero it like `.bss`.
+   **On silicon, those initial contents are your startup's job, never the
+   flasher's:** a PROGBITS `.synth.wasm_mem_k` addressed in RAM is folded by
+   lld into an in-file RAM segment, and a debugger's `program … verify` then
+   fails (gale's STM32WB55 run; Renode loads such a segment directly and
+   cannot show this). Flash only the flash-addressed contents and let your
+   startup copy the memory's bytes into RAM.
    Memory 0's segments remain the `--embedder-data-init` promise.
 5. **Programming the MPU is yours, and it is a memory-safety control.** synth
    emits NO MPU programming on this path — the symbols above are the input to
@@ -293,7 +309,7 @@ load into R11 — one source, no drift.
    and multi-memory), and on self-contained images, RV32 and AArch64 it refuses
    outright (RQ-68-MPUHONEST, #1284). The object is byte-identical to
    `--safety-bounds none`; the safety manifest records
-   `"mpu_programming": "embedder"`. Status of the arrangement: embedder-programmed; containment demonstrated by gale on Renode, not silicon (#1145).
+   `"mpu_programming": "embedder"`. Status of the arrangement: embedder-programmed; containment demonstrated by gale on Renode and on STM32WB55 silicon (#1145).
 6. **Grant regions per EXECUTION CONTEXT, not per tenant.** An MPU region is a
    property of whoever is running, not of a tenant. Enabling every
    `__synth_mem_base_k` region at once hands memory k to whatever executes —

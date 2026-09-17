@@ -12,9 +12,9 @@ in INDEPENDENT target directories (so a build-time non-determinism in the
 compiler itself is visible, not just a run-time one), into separate output
 directories, under a pinned SOURCE_DATE_EPOCH and an environment scrubbed of
 every ambient SYNTH_* lever, and fails on ANY difference in exit code, object
-bytes, or SBOM bytes. The SBOM records the output file NAME, which differs by
-construction between the two output directories' tags — that one token is
-normalised and nothing else is.
+bytes, or SBOM bytes. The comparison is raw: nothing is normalised. That is
+sound because both builds write the same file NAME into different
+directories, and the SBOM records only the base name.
 
 Potency is not assumed: `--plant VAR=VAL` applies one lever to the SECOND
 build only, and scripts/test_determinism_check.py requires that to go red.

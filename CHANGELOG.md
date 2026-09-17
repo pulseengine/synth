@@ -5,6 +5,130 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.68.0] - 2026-09-17
+
+**"No success without the work"** — relay built the same drone software to wasm
+and through synth twice and got two different files. The audit that followed
+looked for things built but never tested and things claimed but not done, and
+filed 23 issues (#1272–#1294). Every one maps to an artifact below; none is
+dropped silently. Nine artifacts: seven implemented, one published as a
+measurement without a deletion, one deferred on a cut-verified external
+blocker. The findings are a **class with several distinct mechanisms**; this
+release does **not** claim a shared root cause.
+
+### Behaviour change — `--safety-bounds mpu` (RQ-68-MPUHONEST, #1284, PR #1310)
+
+Before v0.68, `--safety-bounds mpu` and an undocumented alias `pmp` produced
+bytes identical to `none` on self-contained ARM images and on every RV32 path,
+with no warning: synth emits no MPU or PMP programming.
+
+- **Refused** on self-contained ARM images and on every RV32 path, with a
+  diagnostic naming #1145 and #1284. The CLI refuses `pmp` on every backend.
+  Two residuals remain: on AArch64 the refusal is the existing
+  mask/mpu one, whose message names `mpu`; and the `synth-core` library's
+  `SafetyBounds::parse` still maps `pmp` to `Mpu` (#1317).
+- **ARM `--relocatable`** now requires the acknowledgment flag
+  **`--embedder-mpu`**, for single- and multi-memory objects alike. With it the
+  object is byte-identical to the previous `mpu` object, and the safety
+  manifest records `"mpu_programming": "embedder"`. `--embedder-mpu` without
+  `--safety-bounds mpu` is refused.
+- Each `.synth.wasm_mem_k` section is aligned to its MPU region size in every
+  multi-memory relocatable object (a 1-page memory: 4 → 65536).
+- The plan said "refuse everywhere" on a premise that turned out to be stale;
+  the scope was agreed with the downstream on #1145 before implementation.
+  Containment is embedder-programmed and was **demonstrated by gale on Renode
+  and on STM32WB55 silicon**, including from an object built on this release's
+  `main`. That is a demonstrator on one part, not a discharge of gale's own
+  MPU requirement. `docs/embedder-abi-relocatable-arm.md` carries gale's
+  findings (alignment, per-context granting, placement on RAM-constrained
+  parts, and why initial contents are the startup's job and not the flasher's).
+
+### Fixed
+
+- **RQ-68-NOPCLASS (#1272, #1289, #1275; PR #1304)** — the plan named one
+  catch-all; there were **seven** silent-NOP sites in the Thumb-2 encoder, and
+  all now return a typed error. That makes the WCET loop analysis's premise
+  ("the encoder refuses `Call`") true. 25 MVE ops stop claiming an empty VFP
+  footprint. Byte-identical over the corpus; see the artifact for the triage
+  counts, which were re-measured at cut after a collision in the triage tool
+  was found and fixed (the zero held).
+- **RQ-68-REPRO (#1291, #1292, #1293; PR #1305)** — codegen was never
+  non-deterministic; what was missing was proof and a gate. CI now builds two
+  compilers independently and compares object **and** SBOM over the fixture
+  set (284 pairs, 0 differences when measured), and fails below 100 compared
+  pairs. The SBOM honours `SOURCE_DATE_EPOCH` and records every `SYNTH_*`
+  variable set at build time. 37 are read outside tests (36 by literal name,
+  one through a constant); of the 36 the census set, at least 14 change bytes
+  (a lower bound).
+
+### Changed — claims corrected, evidence pinned
+
+- **RQ-68-CLAIMSDRIFT (#1285, #1294, #1286, #1287, #1279, #1288, #1306; PR #1313)**
+  — seven documents stop claiming what the code does not do.
+  - `--link` on an already-linked image is refused; it always failed.
+  - f32 `min`/`max` and rounding are listed as declining on ARM.
+  - CLAUDE.md cites the acceptance ladder instead of superseded rates.
+  - The PoC page's "0.85x native" was an estimate. Measured against gcc -Os,
+    synth is **larger**; the figure lives in the generated
+    `artifacts/parity-benchmark.md`.
+  - `synth-memory` builds without `std` in CI.
+  - The Spectre policy cites symbols and states that it covers Thumb-2 and RV32
+    only.
+  - CLAUDE.md stops naming a test-only peephole as a shipped load elimination.
+- **RQ-68-ORACLEABI (#1276, #1277, #1278, #1281, #1282; PR #1312)** — oracles
+  and ledger evidence stop asserting what they do not check.
+  - The WCET harnesses set R10 to a size, not a base.
+  - The linear-memory base is pinned on both halves (20 literal copies in 13
+    scripts).
+  - Verus is presented as a count of declarations, never verified.
+  - Fixture generators are staleness-gated.
+  - Four crates the binary does not link (0 symbols) are re-scoped rather than
+    cited as compiler verification. Filed downstream: kiln#510, meld#417.
+- **RQ-68-ONESOURCE (#1270, #1273, #1274, #1280, #1283, #1290; PR #1311)** — the
+  register contract is declared once, byte-identical over the corpus at every
+  rebase.
+  - #1273 was measured first and found latent.
+  - The pool-order assumption is now asserted.
+  - **`selector_lines_code` fell, 20224 → 20201.**
+- **RQ-68-STATUSGATE (#1250; PR #1302)** — a delivered artifact left `proposed`
+  is no longer invisible (R11, plus R4 on squash subjects). It caught this
+  release's own SUBTRACT record before merge.
+
+### Measured, not deleted
+
+- **RQ-68-SUBTRACT (#242; PR #1314)** — `select_default.rs` executes 34 of 1616
+  executable lines over the shipped CLI and corpus. The unexecuted lines are an
+  **upper bound, not a deletion set**, because the fallthrough forwards any
+  unmatched op. 88 Helium-guarded arms are production-dead by construction:
+  `set_helium` is test-only, and the decoder refuses every SIMD operator.
+  Deleting them is a v0.69 candidate. The selector's fall this release came
+  from ONESOURCE, not from this artifact.
+
+### Deferred, with measurements
+
+- **RQ-68-ARCHMODEL (#1136)** — spar#445 re-checked at cut on 2026-09-17:
+  OPEN, last updated 2026-09-03. Deferred again; the count is the
+  `carried-from` chain (RQ-63 → RQ-68, plus two recurrences RQ-63 records in
+  prose).
+- **Found this release, named for later:**
+  - #1307: ARM ELF `.strtab`/`.symtab` sections are unnamed (an off-by-one in
+    two hand-written offsets).
+  - #1308: the advisory federated-graph job saw a new varve PATH shadow (`spar`)
+    on a shared runner.
+  - #1309: the proven-safe #901 unit tests share a fixed temp dir.
+  - #1315 (reported by gale, reproduced on this release's candidate): a
+    declared custom page size, `(memory 1 1 (pagesize 1))`, is accepted
+    and ignored on every path measured, so the memory is sized in 64 KiB
+    pages. It has the same accepted-but-dropped shape as #1284.
+  - rivet#972.
+  - gale's requests: a used-extent symbol `__synth_mem_used_N`, and the
+    per-memory data-base contract (gale#398).
+  - #1303: the across-call VFP checker stops at an op it does not model, and
+    reports nothing past it. The 25 MVE ops NOPCLASS stopped calling
+    VFP-free now take that path.
+  - #1301: there is no ARMv6-M (Cortex-M0/M0+) target profile; its 256 B
+    MPU minimum region is one part of it.
+
 ## [0.67.0] - 2026-09-16
 
 **"One root cause, not five symptoms"** — and the release's own headline claim

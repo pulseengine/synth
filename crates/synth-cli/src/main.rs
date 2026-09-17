@@ -4348,7 +4348,8 @@ fn compile_all_exports(
         // where the HOST owns startup, and the self-contained path declines
         // multi-memory above (one R11 base) — so per-memory isolation exists
         // only if the embedder programs one region per memory from the #1145
-        // region table. gale's two-tenant criterion executed on Renode
+        // region table. gale's two-tenant criterion executed on Renode and on
+        // STM32WB55 silicon
         // (CONTAINED with regions programmed, ESCAPED without), so the flag is
         // now ACCEPTED — but only with the caller's explicit acknowledgment
         // (--embedder-mpu, the --embedder-data-init shape); without it this
@@ -4366,7 +4367,7 @@ fn compile_all_exports(
                  base is your R11 value). The obligation is documented in \
                  docs/embedder-abi-relocatable-arm.md; gale's two-tenant \
                  cross-region fault criterion showed that arrangement containing \
-                 an escape on Renode, not silicon (#1145). Pass --embedder-mpu to \
+                 an escape on Renode and on STM32WB55 silicon (#1145). Pass --embedder-mpu to \
                  acknowledge it, or drop --safety-bounds mpu (the object is \
                  byte-identical either way). Refusing rather than accepting a \
                  silent MPU no-op",
@@ -7396,7 +7397,8 @@ fn build_relocatable_elf(
     // regions from this table is the embedder's obligation. Since
     // RQ-68-MPUHONEST (#1284) `--safety-bounds mpu` accepts a multi-memory
     // module only with --embedder-mpu (the caller's explicit acknowledgment;
-    // gale's #1145 two-tenant criterion executed on Renode). Emitted ONLY for
+    // gale's #1145 two-tenant criterion executed on Renode and on STM32WB55
+    // silicon). Emitted ONLY for
     // a multi-memory object: single-memory output is byte-identical.
     if !extra_memories.is_empty() {
         /// `st_shndx` for an absolute (link-invariant) symbol value.

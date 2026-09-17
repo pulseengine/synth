@@ -4,13 +4,13 @@
 # software to wasm and through synth twice, and the two outputs were not the
 # same file. The ask that followed was an audit — things we build and do not
 # test, things we claim and do not do — with every finding fixed next
-# iteration. Four audit lanes filed 21 issues (#1272-#1294). This release is
+# iteration. Four audit lanes filed 23 issues (#1272-#1294). This release is
 # that iteration.
 #
 # THE PLAN WAS VERIFIED AGAINST SOURCE BEFORE IT WAS WRITTEN, and that is the
 # lesson of the last two releases applied first rather than learned again.
 # v0.66 scoped a lever from a mutation-survey signal and v0.67 scoped one from
-# a manifest asymmetry; neither lever existed. Grouping 21 issues by their
+# a manifest asymmetry; neither lever existed. Grouping 23 issues by their
 # TITLES is the same move. So every artifact here was checked on 9e519fec
 # (the v0.67.0 tag) with the command that would refute it, and three things
 # changed as a result:
@@ -53,7 +53,7 @@
 #   carried SUBTRACT (measure first), ARCHMODEL (8th N/A)
 #
 # If capacity runs out, the three musts ship and the rest defer WITH THEIR
-# MEASUREMENTS, named in the release notes. All 21 audit issues are mapped to
+# MEASUREMENTS, named in the release notes. All 23 audit issues are mapped to
 # an artifact; none is dropped silently. #1267 (falcon tick) stays open outside
 # the plan: the capability shipped in v0.67 and the reporter's measurement is
 # still owed, and only their module can discharge it.
