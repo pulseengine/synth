@@ -2158,87 +2158,6 @@ pub fn read_before_write_locals(
     rbw
 }
 
-/// RQ-69-FALCON (#1318): lay the frame out as it always was, and re-lay it ONCE
-/// with the VFP call-spill area up front if — and only if — that area would
-/// otherwise sit outside the `VSTR`/`VLDR` `[sp,#imm]` reach (1020 bytes).
-///
-/// The first attempt is what shipped before this change, so a function whose
-/// area is already reachable keeps its exact frame, byte for byte. The second
-/// is reached only by a function whose VFP accesses could not be encoded at
-/// all — it declines today, so it has no bytes to preserve.
-///
-/// Gating on the rung flag alone was NOT enough, and the corpus said so: the
-/// `vfp_local_pressure_1069` fixture compiles TODAY through the frame-home rung
-/// with its area in range, and moving the area unconditionally moved its bytes
-/// (1 of 1035 compiles). The condition that matters is reachability, not which
-/// rung is running.
-#[allow(clippy::too_many_arguments)] // forwards the inner layout's argument list unchanged
-fn compute_local_layout(
-    wasm_ops: &[WasmOp],
-    num_params: u32,
-    params_i64: &[bool],
-    declared_i64_locals: &[bool],
-    params_f32: &[bool],
-    params_f64_vfp: &[bool],
-    func_ret_i64: &[bool],
-    type_ret_i64: &[bool],
-    func_arg_counts: &[u32],
-    type_arg_counts: &[u32],
-    force_spill_area: bool,
-    force_param_backing: bool,
-    force_vfp_area: bool,
-    aeabi_builtin_calls: bool,
-    outgoing_arg_bytes: i32,
-    i64_spill_slots: usize,
-    vfp_reachable_area: bool,
-) -> LocalLayout {
-    let as_before = compute_local_layout_inner(
-        wasm_ops,
-        num_params,
-        params_i64,
-        declared_i64_locals,
-        params_f32,
-        params_f64_vfp,
-        func_ret_i64,
-        type_ret_i64,
-        func_arg_counts,
-        type_arg_counts,
-        force_spill_area,
-        force_param_backing,
-        force_vfp_area,
-        aeabi_builtin_calls,
-        outgoing_arg_bytes,
-        i64_spill_slots,
-        false,
-    );
-    // The highest byte the area's own accesses address: S15 sits at base + 60.
-    let out_of_reach = as_before
-        .vfp_spill_base
-        .is_some_and(|b| b + 15 * 4 > VFP_SP_IMM_MAX);
-    if vfp_reachable_area && out_of_reach {
-        return compute_local_layout_inner(
-            wasm_ops,
-            num_params,
-            params_i64,
-            declared_i64_locals,
-            params_f32,
-            params_f64_vfp,
-            func_ret_i64,
-            type_ret_i64,
-            func_arg_counts,
-            type_arg_counts,
-            force_spill_area,
-            force_param_backing,
-            force_vfp_area,
-            aeabi_builtin_calls,
-            outgoing_arg_bytes,
-            i64_spill_slots,
-            true,
-        );
-    }
-    as_before
-}
-
 /// Compute the stack-frame layout for non-parameter locals in a function.
 ///
 /// Walks the wasm op stream once to:
@@ -2255,7 +2174,7 @@ fn compute_local_layout(
 ///   own callee-saved-register spill).
 /// - Epilogue: `add sp, sp, #frame_size` before popping registers.
 #[allow(clippy::too_many_arguments)] // f64-param threading (#369 ph3); params-struct refactor is a named follow-up
-fn compute_local_layout_inner(
+fn compute_local_layout(
     wasm_ops: &[WasmOp],
     num_params: u32,
     params_i64: &[bool],
@@ -2276,6 +2195,8 @@ fn compute_local_layout_inner(
     // area is placed where VSTR/VLDR can reach it. Only ever true for a
     // function that already failed every earlier rung.
     vfp_reachable_area: bool,
+    // RQ-69-FALCON (#1318): this call is the re-lay with the area up front.
+    place_vfp_early: bool,
 ) -> LocalLayout {
     use std::collections::{BTreeSet, HashMap};
     let i64_set = infer_i64_locals(
@@ -2328,7 +2249,7 @@ fn compute_local_layout_inner(
     // rung, which runs only after every earlier rung has failed, so the
     // functions whose layout changes are exactly the functions that emit no
     // bytes today. Byte-identity over the corpus holds by construction.
-    let vfp_early_base = if vfp_reachable_area {
+    let vfp_early_base = if place_vfp_early {
         let base = offset;
         offset += 16 * 4;
         Some(base)
@@ -2538,6 +2459,41 @@ fn compute_local_layout_inner(
         }
     }
 
+    // RQ-69-FALCON (#1318): `VSTR`/`VLDR` reach VFP_SP_IMM_MAX; integer LDR/STR
+    // reach 4095. The VFP call-spill area is placed after every other frame
+    // field so adding it never moved an existing offset — but once the pool
+    // grows for a float-dense function the area lands out of range and every
+    // recovery rung dies on the encoding, not on pressure. Re-lay ONCE with the
+    // area up front, and ONLY when it is genuinely unreachable: a function whose
+    // area is already in range keeps its exact frame (the corpus caught this —
+    // `vfp_local_pressure_1069` compiles TODAY through the frame-home rung, and
+    // gating on the rung alone moved its bytes), and a function whose accesses
+    // cannot be encoded declines today, so it has no bytes to preserve.
+    if !place_vfp_early
+        && vfp_reachable_area
+        && vfp_spill_base.is_some_and(|b| b + 15 * 4 > VFP_SP_IMM_MAX)
+    {
+        return compute_local_layout(
+            wasm_ops,
+            num_params,
+            params_i64,
+            declared_i64_locals,
+            params_f32,
+            params_f64_vfp,
+            func_ret_i64,
+            type_ret_i64,
+            func_arg_counts,
+            type_arg_counts,
+            force_spill_area,
+            force_param_backing,
+            force_vfp_area,
+            aeabi_builtin_calls,
+            outgoing_arg_bytes,
+            i64_spill_slots,
+            vfp_reachable_area,
+            true,
+        );
+    }
     LocalLayout {
         locals,
         frame_size,
@@ -17263,6 +17219,7 @@ mod tests {
             0,
             I64_SPILL_SLOTS,
             false,
+            false,
         );
         assert_eq!(layout.frame_size, 0);
         assert!(layout.locals.is_empty());
@@ -17293,6 +17250,7 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
             false,
         );
         assert!(layout.locals.contains_key(&1));
@@ -17328,6 +17286,7 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
             false,
         );
         let (off, is_i64) = layout.locals[&0];
@@ -17366,6 +17325,7 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
             false,
         );
         let (off0, is_i64_0) = layout.locals[&0];
@@ -17406,6 +17366,7 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
             false,
         );
         // Only idx 2 should be in the layout.
