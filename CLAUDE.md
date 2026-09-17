@@ -461,7 +461,7 @@ Spec-conformant OOB trapping requires `--safety-bounds software|mask` on
 ARM/RV32, and is unconditional on AArch64 (v0.52 #865). **`--safety-bounds mpu`
 traps nothing from synth**: synth emits NO MPU or PMP programming on any path,
 so `mpu` is accepted only on an ARM `--relocatable` object with
-`--embedder-mpu` — embedder-programmed; containment demonstrated by gale on Renode, not silicon (#1145) — and refused on
+`--embedder-mpu` — embedder-programmed; containment demonstrated by gale on Renode and on STM32WB55 silicon (#1145) — and refused on
 self-contained ARM images, on RV32 (`mpu` and `pmp`) and on AArch64
 (RQ-68-MPUHONEST, #1284; the byte-identical-to-`none` passthrough it replaced
 was silent). The default
@@ -512,7 +512,7 @@ comparison into flattery. So:
   the EMBEDDER programs one MPU region per memory — embedder-trusted
   isolation, obligations in `docs/embedder-abi-relocatable-arm.md`;
   `--safety-bounds mpu --embedder-mpu` records that obligation
-  (embedder-programmed; containment demonstrated by gale on Renode, not silicon (#1145); v0.68 aligns each
+  (embedder-programmed; containment demonstrated by gale on Renode and on STM32WB55 silicon (#1145); v0.68 aligns each
   `.synth.wasm_mem_k` to its MPU region size). Pinned executable:
   `scripts/repro/mem_isolation_red_1145.py` (decline needles + the landed
   cross-tenant write).

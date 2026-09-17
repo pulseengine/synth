@@ -45,7 +45,7 @@ silicon that lacks the hardware.
   startup programs an MPU (RQ-68-MPUHONEST, #1284). The only shipped MPU
   surface is the multi-memory region table an EMBEDDER programs from
   (`--relocatable --safety-bounds mpu --embedder-mpu`;
-  embedder-programmed; containment demonstrated by gale on Renode, not silicon (#1145)).
+  embedder-programmed; containment demonstrated by gale on Renode and on STM32WB55 silicon (#1145)).
 * **PMP configuration** — `crates/synth-backend-riscv/src/pmp.rs` models RV32
   PMP entries (NAPOT and TOR modes); like the MPU model it is not linked into
   the `synth` binary, and `--safety-bounds mpu`/`pmp` REFUSE on RV32 (#1284).

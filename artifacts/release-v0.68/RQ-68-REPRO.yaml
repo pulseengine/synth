@@ -90,6 +90,10 @@ artifacts:
         themselves differ -- each embeds its own target-directory path -- which
         concerns the compiler's bytes, not its output, and the gate measures
         output.
+
+        MERGED as PR #1305 (f2012961) through the four-check merge ritual;
+        `git diff <PR head> <merged commit>` = 0 lines (recorded in the merge
+        diff record).
       verified-by: >-
         RED-FIRST THROUGH THE SHIPPED BINARY. `crates/synth-cli/tests/
         sbom_reproducible_1292.rs` (3 tests) fails all three against the pre-fix

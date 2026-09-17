@@ -71,6 +71,10 @@ artifacts:
         commits are not delivery commits. Restricting to delivery types fixed
         it; the real-commit replay was re-run on the restricted rule rather
         than assumed to still hold.
+
+        MERGED as PR #1302 (98fec85b) through the four-check merge ritual;
+        `git diff <PR head> <merged commit>` = 0 lines (recorded in the merge
+        diff record).
       verified-by: >-
         RED-FIRST ON THE REAL COMMITS, measured with detached worktrees and the
         new checker copied in. 63b95dc5 (v0.67's release candidate): the OLD

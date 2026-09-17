@@ -35,3 +35,26 @@ artifacts:
       issue: "#1136"
       done-when: "manual: spar#445 is re-checked AT CUT TIME with the observed state and date recorded; if still open the deferral is filed with the carried-from chain as its count; if closed, an AADL model is generated to WIT and the loop's steps 1-2 are exercised"
       carried-from: RQ-67-ARCHMODEL
+      disposition: deferred
+      landed: >-
+        NOT LANDED — DEFERRED AGAIN, on an external blocker RE-VERIFIED AT CUT.
+
+        spar#445 ("spar accepts property associations from UNDECLARED property
+        sets silently (rc=0)") checked 2026-09-17T16:12Z, the day this release
+        was cut: state OPEN, last updated 2026-09-03, 0 comments. That is a
+        cut-time observation with its date, not a restatement of v0.67's.
+
+        THE COUNT IS THE CHAIN, NOT A REMEMBERED ORDINAL: this artifact's
+        `carried-from` is RQ-67-ARCHMODEL, whose chain runs RQ-66 -> RQ-65 ->
+        RQ-64 -> RQ-63 (six artifact files, v0.63-v0.68). RQ-63-ARCHMODEL's prose
+        records two earlier recurrences that predate the artifact, which is
+        where "eighth" comes from; the six-file chain is the re-derivable part.
+
+        WHY IT IS STILL RIGHT TO DEFER: generating WIT from an AADL model spar
+        would silently mis-validate manufactures a green result whose checker
+        cannot fail — the class this release was about.
+      verified-by: >-
+        `gh issue view 445 --repo pulseengine/spar --json state,updatedAt,closedAt,comments`
+        at cut, 2026-09-17T16:12Z: state=OPEN, updatedAt=2026-09-03T10:57:37Z,
+        closedAt=null, 0 comments. `git grep carried-from` over
+        artifacts/release-v0.6*/ reproduces the chain.

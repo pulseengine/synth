@@ -185,3 +185,7 @@ artifacts:
         still green; the claim now binds the qualifier in the README AND the
         matrix template. Red-first: dropping the README qualifier reds it;
         dropping the matrix qualifier and regenerating reds it.
+
+        MERGED as PR #1312 (d580e8d9) through the four-check merge ritual;
+        `git diff <PR head> <merged commit>` = 0 lines (recorded in the merge
+        diff record).

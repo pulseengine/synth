@@ -148,3 +148,7 @@ artifacts:
         snapshot. The shared byte_triage.py raced on `flight_seam.wat` vs
         `flight_seam.wasm` (same output stem across threads); the lane used a
         copy keyed by the full file name.
+
+        MERGED as PR #1311 (b9bd2700) through the four-check merge ritual;
+        `git diff <PR head> <merged commit>` = 0 lines (recorded in the merge
+        diff record).

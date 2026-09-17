@@ -99,6 +99,23 @@ artifacts:
         weakness this exposed -- `None => break` means the across-call checker
         reports nothing through ANY unmodeled op, all 41 MVE variants included
         -- predates this lane and is filed as #1303, not widened into it.
+
+        MERGED as PR #1304 (31378008) through the four-check merge ritual;
+        `git diff <PR head> <merged commit>` = 0 lines (recorded in the merge
+        diff record).
+
+        CUT-TIME RE-MEASUREMENT (v0.68 release). The lane's byte triage used a
+        shared tool that, it was later found, let a module present as both
+        `.wat` and `.wasm` overwrite one output file (same stem, parallel
+        threads). The triage was therefore re-run with the collision fixed:
+        baseline v0.67.0 (9e519fec) against the NOPCLASS head, 207 modules x 5
+        configurations = 1035 compiles per binary -> 826 byte-identical, 209
+        failing identically, 0 exit-code, digest or skip-set changes. The
+        merged byte-identity claim HOLDS on the corrected instrument. The
+        823 / 212 split recorded above came from the collision-affected tool:
+        9 fixtures exist as both `.wat` and `.wasm`, so 45 compiles per binary
+        shared an output path, which moved 3 results between "identical" and
+        "failing identically" without changing the zero.
       verified-by: >-
         RED-FIRST, every new test backed out and watched fail.
         `a32_no_silent_nop_615.rs` gains four tests. Against the pre-#1272
