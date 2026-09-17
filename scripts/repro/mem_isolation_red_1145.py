@@ -24,11 +24,14 @@ The GREEN half — the same write FAULTS once the embedder programs one MPU
 region per memory from the #1145 region table — is NOT executable here:
 unicorn does not model the ARMv7-M MPU. It runs on an MPU-modeling venue:
 gale's Renode Cortex-M4 platform (Renode's own `tests/unit-tests/mpu.robot`
-passes Zephyr's mem_protect suite on stm32f4) or the STM32G474RE bench. Until
-that executes, `--safety-bounds mpu` on a multi-memory module KEEPS REFUSING
-(pinned below), so this oracle landing green does not let synth claim
-isolation — it proves the hole the region table exists to close, and pins the
-table's shape.
+passes Zephyr's mem_protect suite on stm32f4) or MPU-bearing silicon. gale ran
+it on Renode on 2026-09-06 (#1145: CONTAINED with regions programmed, ESCAPED
+without, nPRIV read back) — emulation, not silicon. Since RQ-68-MPUHONEST
+(#1284) `--safety-bounds mpu` is therefore ACCEPTED on this module, but only
+with `--embedder-mpu` (the caller states that its startup programs the MPU);
+without it the refusal stands (pinned below). This oracle landing green still
+does not let synth claim isolation — it proves the hole the region table
+exists to close, and pins the table's shape.
 
 Also pinned here, so the compliance envelope cannot drift silently:
   * region table structure — `__synth_mem_{count,size_0,size_1}` SHN_ABS with
@@ -39,8 +42,13 @@ Also pinned here, so the compliance envelope cannot drift silently:
   * `--safety-bounds software|mask` still LOUD-decline the memory-1 access
     (root cause: memory 1 has no size register — R10 is memory 0's) and the
     module fails via #952 rather than shipping a partial object.
-  * `--safety-bounds mpu` still refuses, naming the region table and the
-    two-tenant criterion rather than the closed "#406 phase 2".
+  * `--safety-bounds mpu` without `--embedder-mpu` still refuses, naming the
+    region table and the two-tenant criterion rather than the closed
+    "#406 phase 2"; WITH `--embedder-mpu` it is accepted and the object is
+    byte-identical to the plain compile (synth adds no guard and no MPU
+    programming — #1284).
+  * `.synth.wasm_mem_1` carries `sh_addralign` = its MPU region size (one page),
+    so a linker honouring alignment places it at a PMSAv7-legal base (#1145).
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python scripts/repro/mem_isolation_red_1145.py
@@ -117,10 +125,10 @@ def main():
         p = compile_variant(tmp / f"declined_{mode}.o", ["--safety-bounds", mode])
         if p.returncode == 0:
             fail(
-                f"--safety-bounds {mode} now ACCEPTS the two-tenant module. If "
-                f"that is deliberate, the #1145 fault criterion must have "
-                f"executed on an MPU-bearing venue first (RQ-62-REACH) and this "
-                f"pin updated with it."
+                f"--safety-bounds {mode} now ACCEPTS the two-tenant module "
+                f"WITHOUT --embedder-mpu. synth emits no MPU programming, so "
+                f"accepting it unacknowledged is a silent no-op on a "
+                f"memory-safety control (#1284)."
             )
         blob = (p.stderr or "") + (p.stdout or "")
         for needle in needles:
@@ -144,6 +152,22 @@ def main():
     mem1_image = bytes(mem1.data())
     if mem1_image[0:7] != b"tenantB":
         fail("tenant B's init segment not placed at offset 0")
+    if mem1["sh_addralign"] != PAGE:
+        fail(f"{MEM1_SECTION} sh_addralign = {mem1['sh_addralign']:#x}, want "
+             f"{PAGE:#x} — the section must be aligned to its MPU region size so "
+             f"a linker places it at a PMSAv7-legal base (#1145)")
+
+    # ── `mpu` with the acknowledgment: accepted, byte-identical (#1284) ──────
+    acked = tmp / "two_tenant_mpu_acked.o"
+    p = compile_variant(acked, ["--safety-bounds", "mpu", "--embedder-mpu"])
+    if p.returncode != 0:
+        print(p.stderr.strip())
+        fail("--safety-bounds mpu --embedder-mpu declined the two-tenant module")
+    if acked.read_bytes() != obj.read_bytes():
+        fail("--safety-bounds mpu --embedder-mpu changed the object — synth must "
+             "add no guard and no MPU programming under the embedder contract")
+    print(f"mpu + --embedder-mpu accepted, byte-identical to the plain object; "
+          f"{MEM1_SECTION} aligned to its {PAGE:#x} MPU region")
 
     symtab = [s for s in e.iter_sections() if s["sh_type"] == "SHT_SYMTAB"][0]
     syms = {s.name: (s["st_shndx"], s["st_value"], s["st_size"])

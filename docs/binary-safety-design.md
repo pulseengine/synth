@@ -40,10 +40,15 @@ silicon that lacks the hardware.
   `instruction_selector.rs:2950` (`CMP/BHS Trap_Handler` before each load /
   store). Three modes: `None`, `Software`, `Masking`.
 * **MPU configuration** — `crates/synth-backend/src/mpu.rs` and
-  `mpu_allocator.rs`. Cortex-M MPU regions are programmable from the
-  generated startup code.
-* **PMP configuration** — `crates/synth-backend-riscv/src/pmp.rs`. RV32
-  Physical Memory Protection entries (NAPOT and TOR modes).
+  `mpu_allocator.rs` model PMSAv7 regions, but **nothing in the `synth`
+  binary drives them**: they contribute no symbols to it, and no generated
+  startup programs an MPU (RQ-68-MPUHONEST, #1284). The only shipped MPU
+  surface is the multi-memory region table an EMBEDDER programs from
+  (`--relocatable --safety-bounds mpu --embedder-mpu`;
+  embedder-programmed; containment demonstrated by gale on Renode, not silicon (#1145)).
+* **PMP configuration** — `crates/synth-backend-riscv/src/pmp.rs` models RV32
+  PMP entries (NAPOT and TOR modes); like the MPU model it is not linked into
+  the `synth` binary, and `--safety-bounds mpu`/`pmp` REFUSE on RV32 (#1284).
 * **Trap handler** — `crates/synth-cli/src/main.rs:1894` (ARM,
   `generate_trap_handler`) and `crates/synth-backend-riscv/src/startup.rs:88`
   (RV32, `synth_trap_handler` weak symbol).
@@ -92,6 +97,11 @@ Where `<PROFILE>` is one of `none | fuzz | rtos | asil-d | paranoid`.
 ### Per-check overrides
 
 For fine-grained control, individual `--safety-X` flags override the profile.
+
+What SHIPS for bounds (v0.68): `--safety-bounds none|software|mask`, plus
+`mpu` only as `--relocatable --embedder-mpu` on ARM (embedder-programmed, #1284).
+`pmp` is refused. The block below is the original proposal, kept as design
+history.
 
 ```text
 --safety-bounds      <mpu|pmp|soft|mask|off>

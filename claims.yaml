@@ -3741,6 +3741,50 @@ claims:
       - kind: file-exists                    # the negative-controlled gate
         path: scripts/repro/verify_embedder_gate_1132.py
 
+  # RQ-68-MPUHONEST (#1284, #1145): synth emits NO MPU/PMP programming, so
+  # `--safety-bounds mpu` is honest only as an EMBEDDER obligation. The docs
+  # now say that in four places (CLAUDE.md's compliance envelope, the embedder
+  # ABI, the feature-matrix template, the CLI help); this pin binds the
+  # wording to the refusals and the acknowledgment flag that make it true, so
+  # a later change that quietly re-accepts `mpu` (or drops the flag) reds the
+  # ledger instead of leaving the prose describing enforcement that is gone.
+  - id: SYNTH-MPU-EMBEDDER-PROGRAMMED-1284
+    doc: CLAUDE.md
+    text: "**`--safety-bounds mpu`\ntraps nothing from synth**"
+    evidence:
+      - kind: count-eq                       # self-contained ARM refuses
+        pattern: '--safety-bounds mpu is refused on a self-contained ARM image'
+        glob: ['crates/synth-cli/src/main.rs']
+        expect: 1
+      - kind: count-eq                       # every RV32 path refuses
+        pattern: '--safety-bounds mpu is refused on the RISC-V backend'
+        glob: ['crates/synth-cli/src/main.rs']
+        expect: 1
+      - kind: count-eq                       # pmp is never an alias
+        pattern: '--safety-bounds pmp is refused on every backend'
+        glob: ['crates/synth-cli/src/main.rs']
+        expect: 1
+      - kind: count-eq                       # relocatable needs the acknowledgment
+        pattern: 'if safety_bounds == SafetyBounds::Mpu && !embedder_mpu \{'
+        glob: ['crates/synth-cli/src/main.rs']
+        expect: 1
+      - kind: count-eq                       # ...and the flag is a real CLI flag
+        pattern: '^        embedder_mpu: bool,$'
+        glob: ['crates/synth-cli/src/main.rs']
+        expect: 1
+      - kind: count-eq                       # the manifest records who programs it
+        pattern: 'pub mpu_programming: Option<String>,'
+        glob: ['crates/synth-core/src/safety_manifest.rs']
+        expect: 1
+      - kind: count-min                      # gale's per-context finding documented
+        pattern: 'Grant regions per EXECUTION CONTEXT, not per tenant'
+        glob: ['docs/embedder-abi-relocatable-arm.md']
+        min: 1
+      - kind: count-eq                       # the matrix row states the envelope
+        pattern: 'MPU isolation \(`--safety-bounds mpu`\) \| P \(embedder-programmed\)'
+        glob: ['scripts/templates/feature_matrix.md.tmpl']
+        expect: 1
+
   # RQ-65-MUTANTS (#1189): the v0.65 headline number — what share of sampled
   # emitted-code DECISIONS an oracle would catch being wrong — is derived from
   # the committed survey ledger, never typed into prose. `mutants_untested` is

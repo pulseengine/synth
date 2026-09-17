@@ -3550,18 +3550,18 @@ impl InstructionSelector {
                     // Validates the configuration (relocatable, no
                     // native-pointer ABI, known index) — pages unused here.
                     self.multi_memory_pages(*memory)?;
-                    if self.bounds_check != BoundsCheckConfig::None {
-                        // #1145 root cause, stated where it bites: the
-                        // software guard compares against R10 and mask mode
-                        // derives `size-1` from R10 — and R10 holds MEMORY
-                        // 0's size by the register contract. Memory k has NO
-                        // size register (and no other per-memory limit
-                        // source is wired into the guard emitters), so a
-                        // "guarded" memory-k access would either check
-                        // against the WRONG memory's size or check nothing.
-                        // Declining is the only honest lowering until a
-                        // per-memory limit source exists (e.g. the guard
-                        // materializing `__synth_mem_size_k`).
+                    if !self.bounds_check.is_passthrough() {
+                        // #1145 root cause: the software guard compares
+                        // against R10 and mask derives `size-1` from R10 —
+                        // MEMORY 0's size by the register contract. Memory k
+                        // has NO size register, so a guarded memory-k access
+                        // would check the WRONG bound or nothing; decline
+                        // until a per-memory limit source exists (e.g.
+                        // `__synth_mem_size_k`). `mpu` emits no inline guard
+                        // on any memory (`is_passthrough`, #1284): it lowers
+                        // like `none`, and the embedder's per-memory MPU
+                        // region (from the region table) is the enforcement.
+                        // Only the INLINE modes (software/mask) reach here.
                         return Err(synth_core::Error::synthesis(format!(
                             "multi-memory: --safety-bounds is not lowered for an \
                              op on memory {memory} in phase 1 — the bounds \

@@ -3733,9 +3733,11 @@ artifacts:
             fixtures + frozen gate 10/10). Layout contract documented on
             build_multi_func_cortex_m_elf, cross-referenced from the
             #650/#669 R11 table contract (CallIndirectGuards).
-        (2) OPEN — MPU guard region below a stack-HIGH stack (reuse the
-            --safety-bounds mpu machinery, #404/#406 region model); costs one
-            v7-M region, catches overflow without moving the layout.
+        (2) OPEN — MPU guard region below a stack-HIGH stack (#404/#406
+            region model; note synth emits no MPU programming today — the
+            mpu.rs model is unlinked and `--safety-bounds mpu` is
+            embedder-programmed only, #1284); costs one v7-M region, catches
+            overflow without moving the layout.
         (3) OPEN — PSPLIM/MSPLIM hardware stack limit on ARMv8-M targets
             (M33/M55); wire when a v8-M target matters.
 

@@ -454,8 +454,14 @@ v0.24.0. See the README "Roadmap — North Star" section for the full table.
 
 **In its default embedded configuration synth emits no out-of-bounds trap.** An
 OOB linear-memory access reads or writes whatever sits at `R11 + addr`.
-Spec-conformant OOB trapping requires `--safety-bounds software|mask|mpu` on
-ARM/RV32, and is unconditional on AArch64 (v0.52 #865). The default
+Spec-conformant OOB trapping requires `--safety-bounds software|mask` on
+ARM/RV32, and is unconditional on AArch64 (v0.52 #865). **`--safety-bounds mpu`
+traps nothing from synth**: synth emits NO MPU or PMP programming on any path,
+so `mpu` is accepted only on an ARM `--relocatable` object with
+`--embedder-mpu` — embedder-programmed; containment demonstrated by gale on Renode, not silicon (#1145) — and refused on
+self-contained ARM images, on RV32 (`mpu` and `pmp`) and on AArch64
+(RQ-68-MPUHONEST, #1284; the byte-identical-to-`none` passthrough it replaced
+was silent). The default
 (`SafetyBounds::None`, `synth-core/src/backend.rs`) is a deliberate bare-metal
 choice — "fastest, unsafe", relying on MPU/PMP or a trusted module — not an
 oversight. It is pinned by `SYNTH-SAFETY-BOUNDS-DEFAULT-ENVELOPE` in
@@ -492,14 +498,16 @@ comparison into flattery. So:
   cause: the software guard compares against R10 and mask mode derives
   `size-1` from R10, both MEMORY 0's size by the register contract; memory k
   has no size register, so a guard would check the wrong memory's bound — and
-  the module then fails via #952. `--safety-bounds mpu` refuses (multi-memory
-  compiles only on `--relocatable`, where synth emits no MPU programming).
+  the module then fails via #952. `--safety-bounds mpu` is accepted only with
+  `--embedder-mpu` (synth emits no MPU programming; memory k gets no inline
+  guard under it, the embedder's per-memory region is the enforcement).
   What ships instead (v0.62, #1145 option 3): the per-memory region table
   (`__synth_mem_base_N`/`__synth_mem_size_N`/`__synth_mem_count`) from which
   the EMBEDDER programs one MPU region per memory — embedder-trusted
-  isolation, obligations in `docs/embedder-abi-relocatable-arm.md`; accepting
-  `--safety-bounds mpu` itself waits on gale's two-tenant fault criterion
-  executing on an MPU-bearing venue. Pinned executable:
+  isolation, obligations in `docs/embedder-abi-relocatable-arm.md`;
+  `--safety-bounds mpu --embedder-mpu` records that obligation
+  (embedder-programmed; containment demonstrated by gale on Renode, not silicon (#1145); v0.68 aligns each
+  `.synth.wasm_mem_k` to its MPU region size). Pinned executable:
   `scripts/repro/mem_isolation_red_1145.py` (decline needles + the landed
   cross-tenant write).
 

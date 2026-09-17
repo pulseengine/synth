@@ -251,9 +251,19 @@ load into R11 — one source, no drift.
 
 ### What the embedder must arrange (category (b) — CHOSEN, constrained)
 
-1. **Placement is yours, MPU legality is yours.** synth emits
-   `.synth.wasm_mem_k` with `sh_addralign = 4` — it does NOT pre-align the
-   section for your MPU, because it cannot know which MPU you have:
+1. **Placement is yours, MPU legality is yours.** Since v0.68 synth emits
+   `.synth.wasm_mem_k` with `sh_addralign` = its **MPU region size** — the
+   smallest power of two covering the memory's declared size, never below the
+   PMSAv7 minimum of 32 B (RQ-68-MPUHONEST, #1145) — so a linker honouring
+   section alignment places it at a PMSAv7-legal base. (ARMv6-M's 256 B minimum
+   region is not applied yet; it lands with ARMv6-M support, #1301.) **Why it
+   matters, from gale's two-tenant run:** a misaligned base does not fail as
+   "misaligned" — a verified MPU switch that refuses a table whose base is not
+   size-aligned reads exactly like *this platform has no MPU*. Before v0.68 the
+   fix was placing the section by hand, e.g.
+   `--section-start=.synth.wasm_mem_1=0x20030000`; a linker script that places
+   sections at explicit addresses still owns legality. What each profile
+   requires:
    - **PMSAv7 (Cortex-M3/M4/M7):** a region's size must be a power of two
      (≥ 32 B) and its base aligned to that size. A 1-page memory (64 KiB) is
      a power of two — place the section 64 KiB-aligned. A non-power-of-two
@@ -276,11 +286,20 @@ load into R11 — one source, no drift.
    export runs. A pure zero-init memory ships NOBITS — zero it like `.bss`.
    Memory 0's segments remain the `--embedder-data-init` promise.
 5. **Programming the MPU is yours, and it is a memory-safety control.** synth
-   emits NO MPU programming on this path; until the #1145 two-tenant fault
-   criterion has executed on an MPU-bearing venue, `--safety-bounds mpu` on a
-   multi-memory module REFUSES rather than bless the arrangement — the
-   symbols above are the input to YOUR startup, not a claim by synth that
-   isolation exists.
+   emits NO MPU programming on this path — the symbols above are the input to
+   YOUR startup, not a claim by synth that isolation exists. To compile with
+   `--safety-bounds mpu` you must pass **`--embedder-mpu`**, which states that
+   obligation; without it `mpu` REFUSES on every ARM relocatable object (single
+   and multi-memory), and on self-contained images, RV32 and AArch64 it refuses
+   outright (RQ-68-MPUHONEST, #1284). The object is byte-identical to
+   `--safety-bounds none`; the safety manifest records
+   `"mpu_programming": "embedder"`. Status of the arrangement: embedder-programmed; containment demonstrated by gale on Renode, not silicon (#1145).
+6. **Grant regions per EXECUTION CONTEXT, not per tenant.** An MPU region is a
+   property of whoever is running, not of a tenant. Enabling every
+   `__synth_mem_base_k` region at once hands memory k to whatever executes —
+   including tenant A — and an image built that way LOOKS isolated and is not
+   (gale's first two-tenant attempt escaped exactly this way). Each context
+   switch must grant only the memory of the tenant about to run.
 
 ### The compliance fact this table does not fix
 
