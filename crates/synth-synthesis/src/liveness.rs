@@ -5781,8 +5781,18 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
     if let Some(v) = check_vfp_slot_aliasing(instrs) {
         return RaFinalVerdict::Violation(v);
     }
-    if let Some(v) = check_vfp_caller_saved_across_calls(instrs) {
-        return RaFinalVerdict::Violation(v);
+    // RQ-69-VFPUNKNOWN (#1303): three outcomes, not two. A scan that stopped at
+    // an op whose VFP effect is not modelled reports Undecided, and that is
+    // carried to the caller as a loud NotAttempted rather than folded into the
+    // clean path — the same treatment the join check's unmodelled constructs
+    // get, and non-fatal for the same reason. Deferred until after the join
+    // check below so a PROVEN join violation still outranks an undecided VFP
+    // window; a decline must never mask a violation.
+    let mut vfp_across_call_undecided = false;
+    match check_vfp_caller_saved_across_calls_detail(instrs) {
+        VfpAcrossCall::Clean => {}
+        VfpAcrossCall::Violation(v) => return RaFinalVerdict::Violation(v),
+        VfpAcrossCall::Undecided => vfp_across_call_undecided = true,
     }
 
     // ---- Invariant 4: value availability across a join (phase 2) ----
@@ -5795,6 +5805,15 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
             // (unmodeled-CF) function. Loud honest decline, non-fatal upstream.
             return RaFinalVerdict::NotAttempted { reason };
         }
+    }
+
+    // #1303: every other invariant held, but the across-call VFP scan could not
+    // see past an op it does not model. Saying "Consistent" here is the clean
+    // bill of health this lane exists to stop.
+    if vfp_across_call_undecided {
+        return RaFinalVerdict::NotAttempted {
+            reason: "vfp-across-call-unmodeled-effect",
+        };
     }
 
     RaFinalVerdict::Consistent
@@ -6153,9 +6172,40 @@ fn check_vfp_slot_aliasing(instrs: &[ArmInstruction]) -> Option<RaFinalViolation
 /// scan, both stopping conservatively at barriers and unmodeled ops — over
 /// S-words 2..16 (words 0/1 = the S0/D0 return, excluded; words >= 16 =
 /// D8..D15 are CALLEE-saved, out of scope for a caller-side check).
-fn check_vfp_caller_saved_across_calls(instrs: &[ArmInstruction]) -> Option<RaFinalViolation> {
+/// RQ-69-VFPUNKNOWN (#1303): the across-CALL VFP check, and what it does when
+/// it cannot see.
+///
+/// `vfp_word_effect` returns `None` for an op whose S-word footprint it does not
+/// model. That is correct — v0.68's #1275 fix put 25 MVE variants there rather
+/// than let them keep claiming an EMPTY footprint. But both scans below used to
+/// treat `None` as a reason to STOP, and the function then returned `None`,
+/// which its caller reads as "no violation" — the same answer a clean function
+/// gets. One unmodelled op between a producer and a call hid the live word
+/// behind it, and nothing said so.
+///
+/// The sibling caller of `vfp_word_effect`, the #881 spill-slot non-aliasing
+/// check, does the sound thing with the same `None`: it WIDENS. This one now
+/// reports that it could not decide, which is this file's own doctrine (see
+/// [`RaFinalVerdict::NotAttempted`]) — a checker that cannot model a construct
+/// says so rather than guessing, and NotAttempted is NON-FATAL, so a compile
+/// that works today keeps working.
+///
+/// Widening here instead would make every unmodelled op a hard compile error:
+/// the opposite failure, and one nobody could ship past.
+enum VfpAcrossCall {
+    /// No violation, and every scan that mattered reached a conclusion.
+    Clean,
+    /// A word produced before a call and read after it, unpreserved.
+    Violation(RaFinalViolation),
+    /// A scan stopped at an op whose VFP effect is not modelled, in a window
+    /// where a violation could have been hiding. Never reported as clean.
+    Undecided,
+}
+
+fn check_vfp_caller_saved_across_calls_detail(instrs: &[ArmInstruction]) -> VfpAcrossCall {
     use ArmOp::*;
     let is_call = |op: &ArmOp| matches!(op, Bl { .. } | Blx { .. } | Call { .. });
+    let mut undecided = false;
     for (ci, ins) in instrs.iter().enumerate() {
         if !is_call(&ins.op) {
             continue;
@@ -6163,6 +6213,7 @@ fn check_vfp_caller_saved_across_calls(instrs: &[ArmInstruction]) -> Option<RaFi
         for word in 2..16usize {
             // (a) pre-call producer.
             let mut has_producer = false;
+            let mut producer_undecided = false;
             for prev in instrs[..ci].iter().rev() {
                 if !is_straight_line(&prev.op) {
                     break;
@@ -6174,14 +6225,23 @@ fn check_vfp_caller_saved_across_calls(instrs: &[ArmInstruction]) -> Option<RaFi
                             break;
                         }
                     }
-                    None => break,
+                    // #1303: the producer may be BEHIND this op; the scan
+                    // cannot tell. Stopping is not the same as finding nothing.
+                    None => {
+                        producer_undecided = true;
+                        break;
+                    }
                 }
             }
             if !has_producer {
+                if producer_undecided {
+                    undecided = true;
+                }
                 continue;
             }
             // (b) post-call consumer on the straight-line fall-through.
             let mut read_after = false;
+            let mut consumer_undecided = false;
             for next in &instrs[ci + 1..] {
                 if !is_straight_line(&next.op) {
                     break;
@@ -6196,18 +6256,30 @@ fn check_vfp_caller_saved_across_calls(instrs: &[ArmInstruction]) -> Option<RaFi
                             break;
                         }
                     }
-                    None => break,
+                    // #1303: this op may READ the word (a violation) or
+                    // REDEFINE it (harmless). Either way, undecided.
+                    None => {
+                        consumer_undecided = true;
+                        break;
+                    }
                 }
             }
             if read_after {
-                return Some(RaFinalViolation::VfpCallerSavedLiveAcrossCall {
+                return VfpAcrossCall::Violation(RaFinalViolation::VfpCallerSavedLiveAcrossCall {
                     word,
                     call_index: ci,
                 });
             }
+            if consumer_undecided {
+                undecided = true;
+            }
         }
     }
-    None
+    if undecided {
+        VfpAcrossCall::Undecided
+    } else {
+        VfpAcrossCall::Clean
+    }
 }
 
 fn check_caller_saved_across_calls(instrs: &[ArmInstruction]) -> Option<RaFinalViolation> {
@@ -19098,6 +19170,76 @@ mod tests {
                 RaFinalVerdict::Violation(_)
             ),
             "the preserve/restore pattern must not be flagged"
+        );
+    }
+
+    /// RQ-69-VFPUNKNOWN (#1303) RED-FIRST: the SAME violation as
+    /// `ra003_vfp_caller_saved_live_across_call_caught_881`, with one op the
+    /// effect model does not model placed between the producer and the call.
+    ///
+    /// `vfp_word_effect` returns `None` for an MVE op — correct, since
+    /// Q-registers alias the S-file and v0.68's #1275 fix stopped them
+    /// claiming an EMPTY footprint. But
+    /// `check_vfp_caller_saved_across_calls` treats that `None` as a reason to
+    /// STOP scanning (`None => break`) in both directions, and then returns
+    /// `None`, which its caller reads as "no violation". So the unmodelled op
+    /// HIDES the live word behind it.
+    ///
+    /// The sibling caller does the sound thing with the same `None`: the
+    /// spill-slot non-aliasing check WIDENS, bumping every S-word's version.
+    ///
+    /// This test asserts the CURRENT (wrong) behaviour so the fix has a
+    /// red-first anchor: when the scan stops guessing, this assertion flips
+    /// and the test below it must be the one that holds.
+    #[test]
+    fn ra003_unmodeled_op_is_undecided_not_clean_1303() {
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            f32c(VfpReg::S2),
+            // Unmodelled EFFECT, modelled CONTROL FLOW. `vfp_word_effect`
+            // returns None for the i64/float conversion family (it reads an
+            // S-word and writes a GP register, a shape the word model does not
+            // express), while the CFG builder handles it like any other
+            // straight-line op — so the verdict is not masked by
+            // `cfg-unmodeled-construct`, as it is for an MVE op.
+            ins(ArmOp::I32TruncF32S {
+                rd: Reg::R1,
+                sm: VfpReg::S5,
+            }),
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            ins(ArmOp::F32Add {
+                sd: VfpReg::S3,
+                sn: VfpReg::S2,
+                sm: VfpReg::S2,
+            }), // reads S2 straight after the call — still live across it
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        // Assert on the ACROSS-CALL CHECK ITSELF, not on the whole-function
+        // verdict: this body's control flow makes the join check decline, so
+        // `validate_final_allocation` returns `NotAttempted` either way and
+        // would mask what this check concluded. The sibling test
+        // (`..._caught_881`) gets a Violation from the same shape WITHOUT the
+        // unmodelled op — that difference is the whole finding.
+        // FIXED (#1303). The scan still cannot see past the unmodelled op —
+        // that is the honest state of the effect model — but it no longer
+        // hands back the answer it gives for a clean function.
+        assert!(
+            matches!(
+                check_vfp_caller_saved_across_calls_detail(&body),
+                VfpAcrossCall::Undecided
+            ),
+            "the across-call scan must report Undecided when an unmodelled op \
+             truncates it in a window where a violation could hide"
+        );
+        // And it is NOT a violation: nothing was proven, so nothing is claimed.
+        assert!(
+            !matches!(
+                check_vfp_caller_saved_across_calls_detail(&body),
+                VfpAcrossCall::Violation(_)
+            ),
+            "Undecided must not be reported as a proven violation"
         );
     }
 
