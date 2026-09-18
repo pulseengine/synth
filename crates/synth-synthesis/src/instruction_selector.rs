@@ -6272,6 +6272,20 @@ pub struct InstructionSelector {
     /// (no table size, no verdicts) DECLINES every `call_indirect` — an
     /// unchecked indirect branch is never emitted.
     call_indirect_guards: synth_core::CallIndirectGuards,
+    /// #1321: the frame regions THIS selector handed out as allocator spill
+    /// slots on its last `select_with_stack`, as `(frame_size, areas)`.
+    ///
+    /// VCR-RA-003's spill-slot non-aliasing check (#331) rests on "a spill slot
+    /// is a single-value home by the allocator's contract". That holds for a
+    /// spill slot and NOT for a wasm local's permanent frame home, where every
+    /// `local.set` is a legal redefinition. The validator runs in the backend on
+    /// the final stream and cannot see the layout, so it policed both and
+    /// refused cpetig's `falcon-cascade#step` on slot 184 — wasm local 31, 78
+    /// writes / 76 reads. Recorded here so the backend can name the real areas.
+    ///
+    /// `frame_size` rides along so a consumer can prove the record still
+    /// describes the stream it is about to check (see `frame_spill_areas`).
+    frame_spill_areas: Option<(i32, Vec<std::ops::Range<i32>>)>,
 }
 
 /// #642/#650/#664/#676: resolved `call_indirect` guard inputs —
@@ -6282,11 +6296,23 @@ pub struct InstructionSelector {
 type ResolvedCallIndirectGuards = (u32, u32, bool, Option<(u32, u32)>);
 
 impl InstructionSelector {
+    /// #1321: the allocator spill areas reserved by the last `select_with_stack`,
+    /// as `(frame_size, areas)`. `None` before any selection, or when the layout
+    /// reserved no spill area at all.
+    ///
+    /// The caller MUST check `frame_size` against the stream it intends to
+    /// validate — post-selection passes can re-lay the frame, and a stale area
+    /// list would narrow the #331 check over the wrong offsets.
+    pub fn frame_spill_areas(&self) -> Option<&(i32, Vec<std::ops::Range<i32>>)> {
+        self.frame_spill_areas.as_ref()
+    }
+
     /// Create a new instruction selector
     pub fn new(rules: Vec<SynthesisRule>) -> Self {
         Self {
             matcher: PatternMatcher::new(rules),
             regs: RegisterState::new(),
+            frame_spill_areas: None,
             bounds_check: BoundsCheckConfig::None,
             num_imports: 0,
             relocatable: false,
@@ -6340,6 +6366,7 @@ impl InstructionSelector {
         Self {
             matcher: PatternMatcher::new(rules),
             regs: RegisterState::new(),
+            frame_spill_areas: None,
             bounds_check,
             num_imports: 0,
             relocatable: false,

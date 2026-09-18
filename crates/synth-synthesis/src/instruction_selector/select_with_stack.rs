@@ -387,6 +387,29 @@ impl InstructionSelector {
         // i64 register-pair spill slots (#171), reused across the function.
         // Pool size follows `self.i64_spill_slots` (#587 pool-grow rung) and
         // must match the area `compute_local_layout` reserved above.
+        // #1321: record the frame regions that are genuinely ALLOCATOR slots, so
+        // VCR-RA-003's #331 check can be scoped to them instead of policing every
+        // `[sp,#N]` — a wasm local's permanent home is written at every
+        // `local.set` and that is a redefinition, not an aliased spill.
+        // The VFP area is excluded on purpose: its traffic is `VStr`/`VLdr`,
+        // which the integer check never matches, and it has its own twin check
+        // (`check_vfp_slot_aliasing`, #881).
+        {
+            let mut areas: Vec<std::ops::Range<i32>> = Vec::new();
+            if let Some(base) = layout.spill_base {
+                // the call-spill scratch area: 5 word slots (see compute_local_layout)
+                areas.push(base..base + 5 * 4);
+            }
+            if layout.spill_area_reserved {
+                let n = self.i64_spill_slots as i32;
+                areas.push(layout.i64_spill_base..layout.i64_spill_base + n * 8);
+            }
+            self.frame_spill_areas = if areas.is_empty() {
+                None
+            } else {
+                Some((layout.frame_size, areas))
+            };
+        }
         let mut spill = SpillState::with_slots(layout.i64_spill_base, self.i64_spill_slots);
         spill.spill_on_exhaustion = self.spill_on_exhaustion;
         spill.vfp_spill_on_exhaustion = self.vfp_spill_on_exhaustion;

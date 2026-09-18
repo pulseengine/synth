@@ -5540,6 +5540,35 @@ pub enum RaFinalVerdict {
 /// a loud [`RaFinalVerdict::NotAttempted`] naming the unmodeled construct — there
 /// is no silent pass on a shape the checker cannot analyze.
 pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
+    // Areas unknown => police EVERY `[sp,#N]` offset, exactly as before. This is
+    // the conservative default ON PURPOSE (#1321): a caller that cannot name the
+    // allocator's spill areas must not silently lose #331 detection, which is
+    // the same vacuity class the register-delivery candidate fix introduced.
+    validate_final_allocation_in_areas(instrs, None)
+}
+
+/// [`validate_final_allocation`], with the frame regions the allocator hands out
+/// as SPILL SLOTS named explicitly.
+///
+/// The #331 spill-slot non-aliasing invariant rests on "a spill slot is a
+/// single-value home by the allocator's contract". That is true of a spill slot
+/// and FALSE of a wasm local's permanent frame home, where the selector emits a
+/// `Str` at every `local.set/tee` and an `Ldr` at every `local.get` — many
+/// writes interleaved with many reads, all correct. Policing a local's home with
+/// a single-value-per-slot rule reports the second `local.set` as an aliasing
+/// miscompile (#1321: cpetig's `falcon-cascade#step`, slot 184 = local 31, 78
+/// writes / 76 reads, refused with no object emitted).
+///
+/// `spill_areas` is `None` when the caller cannot name them — then EVERY sp
+/// offset is policed, preserving the historical behaviour bit for bit. When
+/// `Some`, only offsets inside one of the named half-open ranges are policed;
+/// everything else is a local/param home and carries no single-value obligation.
+/// Narrowing the SCOPE never weakens the RULE: inside a real spill area the
+/// check is identical.
+pub fn validate_final_allocation_in_areas(
+    instrs: &[ArmInstruction],
+    spill_areas: Option<&[std::ops::Range<i32>]>,
+) -> RaFinalVerdict {
     use ArmOp::*;
     // #1204: this validator is described as "the construction-level answer to
     // the #490/#496/#331/#782b clobber class" and it ran on every ARM
@@ -5697,6 +5726,14 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
         // expected. `(first_store, overwriting_store)`.
         shadowed: Option<(usize, usize)>,
     }
+    // #1321: is this `[sp,#N]` offset an allocator SPILL SLOT (the only kind of
+    // slot the single-value-per-slot premise holds for), or a local/param frame
+    // home (where repeated stores are redefinitions and legal)? With no areas
+    // named, everything is policed — the historical, conservative answer.
+    let policed = |slot: i32| match spill_areas {
+        None => true,
+        Some(areas) => areas.iter().any(|a| a.contains(&slot)),
+    };
     let mut i = 0usize;
     while i < instrs.len() {
         // Skip to the start of the next straight-line segment.
@@ -5708,7 +5745,7 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
         let mut slots: BTreeMap<i32, SlotState> = BTreeMap::new();
         while i < instrs.len() && is_straight_line(&instrs[i].op) {
             match &instrs[i].op {
-                Str { addr, .. } if sp_slot(addr).is_some() => {
+                Str { addr, .. } if sp_slot(addr).is_some_and(&policed) => {
                     let slot = sp_slot(addr).unwrap();
                     // Shadow only when the slot's current owner holds a value that
                     // has NOT yet been reloaded (still live). Overwriting an
@@ -5746,6 +5783,34 @@ pub fn validate_final_allocation(instrs: &[ArmInstruction]) -> RaFinalVerdict {
                             // A reload after an unreloaded overwrite: the value
                             // this reload consumes is the overwriting store's, but
                             // an earlier live value was shadowed at that slot.
+                            // #1321: the window this verdict rests on, dumped
+                            // on demand. The v0.69 diagnosis was wrong about
+                            // WHICH local slot 184 is because the stream was
+                            // reasoned about instead of read; this makes
+                            // reading it one env var away. Default behaviour is
+                            // untouched — it only prints.
+                            if std::env::var("SYNTH_ALIAS_DEBUG").is_ok() {
+                                eprintln!(
+                                    "[alias-dbg] SpillSlotAliased slot={slot} \
+                                     first_store={first_store} \
+                                     overwriting_store={overwriting_store} \
+                                     stale_reload={i}"
+                                );
+                                for (label, idx) in [
+                                    ("first_store", first_store),
+                                    ("overwriting_store", overwriting_store),
+                                    ("stale_reload", i),
+                                ] {
+                                    let lo = idx.saturating_sub(3);
+                                    let hi = (idx + 4).min(instrs.len());
+                                    eprintln!("[alias-dbg] --- {label} @ {idx} ---");
+                                    for (k, ins) in instrs[lo..hi].iter().enumerate() {
+                                        let n = lo + k;
+                                        let mark = if n == idx { ">>" } else { "  " };
+                                        eprintln!("[alias-dbg] {mark} {n}: {:?}", ins.op);
+                                    }
+                                }
+                            }
                             return RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased {
                                 slot,
                                 first_store,
@@ -18185,6 +18250,109 @@ mod tests {
                 RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased { slot: 4, .. })
             ),
             "spill-slot aliasing MUST be caught, got {verdict:?}"
+        );
+    }
+
+    // ---- #1321: what the spill-area scoping does, and what it must not do ----
+
+    /// The aliasing stream used by the three area tests below: store A to slot 4,
+    /// overwrite with B before A is reloaded, then reload. Inside a real spill
+    /// area that is the #331 miscompile; on a wasm local's frame home it is an
+    /// ordinary `local.set; local.set; local.get`.
+    fn aliasing_at_slot_4() -> Vec<ArmInstruction> {
+        vec![
+            movi(Reg::R0, 0xAA),
+            str_sp(Reg::R0, 4),
+            movi(Reg::R1, 0xBB),
+            str_sp(Reg::R1, 4),
+            ldr_sp(Reg::R2, 4),
+        ]
+    }
+
+    #[test]
+    fn ra003_areas_none_polices_every_offset_1321() {
+        // THE LOAD-BEARING DEFAULT. Every caller that cannot name the allocator's
+        // spill areas — the RV32 sibling, the optimized path, every existing test,
+        // and the backend whenever the frame was re-laid after selection — lands
+        // here. If `None` ever came to mean "police nothing", #331 detection would
+        // vanish silently on those paths: the same vacuity as the register-delivery
+        // candidate, just relocated. It must mean "police everything".
+        assert!(
+            matches!(
+                validate_final_allocation_in_areas(&aliasing_at_slot_4(), None),
+                RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased { slot: 4, .. })
+            ),
+            "areas=None MUST police every sp offset"
+        );
+        // and the no-areas wrapper is exactly that default
+        assert_eq!(
+            validate_final_allocation(&aliasing_at_slot_4()),
+            validate_final_allocation_in_areas(&aliasing_at_slot_4(), None),
+            "the public wrapper must be the conservative default"
+        );
+    }
+
+    #[test]
+    fn ra003_areas_inside_a_spill_area_still_caught_1321() {
+        // Narrowing the SCOPE must not weaken the RULE: inside a named spill area
+        // the check is exactly what it always was.
+        assert!(
+            matches!(
+                validate_final_allocation_in_areas(&aliasing_at_slot_4(), Some(&[0..64, 256..320])),
+                RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased { slot: 4, .. })
+            ),
+            "an aliased slot INSIDE a spill area must still be caught"
+        );
+    }
+
+    #[test]
+    fn ra003_areas_outside_every_spill_area_is_a_local_home_1321() {
+        // The #1321 fix itself. Slot 4 is in no spill area, so it is a wasm
+        // local's permanent frame home: the second store is a `local.set`
+        // redefinition and the reload is a `local.get`. cpetig's
+        // `falcon-cascade#step` is this shape 78 times over (slot 184, local 31),
+        // and it was refused with no object emitted.
+        assert_eq!(
+            validate_final_allocation_in_areas(&aliasing_at_slot_4(), Some(&[64..128, 256..320])),
+            RaFinalVerdict::Consistent,
+            "a slot outside every spill area is a local home, not an aliased spill"
+        );
+    }
+
+    // ---- #1321 POTENCY: the aliasing verdict must survive a register use ----
+    #[test]
+    fn ra003_red_spill_slot_aliasing_survives_a_register_use_1321() {
+        // Identical to `ra003_red_spill_slot_aliasing_is_caught` except for ONE
+        // added instruction: `Mov R3, R0` reads the stored register after the
+        // store. A value can have TWO uses — one from the register, one from the
+        // slot — so a register read does NOT prove the slot copy is dead. The
+        // reload at the end still consumes B's bytes where A was live: the #331
+        // miscompile, unchanged.
+        //
+        // This exists because a candidate #1321 fix ("a store whose value is
+        // delivered through its source register counts as consumed") passed the
+        // whole ra003 suite while silently suppressing exactly this case — the
+        // original red test's filler is `movi R1`, which happens not to read R0.
+        // One instruction was the entire difference between a potent gate and a
+        // vacuous one.
+        let body = vec![
+            movi(Reg::R0, 0xAA),
+            str_sp(Reg::R0, 4), // store A → slot 4
+            ins(ArmOp::Mov {
+                rd: Reg::R3,
+                op2: Operand2::Reg(Reg::R0),
+            }), // A ALSO used from the register — still live in the slot
+            movi(Reg::R1, 0xBB),
+            str_sp(Reg::R1, 4), // store B overwrites slot 4 (A not yet reloaded)
+            ldr_sp(Reg::R2, 4), // reload → consumes B where A was live
+        ];
+        let verdict = validate_final_allocation(&body);
+        assert!(
+            matches!(
+                verdict,
+                RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased { slot: 4, .. })
+            ),
+            "a register use must NOT suppress spill-slot aliasing, got {verdict:?}"
         );
     }
 
