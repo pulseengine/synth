@@ -4,9 +4,7 @@
 
 use crate::contracts;
 use crate::control_flow::{BlockType, BranchableInstruction, ControlFlowManager};
-use crate::rules::{
-    ArmOp, Condition, MemAddr, MveSize, Operand2, QReg, Reg, Replacement, SynthesisRule, VfpReg,
-};
+use crate::rules::{ArmOp, Condition, MemAddr, Operand2, Reg, Replacement, SynthesisRule, VfpReg};
 use crate::{Bindings, PatternMatcher};
 use std::collections::HashMap;
 use synth_core::Result;
@@ -6008,20 +6006,6 @@ fn try_lower_f64(
     }
 }
 
-/// Convert Q-register index to QReg enum (Q0-Q7, wrapping)
-fn index_to_qreg(index: u8) -> QReg {
-    match index % 8 {
-        0 => QReg::Q0,
-        1 => QReg::Q1,
-        2 => QReg::Q2,
-        3 => QReg::Q3,
-        4 => QReg::Q4,
-        5 => QReg::Q5,
-        6 => QReg::Q6,
-        _ => QReg::Q7,
-    }
-}
-
 /// Instruction selector
 pub struct InstructionSelector {
     /// Pattern matcher with synthesis rules
@@ -6200,10 +6184,6 @@ pub struct InstructionSelector {
     next_vfp_dreg: u8,
     /// Label counter for generating unique label names
     label_counter: u32,
-    /// Whether this target has Helium MVE (Cortex-M55)
-    has_helium: bool,
-    /// Next available Q-register (Q0-Q7, wrapping)
-    next_qreg: u8,
     /// VCR-RA-001 step 3b-lite (#242): spill-on-exhaustion retry mode. Default
     /// OFF — the backend sets it only for a retry after `select_with_stack`
     /// failed with the i32 register-exhaustion `Err`, so every function that
@@ -6341,8 +6321,6 @@ impl InstructionSelector {
             next_vfp_reg: 0,
             next_vfp_dreg: 0,
             label_counter: 0,
-            has_helium: false,
-            next_qreg: 0,
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
             vfp_spill_on_exhaustion: false,
@@ -6396,8 +6374,6 @@ impl InstructionSelector {
             next_vfp_reg: 0,
             next_vfp_dreg: 0,
             label_counter: 0,
-            has_helium: false,
-            next_qreg: 0,
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
             vfp_spill_on_exhaustion: false,
@@ -7267,18 +7243,6 @@ impl InstructionSelector {
     pub fn set_target(&mut self, fpu: Option<FPUPrecision>, target_name: &str) {
         self.fpu = fpu;
         self.target_name = target_name.to_string();
-    }
-
-    /// Set Helium MVE capability (Cortex-M55)
-    pub fn set_helium(&mut self, has_helium: bool) {
-        self.has_helium = has_helium;
-    }
-
-    /// Allocate a Q-register (Q0-Q7, wrapping)
-    fn alloc_qreg(&mut self) -> QReg {
-        let reg = index_to_qreg(self.next_qreg);
-        self.next_qreg = (self.next_qreg + 1) % 8;
-        reg
     }
 
     /// Generate a unique label name with the given prefix
@@ -9175,6 +9139,10 @@ pub struct SelectionStats {
 mod tests {
     use super::*;
     use crate::rules::RuleDatabase;
+    // RQ-69-SUBTRACT (#242): the lowering path that used MveSize was deleted;
+    // it survives here only for the hand-built ArmInstructions that exercise
+    // `validate_instructions_with_helium`'s guard, which is still live.
+    use crate::rules::{MveSize, QReg};
 
     /// #518: the AAPCS core-register assignment for parameters. An i64 takes an
     /// even-aligned consecutive pair (lo returned); a param that spills past R3 is
@@ -15647,388 +15615,11 @@ mod tests {
     // v128 SIMD / Helium MVE tests
     // ========================================================================
 
-    fn helium_selector() -> InstructionSelector {
-        let db = RuleDatabase::new();
-        let mut selector = InstructionSelector::new(db.rules().to_vec());
-        selector.set_target(Some(FPUPrecision::Single), "cortex-m55");
-        selector.set_helium(true);
-        selector
-    }
-
     fn non_helium_selector() -> InstructionSelector {
         let db = RuleDatabase::new();
         let mut selector = InstructionSelector::new(db.rules().to_vec());
         selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
         selector
-    }
-
-    #[test]
-    fn test_simd_i32x4_add_on_helium() {
-        let mut selector = helium_selector();
-        let ops = vec![WasmOp::I32x4Add];
-        let result = selector.select(&ops);
-        assert!(result.is_ok(), "i32x4.add should succeed on Helium target");
-        let instrs = result.unwrap();
-        assert!(
-            instrs.iter().any(|i| matches!(
-                &i.op,
-                ArmOp::MveAddI {
-                    size: MveSize::S32,
-                    ..
-                }
-            )),
-            "Should produce VADD.I32 MVE instruction"
-        );
-    }
-
-    #[test]
-    fn test_simd_i32x4_sub_on_helium() {
-        let mut selector = helium_selector();
-        let ops = vec![WasmOp::I32x4Sub];
-        let result = selector.select(&ops);
-        assert!(result.is_ok());
-        let instrs = result.unwrap();
-        assert!(instrs.iter().any(|i| matches!(
-            &i.op,
-            ArmOp::MveSubI {
-                size: MveSize::S32,
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn test_simd_i32x4_mul_on_helium() {
-        let mut selector = helium_selector();
-        let ops = vec![WasmOp::I32x4Mul];
-        let result = selector.select(&ops);
-        assert!(result.is_ok());
-        let instrs = result.unwrap();
-        assert!(instrs.iter().any(|i| matches!(
-            &i.op,
-            ArmOp::MveMulI {
-                size: MveSize::S32,
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn test_simd_i8x16_add_on_helium() {
-        let mut selector = helium_selector();
-        let ops = vec![WasmOp::I8x16Add];
-        let result = selector.select(&ops);
-        assert!(result.is_ok());
-        let instrs = result.unwrap();
-        assert!(instrs.iter().any(|i| matches!(
-            &i.op,
-            ArmOp::MveAddI {
-                size: MveSize::S8,
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn test_simd_i16x8_add_on_helium() {
-        let mut selector = helium_selector();
-        let ops = vec![WasmOp::I16x8Add];
-        let result = selector.select(&ops);
-        assert!(result.is_ok());
-        let instrs = result.unwrap();
-        assert!(instrs.iter().any(|i| matches!(
-            &i.op,
-            ArmOp::MveAddI {
-                size: MveSize::S16,
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn test_simd_v128_bitwise_on_helium() {
-        let mut selector = helium_selector();
-
-        let result = selector.select(&[WasmOp::V128And]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveAnd { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::V128Or]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveOrr { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::V128Xor]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveEor { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::V128Not]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveMvn { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::V128AndNot]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveBic { .. }))
-        );
-    }
-
-    #[test]
-    fn test_simd_v128_const_on_helium() {
-        let mut selector = helium_selector();
-        let bytes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        let ops = vec![WasmOp::V128Const(bytes)];
-        let result = selector.select(&ops);
-        assert!(result.is_ok());
-        let instrs = result.unwrap();
-        assert!(
-            instrs
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveConst { bytes: b, .. } if *b == bytes))
-        );
-    }
-
-    #[test]
-    fn test_simd_v128_load_store_on_helium() {
-        let mut selector = helium_selector();
-
-        let result = selector.select(&[WasmOp::V128Load {
-            offset: 0,
-            align: 4,
-        }]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveLoad { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::V128Store {
-            offset: 0,
-            align: 4,
-        }]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveStore { .. }))
-        );
-    }
-
-    #[test]
-    fn test_simd_i32x4_splat_on_helium() {
-        let mut selector = helium_selector();
-        let result = selector.select(&[WasmOp::I32x4Splat]);
-        assert!(result.is_ok());
-        assert!(result.unwrap().iter().any(|i| matches!(
-            &i.op,
-            ArmOp::MveDup {
-                size: MveSize::S32,
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn test_simd_i32x4_extract_lane_on_helium() {
-        let mut selector = helium_selector();
-        let result = selector.select(&[WasmOp::I32x4ExtractLane(2)]);
-        assert!(result.is_ok());
-        assert!(result.unwrap().iter().any(|i| matches!(
-            &i.op,
-            ArmOp::MveExtractLane {
-                lane: 2,
-                size: MveSize::S32,
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn test_simd_i32x4_replace_lane_on_helium() {
-        let mut selector = helium_selector();
-        let result = selector.select(&[WasmOp::I32x4ReplaceLane(1)]);
-        assert!(result.is_ok());
-        assert!(result.unwrap().iter().any(|i| matches!(
-            &i.op,
-            ArmOp::MveInsertLane {
-                lane: 1,
-                size: MveSize::S32,
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn test_simd_f32x4_arithmetic_on_helium() {
-        let mut selector = helium_selector();
-
-        let result = selector.select(&[WasmOp::F32x4Add]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveAddF32 { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::F32x4Sub]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveSubF32 { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::F32x4Mul]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveMulF32 { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::F32x4Div]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveDivF32 { .. }))
-        );
-    }
-
-    #[test]
-    fn test_simd_f32x4_unary_on_helium() {
-        let mut selector = helium_selector();
-
-        let result = selector.select(&[WasmOp::F32x4Abs]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveAbsF32 { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::F32x4Neg]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveNegF32 { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::F32x4Sqrt]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveSqrtF32 { .. }))
-        );
-    }
-
-    #[test]
-    fn test_simd_f32x4_comparisons_on_helium() {
-        let mut selector = helium_selector();
-
-        let result = selector.select(&[WasmOp::F32x4Eq]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveCmpEqF32 { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::F32x4Lt]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveCmpLtF32 { .. }))
-        );
-    }
-
-    #[test]
-    fn test_simd_f32x4_splat_extract_replace_on_helium() {
-        let mut selector = helium_selector();
-
-        let result = selector.select(&[WasmOp::F32x4Splat]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveDupF32 { .. }))
-        );
-
-        let result = selector.select(&[WasmOp::F32x4ExtractLane(3)]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveExtractLaneF32 { lane: 3, .. }))
-        );
-
-        let result = selector.select(&[WasmOp::F32x4ReplaceLane(0)]);
-        assert!(result.is_ok());
-        assert!(
-            result
-                .unwrap()
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::MveReplaceLaneF32 { lane: 0, .. }))
-        );
-    }
-
-    #[test]
-    fn test_simd_i32x4_comparisons_on_helium() {
-        let mut selector = helium_selector();
-
-        for (op, expected_pattern) in [
-            (WasmOp::I32x4Eq, "CmpEqI"),
-            (WasmOp::I32x4Ne, "CmpNeI"),
-            (WasmOp::I32x4LtS, "CmpLtS"),
-            (WasmOp::I32x4LtU, "CmpLtU"),
-            (WasmOp::I32x4GtS, "CmpGtS"),
-            (WasmOp::I32x4GtU, "CmpGtU"),
-        ] {
-            let result = selector.select(std::slice::from_ref(&op));
-            assert!(
-                result.is_ok(),
-                "Comparison {expected_pattern} should succeed on Helium"
-            );
-        }
     }
 
     #[test]
@@ -16062,18 +15653,6 @@ mod tests {
                 "Error for {op:?} should mention Helium or SIMD: {err_msg}"
             );
         }
-    }
-
-    #[test]
-    fn test_simd_i8x16_shuffle_not_implemented() {
-        let mut selector = helium_selector();
-        let result = selector.select(&[WasmOp::I8x16Shuffle([
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-        ])]);
-        assert!(
-            result.is_err(),
-            "i8x16.shuffle should error (not yet implemented)"
-        );
     }
 
     #[test]
@@ -16125,41 +15704,6 @@ mod tests {
             result.is_ok(),
             "MVE instruction should be accepted on Helium target"
         );
-    }
-
-    #[test]
-    fn test_simd_neg_operations_on_helium() {
-        let mut selector = helium_selector();
-
-        let result = selector.select(&[WasmOp::I8x16Neg]);
-        assert!(result.is_ok());
-        assert!(result.unwrap().iter().any(|i| matches!(
-            &i.op,
-            ArmOp::MveNegI {
-                size: MveSize::S8,
-                ..
-            }
-        )));
-
-        let result = selector.select(&[WasmOp::I16x8Neg]);
-        assert!(result.is_ok());
-        assert!(result.unwrap().iter().any(|i| matches!(
-            &i.op,
-            ArmOp::MveNegI {
-                size: MveSize::S16,
-                ..
-            }
-        )));
-
-        let result = selector.select(&[WasmOp::I32x4Neg]);
-        assert!(result.is_ok());
-        assert!(result.unwrap().iter().any(|i| matches!(
-            &i.op,
-            ArmOp::MveNegI {
-                size: MveSize::S32,
-                ..
-            }
-        )));
     }
 
     #[test]
