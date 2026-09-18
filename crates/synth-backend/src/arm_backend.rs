@@ -517,6 +517,14 @@ fn compile_wasm_to_arm(
     // unmodified default, so every function that compiles today is selected by
     // exactly the code that compiled it yesterday (bit-identity is structural,
     // not behavioural).
+    // #1321: the allocator spill areas the direct selector reserved for the
+    // attempt that actually produced the returned stream, as
+    // `(frame_size, areas)`. Written only on a SUCCESSFUL selection, so after
+    // the recovery ladder it holds the rung that won. Left `None` on the
+    // optimized path, which supplies no layout — and `None` means "police every
+    // offset", i.e. exactly today's behaviour.
+    let selected_spill_areas: std::cell::RefCell<Option<(i32, Vec<std::ops::Range<i32>>)>> =
+        std::cell::RefCell::new(None);
     let select_direct_attempt = |spill_on_exhaustion: bool,
                                  param_backing_on_exhaustion: bool,
                                  local_promote: bool,
@@ -662,7 +670,13 @@ fn compile_wasm_to_arm(
         // bounds-guard marks, unioned above. Empty in every compile without
         // SYNTH_FACT_SPEC + facts or --proven-safe.
         selector.set_fact_mem_bounds_elisions(mem_bounds_elide.clone());
-        selector.select_with_stack(wasm_ops, num_params)
+        let selected = selector.select_with_stack(wasm_ops, num_params);
+        if selected.is_ok() {
+            // #1321: only a SUCCESSFUL attempt's layout describes the stream we
+            // return; a failed rung's frame is discarded with it.
+            *selected_spill_areas.borrow_mut() = selector.frame_spill_areas().cloned();
+        }
+        selected
     };
     let select_direct = || -> Result<Vec<ArmInstruction>, String> {
         const SINGLE_EXHAUSTION: &str = "all allocatable registers are live on the stack";
@@ -1417,6 +1431,7 @@ fn compile_wasm_to_arm(
                             config,
                             post_exhaust,
                             true,
+                            selected_spill_areas.borrow().as_ref(),
                         ) {
                             Ok(f) => f,
                             Err(e) => {
@@ -1540,7 +1555,13 @@ fn compile_wasm_to_arm(
     // the SYNTH_GRAPH_ALLOC final-byte arbiter can size a candidate through
     // the REAL pipeline. Flag-off this is the exact pre-extraction sequence,
     // called once, in the same place.
-    let arm_instrs = finish_allocated_stream(arm_instrs, config, post_exhaust, ran_realloc)?;
+    let arm_instrs = finish_allocated_stream(
+        arm_instrs,
+        config,
+        post_exhaust,
+        ran_realloc,
+        selected_spill_areas.borrow().as_ref(),
+    )?;
 
     // Encode to binary — use Thumb-2 for Cortex-M targets
     let use_thumb2 = matches!(config.target.isa, IsaVariant::Thumb2 | IsaVariant::Thumb);
@@ -1754,6 +1775,12 @@ fn finish_allocated_stream(
     config: &CompileConfig,
     post_exhaust: bool,
     ran_realloc: bool,
+    // #1321: `(frame_size, areas)` recorded by the direct selector for the
+    // attempt that produced this stream — the frame regions that are genuinely
+    // allocator SPILL slots. Used to scope VCR-RA-003's #331 check, and ONLY
+    // after `frame_size` is re-proven against this stream (see the use site).
+    // `None` on the optimized path and whenever no area was reserved.
+    recorded_spill_areas: Option<&(i32, Vec<std::ops::Range<i32>>)>,
 ) -> Result<Vec<synth_synthesis::ArmInstruction>, String> {
     let arm_instrs = if ran_realloc {
         let out = arm_instrs;
@@ -2191,7 +2218,35 @@ fn finish_allocated_stream(
     // never claims join coherence it cannot prove, but it also never blocks a
     // correct compile for a construct it simply doesn't model yet. Frozen-safe:
     // it emits nothing, so `.text` is byte-identical (proven by the frozen suite).
-    match synth_synthesis::liveness::validate_final_allocation(&arm_instrs) {
+    // #1321: scope the #331 spill-slot check to the frame regions the allocator
+    // actually hands out as spill slots — but ONLY while the record provably
+    // still describes THIS stream. Between selection and here the stream passes
+    // through re-allocation, dead-frame elimination and prologue shrink, any of
+    // which can re-lay or remove the frame. A stale area list would narrow the
+    // check over the wrong offsets — the silent weakening this lane exists to
+    // avoid — so the areas are used only if the final stream still allocates
+    // EXACTLY the frame they were computed for. On any mismatch (re-laid frame,
+    // eliminated frame, optimized path, no record) we pass `None` and every
+    // `[sp,#N]` offset is policed, bit for bit as before. The fix can go stale;
+    // it cannot go wrong.
+    let spill_areas: Option<&[std::ops::Range<i32>]> = match recorded_spill_areas {
+        Some((frame_size, areas))
+            if arm_instrs.iter().any(|ins| {
+                matches!(
+                    &ins.op,
+                    synth_synthesis::rules::ArmOp::Sub {
+                        rd: synth_synthesis::rules::Reg::SP,
+                        rn: synth_synthesis::rules::Reg::SP,
+                        op2: synth_synthesis::rules::Operand2::Imm(n),
+                    } if n == frame_size
+                )
+            }) =>
+        {
+            Some(areas.as_slice())
+        }
+        _ => None,
+    };
+    match synth_synthesis::liveness::validate_final_allocation_in_areas(&arm_instrs, spill_areas) {
         synth_synthesis::liveness::RaFinalVerdict::Violation(v) => {
             return Err(format!(
                 "VCR-RA-003: register-allocation validation FAILED — {v:?}. \

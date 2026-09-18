@@ -1,43 +1,106 @@
 artifacts:
   - id: RQ-70-ALIAS
     type: system-req
-    title: "VCR-RA-003 refuses cpetig's export on a spill-slot-aliased stream — now THE blocker for #1318, and diagnosed to a checker-model gap"
+    title: "VCR-RA-003 policed a wasm LOCAL'S frame home with a spill slot's single-value rule — cpetig's export now emits, and the candidate fix that looked right was refuted by its own potency test"
     description: >
-      MEASURED on the v0.69 tree with the reporter's own command line:
-      `fused.wasm` reaches `vfp-frame-locals+pool-grow(194) -> ok`, so v0.69's
-      FALCON work DID raise the capacity ceiling. What stops
-      `pulseengine:falcon-cascade/controller@0.10.0#step` now is
+      MEASURED, on the reporter's module and command line
+      (`-b arm --target cortex-m7 --all-exports --relocatable
+      --embedder-data-init --embedder-global-init`):
 
-        VCR-RA-003: SpillSlotAliased { slot: 184, first_store: 11113,
-                    overwriting_store: 11150, stale_reload: 11159 }
+        BEFORE  fused.wasm  rc=1  1 of 21 skipped  1 SpillSlotAliased  NO OBJECT
+        AFTER   fused.wasm  rc=0  0 skipped                            69584-byte object
 
-      Counts unchanged from v0.68.0: still 1 of 21 on fused.wasm, 7 of 17 on
-      opt.wasm. The ceiling moved; the outcome for the user did not.
+      `pulseengine:falcon-cascade/controller@0.10.0#step` compiles. #1318's
+      remaining export is unblocked.
 
-      DIAGNOSED, AND THE FIRST DIAGNOSIS WAS WRONG — recorded because the
-      correction widens the fix. v0.69's artifact said slot 184 was f32 local
-      45's frame home. It is i32 LOCAL 31 (78 set/tee, 84 get; all 154 accesses
-      to [sp,#184] are local 31). The error was reading the layout dump off the
-      PRE-#1322 frame; #1322 reserves a 64-byte VFP area up front, shifting
-      local 31 to 184 and local 45 to 248, and the stream the validator rejects
-      is the RE-LAID one. Found by an independent fresh-context recheck that
-      dumped the emitted stream.
+      THE DEFECT, stated as the check's own comment states its premise: "Since
+      spill slots are single-value homes by the allocator's contract, ANY
+      overwrite of a slot with an outstanding (not-yet-reloaded) live value is
+      the #331 aliasing bug." The premise is TRUE for a spill slot. The defect is
+      that `validate_final_allocation` never verified the slot IS one — it
+      policed every `[sp,#N]` offset, including a wasm local's PERMANENT frame
+      home, where the selector emits a `Str` at every `local.set/tee` and an
+      `Ldr` at every `local.get`. Many writes interleaved with many reads is
+      correct by construction there; the rule reports the second `local.set` as a
+      miscompile.
 
-      THE VERDICT SURVIVES: a checker-model gap, not a miscompile. The rule
-      treats a second store to a slot whose value was not reloaded as aliasing,
-      and for a LOCAL'S HOME that is assignment. The mechanism is
-      store-to-load forwarding with dead-store elimination blocked by unmodelled
-      F32 ops, against the checker's single-value-per-slot premise.
+      THE LAYOUT, RE-DERIVED ON THE CURRENT TREE rather than recalled — and it
+      explains why v0.69 and v0.70 read slot 184 as two different locals. Both
+      readings were of REAL layouts, from DIFFERENT rungs of the recovery ladder:
 
-      REACHABLE ON RELEASED v0.68.0 via a 49-op fixture, so it PREDATES #1322
-      and is not a regression from it.
-    status: proposed
+        rung             frame  spill_base  vfp_spill_base  i64_spill_base  local at 184
+        pre-re-lay         416         256             348             280  45  (f32)
+        final re-laid     1312         320               0             344  31  (i32)
+
+      The stream the validator rejects is the re-laid one, where 184 is i32 local
+      31's home (78 `local.set/tee`, 76 `local.get`) and lies in NO allocator
+      spill area — the VFP area is at 0..64, the call-spill scratch at 320..340,
+      the i64 pool at 344. Reading the first table and validating against the
+      second is the whole of the v0.69 misdiagnosis.
+
+      THE FIX is a SCOPE change, not a rule change. `validate_final_allocation`
+      keeps its name, its signature and its exact behaviour; a new
+      `validate_final_allocation_in_areas` takes the frame regions the allocator
+      actually hands out as spill slots. Inside a named area the check is
+      identical. `None` — the RV32 sibling, the optimized path, every existing
+      test, and the backend whenever the frame was re-laid after selection —
+      polices EVERY offset, exactly as before, so no caller loses one bit of #331
+      detection.
+
+      THE SEAM VALIDATES ITSELF. Between selection and validation the stream
+      passes through re-allocation, dead-frame elimination and prologue shrink,
+      any of which can re-lay or remove the frame. So the selector's record
+      carries the `frame_size` it describes, and the backend uses the areas ONLY
+      if the final stream still allocates exactly that frame
+      (`sub sp, sp, #frame_size`). On any mismatch it passes `None`. The fix can
+      go stale; it cannot go wrong.
+
+      A REFUTED CANDIDATE, RECORDED BECAUSE IT PASSED EVERYTHING THAT EXISTED.
+      The first fix counted a store whose value is consumed through its SOURCE
+      REGISTER as delivered (`Mov R4, R3` at 11114 carries the value the slot
+      copy would have). It was read from the emitted stream, not reasoned about;
+      it produced the IDENTICAL user-visible win above; and it passed all 34
+      `ra003` tests. It is UNSOUND: a value can have two uses, one from the
+      register and one from the slot. Inserting ONE instruction into the existing
+      red-half test — `Mov R3, R0` after the first store — makes it return
+      `Consistent` on a genuine #331 miscompile. The existing red test passed
+      only because its filler `movi R1, 0xBB` happens not to read `R0`. That one
+      instruction is the entire distance between a potent gate and a vacuous one,
+      and it now ships as
+      `ra003_red_spill_slot_aliasing_survives_a_register_use_1321`.
+
+      EVIDENCE, all re-derivable from the repository:
+        - `ra003` unit tests 34 -> 38: the potency test above, plus three pinning
+          the area semantics — `None` polices everything (the load-bearing
+          default), an aliased slot INSIDE an area is still caught, a slot
+          outside every area is a local home.
+        - ARM corpus sweep AFTER: PASS, compiled=174/194, executed=3428/3428
+          vectors, mismatches=0, faults=0.
+        - ARM corpus sweep BEFORE (same script, pre-fix binary): FAIL,
+          `PHASE A NEW DECLINE: spill_slot_alias_1321.wat`. The committed
+          54-line fixture is instruction-identical to the reporter's shape and is
+          NOT on EXPECTED_DECLINES, so the sweep reds if this fix ever regresses.
+        - `opt.wasm` is UNCHANGED at 7 of 17 skipped, the same 7 functions, all
+          declining for #1069 pool exhaustion / GI-FPU-002 — causes unrelated to
+          aliasing. The fix moves what it explains and nothing else.
+
+      HONEST RESIDUALS. (1) The committed fixture COMPILES but is not in the
+      sweep's executed set, so it evidences the decline being gone, not the
+      bytes being right; the 3428 executed vectors carry that weight for the
+      corpus. (2) `check_vfp_slot_aliasing` (#881) carries the same
+      single-value-per-slot model over the VFP word file, and under the #1069
+      rung VFP locals also get permanent frame homes — the same class, one tier
+      over. Its traffic is `VStr`/`VLdr`, which the integer check never matches,
+      so it is untouched here and NOT known to be clean. Filed as a follow-up
+      rather than widened into this lane unmeasured.
+    status: implemented
     release: v0.70
     tags:
       - downstream-blocker
       - external-reporter
       - allocator
       - vcr-ra-003
+      - feature-loop
     links:
       - type: derives-from
         target: BR-001
@@ -46,4 +109,17 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1321"
-      done-when: "manual: either the checker stops reporting a local's home as an aliased spill slot and cpetig's `step` emits, gated on an execution differential vs wasmtime — or the false-positive class is published with the measurement and the validator's premise stated, and #1318 is told which"
+      landed: "#1321"
+      done-when: "file:scripts/repro/spill_slot_alias_1321.wat"
+      verified-by: >-
+        The fixture's PRESENCE in scripts/repro/ is what arms the outcome gate,
+        which is why the signature points there rather than at the source change.
+        `arm_corpus_sweep_973.py` (`# ci-status: wired`) compiles every
+        scripts/repro/*.wat and reds on any decline not on EXPECTED_DECLINES.
+        This module is deliberately NOT on that list, so if the #331 scoping
+        regresses the fixture declines again and the sweep fails with
+        `PHASE A NEW DECLINE: spill_slot_alias_1321.wat` — verified by running
+        the same sweep against the pre-fix binary, which fails with exactly that
+        line. A `contains:` into liveness.rs was the first draft and R9 refused
+        it correctly: code-existence cannot fail on this artifact's own
+        definition of failure.

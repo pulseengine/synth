@@ -1847,9 +1847,45 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 19428
+        value: 19478
         baseline: 17897
         waivers:
+          - to: 19478
+            reason: >-
+              RQ-70-ALIAS (#1321): 19428 -> 19478, a RISE of 50, and it buys a
+              downstream unblock plus a soundness argument that has to be
+              written down somewhere.
+
+              WHAT WENT IN, and it is not a lowering decision: VCR-RA-003's
+              #331 spill-slot check was policing every `[sp,#N]` offset,
+              including a wasm LOCAL'S PERMANENT FRAME HOME, where the selector
+              emits a `Str` at every `local.set` and an `Ldr` at every
+              `local.get`. That is a redefinition, not an aliased spill. It
+              refused cpetig's `falcon-cascade#step` (slot 184 = i32 local 31,
+              78 writes / 76 reads) and emitted NO object. The selector now
+              records the frame regions it actually hands out as spill slots
+              (27 lines in instruction_selector.rs: one field, one getter) and
+              fills them in (23 lines in select_with_stack.rs). The validator's
+              rule is unchanged; only its SCOPE narrowed, and only for a caller
+              that can name the areas.
+
+              WHY THE LINES ARE MOSTLY PROSE: the seam is self-validating —
+              post-selection passes can re-lay or eliminate the frame, so the
+              record carries the `frame_size` it describes and the backend uses
+              the areas ONLY while the final stream still allocates exactly that
+              frame. Explaining WHY a stale record must degrade to "police
+              everything" rather than "police nothing" is the load-bearing part;
+              a reader who gets that backwards silently disables #331 detection.
+              That distinction is what these 50 lines buy, and it is the same
+              distinction that killed this lane's first fix — see
+              `ra003_red_spill_slot_aliasing_survives_a_register_use_1321`.
+
+              NOTHING WAS REPLACED, so nothing could be deleted in exchange.
+              The subtraction this lane owes is filed, not waived away:
+              `check_vfp_slot_aliasing` (#881) carries the same
+              single-value-per-slot model over the VFP word file and is the
+              next candidate to be scoped the same way, which would let both
+              share one predicate instead of two.
           - to: 19428
             reason: >-
               RQ-69-SUBTRACT (#242): 20284 -> 19428, a FALL of 856 — and the
@@ -2452,7 +2488,7 @@ claims:
         # behaviour), the two `validate_instructions_*_mve_*` tests and
         # `test_requires_helium_trait`, which build ArmInstructions by hand and
         # never touched the selector.
-        value: 30021
+        value: 30071
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
