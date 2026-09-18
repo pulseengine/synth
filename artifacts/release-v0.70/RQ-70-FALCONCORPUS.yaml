@@ -40,11 +40,11 @@ artifacts:
     The v0.69 planning noted two; the census finds three. Measured over every
     committed script that walks `scripts/repro/`:
 
-      POPULATION A — `*.wat` only (193 modules on main):  7 scripts
+      POPULATION A — `*.wat` only (193 modules AT v0.69.0):  7 scripts
           byte_triage_242.py, determinism_check.py, gen_home_alias_class_1189.py,
           arm_corpus_sweep_973.py, home_alias_audit_corpus_1189.py,
           macho_host_link_rq64_differential.py, tier_census_1021.py
-      POPULATION B — `*.wat` + `*.wasm` (209 modules on main):  5 scripts
+      POPULATION B — `*.wat` + `*.wasm` (209 modules AT v0.69.0):  5 scripts
           mutation_survey.py, self_contained_boot_sweep_1189_differential.py,
           vcr_dec_001_join_alloc_measure.py, vcr_ver_004_shipping_path_audit.py,
           tied_web_census_242.py
@@ -52,10 +52,20 @@ artifacts:
           partial_census_1017.py
 
     That is how FALCON's "1035 = 207 x 5" and SUBTRACT's "965 = 193 x 5" were both
-    called "the corpus" in the SAME release and differ by 70 compiles. And the
-    figures move: re-derived today the two populations are 193 and 209 (x5 = 965 and
-    1045), because v0.69 itself added two `.wat` — so even the 1035 the v0.70 plan
-    quoted is already stale. A number attributed to "the corpus" cannot be checked.
+    called "the corpus" in the SAME release and differ by 70 compiles.
+
+    AND EVERY ONE OF THOSE FIGURES IS ALREADY STALE, which is the point. Counted
+    with the SAME non-recursive glob the scripts use (`REPRO.glob("*.wat")` — a
+    recursive count differs again, because scripts/repro has subdirectories):
+
+        at v0.69.0        A=193  B=209    x5 = 965 / 1045
+        at main today     A=194  B=210    x5 = 970 / 1050
+        with this PR      A=195  B=211    x5 = 975 / 1055
+
+    So the plan's "1035 = 207 x 5" was right for the tree it was measured on and
+    wrong two releases later, and even "965" moves every time a fixture lands —
+    including the two this release adds. A number attributed to "the corpus"
+    cannot be checked, because "the corpus" is not one thing and is not fixed.
 
     NOT UNIFIED, DELIBERATELY. The populations differ for reasons: byte-triage needs
     two binaries per module and a `.wasm` has no second source, while the mutation
