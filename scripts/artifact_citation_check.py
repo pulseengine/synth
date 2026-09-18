@@ -50,10 +50,37 @@ import yaml
 
 # `cargo test [flags] -- FILTER` — the filter is the first non-flag token after `--`.
 CARGO_TEST_FILTER = re.compile(r"cargo\s+test\b[^\n]*?--\s+(?!-)(\S+)")
+# #1333: `--test <target>` names an integration-test TARGET (the file
+# `crates/*/tests/<target>.rs`), NOT a test function — a different namespace, and
+# conflating the two is a false FAILURE on a valid citation (measured: 4 of
+# v0.69's 5 citations).
+CARGO_TEST_TARGET = re.compile(r"--test\s+([A-Za-z_][A-Za-z0-9_]*)")
+# #1333: `--lib <filter>` / `--bin <filter>` — the token after the target
+# selector IS a filter over test paths, so it resolves like a `--` filter.
+CARGO_LIB_FILTER = re.compile(r"--(?:lib|bin)\s+([A-Za-z_][A-Za-z0-9_]*)")
+# #1333: the keys where an artifact POINTS AT its evidence. Deliberately NOT
+# `description`: RQ-69-PROSEGATE refuted the prose-scanning shape one release
+# ago — a gate reading prose cannot tell a CLAIM from a MENTION, and flagged its
+# own artifact four times. An artifact that merely DISCUSSES a test name (this
+# lane's own artifact does) must not be held to it.
+CITING_KEYS = frozenset({"run", "done-when", "verified-by"})
 # `#[test]`, `#[tokio::test]`, `#[test_case(...)]` etc., then the fn it decorates.
 TEST_ATTR = re.compile(r"#\[(?:\w+::)?test(?:_case)?\b")
 FN_NAME = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
 MOD_DECL = re.compile(r"^\s*(?:pub\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{")
+
+
+def collect_test_targets(root: Path) -> set[str]:
+    """#1333: every integration-test TARGET name — the stem of `crates/*/tests/*.rs`.
+
+    `cargo test --test NAME` selects a test BINARY, so the thing that must exist
+    is a file, not a `#[test]` fn. Same safe direction as the name scan: a target
+    this misses is a loud false failure, never a silent pass.
+    """
+    return {
+        Path(f).stem
+        for f in glob.glob(str(root / "crates" / "*" / "tests" / "*.rs"))
+    }
 
 
 def collect_test_paths(root: Path) -> set[str]:
@@ -70,6 +97,20 @@ def collect_test_paths(root: Path) -> set[str]:
             continue
         # Track a simple mod stack so `mod tests { #[test] fn foo }` yields
         # `tests::foo` as well as `foo`.
+        # #1333: a file under `src/` IS a module — `src/dwarf_line.rs` is
+        # `dwarf_line`, so its tests really run as `dwarf_line::tests::<fn>` and
+        # `cargo test --lib dwarf_line::` matches them. The scan previously took
+        # module names only from `mod` DECLARATIONS, so it recorded
+        # `tests::<fn>` and reported a VALID citation as dangling. Caught as a
+        # false failure on SWVER-016 while widening this gate, which is exactly
+        # the direction the header promises failures point.
+        stem = Path(rs).stem
+        parts = Path(rs).parts
+        file_mod = (
+            []
+            if stem in {"lib", "main", "mod"} or "src" not in parts
+            else [stem]
+        )
         mod_stack: list[str] = []
         depth_of: list[int] = []
         depth = 0
@@ -92,6 +133,9 @@ def collect_test_paths(root: Path) -> set[str]:
                     names.add(f.group(1))
                     if mod_stack:
                         names.add("::".join(mod_stack + [f.group(1)]))
+                    # #1333: and the file-module-qualified path cargo actually uses.
+                    if file_mod:
+                        names.add("::".join(file_mod + mod_stack + [f.group(1)]))
                     pending_test = False
                 elif line.strip() and not line.strip().startswith("#"):
                     # An attribute run ended without an fn — reset rather than
@@ -112,9 +156,18 @@ CLAIMING_STATUSES = {"implemented", "verified", "accepted"}
 
 
 def citations(root: Path) -> list[tuple[str, str, str, str]]:
-    """-> [(artifact_file, artifact_id, status, filter)] for every cited filter."""
-    out: list[tuple[str, str, str, str]] = []
-    for f in sorted(glob.glob(str(root / "artifacts" / "*.yaml"))):
+    """-> [(artifact_file, artifact_id, status, name, kind)] per citation.
+
+    `kind` is "target" (a `--test` integration-test binary) or "filter" (a `--`
+    or `--lib` substring over test paths) — #1333: two namespaces, resolved
+    against two different populations.
+    """
+    out: list[tuple[str, str, str, str, str]] = []
+    # #1333: RECURSIVE. Every release since v0.61 files its artifacts under
+    # `artifacts/release-vX.Y/`; the non-recursive glob saw 30 of 135 files and
+    # ZERO release artifacts, so this gate had never once looked at the artifacts
+    # a release is actually cut from.
+    for f in sorted(glob.glob(str(root / "artifacts" / "**" / "*.yaml"), recursive=True)):
         try:
             doc = yaml.safe_load(Path(f).read_text())
         except Exception:
@@ -126,9 +179,17 @@ def citations(root: Path) -> list[tuple[str, str, str, str]]:
                 current_id = node.get("id", current_id)
                 status = node.get("status", status)
                 for k, v in node.items():
-                    if k == "run" and isinstance(v, str):
+                    if k in CITING_KEYS and isinstance(v, str):
+                        # #1333: two namespaces. A `--test` name must resolve to a
+                        # test TARGET file; a `--` / `--lib` filter must resolve as
+                        # a substring of some test PATH. Tagged so the resolver
+                        # checks each against the right population.
+                        for m in CARGO_TEST_TARGET.finditer(v):
+                            out.append((rel, current_id, status, m.group(1), "target"))
+                        for m in CARGO_LIB_FILTER.finditer(v):
+                            out.append((rel, current_id, status, m.group(1), "filter"))
                         for m in CARGO_TEST_FILTER.finditer(v):
-                            out.append((rel, current_id, status, m.group(1)))
+                            out.append((rel, current_id, status, m.group(1), "filter"))
                     else:
                         walk(v, current_id, status)
             elif isinstance(node, list):
@@ -153,27 +214,46 @@ def main() -> int:
         print("      artifacts stopped citing tests. Either way this gate is inert.")
         return 1
 
-    dangling = [c for c in cites if not any(c[3] in t for t in tests)]
+    n_files = len(glob.glob(str(root / "artifacts" / "**" / "*.yaml"), recursive=True))
+    targets = collect_test_targets(root)
+    if not targets:
+        print("FAIL: collected ZERO integration-test targets — the scan is broken")
+        return 1
+
+    def resolves(c) -> bool:
+        # #1333: a target citation resolves against test FILES, a filter against
+        # test PATHS. Checking either against the wrong population is how a valid
+        # citation reds and an invalid one passes.
+        return c[3] in targets if c[4] == "target" else any(c[3] in t for t in tests)
+
+    dangling = [c for c in cites if not resolves(c)]
     bad = [c for c in dangling if c[2] in CLAIMING_STATUSES]
     planned = [c for c in dangling if c[2] not in CLAIMING_STATUSES]
 
-    for f, i, st, flt in bad:
+    for f, i, st, flt, kind in bad:
+        what = (
+            f"`cargo test --test {flt}`, which names NO integration-test target "
+            f"(no crates/*/tests/{flt}.rs)"
+            if kind == "target"
+            else f"`cargo test -- {flt}`, which matches NO test in the workspace"
+        )
         print(
-            f"FAIL {f} [{i}] status={st}: cites `cargo test -- {flt}`, which "
-            f"matches NO test in the workspace. `cargo test` exits 0 on a filter "
-            f"that matches nothing, so this artifact CLAIMS verification by "
+            f"FAIL {f} [{i}] status={st}: cites {what}. `cargo test` exits 0 on a "
+            f"filter that matches nothing, so this artifact CLAIMS verification by "
             f"evidence that never runs."
         )
-    for f, i, st, flt in planned:
+    for f, i, st, flt, kind in planned:
         print(
-            f"note {f} [{i}] status={st}: cites `{flt}`, not yet written — "
+            f"note {f} [{i}] status={st}: cites `{flt}` ({kind}), not yet written — "
             f"a plan, not a claim. Becomes a FAILURE if the status advances to "
             f"{'/'.join(sorted(CLAIMING_STATUSES))} before the test exists."
         )
+    n_t = sum(1 for c in cites if c[4] == "target")
     print(
-        f"artifact citations: {len(cites)} cited filters over {len(tests)} test "
-        f"names — {len(cites) - len(dangling)} resolve, {len(bad)} false claim(s), "
-        f"{len(planned)} planned-but-unwritten"
+        f"artifact citations: {len(cites)} cited ({n_t} target, {len(cites) - n_t} "
+        f"filter) over {len(tests)} test names / {len(targets)} test targets in "
+        f"{n_files} artifact files — {len(cites) - len(dangling)} resolve, "
+        f"{len(bad)} false claim(s), {len(planned)} planned-but-unwritten"
     )
     if bad:
         print(f"{len(bad)} artifact(s) claim verification by a test that does not exist.")

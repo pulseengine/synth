@@ -1,45 +1,72 @@
 artifacts:
-  - id: RQ-70-CITEGAP
-    type: system-req
-    title: "artifact_citation_check globs artifacts/*.yaml NON-recursively, so it has never scanned a single release artifact since v0.61"
-    description: >
-      FOUND BY THE v0.69 CLEAN-ROOM REVIEW and VERIFIED AT SOURCE.
-      `scripts/artifact_citation_check.py:117` globs
-      `artifacts/*.yaml` — non-recursive. Measured on the v0.69.0 tree:
+- id: RQ-70-CITEGAP
+  type: system-req
+  title: artifact_citation_check globs artifacts/*.yaml NON-recursively, so it has never scanned a single
+    release artifact since v0.61
+  description: |-
+    THREE defects, each re-derived at source before this was written — and the third
+    was found only BECAUSE the first two were fixed first.
 
-        artifacts/*.yaml        30 files   <- what the gate scans
-        artifacts/**/*.yaml    127 files
-        v0.69 artifacts seen     0
+    1. THE GLOB IS NON-RECURSIVE. `artifacts/*.yaml` sees 30 of 135 artifact files.
+       Every release since v0.61 files under `artifacts/release-vX.Y/`, so 105 files
+       are invisible — including ALL 10 of v0.69's and ALL 8 of v0.70's.
 
-      Every release from v0.61 on keeps its artifacts in a SUBDIRECTORY, so all
-      97 subdirectory files — including all nine v0.69 artifacts — are invisible
-      to it. The gate also reads only keys literally named `run:`, and no
-      release artifact at any version has ever had one, so all 12 cited filters
-      it checks come from e2e-verification.yaml / sw-verification.yaml /
-      verification.yaml.
+    2. IT READS ONLY `run:` KEYS. No release artifact has ever had one; they cite
+       under `done-when:` and `verified-by:`. This hid a citation even in a file the
+       old glob COULD see.
 
-      THE v0.69 ARTIFACTS DO CITE TESTS — `--test every_section_header_is_named_1307`,
-      `--test mpu_honest_1284`, `--lib ra003` — and none was checked. The gate's
-      green says nothing about the release it ran on.
+    3. IT HAS ONE CITATION FORM, AND RELEASE ARTIFACTS USE TWO. `--test <target>`
+       names an integration-test FILE (`crates/*/tests/<target>.rs`); `--lib
+       <filter>` and `-- <filter>` are substrings over test PATHS. Measured on
+       v0.69's five citations: `--lib ra003` resolves as a substring, the four
+       `--test` target names do NOT. Widening the glob ALONE would have produced
+       FOUR FALSE FAILURES on perfectly valid citations.
 
-      THE PRECEDENT IS IN THIS REPO: `status_evidence_check.py` carries an
-      explicit P3 rule for exactly this class ("yaml under artifacts/ that
-      PROGRAMME_GLOB does not scan — invisible to every P-rule"). The citation
-      gate has no equivalent. THE FIX MUST BE RED-FIRST: a citation to a test
-      that does not exist, in a v0.70 artifact, must red the gate before the
-      glob is widened — otherwise widening it is unfalsifiable.
-    status: proposed
-    release: v0.70
-    tags:
-      - gate-potency
-      - release-gate
-      - cold-review-finding
-    links:
-      - type: derives-from
-        target: BR-001
-    fields:
-      req-type: process
-      priority: should
-      verification-track: differential
-      issue: "#1333"
-      done-when: "manual: the citation gate scans every artifact under artifacts/ recursively, PROVEN red-first by a deliberately broken citation in a release-subdirectory artifact that reds the gate before the widening lands; and the count it scans is printed so a future narrowing is visible"
+    RED-FIRST, run before any of this landed: planting
+    `--test this_test_does_not_exist_9999` into `implemented`
+    artifacts/release-v0.69/RQ-69-ELFNAMES.yaml left the gate at rc=0, still printing
+    "every cited test filter resolves to at least one test." After the fix the same
+    plant reds with the artifact, its status and the missing target file named.
+
+    A FALSE FAILURE THE WIDENING CAUSED, AND THE SCAN BUG BEHIND IT. With the glob
+    and keys fixed, SWVER-016 reported `--lib dwarf_line::` as dangling. It is
+    valid: `crates/synth-core/src/dwarf_line.rs` holds 3 `#[test]` fns and lib.rs
+    declares `pub mod dwarf_line`, so the real path is `dwarf_line::tests::<fn>`.
+    The scan built module paths only from `mod` DECLARATIONS, never from the FILE,
+    so it recorded `tests::<fn>` and missed it. Fixed by recording the file-derived
+    module path too — test names 5233 -> 7224. That is the header's promised safe
+    direction working exactly as documented: the approximation failed LOUDLY.
+
+    WHY CLAIM-BEARING KEYS AND NOT ALL PROSE: RQ-69-PROSEGATE refuted the
+    prose-scanning shape one release ago — a gate reading DESCRIPTION cannot tell a
+    CLAIM from a MENTION, and flagged its own artifact four times. `run`/`done-when`/
+    `verified-by` are where an artifact POINTS AT evidence; `description` is where it
+    talks about it. This artifact names test filters in its own prose and must not be
+    held to them.
+
+    AFTER: 135 files scanned, 33 citations (15 target, 18 filter) over 7224 test
+    names and 133 test targets, 0 false claims, 1 pre-existing planned-but-unwritten
+    note. BEFORE: 30 files, 12 citations, and no release artifact ever looked at.
+  status: implemented
+  release: v0.70
+  tags:
+  - gate-potency
+  - release-gate
+  - cold-review-finding
+  - feature-loop
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: should
+    verification-track: differential
+    issue: '#1333'
+    done-when: contains:scripts/artifact_citation_check.py:CARGO_TEST_TARGET
+    verified-by: |-
+      The signature names the target/filter split (#1333 defect 3) because that is the
+      part a regression would silently undo: reverting the recursive glob reds
+      immediately via the planted-citation test, but conflating the two namespaces
+      again would produce false failures that invite widening an exemption instead.
+      `artifact_citation_check.py` is `Claim Check`-wired in ci.yml.
+    landed: '#1333'
