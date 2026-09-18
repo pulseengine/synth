@@ -1,0 +1,64 @@
+artifacts:
+  - id: RQ-70-RIVETNOTES
+    type: system-req
+    title: "The CHANGELOG is hand-written prose about a typed artifact set rivet can diff — and the diff nobody ran reports 22 new warnings v0.69 shipped unseen"
+    description: >
+      RAISED BY THE MAINTAINER AFTER THE v0.69 TAG, and the answer was: I did
+      not run it. `rivet diff` compares two artifact trees and emits exactly the
+      shape a release note wants — what was added, what changed, and what the
+      change did to the trace graph's own health. v0.69's CHANGELOG is entirely
+      hand-written prose about a typed artifact set the tool can read.
+
+      MEASURED with the CI-PINNED rivet 0.37.0 (see the version note below),
+      v0.68.0 -> v0.69.0:
+
+        9 added, 0 removed, 0 modified, 575 unchanged
+        0 new errors, 0 resolved errors, 22 NEW WARNINGS, 0 resolved
+
+      The nine additions are the release's nine artifacts, each with its title —
+      a derived table of contents no human wrote. THE 22 WARNINGS ARE THE
+      FINDING, in three classes, none of which any v0.69 gate surfaced:
+
+        (a) ALL NINE IDs "can't be used as a commit-trailer reference (trailers
+            need an uppercase-alphanumeric prefix and an all-digit suffix, e.g.
+            REQ-001); rename it to trace this artifact through commits". So no
+            RQ-NN artifact is traceable through commit trailers AT ALL.
+        (b) `req-type: process` is not in the schema's allowed set
+            ["functional","performance","interface","constraint","safety"] —
+            4 of v0.69's 9, and 53 occurrences repo-wide. A long-standing
+            convention the schema never accepted.
+        (c) all nine lack an incoming `verifies` link, so the right side of the
+            V is open for every artifact this release shipped.
+
+      (a) IS THE SAME ROOT CAUSE AS RQ-70-WINDOWVAC (#1334), FOUND INDEPENDENTLY
+      BY A SECOND TOOL. status_evidence's delivery window matches zero commits
+      because `RQ-69-SUBTRACT (#242): ...` does not fit its conventional-commit
+      regex; rivet says the same IDs cannot be trailer references. One naming
+      decision, two traceability mechanisms silently disabled. Scope them
+      together.
+
+      A VERSION NOTE THAT IS ITSELF A FINDING. The first run of this used the
+      `rivet` on PATH — `~/.cargo/bin/rivet`, version 0.32.0 — which is EXACTLY
+      the PATH shadow #1236 pins and #1308 reports on the CI runners. The
+      maintainer corrected it to the CI-pinned 0.37.0. The artifact delta is the
+      same on both, but the two versions do NOT agree about validate: 0.32.0
+      reports "0 broken cross-refs" where 0.37.0 reports "cross-refs NOT CHECKED
+      — externals failed to load". The older version's 0 was the vacuous
+      reading this project has a memory about; the upgrade landed in v0.69
+      (#1324) and made it honest.
+    status: proposed
+    release: v0.70
+    tags:
+      - traceability
+      - release-notes
+      - gate-potency
+      - rivet
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1337"
+      done-when: "manual: the release CHANGELOG carries a rivet-DERIVED section (`rivet diff` between the previous tag and the release commit, run with the CI-PINNED rivet, showing added/removed/modified and the error+warning delta), and each of the three warning classes is either fixed, or NAMED with its repo-wide count and the reason it is accepted — a release that adds warnings must say how many and why, never ship them unseen"
