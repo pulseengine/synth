@@ -1,52 +1,89 @@
 artifacts:
-  - id: RQ-70-NPA
-    type: system-req
-    title: "`--native-pointer-abi` cannot lower static-data f32.load/f32.store, so 4 of 6 exports are skipped and no object is emitted"
-    description: >
-      cpetig (EXTERNAL reporter, not the shared avrabe account) filed #1331 three
-      hours after v0.69's scope was fixed, with a self-contained module.
-      REPRODUCED on main fb9af784 with their own command line:
+- id: RQ-70-NPA
+  type: system-req
+  title: Static-data f32.load/f32.store now relocate under the native-pointer ABI — cpetig's blocked exports
+    go 4 of 6 to 2, and the two that remain hit a DIFFERENT, named wall
+  description: |-
+    REPRODUCED first, on the reporter's own command line
+    (`--target cortex-m7 --relocatable --all-exports --native-pointer-abi`) and their
+    module — and the issue's own excerpt UNDERCOUNTS, exactly as #1318's did:
 
-        synth compile inv-a-dist-leaves.wasm --target cortex-m7 --relocatable
-              --all-exports --native-pointer-abi -o /tmp/npa.o
+      reported in the issue:   2 functions
+      measured on fb9af784:    6 of 22 functions, 4 of 6 EXPORTS, rc=1 via #952,
+                               NO object emitted
+      reasons:                 4x f32.load and 3x f32.store "from/to the static-data
+                               region under the native-pointer ABI"
 
-      6 of 22 functions skipped; 4 of 6 requested EXPORTS skipped
-      (rate#tick, attitude#tick, position#tick, ekf#estimate); rc=1 via #952;
-      NO object emitted. Decline reasons: 4x "GI-FPU-002 phase 1b: f32.load from
-      the static-data region under the native-pointer ABI is not yet lowered
-      (#359 address relocation)" and 3x the f32.store form.
+    AFTER, same command line, same module:
 
-      THE ISSUE EXCERPT UNDERCOUNTS, as #1318's did (2 vs 7). It shows two
-      functions; the real figure is 6 / 4-exports. Scope from the measurement,
-      never from the excerpt.
+      2 of 22 functions, 2 of 6 EXPORTS skipped
+      `rate#tick` and `attitude#tick` now compile; ZERO f32 static-data declines remain
 
-      THE REPORTER HAS A WORKING PATH, verified on THIS module rather than
-      assumed to transfer: `--embedder-data-init --embedder-global-init` gives
-      rc=0, 0 skipped, a 28409-byte object. So the gap is specific to
-      `--native-pointer-abi`, not to the module or to f32-in-static-data.
+    THE MACHINERY ALREADY EXISTED AND THE FLOAT ARMS WERE SIMPLY NEVER GIVEN IT.
+    `emit_wasm_data_addr` relocates a base to `__synth_wasm_data + offset` (the ELF
+    builder retargets it to the owning segment symbol); the i32 sub-word arms got it
+    in #744 and the i64 arms in #746, both under #739. The float arms declined
+    LOUDLY instead — and that decline was RIGHT, not lazy: the raw
+    `[R11 + addr + #offset]` path BAKES the linmem offset as an un-relocated
+    MOVW/MOVT immediate, which mis-addresses the moment the linker places the region
+    and is invisible to BOTH the #678 `--shadow-stack-size` down-shift and the
+    post-link in-range oracle, because each walks RELOCATIONS. Baking would have
+    been the #739 silent OOB. So this ships the relocation, not the bake.
 
-      ONE CORRECTION TO THE REPORT, in the reporter's favour: they wrote that
-      synth skips functions "before emitting an object". It emits NO object —
-      #952 fails the compile so a build gating on `$?` cannot accept an object
-      missing a public entry point. The loud refusal is correct; the defect is
-      the lowering gap behind it.
+    AND NO FLOAT ADDRESS MACHINERY WAS NEEDED. Both arms already route the 4 bytes
+    through a CORE register and bit-cast (`VMOV Sd,Rd` / `VMOV Rn,Sn`) — the
+    existing comment says why: "VLDR takes only a `[Rn,#imm]` address ... so rather
+    than reinvent the address machinery we LOAD the 4-byte word with the PROVEN
+    integer path". Only HOW THE ADDRESS IS FORMED changed; the bit-cast tail is
+    untouched, so the loaded and stored bytes are identical by construction.
 
-      PRIORITY DEPENDS ON AN ANSWER NOT YET GIVEN: whether
-      `--native-pointer-abi` is load-bearing for their build or merely
-      preferred. ASKED on #1331; do not assume.
-    status: proposed
-    release: v0.70
-    tags:
-      - downstream-blocker
-      - external-reporter
-      - arm
-      - relocatable
-    links:
-      - type: derives-from
-        target: BR-001
-    fields:
-      req-type: functional
-      priority: must
-      verification-track: differential
-      issue: "#1331"
-      done-when: "manual: either static-data f32.load/f32.store lower under --native-pointer-abi and the reporter's module emits an object with 0 skipped exports, gated on an execution differential vs wasmtime rather than on 'it compiles now' — or the ceiling is NAMED with the measurement and the reporter can act on it; never 'the module compiles' when only some functions do"
+    THE TWO THAT REMAIN, AND WHY THIS IS NOT CLAIMED CLOSED. `position#tick` and
+    `ekf#estimate` now reach a DIFFERENT ceiling:
+
+      LdrSym literal pool out of range (#345): imm12=11744 > 4095 for symbol __synth_globals
+      LdrSym literal pool out of range (#345): imm12=4344  > 4095 for symbol __synth_globals
+
+    The f32 decline was HIDING this. Did the relocation's own pool entries cause it?
+    The magnitude answers: `imm12` is the PC-to-pool distance, so 11744 means the
+    function is roughly 11 KB of code, and each relocated access adds at most ONE
+    4-byte pool word. Even a generous 50 added entries (200 bytes) leaves ~11.5 KB —
+    still ~3x over the 4095 limit. This is a FUNCTION-SIZE wall (#345), pre-existing
+    and merely unmasked. Reported to the reporter as a named ceiling they can act on
+    rather than as a closed gap.
+
+    RED-FIRST, committed: `scripts/repro/npa_static_f32_1331.wat`, a 20-line
+    reduction carrying one dynamic-index `f32.load` and one `f32.store` at a memarg
+    offset above the SP global's initializer. Pre-fix it skips 2 of 2 functions with
+    exactly the two decline strings from the reporter's module and fails via #952;
+    post-fix it emits an 813-byte object. It is NOT on EXPECTED_DECLINES, so the
+    wired ARM corpus sweep reds if this regresses.
+
+    The CONST static-data address declines (#237, `try_fold_const_addr`) are
+    deliberately left as they are: a different address mode, and measured to fire on
+    none of the seven.
+  status: implemented
+  release: v0.70
+  tags:
+  - downstream-blocker
+  - external-reporter
+  - arm
+  - relocatable
+  - feature-loop
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: functional
+    priority: must
+    verification-track: differential
+    issue: '#1331'
+    done-when: file:scripts/repro/npa_static_f32_1331.wat
+    landed: '#1331'
+    verified-by: |-
+      The fixture's presence in scripts/repro/ arms the outcome gate:
+      `arm_corpus_sweep_973.py` (`# ci-status: wired`) compiles every scripts/repro/*.wat
+      and reds on any decline not on EXPECTED_DECLINES, and this module is deliberately
+      not on that list. Verified red-first by compiling the same fixture with a pre-fix
+      binary (2 of 2 skipped, rc=1) and post-fix (rc=0, 813-byte object). A `contains:`
+      into select_with_stack.rs was rejected as the signature for the reason R9 states:
+      code-existence cannot fail on this artifact's own definition of failure.

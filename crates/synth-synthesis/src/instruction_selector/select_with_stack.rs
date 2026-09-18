@@ -2340,17 +2340,6 @@ impl InstructionSelector {
                 // exact. Honest-decline the native-pointer static-data address
                 // mode (#359) we don't yet lower here — never a silent miscompile.
                 F32Load { offset, .. } => {
-                    if self.native_pointer_abi
-                        && self.wasm_data_base > 0
-                        && *offset >= self.wasm_data_base
-                    {
-                        return Err(synth_core::Error::synthesis(
-                            "GI-FPU-002 phase 1b: f32.load from the static-data \
-                             region under the native-pointer ABI is not yet \
-                             lowered (#359 address relocation) — declining"
-                                .to_string(),
-                        ));
-                    }
                     // The i32.load path (#95/#237) relocates a CONST effective
                     // address that lands in the static-data region; this f32.load
                     // arm only lowers the dynamic-index (branch-3) form, so a
@@ -2385,13 +2374,54 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    let load_ops =
-                        self.generate_load_with_bounds_check(dst, addr, *offset as i32, 4);
-                    for op in load_ops {
+                    if self.is_native_pointer_static_offset(*offset) {
+                        // RQ-70-NPA (#1331, cpetig's falcon-cascade): a
+                        // DYNAMIC-index f32 load whose constant memarg `offset`
+                        // lands in the static-data region. This declined loudly
+                        // until now — correctly, because the raw
+                        // `[R11 + addr + #offset]` path below BAKES the linmem
+                        // offset as an un-relocated MOVW/MOVT immediate, which
+                        // the #678 `--shadow-stack-size` rebase and the
+                        // post-link in-range oracle cannot see (both walk
+                        // RELOCATIONS): the #739 silent OOB. Relocate the base
+                        // to `__synth_wasm_data + offset` and add the dynamic
+                        // index — byte-for-byte the #744 sub-word branch, with
+                        // the word LDR form. `dst` still receives the identical
+                        // 4 bytes, so the bit-cast tail below is unchanged.
+                        let base = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[live_params.as_slice(), &[addr, dst]].concat(),
+                            idx,
+                        )?;
+                        Self::emit_wasm_data_addr(&mut instructions, base, *offset as i32, idx);
                         instructions.push(ArmInstruction {
-                            op,
+                            op: ArmOp::Add {
+                                rd: base,
+                                rn: base,
+                                op2: Operand2::Reg(addr),
+                            },
                             source_line: Some(idx),
                         });
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Ldr {
+                                rd: dst,
+                                addr: MemAddr::imm(base, 0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else {
+                        let load_ops =
+                            self.generate_load_with_bounds_check(dst, addr, *offset as i32, 4);
+                        for op in load_ops {
+                            instructions.push(ArmInstruction {
+                                op,
+                                source_line: Some(idx),
+                            });
+                        }
                     }
                     // Bit-cast the loaded word into an S-register (VMOV Sd,Rd).
                     let sd = alloc_vfp_temp(&mut vfp_used)?;
@@ -2413,17 +2443,6 @@ impl InstructionSelector {
                 // address modes we don't yet lower (symmetric to F32Load) — never
                 // a silent miscompile; falcon's dynamic-index stores are unaffected.
                 F32Store { offset, .. } => {
-                    if self.native_pointer_abi
-                        && self.wasm_data_base > 0
-                        && *offset >= self.wasm_data_base
-                    {
-                        return Err(synth_core::Error::synthesis(
-                            "GI-FPU-002 phase 1b: f32.store to the static-data \
-                             region under the native-pointer ABI is not yet \
-                             lowered (#359 address relocation) — declining"
-                                .to_string(),
-                        ));
-                    }
                     if let Some(eff) = self.try_fold_const_addr_store(wasm_ops, idx, *offset)
                         && self.static_data_addend(eff).is_some()
                     {
@@ -2461,13 +2480,45 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    let store_ops =
-                        self.generate_store_with_bounds_check(value, addr, *offset as i32, 4);
-                    for op in store_ops {
+                    if self.is_native_pointer_static_offset(*offset) {
+                        // RQ-70-NPA (#1331): the store twin of the F32Load branch
+                        // above — same reason, same relocation, same #739 class
+                        // avoided. `value` already holds the reinterpreted word,
+                        // so only the ADDRESS forms differently.
+                        let base = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[live_params.as_slice(), &[addr, value]].concat(),
+                            idx,
+                        )?;
+                        Self::emit_wasm_data_addr(&mut instructions, base, *offset as i32, idx);
                         instructions.push(ArmInstruction {
-                            op,
+                            op: ArmOp::Add {
+                                rd: base,
+                                rn: base,
+                                op2: Operand2::Reg(addr),
+                            },
                             source_line: Some(idx),
                         });
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: value,
+                                addr: MemAddr::imm(base, 0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else {
+                        let store_ops =
+                            self.generate_store_with_bounds_check(value, addr, *offset as i32, 4);
+                        for op in store_ops {
+                            instructions.push(ArmInstruction {
+                                op,
+                                source_line: Some(idx),
+                            });
+                        }
                     }
                     // Store pushes nothing.
                 }
