@@ -1853,9 +1853,11 @@ claims:
           - to: 19428
             reason: >-
               RQ-69-SUBTRACT (#242): 20284 -> 19428, a FALL of 856 — and the
-              first time in this ratchet's history that an entry records a
-              SUBTRACTION rather than a justified growth. The twenty-four
-              entries below it are all growths. This one is here only because
+              LARGEST subtraction this ratchet has recorded. (An earlier
+              draft called it the first entry to record a subtraction at all;
+              the v0.69 cold review refuted that from this same list — the
+              entries to 20201, 19896 and 18278 each record a FALL in their own
+              words. Largest, not first.) This one is here only because
               the ceiling is still above the all-time baseline of 17897, so the
               remaining 1531 lines of excess stay explicitly owned rather than
               silently inherited: they are the earlier waived growths, not
@@ -2444,7 +2446,7 @@ claims:
         # the new reg_contract tests live in reg_contract.rs, outside this
         # population).
         # RQ-69-SUBTRACT (#242): 31297 -> 30021 (-1276 = -856 code, see
-        # selector_lines_code, -424 test module: the 17 `*_on_helium` tests and
+        # selector_lines_code, -420 test module: the 17 `*_on_helium` tests and
         # the `helium_selector()` helper that exercised the deleted arms).
         # KEPT deliberately: `test_simd_rejected_on_non_helium` (the production
         # behaviour), the two `validate_instructions_*_mve_*` tests and
@@ -2494,7 +2496,11 @@ claims:
         # land on the same value 56 by coincidence of the intervening
         # RQ-59-SUBTRACT -1, not because either superseded the other.
         # RQ-69-SUBTRACT (#242): 56 -> 55, and this pin is now AT its all-time
-        # baseline for the first time. The arm that went is `index_to_qreg`'s
+        # baseline. (An earlier note said "for the first time"; the v0.69 cold
+        # review refuted it from the tags: this pin sat at 55/55 for EIGHT
+        # consecutive releases, v0.58.0 through v0.65.0, and rose to 56 only at
+        # v0.66.0. Returning to the baseline is the claim that holds.)
+        # The arm that went is `index_to_qreg`'s
         # `_ => QReg::Q7` — the Q-register allocator was orphaned by deleting
         # the 88 Helium arms, and `-D warnings` found it rather than a human
         # predicting it. No waiver: the value equals the baseline.

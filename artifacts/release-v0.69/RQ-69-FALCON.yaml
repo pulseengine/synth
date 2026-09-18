@@ -75,14 +75,33 @@ artifacts:
         THE CEILING, NAMED. Past the encoding wall `step` reaches VCR-RA-003,
         which refuses the stream with
         `SpillSlotAliased { slot: 184, first_store: 11113, overwriting_store: 11150, stale_reload: 11159 }`.
-        Diagnosed to a CHECKER-MODEL gap, filed as #1321: slot 184 is wasm local
-        45's permanent home (the layout puts locals below 256 and the spill area
-        at 256; the pool never hands out 184), local 45 is an f32 with 9
-        assignments and 21 reads, and the rule treats a second store to a slot
-        whose value was not reloaded as aliasing. For a spill slot that is a
-        bug; for a local's home it is assignment. NOT verified: the emitted
-        window at those three op indices, so the fix must not land on this
-        reasoning alone.
+        Diagnosed to a CHECKER-MODEL gap, filed as #1321.
+
+        CORRECTED AT THE v0.69 CUT (2026-09-18), and recorded rather than
+        quietly rewritten. This artifact first said slot 184 was f32 LOCAL 45's
+        permanent home. It is i32 LOCAL 31 — 78 `local.set`/`tee` and 84
+        `local.get`, and all 154 accesses to `[sp,#184]` in `step` (78 `Str`,
+        76 `Ldr`) are local 31. The error was reading the layout dump
+        `(45,(184,false))` off the PRE-#1322 frame: #1322 itself reserves a
+        64-byte VFP call-spill area up front, which shifts the locals, so after
+        it local 31 sits at 184 and local 45 at 248 — and the stream the
+        validator rejects is the RE-LAID one. An independent fresh-context
+        recheck, briefed to refute, dumped the emitted stream (the step this
+        artifact admitted below that it had NOT done) and found it; my own
+        re-derivation agrees.
+
+        THE VERDICT SURVIVES, THE MECHANISM DOES NOT. It is still a
+        checker-model gap rather than a miscompile: the rule treats a second
+        store to a slot whose value was not reloaded as aliasing, and for a
+        LOCAL'S HOME that is assignment, not a bug. But the mechanism is
+        store-to-load forwarding with dead-store elimination blocked by
+        unmodelled F32 ops, against the checker's single-value-per-slot
+        premise — not a frame-homed float. The difference widens the fix. The
+        correction is posted on #1321 and #1318.
+
+        NOT verified at authoring: the emitted window at those three op
+        indices — which is precisely the step that, once taken, overturned the
+        mechanism above. The caution was right and was not heeded soon enough.
 
         Also measured and REMOVED rather than shipped: a two-ended spill pool
         (integer slots high, VFP low) and a pool-grow composition into the
@@ -90,4 +109,40 @@ artifacts:
         hand-copied `1020` literals became one `VFP_SP_IMM_MAX`.
 
         Landed in #1318, PR #1322.
+      verified-by: >-
+        ADDED AT THE CUT by the cold review, which found this — the release's
+        only `priority: must` artifact — carrying no evidence field at all. R2
+        did not catch it because the status is `proposed`, and R2 arms on a
+        CLAIMING status. That is the rule's blind spot, stated here rather than
+        left for the next reader to discover.
 
+        RE-DERIVABLE FROM THE TREE:
+        `VFP_SP_IMM_MAX` is a single `const` in `instruction_selector.rs` with
+        every other `1020` occurrence in prose; `SYNTH_RECOVERY_STATS` is read
+        in `arm_backend.rs`; the per-rung `note()` reporting and the deduped
+        decline are in the same file; `cargo test -p synth-synthesis` passes.
+
+        NOT RE-DERIVABLE FROM THE TREE, and named so no reader mistakes it for
+        checked: the byte-identity figures 826 identical / 209 identically
+        failing / 0 changed, and the reporter's function counts (1 of 21 on
+        `fused.wasm`, 7 of 17 on `opt.wasm`). Both were measured against
+        cpetig's two modules, which are ATTACHED TO #1318 AND NOT IN THIS
+        REPOSITORY. Anyone re-checking must fetch them from the issue. This is
+        the artifact's weakest evidence and it is the must-priority one.
+
+        TWO CORPUS DEFINITIONS ARE IN PLAY IN THIS RELEASE, and the cold review
+        was right to flag that they read as one. FALCON's 1035 = 207 modules x 5
+        configs, where 207 counts `scripts/repro/*.wat` AND `*.wasm`.
+        RQ-69-SUBTRACT's 965 = 193 x 5, because `scripts/byte_triage_242.py`
+        globs `*.wat` only. SUBTRACT's deletion gate therefore covered a
+        STRICTLY SMALLER corpus than FALCON's, excluding 16 `.wasm` modules.
+        Neither figure is wrong; calling both "the corpus" without saying which
+        was.
+
+        RESIDUAL, from this artifact's own done-when: "add both modules to the
+        corpus" is NOT done. `git diff --name-status v0.68.0..HEAD --
+        scripts/repro` adds only PAGESIZE's two `.wat` fixtures. The modules are
+        a third party's build output attached to an issue; committing them needs
+        the reporter's agreement, which has not been asked for. Recorded as
+        outstanding rather than quietly dropped — the status stays `proposed`
+        with `disposition: partial` for this reason as well as the decline.

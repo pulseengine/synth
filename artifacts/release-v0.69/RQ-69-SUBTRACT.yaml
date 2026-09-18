@@ -50,7 +50,8 @@ artifacts:
           selector_lines_total         31297 -> 30021  -1276
           selector_wildcard_arms_code     56 ->    55    -1   AT BASELINE
           selector_wildcard_arms_total    94 ->    93    -1
-          diff                          1300 deletions / 75 insertions
+          diff (whole commit)            294 insertions / 1307 deletions
+          diff (selector files only)      22 insertions / 1298 deletions
 
         THE FIRST PIN WAS WRONG AND THE RATCHET SAID SO. I pinned 19455 after
         the first cut; re-running the derivation refused it — the cascade below
@@ -60,11 +61,18 @@ artifacts:
         me noticing, which is the argument for a ratchet that compares against
         a live derivation instead of a remembered one.
 
-        This is the largest single subtraction the ratchet has recorded, and
-        the FIRST of its 25 waiver entries to record a subtraction at all — the
-        other 24 are justified growths. The entry exists only because the
-        ceiling is still 1558 above its all-time baseline of 17897, so that
-        excess stays explicitly owned rather than silently inherited.
+        This is the LARGEST single subtraction the ratchet has recorded. An
+        earlier draft also called it the first waiver entry to record a
+        subtraction at all; the cold review refuted that from the same list —
+        waivers to 20201 (RQ-68-ONESOURCE), 19896 (RQ-65-ALIASCLASS) and 18278
+        (RQ-59-SUBTRACT) each record a FALL in their own words. Largest, not
+        first. The entry exists only because the
+        ceiling is still 1531 above its all-time baseline of 17897, so that
+        excess stays explicitly owned rather than silently inherited. (An
+        earlier draft said 1558 and 829 — both computed from 19455, the pin the
+        ratchet REFUSED. The gate corrected the table; it could not correct the
+        prose, which is the R11 blind spot RQ-69-PROSEGATE measured, landing in
+        this release's own artifact.)
 
         THE PREMISE WAS RE-CHECKED, not inherited from v0.68. All three legs,
         on this release's tree: `set_helium(true)` occurs exactly once, in
@@ -133,5 +141,5 @@ artifacts:
         NOT claimed: that MVE lowering was wrong, or that it could never be
         finished. Claimed: that it was unreachable in every shipped
         configuration, that deleting it changed no emitted byte, and that
-        keeping it cost 829 lines of ceiling the ratchet exists to measure.
+        keeping it cost 856 lines of ceiling the ratchet exists to measure.
 
