@@ -1,0 +1,41 @@
+artifacts:
+  - id: RQ-70-DONEWHEN
+    type: system-req
+    title: "Every done-when has been `manual:` since v0.66, so R3 cannot fire — and the conformance gate counts declarations, not evaluations"
+    description: >
+      FOUND BY THE v0.69 CLEAN-ROOM REVIEW. All 9 v0.69 artifacts carry a
+      `manual:` done-when (re-derived: 9 manual, 0 derivable), so R3 — "a
+      done-when whose evidence evaluates FALSE under a claiming status is red" —
+      cannot fire for any of them.
+
+      THE TREND IS THE FINDING, not any one release:
+        v0.56-59   0% manual
+        v0.60     50%
+        v0.61-65  62-80%
+        v0.66/67/68/69  100%
+
+      `loop_conformance_check` prints "9 artifacts, 9/9 done-when" as
+      DERIVED-PASS, but it counts DECLARATION, not evaluation — so the reading
+      most likely to be taken from it ("the done-whens were checked") is the one
+      it cannot support.
+
+      THIS IS NOT A CALL TO BAN `manual:`. Several v0.69 done-whens are
+      honestly manual — a refutation's publication, a downstream re-verification
+      at the cut. The question is whether a release can state, per artifact,
+      WHY manual was the only option, and whether the 100% rate is a property of
+      the work or of the habit. A measured answer either way is the deliverable.
+    status: proposed
+    release: v0.70
+    tags:
+      - gate-potency
+      - release-gate
+      - cold-review-finding
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: review
+      issue: "#1335"
+      done-when: "manual: the manual-vs-derivable rate is derived per release and published, each v0.70 artifact whose done-when is `manual:` states why no machine predicate was available, and the conformance gate distinguishes DECLARED from EVALUATED in its own output — or the measurement shows the rate is intrinsic and says so with the numbers"

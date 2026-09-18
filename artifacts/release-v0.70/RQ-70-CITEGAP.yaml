@@ -1,0 +1,45 @@
+artifacts:
+  - id: RQ-70-CITEGAP
+    type: system-req
+    title: "artifact_citation_check globs artifacts/*.yaml NON-recursively, so it has never scanned a single release artifact since v0.61"
+    description: >
+      FOUND BY THE v0.69 CLEAN-ROOM REVIEW and VERIFIED AT SOURCE.
+      `scripts/artifact_citation_check.py:117` globs
+      `artifacts/*.yaml` — non-recursive. Measured on the v0.69.0 tree:
+
+        artifacts/*.yaml        30 files   <- what the gate scans
+        artifacts/**/*.yaml    127 files
+        v0.69 artifacts seen     0
+
+      Every release from v0.61 on keeps its artifacts in a SUBDIRECTORY, so all
+      97 subdirectory files — including all nine v0.69 artifacts — are invisible
+      to it. The gate also reads only keys literally named `run:`, and no
+      release artifact at any version has ever had one, so all 12 cited filters
+      it checks come from e2e-verification.yaml / sw-verification.yaml /
+      verification.yaml.
+
+      THE v0.69 ARTIFACTS DO CITE TESTS — `--test every_section_header_is_named_1307`,
+      `--test mpu_honest_1284`, `--lib ra003` — and none was checked. The gate's
+      green says nothing about the release it ran on.
+
+      THE PRECEDENT IS IN THIS REPO: `status_evidence_check.py` carries an
+      explicit P3 rule for exactly this class ("yaml under artifacts/ that
+      PROGRAMME_GLOB does not scan — invisible to every P-rule"). The citation
+      gate has no equivalent. THE FIX MUST BE RED-FIRST: a citation to a test
+      that does not exist, in a v0.70 artifact, must red the gate before the
+      glob is widened — otherwise widening it is unfalsifiable.
+    status: proposed
+    release: v0.70
+    tags:
+      - gate-potency
+      - release-gate
+      - cold-review-finding
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1333"
+      done-when: "manual: the citation gate scans every artifact under artifacts/ recursively, PROVEN red-first by a deliberately broken citation in a release-subdirectory artifact that reds the gate before the widening lands; and the count it scans is printed so a future narrowing is visible"
