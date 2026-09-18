@@ -24,7 +24,7 @@ artifacts:
       This is a two-offset fix in hand-written header construction. Its value is not
       the fix but the GATE: an assertion that every emitted section header resolves
       to a non-empty name, which no test made before.
-    status: proposed
+    status: implemented
     release: v0.69
     tags:
       - elf
@@ -39,3 +39,53 @@ artifacts:
       verification-track: differential
       issue: "#1307"
       done-when: "manual: every section header in an emitted ARM object and self-contained image resolves to its intended non-empty name, checked by a test that walks the whole section table rather than the two known-bad entries, red-first against the current emitter; a name-based `.symtab` lookup succeeds on both object kinds"
+      landed: >-
+        LANDED (#1307, PR #1326).
+
+        THE DEFECT, exactly. `.strtab` and `.symtab` took their `sh_name` from
+        hand-counted expressions at the header writer — `".shstrtab\\0".len()`
+        (10) and `".shstrtab\\0.strtab\\0".len()` (18) — both forgetting that
+        the string table STARTS with a NUL at offset 0. The real offsets are 11
+        and 19. One byte early lands on the previous string's terminator, which
+        reads as the empty string, so both sections were unnamed in every
+        emitted object and a consumer looking either up BY NAME got nothing
+        rather than an error. The later sections (.text at 27, and onward) were
+        always correct: they come from the loop that records each offset as it
+        appends, which is the half that had no second source to disagree with.
+
+        FIXED AT THE SOURCE, not by correcting two constants. The offsets are
+        now derived from the built table by searching it for the name
+        (`shstrtab_offset_of`), so the layout is stated once — the rule this
+        project applies to every other mirrored fact, and whose absence is the
+        whole reason the bug existed.
+
+        THE GATE IS THE POINT, and it walks the WHOLE header table: every
+        header except the mandatory null section must resolve to a non-empty
+        name. Pinning the two known-bad entries would pass an object that broke
+        a third, and nothing checking the CLASS is why a one-byte error
+        survived in every object synth has ever emitted. The exact-names check
+        is kept as a SUPPLEMENT, never as the substitute.
+
+        The test parses the section headers straight out of the ELF bytes
+        rather than through a library: being reconstructed by a permissive
+        reader is this bug's own nature — `readelf` showed empty names instead
+        of erroring — so the test must read what synth WROTE.
+      verified-by: >-
+        `cargo test -p synth-cli --test every_section_header_is_named_1307` —
+        three tests: the whole-table walk on a relocatable object, the same on
+        a self-contained image, and the standard-name resolution supplement.
+
+        RED-FIRST, by restoring the two hand-counted expressions and re-running:
+        all three FAIL (`test result: FAILED. 0 passed; 3 failed`), and the
+        failure names the defect rather than merely reporting a mismatch —
+        "2 section header(s) resolve to an EMPTY name ... Unnamed: [(2, 10, \"\"),
+        (3, 18, \"\")]", with the full table printed: `.shstrtab` at 1, then two
+        empties, then `.text` at 27. Offsets 10 and 18 are exactly what v0.68
+        measured on the shipped binary.
+
+        After the fix, on both object kinds: `.shstrtab` 1, `.strtab` 11,
+        `.symtab` 19, and zero unnamed headers.
+
+        fmt 0 / clippy 0 / cargo test --workspace 0 (167 ok) / claim_check
+        75/75 / status_evidence 0.
+
