@@ -61,6 +61,29 @@ jobs:
         # disk-exhaustion workaround) is gone. The z3-solver feature path is
         # covered by the dedicated `Z3 Verification` differential job below.
         run: cargo test --workspace
+      - name: Fixture isolation — the #901 fixtures must not be shared between processes (RQ-69-TESTISO, #1309)
+        # #1309: the proven_safe fixtures lived at a FIXED `temp_dir()` path, so
+        # every process that ran these tests wrote the same file names — two
+        # `cargo test` invocations, or two jobs on one self-hosted runner, of
+        # which this project has several. Measured on the pre-fix tree: 8
+        # concurrent processes x 6 rounds = 48 runs, 16 FAILED (33 %).
+        #
+        # The unit tests assert the INVARIANT (unique per run, carries the pid,
+        # removed on drop). This step asserts the OBSERVABLE the invariant is
+        # for: the same binary, run many times at once, still passes. It builds
+        # once and then spawns the binary N times — N concurrent `cargo test`s
+        # would serialize on the target-dir lock and never overlap, which is a
+        # vacuous probe rather than a cheap one.
+        #
+        # The verdict is the PRINTED line, not the exit code: a run that spawned
+        # nothing exits 0 while checking nothing, and this project has shipped
+        # that shape before.
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_run.py \
+            scripts/repro/proven_safe_fixture_race_1309.py --procs 8 --rounds 2 \
+            | tee /tmp/fixture-race.log
+          grep -qE '^proven_safe fixture race: processes=[0-9]+ FAILED=0$' /tmp/fixture-race.log
       - name: WCET bound gate (#778 — sound static WCET incl. phase-3/4/5)
         # The soundness gate for --emit-wcet: bound >= actual on loop-free +
         # const-loop fixtures, EXACT-literal composed bounds over the direct call
