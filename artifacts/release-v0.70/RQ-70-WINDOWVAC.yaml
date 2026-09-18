@@ -1,42 +1,66 @@
 artifacts:
-  - id: RQ-70-WINDOWVAC
-    type: system-req
-    title: "status_evidence's delivery window has matched ZERO commits for two releases — the anti-vacuity anchor is itself vacuous"
-    description: >
-      FOUND BY THE v0.69 CLEAN-ROOM REVIEW and RE-DERIVED AT SOURCE.
-      `status-evidence-window: 0 delivery-shaped commits since v0.68.0` — while
-      v0.69 landed eight artifact deliveries.
+- id: RQ-70-WINDOWVAC
+  type: system-req
+  title: status_evidence's delivery window has matched ZERO commits for two releases — the anti-vacuity
+    anchor is itself vacuous
+  description: |-
+    RE-DERIVED with the script's own CONVENTIONAL regex and DELIVERY_TYPES rather
+    than restated from the issue:
 
-      MEASURED on v0.68.0..v0.69.0 (14 commits) with the script's own
-      `CONVENTIONAL = ^([a-z]+)\(([^)]*)\)!?: ` and
-      `DELIVERY_TYPES = {feat,fix,perf,proof,test}`:
+      window              commits  delivery-shaped  RQ-style  other-conventional
+      v0.62.0..v0.63.0         12                4         3                   5
+      v0.63.0..v0.64.0         17                8         3                   6
+      v0.64.0..v0.65.0         18                8         2                   8
+      v0.65.0..v0.66.0         15               11         0                   4
+      v0.66.0..v0.67.0         11                2         3                   6
+      v0.67.0..v0.68.0         10                0         8                   2
+      v0.68.0..v0.69.0         14                0         8                   6
 
-        8 commits DO NOT MATCH THE SHAPE AT ALL — every RQ-NN artifact
-          delivery, e.g. "RQ-69-SUBTRACT (#242): the 88 Helium-guarded arms..."
-        6 commits match but are `release`(1), `chore`(4), `plan`(1) —
-          NONE in DELIVERY_TYPES.
+    The RQ-style column rising to 8 exactly as delivery-shaped falls to 0 IS the
+    mechanism. This project's delivery subjects became `RQ-NN-NAME (#issue): ...`
+    around v0.67; R10's window loop only ever matched `type(scope): `. Both
+    constraints bind: 8 of v0.69's subjects do not match the SHAPE at all, and the 6
+    that do are release(1)/chore(4)/plan(1), none in DELIVERY_TYPES.
 
-      So BOTH constraints bind, and the net is zero. Per-release re-derivation:
-      v0.63->64: 8, v0.64->65: 8, v0.65->66: 11, v0.66->67: 2,
-      v0.67->68: 0, v0.68->69: 0. The convention changed at v0.68 and R10 has
-      scanned nothing since.
+    THE GATE ALREADY HAD THE RECOGNIZER. `ARTIFACT_ID` (`^RQ-\d+-[A-Z0-9]+`) is what
+    R4 uses — which is why 88 delivery commits match overall — and it was simply
+    never applied in the WINDOW loop. So R10, the completeness floor that exists to
+    notice work landing while every artifact stays silent, was structurally blind to
+    the exact subject convention the project had adopted. Two releases reported a
+    vacuous 0 and passed.
 
-      WHY IT PASSES: the window line exists AS the anti-vacuity anchor, but the
-      CI grep only reds on `SKIPPED`, so `0` is green. A rule that examines zero
-      commits reports success about work it never did — the exact shape v0.59
-      measured and this project has now shipped twice more.
-    status: proposed
-    release: v0.70
-    tags:
-      - gate-potency
-      - release-gate
-      - cold-review-finding
-    links:
-      - type: derives-from
-        target: BR-001
-    fields:
-      req-type: process
-      priority: should
-      verification-track: differential
-      issue: "#1334"
-      done-when: "manual: either the window matches the RQ-NN delivery convention and a non-zero count is derived for v0.69 and v0.70, with a FLOOR that reds on 0 — or the measurement is published showing why matching is not worth its false positives, and the window line is deleted rather than left reporting a number nobody can act on"
+    CI COULD NOT HAVE CAUGHT IT: `grep -qE '^status-evidence-window: [0-9]+ ...'`,
+    and `[0-9]+` matches 0. That is #1243's shape again — a floor regex that does not
+    floor — so the floor now lives in the script, where it can say why.
+
+    FIXED, AND PROVEN BOTH WAYS. Replaying v0.68.0..v0.69.0 through
+    `--subjects-file` now reports 8 delivery-shaped, 8 attributed (was 0). NEGATIVE
+    CONTROL: rewriting those same subjects `RQ-69-` -> `DELIVERED-69-` — simulating
+    the next convention change — makes the new floor FIRE with the window size and
+    the reason. The floor is deliberately conditional on window size
+    (WINDOW_RECOGNIZER_FLOOR_COMMITS = 6): early in a cycle a window legitimately
+    holds only a plan commit, and a hard `> 0` would red every release the day after
+    its predecessor shipped. The current v0.70 window (1 commit) is correctly silent.
+  status: implemented
+  release: v0.70
+  tags:
+  - gate-potency
+  - release-gate
+  - cold-review-finding
+  - feature-loop
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: should
+    verification-track: differential
+    issue: '#1334'
+    done-when: contains:scripts/status_evidence_check.py:WINDOW_RECOGNIZER_FLOOR_COMMITS
+    verified-by: |-
+      The signature names the FLOOR, not the recognizer: teaching the window one more
+      subject shape is a fix for today's convention, while the floor is what notices
+      the NEXT change. Its potency is demonstrated by the negative control above
+      (`DELIVERED-69-` subjects fire it), not asserted. `status_evidence_check.py` runs
+      in ci.yml and `scripts/test_status_evidence_check.py` is CI-run beside it.
+    landed: '#1334'
