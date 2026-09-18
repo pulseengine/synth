@@ -70,10 +70,16 @@ artifacts:
       `ra003_red_spill_slot_aliasing_survives_a_register_use_1321`.
 
       EVIDENCE, all re-derivable from the repository:
-        - `ra003` unit tests 34 -> 38: the potency test above, plus three pinning
+        - `ra003` unit tests 34 -> 39: the potency test above, plus four pinning
           the area semantics — `None` polices everything (the load-bearing
-          default), an aliased slot INSIDE an area is still caught, a slot
-          outside every area is a local home.
+          default), an EMPTY list means "unknown" and also polices everything,
+          an aliased slot INSIDE an area is still caught, and a slot outside
+          every area is a local home. The empty-list case was added after the
+          fix landed: `Some(&[])` would have disabled the #331 check entirely,
+          and although `select_with_stack` collapses an empty list to `None` so
+          nothing can produce it today, the degradation belongs in the predicate
+          rather than in one caller's care. The load-bearing question for any
+          "unknown" is whether it means POLICE EVERYTHING or POLICE NOTHING.
         - ARM corpus sweep AFTER: PASS, compiled=174/194, executed=3428/3428
           vectors, mismatches=0, faults=0.
         - ARM corpus sweep BEFORE (same script, pre-fix binary): FAIL,

@@ -3617,8 +3617,14 @@ jobs:
           # on the same tree and printed the identical 7203/8214 — so this is
           # corpus growth from a new fixture, not a codegen change and not a new
           # home-alias defect. Same bookkeeping the #1209 shrinkage above got.
-          grep -Eq '^functions audited: 7203$' haa1189.txt
-          grep -Eq '^homes watched: 8214$' haa1189.txt
+          # RQ-70-NPA (#1331): 7203 -> 7207 and 8214 -> 8220. One more
+          # scripts/repro/*.wat fixture (npa_static_f32_1331.wat) enters the
+          # audit corpus: 2 exported functions, and they compile on the two
+          # hard-float legs only (the soft-float legs decline f32), so +4
+          # functions and +6 homes. MEASURED on the rebased tree, not added to
+          # the previous figure. `hits: 0` unchanged.
+          grep -Eq '^functions audited: 7207$' haa1189.txt
+          grep -Eq '^homes watched: 8220$' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

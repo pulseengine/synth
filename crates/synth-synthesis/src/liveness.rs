@@ -5731,7 +5731,13 @@ pub fn validate_final_allocation_in_areas(
     // home (where repeated stores are redefinitions and legal)? With no areas
     // named, everything is policed — the historical, conservative answer.
     let policed = |slot: i32| match spill_areas {
+        // No areas named => police EVERY offset (the historical answer).
         None => true,
+        // An EMPTY list is "unknown", NOT "no slots are policed". A caller that
+        // reserved no spill area cannot thereby switch the #331 check off;
+        // `select_with_stack` already collapses empty to `None`, but the
+        // degradation belongs in the predicate rather than in one caller's care.
+        Some([]) => true,
         Some(areas) => areas.iter().any(|a| a.contains(&slot)),
     };
     let mut i = 0usize;
@@ -18289,6 +18295,21 @@ mod tests {
             validate_final_allocation(&aliasing_at_slot_4()),
             validate_final_allocation_in_areas(&aliasing_at_slot_4(), None),
             "the public wrapper must be the conservative default"
+        );
+    }
+
+    #[test]
+    fn ra003_areas_empty_is_unknown_not_permission_1321() {
+        // An empty area list must degrade to POLICE EVERYTHING, like `None`.
+        // The opposite reading — "no areas, so nothing is policed" — silently
+        // disables #331 detection for any caller that reserved no spill area,
+        // which is the exact vacuity this lane's first fix introduced.
+        assert!(
+            matches!(
+                validate_final_allocation_in_areas(&aliasing_at_slot_4(), Some(&[])),
+                RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased { slot: 4, .. })
+            ),
+            "an EMPTY area list must police everything, not nothing"
         );
     }
 

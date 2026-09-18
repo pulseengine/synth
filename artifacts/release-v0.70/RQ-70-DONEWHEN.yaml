@@ -38,6 +38,28 @@ artifacts:
     v0.69.0 still CONFORMS; nothing about the verdict changed, only what the gate
     admits it measured.
 
+    THE OUTCOME, MEASURED ON THIS RELEASE RATHER THAN PREDICTED. Running the new
+    census over each release's artifacts:
+
+        v0.66  8 artifacts — 0 evaluable, 8 manual (100%)
+        v0.67  7 artifacts — 0 evaluable, 7 manual (100%)
+        v0.68  9 artifacts — 0 evaluable, 9 manual (100%)
+        v0.69  9 artifacts — 0 evaluable, 9 manual (100%)
+        v0.70  9 artifacts — 7 evaluable, 2 manual ( 22%)
+
+    So the answer to "is the 100% a property of the work or of the habit" is: the
+    HABIT, and the evidence is that it broke the moment something pushed back.
+    Nothing here bans `manual:`. What changed the number is that R9 REFUSED
+    RQ-70-ALIAS's first signature — a `contains:` into crate source, "a predicate
+    that cannot fail on the artifact's own definition of failure" — which forced
+    it onto the wired corpus sweep, and the same standard was then applied to the
+    rest. The two that remain `manual:` are the two DEFERRALS (ARCHMODEL and
+    PAGELIB), where no mechanical predicate exists because nothing landed.
+
+    That is the shape worth keeping: a gate that refuses a weak signature changes
+    behaviour where a rule banning a FORM would have flattened the compound
+    predicates that are the honest half.
+
     THE RECOMMENDED PRACTICE, demonstrated in this release rather than asserted:
     keep the compound `manual:` predicate AND record its mechanical conjunct in
     `verified-by:`, which RQ-70-CITEGAP now checks. RQ-70-ALIAS is the worked
