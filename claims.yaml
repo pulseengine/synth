@@ -1836,9 +1836,53 @@ claims:
         # Byte-identical over the corpus (826 identical / 209 identical
         # failures / 0 changed, per increment). A FALL, no waiver; value
         # RE-DERIVED after cargo fmt.
-        value: 20284
+        # RQ-69-SUBTRACT (#242): 20284 -> 19455, a FALL of 829 and the largest
+        # single subtraction this ratchet has recorded. The 88
+        # `if self.has_helium` arms in select_default.rs were DELETED, with the
+        # `has_helium` field and its `set_helium` setter. v0.68 measured them
+        # production-dead BY CONSTRUCTION, not merely uncovered: `set_helium`
+        # was called only inside `mod tests`, production hardcodes
+        # `validate_instructions_with_helium(.., false, ..)`, and the decoder
+        # refuses every SIMD operator on every target. The catch-all arm below
+        # them already loud-errored all 91 of the same ops, so no decline was
+        # lost and no emitted byte moved — byte identity over the corpus is the
+        # gate this passed. A FALL, no waiver.
+        value: 19428
         baseline: 17897
         waivers:
+          - to: 19428
+            reason: >-
+              RQ-69-SUBTRACT (#242): 20284 -> 19428, a FALL of 856 — and the
+              first time in this ratchet's history that an entry records a
+              SUBTRACTION rather than a justified growth. The twenty-four
+              entries below it are all growths. This one is here only because
+              the ceiling is still above the all-time baseline of 17897, so the
+              remaining 1531 lines of excess stay explicitly owned rather than
+              silently inherited: they are the earlier waived growths, not
+              anything this PR added.
+
+              WHAT CAME OUT: the 88 `if self.has_helium` arms in
+              select_default.rs, plus the now-write-only `has_helium` field and
+              its `set_helium` setter. v0.68 MEASURED them production-dead by
+              construction rather than merely uncovered, and this release
+              re-checked all three legs: `set_helium` was called only inside
+              `mod tests`; production hardcodes
+              `validate_instructions_with_helium(.., false, ..)`; and the
+              decoder refuses every SIMD operator on every target.
+
+              WHY NO DECLINE WAS LOST: the catch-all arm that follows them
+              already loud-errors every SIMD op, and the two op sets were
+              compared mechanically — 91 ops in the deleted Path A, 91 in the
+              surviving Path B, empty difference. Nothing that used to be
+              refused is now accepted, and nothing that used to lower now
+              refuses, because in production Path A was never entered.
+
+              The setter went too on purpose: after the arms were gone the
+              field was written and never read, and a public setter that claims
+              a capability the compiler does not have is exactly the class this
+              release is named for. Restoring MVE means restoring the arms from
+              git history AND wiring `set_helium` to a real target capability
+              AND teaching the decoder to accept v128 — all three.
           - to: 20284
             reason: >-
               RQ-69-FALCON (#1318): 20201 -> 20284, +83. THE TWENTY-FOURTH
@@ -2399,7 +2443,14 @@ claims:
         # RQ-68-ONESOURCE: 31227 -> 31204 (-23 code, see selector_lines_code;
         # the new reg_contract tests live in reg_contract.rs, outside this
         # population).
-        value: 31297
+        # RQ-69-SUBTRACT (#242): 31297 -> 30021 (-1276 = -856 code, see
+        # selector_lines_code, -424 test module: the 17 `*_on_helium` tests and
+        # the `helium_selector()` helper that exercised the deleted arms).
+        # KEPT deliberately: `test_simd_rejected_on_non_helium` (the production
+        # behaviour), the two `validate_instructions_*_mve_*` tests and
+        # `test_requires_helium_trait`, which build ArmInstructions by hand and
+        # never touched the selector.
+        value: 30021
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -2442,7 +2493,12 @@ claims:
         # than the ZEROINIT +1 below (which is still live in the code); they
         # land on the same value 56 by coincidence of the intervening
         # RQ-59-SUBTRACT -1, not because either superseded the other.
-        value: 56
+        # RQ-69-SUBTRACT (#242): 56 -> 55, and this pin is now AT its all-time
+        # baseline for the first time. The arm that went is `index_to_qreg`'s
+        # `_ => QReg::Q7` — the Q-register allocator was orphaned by deleting
+        # the 88 Helium arms, and `-D warnings` found it rather than a human
+        # predicting it. No waiver: the value equals the baseline.
+        value: 55
         baseline: 55
         waivers:
           - to: 56
@@ -2478,7 +2534,9 @@ claims:
         # (test region; the directed code-region count stays 55).
         # RQ-66-BOTHWRONG (#1215 partial): 93 -> 94 — the `BrTable`
         # `target_of` match's `_ => {}` (see selector_wildcard_arms_code).
-        value: 94
+        # RQ-69-SUBTRACT (#242): 94 -> 93 — `index_to_qreg`'s `_ => QReg::Q7`,
+        # deleted with the orphaned Q-register allocator (see the code pin).
+        value: 93
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly

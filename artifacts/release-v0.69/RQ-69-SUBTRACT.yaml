@@ -25,7 +25,7 @@ artifacts:
       AND THE REFUSAL DIRECTION IS LOAD-BEARING: a deletion that moves emitted bytes
       without an oracle proving the new bytes correct is refused, not explained. Byte
       identity over the corpus gates this, exactly as it gated ONESOURCE.
-    status: proposed
+    status: implemented
     release: v0.69
     tags:
       - subtraction
@@ -40,3 +40,98 @@ artifacts:
       verification-track: differential
       issue: "#242"
       done-when: "manual: the 88 Helium-guarded arms are deleted and `selector_lines_code` falls by the measured amount in the same PR, gated on byte-identity over the full corpus; any arm that cannot be deleted is NAMED with the reason it is reachable, and a measured 'fewer than 88 are truly dead' is a publishable outcome"
+      landed: >-
+        DELETED — 88 arms out, and the ratchet moved by the measured amount in
+        the same PR (#242, PR #1330).
+
+        THE MEASUREMENT, which is the deliverable rather than a side effect:
+
+          selector_lines_code          20284 -> 19428   -856  (directed ceiling)
+          selector_lines_total         31297 -> 30021  -1276
+          selector_wildcard_arms_code     56 ->    55    -1   AT BASELINE
+          selector_wildcard_arms_total    94 ->    93    -1
+          diff                          1300 deletions / 75 insertions
+
+        THE FIRST PIN WAS WRONG AND THE RATCHET SAID SO. I pinned 19455 after
+        the first cut; re-running the derivation refused it — the cascade below
+        had taken 25 more lines and a WILDCARD ARM I had not accounted for.
+        `cargo fmt` then collapsed a now-shorter import for 2 more. Both
+        corrections came from the gate refusing a stale number rather than from
+        me noticing, which is the argument for a ratchet that compares against
+        a live derivation instead of a remembered one.
+
+        This is the largest single subtraction the ratchet has recorded, and
+        the FIRST of its 25 waiver entries to record a subtraction at all — the
+        other 24 are justified growths. The entry exists only because the
+        ceiling is still 1558 above its all-time baseline of 17897, so that
+        excess stays explicitly owned rather than silently inherited.
+
+        THE PREMISE WAS RE-CHECKED, not inherited from v0.68. All three legs,
+        on this release's tree: `set_helium(true)` occurs exactly once, in
+        `helium_selector()` inside `#[cfg(test)] mod tests`; production hardcodes
+        `validate_instructions_with_helium(.., false, ..)` at the only call site
+        (`arm_backend.rs`); and the decoder refuses every SIMD operator on every
+        target. There was no target on which those arms ran.
+
+        NO DECLINE WAS LOST, and that was checked mechanically rather than by
+        eye. The catch-all arm that follows the deleted block was already the
+        fallback whenever Helium was absent — which in production was always.
+        The two op sets were extracted and compared: 91 ops in the deleted
+        Path A, 91 in the surviving Path B, EMPTY difference. Nothing that used
+        to be refused is now accepted; nothing that used to lower now refuses.
+
+        THE DELETION CASCADED, and the compiler found the cascade rather than a
+        human guessing at it. Once the arms were gone, `-D warnings` reported
+        `has_helium` written-but-never-read, then `alloc_qreg` unused, then
+        `index_to_qreg` unused, then `next_qreg` never read, then two imports
+        orphaned. Each was machinery that existed ONLY to serve the dead arms.
+        So what came out is: the 88 arms, the `has_helium` field, the PUBLIC
+        `set_helium` setter, the whole Q-register allocator, and the
+        `MveSize`/`QReg` imports (re-scoped into the test module, where the
+        surviving hand-built-ArmInstruction tests still need them).
+
+        THE PUBLIC SETTER WENT ON PURPOSE. After the arms were gone,
+        `set_helium` wrote a field nothing read — a public API that claims a
+        capability the compiler does not have, which is the exact class this
+        release is named for. Restoring MVE lowering now means restoring the
+        arms from git history AND wiring `set_helium` to a real target
+        capability AND teaching the decoder to accept v128 — all three, and the
+        comment left in `select_default.rs` says so.
+
+        KEPT DELIBERATELY: `test_simd_rejected_on_non_helium` (the PRODUCTION
+        behaviour — SIMD is refused), the two `validate_instructions_*_mve_*`
+        tests and `test_requires_helium_trait`. Those build `ArmInstruction`s by
+        hand and exercise the MVE guard in `validate_instructions_with_helium`,
+        which is still live and still the thing that stops an MVE opcode
+        reaching a non-Helium target. 17 `*_on_helium` tests and the
+        `helium_selector()` helper were deleted with the arms they exercised.
+      verified-by: >-
+        BYTE IDENTITY OVER THE CORPUS, which is the gate the artifact set and
+        the reason this is a deletion rather than a cleanup: "a deletion that
+        moves emitted bytes without an oracle proving the new bytes correct is
+        REFUSED, not explained."
+
+        BYTE TRIAGE, 193 modules x 5 ARM configs = 965 compiles, the base
+        binary at fb9af784 against this branch: 760 BYTE-IDENTICAL, 205
+        IDENTICAL FAILURES (same return code AND same first stderr line), 0
+        CHANGED. Not one emitted byte moved.
+
+        The config set deliberately INCLUDES `cortex-m55` — the Helium-bearing
+        target, and the only one on which the deleted arms could conceivably
+        have mattered. If the premise were wrong anywhere, it would be there.
+
+        A failure is compared by return code AND the first line of stderr, not
+        by return code alone, so a DIFFERENT refusal reason counts as a change
+        rather than being absorbed into "both failed". That distinction is what
+        makes the identical-failure bucket evidence instead of noise.
+
+        The op-set comparison (91 vs 91, empty difference) is re-derivable from
+        the diff: extract the `V128*`/`I8x16*`/`I16x8*`/`I32x4*`/`I64x2*`/
+        `F32x4*`/`F64x2*` identifiers from the deleted block and from the
+        surviving catch-all arm, and subtract.
+
+        NOT claimed: that MVE lowering was wrong, or that it could never be
+        finished. Claimed: that it was unreachable in every shipped
+        configuration, that deleting it changed no emitted byte, and that
+        keeping it cost 829 lines of ceiling the ratchet exists to measure.
+
