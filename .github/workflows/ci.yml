@@ -3596,8 +3596,18 @@ jobs:
           set -euo pipefail
           SYNTH=./target/debug/synth \
             python scripts/oracle_run.py scripts/repro/home_alias_audit_corpus_1189.py | tee haa1189.txt
-          grep -Eq '^functions audited: 7199$' haa1189.txt
-          grep -Eq '^homes watched: 8210$' haa1189.txt
+          # RQ-70-ALIAS (#1321): 7199 -> 7203 and 8210 -> 8214. The audit's
+          # corpus includes `scripts/repro/*.wat` (see corpus() in the script),
+          # and this release commits ONE new fixture there —
+          # spill_slot_alias_1321.wat, the reduction of cpetig's falcon-cascade
+          # `step`. One exported function x 4 legs = +4 functions and +4 homes,
+          # exactly the delta. `hits: 0` and the 217081 attributed instructions
+          # are UNCHANGED, and the audit was re-run against the PRE-FIX binary
+          # on the same tree and printed the identical 7203/8214 — so this is
+          # corpus growth from a new fixture, not a codegen change and not a new
+          # home-alias defect. Same bookkeeping the #1209 shrinkage above got.
+          grep -Eq '^functions audited: 7203$' haa1189.txt
+          grep -Eq '^homes watched: 8214$' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
