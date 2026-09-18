@@ -31,7 +31,7 @@ artifacts:
       "safe". Whether the honest form is widening (as the sibling does), a reported
       UNKNOWN, or a refusal is the lane's measurement — but "stopped looking" and
       "looked and found nothing" must stop being the same return value.
-    status: proposed
+    status: implemented
     release: v0.69
     tags:
       - checker-potency
@@ -46,3 +46,62 @@ artifacts:
       verification-track: differential
       issue: "#1303"
       done-when: "manual: a function with a VFP producer, an op `vfp_word_effect` does not model, a call, and a post-call read of that S-word no longer returns 'no violation'; red-first by constructing exactly that shape and watching the current checker pass it; the two callers' treatment of `None` is stated in one place and the sibling's widening behaviour is pinned so the pair cannot drift apart again"
+      landed: >-
+        LANDED (#1303, PR #1325).
+
+        THE DISHONESTY HAD MOVED, NOT GONE. v0.68's #1275 fix stopped 25 MVE
+        variants claiming an EMPTY VFP footprint — correct — and thereby routed
+        them into `vfp_word_effect`'s `None`. Both scans in
+        `check_vfp_caller_saved_across_calls` treated `None` as a reason to
+        STOP, and the function then returned `None`, which its caller reads as
+        "no violation": the answer a clean function gets. One unmodelled op
+        between a producer and a call hid the live word behind it.
+
+        THREE OUTCOMES NOW. `Undecided` — a scan truncated by an unmodelled
+        effect in a window where a violation could hide — surfaces as
+        `NotAttempted { reason: "vfp-across-call-unmodeled-effect" }`, which is
+        this file's own written doctrine for a checker that cannot model a
+        construct, and is NON-FATAL, so every compile that works today keeps
+        working. It is reported AFTER the join check so a proven violation
+        always outranks it: a decline must never mask a violation.
+
+        NOT WIDENED, deliberately. The sibling caller of `vfp_word_effect` (the
+        #881 spill-slot check) widens on the same `None`, which is sound there.
+        Here it would turn every unmodelled op into a hard compile error —
+        trading a silent false-clean for a gate nobody can ship past.
+
+        MEASURED WHILE ISOLATING THE RED-FIRST CASE, and worth recording
+        because it bounds the finding: for an MVE op the whole-function verdict
+        is ALREADY `NotAttempted{cfg-unmodeled-construct}`, so the silent pass
+        was confined to ops whose CONTROL FLOW is modelled while their EFFECT
+        is not. The test therefore asserts on the check itself, where the
+        sibling `..._caught_881` reports a Violation from the same shape
+        without the unmodelled op.
+
+        A TEST I BROKE AND RESTORED. An earlier scripted edit anchored with
+        `str.index()` replaced the assertion inside
+        `ra003_red_epilogue_drops_saved_register` (#490) instead of the new
+        test, and that test then PASSED VACUOUSLY — a dropped-restore body
+        asserting something about VFP calls. Restored from main. The thread
+        back to it was clippy's dead-code error on a wrapper left with no
+        callers; the wrapper is deleted, not silenced with an allow.
+      verified-by: >-
+        `cargo test -p synth-synthesis --lib ra003` — 34 tests, including the
+        #881 violation catch and the preserved-pattern control, both still
+        green, plus `ra003_unmodeled_op_is_undecided_not_clean_1303` asserting
+        BOTH halves: the scan reports `Undecided`, and `Undecided` is not
+        reported as a proven violation.
+
+        Red-first: before the fix that test asserted the check returned `None`
+        (the clean-function answer) and passed; the assertion was flipped only
+        after the behaviour changed, not adjusted to match it.
+
+        Restored-test evidence: `ra003_red_epilogue_drops_saved_register` again
+        requires `CalleeSavedNotRestored { reg: R5 }`, recovered from
+        origin/main rather than rewritten from memory.
+
+        fmt 0 / clippy 0 / cargo test --workspace 0 (166 ok) / claim_check
+        75/75 / status_evidence 0. NOT claimed: that the effect model now
+        covers those ops — it does not, and that is why the outcome is
+        "undecided" rather than "clean".
+
