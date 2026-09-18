@@ -1,42 +1,89 @@
 artifacts:
-  - id: RQ-70-PAGELIB
-    type: system-req
-    title: "The custom-page-size refusal lives only in the CLI; a caller of the PUBLISHED synth-core still gets it silently ignored"
-    description: >
-      DISCLOSED IN v0.69 rather than discovered now — RQ-69-PAGESIZE carries a
-      `layer-residual:` field saying exactly this, and the v0.69 cold review
-      flagged that the CHANGELOG's "refused on every path" reads wider than the
-      code.
+- id: RQ-70-PAGELIB
+  type: system-req
+  title: >-
+    DEFERRED to v0.71 with the measurement: the custom-page-size refusal is CLI-only, and where it
+    belongs depends on a downstream answer that does not exist yet
+  description: |-
+    DEFERRED, NOT DROPPED — and deferred for the reason the v0.68 near-miss taught:
+    a refusal placed without the consumer's direction is one they have to route
+    around.
 
-      VERIFIED AT SOURCE on the v0.69.0 tree: `refuse_custom_page_size` and
-      `refuse_shared_memory` live in `crates/synth-cli/src/main.rs`.
-      `synth-core/src/wasm_decoder.rs` DECODES `page_size_log2` into
-      `WasmMemory` and does not refuse on it — its own comment says the field is
-      "Consumed by `refuse_custom_page_size` in `synth-cli`".
+    ## The measurement, verified at source on b3ea4b62 so v0.71 need not re-derive it
 
-      WHY IT MATTERS AND WHY IT IS THE SAME BUG TWICE: RQ-69-PMPLIB, in that
-      same release, closed exactly this shape for `--safety-bounds pmp` on the
-      stated principle that the published library is a user-visible surface. The
-      two artifacts applied opposite standards. gale asked for the CLI refusal
-      first and page-granular sizing second, so the ordering was right; the
-      residual is that the library layer never followed.
+    `refuse_custom_page_size` and `refuse_shared_memory` both live in
+    `crates/synth-cli/src/main.rs` (lines 3672 and 3720). `synth-core`'s decoder
+    DECODES the declaration and stops — its own doc comment says exactly that:
 
-      SCOPE NOTE: this belongs WITH gale's page-granular sizing work
-      (REQ-OS-MULTITENANT-001, #1145), not ahead of it. Consult the downstream
-      before scoping — v0.68's MPUHONEST rested on a stale premise for want of
-      that.
-    status: proposed
-    release: v0.70
-    tags:
-      - published-library
-      - refusal-honesty
-      - multi-memory
-    links:
-      - type: derives-from
-        target: BR-001
-    fields:
-      req-type: functional
-      priority: should
-      verification-track: differential
-      issue: "#1315"
-      done-when: "manual: a library caller of synth-core gets the same refusal the CLI gives for a custom page size and a shared memory — red-first, by a test that passes today and fails once the refusal moves down a layer — or gale confirms on #1145 that the CLI-only refusal is sufficient for the sizing work, and that is recorded"
+        /// ... wasmparser decodes it; nothing in this workspace read it, so a
+        /// memory declared one byte long was reported and reserved as 65536 - and
+        /// `__synth_mem_size_N`, which the embedder programs one MPU region from
+        /// (#1145), inherited the over-grant by the page-size ratio. Consumed by
+        /// `refuse_custom_page_size` in `synth-cli` ...
+        pub page_size_log2: Option<u32>,
+
+    So a caller of the PUBLISHED `synth-core` — not the CLI — still gets a custom
+    page size silently ignored, and `__synth_mem_size_N` still inherits the
+    over-grant. This is the shape #1317 closed in the SAME release on the opposite
+    principle: the CLI refused `pmp` while the published library still aliased it to
+    `mpu`. Two halves of one class, one closed and one not.
+
+    ## Why it is not scoped in v0.70
+
+    The obvious fix — push the refusal down into `synth-core` — forecloses a choice
+    that is not mine to make. gale's page-granular sizing
+    (REQ-OS-MULTITENANT-001, #1145) is what would CONSUME this, and a 1-byte page
+    declaration is exactly the granularity a per-memory MPU region table might WANT.
+    Refusing it in the library would remove a mode before knowing whether an
+    executed criterion depends on it — which is precisely what v0.68 nearly did to
+    `--safety-bounds mpu`, and what [[feedback_consult_downstream_before_scoping_a_flag]]
+    records.
+
+    ASKED on #1145 (2026-09-18), three questions, none yet answered:
+      1. does `gust:os` call `synth-core` as a LIBRARY anywhere, or only the CLI?
+         (if only the CLI, the gap is real but nobody stands in it)
+      2. for per-memory MPU regions, should a custom page size be REFUSED or
+         HONOURED?
+      3. if honoured, is `__synth_mem_size_N` in BYTES the contract, or pages?
+
+    ## What v0.71 inherits
+
+    The measurement above, the question posted with a date, and the explicit note
+    that "CLI-only is fine for now" is an ACCEPTABLE answer that would keep this
+    deferred with a reason attached rather than silently dropped.
+
+    A CORRECTION TO THIS ARTIFACT'S OWN FIRST DRAFT, recorded rather than quietly
+    edited. It said "#1315 stays OPEN; this artifact is `proposed`, so the release
+    does not close it". That is FALSE: #1315 was CLOSED on the v0.69 tag
+    (2026-09-18T17:53:18Z) by RQ-69-PAGESIZE, which shipped the CLI refusal. The
+    reasoning was right and the fact was wrong — I applied the "do not close a
+    `proposed` artifact's issue" rule to an issue that another artifact had
+    already closed for its own, valid reason.
+
+    So this is a FOLLOW-UP to a closed issue, not a deferral of an open one, and
+    it therefore gets its OWN tracking issue (#1339) rather than reopening #1315: the
+    library-side gap is a different defect from the one v0.69 fixed. This
+    artifact is `proposed` because nothing landed, and the release closes
+    nothing on its account.
+  status: proposed
+  release: v0.70
+  tags:
+  - published-library
+  - refusal-honesty
+  - multi-memory
+  - feature-loop
+  - deferred
+  - awaiting-downstream
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: functional
+    priority: should
+    verification-track: differential
+    issue: '#1339'
+    done-when: >-
+      manual: gale answers on #1145 whether a custom page size should be REFUSED or HONOURED for per-memory
+      MPU regions and whether gust:os calls synth-core as a library; THEN either the refusal moves
+      into synth-core with the published-library caller covered red-first, or the artifact records
+      'CLI-only is correct' with gale's reason quoted — a silent drop is not an outcome

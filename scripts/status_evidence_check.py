@@ -637,6 +637,11 @@ SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+(?=[^a-z\s])")
 STALENESS_CITATIONS = 34
 
 ARTIFACT_ID = re.compile(r"^(RQ-\d+-[A-Z0-9]+)\b")
+# RQ-70-WINDOWVAC (#1334): how many commits a release window must hold before
+# "zero delivery-shaped commits" is read as a broken recognizer rather than a
+# quiet start. Measured: the two vacuous windows held 10 and 14 commits; the
+# smallest window with genuine deliveries since v0.62 held 11.
+WINDOW_RECOGNIZER_FLOOR_COMMITS = 6
 # R4-conv (#1250). R4's population is subjects that START with the artifact id.
 # A squash merge keeps the FIRST commit's conventional subject, so a lane whose
 # first commit was `feat(codegen): RQ-67-VFPREACH (#1267) ...` landed on main
@@ -1709,6 +1714,27 @@ def check(root: Path, release_glob: str, subjects: list[str],
             "this into a red")
     else:
         for subject in window_subjects:
+            # RQ-70-WINDOWVAC (#1334): this project's delivery subjects are
+            # `RQ-NN-NAME (#issue): ...`, NOT `type(scope): ...`. R4 has always
+            # recognized them via ARTIFACT_ID; the window loop never did, so
+            # R10's attribution floor saw 0 delivery-shaped commits for two
+            # releases running and passed vacuously. Count them here, and hold
+            # them to the same attribution demand — trivially met when the
+            # subject names a KNOWN artifact, which is the point: the count
+            # stops lying and an UNKNOWN id still reds.
+            am = ARTIFACT_ID.match(subject)
+            if am:
+                window_delivery += 1
+                if am.group(1) in by_id:
+                    window_attributed += 1
+                else:
+                    failures.append(
+                        f"R10: delivery-shaped commit in the release window "
+                        f"names artifact {am.group(1)}, which no release file "
+                        f"defines: {subject!r} — work landed against an "
+                        f"artifact id that does not exist"
+                    )
+                continue
             m = CONVENTIONAL.match(subject)
             if not m:
                 continue
@@ -1772,6 +1798,23 @@ def check(root: Path, release_glob: str, subjects: list[str],
             )
 
     # ---- Anti-vacuity ------------------------------------------------------
+    # RQ-70-WINDOWVAC (#1334): a window recognizer that matches NOTHING in a
+    # substantial window is reporting on itself, not on the release. CI's grep
+    # cannot express this — `[0-9]+` matches 0, the #1243 shape — so the floor
+    # lives here, where it can say WHY. Deliberately conditional on window size:
+    # early in a cycle a window legitimately holds only a plan commit, and a
+    # hard `> 0` would red every release the day after its predecessor shipped.
+    if (window_subjects not in (None, "derive") or window_label is not None) \
+            and len(window_subjects or []) >= WINDOW_RECOGNIZER_FLOOR_COMMITS \
+            and window_delivery == 0:
+        failures.append(
+            f"VACUOUS: {len(window_subjects or [])} commits in the release "
+            f"window and ZERO recognized as delivery-shaped — the RECOGNIZER "
+            f"is empty, not the release. The subject convention moved and this "
+            f"scan did not follow it (#1334: it happened for two releases with "
+            f"8 RQ-NN deliveries each). Teach the new shape rather than "
+            f"lowering this floor"
+        )
     if not artifacts:
         failures.append("VACUOUS: zero release artifacts loaded")
     if delivery_hits < delivery_floor:

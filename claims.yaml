@@ -1847,9 +1847,35 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 19478
+        value: 19529
         baseline: 17897
         waivers:
+          - to: 19529
+            reason: >-
+              RQ-70-NPA (#1331): 19478 -> 19529, a RISE of 51, measured on the
+              REBASED tree rather than added to RQ-70-ALIAS's figure — the
+              v0.69 lesson (856 vs the 854 measured before the cascade settled).
+
+              WHAT WENT IN: the static-data relocation branch for `f32.load` and
+              `f32.store` under the native-pointer ABI. `emit_wasm_data_addr`
+              already existed and the i32 sub-word (#744) and i64 (#746) arms
+              have used it since #739; the float arms declined loudly instead.
+              These 51 lines are the two branches plus the comment explaining
+              why the decline was RIGHT and why the fix is a relocation and not
+              a bake — the raw path materializes the linmem offset as an
+              un-relocated MOVW/MOVT immediate, which the #678
+              `--shadow-stack-size` rebase and the post-link in-range oracle
+              cannot see, because both walk RELOCATIONS.
+
+              WHAT IT BUYS: cpetig's blocked exports go from 4 of 6 to 2 of 6,
+              and the two that remain hit a DIFFERENT named ceiling (#345
+              literal-pool range) rather than a silent one.
+
+              NOTHING WAS REPLACED, so nothing could be deleted in exchange —
+              this is a reach increment onto proven machinery, not a second
+              lowering path. The subtraction it owes is named in the artifact:
+              the const-static-data declines (#237) remain, and closing them
+              would reuse these same two branches rather than add a third.
           - to: 19478
             reason: >-
               RQ-70-ALIAS (#1321): 19428 -> 19478, a RISE of 50, and it buys a
@@ -2488,7 +2514,7 @@ claims:
         # behaviour), the two `validate_instructions_*_mve_*` tests and
         # `test_requires_helium_trait`, which build ArmInstructions by hand and
         # never touched the selector.
-        value: 30071
+        value: 30122
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

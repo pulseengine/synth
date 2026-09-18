@@ -1,0 +1,68 @@
+artifacts:
+- id: RQ-70-ARCHMODEL
+  type: system-req
+  title: >-
+    Feature-loop steps 1-2 (spar AADL -> WIT) are N/A again, carried on spar#445 — re-verified at
+    the v0.70 cut, and the gate that could not SEE this filing is fixed in the same release
+  description: |-
+    CARRIED, NOT FORGOTTEN. #1136 exists because a step marked N/A for the same
+    reason three releases running is a backlog item rather than an exemption.
+
+    RE-VERIFIED AT THE CUT, not remembered. Observed 2026-09-18T21:13:53Z by
+    querying the issue directly:
+
+        spar#445  state=OPEN  updatedAt=2026-09-03T10:57:37Z  comments=0
+
+    Unmoved since the v0.68 and v0.69 cuts, which recorded the same updatedAt. If it
+    had moved, this artifact would stop being carried.
+
+    THE COUNT IS THE `carried-from` CHAIN, NOT A REMEMBERED ORDINAL. Release
+    artifacts only exist from v0.63, so an ordinal like "the fifth N/A" cannot be
+    derived from the artifact set and must not be asserted from memory. The chain,
+    walked rather than recalled:
+
+        v0.63 RQ-63-ARCHMODEL  (chain head, no carried-from)
+        v0.64 <- RQ-63   v0.65 <- RQ-64   v0.66 <- RQ-65
+        v0.67 <- RQ-66   v0.68 <- RQ-67   v0.69 <- RQ-68   v0.70 <- RQ-69
+
+    WHY THIS FILING NEARLY DID NOT EXIST, AND WHAT CHANGED. v0.69's cold review
+    found RQ-69-ARCHMODEL had LOST its `feature-loop` tag, so the artifact filed to
+    keep a deferral VISIBLE was itself invisible to the conformance gate, and the
+    release read DOES-NOT-CONFORM until a human caught it. This release checked the
+    tags against the predecessor BEFORE the cut rather than after — the gate reported
+    `DERIVED-FAIL: the only filed steps-1-2 decision is RQ-63-ARCHMODEL, scoped to
+    release v0.63 - NOT v0.70` while there was still time to file rather than while
+    tagging.
+
+    The deeper half is also addressed, from a different direction: ci.yml runs that
+    gate's UNIT TESTS and never the gate itself, which is why a tag-time-only check
+    could rot unnoticed. RQ-70-DONEWHEN and RQ-70-WINDOWVAC in this same release both
+    attack that class — a gate whose output nobody reads is indistinguishable from a
+    gate that passes.
+  status: proposed
+  release: v0.70
+  tags:
+  - process
+  - carried
+  - spar
+  - aadl
+  - feature-loop
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: should
+    verification-track: review
+    issue: '#1136'
+    disposition: deferred
+    carried-from: RQ-69-ARCHMODEL
+    done-when: >-
+      manual: spar#445 is re-checked at the v0.71 cut with its observed state and the UTC date recorded,
+      and the carried-from chain is extended rather than an ordinal asserted; the `feature-loop` +
+      `aadl|spar` tags are checked against the predecessor artifact BEFORE the cut, not after
+    verified-by: >-
+      Re-derivable in two commands. The blocker: `gh issue view 445 --repo pulseengine/spar --json
+      state,updatedAt,comments` returns OPEN / 2026-09-03T10:57:37Z / 0 at the timestamp above. The
+      chain: walk `fields.carried-from` back from this artifact through artifacts/release-v0.*/ to
+      the v0.63 head. Neither number is carried in prose.

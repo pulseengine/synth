@@ -1,64 +1,80 @@
 artifacts:
-  - id: RQ-70-RIVETNOTES
-    type: system-req
-    title: "The CHANGELOG is hand-written prose about a typed artifact set rivet can diff — and the diff nobody ran reports 22 new warnings v0.69 shipped unseen"
-    description: >
-      RAISED BY THE MAINTAINER AFTER THE v0.69 TAG, and the answer was: I did
-      not run it. `rivet diff` compares two artifact trees and emits exactly the
-      shape a release note wants — what was added, what changed, and what the
-      change did to the trace graph's own health. v0.69's CHANGELOG is entirely
-      hand-written prose about a typed artifact set the tool can read.
+- id: RQ-70-RIVETNOTES
+  type: system-req
+  title: The CHANGELOG is hand-written prose about a typed artifact set rivet can diff — and the diff
+    nobody ran reports 22 new warnings v0.69 shipped unseen
+  description: |-
+    The CHANGELOG's per-release section is hand-written prose ABOUT A TYPED SET rivet
+    can diff. Every release someone re-types which artifacts landed — and v0.66 filed
+    two of its OWN artifacts under `[Unreleased]` because the list was remembered
+    rather than derived. The artifacts are structured data; the diff is a command.
 
-      MEASURED with the CI-PINNED rivet 0.37.0 (see the version note below),
-      v0.68.0 -> v0.69.0:
+    WHAT SHIPS: `scripts/release_notes_from_rivet.py`, which extracts the previous
+    tag's rivet sources with `git archive` (bounded by the paths rivet.yaml itself
+    declares, so a moved source is a loud extract failure and not a silently narrower
+    diff), runs `rivet diff`, and emits the CHANGELOG section — the artifact list AND
+    the trace-graph delta.
 
-        9 added, 0 removed, 0 modified, 575 unchanged
-        0 new errors, 0 resolved errors, 22 NEW WARNINGS, 0 resolved
+    THE DELTA IS THE PART NOBODY HAD LOOKED AT. Measured with the pinned rivet 0.37.0
+    between v0.69.0 and this tree: 8 added, 0 removed, 0 modified, 0 new ERRORS —
+    and 22 NEW WARNINGS, in three classes this release had shipped unseen:
 
-      The nine additions are the release's nine artifacts, each with its title —
-      a derived table of contents no human wrote. THE 22 WARNINGS ARE THE
-      FINDING, in three classes, none of which any v0.69 gate surfaced:
+      - `id 'RQ-70-X' can't be used as a commit-trailer reference` — one per
+        artifact. The RQ-NN-NAME convention is not trailer-shaped, so rivet cannot
+        trace these through commits. The SAME convention RQ-70-WINDOWVAC just had to
+        teach status_evidence, found independently from the other side.
+      - `field 'req-type' has value 'process', allowed: [functional, performance,
+        interface, constraint, safety]` — five artifacts use a value the schema does
+        not define.
+      - `Every system requirement should be verified by at least one verification
+        measure` — no incoming `verifies` link, on every one.
 
-        (a) ALL NINE IDs "can't be used as a commit-trailer reference (trailers
-            need an uppercase-alphanumeric prefix and an all-digit suffix, e.g.
-            REQ-001); rename it to trace this artifact through commits". So no
-            RQ-NN artifact is traceable through commit trailers AT ALL.
-        (b) `req-type: process` is not in the schema's allowed set
-            ["functional","performance","interface","constraint","safety"] —
-            4 of v0.69's 9, and 53 occurrences repo-wide. A long-standing
-            convention the schema never accepted.
-        (c) all nine lack an incoming `verifies` link, so the right side of the
-            V is open for every artifact this release shipped.
+    None is fixed here; all are now REPORTED, which is the difference between a
+    release that knows whether it improved the trace graph and one that does not.
 
-      (a) IS THE SAME ROOT CAUSE AS RQ-70-WINDOWVAC (#1334), FOUND INDEPENDENTLY
-      BY A SECOND TOOL. status_evidence's delivery window matches zero commits
-      because `RQ-69-SUBTRACT (#242): ...` does not fit its conventional-commit
-      regex; rivet says the same IDs cannot be trailer references. One naming
-      decision, two traceability mechanisms silently disabled. Scope them
-      together.
+    THE VERSION CHECK IS THE LOAD-BEARING PART, and it is not hygiene. A developer
+    machine's `~/.cargo/bin/rivet` is routinely stale — this session's was 0.32.0
+    while CI pins 0.37.0, the #1236/#1308 PATH-shadow class — and an old rivet does
+    not merely miss findings: 0.32 reports "0 broken cross-refs" on a tree where
+    resolution never RAN, which reads as a clean bill of health. So the generator
+    REFUSES a rivet older than the CI pin, demonstrated live:
 
-      A VERSION NOTE THAT IS ITSELF A FINDING. The first run of this used the
-      `rivet` on PATH — `~/.cargo/bin/rivet`, version 0.32.0 — which is EXACTLY
-      the PATH shadow #1236 pins and #1308 reports on the CI runners. The
-      maintainer corrected it to the CI-pinned 0.37.0. The artifact delta is the
-      same on both, but the two versions do NOT agree about validate: 0.32.0
-      reports "0 broken cross-refs" where 0.37.0 reports "cross-refs NOT CHECKED
-      — externals failed to load". The older version's 0 was the vacuous
-      reading this project has a memory about; the upgrade landed in v0.69
-      (#1324) and made it honest.
-    status: proposed
-    release: v0.70
-    tags:
-      - traceability
-      - release-notes
-      - gate-potency
-      - rivet
-    links:
-      - type: derives-from
-        target: BR-001
-    fields:
-      req-type: process
-      priority: should
-      verification-track: differential
-      issue: "#1337"
-      done-when: "manual: the release CHANGELOG carries a rivet-DERIVED section (`rivet diff` between the previous tag and the release commit, run with the CI-PINNED rivet, showing added/removed/modified and the error+warning delta), and each of the three warning classes is either fixed, or NAMED with its repo-wide count and the reason it is accepted — a release that adds warnings must say how many and why, never ship them unseen"
+      $ python3 scripts/release_notes_from_rivet.py --base v0.69.0 --rivet rivet
+      FAIL: rivet 0.32.0 is older than the CI pin 0.37.0 ...
+
+    and the pin is RE-DERIVED from ci.yml by
+    `test_release_notes_from_rivet.py::test_pin_is_not_below_ci` rather than
+    restated, so the two cannot drift apart behind a green gate — the
+    second-source-of-truth failure this repo keeps finding.
+
+    ANTI-VACUITY: a derivation that finds ZERO added artifacts REFUSES rather than
+    emitting an empty section. Zero added means the base tag is wrong, the sources
+    moved, or the extract failed — never that a release shipped nothing. An empty
+    section that read as "nothing shipped" is precisely the silent-success shape.
+  status: implemented
+  release: v0.70
+  tags:
+  - traceability
+  - release-notes
+  - gate-potency
+  - rivet
+  - feature-loop
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: should
+    verification-track: differential
+    issue: '#1337'
+    done-when: contains:scripts/release_notes_from_rivet.py:PINNED_RIVET
+    landed: '#1337'
+    verified-by: |-
+      The signature names the version pin because that is the part whose failure is
+      SILENT: a wrong artifact list is visible in review, while a stale rivet emits a
+      confidently clean graph nobody would question. Pinned by
+      `scripts/test_release_notes_from_rivet.py` (8 tests, wired in ci.yml beside the
+      loop-conformance and status-evidence potency tests), whose load-bearing case
+      re-derives PINNED_RIVET from ci.yml so the generator cannot drift below the
+      version CI installs. Both refusals were demonstrated live before this was
+      written: the stale 0.32.0 on PATH is refused, the pinned 0.37.0 emits.

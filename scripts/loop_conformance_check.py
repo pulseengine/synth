@@ -290,10 +290,26 @@ def find_filed_steps12_decision(
     return stale
 
 
-def artifacts_missing_done_when(docs: list[tuple[str, object]]) -> tuple[int, list[str]]:
-    """Count visible release artifacts and list ids lacking fields.done-when."""
+def artifacts_missing_done_when(
+    docs: list[tuple[str, object]],
+) -> tuple[int, list[str], int, int]:
+    """Visible release artifacts, ids lacking fields.done-when, and — RQ-70-DONEWHEN
+    (#1335) — how many of the declared signatures anything can actually EVALUATE.
+
+    A `manual:` done-when is a declaration. status_evidence's R3 evaluates only
+    the mechanical forms (`contains:<path>:<literal>`, `file:<path>`), so a
+    release whose signatures are all `manual:` has nothing machine-checked and
+    used to print exactly the same `N/N done-when` line as one that did.
+
+    Returns `(total, missing, evaluable, manual)`. Counting the forms rather than
+    judging them is deliberate: `manual:` is often the honest choice for a
+    compound acceptance statement, and this reports the split rather than
+    demanding a particular answer.
+    """
     total = 0
     missing: list[str] = []
+    evaluable = 0
+    manual = 0
     for _fname, doc in docs:
         if not isinstance(doc, dict):
             continue
@@ -304,7 +320,11 @@ def artifacts_missing_done_when(docs: list[tuple[str, object]]) -> tuple[int, li
             dw = str((a.get("fields") or {}).get("done-when") or "").strip()
             if not dw:
                 missing.append(str(a.get("id")))
-    return total, missing
+            elif dw.startswith(("contains:", "file:")):
+                evaluable += 1
+            else:
+                manual += 1
+    return total, missing, evaluable, manual
 
 
 def ci_emulation_floor(ci_text: str) -> tuple[int, str]:
@@ -484,7 +504,7 @@ class Check:
 
     def step_3(self) -> None:
         docs = self.load_release_docs()
-        total, missing = artifacts_missing_done_when(docs)
+        total, missing, evaluable, manual = artifacts_missing_done_when(docs)
         if total == 0:
             self.add(
                 "3",
@@ -503,7 +523,17 @@ class Check:
                 + ("..." if len(missing) > 5 else ""),
             )
         else:
-            self.add("3", "artifact set", DERIVED_PASS, f"{total} artifacts, {total}/{total} done-when")
+            # RQ-70-DONEWHEN (#1335): DECLARED is not EVALUATED. Naming the split
+            # is the whole point — `N/N done-when` read as verification for four
+            # releases in which nothing was machine-checked.
+            self.add(
+                "3",
+                "artifact set",
+                DERIVED_PASS,
+                f"{total} artifacts, {total}/{total} done-when DECLARED — "
+                f"{evaluable} mechanically evaluable (contains:/file:), "
+                f"{manual} manual: (declared only; R3 cannot fire on these)",
+            )
 
         ci = tree_read(self.ref, ".github/workflows/ci.yml") or ""
         if tree_has(self.ref, "scripts/status_evidence_check.py") and "status_evidence_check.py" in ci:
