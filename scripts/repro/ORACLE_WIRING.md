@@ -88,8 +88,21 @@ argued **down** over time and cannot grow silently:
 
 - **145 wired** — a floor (`count-min`). The surface cannot be emptied by
   deleting oracles instead of fixing them.
-- **7 manual** — a ceiling (`count-max`). An eighth needs a conversation, not a
-  commit. There WAS an eighth for five releases (RQ-59-PARTIALCENSUS,
+- **8 manual** — a ceiling (`count-max`). A ninth needs a conversation, not a
+  commit.
+
+  The eighth is `prose_status_claim_1319.py` (RQ-69-PROSEGATE, #1319, v0.69),
+  and it is the only script here whose **own conclusion is that CI must not run
+  it**. It measures whether R11's blind spot — an artifact whose prose claims a
+  status its structured field does not — can be gated, and the measured answer
+  is no: 0 true positives against 1 false positive on the live tree, against a
+  record that is correct. Wiring it would red honest artifacts on every push and
+  catch nothing the pre-tag clean-room review does not. The ceiling was RAISED
+  to admit it, which the rule above warns against; the argument for paying that
+  cost, and the condition that would lower it again, are written beside the pin
+  in `claims.yaml` rather than left implicit.
+
+  There WAS a different eighth for five releases (RQ-59-PARTIALCENSUS,
   `partial_census_1017.py`, #1017): a census scoped to MEASURE AND STOP, with no
   expected value and no verdict for CI to fail on, over a real-world corpus CI
   does not carry. The note beside its pin in `claims.yaml` said what would make
@@ -109,10 +122,11 @@ The gate also writes a table (and the unwired-debt list) to
 `$GITHUB_STEP_SUMMARY`, so the backlog is visible on every run rather than only
 in a log nobody opens.
 
-## The manual seven
+## The manual eight
 
 | script | category | why |
 |---|---|---|
+| `prose_status_claim_1319.py` | measurement | RQ-69-PROSEGATE's refutation evidence (#1319): measured at 0 live true positives against 1 false positive on a CORRECT record, so running it in CI would red honest artifacts and catch nothing. Prints counts, no verdict. The class is gated by R11 in `scripts/status_evidence_check.py` (wired) over the *structured* status, plus the pre-tag clean-room review — which is what found the one historical instance |
 | `wake_path_differential.py` | external-input | needs gale's `merged.both.loom.wat`, fetched from a gist; the WAKE path cannot be reproduced from any in-repo fixture (the debugger perturbs the race on silicon) |
 | `size_attribution_390.py` | measurement | prints the #390 size-attribution table; the numbers are pinned by `crates/synth-cli/tests/size_attribution_390.rs`, which *is* the gate |
 | `local_promotion_headroom.py` | measurement | #390 scoping spike; no expected values, no verdict. The lever it sized is gated by the wired `local_promote_i32_differential.py` |

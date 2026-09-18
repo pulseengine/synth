@@ -3365,15 +3365,53 @@ claims:
         # now `wired` (claim-check job, `ci-checks: stdout` assertion-count
         # floor); the census MODES are unchanged and still measure without a
         # verdict about synth. The ceiling falls with it, as the rule says.
+        #
+        # 7 -> 8 (RQ-69-PROSEGATE #1319, v0.69). The conversation, since the
+        # rule above says an eighth needs one:
+        #
+        # prose_status_claim_1319.py measures whether R11's blind spot — an
+        # artifact whose PROSE claims a status its structured field does not —
+        # can be gated. The measured answer is NO: on the live tree the best
+        # rule I could construct scores 0 true positives against 1 false
+        # positive, and that false positive is a record that is CORRECT (it
+        # narrates its own status history). Its one demonstrated true positive
+        # is historical, and a fresh-context human read had already found it.
+        #
+        # So this is the rare script whose OWN CONCLUSION is that CI must not
+        # run it. Wiring it would red honest artifacts on every push and catch
+        # nothing the pre-tag clean-room review does not already catch — the
+        # "checker becomes the defect" shape v0.57 (5 of 10 defects in
+        # checkers) and v0.61 (every artifact a checker defect) already paid
+        # for. It prints counts and has no verdict.
+        #
+        # This ceiling is being RAISED, which the line at the top of this block
+        # warns against ("never raise it to green a build"). It is not being
+        # raised to green a build: the build was green before the script
+        # existed, and deleting the script would green it again. It is raised
+        # because a refutation's evidence has to SHIP to be checkable, and the
+        # honest place for it is the measurement surface this ceiling counts.
+        # The alternative — putting the file outside scripts/repro/ so the glob
+        # misses it — is routing around the gate, which is worse than paying it.
+        #
+        # What would make this the WRONG call, in the same shape the #1017 note
+        # used: if anyone finds a rule that separates the classes without being
+        # tuned to this sample, this script grows a verdict and must be WIRED,
+        # and the ceiling falls back to 7. The artifact names the two changes
+        # that would enable that (a structured status-history field; a
+        # designated current-status sentence), so the exit condition is written
+        # down rather than left to whoever next reads this number.
         pattern: '^# ci-status: manual'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        max: 7
+        max: 8
       - kind: count-max                      # known debt: zero, and it stays zero
         pattern: '^# ci-status: unwired'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
         max: 0
       - kind: verbatim                       # the doc must carry the manual budget
-        text: "**7 manual**"
+        # 7 -> 8 (RQ-69-PROSEGATE #1319): moved in the same PR that raised the
+        # count-max above, which is the point of pinning the sentence as well
+        # as the number — the prose cannot lag the budget it describes.
+        text: "**8 manual**"
       - kind: verbatim
         text: "**0 unwired**"
 

@@ -1,7 +1,7 @@
 artifacts:
   - id: RQ-69-PROSEGATE
     type: system-req
-    title: "R11 reads the structured status; it cannot see an artifact's PROSE claiming a different one — and the naive rule that would fire 2 false positives out of 3"
+    title: "R11 reads the structured status; it cannot see an artifact's PROSE claiming a different one — and the rule that would cannot tell a CLAIM from a MENTION, so no gate ships"
     description: >
       v0.68 shipped R11 (#1250): a delivered artifact must carry a claiming status or
       an explicit disposition. R11 is not vacuous — deleting an artifact's
@@ -10,9 +10,22 @@ artifacts:
       `proposed` with `disposition: partial`" while the artifact was `implemented`
       with no disposition. The gate reads fields; the false statement was in prose.
 
-      THE OBVIOUS RULE IS REFUTED, AND THAT REFUTATION IS PART OF THE SCOPE. Scanning
-      all 433 artifact blocks on v0.68.0 for `status (stays|remains|is) X` against the
-      structured `status:` gives three mismatches:
+      THE OBVIOUS RULE IS REFUTED, AND THAT REFUTATION IS PART OF THE SCOPE.
+
+      CORRECTED AT DELIVERY (#1319, PR #1328) — this paragraph was written at plan
+      time from a hand scan, and the measurement it anticipated did not confirm it.
+      It said THREE mismatches on 433 blocks. The committed script
+      (`scripts/repro/prose_status_claim_1319.py`) finds SIX on 442, and zero of
+      them is the live false claim this paragraph names first: RQ-68-CLAIMSDRIFT was
+      fixed by v0.68's cold review before this release opened, so it survives only at
+      commit 3e6a520b. The three rows below are the ones the hand scan caught; the
+      three it missed (RQ-59-FRESHNESS, RQ-62-ROADMAPGATE, RQ-68-STATUSGATE, plus
+      VCR-PERF-002) are grammatical accidents listed in `landed:`. The numbers to
+      read are the ones in `landed:`, which a command re-derives; these are kept,
+      corrected rather than deleted, because an artifact quietly rewriting its own
+      premise to match its result is the failure this release is named for.
+
+      The plan-time scan, as written:
 
         RQ-68-CLAIMSDRIFT  implemented  "Status stays `proposed` ..."   LIVE FALSE CLAIM
         RQ-61-CICAP        implemented  "Status stays proposed"        NARRATIVE — the
@@ -22,10 +35,12 @@ artifacts:
                            record continues "CLOSED ON THE INTEGRATOR'S CONFIRMATION
                            (#1131)"
 
-      Two of three are records correctly narrating their own history. A rule matching
-      prose against the field fires 2 false positives out of 3, and a gate people
-      route around is worse than no gate — this project has twice shipped a checker
-      that was itself the defect.
+      Two of three are records correctly narrating their own history — which the
+      measurement did confirm, and is the load-bearing half: a gate people route
+      around is worse than no gate, and this project has twice shipped a checker that
+      was itself the defect. The ratio was wrong (it is 0 true positives against 1
+      false positive after the principled filters, not 1-in-3); the conclusion it was
+      reasoning toward was right.
 
       SO THE ARTIFACT IS SHAPED AROUND ITS NEGATIVE CONTROL: any rule must red on
       RQ-68-CLAIMSDRIFT as written and stay green on RQ-61-CICAP and RQ-62-EMBEDDER,
@@ -46,4 +61,132 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1319"
+      disposition: refuted
       done-when: "manual: either status_evidence reds on an artifact whose CURRENT prose claim contradicts its structured status — shown red on RQ-68-CLAIMSDRIFT as v0.68 wrote it and green on the RQ-61-CICAP and RQ-62-EMBEDDER records, with neither named in the rule — or the measurement is published with a stated reason why no non-hand-tuned rule separates them, and no gate ships"
+      landed: >-
+        REFUTED, and NO GATE SHIPS (#1319, PR #1328). The artifact's own
+        done-when allowed exactly this second branch: "the measurement is
+        published with a stated reason why no non-hand-tuned rule separates
+        them, and no gate ships."
+
+        THE RULE IS NOT VACUOUS, and that is where the measurement starts. On
+        RQ-68-CLAIMSDRIFT AS v0.68 WROTE IT (commit 3e6a520b: structured
+        `status: implemented`, prose "Status stays `proposed` with
+        `disposition: partial`") all three stages of the rule fire. It would
+        have caught the one real instance in this project's history.
+
+        IT IS ALSO NOT ON MAIN, which is the problem. That instance was found
+        and fixed by v0.68's clean-room review, so the LIVE true-positive count
+        is ZERO. Measured on this tree (442 artifact blocks) by
+        `scripts/repro/prose_status_claim_1319.py`:
+
+          rule stage                             TP (3e6a520b)   FP (live main)
+          naive "status <copula> <word>"               1          6 hits / 6 artifacts
+          + the claim must name a REAL status          1          2 hits / 2 artifacts
+          + ignore claims inside quotes                1          1 hit  / 1 artifact
+
+        THE NAIVE STAGE ALSO FLAGS THIS ARTIFACT, four times — reported beside
+        the table rather than inside it, and that separation is itself the
+        finding. The paragraphs below quote the false positives in order to
+        explain them, so the rule reads them as four more status claims: a
+        prose-scanning gate reds on the document explaining why prose scanning
+        does not work. It cannot tell a CLAIM from a MENTION. Worse for anyone
+        who wanted to ship it, the count MOVED while this record was being
+        written — 9, then 10, as sentences were reworded — so the published
+        number had to be made independent of the prose describing it
+        (`SELF` in the script). A measurement that its own write-up perturbs is
+        not a gate; it is an observer effect.
+
+        WHAT THE OTHER FALSE POSITIVES ARE. Four are grammatical — "EXIT STATUS
+        is checked at all 58" (RQ-59-FRESHNESS), "A missing status is
+        unrepresentable" (RQ-62-ROADMAPGATE), "A disposition beside a CLAIMING
+        status is red" (RQ-68-STATUSGATE), "status stays at implemented"
+        (VCR-PERF-002). All four die to a principled filter: the claim must name
+        a real lifecycle word. Two survive it, and BOTH are records correctly
+        NARRATING their own history — RQ-61-CICAP quotes its own earlier
+        sentence in order to say it was corrected, and RQ-62-EMBEDDER says
+        "Status stays proposed" and then records that the integrator later
+        confirmed it (#1131). The quote filter removes RQ-61-CICAP.
+        RQ-62-EMBEDDER survives every principled filter I could construct.
+
+        THE ONE JUDGMENT IN THIS TABLE, named because no gate can evaluate it.
+        Both headline numbers rest on calling RQ-62-EMBEDDER a FALSE positive,
+        and it is structurally identical to the true positive: `implemented`
+        beside prose reading "Status stays proposed". The discriminator is that
+        EMBEDDER's next sentence records the transition — "CLOSED ON THE
+        INTEGRATOR'S CONFIRMATION (#1131)" — so a reader meeting the record cold
+        is told the claim is historical, whereas RQ-68-CLAIMSDRIFT at 3e6a520b
+        said "with `disposition: partial`" while carrying NO disposition, and
+        nothing in it recorded a move. I called EMBEDDER a false positive on
+        that basis.
+
+        IF A REVIEWER CALLS IT THE OTHER WAY the table becomes 1 live true
+        positive against 0 false positives and this artifact's ratio inverts.
+        What does NOT change: the rule cannot tell a claim from a mention (it
+        flags this record four times for quoting examples); the count moves when
+        the write-up is reworded; and the discriminator above — "does a later
+        sentence record the transition?" — is tense and ordering, which is the
+        thing pattern matching cannot do. The refutation rests on those, not on
+        the ratio. Note also that the discriminator is exactly what a keyword
+        list would approximate, which is why approximating it would be
+        hand-tuning rather than a rule.
+
+        WHY IT CANNOT BE SEPARATED HONESTLY. RQ-62-EMBEDDER's sentence was TRUE
+        when written and became false when the decision it describes changed.
+        Separating that from a genuine false claim needs tense and ordering, not
+        pattern matching. A keyword list ("corrected", "later", "since") would
+        do it on this sample, and is exactly the hand-tuning the done-when rules
+        out.
+
+        SO THE HONEST OUTCOME IS A REFUTATION. The best rule scores 0 true
+        positives and 1 false positive on the live tree, against a record that
+        is correct; its only demonstrated true positive is one a fresh-context
+        human read had already found. Shipping it would add noise to correct
+        artifacts and catch nothing the clean-room review does not — the
+        "checker becomes the defect" shape this project has now paid for twice
+        (v0.57: 5 of 10 defects were in checkers; v0.61: every artifact was a
+        checker defect).
+
+        WHAT WOULD CHANGE THE ANSWER, recorded so the next attempt starts here
+        and not at the naive rule: a structured field for status HISTORY, so
+        prose never carries the claim; or a rule reading only one DESIGNATED
+        current-status sentence, so a mention is syntactically distinct from a
+        claim. Both are changes to how artifacts are WRITTEN, not to a checker —
+        which is the finding, not a dodge.
+      verified-by: >-
+        MEASURED ON A NAMED TREE, not on "main": origin/main at `cf35150a` plus
+        this branch. The script is `manual (measurement)` and therefore unwired,
+        so nothing re-derives these numbers after a later merge — that is the
+        cost of not shipping a gate, and it is stated rather than hidden. The
+        other three v0.69 lanes in flight (#1325, #1326, #1327) were checked
+        for status-claim prose and add none, so the table does not move when
+        they land.
+
+        Re-derivable in one command on the committed tree:
+        `python3 scripts/repro/prose_status_claim_1319.py --show` prints the
+        population (442 artifact blocks), each stage's hit count, and every
+        hit's id and context. The true-positive half is re-derivable too:
+        extract `git show 3e6a520b:artifacts/release-v0.68/RQ-68-CLAIMSDRIFT.yaml`
+        into an otherwise empty `artifacts/` tree and run the same script — all
+        three stages report 1 hit. That is the red-first evidence that the rule
+        is POTENT rather than merely quiet, and it is the half a refutation is
+        most tempted to skip.
+
+        The denominator is not my own count. status_evidence's ANCHOR_PROGRAMME
+        pins 433 artifacts at v0.68.0; this release adds 9; the script
+        independently scans 442. Two derivations that never consult each other
+        agree, which is the check a hand-rolled census usually skips.
+
+        The script is deliberately NOT wired into CI, and its docstring says so:
+        its own conclusion is that it should not be. It is a published
+        measurement, not a gate.
+
+        NOT claimed: that no rule could ever separate these. Claimed: that no
+        rule I could construct does so without being tuned to this sample, and
+        that the best one's measured live cost is 1 false positive against 0
+        true positives.
+
+        R11 (#1250, v0.68) is untouched and remains non-vacuous; this artifact
+        does not weaken it and adds no waiver. The blind spot R11 has — prose
+        contradicting the structured field — is now MEASURED rather than
+        asserted, which is the deliverable.
