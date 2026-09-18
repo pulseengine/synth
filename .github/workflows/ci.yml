@@ -758,18 +758,33 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/rivet
-          key: ${{ runner.os }}-rivet-cli-v0.23.0
+          key: ${{ runner.os }}-rivet-cli-v0.37.0
       # PIN rivet to a release tag (was `--branch main`, unpinned). Unpinned, an
       # upstream schema/behaviour bump silently reddened the gate on unchanged
-      # artifacts (rivet 0.15.0 promoted a WARN→ERROR, #229). v0.23.0 (adds configurable
-      # release-readiness ready-when/coverage, check verification-evidence, trace-results) is validated clean on this repo's
-      # artifacts before pinning — the exact CI gate below run locally under
-      # v0.23.0 gives non-xref ERROR 0, same as v0.22.0. Skip
-      # the (expensive) build entirely on a cache hit.
-      - name: Install rivet (pinned v0.23.0)
+      # artifacts (rivet 0.15.0 promoted a WARN→ERROR, #229), which is why every
+      # bump is MEASURED on this repo's artifacts before it lands, never taken
+      # on the release notes.
+      #
+      # v0.23.0 -> v0.37.0 (2026-09-18). Both versions were built side by side
+      # and the EXACT gate below was replayed under each, on the same tree, with
+      # `externals:` stripped:
+      #
+      #             errors that gate (OURS)   total errors   warnings   artifacts
+      #   v0.23.0            0                  40 (xref)      463       584 / 8 skipped
+      #   v0.37.0            0                  40 (xref)      461       584 / 8 skipped
+      #
+      # Identical gating set (empty), identical artifact loading — so the
+      # non-vacuity floor below is unaffected. 0.37 reports two FEWER warnings
+      # and NO new ones: it stopped calling `unit-verification` and
+      # `sw-integration-verification` invalid `verifies` satisfiers, which is
+      # rivet's REQ-339 (dev verification measures may verify dev types). What
+      # the upgrade buys: `rivet release notes` (generate the note from the
+      # trace, REQ-327) and release-readiness scoped to local artifacts
+      # (REQ-338). Skip the (expensive) build entirely on a cache hit.
+      - name: Install rivet (pinned v0.37.0)
         run: |
-          if ! rivet --version 2>/dev/null | grep -q "0.23.0"; then
-            cargo install --force --git https://github.com/pulseengine/rivet --tag v0.23.0 rivet-cli
+          if ! rivet --version 2>/dev/null | grep -q "0.37.0"; then
+            cargo install --force --git https://github.com/pulseengine/rivet --tag v0.37.0 rivet-cli
           fi
       - name: Validate artifacts
         # THIS GATE HAD TWO HOLES, and v0.55 (#893) found them by finding two
@@ -832,6 +847,10 @@ jobs:
           # PR (the visible-diff rule). A measured value BELOW the floor
           # means an artifact source went invisible; that is the defect —
           # never lower the floor to pass.
+          #
+          # Floor RE-MEASURED 2026-09-18 under rivet v0.37.0: 584 artifacts
+          # loaded, 8 skipped — identical to v0.23.0, so the bump moves no
+          # count here. History below is under the previously pinned v0.23.0.
           #
           # Floor measured 2026-08-26 under the pinned rivet v0.23.0 with the
           # externals block stripped (this job's own conditions, above):
