@@ -5,6 +5,130 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.0] - 2026-09-18
+
+**"The failure a user can see"** — two downstream reports arrived within three
+hours of the v0.68 tag and set this release's order: an external reporter could
+not compile their component, and an integrator's declared memory sizes were
+silently wrong. Both are failures a user meets before any checker does. Nine
+artifacts: **six implemented, one partial with the ceiling named, one published
+as a REFUTATION with no gate, one deferred on a cut-verified external blocker.**
+The findings are a **class with several distinct mechanisms** — a spill-slot
+ceiling, an unread decoder field, a truncated scan, hand-counted ELF offsets, a
+stale library alias, shared test fixtures and 88 dead selector arms. This
+release does **not** claim a shared root cause.
+
+### Loud declines a user hits — ARM `--relocatable` (RQ-69-FALCON, #1318, PR #1322)
+
+cpetig reported a falcon-cascade component that would not compile. Reproduced
+with their own command line: `fused.wasm` skipped 1 of 21 functions — the
+EXPORT `…/controller@0.10.0#step` — and `opt.wasm` skipped 7 of 17. The
+OPTIMIZED module failed *more* than the unoptimized one, so these were two
+reproductions, not one defect seen twice.
+
+- The recovery ladder now **reports every rung it tried**, deduped, behind
+  `SYNTH_RECOVERY_STATS`. The frame is re-laid once with the VFP call-spill
+  area up front when it would otherwise fall outside the `VSTR`/`VLDR`
+  `[sp,#imm]` window; `VFP_SP_IMM_MAX` (1020) replaced three hand-copied
+  literals. Byte-identical over the corpus: 826 identical / 209 identically
+  failing / 0 changed.
+- **The capacity ceiling is raised and the new wall is named.** On the
+  reporter's module the ladder now reaches `vfp-frame-locals+pool-grow(194) ->
+  ok`; what stops `step` is `VCR-RA-003` refusing a spill-slot-aliased stream
+  (#1321), not a pool limit.
+- **`status: proposed`, `disposition: partial`.** Function counts are
+  unchanged — still 1 of 21 and 7 of 17. #1318 stays open; this release does
+  **not** claim the module compiles.
+
+### Silent acceptance of what no backend reads (RQ-69-PAGESIZE, #1315, PR #1323)
+
+`(memory 1 1 (pagesize 1))` compiled rc=0 with no diagnostic and reported
+`__synth_mem_size_N = 0x10000` for a one-byte memory — the number an embedder
+programs an MPU region from (#1145). `page_size_log2` had zero readers.
+
+- **Refused** on every path that silently accepted it, with the declared size
+  decoded so the refusal can name it. `(memory 1 1 shared)` — the second member
+  of the class, measured — is refused the same way. gale asked for the refusal
+  first and the capability second; this is the refusal.
+
+### A checker that reported the clean answer (RQ-69-VFPUNKNOWN, #1303, PR #1325)
+
+v0.68's #1275 fix stopped 25 MVE variants claiming an empty VFP footprint —
+correct — and thereby routed them into a scan that `break`s on an unmodelled op
+and then returns "no violation". The dishonesty had moved, not gone. The
+across-call check now distinguishes **Undecided** from **Clean** and reports
+`RaFinalVerdict::NotAttempted { reason: "vfp-across-call-unmodeled-effect" }`.
+
+### Two sections unnamed in every object (RQ-69-ELFNAMES, #1307, PR #1326)
+
+`.strtab` and `.symtab` took their `sh_name` from hand-counted expressions and
+both pointed one byte early, so a consumer looking them up **by name** concluded
+"no symbol table". Offsets are now derived from the `.shstrtab` blob, and a new
+gate asserts **every** emitted section header resolves to a non-empty name —
+over the whole table, not the two known-bad entries.
+
+### A published library still aliased a refused flag (RQ-69-PMPLIB, #1317, PR #1327)
+
+The CLI refused `--safety-bounds pmp`, but `synth-core`'s `SafetyBounds::parse`
+— a **published** library — still mapped `pmp` to `Mpu`, with a unit test
+pinning it. Closed at the layer that was wrong, using #1284's wording verbatim
+so the nine tests that pin user-visible phrasing pass unedited.
+
+### Shared test fixtures, now measured failing (RQ-69-TESTISO, #1309, PR #1329)
+
+The #901 fixtures built paths from fixed names under `temp_dir()`, so every
+process running them wrote the same files. The artifact said this was **not yet
+observed failing**. It is now: 8 concurrent processes × 6 rounds = **48 runs,
+16 failed (33 %)**. Fixtures are unique per process and per call (pid +
+counter) and removed on drop; a wired probe spawns the binary N times and binds
+the **printed** process count, so a run that spawned nothing cannot pass green.
+
+### A gate that was measured and NOT shipped (RQ-69-PROSEGATE, #1319, PR #1328)
+
+R11 reads an artifact's structured `status:` and cannot see its prose claiming a
+different one. The rule that would is **refuted**: on the live tree it scores
+**0 true positives against 1 false positive**, and that false positive is a
+record correctly narrating its own history. Its only demonstrated true positive
+is one a fresh-context human read had already found.
+
+- **No gate ships.** The measurement ships instead, re-derivable by one command.
+- The naive stage flags the artifact itself four times, for quoting the false
+  positives in order to explain them — it cannot tell a claim from a mention.
+
+### The fourth lever, and the first that existed (RQ-69-SUBTRACT, #242, PR #1330)
+
+v0.68 measured 88 `if self.has_helium` arms production-dead **by construction**
+and did not delete them. This release deletes them.
+
+| ratchet | before | after |
+|---|---|---|
+| `selector_lines_code` | 20284 | **19428** (−856) |
+| `selector_lines_total` | 31297 | 30021 (−1276) |
+| `selector_wildcard_arms_code` | 56 | **55 — at its all-time baseline** |
+
+- Gated on **byte identity**: 193 modules × 5 ARM configs = **965 compiles, 0
+  changed**, `cortex-m55` included deliberately.
+- No decline was lost — the surviving catch-all covers all **91** of the same
+  ops, compared mechanically.
+- The cascade was enumerated by the compiler, not predicted: the `has_helium`
+  field, the public `set_helium` setter, and an orphaned Q-register allocator
+  went with the arms.
+
+### Deferred, on a blocker re-verified at the cut (RQ-69-ARCHMODEL, #1136)
+
+`spar#445` observed **2026-09-18T16:49:14Z**: OPEN, `updatedAt
+2026-09-03T10:57:37Z`, 0 comments — unchanged since the v0.68 cut. Feature-loop
+steps 1–2 stay N/A. The count is the `carried-from` chain, derived: RQ-69 → 68 →
+67 → 66 → 65 → 64 → 63, **seven consecutive releases**; release artifacts only
+exist from v0.63, so no larger ordinal is asserted.
+
+### Corrected in this release
+
+`RQ-69-FALCON` first recorded slot 184 as f32 local 45. It is **i32 local 31**;
+the original reading came from the pre-#1322 frame, which #1322's own VFP area
+shifts. The verdict (a checker-model gap, not a miscompile) survives; the
+mechanism does not. Corrected on #1321, #1318 and in the artifact.
+
 ## [0.68.0] - 2026-09-17
 
 **"No success without the work"** — relay built the same drone software to wasm

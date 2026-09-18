@@ -75,14 +75,33 @@ artifacts:
         THE CEILING, NAMED. Past the encoding wall `step` reaches VCR-RA-003,
         which refuses the stream with
         `SpillSlotAliased { slot: 184, first_store: 11113, overwriting_store: 11150, stale_reload: 11159 }`.
-        Diagnosed to a CHECKER-MODEL gap, filed as #1321: slot 184 is wasm local
-        45's permanent home (the layout puts locals below 256 and the spill area
-        at 256; the pool never hands out 184), local 45 is an f32 with 9
-        assignments and 21 reads, and the rule treats a second store to a slot
-        whose value was not reloaded as aliasing. For a spill slot that is a
-        bug; for a local's home it is assignment. NOT verified: the emitted
-        window at those three op indices, so the fix must not land on this
-        reasoning alone.
+        Diagnosed to a CHECKER-MODEL gap, filed as #1321.
+
+        CORRECTED AT THE v0.69 CUT (2026-09-18), and recorded rather than
+        quietly rewritten. This artifact first said slot 184 was f32 LOCAL 45's
+        permanent home. It is i32 LOCAL 31 — 78 `local.set`/`tee` and 84
+        `local.get`, and all 154 accesses to `[sp,#184]` in `step` (78 `Str`,
+        76 `Ldr`) are local 31. The error was reading the layout dump
+        `(45,(184,false))` off the PRE-#1322 frame: #1322 itself reserves a
+        64-byte VFP call-spill area up front, which shifts the locals, so after
+        it local 31 sits at 184 and local 45 at 248 — and the stream the
+        validator rejects is the RE-LAID one. An independent fresh-context
+        recheck, briefed to refute, dumped the emitted stream (the step this
+        artifact admitted below that it had NOT done) and found it; my own
+        re-derivation agrees.
+
+        THE VERDICT SURVIVES, THE MECHANISM DOES NOT. It is still a
+        checker-model gap rather than a miscompile: the rule treats a second
+        store to a slot whose value was not reloaded as aliasing, and for a
+        LOCAL'S HOME that is assignment, not a bug. But the mechanism is
+        store-to-load forwarding with dead-store elimination blocked by
+        unmodelled F32 ops, against the checker's single-value-per-slot
+        premise — not a frame-homed float. The difference widens the fix. The
+        correction is posted on #1321 and #1318.
+
+        NOT verified at authoring: the emitted window at those three op
+        indices — which is precisely the step that, once taken, overturned the
+        mechanism above. The caution was right and was not heeded soon enough.
 
         Also measured and REMOVED rather than shipped: a two-ended spill pool
         (integer slots high, VFP low) and a pool-grow composition into the

@@ -30,4 +30,41 @@ artifacts:
       priority: should
       verification-track: review
       issue: "#1136"
+      disposition: deferred
+      carried-from: RQ-68-ARCHMODEL
       done-when: "manual: spar#445 is re-checked at the v0.69 cut with its observed state and the UTC date recorded, and the carried-from chain is extended rather than an ordinal asserted"
+      landed: >-
+        DEFERRED AGAIN, on a blocker re-verified AT THE CUT rather than
+        remembered (#1136).
+
+        OBSERVED 2026-09-18T16:49:14Z, by querying the issue:
+
+          spar#445  state=OPEN  updatedAt=2026-09-03T10:57:37Z  comments=0
+          "spar accepts property associations from UNDECLARED property sets
+           silently (rc=0)"
+
+        Unchanged since the v0.68 cut recorded it (OPEN, 2026-09-03, 0
+        comments). Feature-loop steps 1-2 (spar AADL -> generated WIT) stay
+        N/A: a generator whose input language silently accepts a typo'd or
+        invented property set cannot be the single source this loop requires,
+        because the failure it would introduce is exactly the one this project
+        keeps paying for — a green run that checked nothing.
+
+        THE COUNT IS THE CHAIN, DERIVED, NOT AN ORDINAL. Following
+        `carried-from` backwards from this artifact: RQ-69 -> RQ-68 -> RQ-67 ->
+        RQ-66 -> RQ-65 -> RQ-64 -> RQ-63, which is SEVEN consecutive releases.
+        That is the entire derivable history and no claim is made beyond it:
+        release artifacts only exist from v0.63, so a larger ordinal cannot be
+        supported from the artifact set and is not asserted here.
+      verified-by: >-
+        Re-derivable in two commands. The blocker:
+        `gh issue view 445 --repo pulseengine/spar --json state,updatedAt,comments`
+        returns OPEN / 2026-09-03T10:57:37Z / 0 at the timestamp above. The
+        count: walk `fields.carried-from` from RQ-69-ARCHMODEL backwards over
+        `artifacts/release-v0.*/RQ-*-ARCHMODEL.yaml` — seven links, terminating
+        at RQ-63-ARCHMODEL, which carries none.
+
+        NOT claimed: that spar#445 is the only thing between this project and a
+        generated-WIT pipeline, or that deferring is free. #1136 exists because
+        a step marked N/A for the same reason three releases running is a
+        backlog item rather than an exemption — and this is the seventh.
