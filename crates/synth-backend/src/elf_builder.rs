@@ -1056,6 +1056,35 @@ impl ElfBuilder {
         symtab
     }
 
+    /// RQ-69-ELFNAMES (#1307): the offset of a section NAME inside the built
+    /// `.shstrtab`, derived from the table itself.
+    ///
+    /// The three standard names were hand-counted at the header writer as
+    /// `".shstrtab\0".len()` (10) and `".shstrtab\0.strtab\0".len()` (18). Both
+    /// forget the NUL the table starts with, so `.strtab` and `.symtab` named one
+    /// byte EARLY — landing on the previous string's terminator, which reads as the
+    /// empty string. Every emitted object had two unnamed sections, and a consumer
+    /// looking either up BY NAME got nothing rather than an error. That is how this
+    /// was found: a v0.68 harness reported "no symbol table" for an object that had
+    /// one.
+    ///
+    /// Deriving the offset from the table removes the second place that had to
+    /// agree about the layout: the string table is now the ONE statement of
+    /// where each name lives.
+    fn shstrtab_offset_of(shstrtab: &[u8], name: &str) -> u32 {
+        let needle: Vec<u8> = std::iter::once(0u8)
+            .chain(name.as_bytes().iter().copied())
+            .chain(std::iter::once(0u8))
+            .collect();
+        let pos = shstrtab
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap_or_else(|| panic!("#1307: '{name}' is not in the built .shstrtab"));
+        // The match starts at the PRECEDING terminator; the name itself is one byte
+        // further in.
+        (pos + 1) as u32
+    }
+
     /// Build section headers (with optional .rel.text)
     #[allow(clippy::too_many_arguments)]
     fn build_section_headers_with_rel(
@@ -1098,7 +1127,7 @@ impl ElfBuilder {
         );
 
         // Section 2: .strtab
-        let strtab_name_offset = ".shstrtab\0".len();
+        let strtab_name_offset = Self::shstrtab_offset_of(shstrtab_data, ".strtab") as usize;
         self.write_section_header(
             &mut headers,
             strtab_name_offset as u32,
@@ -1114,7 +1143,7 @@ impl ElfBuilder {
         );
 
         // Section 3: .symtab (links to .strtab which is section 2)
-        let symtab_name_offset = ".shstrtab\0.strtab\0".len();
+        let symtab_name_offset = Self::shstrtab_offset_of(shstrtab_data, ".symtab") as usize;
         self.write_section_header(
             &mut headers,
             symtab_name_offset as u32,
