@@ -49,9 +49,21 @@ artifacts:
 
     The measurement above, the question posted with a date, and the explicit note
     that "CLI-only is fine for now" is an ACCEPTABLE answer that would keep this
-    deferred with a reason attached rather than silently dropped. #1315 stays OPEN;
-    this artifact is `proposed`, so the release does not close it — closing an issue
-    whose artifact claims no completion contradicts the gate's own semantics.
+    deferred with a reason attached rather than silently dropped.
+
+    A CORRECTION TO THIS ARTIFACT'S OWN FIRST DRAFT, recorded rather than quietly
+    edited. It said "#1315 stays OPEN; this artifact is `proposed`, so the release
+    does not close it". That is FALSE: #1315 was CLOSED on the v0.69 tag
+    (2026-09-18T17:53:18Z) by RQ-69-PAGESIZE, which shipped the CLI refusal. The
+    reasoning was right and the fact was wrong — I applied the "do not close a
+    `proposed` artifact's issue" rule to an issue that another artifact had
+    already closed for its own, valid reason.
+
+    So this is a FOLLOW-UP to a closed issue, not a deferral of an open one, and
+    it therefore gets its OWN tracking issue (#1339) rather than reopening #1315: the
+    library-side gap is a different defect from the one v0.69 fixed. This
+    artifact is `proposed` because nothing landed, and the release closes
+    nothing on its account.
   status: proposed
   release: v0.70
   tags:
@@ -68,7 +80,7 @@ artifacts:
     req-type: functional
     priority: should
     verification-track: differential
-    issue: '#1315'
+    issue: '#1339'
     done-when: 'manual: gale answers on #1145 whether a custom page size should be REFUSED or HONOURED
       for per-memory MPU regions and whether gust:os calls synth-core as a library; THEN either the refusal
       moves into synth-core with the published-library caller covered red-first, or the artifact records
