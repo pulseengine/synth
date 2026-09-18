@@ -119,8 +119,11 @@ and did not delete them. This release deletes them.
 `spar#445` observed **2026-09-18T16:49:14Z**: OPEN, `updatedAt
 2026-09-03T10:57:37Z`, 0 comments — unchanged since the v0.68 cut. Feature-loop
 steps 1–2 stay N/A. The count is the `carried-from` chain, derived: RQ-69 → 68 →
-67 → 66 → 65 → 64 → 63, **seven consecutive releases**; release artifacts only
-exist from v0.63, so no larger ordinal is asserted.
+67 → 66 → 65 → 64 → 63 — **seven consecutive releases**, seven records joined
+by six links. No larger ordinal is asserted because RQ-63-ARCHMODEL is the first
+record carrying no `carried-from`, which is what the chain supports. (A draft of
+this paragraph gave the reason as "release artifacts only exist from v0.63";
+the cold review refuted it — `artifacts/release-v0.56.yaml` onward exist.)
 
 ### Corrected in this release
 

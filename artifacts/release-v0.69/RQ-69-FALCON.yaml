@@ -109,4 +109,40 @@ artifacts:
         hand-copied `1020` literals became one `VFP_SP_IMM_MAX`.
 
         Landed in #1318, PR #1322.
+      verified-by: >-
+        ADDED AT THE CUT by the cold review, which found this — the release's
+        only `priority: must` artifact — carrying no evidence field at all. R2
+        did not catch it because the status is `proposed`, and R2 arms on a
+        CLAIMING status. That is the rule's blind spot, stated here rather than
+        left for the next reader to discover.
 
+        RE-DERIVABLE FROM THE TREE:
+        `VFP_SP_IMM_MAX` is a single `const` in `instruction_selector.rs` with
+        every other `1020` occurrence in prose; `SYNTH_RECOVERY_STATS` is read
+        in `arm_backend.rs`; the per-rung `note()` reporting and the deduped
+        decline are in the same file; `cargo test -p synth-synthesis` passes.
+
+        NOT RE-DERIVABLE FROM THE TREE, and named so no reader mistakes it for
+        checked: the byte-identity figures 826 identical / 209 identically
+        failing / 0 changed, and the reporter's function counts (1 of 21 on
+        `fused.wasm`, 7 of 17 on `opt.wasm`). Both were measured against
+        cpetig's two modules, which are ATTACHED TO #1318 AND NOT IN THIS
+        REPOSITORY. Anyone re-checking must fetch them from the issue. This is
+        the artifact's weakest evidence and it is the must-priority one.
+
+        TWO CORPUS DEFINITIONS ARE IN PLAY IN THIS RELEASE, and the cold review
+        was right to flag that they read as one. FALCON's 1035 = 207 modules x 5
+        configs, where 207 counts `scripts/repro/*.wat` AND `*.wasm`.
+        RQ-69-SUBTRACT's 965 = 193 x 5, because `scripts/byte_triage_242.py`
+        globs `*.wat` only. SUBTRACT's deletion gate therefore covered a
+        STRICTLY SMALLER corpus than FALCON's, excluding 16 `.wasm` modules.
+        Neither figure is wrong; calling both "the corpus" without saying which
+        was.
+
+        RESIDUAL, from this artifact's own done-when: "add both modules to the
+        corpus" is NOT done. `git diff --name-status v0.68.0..HEAD --
+        scripts/repro` adds only PAGESIZE's two `.wat` fixtures. The modules are
+        a third party's build output attached to an issue; committing them needs
+        the reporter's agreement, which has not been asked for. Recorded as
+        outstanding rather than quietly dropped — the status stays `proposed`
+        with `disposition: partial` for this reason as well as the decline.

@@ -22,6 +22,14 @@ artifacts:
       - process
       - carried
       - spar
+      # RESTORED at the v0.69 cut (cold review). Every predecessor v0.63-v0.68
+      # carries `feature-loop` + `aadl`; this artifact was written without them
+      # in the plan PR, and loop_conformance_check's steps-1-2 slot matches on
+      # exactly `feature-loop` AND (`aadl`|`spar`) — so the filing that exists
+      # to keep this deferral VISIBLE was itself invisible to the gate. That is
+      # the lapse #1136 was opened to prevent, one layer up.
+      - aadl
+      - feature-loop
     links:
       - type: derives-from
         target: BR-001
@@ -52,17 +60,25 @@ artifacts:
 
         THE COUNT IS THE CHAIN, DERIVED, NOT AN ORDINAL. Following
         `carried-from` backwards from this artifact: RQ-69 -> RQ-68 -> RQ-67 ->
-        RQ-66 -> RQ-65 -> RQ-64 -> RQ-63, which is SEVEN consecutive releases.
-        That is the entire derivable history and no claim is made beyond it:
-        release artifacts only exist from v0.63, so a larger ordinal cannot be
-        supported from the artifact set and is not asserted here.
+        RQ-66 -> RQ-65 -> RQ-64 -> RQ-63, which is SEVEN consecutive releases
+        (seven RECORDS joined by six `carried-from` links).
+
+        CORRECTED BY THE COLD REVIEW: an earlier draft of this paragraph said
+        "release artifacts only exist from v0.63" as the reason no larger
+        ordinal is asserted. That is FALSE — `artifacts/release-v0.56.yaml`
+        onwards exist, seven minors earlier. The chain still terminates at
+        RQ-63-ARCHMODEL because that is the first record carrying no
+        `carried-from`, which is the honest reason: the count is what the links
+        support, not what the artifact directory happens to contain.
       verified-by: >-
         Re-derivable in two commands. The blocker:
         `gh issue view 445 --repo pulseengine/spar --json state,updatedAt,comments`
         returns OPEN / 2026-09-03T10:57:37Z / 0 at the timestamp above. The
         count: walk `fields.carried-from` from RQ-69-ARCHMODEL backwards over
-        `artifacts/release-v0.*/RQ-*-ARCHMODEL.yaml` — seven links, terminating
-        at RQ-63-ARCHMODEL, which carries none.
+        `artifacts/release-v0.*/RQ-*-ARCHMODEL.yaml` — SEVEN RECORDS joined by
+        SIX links, terminating at RQ-63-ARCHMODEL, which carries none. (An
+        earlier draft said "seven links"; the cold review caught the off-by-one.
+        Seven consecutive releases is the claim that holds.)
 
         NOT claimed: that spar#445 is the only thing between this project and a
         generated-WIT pipeline, or that deferring is free. #1136 exists because

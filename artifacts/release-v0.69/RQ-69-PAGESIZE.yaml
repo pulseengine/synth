@@ -106,6 +106,22 @@ artifacts:
         capability half and needs its own oracle. gale named it as the
         declarative route to page-granular MPU regions for
         REQ-OS-MULTITENANT-001; it is a v0.70 candidate.
+      layer-residual: >-
+        DISCLOSED AT THE CUT by the cold review. This refusal lives in
+        `synth-cli/src/main.rs` (`refuse_custom_page_size`, `refuse_shared_memory`).
+        `synth-core`'s decoder DECODES `page_size_log2` into `WasmMemory` but
+        does not refuse on it, so a consumer of the PUBLISHED `synth-core` or
+        `synth-backend` still gets a custom page size silently ignored — exactly
+        the shape RQ-69-PMPLIB closed for `pmp` IN THIS SAME RELEASE, on the
+        stated principle that the published library is a user-visible surface.
+
+        The two artifacts therefore apply opposite standards, and this release
+        does not pretend otherwise. Why it is not closed here: gale asked for
+        the CLI refusal first and page-granular sizing second (#1315), and the
+        library-layer refusal belongs with the sizing work rather than ahead of
+        it. "Refused on every path that silently accepted it" in the CHANGELOG
+        means every CLI path, which is every path a `synth compile` user
+        reaches — not every path a library caller reaches.
       verified-by: >-
         Each clause of the done-when, with the command that shows it.
 
