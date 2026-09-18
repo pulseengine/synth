@@ -2056,6 +2056,8 @@ fn compile_command(
             // RQ-66-BOTHWRONG (#1209): same for memory64 — this path shares
             // the module-path #1046 lineage.
             refuse_memory64_module(&module.memories)?;
+            refuse_custom_page_size(&module.memories)?;
+            refuse_shared_memory(&module.memories)?;
             // #642: compute the call_indirect guard inputs BEFORE the
             // module's vectors are moved out below.
             call_indirect_guards = module.call_indirect_guards();
@@ -3646,6 +3648,90 @@ fn refuse_memory64_module(memories: &[synth_core::wasm_decoder::WasmMemory]) -> 
     Ok(())
 }
 
+/// RQ-69-PAGESIZE (#1315, gale): refuse a memory whose DECLARED page size is
+/// not the default 64 KiB (the custom-page-sizes proposal).
+///
+/// Measured on v0.68.0 before this landed: `(memory $a 1 1 (pagesize 1))`
+/// compiled rc=0 with no diagnostic on `--cortex-m`, on
+/// `--target cortex-m3 --all-exports --relocatable`, and on `-b riscv`, and
+/// reported `__synth_mem_size_0 = 0x10000` for a memory the module declares as
+/// ONE BYTE. Nothing in the workspace read the declaration:
+/// `grep -rn page_size_log2 crates` returned zero hits.
+///
+/// It matters beyond the size being wrong. `__synth_mem_size_N` is the number
+/// the embedder programs one MPU region from (#1145), so a tenant declaring a
+/// small memory was handed a 64 KiB grant — the isolation table inherits the
+/// error by the page-size ratio, and gale's multi-tenant requirement is blocked
+/// on page-granular sizing. With `--safety-bounds software|mask` the guard
+/// likewise follows the size synth believes rather than the declared one.
+///
+/// The same shape as #1209 (memory64) and #1046 (the start section): decode the
+/// declaration, then decline loudly. Honouring the declared size is capability
+/// work with its own oracle and is NOT what this does — gale asked for the
+/// refusal first, in that order.
+fn refuse_custom_page_size(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Result<()> {
+    if let Some(mem) = memories
+        .iter()
+        .find(|m| m.page_size_log2.is_some_and(|l| l != 16))
+    {
+        let log2 = mem.page_size_log2.unwrap_or(16);
+        let declared = 1u64 << log2;
+        let would_report = (mem.initial_pages as u64) * 65536;
+        anyhow::bail!(
+            "module declares memory {idx} with a custom page size of {declared} \
+             byte(s) (`(pagesize {declared})`, the custom-page-sizes proposal, \
+             log2 = {log2}), but no synth backend reads the declared page size \
+             — every memory is sized, reported and reserved in 64 KiB pages. \
+             Accepting it would report `__synth_mem_size_{idx}` as \
+             {would_report} for a memory the module says is {declared} \
+             byte(s), and that symbol is what an embedder programs one MPU \
+             region from (#1145), so the region would over-grant by the \
+             page-size ratio. Refusing rather than silently ignoring the \
+             declaration (#1315). Workaround: declare the memory with the \
+             default 64 KiB page size and size it in whole pages.",
+            idx = mem.index,
+        );
+    }
+    Ok(())
+}
+
+/// RQ-69-PAGESIZE (#1315) sweep, second member: refuse a SHARED memory.
+///
+/// The sweep asked which module-level declarations the decoder accepts and no
+/// backend reads. Measured with type context (a bare field-name grep counts
+/// `.shared` on every other type and is not a measurement): `WasmMemory.shared`
+/// has exactly ONE reader outside the decoder — `synth-frontend`'s parser
+/// copying it into a parallel struct. Nothing acts on it.
+///
+/// `(memory 1 1 shared)` promises a memory that may be shared across threads,
+/// which synth cannot provide: there is no synchronization anywhere in the
+/// emitted code, and every atomic operator is already loud-declined at
+/// selection. Accepting the declaration and ignoring it is the #1315 shape.
+///
+/// Measured before refusing, as a behaviour change requires: zero `(memory ...
+/// shared)` declarations in synth's own repro fixtures, and zero hits across
+/// the org's consumer repositories.
+///
+/// The declared MAXIMUM was the sweep's third candidate and is REFUTED: it
+/// looked unread under a type-qualified grep, but `synth-memory`'s descriptor
+/// enforces `new_pages > max_pages` on grow and `main.rs` reads it through a
+/// multi-line chain the pattern missed. It is honoured; it is not in this
+/// class.
+fn refuse_shared_memory(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Result<()> {
+    if let Some(mem) = memories.iter().find(|m| m.shared) {
+        anyhow::bail!(
+            "module declares memory {idx} as SHARED (`(memory ... shared)`, the \
+             threads proposal), but synth emits no synchronization and declines \
+             every atomic operator at selection, so the sharing the declaration \
+             promises cannot hold. Accepting it would silently compile a module \
+             whose memory model synth does not implement (#1315). Refusing; \
+             declare the memory unshared if it is only ever used by one thread.",
+            idx = mem.index,
+        );
+    }
+    Ok(())
+}
+
 /// Compile all exported functions (plus their reachable internal callees, #235)
 /// into a multi-function ELF.
 #[allow(clippy::too_many_arguments)]
@@ -3852,6 +3938,8 @@ fn compile_all_exports(
                     refuse_dropped_start_function(module.start_function)?;
                     // RQ-66-BOTHWRONG (#1209): same for memory64.
                     refuse_memory64_module(&module.memories)?;
+                    refuse_custom_page_size(&module.memories)?;
+                    refuse_shared_memory(&module.memories)?;
                     let export_count = module
                         .functions
                         .iter()
@@ -4084,6 +4172,8 @@ fn compile_all_exports(
         // start-function decision below — memory64 is refused on every
         // compile mode this path serves.
         refuse_memory64_module(&module.memories)?;
+        refuse_custom_page_size(&module.memories)?;
+        refuse_shared_memory(&module.memories)?;
         // RQ-59-STARTFN (#1046) / RQ-65-MVPCORE (#1017): a `(start ...)`
         // module is ACCEPTED on exactly one path — the self-contained ARM
         // Cortex-M image, whose Reset_Handler is the instantiation step and
