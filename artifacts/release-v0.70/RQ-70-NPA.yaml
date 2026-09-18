@@ -1,0 +1,52 @@
+artifacts:
+  - id: RQ-70-NPA
+    type: system-req
+    title: "`--native-pointer-abi` cannot lower static-data f32.load/f32.store, so 4 of 6 exports are skipped and no object is emitted"
+    description: >
+      cpetig (EXTERNAL reporter, not the shared avrabe account) filed #1331 three
+      hours after v0.69's scope was fixed, with a self-contained module.
+      REPRODUCED on main fb9af784 with their own command line:
+
+        synth compile inv-a-dist-leaves.wasm --target cortex-m7 --relocatable
+              --all-exports --native-pointer-abi -o /tmp/npa.o
+
+      6 of 22 functions skipped; 4 of 6 requested EXPORTS skipped
+      (rate#tick, attitude#tick, position#tick, ekf#estimate); rc=1 via #952;
+      NO object emitted. Decline reasons: 4x "GI-FPU-002 phase 1b: f32.load from
+      the static-data region under the native-pointer ABI is not yet lowered
+      (#359 address relocation)" and 3x the f32.store form.
+
+      THE ISSUE EXCERPT UNDERCOUNTS, as #1318's did (2 vs 7). It shows two
+      functions; the real figure is 6 / 4-exports. Scope from the measurement,
+      never from the excerpt.
+
+      THE REPORTER HAS A WORKING PATH, verified on THIS module rather than
+      assumed to transfer: `--embedder-data-init --embedder-global-init` gives
+      rc=0, 0 skipped, a 28409-byte object. So the gap is specific to
+      `--native-pointer-abi`, not to the module or to f32-in-static-data.
+
+      ONE CORRECTION TO THE REPORT, in the reporter's favour: they wrote that
+      synth skips functions "before emitting an object". It emits NO object —
+      #952 fails the compile so a build gating on `$?` cannot accept an object
+      missing a public entry point. The loud refusal is correct; the defect is
+      the lowering gap behind it.
+
+      PRIORITY DEPENDS ON AN ANSWER NOT YET GIVEN: whether
+      `--native-pointer-abi` is load-bearing for their build or merely
+      preferred. ASKED on #1331; do not assume.
+    status: proposed
+    release: v0.70
+    tags:
+      - downstream-blocker
+      - external-reporter
+      - arm
+      - relocatable
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1331"
+      done-when: "manual: either static-data f32.load/f32.store lower under --native-pointer-abi and the reporter's module emits an object with 0 skipped exports, gated on an execution differential vs wasmtime rather than on 'it compiles now' — or the ceiling is NAMED with the measurement and the reporter can act on it; never 'the module compiles' when only some functions do"

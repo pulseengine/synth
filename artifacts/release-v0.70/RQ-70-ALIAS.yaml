@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-70-ALIAS
+    type: system-req
+    title: "VCR-RA-003 refuses cpetig's export on a spill-slot-aliased stream — now THE blocker for #1318, and diagnosed to a checker-model gap"
+    description: >
+      MEASURED on the v0.69 tree with the reporter's own command line:
+      `fused.wasm` reaches `vfp-frame-locals+pool-grow(194) -> ok`, so v0.69's
+      FALCON work DID raise the capacity ceiling. What stops
+      `pulseengine:falcon-cascade/controller@0.10.0#step` now is
+
+        VCR-RA-003: SpillSlotAliased { slot: 184, first_store: 11113,
+                    overwriting_store: 11150, stale_reload: 11159 }
+
+      Counts unchanged from v0.68.0: still 1 of 21 on fused.wasm, 7 of 17 on
+      opt.wasm. The ceiling moved; the outcome for the user did not.
+
+      DIAGNOSED, AND THE FIRST DIAGNOSIS WAS WRONG — recorded because the
+      correction widens the fix. v0.69's artifact said slot 184 was f32 local
+      45's frame home. It is i32 LOCAL 31 (78 set/tee, 84 get; all 154 accesses
+      to [sp,#184] are local 31). The error was reading the layout dump off the
+      PRE-#1322 frame; #1322 reserves a 64-byte VFP area up front, shifting
+      local 31 to 184 and local 45 to 248, and the stream the validator rejects
+      is the RE-LAID one. Found by an independent fresh-context recheck that
+      dumped the emitted stream.
+
+      THE VERDICT SURVIVES: a checker-model gap, not a miscompile. The rule
+      treats a second store to a slot whose value was not reloaded as aliasing,
+      and for a LOCAL'S HOME that is assignment. The mechanism is
+      store-to-load forwarding with dead-store elimination blocked by unmodelled
+      F32 ops, against the checker's single-value-per-slot premise.
+
+      REACHABLE ON RELEASED v0.68.0 via a 49-op fixture, so it PREDATES #1322
+      and is not a regression from it.
+    status: proposed
+    release: v0.70
+    tags:
+      - downstream-blocker
+      - external-reporter
+      - allocator
+      - vcr-ra-003
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1321"
+      done-when: "manual: either the checker stops reporting a local's home as an aliased spill slot and cpetig's `step` emits, gated on an execution differential vs wasmtime — or the false-positive class is published with the measurement and the validator's premise stated, and #1318 is told which"

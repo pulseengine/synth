@@ -1,0 +1,42 @@
+artifacts:
+  - id: RQ-70-WINDOWVAC
+    type: system-req
+    title: "status_evidence's delivery window has matched ZERO commits for two releases — the anti-vacuity anchor is itself vacuous"
+    description: >
+      FOUND BY THE v0.69 CLEAN-ROOM REVIEW and RE-DERIVED AT SOURCE.
+      `status-evidence-window: 0 delivery-shaped commits since v0.68.0` — while
+      v0.69 landed eight artifact deliveries.
+
+      MEASURED on v0.68.0..v0.69.0 (14 commits) with the script's own
+      `CONVENTIONAL = ^([a-z]+)\(([^)]*)\)!?: ` and
+      `DELIVERY_TYPES = {feat,fix,perf,proof,test}`:
+
+        8 commits DO NOT MATCH THE SHAPE AT ALL — every RQ-NN artifact
+          delivery, e.g. "RQ-69-SUBTRACT (#242): the 88 Helium-guarded arms..."
+        6 commits match but are `release`(1), `chore`(4), `plan`(1) —
+          NONE in DELIVERY_TYPES.
+
+      So BOTH constraints bind, and the net is zero. Per-release re-derivation:
+      v0.63->64: 8, v0.64->65: 8, v0.65->66: 11, v0.66->67: 2,
+      v0.67->68: 0, v0.68->69: 0. The convention changed at v0.68 and R10 has
+      scanned nothing since.
+
+      WHY IT PASSES: the window line exists AS the anti-vacuity anchor, but the
+      CI grep only reds on `SKIPPED`, so `0` is green. A rule that examines zero
+      commits reports success about work it never did — the exact shape v0.59
+      measured and this project has now shipped twice more.
+    status: proposed
+    release: v0.70
+    tags:
+      - gate-potency
+      - release-gate
+      - cold-review-finding
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1334"
+      done-when: "manual: either the window matches the RQ-NN delivery convention and a non-zero count is derived for v0.69 and v0.70, with a FLOOR that reds on 0 — or the measurement is published showing why matching is not worth its false positives, and the window line is deleted rather than left reporting a number nobody can act on"

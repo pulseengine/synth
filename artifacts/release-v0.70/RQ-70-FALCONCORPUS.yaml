@@ -1,0 +1,42 @@
+artifacts:
+  - id: RQ-70-FALCONCORPUS
+    type: system-req
+    title: "FALCON's headline numbers are not re-derivable from this repository, because the reporter's modules are attached to an issue and were never committed"
+    description: >
+      FOUND BY THE v0.69 CLEAN-ROOM REVIEW. RQ-69-FALCON's own done-when
+      included "add both modules to the corpus". Measured:
+      `git diff --name-status v0.68.0..v0.69.0 -- scripts/repro` adds only
+      PAGESIZE's two `.wat` fixtures. The modules are not in the tree.
+
+      THE CONSEQUENCE, stated in v0.69's artifact at the cut: the byte-identity
+      figures (826 identical / 209 identically failing / 0 changed) and the
+      reporter's function counts (1 of 21, 7 of 17) CANNOT be re-derived by
+      anyone reading the repository. That artifact was the release's only
+      `priority: must` one, and it shipped with its weakest evidence.
+
+      A SECOND, RELATED DISCLOSURE: two corpus definitions were both called "the
+      corpus" in v0.69 — FALCON's 1035 = 207 modules x 5 configs (`.wat` AND
+      `.wasm`), SUBTRACT's 965 = 193 x 5, because `scripts/byte_triage_242.py`
+      globs `*.wat` only. SUBTRACT's deletion gate therefore covered a strictly
+      smaller corpus, excluding 16 `.wasm` modules. Neither number was wrong;
+      calling both "the corpus" was.
+
+      TWO HONEST ROUTES, and the artifact must pick one with the reporter:
+      commit the modules with cpetig's agreement, or build a REDUCED fixture
+      that reproduces the same declines and commit that. A third — leaving the
+      numbers unverifiable — is what v0.69 did, and is not available twice.
+    status: proposed
+    release: v0.70
+    tags:
+      - evidence-reproducibility
+      - external-reporter
+      - cold-review-finding
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1318"
+      done-when: "manual: either the reporter's modules (or a reduced fixture reproducing the same declines) are in scripts/repro and FALCON-class numbers are re-derivable by one command, or the reporter declines and that is recorded on #1318 with the numbers marked permanently unverifiable; and the two corpus definitions are named wherever a count is published"
