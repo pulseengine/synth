@@ -480,14 +480,62 @@ impl ElisionAttestation {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
-    fn write_tmp(name: &str, body: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("proven_safe_901_unit");
-        std::fs::create_dir_all(&dir).expect("mk tempdir");
-        let p = dir.join(name);
-        let mut f = std::fs::File::create(&p).expect("create");
-        f.write_all(body.as_bytes()).expect("write");
-        p
+    /// A fixture directory unique to THIS PROCESS and THIS CALL, removed on drop.
+    ///
+    /// #1309: these fixtures used to live at a FIXED
+    /// `temp_dir()/proven_safe_901_unit`, so every process that ran these tests
+    /// wrote the same file names — two `cargo test` invocations on one machine,
+    /// or two jobs on one self-hosted runner, of which this project has several.
+    /// `File::create` truncates, so one process could read a fixture another was
+    /// half-way through rewriting, and `ingest` would refuse a document that is
+    /// valid on disk a millisecond later.
+    ///
+    /// That was filed from reading, not from an observed failure. It has since
+    /// been observed: 8 concurrent processes x 6 rounds = 48 runs of these
+    /// tests against the pre-fix code failed 16 times (33 %), in
+    /// `valid_sites_become_marks_901`, `width_disagreement_is_dropped_901` and
+    /// `sites_are_keyed_per_function_901`. The repro is
+    /// `scripts/repro/proven_safe_fixture_race_1309.py`.
+    ///
+    /// The shape follows the one already used for compile outputs
+    /// (`artifact_guard::unique_artifact`, #977): process id plus a counter, so
+    /// no two runs and no two calls can collide. The `Drop` is what #1309's
+    /// done-when additionally asks for — a unique directory that cleans up.
+    struct Fixtures(PathBuf);
+
+    impl Fixtures {
+        fn new() -> Self {
+            static SEQ: AtomicU32 = AtomicU32::new(0);
+            let n = SEQ.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir()
+                .join(format!("proven_safe_901_unit-{}-{n}", std::process::id()));
+            // A pid is reused eventually, so do not trust an existing directory.
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("mk tempdir");
+            Self(dir)
+        }
+
+        fn write(&self, name: &str, body: &str) -> PathBuf {
+            let p = self.0.join(name);
+            let mut f = std::fs::File::create(&p).expect("create");
+            f.write_all(body.as_bytes()).expect("write");
+            p
+        }
+
+        /// A path inside this run's directory that is deliberately NOT created.
+        fn absent(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for Fixtures {
+        fn drop(&mut self) {
+            // Best-effort: a test that already failed must not be reported as a
+            // cleanup failure instead.
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     const MODULE: &[u8] = b"\0asm\x01\0\0\0 pretend this is a module";
@@ -507,7 +555,8 @@ mod tests {
     #[test]
     fn hash_mismatch_refuses_everything_901() {
         let stale = "0".repeat(64);
-        let p = write_tmp(
+        let fx = Fixtures::new();
+        let p = fx.write(
             "stale.json",
             &doc(
                 &stale,
@@ -531,7 +580,8 @@ mod tests {
     #[test]
     fn matching_hash_is_accepted_and_case_insensitive_901() {
         let h = hex_sha256(MODULE).to_uppercase();
-        let p = write_tmp(
+        let fx = Fixtures::new();
+        let p = fx.write(
             "good.json",
             &doc(&h, 65536, r#"{"func":0,"pc":1,"op":"i32.load","width":4}"#),
         );
@@ -545,7 +595,8 @@ mod tests {
     /// pre-compile rewrite looks like — refuses.
     #[test]
     fn one_flipped_module_byte_refuses_901() {
-        let p = write_tmp(
+        let fx = Fixtures::new();
+        let p = fx.write(
             "flip.json",
             &doc(
                 &hex_sha256(MODULE),
@@ -564,7 +615,8 @@ mod tests {
 
     #[test]
     fn memory_min_bytes_disagreement_refuses_901() {
-        let p = write_tmp(
+        let fx = Fixtures::new();
+        let p = fx.write(
             "floor.json",
             &doc(
                 &hex_sha256(MODULE),
@@ -601,10 +653,13 @@ mod tests {
                 Some(doc(&h, 65536, r#"{"func":"four","pc":1,"width":4}"#)),
             ),
         ];
+        let fx = Fixtures::new();
         for (name, body) in cases {
             let p = match body {
-                Some(b) => write_tmp(name, &b),
-                None => std::env::temp_dir().join("proven_safe_901_unit/definitely-absent.json"),
+                Some(b) => fx.write(name, &b),
+                // Inside THIS run's directory, so "missing" means missing for
+                // this process — not "missing unless another process made it".
+                None => fx.absent("definitely-absent.json"),
             };
             let r = ingest(&p, MODULE, 65536);
             assert!(!r.accepted, "'{name}' must not be accepted");
@@ -617,7 +672,8 @@ mod tests {
     #[test]
     fn unknown_fields_are_tolerated_901() {
         // A newer scry adding fields must not break an older synth.
-        let p = write_tmp(
+        let fx = Fixtures::new();
+        let p = fx.write(
             "future.json",
             &format!(
                 r#"{{ "schema": "scry/safe-accesses/v1", "scry_version": "9.9.9",
@@ -635,7 +691,8 @@ mod tests {
 
     #[test]
     fn accepted_but_empty_is_diagnosed_901() {
-        let p = write_tmp("none.json", &doc(&hex_sha256(MODULE), 65536, ""));
+        let fx = Fixtures::new();
+        let p = fx.write("none.json", &doc(&hex_sha256(MODULE), 65536, ""));
         let r = ingest(&p, MODULE, 65536);
         assert!(r.accepted);
         assert!(r.offered.is_empty());
@@ -672,7 +729,8 @@ mod tests {
 
     #[test]
     fn valid_sites_become_marks_901() {
-        let p = write_tmp(
+        let fx = Fixtures::new();
+        let p = fx.write(
             "marks.json",
             &doc(
                 &hex_sha256(MODULE),
@@ -693,7 +751,8 @@ mod tests {
     /// so the build elides nothing LOUDLY instead of stripping the wrong guard.
     #[test]
     fn byte_offsets_instead_of_op_indices_elide_nothing_loudly_901() {
-        let p = write_tmp(
+        let fx = Fixtures::new();
+        let p = fx.write(
             "byteoffsets.json",
             &doc(
                 &hex_sha256(MODULE),
@@ -722,7 +781,8 @@ mod tests {
 
     #[test]
     fn non_access_operator_is_dropped_901() {
-        let p = write_tmp(
+        let fx = Fixtures::new();
+        let p = fx.write(
             "nonaccess.json",
             &doc(
                 &hex_sha256(MODULE),
@@ -740,7 +800,8 @@ mod tests {
     fn width_disagreement_is_dropped_901() {
         // pc 3 is an i32.load8_u (1 B) but the file claims 4 B: the file and
         // the module disagree about which BYTES are covered — drop it.
-        let p = write_tmp(
+        let fx = Fixtures::new();
+        let p = fx.write(
             "width.json",
             &doc(
                 &hex_sha256(MODULE),
@@ -765,7 +826,8 @@ mod tests {
 
     #[test]
     fn sites_are_keyed_per_function_901() {
-        let p = write_tmp(
+        let fx = Fixtures::new();
+        let p = fx.write(
             "perfunc.json",
             &doc(
                 &hex_sha256(MODULE),
@@ -818,6 +880,56 @@ mod tests {
         );
         assert_eq!(access_width(&WasmOp::I32Add), None);
         assert_eq!(access_width(&WasmOp::LocalGet(0)), None);
+    }
+
+    // ---- fixture isolation (#1309) ------------------------------------------
+
+    /// The race probe (`scripts/repro/proven_safe_fixture_race_1309.py`) is the
+    /// evidence that the OLD shape failed; this is the invariant that makes a
+    /// regression fail immediately instead of one run in three. A future edit
+    /// that reinstates a fixed path reds here, deterministically, in-process.
+    #[test]
+    fn fixture_dirs_are_unique_per_run_1309() {
+        let a = Fixtures::new();
+        let b = Fixtures::new();
+        assert_ne!(
+            a.0, b.0,
+            "two runs must not share a fixture directory — that is #1309"
+        );
+
+        // Unique ACROSS processes, not merely within one: the pid is what makes
+        // two concurrent `cargo test` invocations disjoint, and a counter alone
+        // would not (both would start at 0).
+        let pid = std::process::id().to_string();
+        for d in [&a.0, &b.0] {
+            let name = d.file_name().unwrap().to_string_lossy().to_string();
+            assert!(
+                name.contains(&pid),
+                "fixture dir {name} does not carry the pid, so another process \
+                 can collide with it"
+            );
+        }
+
+        // Writing the same fixture NAME in both runs must touch different files.
+        let pa = a.write("same-name.json", "a");
+        let pb = b.write("same-name.json", "b");
+        assert_ne!(pa, pb);
+        assert_eq!(std::fs::read_to_string(&pa).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(&pb).unwrap(), "b");
+    }
+
+    #[test]
+    fn fixture_dir_is_removed_on_drop_1309() {
+        let path = {
+            let fx = Fixtures::new();
+            fx.write("leftover.json", "{}");
+            fx.0.clone()
+        };
+        assert!(
+            !path.exists(),
+            "the fixture directory must clean up after itself: {} survived",
+            path.display()
+        );
     }
 
     // ---- attestation -------------------------------------------------------

@@ -18,7 +18,7 @@ artifacts:
       found by reading, filed as #1309 during v0.68, and is scoped here because the
       shared self-hosted runners make it reachable rather than theoretical. The fix
       is per-process unique directories with cleanup.
-    status: proposed
+    status: implemented
     release: v0.69
     tags:
       - test-isolation
@@ -32,3 +32,72 @@ artifacts:
       verification-track: differential
       issue: "#1309"
       done-when: "manual: no test fixture path is shared between processes — each run gets a unique directory it cleans up; demonstrated by running the affected tests concurrently in two processes and watching the current code fail or interfere first"
+      landed: >-
+        FIXED, and the failure this artifact called "NOT YET OBSERVED" is now
+        OBSERVED (#1309, PR #1329).
+
+        THE OBSERVATION, which the artifact asked for before any fix: the
+        `proven_safe` unit tests were run in 8 CONCURRENT PROCESSES for 6
+        rounds against the pre-fix tree (cf35150a). 48 runs, 16 FAILED (33 %),
+        in `sites_are_keyed_per_function_901`, `valid_sites_become_marks_901`
+        and `width_disagreement_is_dropped_901`. The mechanism is
+        `File::create`, which TRUNCATES: one process read a fixture another was
+        rewriting, and `ingest` refused a document that is valid on disk a
+        millisecond later. The artifact was filed from READING the code; this
+        is what turned it into a number.
+
+        WHAT SHIPS:
+
+          crates/synth-core/src/proven_safe.rs   13 fixture sites moved off the
+              fixed `temp_dir()/proven_safe_901_unit` onto a `Fixtures` guard —
+              unique per PROCESS and per CALL (pid + counter), removed on Drop.
+              The `None` arm that hard-coded `proven_safe_901_unit/definitely-
+              absent.json` now asks the guard for a path inside THIS run's
+              directory, so "missing" means missing for this process rather
+              than "missing unless another process created it".
+
+          crates/synth-cli/tests/proven_safe_bounds_901.rs   the same shape for
+              the compile INPUTS. The outputs were already unique per call
+              (#977); the `.wasm` and `.safe-accesses.json` inputs were not —
+              and one arm `remove_file`s the verdict document, so a concurrent
+              run could have its input deleted, not merely truncated.
+
+          scripts/repro/proven_safe_fixture_race_1309.py   the probe, WIRED
+              (Test job, `ci-checks: stdout` floor `processes=(\d+) FAILED=0`
+              >= 16). It builds once and spawns the BINARY N times: N
+              concurrent `cargo test`s would serialize on the target-directory
+              lock and never overlap, which is a vacuous probe rather than a
+              cheap one.
+
+        THE FIX FOLLOWS THE REPO'S OWN PRECEDENT rather than adding a
+        dependency: `artifact_guard::unique_artifact` (#977) already solved
+        this for compile outputs with pid + atomic counter. `tempfile` is not
+        a workspace dependency and this did not seem worth making it one.
+      verified-by: >-
+        RED-FIRST ON THE COMMITTED INSTRUMENT, not merely on an ad-hoc script.
+        The probe that ships was run against a DELIBERATELY REGRESSED tree (the
+        `Fixtures` directory name reverted to the fixed path, nothing else
+        changed) and FAILED, rc=1, naming 8 distinct tests. The regression was
+        then removed and the same probe, same parameters, returned
+        `processes=48 FAILED=0`, rc=0.
+
+          planted regression   rc=1   8 tests FAILED across 48 processes
+          shipped fix          rc=0   processes=48 FAILED=0
+
+        The `ci-checks: stdout` floor binds the PRINTED process count, so a run
+        that spawned nothing cannot pass green on exit 0 — the vacuity shape
+        this project has shipped before.
+
+        TWO UNIT TESTS ASSERT THE INVARIANT deterministically, in-process, so a
+        regression fails immediately instead of one run in three:
+        `fixture_dirs_are_unique_per_run_1309` (two runs differ; each carries
+        the PID, because a counter alone would collide across processes; the
+        same fixture NAME in two runs touches different files) and
+        `fixture_dir_is_removed_on_drop_1309` (the cleanup the done-when asks
+        for). `cargo test -p synth-core proven_safe`: 18 passed, 0 failed.
+
+        NOT claimed: that the race was ever observed in CI. It was not, and the
+        artifact said so. What is claimed is that it is REACHABLE — measured at
+        33 % of processes under 8-way concurrency — on the shared self-hosted
+        runners this project uses.
+

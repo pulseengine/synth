@@ -29,6 +29,7 @@
 use object::{Object, ObjectSection, ObjectSymbol};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
 use synth_core::proven_safe::hex_sha256;
 
 // #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
@@ -77,10 +78,43 @@ const SAVED_UNPROVEN_3: usize = 50;
 
 const UDF0: u16 = 0xDE00;
 
-fn dir() -> PathBuf {
-    let d = std::env::temp_dir().join("proven_safe_bounds_901");
+/// An input directory unique to THIS PROCESS and THIS CALL, removed on drop.
+///
+/// #1309: these inputs used to live at a FIXED
+/// `temp_dir()/proven_safe_bounds_901`, so every process running this suite
+/// wrote the same `<tag>.wasm` and `<tag>.safe-accesses.json`. The compile
+/// outputs were already unique per call (#977, `artifact_guard`); the INPUTS
+/// were not, and `fs::write` truncates — so a concurrent run could hand synth a
+/// half-written verdict file, or (in the `Some(None)` arm) delete the verdict
+/// file another process was about to compile against.
+///
+/// The measured shape of the same defect in the `proven_safe` unit tests: 48
+/// concurrent runs, 16 failures. See
+/// `scripts/repro/proven_safe_fixture_race_1309.py`.
+struct Fixtures(PathBuf);
+
+impl Fixtures {
+    /// Mirrors `PathBuf::join`, so the call sites did not have to change shape.
+    fn join(&self, name: impl AsRef<std::path::Path>) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for Fixtures {
+    fn drop(&mut self) {
+        // Best-effort: a failing test must not be re-reported as a cleanup error.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn dir() -> Fixtures {
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("proven_safe_bounds_901-{}-{n}", std::process::id()));
+    // A pid is reused eventually, so do not trust an existing directory.
+    let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("mk tempdir");
-    d
+    Fixtures(d)
 }
 
 fn fixture_wasm() -> Vec<u8> {
