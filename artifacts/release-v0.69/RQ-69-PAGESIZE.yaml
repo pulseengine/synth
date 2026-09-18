@@ -35,7 +35,7 @@ artifacts:
       — refuse `(pagesize N)` with N != 65536 until it is honoured, then consider
       honouring it as the first per-memory sizing mechanism. Honouring it is
       capability work with its own oracle and is NOT in this artifact.
-    status: proposed
+    status: implemented
     release: v0.69
     tags:
       - silent-drop
@@ -51,3 +51,94 @@ artifacts:
       verification-track: differential
       issue: "#1315"
       done-when: "manual: a module declaring any page size other than 65536 is refused with a typed diagnostic naming #1315 on every backend and every path measured above (self-contained, relocatable, RV32), red-first by the module that compiles rc=0 today; the class sweep is published — every module-level declaration the decoder accepts and no backend reads, each one either honoured, refused, or NAMED with its measurement; `shared` is dispositioned by that sweep; the external-consumer check is re-run before the refusal lands, as MPUHONEST's was"
+      landed: >-
+        LANDED (#1315, PR #1323). gale asked for the refusal first and the
+        capability second; this is the refusal.
+
+        REFUSED, on every path that silently accepted it. A memory declaring
+        any page size other than 65536 is now declined at decode time with a
+        diagnostic naming #1315, the declared size, and the size synth would
+        otherwise have reported — the number an embedder programs one MPU
+        region from (#1145). Wired at all three sites that already refuse
+        memory64 (#1209), the same decode-then-decline shape as the dropped
+        start section (#1046). RED-FIRST, both halves, by backing the calls out
+        and watching the suite: with the page-size calls removed all three
+        path tests FAIL and the default-page-size control passes; with only the
+        shared call removed exactly that one test fails and the other four
+        pass, so neither test is covering for the other.
+
+        THE CLASS SWEEP, with its instrument corrected mid-flight. A bare
+        field-name grep over the decoder's structs is NOT a measurement: it
+        counted 1665 "readers" of `.index` and would have had me report the
+        declared maximum as ignored. Re-run type-qualified:
+
+          page_size_log2  0 readers  -> REFUSED (this artifact)
+          shared          1 reader   -> REFUSED. The one reader is
+                                        synth-frontend copying it into a
+                                        parallel struct; nothing acts on it.
+                                        A shared memory promises cross-thread
+                                        sharing synth cannot provide — no
+                                        synchronization is emitted and every
+                                        atomic operator is already declined.
+          max_pages       0 readers  -> REFUTED as a candidate. It only LOOKED
+                                        unread: synth-memory's descriptor
+                                        enforces `new_pages > max_pages` on
+                                        grow, and the CLI reads it through a
+                                        multi-line chain the pattern missed.
+                                        It is honoured.
+          initial_pages   7 readers  -> honoured.
+          memory64        3 readers  -> already refused (#1209).
+
+        A DIFFERENT CLASS, NAMED NOT FIXED: `DecodedModule.func_type_indices`
+        and `DecodedModule.type_signatures` have zero readers outside the
+        decoder. These are not dropped DECLARATIONS — nothing about the
+        module's meaning is lost — they are dead decode output. Deleting them
+        touches published `synth-core` API and is a v0.70 subtraction
+        candidate, not this artifact's business.
+
+        EXTERNAL-CONSUMER CHECK, re-run before landing as MPUHONEST's was:
+        zero custom-page-size hits and zero `(memory ... shared)` declarations
+        across gale, kiln, meld, jess, relay, loom, scry and wohl, and zero
+        shared-memory declarations in synth's own repro corpus. Both behaviour
+        changes break no known caller.
+
+        NOT DONE HERE: honouring the declared page size, which is the
+        capability half and needs its own oracle. gale named it as the
+        declarative route to page-granular MPU regions for
+        REQ-OS-MULTITENANT-001; it is a v0.70 candidate.
+      verified-by: >-
+        Each clause of the done-when, with the command that shows it.
+
+        "refused on every path, with a typed diagnostic naming #1315":
+        `cargo test -p synth-cli --test refuses_custom_page_size_1315` — five
+        tests, covering `--cortex-m`, `--target cortex-m3 --all-exports
+        --relocatable` and `-b riscv --all-exports` for the page size, the
+        shared memory, and the default-page-size negative control. The
+        assertions require the diagnostic to name #1315, to say what was
+        declared, and to state the size synth would otherwise have reported.
+
+        "red-first by the module that compiles rc=0 today": the calls were
+        backed out and the suite re-run, twice. Page-size calls removed:
+        3 FAILED, control ok (`test result: FAILED. 1 passed; 3 failed`).
+        Shared call removed: 1 FAILED, the other four ok
+        (`test result: FAILED. 4 passed; 1 failed`). Fixtures are committed at
+        `scripts/repro/custom_page_size_1315.wat` and
+        `scripts/repro/shared_memory_1315.wat`, so the cases reproduce outside
+        a scratch directory.
+
+        "the class sweep is published, each member honoured/refused/named":
+        the dispositions and their reader counts are in `landed:` above and in
+        the doc comments on `refuse_custom_page_size` / `refuse_shared_memory`.
+        Re-derivable with a type-qualified grep, e.g.
+        `grep -rn --include='*.rs' -E "(mem|memory|m)\.shared\b" crates | grep -v wasm_decoder.rs`
+        — the bare field-name form is NOT a valid instrument here and its
+        failure is recorded rather than hidden.
+
+        "the external-consumer check is re-run before the refusal lands":
+        `gh api search/code` for custom page sizes and for shared memories
+        across gale, kiln, meld, jess, relay, loom, scry, wohl — zero hits
+        each; plus zero `(memory ... shared)` in synth's own repro corpus.
+
+        NOT claimed: that a declared page size is honoured. It is refused. The
+        artifact's scope is the refusal, in the order gale asked for.
+

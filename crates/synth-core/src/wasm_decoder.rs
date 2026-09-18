@@ -55,6 +55,16 @@ pub struct WasmMemory {
     /// consumed by `refuse_memory64_module` in `synth-cli` to turn that into a
     /// loud decline at decode time, the #1046 pattern.
     pub memory64: bool,
+    /// #1315: the log2 of this memory's DECLARED page size (the
+    /// custom-page-sizes proposal, `(memory 1 1 (pagesize N))`), or `None` for
+    /// the default 64 KiB page. wasmparser decodes it; nothing in this
+    /// workspace read it, so a memory declared one byte long was reported and
+    /// reserved as 65536 — and `__synth_mem_size_N`, which the embedder
+    /// programs one MPU region from (#1145), inherited the over-grant by the
+    /// page-size ratio. Consumed by `refuse_custom_page_size` in `synth-cli`,
+    /// the `refuse_memory64_module` (#1209) pattern: decode the declaration,
+    /// then decline loudly rather than silently ignore it.
+    pub page_size_log2: Option<u32>,
 }
 
 /// A captured constant global initializer (#649). Only INTEGER `t.const` init
@@ -1128,6 +1138,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         max_pages: mem.maximum.map(|m| m as u32),
                         shared: mem.shared,
                         memory64: mem.memory64,
+                        page_size_log2: mem.page_size_log2,
                     });
                 }
             }
