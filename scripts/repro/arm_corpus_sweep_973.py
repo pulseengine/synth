@@ -226,6 +226,18 @@ EXPECTED_DECLINES = {
     # day #1230's underlying allocator bug is fixed, same as that oracle's
     # pin.
     "ra003_switch_1230.wat": "VCR-RA-003 JoinValueNotAvailable (#1230 — the fixture's own point)",
+    # RQ-69-PAGESIZE (#1315). These two fixtures EXIST to be refused: each
+    # carries a module-level declaration synth does not honour, and v0.69
+    # turned silent acceptance into a loud decline at decode time. A decline
+    # here is the fixture's whole point, exactly like `ra003_switch_1230.wat`
+    # above — and unlike that one, this pair does NOT move the day a bug is
+    # fixed, because refusing is the shipped behaviour, not a placeholder.
+    #
+    # They are listed rather than kept out of `scripts/repro/`: the sweep
+    # compiling every fixture is what makes it a corpus, and a refusal fixture
+    # parked outside the corpus is a refusal nothing re-checks.
+    "custom_page_size_1315.wat": "declared page size other than 64 KiB is refused at decode (#1315)",
+    "shared_memory_1315.wat": "a shared memory is refused at decode — no synchronization is emitted (#1315)",
 }
 
 # Compile floor: a FLOOR, so adding fixtures cannot redden the job. Measured
