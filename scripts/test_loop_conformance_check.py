@@ -140,9 +140,35 @@ class PureHelpers(unittest.TestCase):
             ("a.yaml", {"artifacts": [artifact("A"), artifact("B", done_when=None)]}),
             ("b.yaml", None),  # comments-only file parses to None
         ]
-        total, missing = lcc.artifacts_missing_done_when(docs)
+        total, missing, evaluable, manual = lcc.artifacts_missing_done_when(docs)
         self.assertEqual(total, 2)
         self.assertEqual(missing, ["B"])
+
+    def test_done_when_declared_is_not_evaluated_1335(self):
+        """RQ-70-DONEWHEN (#1335): the census must SPLIT declared from evaluable.
+
+        `manual:` is a declaration nothing evaluates — status_evidence's R3 fires
+        only on the mechanical forms. Counting presence made a release with zero
+        machine-checked signatures print the same `N/N done-when` line as one
+        with all of them, and v0.66/67/68/69 were each 100% `manual:`.
+        """
+        docs = [("a.yaml", {"artifacts": [
+            artifact("M1", done_when="manual: someone looks at it"),
+            artifact("M2", done_when="manual: and at this too"),
+            artifact("C1", done_when="contains:scripts/x.py:NEEDLE"),
+            artifact("F1", done_when="file:scripts/repro/thing.wat"),
+        ]})]
+        total, missing, evaluable, manual = lcc.artifacts_missing_done_when(docs)
+        self.assertEqual((total, missing), (4, []))
+        self.assertEqual(evaluable, 2, "contains:/file: are machine-evaluable")
+        self.assertEqual(manual, 2, "manual: is declared only")
+
+    def test_done_when_all_manual_is_zero_evaluable_1335(self):
+        """The shape four releases running shipped: nothing mechanically checked."""
+        docs = [("a.yaml", {"artifacts": [
+            artifact(f"M{i}", done_when="manual: ...") for i in range(9)]})]
+        total, _missing, evaluable, manual = lcc.artifacts_missing_done_when(docs)
+        self.assertEqual((total, evaluable, manual), (9, 0, 9))
 
     def test_done_when_blank_counts_missing(self):
         docs = [("a.yaml", {"artifacts": [artifact("A", done_when="  ")]})]

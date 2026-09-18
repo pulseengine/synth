@@ -1,41 +1,72 @@
 artifacts:
-  - id: RQ-70-DONEWHEN
-    type: system-req
-    title: "Every done-when has been `manual:` since v0.66, so R3 cannot fire — and the conformance gate counts declarations, not evaluations"
-    description: >
-      FOUND BY THE v0.69 CLEAN-ROOM REVIEW. All 9 v0.69 artifacts carry a
-      `manual:` done-when (re-derived: 9 manual, 0 derivable), so R3 — "a
-      done-when whose evidence evaluates FALSE under a claiming status is red" —
-      cannot fire for any of them.
+- id: RQ-70-DONEWHEN
+  type: system-req
+  title: Every done-when has been `manual:` since v0.66, so R3 cannot fire — and the conformance gate
+    counts declarations, not evaluations
+  description: |-
+    THE MEASURED ANSWER THE BRIEF ASKED FOR: the 100% is mostly a property of the
+    HABIT, and the compound predicates are genuinely good. Both halves are true, and
+    that is why this is not a call to ban `manual:`.
 
-      THE TREND IS THE FINDING, not any one release:
-        v0.56-59   0% manual
-        v0.60     50%
-        v0.61-65  62-80%
-        v0.66/67/68/69  100%
+    Manual share per release, derived: v0.61 11/15, v0.62 7/10, v0.63 8/12,
+    v0.64 7/10, v0.65 5/8, v0.66 8/8, v0.67 7/7, v0.68 9/9, v0.69 9/9.
 
-      `loop_conformance_check` prints "9 artifacts, 9/9 done-when" as
-      DERIVED-PASS, but it counts DECLARATION, not evaluation — so the reading
-      most likely to be taken from it ("the done-whens were checked") is the one
-      it cannot support.
+    READING ALL NINE v0.69 PREDICATES: each is a COMPOUND acceptance statement —
+    red-first AND a class sweep AND a named ceiling AND an execution differential.
+    No single `contains:` could carry one, and flattening them would lose the part
+    that makes them good. That is the habit's honest half.
 
-      THIS IS NOT A CALL TO BAN `manual:`. Several v0.69 done-whens are
-      honestly manual — a refutation's publication, a downstream re-verification
-      at the cut. The question is whether a release can state, per artifact,
-      WHY manual was the only option, and whether the 100% rate is a property of
-      the work or of the habit. A measured answer either way is the deliverable.
-    status: proposed
-    release: v0.70
-    tags:
-      - gate-potency
-      - release-gate
-      - cold-review-finding
-    links:
-      - type: derives-from
-        target: BR-001
-    fields:
-      req-type: process
-      priority: should
-      verification-track: review
-      issue: "#1335"
-      done-when: "manual: the manual-vs-derivable rate is derived per release and published, each v0.70 artifact whose done-when is `manual:` states why no machine predicate was available, and the conformance gate distinguishes DECLARED from EVALUATED in its own output — or the measurement shows the rate is intrinsic and says so with the numbers"
+    But most carry a MECHANICAL CONJUNCT that was written in prose and checked by
+    nothing: ELFNAMES names `--test every_section_header_is_named_1307`, PAGESIZE
+    `--test refuses_custom_page_size_1315`, PMPLIB `--test mpu_honest_1284` and
+    `--test pmp_is_not_an_alias_1317`, VFPUNKNOWN `--lib ra003`, and SUBTRACT's
+    "`selector_lines_code` falls by the measured amount" IS a claims.yaml ratchet.
+    Five real test citations, none under a key any gate read — which is precisely
+    what RQ-70-CITEGAP measured from the other side. The evidence existed; `manual:`
+    was where it went to not be checked.
+
+    SO THE DELIVERABLE IS NOT A BAN, IT IS HONEST OUTPUT. `loop_conformance_check`
+    step 3 printed `{total} artifacts, {total}/{total} done-when` from FIELD
+    PRESENCE. A `manual:` signature is present and evaluated by nothing —
+    status_evidence's R3 fires only on `contains:`/`file:` — so four releases in
+    which NOTHING was machine-checked printed the same line as one in which
+    everything was. It now prints, on v0.69.0:
+
+      9 artifacts, 9/9 done-when DECLARED — 0 mechanically evaluable
+      (contains:/file:), 9 manual: (declared only; R3 cannot fire on these)
+
+    v0.69.0 still CONFORMS; nothing about the verdict changed, only what the gate
+    admits it measured.
+
+    THE RECOMMENDED PRACTICE, demonstrated in this release rather than asserted:
+    keep the compound `manual:` predicate AND record its mechanical conjunct in
+    `verified-by:`, which RQ-70-CITEGAP now checks. RQ-70-ALIAS is the worked
+    example — its done-when started as `manual:`, became a `contains:` into crate
+    source, and status_evidence's R9 REFUSED that as a predicate that cannot fail,
+    which is how it ended up pointing at the wired corpus sweep's fixture. v0.70 is
+    therefore the first release since v0.65 with a non-`manual:` signature, and it
+    got there by a gate refusing, not by a rule banning.
+  status: implemented
+  release: v0.70
+  tags:
+  - gate-potency
+  - release-gate
+  - cold-review-finding
+  - feature-loop
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: should
+    verification-track: review
+    issue: '#1335'
+    done-when: contains:scripts/loop_conformance_check.py:mechanically evaluable
+    verified-by: |-
+      The signature names the gate's own OUTPUT string, because the deliverable IS the
+      output: the fix changes nothing about conformance, only about what the gate
+      admits it checked. Pinned against regression by
+      `test_done_when_declared_is_not_evaluated_1335` and
+      `test_done_when_all_manual_is_zero_evaluable_1335` in
+      scripts/test_loop_conformance_check.py, which ci.yml runs.
+    landed: '#1335'
