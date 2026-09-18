@@ -507,6 +507,17 @@ jobs:
       - name: Unit-test the loop-conformance gate — corpora replay (1136)
         run: python3 scripts/test_loop_conformance_check.py
 
+      # RQ-70-RIVETNOTES (#1337): the release-notes DERIVATION gets the same
+      # treatment. Its load-bearing test re-derives the generator's own
+      # `PINNED_RIVET` from THIS file rather than restating it, so the two
+      # cannot drift: a generator that accepted a rivet older than the one CI
+      # installs would emit a confidently clean answer from a tool that never
+      # resolved the graph (0.32 prints "0 broken cross-refs" where 0.37 prints
+      # "cross-refs NOT CHECKED"). The generator itself is release-time, not
+      # per-PR — but its refusals are checked here, every PR.
+      - name: Unit-test the rivet-derived release notes (RQ-70-RIVETNOTES, #1337)
+        run: python3 scripts/test_release_notes_from_rivet.py
+
       # RQ-67-NOTESGATE (#1259): the release NOTES were the one surface with
       # no gate, and in v0.66 they carried two defects to the tag candidate
       # past the release PR, a clean-room review and 67 green checks. The new
