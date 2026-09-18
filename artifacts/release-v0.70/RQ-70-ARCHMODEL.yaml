@@ -1,7 +1,8 @@
 artifacts:
 - id: RQ-70-ARCHMODEL
   type: system-req
-  title: Feature-loop steps 1-2 (spar AADL -> WIT) are N/A again, carried on spar#445 — re-verified at
+  title: >-
+    Feature-loop steps 1-2 (spar AADL -> WIT) are N/A again, carried on spar#445 — re-verified at
     the v0.70 cut, and the gate that could not SEE this filing is fixed in the same release
   description: |-
     CARRIED, NOT FORGOTTEN. #1136 exists because a step marked N/A for the same
@@ -56,10 +57,12 @@ artifacts:
     issue: '#1136'
     disposition: deferred
     carried-from: RQ-69-ARCHMODEL
-    done-when: 'manual: spar#445 is re-checked at the v0.71 cut with its observed state and the UTC date
-      recorded, and the carried-from chain is extended rather than an ordinal asserted; the `feature-loop`
-      + `aadl|spar` tags are checked against the predecessor artifact BEFORE the cut, not after'
-    verified-by: 'Re-derivable in two commands. The blocker: `gh issue view 445 --repo pulseengine/spar
-      --json state,updatedAt,comments` returns OPEN / 2026-09-03T10:57:37Z / 0 at the timestamp above.
-      The chain: walk `fields.carried-from` back from this artifact through artifacts/release-v0.*/ to
-      the v0.63 head. Neither number is carried in prose.'
+    done-when: >-
+      manual: spar#445 is re-checked at the v0.71 cut with its observed state and the UTC date recorded,
+      and the carried-from chain is extended rather than an ordinal asserted; the `feature-loop` +
+      `aadl|spar` tags are checked against the predecessor artifact BEFORE the cut, not after
+    verified-by: >-
+      Re-derivable in two commands. The blocker: `gh issue view 445 --repo pulseengine/spar --json
+      state,updatedAt,comments` returns OPEN / 2026-09-03T10:57:37Z / 0 at the timestamp above. The
+      chain: walk `fields.carried-from` back from this artifact through artifacts/release-v0.*/ to
+      the v0.63 head. Neither number is carried in prose.

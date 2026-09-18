@@ -1,8 +1,9 @@
 artifacts:
 - id: RQ-70-PAGELIB
   type: system-req
-  title: 'DEFERRED to v0.71 with the measurement: the custom-page-size refusal is CLI-only, and where
-    it belongs depends on a downstream answer that does not exist yet'
+  title: >-
+    DEFERRED to v0.71 with the measurement: the custom-page-size refusal is CLI-only, and where it
+    belongs depends on a downstream answer that does not exist yet
   description: |-
     DEFERRED, NOT DROPPED — and deferred for the reason the v0.68 near-miss taught:
     a refusal placed without the consumer's direction is one they have to route
@@ -81,7 +82,8 @@ artifacts:
     priority: should
     verification-track: differential
     issue: '#1339'
-    done-when: 'manual: gale answers on #1145 whether a custom page size should be REFUSED or HONOURED
-      for per-memory MPU regions and whether gust:os calls synth-core as a library; THEN either the refusal
-      moves into synth-core with the published-library caller covered red-first, or the artifact records
-      ''CLI-only is correct'' with gale''s reason quoted — a silent drop is not an outcome'
+    done-when: >-
+      manual: gale answers on #1145 whether a custom page size should be REFUSED or HONOURED for per-memory
+      MPU regions and whether gust:os calls synth-core as a library; THEN either the refusal moves
+      into synth-core with the published-library caller covered red-first, or the artifact records
+      'CLI-only is correct' with gale's reason quoted — a silent drop is not an outcome
