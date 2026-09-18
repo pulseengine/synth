@@ -1,42 +1,91 @@
 artifacts:
-  - id: RQ-70-FALCONCORPUS
-    type: system-req
-    title: "FALCON's headline numbers are not re-derivable from this repository, because the reporter's modules are attached to an issue and were never committed"
-    description: >
-      FOUND BY THE v0.69 CLEAN-ROOM REVIEW. RQ-69-FALCON's own done-when
-      included "add both modules to the corpus". Measured:
-      `git diff --name-status v0.68.0..v0.69.0 -- scripts/repro` adds only
-      PAGESIZE's two `.wat` fixtures. The modules are not in the tree.
+- id: RQ-70-FALCONCORPUS
+  type: system-req
+  title: v0.69's headline numbers were not re-derivable, and "the corpus" names THREE different populations
+    — two reduced fixtures land, the ambiguity is measured
+  description: |-
+    TWO FINDINGS, both re-derived at source rather than restated.
 
-      THE CONSEQUENCE, stated in v0.69's artifact at the cut: the byte-identity
-      figures (826 identical / 209 identically failing / 0 changed) and the
-      reporter's function counts (1 of 21, 7 of 17) CANNOT be re-derived by
-      anyone reading the repository. That artifact was the release's only
-      `priority: must` one, and it shipped with its weakest evidence.
+    ## 1. The reporter's modules were never committed, so FALCON's figures stand
+    alone
 
-      A SECOND, RELATED DISCLOSURE: two corpus definitions were both called "the
-      corpus" in v0.69 — FALCON's 1035 = 207 modules x 5 configs (`.wat` AND
-      `.wasm`), SUBTRACT's 965 = 193 x 5, because `scripts/byte_triage_242.py`
-      globs `*.wat` only. SUBTRACT's deletion gate therefore covered a strictly
-      smaller corpus, excluding 16 `.wasm` modules. Neither number was wrong;
-      calling both "the corpus" was.
+    `git diff --name-status v0.68.0..v0.69.0 -- scripts/repro` adds only PAGESIZE's
+    two `.wat` fixtures. cpetig's `fused.wasm` and `opt.wasm` live on an issue
+    attachment, so FALCON's 826 identical / 209 identically failing / 0 changed, and
+    its 1-of-21 and 7-of-17 skip counts, cannot be reproduced from this repository by
+    anyone — and FALCON was v0.69's only `must`.
 
-      TWO HONEST ROUTES, and the artifact must pick one with the reporter:
-      commit the modules with cpetig's agreement, or build a REDUCED fixture
-      that reproduces the same declines and commit that. A third — leaving the
-      numbers unverifiable — is what v0.69 did, and is not available twice.
-    status: proposed
-    release: v0.70
-    tags:
-      - evidence-reproducibility
-      - external-reporter
-      - cold-review-finding
-    links:
-      - type: derives-from
-        target: BR-001
-    fields:
-      req-type: process
-      priority: should
-      verification-track: differential
-      issue: "#1318"
-      done-when: "manual: either the reporter's modules (or a reduced fixture reproducing the same declines) are in scripts/repro and FALCON-class numbers are re-derivable by one command, or the reporter declines and that is recorded on #1318 with the numbers marked permanently unverifiable; and the two corpus definitions are named wherever a count is published"
+    WHAT v0.70 DOES ABOUT IT: the honest route B, taken twice. Both of this release's
+    downstream blockers now have a COMMITTED REDUCTION that reproduces the reporter's
+    decline:
+
+      scripts/repro/spill_slot_alias_1321.wat   54 lines — reproduces the VCR-RA-003
+          SpillSlotAliased refusal on `falcon-cascade#step`. Pre-fix: rc=1, no
+          object. Post-fix: an 830-byte object.
+      scripts/repro/npa_static_f32_1331.wat     20 lines — reproduces the
+          native-pointer static-data f32.load/f32.store decline, both strings.
+          Pre-fix: 2 of 2 skipped via #952. Post-fix: an 813-byte object.
+
+    Neither is on `EXPECTED_DECLINES`, so the wired ARM corpus sweep reds if either
+    regresses — verified by running that sweep against the pre-fix binaries, which
+    fails with `PHASE A NEW DECLINE` naming the fixture.
+
+    RESIDUAL, NAMED RATHER THAN CLOSED: the reduction reproduces the DECLINE, not the
+    reporter's whole module. FALCON's 826/209/0 remain non-re-derivable, and this
+    artifact does not claim otherwise. Committing the modules themselves still needs
+    the reporter's agreement and has not been asked for.
+
+    ## 2. "The corpus" names THREE populations, and prose never says which
+
+    The v0.69 planning noted two; the census finds three. Measured over every
+    committed script that walks `scripts/repro/`:
+
+      POPULATION A — `*.wat` only (193 modules on main):  7 scripts
+          byte_triage_242.py, determinism_check.py, gen_home_alias_class_1189.py,
+          arm_corpus_sweep_973.py, home_alias_audit_corpus_1189.py,
+          macho_host_link_rq64_differential.py, tier_census_1021.py
+      POPULATION B — `*.wat` + `*.wasm` (209 modules on main):  5 scripts
+          mutation_survey.py, self_contained_boot_sweep_1189_differential.py,
+          vcr_dec_001_join_alloc_measure.py, vcr_ver_004_shipping_path_audit.py,
+          tied_web_census_242.py
+      POPULATION C — `*.wasm` only:  1 script
+          partial_census_1017.py
+
+    That is how FALCON's "1035 = 207 x 5" and SUBTRACT's "965 = 193 x 5" were both
+    called "the corpus" in the SAME release and differ by 70 compiles. And the
+    figures move: re-derived today the two populations are 193 and 209 (x5 = 965 and
+    1045), because v0.69 itself added two `.wat` — so even the 1035 the v0.70 plan
+    quoted is already stale. A number attributed to "the corpus" cannot be checked.
+
+    NOT UNIFIED, DELIBERATELY. The populations differ for reasons: byte-triage needs
+    two binaries per module and a `.wasm` has no second source, while the mutation
+    survey wants every module it can reach. Collapsing them would move measured
+    numbers across a dozen pinned gates for no correctness gain. The defect is the
+    unnamed attribution in PROSE, not the existence of two globs — so the deliverable
+    is the census, published here and citable, rather than a refactor that would
+    churn every pin in claims.yaml.
+  status: implemented
+  release: v0.70
+  tags:
+  - evidence-reproducibility
+  - external-reporter
+  - cold-review-finding
+  - feature-loop
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: should
+    verification-track: differential
+    issue: '#1318'
+    done-when: file:scripts/repro/npa_static_f32_1331.wat
+    landed: '#1318'
+    verified-by: |-
+      The signature names the SECOND of the two committed reductions, because that is
+      the one this PR lands (the first, spill_slot_alias_1321.wat, ships with
+      RQ-70-ALIAS). Both are compiled by `arm_corpus_sweep_973.py` (`# ci-status:
+      wired`) on every run and neither is on EXPECTED_DECLINES, so a regression in
+      either reporter-facing gap reds CI with the fixture named — which is precisely
+      the property v0.69's numbers lacked. The three-population census is re-derivable
+      by globbing scripts/repro/ and grepping the thirteen scripts named above.
