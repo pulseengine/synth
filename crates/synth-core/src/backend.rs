@@ -52,7 +52,28 @@ impl SafetyBounds {
     pub fn parse(s: &str) -> std::result::Result<Self, String> {
         match s {
             "none" => Ok(SafetyBounds::None),
-            "mpu" | "pmp" => Ok(SafetyBounds::Mpu),
+            "mpu" => Ok(SafetyBounds::Mpu),
+            // RQ-69-PMPLIB (#1317): `pmp` was a SILENT ALIAS for `mpu` here.
+            // v0.68 (#1284) made the CLI refuse it on every backend, but this
+            // is `synth-core`, a PUBLISHED crate — a library caller still got
+            // the alias the CLI rejects, and a unit test PINNED that. synth
+            // emits no RV32 PMP programming, so accepting the spelling and
+            // meaning something else is the accepted-and-dropped shape #1284
+            // closed at the outer layer and left open here.
+            //
+            // The WORDING is #1284's, verbatim. Those tests pin what the user
+            // sees; that contract did not change — only the LAYER enforcing it
+            // did. Keeping the phrasing means #1284's tests pass UNEDITED,
+            // which is the evidence that this moved the check without
+            // weakening it.
+            "pmp" => Err(
+                "--safety-bounds pmp is refused on every backend: synth emits no RV32 PMP \
+                 programming, and `pmp` is never a silent alias for `mpu`. The \
+                 only accepted MPU mode is --safety-bounds mpu --embedder-mpu on an \
+                 ARM relocatable object, where YOUR startup programs the MPU \
+                 from the region table (#1145, #1284, #1317)"
+                    .to_string(),
+            ),
             "software" | "soft" => Ok(SafetyBounds::Software),
             "mask" | "masking" => Ok(SafetyBounds::Mask),
             other => Err(format!(
@@ -994,7 +1015,15 @@ mod tests {
             let sb = SafetyBounds::parse(s).unwrap();
             assert_eq!(sb.as_str(), s);
         }
-        assert_eq!(SafetyBounds::parse("pmp").unwrap(), SafetyBounds::Mpu);
+        // RQ-69-PMPLIB (#1317): this line PINNED the silent alias. Flipped —
+        // the library refuses `pmp` exactly as the CLI has since v0.68, and
+        // the message names the issue so a caller can find out why.
+        let pmp = SafetyBounds::parse("pmp").expect_err("pmp must be refused (#1317)");
+        assert!(pmp.contains("#1317"), "refusal must name the issue: {pmp}");
+        assert!(
+            pmp.contains("never a silent alias"),
+            "refusal must say what it is not: {pmp}"
+        );
         assert_eq!(SafetyBounds::parse("soft").unwrap(), SafetyBounds::Software);
         assert!(SafetyBounds::parse("nonsense").is_err());
     }

@@ -23,7 +23,7 @@ artifacts:
       and a check-ordering change. It is here because a refusal that holds only at
       the outermost layer is a refusal with a hole, and the hole is in the half we
       publish for other people to build on.
-    status: proposed
+    status: implemented
     release: v0.69
     tags:
       - api
@@ -38,3 +38,50 @@ artifacts:
       verification-track: differential
       issue: "#1317"
       done-when: "manual: `SafetyBounds::parse(\"pmp\")` returns an error naming #1284 instead of Mpu, the unit test that pinned the alias is flipped and shown red against the current parse first, and all three backends answer a `pmp` request with one diagnostic that names `pmp`"
+      landed: >-
+        LANDED (#1317, PR #1327). Both residuals the v0.68 clean-room review
+        named are closed, by fixing the LAYER that was wrong rather than adding
+        another check.
+
+        `SafetyBounds::parse("pmp")` now returns an error instead of `Mpu`.
+        `synth-core` is PUBLISHED, so until now a library caller got exactly
+        the alias the CLI refuses — and a unit test PINNED it, which is worse
+        than the parse arm: anyone fixing the parse would have been told by the
+        suite that they had broken something. That test is flipped to require
+        the refusal.
+
+        REFUSING IN THE PARSE FIXED THE SECOND RESIDUAL FOR FREE. On AArch64
+        `pmp` had been refused by the older #865 mask/mpu check, whose message
+        says "mpu" — one backend answering a `pmp` request by discussing a
+        different mode. Nothing now reaches a per-backend check, so all three
+        backends emit one message naming what the user typed. Measured on all
+        three before and after.
+
+        THE WORDING IS #1284's, VERBATIM, and that is the evidence rather than
+        a courtesy. Rewording it broke two v0.68 tests that pin what the user
+        sees; the tempting fix was to update those tests to my new prose, which
+        would have destroyed the proof that the earlier fix still holds. The
+        contract did not change here — only the layer enforcing it did — so the
+        library inherits the phrasing and #1284's nine tests pass UNEDITED.
+      verified-by: >-
+        `cargo test -p synth-cli --test mpu_honest_1284 --test pmp_is_not_an_alias_1317`
+        — 9 + 4 tests, all green: v0.68's suite unedited, plus refusal on ARM,
+        RV32 and AArch64 each asserting the message names `pmp` and says it is
+        never a silent alias.
+
+        NEGATIVE CONTROL, the load-bearing one:
+        `mpu_still_reaches_its_own_diagnostic_1317` asserts `--safety-bounds
+        mpu` still gets its OWN #1145/#1284 diagnostic and is explicitly NOT
+        answered with the pmp message. Refusing earlier in the pipeline is
+        exactly the change that could have swallowed a neighbouring mode's
+        error, turning a precise diagnostic into a blunt one.
+
+        RED-FIRST is the flipped pin: `SafetyBounds::parse("pmp")` previously
+        asserted `== SafetyBounds::Mpu`; it now asserts an error whose message
+        names #1317 and "never a silent alias". The old assertion actively
+        locked the defect in place.
+
+        fmt 0 / clippy 0 / cargo test --workspace 0 (167 ok) / claim_check
+        75/75 / status_evidence 0. NOT claimed: that synth implements RV32 PMP.
+        It does not — that is why the spelling is refused.
+
