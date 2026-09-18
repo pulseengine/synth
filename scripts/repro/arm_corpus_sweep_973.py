@@ -226,18 +226,26 @@ EXPECTED_DECLINES = {
     # day #1230's underlying allocator bug is fixed, same as that oracle's
     # pin.
     "ra003_switch_1230.wat": "VCR-RA-003 JoinValueNotAvailable (#1230 — the fixture's own point)",
-    # RQ-69-PAGESIZE (#1315). These two fixtures EXIST to be refused: each
-    # carries a module-level declaration synth does not honour, and v0.69
-    # turned silent acceptance into a loud decline at decode time. A decline
-    # here is the fixture's whole point, exactly like `ra003_switch_1230.wat`
-    # above — and unlike that one, this pair does NOT move the day a bug is
-    # fixed, because refusing is the shipped behaviour, not a placeholder.
-    #
-    # They are listed rather than kept out of `scripts/repro/`: the sweep
-    # compiling every fixture is what makes it a corpus, and a refusal fixture
-    # parked outside the corpus is a refusal nothing re-checks.
-    "custom_page_size_1315.wat": "declared page size other than 64 KiB is refused at decode (#1315)",
-    "shared_memory_1315.wat": "a shared memory is refused at decode — no synchronization is emitted (#1315)",
+}
+
+# RQ-69-PAGESIZE (#1315): fixtures REFUSED AT THE MODULE LEVEL, by design.
+#
+# A different category from EXPECTED_DECLINES above, and the distinction is the
+# script's own: a #952 decline means SOME FUNCTIONS did not compile and synth
+# refused to ship an object missing them. These fixtures never get that far —
+# they carry a module-level declaration synth does not honour, and v0.69 turned
+# silent acceptance into a loud refusal at DECODE time, before any function is
+# selected. Filing them under EXPECTED_DECLINES does not work (they never enter
+# `declined`) and adds a STALE-entry failure on top; they belong here.
+#
+# They stay in `scripts/repro/` rather than being parked outside the corpus: the
+# sweep compiling every fixture is what makes it a corpus, and a refusal nothing
+# re-checks is a refusal that can rot. Each entry names the substring that must
+# appear in the refusal, so an entry cannot silently start matching some OTHER
+# failure.
+REFUSED_BY_DESIGN = {
+    "custom_page_size_1315.wat": "#1315",
+    "shared_memory_1315.wat": "#1315",
 }
 
 # Compile floor: a FLOOR, so adding fixtures cannot redden the job. Measured
@@ -501,6 +509,7 @@ def main():
         return 1
 
     compiled, declined, unexpected = [], {}, []
+    refused_by_design = []
     objects = {}
     tmp = tempfile.TemporaryDirectory()
     td = tmp.name
@@ -512,12 +521,16 @@ def main():
             objects[wat.name] = out
         elif "#952" in log or "no functions compiled successfully" in log:
             declined[wat.name] = decline_reason(log)
+        elif wat.name in REFUSED_BY_DESIGN and REFUSED_BY_DESIGN[wat.name] in log:
+            # Refused at the module level, by design (#1315) — not a #952
+            # decline and not a hard error. Counted so the category is visible.
+            refused_by_design.append(wat.name)
         else:
             unexpected.append((wat.name, rc, log.strip()[-300:]))
 
     print(f"PHASE A — ARM compile coverage ({TARGET}, --relocatable --all-exports)")
     print(f"  fixtures={len(wats)} compiled={len(compiled)} declined={len(declined)} "
-          f"hard-error={len(unexpected)}")
+          f"refused-by-design={len(refused_by_design)} hard-error={len(unexpected)}")
 
     fails = []
     for name, rc, log in unexpected:
@@ -539,6 +552,19 @@ def main():
             fails.append(
                 f"PHASE A STALE: {name} is on EXPECTED_DECLINES but no longer exists "
                 f"in scripts/repro/ — remove the entry."
+            )
+    for name in sorted(REFUSED_BY_DESIGN):
+        if name in compiled:
+            fails.append(
+                f"PHASE A RATCHET: {name} now COMPILES for ARM but is on "
+                f"REFUSED_BY_DESIGN (#1315) — the refusal regressed, or the "
+                f"entry is stale."
+            )
+        elif name not in refused_by_design:
+            fails.append(
+                f"PHASE A STALE: {name} is on REFUSED_BY_DESIGN but did not "
+                f"produce its expected refusal — remove the entry or fix the "
+                f"refusal."
             )
     if len(compiled) < MIN_COMPILED:
         fails.append(
