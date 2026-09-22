@@ -5435,6 +5435,13 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/wcet_phase6_936_i64_leaf_soundness.py
       - name: WCET phase-7 I32WrapI64/I64ExtendI32S/U conversion soundness (RQ-59-WCETI64, #936)
         run: python scripts/oracle_run.py scripts/repro/wcet_phase7_936_i64_conv_soundness.py
+      # RQ-71-STACKDEPTH (#1341): the stack figure is not a WCET phase — it is a
+      # sibling pass with a different composition rule (MAX over the call tree,
+      # not a trip-weighted sum) and a different decline set. It rides in this
+      # job because it needs the same unicorn dependency, which the cargo gates
+      # do not have.
+      - name: Stack-depth bound soundness — peak SP under execution (RQ-71-STACKDEPTH, #1341)
+        run: python scripts/oracle_run.py scripts/repro/stack_depth_1341.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
       # met its declared floor AND that the expected number of them
       # reported at all — a step deleted, commented out, or skipped by an
@@ -5445,7 +5452,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 6
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 7
 
   mcdc-structural-coverage:
     name: MC/DC structural coverage over synth's decision logic (RQ-57-MCDC, #912)

@@ -888,6 +888,10 @@ pub struct CompiledFunction {
     /// on the Thumb-2 path that produced `wcet`. Purely additive, `.text`-invisible
     /// (frozen-safe) — derived from the already-decided instruction list.
     pub wcet_intermediate: Option<crate::wcet::WcetIntermediate>,
+    /// RQ-71-STACKDEPTH (#1341): this function's own native-stack profile,
+    /// read off the SAME final stream `wcet_intermediate` is read from.
+    /// `None` on backends that emit no ArmInstruction stream.
+    pub stack_frame: Option<crate::stack_depth::StackFrame>,
 }
 
 /// Result of compiling a full module

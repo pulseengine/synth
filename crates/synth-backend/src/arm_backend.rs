@@ -194,6 +194,13 @@ impl Backend for ArmBackend {
         // lone `CompiledFunction` without running the module composer; the CLI
         // `--emit-wcet` path IGNORES this and composes `wcet_intermediate` across
         // the whole call graph instead (its result overwrites the report).
+        // RQ-71-STACKDEPTH (#1341): the native-stack profile, from the SAME
+        // final stream. Unconditional and cheap (one linear walk); the CLI
+        // decides whether to report it. It is NOT gated on the WCET decline —
+        // a data-dependent loop is WCET-unbounded and stack-bounded.
+        let stack_frame = final_instrs
+            .as_ref()
+            .map(|instrs| crate::stack_depth::analyze_function(name, instrs));
         let wcet = final_instrs.map(|instrs| {
             let hints = config
                 .wcet_hints
@@ -211,6 +218,7 @@ impl Backend for ArmBackend {
             branch_map,
             wcet,
             wcet_intermediate,
+            stack_frame,
         })
     }
 

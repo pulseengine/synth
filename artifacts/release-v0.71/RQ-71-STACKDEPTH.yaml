@@ -75,7 +75,94 @@ artifacts:
       that four releases running declared 100% `manual:` done-when, which R3
       can never fire on, and printed that as though it were evaluation.
 
-    status: proposed
+
+      DELIVERED. `--emit-stack-depth` writes a `synth-stack-v1` sidecar
+      (`<output>.stack.json`) with a per-export maximum native stack depth, or a
+      NAMED decline. The composition is `own + MAX over the call tree`; each
+      function's own cost is read off the EMITTED STREAM by a walker that tracks
+      the running SP delta and takes the maximum over every instruction
+      boundary, so a transient push inside an encoder expansion counts without
+      enumerating which ops those are.
+
+      THE THREE WAYS TO COUNT, MEASURED IN-REPO on the committed
+      `stack_depth_branch_1341.wat` (four functions; `top` calls `a` and `b`,
+      both call `leaf`):
+
+        leaf   push { r4, lr }        =  8   sub sp ABSENT   frame   8
+        a      push.w { r4-r8, lr }   = 24   sub sp #0x20    frame  56
+        b      push.w { r4-r8, lr }   = 24   sub sp #0x20    frame  56
+        top    push.w { r4-r8, lr }   = 24   sub sp #0x20    frame  56
+
+        (a) the reporter's sum of `sub sp` only :  96 B  UNDER by 24 (20%)
+        (b) a naive sum of every frame          : 176 B  OVER  by 56 (46%)
+        (c) TRUTH: max over root-to-leaf paths  : 120 B
+
+      (a) is the DANGEROUS direction and misses THREE things, each measured
+      rather than argued. The prologue moves SP in up to three separate steps —
+      `push.w {r4-r8,lr}` (24 B, always), `vpush {d8-d15}` (64 B, conditional),
+      and `sub sp` — and `sub sp` IS EMITTED ONLY WHEN `frame_size > 0`, so
+      `leaf` consumes 8 bytes while being invisible to that grep. And the
+      immediate is printed in HEX: `#0x20` is 32, which a `#[0-9]+` regex reads
+      as `0`. That last one is not hypothetical — the first measuring command
+      written FOR THIS ARTIFACT had exactly that bug and reported "sum: 0".
+
+      THE FIGURE DEPENDS ON THE LINK MODE, AND THAT IS LEGITIMATE. The oracle's
+      first version asserted `--relocatable` and self-contained builds report the
+      same number. They do not: 8/64/64/120 against 16/72/72/128 on the same
+      fixture. `--relocatable` forces the DIRECT selector (#197); the optimized
+      path's prologue costs 8 more bytes per frame. So the number is a property
+      of THE BUILD YOU SHIP and an embedder must read it from their own object —
+      the oracle now asserts the two paths agree on WHICH functions are
+      boundable, and lets the figures differ.
+
+      THE DECLINE SET IS NOT THE WCET ONE, and reusing it would have been a
+      silent mistake. `WcetDecline` carries `Loop`, `LoopedExpansion`,
+      `UnmodeledOp` and `UnresolvedBranch`; none affects stack depth, because a
+      loop body reuses one frame every trip. A data-dependent loop is
+      WCET-unbounded and perfectly stack-bounded — riding on the WCET decline
+      would have refused a bound for most real modules, the reporter's control
+      loop included. So this is a sibling pass sharing only the DFS shape.
+
+      EVIDENCE — the oracle, which found two of its own author's errors:
+        - `scripts/repro/stack_depth_1341.py`, CI-wired, 6 emulations. RED-FIRST
+          against the pre-feature binary (`rc=1`, "unexpected argument
+          `--emit-stack-depth`").
+        - Both bounded fixtures report 128 B against a measured peak of 128 B —
+          slack ZERO. The bound is not merely sound here, it is exact.
+        - `call_indirect` DECLINES with that reason named. It reaches the stream
+          as `ldr rN,[pc,#..]` + `blx rN`, not as a `CallIndirect` pseudo-op, so
+          the catch-all was declining it as `unknown-sp-move` — safe, and wrong:
+          it tells an embedder the walker got confused rather than that their
+          call graph is unresolvable. The oracle demanded the accurate reason.
+        - The oracle also wrongly required that NOTHING in an unboundable module
+          be bounded. The leaves of the `call_indirect` fixture are perfectly
+          boundable; only the EXPORT matters. Both corrections are recorded in
+          the script rather than quietly applied.
+        - 7 `synth-backend` unit tests, including
+          `composition_takes_the_max_over_branches_not_the_sum`, which is the one
+          that would catch a regression to the WCET composer's arithmetic.
+
+      NOT CLAIMED, and #1341 ASKED FOR TWO THINGS — this ships ONE of them.
+      The reporter's list was: (1) report the depth at compile time, (2) record
+      it IN THE OBJECT so a build step can assert the embedder's region against
+      it rather than a human copying a number, (3) document it.
+
+        (1) DONE — the `synth-stack-v1` sidecar and a compile-time line.
+        (2) NOT DONE. There is no ELF note section carrying the figure, so a
+            build step must read the sidecar beside the object rather than the
+            object itself. That is weaker than asked: a sidecar can be lost,
+            stale, or not copied alongside the `.o`. Recorded as the follow-up
+            it is, not folded into the delivery.
+        (3) ALREADY HALF-MET BEFORE THIS WORK and unchanged:
+            `docs/embedder-abi-relocatable-arm.md` "Region requirements" already
+            said under **Stack** that the embedder owns placement and size. What
+            was missing was a NUMBER, which (1) now supplies.
+
+      The reporter's own module is an issue attachment and is not in this
+      repository, so their 1984/4032 B bracketing stays [REPORTER-ONLY]; this
+      release does not restate it as re-derived. What IS re-derivable is the
+      committed fixture set and the executed oracle.
+    status: implemented
     release: v0.71
     tags:
       - downstream-blocker
@@ -90,4 +177,5 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#1341"
+      landed: "#1341"
       done-when: "file:scripts/repro/stack_depth_1341.py"

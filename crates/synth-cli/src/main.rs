@@ -537,6 +537,29 @@ enum Commands {
         #[arg(long)]
         emit_wcet: bool,
 
+        /// RQ-71-STACKDEPTH (#1341): emit the `synth-stack-v1` per-export
+        /// MAXIMUM NATIVE STACK DEPTH as a JSON sidecar next to the output
+        /// (`<output>.stack.json`).
+        ///
+        /// A `--relocatable` object already tells the embedder how much LINEAR
+        /// MEMORY to reserve and nothing at all about native stack, so the
+        /// region has to be guessed — and guessing low fails SILENTLY, with a
+        /// correct-looking result and a corrupted pointer somewhere else
+        /// (#1341, measured on PX4/NuttX).
+        ///
+        /// The figure is `own + MAX over the call tree`, never a sum: a callee
+        /// invoked 1000 times in a loop costs 1000x the cycles and ONCE the
+        /// stack. Each function's own cost is read off the EMITTED STREAM
+        /// (callee-saved `push`, the AAPCS VFP `vpush`, `sub sp`, and any
+        /// transient push inside an encoder expansion), which is why it counts
+        /// functions whose `frame_size` is 0 and emit no `sub sp` at all.
+        /// Anything unbounded — recursion, `call_indirect`, an external callee —
+        /// DECLINES with a machine-readable reason rather than reporting a
+        /// lower bound. Purely additive: `.text` is byte-identical; off by
+        /// default. ARM (Thumb-2) only in v1.
+        #[arg(long)]
+        emit_stack_depth: bool,
+
         /// #778 phase 2 (v0.47): a `synth-wcet-hints-v1` JSON file of UNTRUSTED
         /// per-function loop-trip-count hints (the scry oracle seam). Requires
         /// `--emit-wcet`. Every hint is soundly CHECKED against synth's own
@@ -804,6 +827,7 @@ fn main() -> Result<()> {
             debug_line,
             emit_provenance,
             emit_wcet,
+            emit_stack_depth,
             wcet_hints,
             volatile_segment,
             stack_layout,
@@ -913,6 +937,7 @@ fn main() -> Result<()> {
                 debug_line,
                 emit_provenance,
                 emit_wcet,
+                emit_stack_depth,
                 wcet_hints,
                 volatile_segments,
                 stack_layout,
@@ -1847,6 +1872,9 @@ fn compile_command(
     emit_provenance: bool,
     // #778: `--emit-wcet` — write the synth-wcet-v1 sound worst-case-cycle sidecar.
     emit_wcet: bool,
+    // RQ-71-STACKDEPTH (#1341): `--emit-stack-depth` — write the
+    // synth-stack-v1 per-export maximum native stack depth sidecar.
+    emit_stack_depth: bool,
     // #778 phase 2: parsed --wcet-hints (UNTRUSTED; verified per loop, never
     // trusted). Only consulted by the WCET sidecar computation.
     wcet_hints: Option<synth_core::wcet::WcetHints>,
@@ -1947,6 +1975,7 @@ fn compile_command(
             debug_line,
             emit_provenance,
             emit_wcet,
+            emit_stack_depth,
             wcet_hints,
             volatile_segments,
             stack_layout,
@@ -3775,6 +3804,8 @@ fn compile_all_exports(
     emit_provenance: bool,
     // #778: write the synth-wcet-v1 sound worst-case-cycle JSON sidecar.
     emit_wcet: bool,
+    // RQ-71-STACKDEPTH (#1341): emit the per-export native stack bound.
+    emit_stack_depth: bool,
     // #778 phase 2: parsed --wcet-hints (UNTRUSTED; verified per loop, never
     // trusted into a bound). Threaded to the CompileConfig for the per-function
     // WCET computation only — codegen never reads it.
@@ -3815,6 +3846,9 @@ fn compile_all_exports(
     let wcet_core_class = synth_backend::wcet::sound_core_class(&target_spec.triple)
         .map(str::to_string)
         .unwrap_or_else(|| target_spec.triple.clone());
+    // RQ-71-STACKDEPTH (#1341): the stack sidecar names the same module, but
+    // `module_name` is moved into the WCET report below, so take the copy here.
+    let stack_module_name = module_name.clone();
     let mut wcet_report =
         emit_wcet.then(|| synth_core::wcet::WcetReport::new(module_name, wcet_core_class));
 
@@ -4827,6 +4861,16 @@ fn compile_all_exports(
     // every function compiles. `func_none` is a placeholder for a function that
     // produced no intermediate (non-Thumb-2 backend) → resolved to an
     // UnsupportedCore decline, keeping the report COMPLETE.
+    // RQ-71-STACKDEPTH (#1341). A SEPARATE collection from the WCET one on
+    // purpose: the two decline sets differ. `WcetDecline` includes `Loop`,
+    // `LoopedExpansion`, `UnmodeledOp` and `UnresolvedBranch`, none of which
+    // affect stack depth — a data-dependent loop is WCET-unbounded and
+    // perfectly stack-bounded, because the body reuses one frame every trip.
+    // Riding on the WCET decline would refuse a stack bound for most real
+    // modules, the reporter's control loop included.
+    let mut stack_frames: Vec<synth_core::stack_depth::StackFrame> = Vec::new();
+    let mut stack_label_index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let mut wcet_intermediates: Vec<synth_core::wcet::WcetIntermediate> = Vec::new();
     let mut wcet_label_index: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
@@ -5148,6 +5192,24 @@ fn compile_all_exports(
             });
             wcet_label_index.insert(format!("func_{}", func.index), wcet_intermediates.len());
             wcet_intermediates.push(inter);
+        }
+
+        // RQ-71-STACKDEPTH (#1341): the same per-function collection, keyed the
+        // same way. A backend that emits no ArmInstruction stream yields no
+        // profile; record an explicit UnknownSpMove decline so the map stays
+        // COMPLETE — every compiled function bounded-or-explicitly-unbounded,
+        // never silently missing, which for a stack figure would read as 0.
+        if emit_stack_depth {
+            let frame = compiled.stack_frame.clone().unwrap_or_else(|| {
+                synth_core::stack_depth::StackFrame {
+                    name: name.clone(),
+                    own_bytes: 0,
+                    calls: Vec::new(),
+                    decline: Some(synth_core::stack_depth::StackDecline::UnknownSpMove),
+                }
+            });
+            stack_label_index.insert(format!("func_{}", func.index), stack_frames.len());
+            stack_frames.push(frame);
         }
 
         if !compiled.relocations.is_empty() {
@@ -6141,6 +6203,40 @@ fn compile_all_exports(
     }
 
     // #778: write the synth-wcet-v1 sound worst-case-cycle sidecar next to the
+    // RQ-71-STACKDEPTH (#1341): compose the per-function profiles into a
+    // per-export MAXIMUM over the call tree and write `<output>.stack.json`.
+    // `own + MAX(callees)`, never a sum — see synth_backend::stack_depth.
+    if emit_stack_depth {
+        let results = synth_backend::stack_depth::compose(&stack_frames, &stack_label_index);
+        let mut report = synth_core::stack_depth::StackReport::new(stack_module_name);
+        report.exports = results.into_iter().map(Into::into).collect();
+        let sidecar = synth_core::stack_depth::StackReport::sidecar_path(&output);
+        let json = report
+            .to_json()
+            .with_context(|| "Failed to serialize stack-depth report".to_string())?;
+        std::fs::write(&sidecar, json).with_context(|| {
+            format!("Failed to write stack-depth report: {}", sidecar.display())
+        })?;
+        let bounded = report
+            .exports
+            .iter()
+            .filter(|e| e.status == "bounded")
+            .count();
+        let deepest = report
+            .exports
+            .iter()
+            .filter_map(|e| e.bytes)
+            .max()
+            .unwrap_or(0);
+        println!(
+            "  Stack: wrote {} ({} bounded, {} declined, deepest {} B) — synth-stack-v1",
+            sidecar.display(),
+            bounded,
+            report.exports.len() - bounded,
+            deepest
+        );
+    }
+
     // output (`<output>.wcet.json`). Additive; the ELF is byte-identical.
     if let Some(wr) = wcet_report {
         // #778 phase 2 / #1063: a --wcet-hints entry that does not address a
