@@ -1,0 +1,99 @@
+# v0.71 — "The number the consumer needs"
+#
+# This file exists because v0.70 did not have one. Every release v0.61..v0.69
+# carries a `_release.yaml`; v0.70's planning PR (#1336) omitted it, and the gap
+# was invisible because `status_evidence_check`'s R0 constrains this file only IF
+# PRESENT (it must parse, and must be comments-only — a keyed `_release.yaml` is
+# skipped silently by rivet). v0.70's cold review found the omission and
+# deliberately did NOT back-fill it: it is a plan-time document, and writing one
+# at a tag manufactures the evidence. So it is written here, at plan time, where
+# it belongs.
+#
+# EVERY CANDIDATE BELOW HAD ITS REFUTING COMMAND RUN AGAINST SOURCE BEFORE IT WAS
+# WRITTEN. Three were reshaped by that and one was nearly scoped wrong:
+#
+#   - STACKDEPTH's proposed mechanism is UNSOUND AS THE REPORTER STATED IT.
+#     "If --emit-wcet already walks the call graph, the same traversal would
+#     yield the depth" — the traversal shape is right, the arithmetic is not.
+#     `wcet_compose.rs` composes `total = own + Σ_site multiplier × callee_total`
+#     where `multiplier` is the site's PROVEN EXECUTION COUNT. A callee invoked
+#     1000 times in a proven loop costs 1000× the cycles and ONE× the stack.
+#     Stack depth is a MAX over the call tree, not a trip-weighted SUM. Reusing
+#     the composer unchanged would over-report by orders of magnitude, and an
+#     over-report is not the safe direction: an embedder told 2 MB for a 2.3 KB
+#     requirement stops believing the number. Also measured: `frame_size` appears
+#     in NO `wcet_*.rs` file, so the intermediate needs threading too.
+#   - LITPOOL was MISNAMED. `arm_backend.rs:1727`'s `imm12 > 4095` refusal is
+#     CORRECT — Thumb-2 LDR(literal) really has that range and failing beats
+#     miscompiling. What broke is the assumption in the comment beside it,
+#     "these function bodies are far smaller", combined with synth emitting
+#     exactly ONE pool per function, appended at the end. The lane is CONSTANT
+#     ISLANDS, not "widen the range".
+#   - STACKDEPTH's documentation ask is already half-met: the "Region
+#     requirements" section of docs/embedder-abi-relocatable-arm.md already says
+#     the embedder owns stack placement and size. The gap is that no NUMBER is
+#     offered and the statement is not reachable from the compile output.
+#
+# PRIORITY — ORDERED BY WHO IS BLOCKED, and both musts are cpetig again:
+#
+#   must    STACKDEPTH #1341 — a --relocatable object says how much LINEAR MEMORY
+#                     to reserve and NOTHING about native stack. Guess low and
+#                     the failure is silent memory corruption with a bit-exact
+#                     correct result: the export returned the right answer every
+#                     time and then overwrote an RTOS pointer. Bracketed 1984 B
+#                     faults / 4032 B clean. Summing all 18 frame allocations
+#                     gives 1456 B, which is both wrong and an underestimate.
+#                     This is the silent-wrongness class synth exists to refuse.
+#   must    ISLANDS   #345/#1331 — cpetig CONFIRMED v0.70's f32 fix on their own
+#                     module and named the next wall themselves. Their working
+#                     route today is --embedder-data-init --embedder-global-init,
+#                     so --native-pointer-abi is a PREFERENCE blocker, not a hard
+#                     one — which is the answer to v0.70's asked-and-unanswered
+#                     question, arriving by demonstration rather than by reply.
+#                     Ranked second for that reason.
+#   should  MUSL      #1349 — Linux assets are glibc-2.39-only, excluding Ubuntu
+#                     22.04/Debian 12/RHEL 9/Alpine. A varve layer's portability
+#                     is the MAXIMUM floor across its payloads, so one 2.39
+#                     payload sets the floor for the whole pinned toolchain.
+#                     v0.70 SHIPPED WITH THIS TOO, said plainly in its report.
+#   should  MUTANTDRIFT #1189 — a mutant pinned by file:line:col is invalidated by
+#                     any edit ABOVE it. v0.70 hit this: a +27/-5 change to
+#                     liveness.rs moved a pinned site 7346 -> 7350 and the gate
+#                     reddened saying "survivors must reproduce", which reads as
+#                     lost coverage. `reanchor` fixes it and CI never runs it.
+#   should  ISSUESCOPE — R11 makes `disposition:` beside a claiming status a hard
+#                     contradiction, correctly. So an artifact whose scope IS
+#                     delivered while its ISSUE stays broader can say so only in
+#                     prose. Nothing machine-checkable connects "implemented" to
+#                     "do not auto-close this issue" — one bad PR body from
+#                     repeating v0.69's auto-close of cpetig's live blocker.
+#   should  VFPALIAS  #881 — the sibling of v0.70's headline, SHARPENED by its
+#                     refuting command rather than assumed: the VFP twin already
+#                     tracks a value identity per half (`src_word` + `src_version`)
+#                     and treats a provably-identical re-store as benign, so it
+#                     already defends the case the integer check could not. The
+#                     open question is narrower — a frame-homed VFP local under
+#                     the #1069 rung producing two differently-versioned stores
+#                     to one half.
+#   carried PAGELIB   #1339 — still waiting on gale/#1145; re-verify at the cut.
+#   carried ARCHMODEL #1136 — spar#445, fifth consecutive N/A; re-verify at the
+#                     cut and CHECK THE TAGS against the predecessor artifact
+#                     (v0.69's lost its `feature-loop` tag and went invisible).
+#
+# HONEST RISKS, recorded before the work:
+#   - STACKDEPTH MAY NOT BE BOUNDABLE FOR THE MODULE THAT ASKED. If the component
+#     contains `call_indirect` anywhere on a reachable path, the answer is a LOUD
+#     DECLINE naming why, not a number. cpetig's module reports call_indirect = 0,
+#     so it is boundable — but the deliverable must decline honestly for modules
+#     that are not, because a silent lower bound reproduces the reported bug.
+#   - ISLANDS IS ON THE EMITTED-BYTES PATH. A pool jumped over incorrectly is a
+#     branch into data, the loudest possible miscompile. It needs byte-identity
+#     for functions that need no island AND an execution differential for those
+#     that do. This is not a one-line change and must not be scoped as one.
+#   - MUSL IS RELEASE ENGINEERING, NOT COMPILER WORK. It will look cheap and may
+#     not be: a second target means a second set of assets, a second sigil
+#     attestation path, and a varve layer decision. Measure before promising.
+#   - THE ANCHOR MOVES IN THIS PR. status_evidence's ANCHOR_TAG/ANCHOR_DELIVERY/
+#     ANCHOR_PROGRAMME go to v0.70.0 with their claims.yaml pin, all three DERIVED
+#     by setting a placeholder and letting the checker report the real counts.
+#     v0.68's planning PR forgot and the whole release printed ANCHOR-LAG.

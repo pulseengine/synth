@@ -1,0 +1,39 @@
+artifacts:
+  - id: RQ-71-PAGELIB
+    type: system-req
+    title: "A caller of the PUBLISHED synth-core still gets a custom page size silently ignored — the CLI refuses it, the library does not"
+    description: >
+      Carried from v0.70 (RQ-70-PAGELIB, #1339), which deferred it WITH the
+      measurement rather than dropping it. Re-verify at the v0.71 cut before
+      scoping: `refuse_custom_page_size` / `refuse_shared_memory` live in
+      `crates/synth-cli/src/main.rs`, while `crates/synth-core/src/wasm_decoder.rs`
+      DECODES `page_size_log2` — its own comment says "Consumed by
+      `refuse_custom_page_size` in synth-cli" — and does not refuse.
+
+      So the refusal is CLI-only. A downstream consumer of the published
+      `synth-core` crate gets a declared custom page size silently ignored: exactly
+      the shape #1317 closed in the SAME release, on the opposite principle.
+
+      WHY IT IS STILL DEFERRED RATHER THAN SCOPED. Where the refusal belongs depends
+      on gale's page-granular sizing (`REQ-OS-MULTITENANT-001`, #1145). Moving it
+      into `synth-core` ahead of that answer would fix the layering twice — once
+      now and once when the downstream requirement lands. CONSULT #1145 before
+      scoping; if gale has answered by the v0.71 cut, this becomes a `should` with a
+      concrete shape, and if not it defers again WITH the measurement restated, not
+      quietly.
+    status: proposed
+    release: v0.71
+    tags:
+      - carried
+      - library-vs-cli
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: interface
+      priority: should
+      verification-track: differential
+      issue: "#1339"
+      disposition: deferred
+      done-when: "manual: either the refusal moves into synth-core so a library caller gets the same loud decline as a CLI caller, PROVEN by a test that calls the published crate API directly and expects an Err; or #1145's answer is recorded and this defers again with the measurement restated"

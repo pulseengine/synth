@@ -1,0 +1,62 @@
+artifacts:
+  - id: RQ-71-MUSL
+    type: system-req
+    title: "Linux release assets are glibc-2.39-only, so one payload sets the portability floor for the whole varve pinned layer"
+    description: >
+      #1349, 2026-09-22. Measured on the v0.69.0 Linux x86_64 release asset,
+      downloaded from this repo: `ELF 64-bit LSB pie executable, dynamically
+      linked, interpreter /lib64/ld-linux-x86-64.so.2`, and
+      `strings -a synth | grep -oE 'GLIBC_[0-9.]+' | sort -V | tail -1` gives
+      **GLIBC_2.39**.
+
+      That excludes Ubuntu 22.04 (2.35), Debian 12 bookworm (2.36), RHEL 9 and
+      Amazon Linux 2023 (2.34), Ubuntu 20.04 (2.31), and Alpine / distroless-static
+      entirely.
+
+      WHY IT IS NOT MERELY A CONVENIENCE. These binaries are ingested into the varve
+      `pulseengine` realm's rolling layer — the pinned toolchain an air-gapped or
+      enterprise consumer installs. A layer's portability is the MAXIMUM floor
+      across its payloads, so a single 2.39 payload sets the floor for everything
+      pinned beside it.
+
+      v0.70 SHIPS WITH THIS TOO, AND SAID SO. The issue arrived on the day of the
+      v0.70 cut. Changing the release workflow between an RC and its tag is exactly
+      the unreviewed late change this process exists to prevent, so v0.70's assets
+      carry the same 2.39 floor and its release report states that plainly rather
+      than leaving a consumer to discover it.
+
+      REFUTING COMMANDS TO RUN BEFORE SCOPING, not after. First: inspect the
+      v0.70.0 asset the moment it publishes, with the same two commands — if the
+      floor is already lower, the runner image moved under us and the premise needs
+      re-measuring. Second: `grep -n 'musl' .github/workflows/*.yml` — measured at
+      the v0.70 cut, the only hit is `fuzz-smoke.yml`, so no musl RELEASE target
+      exists today; publishing an artifact that is already built would be a much
+      smaller lane than adding a target, and the two must not be confused.
+
+      HONEST RISK: this is release engineering, not compiler work, and it will look
+      cheaper than it is. A second target means a second set of assets, a second
+      path through sigil attestation, and a varve layer decision about which
+      payload is canonical. Measure before promising.
+
+      THE MACHINE'S HALF OF THIS IS `contains:.github/workflows/release.yml:musl`. The full obligation is:
+      a Linux release asset is published whose dynamic-loader floor is verified by the issue's own two commands (file + the GLIBC_ strings scan) to run on Ubuntu 22.04, Debian 12 and RHEL 9, or a musl-static asset is published alongside; and the release process documents which asset varve's layer pins
+      The predicate cannot express all of that — it checks that the artefact
+      EXISTS, not that it is right. It is still worth having: v0.70 measured
+      that four releases running declared 100% `manual:` done-when, which R3
+      can never fire on, and printed that as though it were evaluation.
+
+    status: proposed
+    release: v0.71
+    tags:
+      - release-engineering
+      - downstream-consumer
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: constraint
+      priority: should
+      verification-track: differential
+      issue: "#1349"
+      done-when: "contains:.github/workflows/release.yml:musl"

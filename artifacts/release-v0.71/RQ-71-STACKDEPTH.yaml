@@ -1,0 +1,93 @@
+artifacts:
+  - id: RQ-71-STACKDEPTH
+    type: system-req
+    title: "A --relocatable object says how much LINEAR MEMORY to reserve and nothing about native stack — guess low and the failure is silent memory corruption with a bit-exact correct result"
+    description: >
+      cpetig, #1341, 2026-09-19, on PX4/NuttX 12.12.0 (px4_fmu-v6xrt, i.MX RT1170,
+      cortex-m7). The export returned the CORRECT ANSWER EVERY TIME — bit-identical
+      to the same component under wasmtime — and then the system crashed somewhere
+      unrelated, differently on each run, with a float-looking bit pattern written
+      over an RTOS pointer. This is the silent-wrongness class synth exists to
+      refuse, arriving through the one channel synth does not police.
+
+      [REPORTER-ONLY] Bracketed on their module, only `STACK_MAIN` varying:
+      1984 B faults, 4032 B clean, 16320 B clean. Guard bands of 32768 B below and
+      4096 B above linear memory were UNTOUCHED and the register contract was intact
+      at fault time, so the export did not write outside the memory it was given —
+      it overran its own task stack.
+
+      WHY THE EMBEDDER CANNOT DERIVE IT TODAY. Summing every frame allocation in the
+      object gives 1456 bytes across 18 frames, largest single frame 232 — which
+      suggests 1984 is ample, and it is not. Without the call graph the sum is both
+      the wrong quantity AND an underestimate.
+
+      THE REPORTER'S PROPOSED MECHANISM IS UNSOUND AS STATED, AND THAT IS THE
+      FINDING THAT SHAPES THIS LANE. They wrote: "If `--emit-wcet` already walks the
+      call graph, the same traversal would yield the depth." The TRAVERSAL is right
+      — `wcet_compose.rs` is a memoized DFS over the direct call graph with exactly
+      the honest declines this needs (recursion, any cycle, `call_indirect`,
+      external calls, a declined callee propagating UP). The ARITHMETIC IS NOT.
+      It composes `total = own + Σ_site multiplier × callee_total`, where
+      `multiplier` is the call site's PROVEN EXECUTION COUNT, so a callee invoked
+      inside a proven 1000-trip loop is counted 1000×. That is correct for cycles
+      and catastrophically wrong for stack: a callee invoked 1000 times
+      SEQUENTIALLY costs 1000× the cycles and ONE× the stack. Stack depth is a MAX
+      over the call tree, not a trip-weighted sum.
+
+      Over-reporting is NOT the safe direction it looks like. An embedder told to
+      reserve 2 MB for a 2.3 KB requirement stops believing the number, and a
+      number nobody believes is worse than no number, because it displaces the
+      investigation that would have found the real one.
+
+      MEASURED, not assumed: `grep -rn 'frame_size' crates/synth-backend/src/wcet_*.rs`
+      returns NOTHING. The composer carries `own_cycles`, not frame sizes, so the
+      intermediate needs `frame_size` threaded onto it. This is a SIBLING pass
+      sharing the DFS and the decline residuals, not a field added to an existing
+      one.
+
+      ALSO MEASURED, and it narrows the ask: synth already has the vocabulary.
+      `crates/synth-cli/src/shadow_budget.rs` defines
+      `StackDepthBound::{Bytes, Unbounded, Unknown}` and
+      `BudgetSource::ProvenStackDepth`, and `main.rs` adapts scry's `StackBound`
+      into it. But that bound is scry's analysis of the WASM module funding the
+      SHADOW-STACK budget on the self-contained path — a different stack on a
+      different path. The TYPE and its trichotomy are the right shape and should be
+      reused rather than reinvented; the number is new.
+
+      AND THE DOCUMENTATION ASK IS ALREADY HALF-MET. #1341's item 3 asks for a line
+      in `docs/embedder-abi-relocatable-arm.md` under "Region requirements". That
+      section exists and already says, under **Stack**: "plain AAPCS — the embedder
+      owns placement and size; `--stack-layout` is refused with `--relocatable`
+      precisely because the linker/harness owns the layout". The gap is not that
+      the words are missing; it is that no NUMBER is offered and the words are not
+      reachable from the compile output. Deliver items 1/2, not 3.
+
+      WHAT WOULD MAKE THIS WRONG TO BUILD: if a reachable `call_indirect` makes the
+      module unboundable, the answer is a LOUD DECLINE naming why — never a number
+      that is silently a lower bound, which would reproduce the exact defect being
+      reported. cpetig's module reports `call_indirect` count 0, so it is boundable;
+      the deliverable must still decline honestly for the ones that are not.
+
+      THE MACHINE'S HALF OF THIS IS `file:scripts/repro/stack_depth_1341.py`. The full obligation is:
+      synth reports a per-export maximum native stack depth for a --relocatable object, derived as a MAX over the call tree (never trip-weighted), reusing StackDepthBound's Bytes|Unbounded|Unknown trichotomy; PROVEN against an executed oracle that measures actual peak SP on a bounded fixture and shows the reported bound is >= it and within a stated factor; and a module with a reachable call_indirect LOUD-DECLINES with the reason named rather than emitting a lower bound
+      The predicate cannot express all of that — it checks that the artefact
+      EXISTS, not that it is right. It is still worth having: v0.70 measured
+      that four releases running declared 100% `manual:` done-when, which R3
+      can never fire on, and printed that as though it were evaluation.
+
+    status: proposed
+    release: v0.71
+    tags:
+      - downstream-blocker
+      - external-reporter
+      - silent-wrongness
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#1341"
+      done-when: "file:scripts/repro/stack_depth_1341.py"

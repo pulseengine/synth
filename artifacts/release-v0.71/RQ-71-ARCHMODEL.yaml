@@ -1,0 +1,43 @@
+artifacts:
+  - id: RQ-71-ARCHMODEL
+    type: system-req
+    title: "Feature-loop steps 1-2 (spar AADL -> WIT) are N/A a FIFTH release running, carried on spar#445 — re-verified at the cut"
+    description: >
+      The recurring N/A, filed again rather than waved off. `spar#445` is the
+      blocker; re-verify its state AT THE v0.71 CUT and record the date, not the
+      memory of a date.
+
+      THE COUNT IS THE `carried-from` CHAIN, NOT A REMEMBERED ORDINAL. Walk it.
+      Do NOT write "release artifacts only exist from v0.63" — that sentence is
+      FALSE (`artifacts/release-v0.56.yaml` onwards exist), it was retracted in
+      RQ-69-ARCHMODEL, and it CAME BACK in RQ-70-ARCHMODEL because that artifact
+      was written from its predecessor's SHAPE rather than its predecessor's
+      CORRECTION. v0.70's cold review caught it the second time. A retraction that
+      lives only in last release's prose is one copy-paste from being un-retracted.
+
+      THE TAGS ON THIS ARTIFACT ARE LOAD-BEARING AND ARE CHECKED, NOT ASSUMED.
+      `loop_conformance_check`'s steps-1-2 slot matches an artifact tagged
+      `feature-loop` AND (`aadl` | `spar`) carrying a `fields.issue`. v0.69's
+      equivalent LOST its `feature-loop` tag, so the filing whose entire purpose is
+      keeping a deferral VISIBLE became invisible to the gate, and the release read
+      DOES-NOT-CONFORM until the cold review found it. v0.70's tags were
+      `[process, carried, spar, aadl, feature-loop]` and conformance passed
+      NA-FILED; this artifact carries the same set deliberately.
+    status: proposed
+    release: v0.71
+    tags:
+      - process
+      - carried
+      - spar
+      - aadl
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: manual
+      issue: "#1136"
+      disposition: deferred
+      done-when: "manual: spar#445's state is re-verified at the v0.71 cut with the date recorded, the carried-from chain is WALKED rather than recalled, and loop_conformance_check reports the steps-1-2 slot as NA-FILED naming this artifact"
