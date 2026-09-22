@@ -3753,7 +3753,12 @@ claims:
     # v0.66 MERGE: both landed in the same wave, so neither branch's value is
     #   correct for this tree. RE-DERIVED below by running oracle_wiring_check
     #   on the merged tree, exactly as the RQ-66-WATCHED note above instructs.
-    text: "--exact-emulation-floor 367759"
+    # v0.71 RQ-71-STACKDEPTH (#1341): 367759 -> 367762. `stack_depth_1341.py`
+    #   declares `emulations >= 3` and is wired into the unicorn job. The pin
+    #   is EXACT (RQ-63-FLOOREQ), so this bump is not optional bookkeeping —
+    #   CI reddened on `Claim Check` until ci.yml AND this line moved together,
+    #   which is the pair working as designed.
+    text: "--exact-emulation-floor 367762"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
