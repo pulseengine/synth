@@ -27,7 +27,7 @@ artifacts:
       scripts/repro/spill_slot_alias_1321.wat   54 lines — reproduces the VCR-RA-003
           SpillSlotAliased refusal on `falcon-cascade#step`. Pre-fix: rc=1, no
           object. Post-fix: an 830-byte object.
-      scripts/repro/npa_static_f32_1331.wat     12 code lines (41 total) — reproduces the
+      scripts/repro/npa_static_f32_1331.wat     12 code lines — reproduces the
           native-pointer static-data f32.load/f32.store decline, both strings.
           Pre-fix: 2 of 2 skipped via #952. Post-fix: an 813-byte object.
 
@@ -64,7 +64,7 @@ artifacts:
     recursive count differs again, because scripts/repro has subdirectories):
 
         at v0.69.0        A=193  B=209    x5 = 965 / 1045
-        at main today     A=194  B=210    x5 = 970 / 1050
+        at the v0.70 cut  A=195  B=211    x5 = 975 / 1055
         with this PR      A=195  B=211    x5 = 975 / 1055
 
     So the plan's "1035 = 207 x 5" was right for the tree it was measured on and

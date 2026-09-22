@@ -1,6 +1,15 @@
 (module
-  ;; RQ-70-NPA (#1331, cpetig, falcon-cascade) — a 12-code-line reduction (41 total,
-  ;; 38 non-blank; same non-blank-non-comment convention as spill_slot_alias_1321.wat)
+  ;; RQ-70-NPA (#1331, cpetig, falcon-cascade) — a 12-CODE-LINE reduction, where
+  ;; "code" means non-blank and non-comment. The same convention counts
+  ;; spill_slot_alias_1321.wat as 54, so the two fixtures are comparable.
+  ;;
+  ;; This header deliberately quotes NO total/non-blank count. It carried
+  ;; "41 total, 38 non-blank" until v0.70's cold review measured 43/40 — the
+  ;; edit that WROTE those numbers had split a comment line in two, so the hunk
+  ;; added the lines it was counting. Correcting them in place then made the
+  ;; file 47/44 and the new numbers wrong the same way. A count of the file it
+  ;; is written in cannot be re-derived after its own next edit; the code-line
+  ;; count is the one figure that survives editing the prose around it.
   ;; of the shape
   ;; that skipped 4 of 6 EXPORTS on their module and emitted NO object at all.
   ;;

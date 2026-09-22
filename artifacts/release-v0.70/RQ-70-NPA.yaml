@@ -72,7 +72,7 @@ artifacts:
     and merely unmasked. Reported to the reporter as a named ceiling they can act on
     rather than as a closed gap.
 
-    RED-FIRST, committed: `scripts/repro/npa_static_f32_1331.wat`, a 20-line
+    RED-FIRST, committed: `scripts/repro/npa_static_f32_1331.wat`, a 12-code-line
     reduction carrying one dynamic-index `f32.load` and one `f32.store` at a memarg
     offset above the SP global's initializer. Pre-fix it skips 2 of 2 functions with
     exactly the two decline strings from the reporter's module and fails via #952;

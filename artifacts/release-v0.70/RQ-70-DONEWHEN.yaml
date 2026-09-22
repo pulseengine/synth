@@ -59,7 +59,11 @@ artifacts:
     done-when to `contains:crates/synth-synthesis/src/liveness.rs:...` and, with its
     `verified-by` present, status_evidence exits 0 — R9 never fires. Delete the
     `verified-by` and the same signature reds it (rc=1). R9 is disarmed by ANY
-    non-empty `verified-by`, and `is_crate_source()` is `parts[0] == "crates"`, so a
+    non-empty `verified-by`, and `is_crate_source()` is
+    `parts[0] == "crates" and "tests" not in parts[1:]` — this artifact quoted only
+    the first conjunct until the cold review restored the second. The conclusion
+    below re-derives either way, but a truncated quote of a predicate is not a quote
+    of it. So a
     `contains:scripts/...` — which is 4 of this release's 7 evaluable signatures — is
     outside its reach entirely. The 22% is a convention this release adopted, not a
     gate it was compelled by; R9's enforceable perimeter is filed as follow-up. The two that remain `manual:` are the two DEFERRALS (ARCHMODEL and

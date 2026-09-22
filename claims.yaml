@@ -1862,8 +1862,19 @@ claims:
               `generate_load_with_bounds_check`/`generate_store_with_bounds_check`
               too, so an access that previously LOUD-DECLINED now emits unguarded.
               That is a compliance-envelope fact a reader of the arm must not have
-              to re-derive, so it is written at both sites (8 lines at `F32Load`,
-              5 at `F32Store`, less 4 lines of superseded text).
+              to re-derive, so it is written at THREE sites, +17/-8 = +9:
+              `select_with_stack.rs` `F32Load` +8/-2 and `F32Store` +5/-3, plus
+              `instruction_selector.rs`'s `is_native_pointer_static_offset` doc
+              comment +4/-3, which had claimed "the float load/store arms still
+              decline loudly" and was therefore FALSE the moment the arms landed.
+
+              THIS SENTENCE WAS ITSELF WRONG UNTIL THE COLD REVIEW, and the total
+              is why it survived. It read "8 lines at `F32Load`, 5 at `F32Store`,
+              less 4 lines of superseded text" — two sites, 13-4 — which reaches
+              the correct +9 by a route that does not exist: removals at those two
+              sites are 5, not 4, and the third site was unmentioned. A reason
+              bound to the right number can still be an unre-derivable account of
+              it, which is exactly the failure this release is named against.
 
               Paying 9 ceiling lines for a disclosure is the trade this ratchet is
               supposed to permit: it counts hand-maintained DECISIONS, and this
@@ -2533,6 +2544,11 @@ claims:
         # behaviour), the two `validate_instructions_*_mve_*` tests and
         # `test_requires_helium_trait`, which build ArmInstructions by hand and
         # never touched the selector.
+        # v0.70 COLD REVIEW: 30122 -> 30131. The same +9 as `selector_lines_code`
+        # — all of it comment, none of it test-module — so the whole-file count
+        # moves by exactly the region-scoped amount. `direction: track` owes no
+        # waiver, but it does owe this line: the convention on this pin is that
+        # every move is recorded, and the move was initially made without one.
         value: 30131
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105

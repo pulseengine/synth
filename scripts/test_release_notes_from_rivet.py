@@ -127,8 +127,17 @@ class Refusals(unittest.TestCase):
         (root / "rivet.yaml").write_text("sources:\n  - path: artifacts\n")
         # Fixture-local config only: this repo is created and destroyed inside
         # the test. It is not a synth commit and never leaves the temp dir.
+        #
+        # The ambient config is neutralised WHOLESALE, not one setting at a
+        # time. Handling `commit.gpgsign` alone left `core.hooksPath` and
+        # `init.templateDir` inherited, so a developer whose global config
+        # points at a hooks framework with a failing `pre-commit` gets three
+        # spurious errors here — a red that is about their machine, not about
+        # the generator. Loud rather than silent, but still wrong.
         env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
-                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
+                   GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+                   GIT_CONFIG_NOSYSTEM="1")
         for cmd in (["init", "-q", "-b", "main"], ["add", "-A"],
                     ["-c", "commit.gpgsign=false", "commit", "-qm", "base"],
                     ["tag", "v0.0.1"]):
@@ -144,10 +153,19 @@ class Refusals(unittest.TestCase):
         )
 
     def test_a_rivet_older_than_the_pin_is_refused(self):
-        """0.36.0 < the 0.37.0 pin must REFUSE, and say why an old rivet lies."""
+        """0.36.0 < the 0.37.0 pin must REFUSE, and say why an old rivet lies.
+
+        The fake reports a NON-EMPTY diff on purpose. With `"{}"` the process
+        still exits non-zero when the version refusal is removed — via the
+        zero-added refusal — so the returncode assertion carried no weight and
+        all the potency sat in the message. A non-empty diff makes both
+        assertions load-bearing: without the version check this run would
+        SUCCEED.
+        """
         with tempfile.TemporaryDirectory() as d:
             td = Path(d)
-            r = self._run(self._repo(td), self._fake_rivet(td, "0.36.0", "{}"))
+            fake = self._fake_rivet(td, "0.36.0", '{"added": ["RQ-70-X"], "removed": []}')
+            r = self._run(self._repo(td), fake)
             self.assertNotEqual(r.returncode, 0, "a stale rivet must be refused")
             self.assertIn("older than the CI pin", r.stderr)
 

@@ -34,7 +34,13 @@ artifacts:
     declares `pub mod dwarf_line`, so the real path is `dwarf_line::tests::<fn>`.
     The scan built module paths only from `mod` DECLARATIONS, never from the FILE,
     so it recorded `tests::<fn>` and missed it. Fixed by recording the file-derived
-    module path too — test names 5243 -> 7242. That is the header's promised safe
+    module path too — test names 5245 -> 7242, BOTH re-derived on the cut tree by
+    running the pre-fix script (`git show 624ca2c0:scripts/artifact_citation_check.py`)
+    and the shipped one against the same checkout. The pair published until the cold
+    review was `5243 -> 7242`, which is derivable from NO single tree: 5243/7239 are
+    this release's parent, 5245/7242 are the cut. Re-deriving one half of a
+    before/after pair and carrying the other is how a comparison stops being one.
+    That is the header's promised safe
     direction working exactly as documented: the approximation failed LOUDLY.
 
     WHY CLAIM-BEARING KEYS AND NOT ALL PROSE: RQ-69-PROSEGATE refuted the

@@ -92,7 +92,7 @@ artifacts:
 
         - [REPORTER-ONLY] fused.wasm rc=1 -> rc=0, 1 of 21 skipped -> 0, and the
           69584-byte object: measured on the reporter's attachment.
-        - `ra003` unit tests 34 -> 39: the potency test above, plus four pinning
+        - `ra003` unit tests 34 -> 40: the potency test above, plus five pinning
           the area semantics — `None` polices everything (the load-bearing
           default), an EMPTY list means "unknown" and also polices everything,
           an aliased slot INSIDE an area is still caught, and a slot outside
@@ -106,9 +106,11 @@ artifacts:
           vectors, mismatches=0, faults=0.
         - ARM corpus sweep BEFORE (same script, pre-fix binary): FAIL,
           `PHASE A NEW DECLINE: spill_slot_alias_1321.wat`. The committed
-          54-line fixture is instruction-identical to the reporter's shape and is
+          54-CODE-LINE fixture (93 total; "code" = non-blank non-comment, the
+          same convention `npa_static_f32_1331.wat` states in its header) is
+          instruction-identical to the reporter's shape and is
           NOT on EXPECTED_DECLINES, so the sweep reds if this fix ever regresses.
-        - `opt.wasm` is UNCHANGED at 7 of 17 skipped, the same 7 functions, all
+        - [REPORTER-ONLY] `opt.wasm` is UNCHANGED at 7 of 17 skipped, the same 7 functions, all
           declining for #1069 pool exhaustion / GI-FPU-002 — causes unrelated to
           aliasing. The fix moves what it explains and nothing else.
 
@@ -125,23 +127,49 @@ artifacts:
       the i64 pool when `layout.spill_area_reserved` is false, which would leave
       a slot handed out at `i64_spill_base` — the region that ALIASES the #204
       param homes, the original #331 shape — unpoliced. That state is
-      unreachable. All EIGHT non-test `spill.alloc()` sites are dominated by a
-      guard: two test the flag directly and return the ladder-recoverable
-      exhaustion `Err` (`instruction_selector.rs:8461` arg-move cycles, `:8650`
-      call-result parking); four sit under a retry rung — `:1076` on
-      `spill_on_exhaustion` via a SHORT-CIRCUITING `||`, `:3392` and `:5479` on
-      `vfp_frame_home_locals`, and `select_with_stack.rs:884`/`:4936` on
-      `vfp_spill_on_exhaustion` — and every rung IMPLIES the area, because
-      `select_with_stack.rs:296` passes exactly that three-way disjunction as
-      `force_spill_area` and `has_i64` ORs it in; the eighth, `:1867` in
-      `alloc_consecutive_pair`, is reached only by i64 pair allocation, which
-      implies `has_i64` by the same derivation. MEASURED, not only argued: an
+      unreachable. There are FIVE non-test `spill.alloc()` CALL SITES, all in
+      `instruction_selector.rs` and none in `select_with_stack.rs`: `:1104`
+      (`spill_deepest_reg`), `:3243` (`alloc_vfp_local_frame_slot`), `:4033`
+      (`spill_deepest_vfp`), `:8473` (arg-move cycles) and `:8657` (call-result
+      parking). Each is dominated by a guard, at EIGHT distinct GUARD sites; the
+      two counts differ because three of the five allocators are helpers reached
+      from more than one guarded caller.
+
+      Two guards test the flag directly and return the ladder-recoverable
+      exhaustion `Err` — `instruction_selector.rs:8461` and `:8650`, immediately
+      above the `:8473` and `:8657` allocations. The other three allocators sit
+      under a retry rung: `instruction_selector.rs:1076` gates `spill_deepest_reg`
+      on `spill_on_exhaustion` through a SHORT-CIRCUITING `||`; `:3392` and
+      `:5479` gate `alloc_vfp_local_frame_slot` on `vfp_frame_home_locals`; and
+      `select_with_stack.rs:884` and `:4936` gate the callers of
+      `vfp_reload_spilled`/`vfp_ensure_headroom`, which own the `:4033`
+      allocation, on `vfp_spill_on_exhaustion`. Every rung IMPLIES the area,
+      because `select_with_stack.rs:296` passes exactly that three-way disjunction
+      as `force_spill_area` and `has_i64` ORs it in. The eighth guard is
+      `instruction_selector.rs:1867`, the OTHER caller of `spill_deepest_reg`,
+      inside `alloc_consecutive_pair` — reached only by i64 pair allocation, which
+      implies `has_i64` by the same derivation.
+
+      UNTIL THE COLD REVIEW THIS SAID "all EIGHT non-test `spill.alloc()` sites",
+      evidenced with eight line numbers of which NONE is an allocation line, and
+      with a bare `:1867` sitting after two `select_with_stack.rs:` citations
+      although it belongs to `instruction_selector.rs`. The substance held — the
+      reviewer re-derived every caller set independently and agreed the narrowing
+      is sound — but a claim about SITES carried entirely by non-site citations is
+      not checkable, which in this release is the whole point. MEASURED, not only argued: an
       `assert!(self.area_reserved)` planted in `SpillState::alloc` fired ZERO
       times across the 766-test synth-synthesis suite AND the corpus sweep's 175
       compiled modules / 3428 executed vectors, while a `should_panic` potency
       test confirmed that same assert DOES fire when alloc is reached unreserved
       — so the zero is evidence and not a dead probe. The probe was reverted and
-      the source sha256 restored byte-identical; it is not in the shipped tree.
+      the source sha256 restored byte-identical; it is not in the shipped tree —
+      WHICH MAKES THIS PARTICULAR EVIDENCE UNREPRODUCIBLE FROM THE SHIPPED
+      ARTEFACT, worth saying plainly in a release named "Evidence you can
+      re-derive". What a reader CAN re-derive is the static argument above — every
+      call site and every guard, named with line numbers — and the potency
+      reasoning. What they must take on trust is that the planted assert was run
+      and stayed silent. The reproducible form is a PERMANENT `debug_assert!` in
+      `SpillState::alloc`, a v0.71 candidate rather than a change to make at a cut.
     status: implemented
     release: v0.70
     tags:

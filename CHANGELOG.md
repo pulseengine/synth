@@ -12,11 +12,19 @@ deferred with their measurements recorded.** Both `must` lanes came from
 **cpetig**, an external reporter, and both of their blockers are measurably
 better on their own modules and their own command lines. The rest of the release
 is about a single question asked of synth's own machinery: *can this number be
-derived again, or was it only ever typed?* Three gates turned out to be unable to
-fail, one release-notes pipeline had no derivation at all, and the headline fix
-was refuted by a test written to attack it.
+derived again, or was it only ever typed?* **Four** gates turned out to be unable
+to fail — three named below plus the `policed` predicate in `liveness.rs`, whose
+empty-area guard covered an empty *list* but not a list of empty *ranges* — one
+release-notes pipeline had no derivation at all, and the headline fix was refuted
+by a test written to attack it.
 
-| | before | after |
+Every figure in this table is **[REPORTER-ONLY]**: it is measured on cpetig's
+modules, which are issue attachments and are not in this repository. The
+re-derivable evidence for both fixes is the committed reduction fixtures
+(`scripts/repro/spill_slot_alias_1321.wat`, `scripts/repro/npa_static_f32_1331.wat`)
+and the corpus sweep, not these numbers.
+
+| [REPORTER-ONLY] | before | after |
 |---|---|---|
 | `fused.wasm` (#1321) | rc=1, 1 of 21 skipped, **no object** | **rc=0, 0 skipped, 69584-byte object** |
 | native-pointer ABI (#1331) | 6 of 22 skipped, **4 of 6 exports** blocked | 2 of 22, **2 of 6** |
@@ -55,12 +63,16 @@ now lives in the predicate itself: an empty area **list** and a list of empty
 **ranges** are one case, not two, because a guard written only for the first
 polices nothing when handed the second.
 
-The narrowing was checked for reachability rather than argued: all **eight**
-non-test allocation sites are dominated by a guard, and an
-`assert!(self.area_reserved)` planted in `SpillState::alloc` fired **zero** times
-across the 766-test synthesis suite and the corpus sweep's 3428 executed vectors,
-while a `should_panic` control confirmed the same assert **does** fire when
-reached unreserved.
+The narrowing was checked for reachability rather than argued: the **five**
+non-test `spill.alloc()` call sites are each dominated by a guard, at **eight**
+distinct guard sites (three of the five allocators are helpers reached from more
+than one guarded caller). An `assert!(self.area_reserved)` planted in
+`SpillState::alloc` fired **zero** times across the 766-test synthesis suite and
+the corpus sweep's 3428 executed vectors, while a `should_panic` control confirmed
+the same assert **does** fire when reached unreserved. That probe was reverted, so
+this last piece of evidence is **not reproducible from the shipped tree** — the
+static argument and the guard line numbers are; a permanent `debug_assert!` is a
+v0.71 candidate.
 
 ### Static-data f32 under the native-pointer ABI (RQ-70-NPA, #1331)
 
@@ -112,11 +124,13 @@ fourth class is two warnings on two of **this release's own** artifacts.
 
 ### What this release does NOT claim
 
-- `opt.wasm` still skips 7 of 17 functions (#1069 pool exhaustion, GI-FPU-002) —
-  measured, unchanged, and not what this release fixed. **#1318 stays open.**
-- `position#tick` and `ekf#estimate` now reach the **#345 literal-pool wall**, a
-  pre-existing function-size limit the f32 decline had been hiding. **#1331 stays
-  open.**
+- **[REPORTER-ONLY]** `opt.wasm` still skips 7 of 17 functions (#1069 pool
+  exhaustion, GI-FPU-002) — measured, unchanged, and not what this release fixed.
+  **#1318 stays open.**
+- **[REPORTER-ONLY]** `position#tick` and `ekf#estimate` now reach the **#345
+  literal-pool wall**, a pre-existing function-size limit the f32 decline had been
+  hiding. **#1331 stays open** — and the reporter independently hit that same wall
+  on 2026-09-19.
 - `check_vfp_slot_aliasing` (#881) carries the same single-value-per-slot model
   over the VFP word file and is **not known to be clean**.
 - "The corpus" names **three** different populations across thirteen scripts,
