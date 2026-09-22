@@ -9,6 +9,9 @@ artifacts:
     module — and the issue's own excerpt UNDERCOUNTS, exactly as #1318's did:
 
       reported in the issue:   2 functions
+      [REPORTER-ONLY — the module is an issue attachment (input.zip), not committed;
+       the committed `npa_static_f32_1331.wat` reproduces the SHAPE, not these counts.
+       RQ-70-FALCONCORPUS makes this criticism of v0.69 and it applies here too.]
       measured on fb9af784:    6 of 22 functions, 4 of 6 EXPORTS, rc=1 via #952,
                                NO object emitted
       reasons:                 4x f32.load and 3x f32.store "from/to the static-data
@@ -61,6 +64,19 @@ artifacts:
     The CONST static-data address declines (#237, `try_fold_const_addr`) are
     deliberately left as they are: a different address mode, and measured to fire on
     none of the seven.
+
+    COMPLIANCE ENVELOPE — STATED BECAUSE IT CHANGED. The new f32 branches emit a raw
+    `Ldr`/`Str [base,#0]` and bypass `generate_load_with_bounds_check` /
+    `generate_store_with_bounds_check` entirely. So under `--native-pointer-abi
+    --safety-bounds software|mask`, an f32 static-data access that previously
+    LOUD-DECLINED now emits an UNGUARDED access. This is a CLASS EXTENSION, not a new
+    class: the i32 (#744) and i64 (#746) static-data arms have always done exactly
+    this, and the relocated address is compiler-derived rather than attacker-derived.
+    It is recorded here because CLAUDE.md requires the envelope be stated whenever it
+    moves, and because trading a loud decline for a silent unguarded access is
+    precisely the shape this project refuses to let pass unnoticed. Narrowing it —
+    routing the relocated base through the guard path — is follow-up on #1331, not
+    something this release claims.
   status: implemented
   release: v0.70
   tags:

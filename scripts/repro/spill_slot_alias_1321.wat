@@ -30,10 +30,13 @@
 ;; The checker is right that "a value was stored and overwritten unreloaded",
 ;; and wrong to call that aliasing, because nothing needed the slot copy.
 ;;
-;; RED-FIRST BY CONSTRUCTION. Today this module DECLINES (#952, export `f`
-;; skipped) and carries an EXPECTED_DECLINES entry in arm_corpus_sweep_973.py.
-;; When #1321 is fixed it will COMPILE, the entry goes STALE, and the sweep
-;; says so — the pin moving is the fix's own evidence.
+;; RED-FIRST BY CONSTRUCTION, AND DELIBERATELY NOT PINNED. Before the #1321 fix
+;; this module DECLINED (#952, export `f` skipped); it COMPILES on this tree.
+;; It carries NO EXPECTED_DECLINES entry in arm_corpus_sweep_973.py and never
+;; did — fixture and fix landed in the same commit, so a pin would have been a
+;; suppression with no red half to justify it. The sweep guards it directly:
+;; a regression makes this module decline again and reds the sweep, with no
+;; entry to go stale and nothing to forget to remove.
 (module
   (memory 1)
   (func $h (param i32) (result i32) local.get 0)

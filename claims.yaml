@@ -1847,9 +1847,28 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 19529
+        value: 19538
         baseline: 17897
         waivers:
+          - to: 19538
+            reason: >-
+              v0.70 COLD REVIEW: 19529 -> 19538, a RISE of 9, and every one of the
+              9 is a COMMENT. No lowering decision was added; the release's own
+              review found that RQ-70-NPA's new `f32.load`/`f32.store` static-data
+              branches say nothing about bounds checking at the site, while the
+              i32 (#744) and i64 (#746) arms they were modelled on are documented
+              as UNGUARDED. Under `--native-pointer-abi --safety-bounds
+              software|mask` those f32 branches bypass
+              `generate_load_with_bounds_check`/`generate_store_with_bounds_check`
+              too, so an access that previously LOUD-DECLINED now emits unguarded.
+              That is a compliance-envelope fact a reader of the arm must not have
+              to re-derive, so it is written at both sites (8 lines at `F32Load`,
+              5 at `F32Store`, less 4 lines of superseded text).
+
+              Paying 9 ceiling lines for a disclosure is the trade this ratchet is
+              supposed to permit: it counts hand-maintained DECISIONS, and this
+              adds none. Recording it as a waiver rather than quietly re-baselining
+              is what makes the next rise need its own reason.
           - to: 19529
             reason: >-
               RQ-70-NPA (#1331): 19478 -> 19529, a RISE of 51, measured on the
@@ -2514,7 +2533,7 @@ claims:
         # behaviour), the two `validate_instructions_*_mve_*` tests and
         # `test_requires_helium_trait`, which build ArmInstructions by hand and
         # never touched the selector.
-        value: 30122
+        value: 30131
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

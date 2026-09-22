@@ -82,6 +82,15 @@ artifacts:
     priority: should
     verification-track: differential
     issue: '#1339'
+    disposition: deferred
+    verified-by: >-
+      Re-derivable in one command: `gh issue view 1145 --repo pulseengine/gale --json
+      state,updatedAt,comments` shows no answer on the page-size question at the v0.70
+      cut, which is the whole reason nothing landed. The code finding this artifact
+      rests on is re-derivable independently: `refuse_custom_page_size` is in
+      crates/synth-cli/src/main.rs while crates/synth-core/src/wasm_decoder.rs DECODES
+      page_size_log2 and does not refuse, so a caller of the published library still
+      gets a custom page size silently ignored.
     done-when: >-
       manual: gale answers on #1145 whether a custom page size should be REFUSED or HONOURED for per-memory
       MPU regions and whether gust:os calls synth-core as a library; THEN either the refusal moves

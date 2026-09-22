@@ -7032,9 +7032,10 @@ impl InstructionSelector {
     /// post-link in-range oracle, which walk RELOCATIONS (the #739 silent OOB
     /// miscompile). Callers relocate the base via
     /// [`Self::emit_wasm_data_addr`]: i32 word + sub-word accesses (#744) and
-    /// the i64 pair / narrow accesses (#746). The float load/store arms still
-    /// decline loudly with a typed `Err` (GI-FPU-002, not yet relocated) —
-    /// never bake.
+    /// the i64 pair / narrow accesses (#746), and — since RQ-70-NPA (#1331) —
+    /// the f32 load/store arms, which now relocate through the same
+    /// `emit_wasm_data_addr` + `Add` + `Ldr`/`Str` sequence instead of
+    /// declining. Nothing on this path bakes the offset as an absolute.
     fn is_native_pointer_static_offset(&self, offset: u32) -> bool {
         self.native_pointer_abi && self.wasm_data_base > 0 && offset >= self.wasm_data_base
     }

@@ -12,7 +12,10 @@ cross-refs" where 0.37 reports "cross-refs NOT CHECKED").
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -87,6 +90,87 @@ class Parsing(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1), "RQ-70-NPA")
         self.assertTrue(m.group(2).startswith("`--native-pointer-abi`"))
+
+
+class Refusals(unittest.TestCase):
+    """The two refusals the artifact calls 'demonstrated live'.
+
+    Demonstrated once, by hand, is not pinned: both live in `main()` behind a
+    subprocess call to rivet, which is precisely why neither had a test. A
+    refusal nothing exercises is the same shape as the gates this release
+    measured and fixed — it works until the day it silently does not.
+
+    Both tests drive the REAL `main()` in a subprocess against a FAKE rivet and
+    a throwaway git repo, so they depend on no tag, no network, and no
+    `fetch-depth` setting in whatever CI job runs them.
+    """
+
+    def _fake_rivet(self, td: Path, version: str, diff_json: str) -> Path:
+        fake = td / "fake-rivet"
+        fake.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then echo "rivet %s"; exit 0; fi\n'
+            'if [ "$1" = "diff" ]; then\n'
+            '  for a in "$@"; do if [ "$a" = "json" ]; then printf \'%s\'; exit 0; fi; done\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n" % (version, diff_json)
+        )
+        fake.chmod(0o755)
+        return fake
+
+    def _repo(self, td: Path) -> Path:
+        """A minimal repo with a tag, so `git archive` succeeds on its own."""
+        root = td / "repo"
+        (root / "artifacts").mkdir(parents=True)
+        (root / "artifacts" / "x.yaml").write_text("artifacts: []\n")
+        (root / "rivet.yaml").write_text("sources:\n  - path: artifacts\n")
+        # Fixture-local config only: this repo is created and destroyed inside
+        # the test. It is not a synth commit and never leaves the temp dir.
+        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+        for cmd in (["init", "-q", "-b", "main"], ["add", "-A"],
+                    ["-c", "commit.gpgsign=false", "commit", "-qm", "base"],
+                    ["tag", "v0.0.1"]):
+            subprocess.run(["git", *cmd], cwd=root, check=True, env=env,
+                           capture_output=True)
+        return root
+
+    def _run(self, root: Path, rivet: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "release_notes_from_rivet.py"),
+             "--base", "v0.0.1", "--root", str(root), "--rivet", str(rivet)],
+            capture_output=True, text=True,
+        )
+
+    def test_a_rivet_older_than_the_pin_is_refused(self):
+        """0.36.0 < the 0.37.0 pin must REFUSE, and say why an old rivet lies."""
+        with tempfile.TemporaryDirectory() as d:
+            td = Path(d)
+            r = self._run(self._repo(td), self._fake_rivet(td, "0.36.0", "{}"))
+            self.assertNotEqual(r.returncode, 0, "a stale rivet must be refused")
+            self.assertIn("older than the CI pin", r.stderr)
+
+    def test_zero_added_artifacts_is_refused_as_a_broken_derivation(self):
+        """An empty diff is a broken derivation, never a quiet release."""
+        with tempfile.TemporaryDirectory() as d:
+            td = Path(d)
+            fake = self._fake_rivet(td, "0.37.0", '{"added": [], "removed": []}')
+            r = self._run(self._repo(td), fake)
+            self.assertNotEqual(r.returncode, 0, "zero added must be refused")
+            self.assertIn("ZERO added artifacts", r.stderr)
+
+    def test_the_fake_rivet_lets_a_NON_empty_diff_through(self):
+        """Negative control: the two refusals above must be the REFUSALS firing,
+
+        not the harness failing to reach them. Same fixture, same fake rivet,
+        one added artifact — the generator must now exit 0.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            td = Path(d)
+            fake = self._fake_rivet(td, "0.37.0", '{"added": ["RQ-70-X"], "removed": []}')
+            r = self._run(self._repo(td), fake)
+            self.assertEqual(r.returncode, 0, f"harness cannot reach main(): {r.stderr[:400]}")
 
 
 if __name__ == "__main__":

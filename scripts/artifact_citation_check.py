@@ -48,6 +48,21 @@ from pathlib import Path
 
 import yaml
 
+# #1333 follow-up (v0.70 cold review, findings 10 & 11): this gate USED to
+# `yaml.safe_load` inside a bare `except Exception: continue`. Two ways it could
+# not fail, both MEASURED on this tree before the fix:
+#   - an UNPARSEABLE artifact was SILENTLY SKIPPED. Corrupting
+#     artifacts/release-v0.69/RQ-69-ELFNAMES.yaml dropped its citation (33 -> 32)
+#     with rc=0 and no message, and ci.yml's non-vacuity floor still matched
+#     because the file count comes from the GLOB, not from the parse.
+#   - `safe_load` is LAST-WINS on duplicate keys, so a duplicate `verified-by`
+#     silently dropped a planted bogus citation: rc=0, count unchanged.
+# Both are the defect class this very gate exists to remove. The loader is
+# IMPORTED from status_evidence_check rather than copied, so there is no second
+# definition to drift -- the same reason RQ-70-RIVETNOTES derives its notes.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from status_evidence_check import DuplicateKeyError, StrictLoader  # noqa: E402
+
 # `cargo test [flags] -- FILTER` — the filter is the first non-flag token after `--`.
 CARGO_TEST_FILTER = re.compile(r"cargo\s+test\b[^\n]*?--\s+(?!-)(\S+)")
 # #1333: `--test <target>` names an integration-test TARGET (the file
@@ -155,6 +170,11 @@ def collect_test_paths(root: Path) -> set[str]:
 CLAIMING_STATUSES = {"implemented", "verified", "accepted"}
 
 
+# Files this gate REFUSED to read (unparseable / duplicate-key). Module-level so
+# the return signature stays stable, and CLEARED at the top of `citations()`.
+hard_failures: list[str] = []
+
+
 def citations(root: Path) -> list[tuple[str, str, str, str]]:
     """-> [(artifact_file, artifact_id, status, name, kind)] per citation.
 
@@ -163,14 +183,31 @@ def citations(root: Path) -> list[tuple[str, str, str, str]]:
     against two different populations.
     """
     out: list[tuple[str, str, str, str, str]] = []
+    hard_failures.clear()
     # #1333: RECURSIVE. Every release since v0.61 files its artifacts under
     # `artifacts/release-vX.Y/`; the non-recursive glob saw 30 of 135 files and
     # ZERO release artifacts, so this gate had never once looked at the artifacts
     # a release is actually cut from.
     for f in sorted(glob.glob(str(root / "artifacts" / "**" / "*.yaml"), recursive=True)):
         try:
-            doc = yaml.safe_load(Path(f).read_text())
-        except Exception:
+            doc = yaml.load(Path(f).read_text(), Loader=StrictLoader)
+        except DuplicateKeyError as exc:
+            print(
+                f"FAIL {Path(f).relative_to(root)}: {exc} — a duplicate key makes "
+                f"this gate read the LAST value and silently drop the citations in "
+                f"the first. Refusing rather than skipping.",
+                file=sys.stderr,
+            )
+            hard_failures.append(str(Path(f).relative_to(root)))
+            continue
+        except Exception as exc:
+            print(
+                f"FAIL {Path(f).relative_to(root)}: unparseable YAML ({exc.__class__.__name__}: "
+                f"{str(exc).splitlines()[0][:120]}) — a gate that skips what it cannot "
+                f"read cannot fail on it. Refusing rather than skipping.",
+                file=sys.stderr,
+            )
+            hard_failures.append(str(Path(f).relative_to(root)))
             continue
         rel = str(Path(f).relative_to(root))
 
@@ -204,6 +241,17 @@ def main() -> int:
     root = Path(__file__).resolve().parent.parent
     tests = collect_test_paths(root)
     cites = citations(root)
+
+    # A file this gate could not READ is a file it cannot CHECK. Skipping it
+    # silently is how a gate passes over the thing it exists to police, so the
+    # refusal is terminal and names every file.
+    if hard_failures:
+        print(
+            f"FAIL: {len(hard_failures)} artifact file(s) could not be read: "
+            + ", ".join(hard_failures)
+        )
+        print("      A gate that skips what it cannot parse cannot fail on it.")
+        return 1
 
     if not tests:
         print("FAIL: collected ZERO test names — the scan is broken, not the tree")

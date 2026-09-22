@@ -69,7 +69,15 @@ artifacts:
       and it now ships as
       `ra003_red_spill_slot_aliasing_survives_a_register_use_1321`.
 
-      EVIDENCE, all re-derivable from the repository:
+      EVIDENCE. Re-derivable from this repository EXCEPT where marked
+      [REPORTER-ONLY] — those depend on cpetig's `fused.wasm`, which is an issue
+      attachment and not committed. RQ-70-FALCONCORPUS makes exactly this
+      criticism of v0.69's FALCON; it applies here and is labelled rather than
+      left implicit. The committed `spill_slot_alias_1321.wat` reduction is what
+      makes the FIX re-derivable; the reporter's module sizes are not.
+
+        - [REPORTER-ONLY] fused.wasm rc=1 -> rc=0, 1 of 21 skipped -> 0, and the
+          69584-byte object: measured on the reporter's attachment.
         - `ra003` unit tests 34 -> 39: the potency test above, plus four pinning
           the area semantics — `None` polices everything (the load-bearing
           default), an EMPTY list means "unknown" and also polices everything,
@@ -80,7 +88,7 @@ artifacts:
           nothing can produce it today, the degradation belongs in the predicate
           rather than in one caller's care. The load-bearing question for any
           "unknown" is whether it means POLICE EVERYTHING or POLICE NOTHING.
-        - ARM corpus sweep AFTER: PASS, compiled=174/194, executed=3428/3428
+        - ARM corpus sweep AFTER: PASS, compiled=175/195, executed=3428/3428
           vectors, mismatches=0, faults=0.
         - ARM corpus sweep BEFORE (same script, pre-fix binary): FAIL,
           `PHASE A NEW DECLINE: spill_slot_alias_1321.wat`. The committed
@@ -98,7 +106,28 @@ artifacts:
       rung VFP locals also get permanent frame homes — the same class, one tier
       over. Its traffic is `VStr`/`VLdr`, which the integer check never matches,
       so it is untouched here and NOT known to be clean. Filed as a follow-up
-      rather than widened into this lane unmeasured.
+      rather than widened into this lane unmeasured. (3) THE NARROWING RECORDS
+      FEWER AREAS, AND MEASURED IT LOSES NO DETECTION: `frame_spill_areas` omits
+      the i64 pool when `layout.spill_area_reserved` is false, which would leave
+      a slot handed out at `i64_spill_base` — the region that ALIASES the #204
+      param homes, the original #331 shape — unpoliced. That state is
+      unreachable. All EIGHT non-test `spill.alloc()` sites are dominated by a
+      guard: two test the flag directly and return the ladder-recoverable
+      exhaustion `Err` (`instruction_selector.rs:8461` arg-move cycles, `:8650`
+      call-result parking); four sit under a retry rung — `:1076` on
+      `spill_on_exhaustion` via a SHORT-CIRCUITING `||`, `:3392` and `:5479` on
+      `vfp_frame_home_locals`, and `select_with_stack.rs:884`/`:4936` on
+      `vfp_spill_on_exhaustion` — and every rung IMPLIES the area, because
+      `select_with_stack.rs:296` passes exactly that three-way disjunction as
+      `force_spill_area` and `has_i64` ORs it in; the eighth, `:1867` in
+      `alloc_consecutive_pair`, is reached only by i64 pair allocation, which
+      implies `has_i64` by the same derivation. MEASURED, not only argued: an
+      `assert!(self.area_reserved)` planted in `SpillState::alloc` fired ZERO
+      times across the 766-test synth-synthesis suite AND the corpus sweep's 175
+      compiled modules / 3428 executed vectors, while a `should_panic` potency
+      test confirmed that same assert DOES fire when alloc is reached unreserved
+      — so the zero is evidence and not a dead probe. The probe was reverted and
+      the source sha256 restored byte-identical; it is not in the shipped tree.
     status: implemented
     release: v0.70
     tags:
@@ -126,6 +155,8 @@ artifacts:
         regresses the fixture declines again and the sweep fails with
         `PHASE A NEW DECLINE: spill_slot_alias_1321.wat` — verified by running
         the same sweep against the pre-fix binary, which fails with exactly that
-        line. A `contains:` into liveness.rs was the first draft and R9 refused
-        it correctly: code-existence cannot fail on this artifact's own
-        definition of failure.
+        line. A `contains:` into liveness.rs was the first draft and was
+        rejected against R9's stated standard — code-existence cannot fail on
+        this artifact's own definition of failure. R9 itself does NOT fire on
+        that shape while `verified-by` is present (measured; see
+        RQ-70-DONEWHEN), so the rejection was the author's, not the gate's.

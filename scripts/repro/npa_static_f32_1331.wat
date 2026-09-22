@@ -1,5 +1,7 @@
 (module
-  ;; RQ-70-NPA (#1331, cpetig, falcon-cascade) — a 20-line reduction of the shape
+  ;; RQ-70-NPA (#1331, cpetig, falcon-cascade) — a 12-code-line reduction (41 total,
+  ;; 38 non-blank; same non-blank-non-comment convention as spill_slot_alias_1321.wat)
+  ;; of the shape
   ;; that skipped 4 of 6 EXPORTS on their module and emitted NO object at all.
   ;;
   ;; THE SHAPE: under `--native-pointer-abi`, an f32 load/store whose constant

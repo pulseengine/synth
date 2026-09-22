@@ -9,11 +9,16 @@ artifacts:
     ## 1. The reporter's modules were never committed, so FALCON's figures stand
     alone
 
-    `git diff --name-status v0.68.0..v0.69.0 -- scripts/repro` adds only PAGESIZE's
-    two `.wat` fixtures. cpetig's `fused.wasm` and `opt.wasm` live on an issue
-    attachment, so FALCON's 826 identical / 209 identically failing / 0 changed, and
+    `git diff --name-status v0.68.0..v0.69.0 -- scripts/repro` adds FOUR files, not
+    the two this artifact first claimed: PAGESIZE's `custom_page_size_1315.wat` and
+    `shared_memory_1315.wat`, plus `prose_status_claim_1319.py` and
+    `proven_safe_fixture_race_1309.py`. The correction does not soften the finding —
+    none of the four is a falcon module.
+    cpetig's `fused.wasm` and `opt.wasm` live on an issue attachment, so FALCON's
+    826 identical / 209 identically failing / 0 changed, and
     its 1-of-21 and 7-of-17 skip counts, cannot be reproduced from this repository by
-    anyone — and FALCON was v0.69's only `must`.
+    anyone — and FALCON was one of v0.69's TWO `must` artifacts (RQ-69-FALCON and
+    RQ-69-PAGESIZE, the latter `implemented` with a `landed:`).
 
     WHAT v0.70 DOES ABOUT IT: the honest route B, taken twice. Both of this release's
     downstream blockers now have a COMMITTED REDUCTION that reproduces the reporter's
@@ -22,7 +27,7 @@ artifacts:
       scripts/repro/spill_slot_alias_1321.wat   54 lines — reproduces the VCR-RA-003
           SpillSlotAliased refusal on `falcon-cascade#step`. Pre-fix: rc=1, no
           object. Post-fix: an 830-byte object.
-      scripts/repro/npa_static_f32_1331.wat     20 lines — reproduces the
+      scripts/repro/npa_static_f32_1331.wat     12 code lines (41 total) — reproduces the
           native-pointer static-data f32.load/f32.store decline, both strings.
           Pre-fix: 2 of 2 skipped via #952. Post-fix: an 813-byte object.
 
