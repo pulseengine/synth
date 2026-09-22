@@ -673,7 +673,7 @@
       "want_classification": "UNTESTED"
     },
     {
-      "id": "R4-shared/REG/liveness.rs:7346:36",
+      "id": "R4-shared/REG/liveness.rs:7350:36",
       "want_bytes": "changed",
       "want_changed": [
         "aarch64_param_homing_851.wat|reloc",
@@ -2291,7 +2291,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "4e865f31",
+    "reanchored_at": "c51823a8",
     "seed": 1189
   },
   "mutants": [
@@ -2584,9 +2584,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 2736,
+      "end": 2744,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/REG/select_with_stack.rs:2736:24",
+      "id": "R3-direct/REG/select_with_stack.rs:2744:24",
       "killed_by": {
         "binaries": [
           "issue_95_const_addr_load"
@@ -2602,7 +2602,7 @@
       "op": "REG",
       "region": "R3-direct",
       "seconds": 277.5,
-      "start": 2736,
+      "start": 2744,
       "status": "killed"
     },
     {
@@ -2610,13 +2610,13 @@
       "before": "            op2: Operand2::Imm(v),",
       "build_error": "error: expected a pattern, found an expression",
       "classification": "UNCOMPILABLE",
-      "end": 8910,
+      "end": 8914,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/IMM/liveness.rs:8910:17",
+      "id": "R4-shared/IMM/liveness.rs:8914:17",
       "op": "IMM",
       "region": "R4-shared",
       "seconds": 1.4,
-      "start": 8910,
+      "start": 8914,
       "status": "uncompilable"
     },
     {
@@ -5394,13 +5394,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 7346,
+      "end": 7350,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/REG/liveness.rs:7346:36",
+      "id": "R4-shared/REG/liveness.rs:7350:36",
       "op": "REG",
       "region": "R4-shared",
       "seconds": 326.8,
-      "start": 7346,
+      "start": 7350,
       "status": "survived",
       "suite_seconds": 290.1
     },
@@ -6961,13 +6961,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 7086,
+      "end": 7094,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/COND/select_with_stack.rs:7086:37",
+      "id": "R3-direct/COND/select_with_stack.rs:7094:37",
       "op": "COND",
       "region": "R3-direct",
       "seconds": 329.4,
-      "start": 7086,
+      "start": 7094,
       "status": "survived",
       "suite_seconds": 301.7
     },
@@ -7420,9 +7420,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 6291,
+      "end": 6299,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/GUARD/select_with_stack.rs:6291:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:6299:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -7434,7 +7434,7 @@
       "op": "GUARD",
       "region": "R3-direct",
       "seconds": 22.6,
-      "start": 6291,
+      "start": 6299,
       "status": "killed"
     },
     {
