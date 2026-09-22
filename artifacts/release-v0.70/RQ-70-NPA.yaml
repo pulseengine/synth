@@ -9,6 +9,9 @@ artifacts:
     module — and the issue's own excerpt UNDERCOUNTS, exactly as #1318's did:
 
       reported in the issue:   2 functions
+      [REPORTER-ONLY — the module is an issue attachment (input.zip), not committed;
+       the committed `npa_static_f32_1331.wat` reproduces the SHAPE, not these counts.
+       RQ-70-FALCONCORPUS makes this criticism of v0.69 and it applies here too.]
       measured on fb9af784:    6 of 22 functions, 4 of 6 EXPORTS, rc=1 via #952,
                                NO object emitted
       reasons:                 4x f32.load and 3x f32.store "from/to the static-data
@@ -18,6 +21,24 @@ artifacts:
 
       2 of 22 functions, 2 of 6 EXPORTS skipped
       `rate#tick` and `attitude#tick` now compile; ZERO f32 static-data declines remain
+
+    REPORTER-CONFIRMED 2026-09-19, AND THE PREDICTED NEXT WALL IS THE ONE THEY HIT.
+    cpetig rebuilt from c18c185e and reported: "The f32 static-data declines are
+    gone ... the `GI-FPU-002 phase 1b` messages from the original report are gone."
+    They also name what now blocks `--native-pointer-abi` on their module:
+    `LdrSym literal pool out of range (#345)` in a single 50722-byte function —
+    which is exactly the wall this artifact predicted rather than a surprise.
+    #1331 therefore STAYS OPEN, and it stays open on the reporter's own evidence.
+
+    THE ASKED-AND-UNANSWERED QUESTION WAS ANSWERED BY DEMONSTRATION. v0.70 asked
+    whether `--native-pointer-abi` is load-bearing for their build or merely
+    preferred; no reply came, and the artifact was scoped without one. The
+    2026-09-19 comment settles it: they are shipping via
+    `--embedder-data-init --embedder-global-init`, which gives them rc=0 with 0
+    skipped today. So the NPA route is a PREFERENCE blocker, not a hard one — a
+    fact that should have lowered this lane's priority against ALIAS had it
+    arrived in time, and is recorded here so the v0.71 ranking starts from it
+    rather than re-deriving it.
 
     THE MACHINERY ALREADY EXISTED AND THE FLOAT ARMS WERE SIMPLY NEVER GIVEN IT.
     `emit_wasm_data_addr` relocates a base to `__synth_wasm_data + offset` (the ELF
@@ -51,7 +72,7 @@ artifacts:
     and merely unmasked. Reported to the reporter as a named ceiling they can act on
     rather than as a closed gap.
 
-    RED-FIRST, committed: `scripts/repro/npa_static_f32_1331.wat`, a 20-line
+    RED-FIRST, committed: `scripts/repro/npa_static_f32_1331.wat`, a 12-code-line
     reduction carrying one dynamic-index `f32.load` and one `f32.store` at a memarg
     offset above the SP global's initializer. Pre-fix it skips 2 of 2 functions with
     exactly the two decline strings from the reporter's module and fails via #952;
@@ -61,6 +82,19 @@ artifacts:
     The CONST static-data address declines (#237, `try_fold_const_addr`) are
     deliberately left as they are: a different address mode, and measured to fire on
     none of the seven.
+
+    COMPLIANCE ENVELOPE — STATED BECAUSE IT CHANGED. The new f32 branches emit a raw
+    `Ldr`/`Str [base,#0]` and bypass `generate_load_with_bounds_check` /
+    `generate_store_with_bounds_check` entirely. So under `--native-pointer-abi
+    --safety-bounds software|mask`, an f32 static-data access that previously
+    LOUD-DECLINED now emits an UNGUARDED access. This is a CLASS EXTENSION, not a new
+    class: the i32 (#744) and i64 (#746) static-data arms have always done exactly
+    this, and the relocated address is compiler-derived rather than attacker-derived.
+    It is recorded here because CLAUDE.md requires the envelope be stated whenever it
+    moves, and because trading a loud decline for a silent unguarded access is
+    precisely the shape this project refuses to let pass unnoticed. Narrowing it —
+    routing the relocated base through the guard path — is follow-up on #1331, not
+    something this release claims.
   status: implemented
   release: v0.70
   tags:

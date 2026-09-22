@@ -16,18 +16,34 @@ artifacts:
     the trace-graph delta.
 
     THE DELTA IS THE PART NOBODY HAD LOOKED AT. Measured with the pinned rivet 0.37.0
-    between v0.69.0 and this tree: 8 added, 0 removed, 0 modified, 0 new ERRORS —
-    and 22 NEW WARNINGS, in three classes this release had shipped unseen:
+    between v0.69.0 and this tree: 9 added, 0 removed, 0 modified, 0 new ERRORS —
+    and 26 NEW WARNINGS, in four classes this release had shipped unseen:
 
       - `id 'RQ-70-X' can't be used as a commit-trailer reference` — one per
         artifact. The RQ-NN-NAME convention is not trailer-shaped, so rivet cannot
         trace these through commits. The SAME convention RQ-70-WINDOWVAC just had to
         teach status_evidence, found independently from the other side.
       - `field 'req-type' has value 'process', allowed: [functional, performance,
-        interface, constraint, safety]` — five artifacts use a value the schema does
+        interface, constraint, safety]` — six artifacts use a value the schema does
         not define.
       - `Every system requirement should be verified by at least one verification
         measure` — no incoming `verifies` link, on every one.
+      - `prose mentions 'SWVER-016' but no typed link to it; add a link in
+        `links:` or remove the mention` — TWO, on RQ-70-CITEGAP and on this
+        artifact. Both name SWVER-016 in prose to say what the citation gate
+        checks, and neither carries a typed link to it, so rivet is right: the
+        mention is untraceable. Recorded rather than fixed, because adding a
+        `links:` entry to satisfy a warning about prose would assert a
+        traceability relationship neither artifact actually has.
+
+        THIS COUNT WAS WRONG IN THIS ARTIFACT UNTIL THE RELEASE CUT, and the
+        way it was wrong is the reason the generator exists. It read 25 in
+        three-plus-one classes with this one attributed to VCR-DEC-003 — an
+        artifact v0.70 never touched. Re-deriving on the cut tree gives 26,
+        and the fourth class is TWO warnings on two of this release's OWN
+        artifacts. A number carried between trees is a number that has stopped
+        being a measurement; that is the whole thesis of #1337, and it caught
+        its own artifact.
 
     None is fixed here; all are now REPORTED, which is the difference between a
     release that knows whether it improved the trace graph and one that does not.
@@ -73,8 +89,15 @@ artifacts:
       The signature names the version pin because that is the part whose failure is
       SILENT: a wrong artifact list is visible in review, while a stale rivet emits a
       confidently clean graph nobody would question. Pinned by
-      `scripts/test_release_notes_from_rivet.py` (8 tests, wired in ci.yml beside the
+      `scripts/test_release_notes_from_rivet.py` (11 tests, wired in ci.yml beside the
       loop-conformance and status-evidence potency tests), whose load-bearing case
       re-derives PINNED_RIVET from ci.yml so the generator cannot drift below the
       version CI installs. Both refusals were demonstrated live before this was
       written: the stale 0.32.0 on PATH is refused, the pinned 0.37.0 emits.
+      They are now PINNED as well as demonstrated — a hand demonstration is not a
+      test, and both refusals sit behind a subprocess call to rivet, which is exactly
+      why neither had one. Three cases drive the real `main()` against a FAKE rivet
+      and a throwaway tagged repo (so they need no tag, network, or `fetch-depth`
+      setting): the below-pin refusal, the zero-added refusal, and a NEGATIVE CONTROL
+      in which the same harness with ONE added artifact exits 0 — so the two reds are
+      the refusals firing, not the harness failing to reach them.

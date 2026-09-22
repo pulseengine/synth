@@ -40,7 +40,11 @@ artifacts:
     the reason. The floor is deliberately conditional on window size
     (WINDOW_RECOGNIZER_FLOOR_COMMITS = 6): early in a cycle a window legitimately
     holds only a plan commit, and a hard `> 0` would red every release the day after
-    its predecessor shipped. The current v0.70 window (1 commit) is correctly silent.
+    its predecessor shipped. At this cut the v0.70 window is PAST that floor and
+    passing on evidence, not on size: `status-evidence-window: 2 delivery-shaped
+    commits since v0.69.0 - 2 attributed`. That distinction is the whole artifact:
+    a window silent because it RECOGNIZED deliveries is not the window this lane
+    found, which was silent because it could recognize none.
   status: implemented
   release: v0.70
   tags:

@@ -7,9 +7,9 @@ artifacts:
     THREE defects, each re-derived at source before this was written — and the third
     was found only BECAUSE the first two were fixed first.
 
-    1. THE GLOB IS NON-RECURSIVE. `artifacts/*.yaml` sees 30 of 135 artifact files.
-       Every release since v0.61 files under `artifacts/release-vX.Y/`, so 105 files
-       are invisible — including ALL 10 of v0.69's and ALL 8 of v0.70's.
+    1. THE GLOB IS NON-RECURSIVE. `artifacts/*.yaml` sees 30 of 136 artifact files.
+       Every release since v0.61 files under `artifacts/release-vX.Y/`, so 106 files
+       are invisible — including ALL 10 of v0.69's and ALL 9 of v0.70's.
 
     2. IT READS ONLY `run:` KEYS. No release artifact has ever had one; they cite
        under `done-when:` and `verified-by:`. This hid a citation even in a file the
@@ -34,7 +34,13 @@ artifacts:
     declares `pub mod dwarf_line`, so the real path is `dwarf_line::tests::<fn>`.
     The scan built module paths only from `mod` DECLARATIONS, never from the FILE,
     so it recorded `tests::<fn>` and missed it. Fixed by recording the file-derived
-    module path too — test names 5233 -> 7224. That is the header's promised safe
+    module path too — test names 5245 -> 7242, BOTH re-derived on the cut tree by
+    running the pre-fix script (`git show 624ca2c0:scripts/artifact_citation_check.py`)
+    and the shipped one against the same checkout. The pair published until the cold
+    review was `5243 -> 7242`, which is derivable from NO single tree: 5243/7239 are
+    this release's parent, 5245/7242 are the cut. Re-deriving one half of a
+    before/after pair and carrying the other is how a comparison stops being one.
+    That is the header's promised safe
     direction working exactly as documented: the approximation failed LOUDLY.
 
     WHY CLAIM-BEARING KEYS AND NOT ALL PROSE: RQ-69-PROSEGATE refuted the
@@ -44,7 +50,7 @@ artifacts:
     talks about it. This artifact names test filters in its own prose and must not be
     held to them.
 
-    AFTER: 135 files scanned, 33 citations (15 target, 18 filter) over 7224 test
+    AFTER: 136 files scanned, 33 citations (15 target, 18 filter) over 7242 test
     names and 133 test targets, 0 false claims, 1 pre-existing planned-but-unwritten
     note. BEFORE: 30 files, 12 citations, and no release artifact ever looked at.
   status: implemented

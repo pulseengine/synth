@@ -69,8 +69,30 @@ artifacts:
       and it now ships as
       `ra003_red_spill_slot_aliasing_survives_a_register_use_1321`.
 
-      EVIDENCE, all re-derivable from the repository:
-        - `ra003` unit tests 34 -> 39: the potency test above, plus four pinning
+      EVIDENCE. Re-derivable from this repository EXCEPT where marked
+      [REPORTER-ONLY] — those depend on cpetig's `fused.wasm`, which is an issue
+      attachment and not committed. RQ-70-FALCONCORPUS makes exactly this
+      criticism of v0.69's FALCON; it applies here and is labelled rather than
+      left implicit. The committed `spill_slot_alias_1321.wat` reduction is what
+      makes the FIX re-derivable; the reporter's module sizes are not.
+
+      REPORTER-CONFIRMED, 2026-09-19, ON THEIR OWN MODULE AND THEIR OWN
+      TOOLCHAIN. cpetig rebuilt from c18c185e and reported back: the
+      `--embedder-*` route on a NEWER build of the component
+      (`cascade-v1139-fused.wasm`, 41055 bytes) now gives `rc=0`, `Compiled 21
+      functions` with 0 skipped, 68374 bytes of code, 70172-byte ELF, 66
+      relocations, plus `verify-embedder OK: 0 reserved-register writes in 19140
+      instructions across 21 symbols`. In their words: "Previously this was
+      rc=1, 1 of 21 functions skipped with `SpillSlotAliased`, no object — i.e.
+      the #1321 fix lands." That is an INDEPENDENT reproduction by the blocked
+      party, which is the only acceptance test this lane ever had. Note the byte
+      counts differ from the [REPORTER-ONLY] line above because it is a
+      different build of their component, not a different result — recorded as
+      two measurements rather than reconciled into one.
+
+        - [REPORTER-ONLY] fused.wasm rc=1 -> rc=0, 1 of 21 skipped -> 0, and the
+          69584-byte object: measured on the reporter's attachment.
+        - `ra003` unit tests 34 -> 40: the potency test above, plus five pinning
           the area semantics — `None` polices everything (the load-bearing
           default), an EMPTY list means "unknown" and also polices everything,
           an aliased slot INSIDE an area is still caught, and a slot outside
@@ -80,13 +102,15 @@ artifacts:
           nothing can produce it today, the degradation belongs in the predicate
           rather than in one caller's care. The load-bearing question for any
           "unknown" is whether it means POLICE EVERYTHING or POLICE NOTHING.
-        - ARM corpus sweep AFTER: PASS, compiled=174/194, executed=3428/3428
+        - ARM corpus sweep AFTER: PASS, compiled=175/195, executed=3428/3428
           vectors, mismatches=0, faults=0.
         - ARM corpus sweep BEFORE (same script, pre-fix binary): FAIL,
           `PHASE A NEW DECLINE: spill_slot_alias_1321.wat`. The committed
-          54-line fixture is instruction-identical to the reporter's shape and is
+          54-CODE-LINE fixture (93 total; "code" = non-blank non-comment, the
+          same convention `npa_static_f32_1331.wat` states in its header) is
+          instruction-identical to the reporter's shape and is
           NOT on EXPECTED_DECLINES, so the sweep reds if this fix ever regresses.
-        - `opt.wasm` is UNCHANGED at 7 of 17 skipped, the same 7 functions, all
+        - [REPORTER-ONLY] `opt.wasm` is UNCHANGED at 7 of 17 skipped, the same 7 functions, all
           declining for #1069 pool exhaustion / GI-FPU-002 — causes unrelated to
           aliasing. The fix moves what it explains and nothing else.
 
@@ -98,7 +122,54 @@ artifacts:
       rung VFP locals also get permanent frame homes — the same class, one tier
       over. Its traffic is `VStr`/`VLdr`, which the integer check never matches,
       so it is untouched here and NOT known to be clean. Filed as a follow-up
-      rather than widened into this lane unmeasured.
+      rather than widened into this lane unmeasured. (3) THE NARROWING RECORDS
+      FEWER AREAS, AND MEASURED IT LOSES NO DETECTION: `frame_spill_areas` omits
+      the i64 pool when `layout.spill_area_reserved` is false, which would leave
+      a slot handed out at `i64_spill_base` — the region that ALIASES the #204
+      param homes, the original #331 shape — unpoliced. That state is
+      unreachable. There are FIVE non-test `spill.alloc()` CALL SITES, all in
+      `instruction_selector.rs` and none in `select_with_stack.rs`: `:1104`
+      (`spill_deepest_reg`), `:3243` (`alloc_vfp_local_frame_slot`), `:4033`
+      (`spill_deepest_vfp`), `:8473` (arg-move cycles) and `:8657` (call-result
+      parking). Each is dominated by a guard, at EIGHT distinct GUARD sites; the
+      two counts differ because three of the five allocators are helpers reached
+      from more than one guarded caller.
+
+      Two guards test the flag directly and return the ladder-recoverable
+      exhaustion `Err` — `instruction_selector.rs:8461` and `:8650`, immediately
+      above the `:8473` and `:8657` allocations. The other three allocators sit
+      under a retry rung: `instruction_selector.rs:1076` gates `spill_deepest_reg`
+      on `spill_on_exhaustion` through a SHORT-CIRCUITING `||`; `:3392` and
+      `:5479` gate `alloc_vfp_local_frame_slot` on `vfp_frame_home_locals`; and
+      `select_with_stack.rs:884` and `:4936` gate the callers of
+      `vfp_reload_spilled`/`vfp_ensure_headroom`, which own the `:4033`
+      allocation, on `vfp_spill_on_exhaustion`. Every rung IMPLIES the area,
+      because `select_with_stack.rs:296` passes exactly that three-way disjunction
+      as `force_spill_area` and `has_i64` ORs it in. The eighth guard is
+      `instruction_selector.rs:1867`, the OTHER caller of `spill_deepest_reg`,
+      inside `alloc_consecutive_pair` — reached only by i64 pair allocation, which
+      implies `has_i64` by the same derivation.
+
+      UNTIL THE COLD REVIEW THIS SAID "all EIGHT non-test `spill.alloc()` sites",
+      evidenced with eight line numbers of which NONE is an allocation line, and
+      with a bare `:1867` sitting after two `select_with_stack.rs:` citations
+      although it belongs to `instruction_selector.rs`. The substance held — the
+      reviewer re-derived every caller set independently and agreed the narrowing
+      is sound — but a claim about SITES carried entirely by non-site citations is
+      not checkable, which in this release is the whole point. MEASURED, not only argued: an
+      `assert!(self.area_reserved)` planted in `SpillState::alloc` fired ZERO
+      times across the 766-test synth-synthesis suite AND the corpus sweep's 175
+      compiled modules / 3428 executed vectors, while a `should_panic` potency
+      test confirmed that same assert DOES fire when alloc is reached unreserved
+      — so the zero is evidence and not a dead probe. The probe was reverted and
+      the source sha256 restored byte-identical; it is not in the shipped tree —
+      WHICH MAKES THIS PARTICULAR EVIDENCE UNREPRODUCIBLE FROM THE SHIPPED
+      ARTEFACT, worth saying plainly in a release named "Evidence you can
+      re-derive". What a reader CAN re-derive is the static argument above — every
+      call site and every guard, named with line numbers — and the potency
+      reasoning. What they must take on trust is that the planted assert was run
+      and stayed silent. The reproducible form is a PERMANENT `debug_assert!` in
+      `SpillState::alloc`, a v0.71 candidate rather than a change to make at a cut.
     status: implemented
     release: v0.70
     tags:
@@ -126,6 +197,8 @@ artifacts:
         regresses the fixture declines again and the sweep fails with
         `PHASE A NEW DECLINE: spill_slot_alias_1321.wat` — verified by running
         the same sweep against the pre-fix binary, which fails with exactly that
-        line. A `contains:` into liveness.rs was the first draft and R9 refused
-        it correctly: code-existence cannot fail on this artifact's own
-        definition of failure.
+        line. A `contains:` into liveness.rs was the first draft and was
+        rejected against R9's stated standard — code-existence cannot fail on
+        this artifact's own definition of failure. R9 itself does NOT fire on
+        that shape while `verified-by` is present (measured; see
+        RQ-70-DONEWHEN), so the rejection was the author's, not the gate's.

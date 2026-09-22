@@ -16,10 +16,19 @@ artifacts:
     Unmoved since the v0.68 and v0.69 cuts, which recorded the same updatedAt. If it
     had moved, this artifact would stop being carried.
 
-    THE COUNT IS THE `carried-from` CHAIN, NOT A REMEMBERED ORDINAL. Release
-    artifacts only exist from v0.63, so an ordinal like "the fifth N/A" cannot be
-    derived from the artifact set and must not be asserted from memory. The chain,
-    walked rather than recalled:
+    THE COUNT IS THE `carried-from` CHAIN, NOT A REMEMBERED ORDINAL. An ordinal
+    like "the fifth N/A" must not be asserted from memory; walk the chain.
+
+    THIS PARAGRAPH REGRESSED A RETRACTION, AND THE v0.70 COLD REVIEW CAUGHT IT. It
+    read "Release artifacts only exist from v0.63", which is FALSE:
+    `artifacts/release-v0.56.yaml` onwards exist, SEVEN minors earlier. That is not
+    a new error — RQ-69-ARCHMODEL retracted this exact sentence in its own text
+    ("That is FALSE — `artifacts/release-v0.56.yaml` onwards exist") — it came back
+    because this artifact was written from its predecessor's SHAPE rather than from
+    the predecessor's CORRECTION. A retraction that lives only in last release's
+    prose is one copy-paste away from being un-retracted.
+
+    The chain, walked rather than recalled:
 
         v0.63 RQ-63-ARCHMODEL  (chain head, no carried-from)
         v0.64 <- RQ-63   v0.65 <- RQ-64   v0.66 <- RQ-65

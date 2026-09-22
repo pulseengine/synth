@@ -2337,8 +2337,14 @@ impl InstructionSelector {
                 // base rewrite + optional bounds guard) into a core register,
                 // then bit-cast it into an S-register with `VMOV Sd,Rd`. A VLDR
                 // would load the identical 4 bytes, so the result bit pattern is
-                // exact. Honest-decline the native-pointer static-data address
-                // mode (#359) we don't yet lower here — never a silent miscompile.
+                // exact. The native-pointer static-data address mode (#359) is
+                // RELOCATED here since RQ-70-NPA (#1331) — `emit_wasm_data_addr`
+                // + `Add` + `Ldr` — rather than declined. NOTE, and it is the
+                // reason this comment is not just a status update: that branch
+                // bypasses `generate_load_with_bounds_check`, so under
+                // `--safety-bounds software|mask` this access is UNGUARDED,
+                // exactly as the i32 (#744) and i64 (#746) arms above already
+                // are. Class extension, not a new class — see RQ-70-NPA.
                 F32Load { offset, .. } => {
                     // The i32.load path (#95/#237) relocates a CONST effective
                     // address that lands in the static-data region; this f32.load
@@ -2439,9 +2445,11 @@ impl InstructionSelector {
                 // register (`VMOV Rn,Sn`, a reinterpret) and store it with the
                 // PROVEN integer path (`generate_store_with_bounds_check`). A VSTR
                 // would write the identical 4 bytes, so the stored word is exact.
-                // Honest-decline the native-pointer static-data + const static-data
-                // address modes we don't yet lower (symmetric to F32Load) — never
-                // a silent miscompile; falcon's dynamic-index stores are unaffected.
+                // The native-pointer static-data mode is RELOCATED since
+                // RQ-70-NPA (#1331), symmetric to F32Load and sharing its
+                // bounds-check bypass (UNGUARDED under `--safety-bounds
+                // software|mask`, as the i32/i64 arms already are). The CONST
+                // static-data address mode below is still honest-declined.
                 F32Store { offset, .. } => {
                     if let Some(eff) = self.try_fold_const_addr_store(wasm_ops, idx, *offset)
                         && self.static_data_addend(eff).is_some()

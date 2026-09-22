@@ -5,6 +5,174 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.70.0] - 2026-09-22
+
+**"Evidence you can re-derive"** — nine artifacts: **seven implemented, two
+deferred with their measurements recorded.** Both `must` lanes came from
+**cpetig**, an external reporter, and both of their blockers are measurably
+better on their own modules and their own command lines. The rest of the release
+is about a single question asked of synth's own machinery: *can this number be
+derived again, or was it only ever typed?* **Four** gates turned out to be unable
+to fail — three named below plus the `policed` predicate in `liveness.rs`, whose
+empty-area guard covered an empty *list* but not a list of empty *ranges* — one
+release-notes pipeline had no derivation at all, and the headline fix was refuted
+by a test written to attack it.
+
+Every figure in this table is **[REPORTER-ONLY]**: it is measured on cpetig's
+modules, which are issue attachments and are not in this repository. The
+re-derivable evidence for both fixes is the committed reduction fixtures
+(`scripts/repro/spill_slot_alias_1321.wat`, `scripts/repro/npa_static_f32_1331.wat`)
+and the corpus sweep, not these numbers.
+
+| [REPORTER-ONLY] | before | after |
+|---|---|---|
+| `fused.wasm` (#1321) | rc=1, 1 of 21 skipped, **no object** | **rc=0, 0 skipped, 69584-byte object** |
+| native-pointer ABI (#1331) | 6 of 22 skipped, **4 of 6 exports** blocked | 2 of 22, **2 of 6** |
+
+**Both were independently confirmed by the reporter on 2026-09-19**, on their own
+module and toolchain, rebuilt from `c18c185e`: `rc=0`, `Compiled 21 functions`
+with 0 skipped, 68374 bytes of code and `verify-embedder OK: 0 reserved-register
+writes in 19140 instructions across 21 symbols` — *"Previously this was rc=1, 1
+of 21 functions skipped with `SpillSlotAliased`, no object — i.e. the #1321 fix
+lands"* — and *"the f32 static-data declines are gone."* The byte counts differ
+from the table because it is a newer build of their component; both are recorded
+rather than reconciled. They also name the next wall on the native-pointer route
+themselves — `LdrSym literal pool out of range (#345)` in a single 50722-byte
+function — which is the wall RQ-70-NPA predicted, so **#1331 stays open on the
+reporter's own evidence.**
+
+### The headline is a fix that was thrown away (RQ-70-ALIAS, #1321)
+
+`VCR-RA-003` policed a wasm **local's frame home** with a rule that only holds
+for **allocator spill slots** — one value per slot — so a legal re-store to a
+local's home read as a #331 aliasing miscompile and cpetig's exported entry point
+declined.
+
+The first fix was read off the emitted instruction stream, produced exactly the
+table above, and passed **all 34** `ra003` tests. **It is unsound.** A value can
+have two uses, one from a register and one from the slot; **one added
+instruction** to the existing red-half test makes the validator return
+`Consistent` on a genuine #331 miscompile. The old test passed only because its
+filler happened not to read the stored register — a green suite measuring an
+accident of its own fixture.
+
+What shipped narrows the check's **scope** (police allocator spill areas, not a
+wasm local's frame home) and leaves the **rule** untouched. "Areas unknown" means
+police everything, so no caller loses a bit of detection — and that degradation
+now lives in the predicate itself: an empty area **list** and a list of empty
+**ranges** are one case, not two, because a guard written only for the first
+polices nothing when handed the second.
+
+The narrowing was checked for reachability rather than argued: the **five**
+non-test `spill.alloc()` call sites are each dominated by a guard, at **eight**
+distinct guard sites (three of the five allocators are helpers reached from more
+than one guarded caller). An `assert!(self.area_reserved)` planted in
+`SpillState::alloc` fired **zero** times across the 766-test synthesis suite and
+the corpus sweep's 3428 executed vectors, while a `should_panic` control confirmed
+the same assert **does** fire when reached unreserved. That probe was reverted, so
+this last piece of evidence is **not reproducible from the shipped tree** — the
+static argument and the guard line numbers are; a permanent `debug_assert!` is a
+v0.71 candidate.
+
+### Static-data f32 under the native-pointer ABI (RQ-70-NPA, #1331)
+
+`f32.load`/`f32.store` against static data now relocate via `emit_wasm_data_addr`
+instead of declining, the way the i32 (#744) and i64 (#746) arms have since #739.
+**Disclosed, not discovered later:** those new branches bypass
+`generate_load_with_bounds_check`/`generate_store_with_bounds_check`, so under
+`--native-pointer-abi --safety-bounds software|mask` an f32 static-data access
+that previously **loud-declined** now emits **unguarded** — a class extension of
+#744/#746, written at both call sites.
+
+### Three gates that could not fail
+
+- **`artifact_citation_check` had never scanned a single release artifact**
+  (RQ-70-CITEGAP, #1333). A non-recursive `artifacts/*.yaml` glob saw 30 of 136
+  files; it read only `run:` keys where release artifacts use `done-when:` and
+  `verified-by:`; and it knew one citation form where two are in use. A fabricated
+  citation in an `implemented` v0.69 artifact passed with rc=0. Now: **136 files,
+  33 citations** (15 target, 18 filter) over **7242** test names, 0 false claims.
+  It also no longer skips a file it cannot parse — a gate that silently ignores
+  unreadable input cannot fail on it.
+- **`status_evidence`'s delivery window matched ZERO commits for two releases**
+  (RQ-70-WINDOWVAC, #1334). The subject convention became `RQ-NN-NAME (#issue):`
+  around v0.67 while the window loop still matched only `type(scope):`. CI could
+  not catch it: the floor regex was `[0-9]+`, which matches `0`. Replaying
+  `v0.68.0..v0.69.0` now reports **8 delivery-shaped, 8 attributed** (was 0).
+- **`loop_conformance_check` counted done-when DECLARATIONS and printed them as
+  evaluation** (RQ-70-DONEWHEN, #1335). Four releases at 100% `manual:` printed
+  the same line as a release with everything machine-checked. It now prints
+  DECLARED vs EVALUABLE: this release is **9/9 declared, 7 mechanically
+  evaluable, 2 `manual:`**.
+
+### Release notes are derived, not typed (RQ-70-RIVETNOTES, #1337)
+
+The artifact list and trace-graph delta below are generated by
+`scripts/release_notes_from_rivet.py` from `rivet diff`. The generator **refuses
+a rivet older than the CI pin** — 0.32 reports "0 broken cross-refs" on a tree
+where resolution never ran, which reads as a clean bill of health — and
+**refuses a zero-added diff** as a broken derivation rather than emitting a
+section that reads as "nothing shipped". Both refusals are now pinned by tests
+with a negative control, not merely demonstrated by hand.
+
+This release reports the **trace-graph delta for the first time**: **+26
+warnings, 0 new errors**, none fixed here. Reporting them is the deliverable.
+The count is also the generator's first catch on its own artifact — it had been
+recorded as 25, in three-plus-one classes, with the fourth attributed to an
+artifact v0.70 never touched. Re-derived on the cut tree it is 26, and that
+fourth class is two warnings on two of **this release's own** artifacts.
+
+### What this release does NOT claim
+
+- **[REPORTER-ONLY]** `opt.wasm` still skips 7 of 17 functions (#1069 pool
+  exhaustion, GI-FPU-002) — measured, unchanged, and not what this release fixed.
+  **#1318 stays open.**
+- **[REPORTER-ONLY]** `position#tick` and `ekf#estimate` now reach the **#345
+  literal-pool wall**, a pre-existing function-size limit the f32 decline had been
+  hiding. **#1331 stays open** — and the reporter independently hit that same wall
+  on 2026-09-19.
+- `check_vfp_slot_aliasing` (#881) carries the same single-value-per-slot model
+  over the VFP word file and is **not known to be clean**.
+- "The corpus" names **three** different populations across thirteen scripts,
+  which is how two figures differing by 70 compiles were both "the corpus" in one
+  release (RQ-70-FALCONCORPUS, #1318). The ambiguity is measured, not resolved.
+
+### Deferred, with their measurements
+
+- **RQ-70-PAGELIB** (#1339) — the custom-page-size refusal is CLI-only; where it
+  belongs depends on a downstream answer that does not exist yet (gale on #1145).
+- **RQ-70-ARCHMODEL** (#1136) — feature-loop steps 1–2 are N/A again on spar#445,
+  unmoved since 2026-09-03, re-verified at the cut.
+
+### Verification
+
+`cargo fmt --check`, `clippy --workspace --all-targets -D warnings`, `cargo test
+--workspace`; ARM corpus sweep **PASS** (175/195 compiled, 3428/3428 vectors, 0
+mismatches); `claim_check` **75/75**; `status_evidence`, `check_version_pins`,
+`oracle_wiring` and `artifact_citation` all exit 0.
+
+<!-- DERIVED by scripts/release_notes_from_rivet.py from `rivet diff` -->
+<!-- base v0.69.0 · rivet 0.37.0 · do not hand-edit the lists -->
+
+### Artifacts (9 added, 0 removed, 0 modified, 584 unchanged)
+
+- **RQ-70-ALIAS** — VCR-RA-003 policed a wasm LOCAL'S frame home with a spill slot's single-value rule — cpetig's export now emits, and the candidate fix that looked right was refuted by its own potency test
+- **RQ-70-ARCHMODEL** — Feature-loop steps 1-2 (spar AADL -> WIT) are N/A again, carried on spar#445 — re-verified at the v0.70 cut, and the gate that could not SEE this filing is fixed in the same release
+- **RQ-70-CITEGAP** — artifact_citation_check globs artifacts/*.yaml NON-recursively, so it has never scanned a single release artifact since v0.61
+- **RQ-70-DONEWHEN** — Every done-when has been `manual:` since v0.66, so R3 cannot fire — and the conformance gate counts declarations, not evaluations
+- **RQ-70-FALCONCORPUS** — v0.69's headline numbers were not re-derivable, and "the corpus" names THREE different populations — two reduced fixtures land, the ambiguity is measured
+- **RQ-70-NPA** — Static-data f32.load/f32.store now relocate under the native-pointer ABI — cpetig's blocked exports go 4 of 6 to 2, and the two that remain hit a DIFFERENT, named wall
+- **RQ-70-PAGELIB** — DEFERRED to v0.71 with the measurement: the custom-page-size refusal is CLI-only, and where it belongs depends on a downstream answer that does not exist yet
+- **RQ-70-RIVETNOTES** — The CHANGELOG is hand-written prose about a typed artifact set rivet can diff — and the diff nobody ran reports 22 new warnings v0.69 shipped unseen
+- **RQ-70-WINDOWVAC** — status_evidence's delivery window has matched ZERO commits for two releases — the anti-vacuity anchor is itself vacuous
+
+### Trace-graph delta
+
+- errors: **+0 / -0**
+- warnings: **+26 / -0**
+
+> 26 new warning(s), 0 new errors. Listed so the release says whether it improved the trace graph or degraded it — v0.69 shipped 22 unseen (#1337).
+
 ## [0.69.0] - 2026-09-18
 
 **"The failure a user can see"** — two downstream reports arrived within three

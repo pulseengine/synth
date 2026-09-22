@@ -5733,11 +5733,15 @@ pub fn validate_final_allocation_in_areas(
     let policed = |slot: i32| match spill_areas {
         // No areas named => police EVERY offset (the historical answer).
         None => true,
-        // An EMPTY list is "unknown", NOT "no slots are policed". A caller that
-        // reserved no spill area cannot thereby switch the #331 check off;
-        // `select_with_stack` already collapses empty to `None`, but the
-        // degradation belongs in the predicate rather than in one caller's care.
-        Some([]) => true,
+        // A list that names NO OFFSET is "unknown", NOT "no slots are policed".
+        // A caller that reserved no spill area cannot thereby switch the #331
+        // check off; `select_with_stack` already collapses empty to `None`, but
+        // the degradation belongs in the predicate rather than in one caller's
+        // care. This is ONE arm on purpose: an empty LIST and a list of empty
+        // RANGES (`a..a`, which `contains` rejects for every slot) say the same
+        // thing in two shapes, and a guard written only for the first shape
+        // polices nothing when handed the second.
+        Some(areas) if areas.iter().all(|a| a.is_empty()) => true,
         Some(areas) => areas.iter().any(|a| a.contains(&slot)),
     };
     let mut i = 0usize;
@@ -18310,6 +18314,24 @@ mod tests {
                 RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased { slot: 4, .. })
             ),
             "an EMPTY area list must police everything, not nothing"
+        );
+    }
+
+    #[test]
+    fn ra003_areas_of_empty_ranges_is_unknown_not_permission_1321() {
+        // The SAME degradation, in the shape the `Some([])` guard did not cover:
+        // a NON-empty list whose ranges are all empty names no offset at all, so
+        // `any(|a| a.contains(&slot))` is false for every slot and the check
+        // would police NOTHING while looking configured. Latent rather than live
+        // today (the selector's areas are sized from `I64_SPILL_SLOTS` and the
+        // 20-byte scratch area, both non-zero), which is exactly why it needs a
+        // test: nothing else would notice it becoming reachable.
+        assert!(
+            matches!(
+                validate_final_allocation_in_areas(&aliasing_at_slot_4(), Some(&[0..0, 64..64])),
+                RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased { slot: 4, .. })
+            ),
+            "a list of EMPTY ranges must police everything, not nothing"
         );
     }
 

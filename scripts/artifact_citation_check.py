@@ -48,6 +48,21 @@ from pathlib import Path
 
 import yaml
 
+# #1333 follow-up (v0.70 cold review, findings 10 & 11): this gate USED to
+# `yaml.safe_load` inside a bare `except Exception: continue`. Two ways it could
+# not fail, both MEASURED on this tree before the fix:
+#   - an UNPARSEABLE artifact was SILENTLY SKIPPED. Corrupting
+#     artifacts/release-v0.69/RQ-69-ELFNAMES.yaml dropped its citation (33 -> 32)
+#     with rc=0 and no message, and ci.yml's non-vacuity floor still matched
+#     because the file count comes from the GLOB, not from the parse.
+#   - `safe_load` is LAST-WINS on duplicate keys, so a duplicate `verified-by`
+#     silently dropped a planted bogus citation: rc=0, count unchanged.
+# Both are the defect class this very gate exists to remove. The loader is
+# IMPORTED from status_evidence_check rather than copied, so there is no second
+# definition to drift -- the same reason RQ-70-RIVETNOTES derives its notes.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from status_evidence_check import DuplicateKeyError, StrictLoader  # noqa: E402
+
 # `cargo test [flags] -- FILTER` — the filter is the first non-flag token after `--`.
 CARGO_TEST_FILTER = re.compile(r"cargo\s+test\b[^\n]*?--\s+(?!-)(\S+)")
 # #1333: `--test <target>` names an integration-test TARGET (the file
@@ -155,6 +170,25 @@ def collect_test_paths(root: Path) -> set[str]:
 CLAIMING_STATUSES = {"implemented", "verified", "accepted"}
 
 
+# Files this gate REFUSED to read (unparseable / duplicate-key). Module-level so
+# the return signature stays stable, and CLEARED at the top of `citations()`.
+hard_failures: list[str] = []
+
+
+def artifact_files(root: Path) -> list[str]:
+    """Every artifact file this gate is responsible for — ONE definition.
+
+    The scan loop and the reported file count both call this. They used to hold
+    separate globs, so "N artifact files scanned" was derived from a different
+    set than the scan; v0.70's cold review found the pair had already drifted on
+    extension.
+    """
+    return sorted(
+        set(glob.glob(str(root / "artifacts" / "**" / "*.yaml"), recursive=True))
+        | set(glob.glob(str(root / "artifacts" / "**" / "*.yml"), recursive=True))
+    )
+
+
 def citations(root: Path) -> list[tuple[str, str, str, str]]:
     """-> [(artifact_file, artifact_id, status, name, kind)] per citation.
 
@@ -163,14 +197,63 @@ def citations(root: Path) -> list[tuple[str, str, str, str]]:
     against two different populations.
     """
     out: list[tuple[str, str, str, str, str]] = []
+    hard_failures.clear()
     # #1333: RECURSIVE. Every release since v0.61 files its artifacts under
-    # `artifacts/release-vX.Y/`; the non-recursive glob saw 30 of 135 files and
+    # `artifacts/release-vX.Y/`; the non-recursive glob saw 30 of 136 files and
     # ZERO release artifacts, so this gate had never once looked at the artifacts
     # a release is actually cut from.
-    for f in sorted(glob.glob(str(root / "artifacts" / "**" / "*.yaml"), recursive=True)):
+    #
+    # BOTH EXTENSIONS, because the sibling gate accepts both. v0.70's cold review
+    # found that sharing `StrictLoader` with `status_evidence_check` removed the
+    # second PARSER but left a second FILE SET: its `RELEASE_GLOB` ends
+    # `artifacts/release-v*/*.yml`, and this gate saw only `*.yaml`. A `.yml`
+    # artifact would therefore be legal to the release gate and INVISIBLE here —
+    # including an unparseable one, which is precisely the silent-skip class the
+    # `hard_failures` path below exists to end. Latent today (0 `.yml` against
+    # 136 `.yaml`) and fixed anyway: "no second definition to drift" has to mean
+    # the file set too, or it is only half true.
+    for f in artifact_files(root):
         try:
-            doc = yaml.safe_load(Path(f).read_text())
-        except Exception:
+            doc = yaml.load(Path(f).read_text(), Loader=StrictLoader)
+        except DuplicateKeyError as exc:
+            print(
+                f"FAIL {Path(f).relative_to(root)}: {exc} — a duplicate key makes "
+                f"this gate read the LAST value and silently drop the citations in "
+                f"the first. Refusing rather than skipping.",
+                file=sys.stderr,
+            )
+            hard_failures.append(str(Path(f).relative_to(root)))
+            continue
+        except Exception as exc:
+            print(
+                f"FAIL {Path(f).relative_to(root)}: unparseable YAML ({exc.__class__.__name__}: "
+                f"{str(exc).splitlines()[0][:120]}) — a gate that skips what it cannot "
+                f"read cannot fail on it. Refusing rather than skipping.",
+                file=sys.stderr,
+            )
+            hard_failures.append(str(Path(f).relative_to(root)))
+            continue
+        # v0.70 cold review: an EMPTY or comment-only file PARSES, to `None`.
+        # `walk(None)` then does nothing and the file contributes no citations —
+        # visibly identical to the unparseable case this gate was just taught to
+        # refuse, but reached by a different door. A zero-byte artifact is never
+        # intentional, and the ci.yml non-vacuity floor cannot see it either,
+        # because the file count comes from the glob and not from the parse.
+        # ...EXCEPT `_release.yaml`, whose REQUIRED shape is comments-only.
+        # status_evidence_check's R0 refuses a KEYED `_release.yaml` ("a keyed
+        # _release.yaml is skipped silently by rivet"), so parsing to `None` is
+        # that file being correct, not broken. Written only after this guard
+        # reddened all nine of them on a clean tree — a checker that fails on
+        # the right answer is the defect class this release is named against.
+        if doc is None and Path(f).name != "_release.yaml":
+            print(
+                f"FAIL {Path(f).relative_to(root)}: parsed to an EMPTY document "
+                f"(zero-byte or comments only) — it contributes no citations and "
+                f"looks exactly like a file with none. Refusing rather than "
+                f"counting it as scanned.",
+                file=sys.stderr,
+            )
+            hard_failures.append(str(Path(f).relative_to(root)))
             continue
         rel = str(Path(f).relative_to(root))
 
@@ -205,6 +288,17 @@ def main() -> int:
     tests = collect_test_paths(root)
     cites = citations(root)
 
+    # A file this gate could not READ is a file it cannot CHECK. Skipping it
+    # silently is how a gate passes over the thing it exists to police, so the
+    # refusal is terminal and names every file.
+    if hard_failures:
+        print(
+            f"FAIL: {len(hard_failures)} artifact file(s) could not be read: "
+            + ", ".join(hard_failures)
+        )
+        print("      A gate that skips what it cannot parse cannot fail on it.")
+        return 1
+
     if not tests:
         print("FAIL: collected ZERO test names — the scan is broken, not the tree")
         return 1
@@ -214,7 +308,9 @@ def main() -> int:
         print("      artifacts stopped citing tests. Either way this gate is inert.")
         return 1
 
-    n_files = len(glob.glob(str(root / "artifacts" / "**" / "*.yaml"), recursive=True))
+    # Same file set as the scan loop above — a reported count derived from a
+    # DIFFERENT glob is how "136 files scanned" stops meaning what it says.
+    n_files = len(artifact_files(root))
     targets = collect_test_targets(root)
     if not targets:
         print("FAIL: collected ZERO integration-test targets — the scan is broken")

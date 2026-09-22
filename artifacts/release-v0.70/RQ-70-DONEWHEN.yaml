@@ -8,7 +8,7 @@ artifacts:
     HABIT, and the compound predicates are genuinely good. Both halves are true, and
     that is why this is not a call to ban `manual:`.
 
-    Manual share per release, derived: v0.61 11/15, v0.62 7/10, v0.63 8/12,
+    Manual share per release, derived: v0.61 12/15, v0.62 7/10, v0.63 8/12,
     v0.64 7/10, v0.65 5/8, v0.66 8/8, v0.67 7/7, v0.68 9/9, v0.69 9/9.
 
     READING ALL NINE v0.69 PREDICATES: each is a COMPOUND acceptance statement —
@@ -49,11 +49,24 @@ artifacts:
 
     So the answer to "is the 100% a property of the work or of the habit" is: the
     HABIT, and the evidence is that it broke the moment something pushed back.
-    Nothing here bans `manual:`. What changed the number is that R9 REFUSED
-    RQ-70-ALIAS's first signature — a `contains:` into crate source, "a predicate
-    that cannot fail on the artifact's own definition of failure" — which forced
-    it onto the wired corpus sweep, and the same standard was then applied to the
-    rest. The two that remain `manual:` are the two DEFERRALS (ARCHMODEL and
+    Nothing here bans `manual:`. What changed the number is that the STANDARD R9
+    states — "a predicate that cannot fail on the artifact's own definition of
+    failure" — was applied by hand to RQ-70-ALIAS's first `contains:` signature and
+    then to the rest, moving them onto wired oracles.
+
+    THE GATE ITSELF WOULD NOT HAVE FORCED THIS, and saying otherwise would be the
+    exact error this release is named against. MEASURED on this tree: set ALIAS's
+    done-when to `contains:crates/synth-synthesis/src/liveness.rs:...` and, with its
+    `verified-by` present, status_evidence exits 0 — R9 never fires. Delete the
+    `verified-by` and the same signature reds it (rc=1). R9 is disarmed by ANY
+    non-empty `verified-by`, and `is_crate_source()` is
+    `parts[0] == "crates" and "tests" not in parts[1:]` — this artifact quoted only
+    the first conjunct until the cold review restored the second. The conclusion
+    below re-derives either way, but a truncated quote of a predicate is not a quote
+    of it. So a
+    `contains:scripts/...` — which is 4 of this release's 7 evaluable signatures — is
+    outside its reach entirely. The 22% is a convention this release adopted, not a
+    gate it was compelled by; R9's enforceable perimeter is filed as follow-up. The two that remain `manual:` are the two DEFERRALS (ARCHMODEL and
     PAGELIB), where no mechanical predicate exists because nothing landed.
 
     That is the shape worth keeping: a gate that refuses a weak signature changes
@@ -63,11 +76,12 @@ artifacts:
     THE RECOMMENDED PRACTICE, demonstrated in this release rather than asserted:
     keep the compound `manual:` predicate AND record its mechanical conjunct in
     `verified-by:`, which RQ-70-CITEGAP now checks. RQ-70-ALIAS is the worked
-    example — its done-when started as `manual:`, became a `contains:` into crate
-    source, and status_evidence's R9 REFUSED that as a predicate that cannot fail,
-    which is how it ended up pointing at the wired corpus sweep's fixture. v0.70 is
-    therefore the first release since v0.65 with a non-`manual:` signature, and it
-    got there by a gate refusing, not by a rule banning.
+    example — its done-when started as `manual:` and ended up pointing at the wired
+    corpus sweep's fixture, because a code-existence `contains:` cannot fail on that
+    artifact's own definition of failure. That judgement was applied by the author
+    against R9's stated standard, NOT enforced by R9 (see the measurement above).
+    v0.70 is the first release since v0.65 with a non-`manual:` signature, and it got
+    there by a standard applied, not by a gate compelling it.
   status: implemented
   release: v0.70
   tags:
