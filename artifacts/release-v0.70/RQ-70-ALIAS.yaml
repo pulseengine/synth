@@ -76,6 +76,20 @@ artifacts:
       left implicit. The committed `spill_slot_alias_1321.wat` reduction is what
       makes the FIX re-derivable; the reporter's module sizes are not.
 
+      REPORTER-CONFIRMED, 2026-09-19, ON THEIR OWN MODULE AND THEIR OWN
+      TOOLCHAIN. cpetig rebuilt from c18c185e and reported back: the
+      `--embedder-*` route on a NEWER build of the component
+      (`cascade-v1139-fused.wasm`, 41055 bytes) now gives `rc=0`, `Compiled 21
+      functions` with 0 skipped, 68374 bytes of code, 70172-byte ELF, 66
+      relocations, plus `verify-embedder OK: 0 reserved-register writes in 19140
+      instructions across 21 symbols`. In their words: "Previously this was
+      rc=1, 1 of 21 functions skipped with `SpillSlotAliased`, no object — i.e.
+      the #1321 fix lands." That is an INDEPENDENT reproduction by the blocked
+      party, which is the only acceptance test this lane ever had. Note the byte
+      counts differ from the [REPORTER-ONLY] line above because it is a
+      different build of their component, not a different result — recorded as
+      two measurements rather than reconciled into one.
+
         - [REPORTER-ONLY] fused.wasm rc=1 -> rc=0, 1 of 21 skipped -> 0, and the
           69584-byte object: measured on the reporter's attachment.
         - `ra003` unit tests 34 -> 39: the potency test above, plus four pinning

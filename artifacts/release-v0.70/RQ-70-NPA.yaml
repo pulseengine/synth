@@ -22,6 +22,24 @@ artifacts:
       2 of 22 functions, 2 of 6 EXPORTS skipped
       `rate#tick` and `attitude#tick` now compile; ZERO f32 static-data declines remain
 
+    REPORTER-CONFIRMED 2026-09-19, AND THE PREDICTED NEXT WALL IS THE ONE THEY HIT.
+    cpetig rebuilt from c18c185e and reported: "The f32 static-data declines are
+    gone ... the `GI-FPU-002 phase 1b` messages from the original report are gone."
+    They also name what now blocks `--native-pointer-abi` on their module:
+    `LdrSym literal pool out of range (#345)` in a single 50722-byte function —
+    which is exactly the wall this artifact predicted rather than a surprise.
+    #1331 therefore STAYS OPEN, and it stays open on the reporter's own evidence.
+
+    THE ASKED-AND-UNANSWERED QUESTION WAS ANSWERED BY DEMONSTRATION. v0.70 asked
+    whether `--native-pointer-abi` is load-bearing for their build or merely
+    preferred; no reply came, and the artifact was scoped without one. The
+    2026-09-19 comment settles it: they are shipping via
+    `--embedder-data-init --embedder-global-init`, which gives them rc=0 with 0
+    skipped today. So the NPA route is a PREFERENCE blocker, not a hard one — a
+    fact that should have lowered this lane's priority against ALIAS had it
+    arrived in time, and is recorded here so the v0.71 ranking starts from it
+    rather than re-deriving it.
+
     THE MACHINERY ALREADY EXISTED AND THE FLOAT ARMS WERE SIMPLY NEVER GIVEN IT.
     `emit_wasm_data_addr` relocates a base to `__synth_wasm_data + offset` (the ELF
     builder retargets it to the owning segment symbol); the i32 sub-word arms got it

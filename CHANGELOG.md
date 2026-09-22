@@ -21,6 +21,18 @@ was refuted by a test written to attack it.
 | `fused.wasm` (#1321) | rc=1, 1 of 21 skipped, **no object** | **rc=0, 0 skipped, 69584-byte object** |
 | native-pointer ABI (#1331) | 6 of 22 skipped, **4 of 6 exports** blocked | 2 of 22, **2 of 6** |
 
+**Both were independently confirmed by the reporter on 2026-09-19**, on their own
+module and toolchain, rebuilt from `c18c185e`: `rc=0`, `Compiled 21 functions`
+with 0 skipped, 68374 bytes of code and `verify-embedder OK: 0 reserved-register
+writes in 19140 instructions across 21 symbols` — *"Previously this was rc=1, 1
+of 21 functions skipped with `SpillSlotAliased`, no object — i.e. the #1321 fix
+lands"* — and *"the f32 static-data declines are gone."* The byte counts differ
+from the table because it is a newer build of their component; both are recorded
+rather than reconciled. They also name the next wall on the native-pointer route
+themselves — `LdrSym literal pool out of range (#345)` in a single 50722-byte
+function — which is the wall RQ-70-NPA predicted, so **#1331 stays open on the
+reporter's own evidence.**
+
 ### The headline is a fix that was thrown away (RQ-70-ALIAS, #1321)
 
 `VCR-RA-003` policed a wasm **local's frame home** with a rule that only holds
