@@ -1,0 +1,78 @@
+artifacts:
+  - id: RQ-71-ISLANDS
+    type: system-req
+    title: "synth emits exactly ONE literal pool per function, appended at the end — so any LdrSym more than 4 KB from the end is unreachable by construction and a large function cannot compile"
+    description: >
+      cpetig, 2026-09-19, on #1331. They CONFIRMED v0.70's f32 static-data fix on
+      their own module ("the f32 static-data declines are gone ... the GI-FPU-002
+      phase 1b messages from the original report are gone") and named the next wall
+      themselves: `LdrSym literal pool out of range (#345)` in a single
+      50722-byte function.
+
+      THE LANE AS FIRST FILED WAS MISNAMED, AND THE REFUTING COMMAND IS WHAT FOUND
+      THAT. The candidate said "reproduce #345 and see whether the real cause is a
+      missing pool FLUSH rather than a range limit". It is the flush.
+      `arm_backend.rs:1727` refuses on `imm12 > 0xFFF`, and that refusal is
+      CORRECT: Thumb-2 `LDR (literal)` genuinely has a 12-bit unsigned offset, and
+      failing cleanly beats miscompiling. There is no bug at the check.
+
+      What broke is the assumption in the comment beside it — "these function
+      bodies are far smaller" — combined with `arm_backend.rs:1619`'s placement:
+      "the literal pool is appended at the end". One pool per function, at the end,
+      means every `LdrSym` further than 4 KB from that end is out of range by
+      construction. At 50722 bytes, most of the function is.
+
+      So the deliverable is CONSTANT ISLANDS: intermediate literal pools emitted at
+      under-4 KB intervals and branched over, the mechanism LLVM's
+      `ARMConstantIslandPass` and GCC's pool handling have both settled on. Choosing
+      a well-trodden mechanism matters here specifically because this is on the
+      emitted-bytes path.
+
+      NOT CLAIMED, and this is the honest limit of what #1331 can promise: cpetig's
+      module is an issue attachment and is NOT in this repository, so their 50722-byte
+      function cannot gate anything here. A synthetic fixture that crosses 4 KB
+      between an `LdrSym` and the function end is what makes this lane re-derivable
+      in-repo at all — RQ-70-FALCONCORPUS's lesson applied BEFORE the fact instead
+      of after it. Build the fixture first and confirm it refuses with this exact
+      message; if some other mechanism already splits large functions, the lane dies
+      before it is written.
+
+      ALSO RECORDED SO THE RANKING IS NOT RE-DERIVED: `--native-pointer-abi` is a
+      PREFERENCE blocker for this reporter, not a hard one. Their working route
+      today is `--embedder-data-init --embedder-global-init`, which gives rc=0 with
+      0 of 21 skipped and a 68374-byte object. v0.70 asked whether the ABI was
+      load-bearing and shipped without an answer; the answer arrived by
+      demonstration. That is why this is the SECOND must and not the first.
+
+      THE GATING OBLIGATION IS THE EXPENSIVE PART, and it is not negotiable. An
+      island is INSERTED CODE on the shipped path. A pool branched over incorrectly
+      is a branch into data — the loudest possible miscompile, and precisely the
+      class VCR exists to prevent. This needs BOTH a byte-identity differential over
+      the corpus for functions that need no island (they must be bit-identical, not
+      merely still-correct) AND an execution differential for functions that do.
+      Anyone scoping this as a one-line placement change has not read this
+      paragraph.
+
+      THE MACHINE'S HALF OF THIS IS `file:scripts/repro/litpool_islands_345.wat`. The full obligation is:
+      a committed .wat fixture whose LdrSym sits more than 4 KB from its function end compiles rc=0 where it previously refused with `LdrSym literal pool out of range (#345)`, PROVEN red-first on the pre-fix binary; the corpus is byte-identical for every function that needs no island; and an execution differential covers at least one function that does, so a branch into an island is caught by execution and not by inspection
+      The predicate cannot express all of that — it checks that the artefact
+      EXISTS, not that it is right. It is still worth having: v0.70 measured
+      that four releases running declared 100% `manual:` done-when, which R3
+      can never fire on, and printed that as though it were evaluation.
+
+    status: proposed
+    release: v0.71
+    tags:
+      - downstream-blocker
+      - external-reporter
+      - emitted-bytes
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: differential
+      issue: "#345"
+      done-when: "file:scripts/repro/litpool_islands_345.wat"

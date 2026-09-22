@@ -1,0 +1,61 @@
+artifacts:
+  - id: RQ-71-ISSUESCOPE
+    type: system-req
+    title: "An artifact whose own scope is delivered while its ISSUE stays broader can say so only in prose — nothing machine-checkable stops the wrong issue being closed"
+    description: >
+      MEASURED at the v0.70 cut, by reading the rule rather than assuming it. R11
+      (`status_evidence_check.py:1488`) makes a `disposition:` beside a CLAIMING
+      status a hard contradiction — "status `implemented` claims the outcome holds
+      but `disposition: partial` says it does not — pick one". That is CORRECT for
+      the artifact, and this lane does not propose changing it.
+
+      But two of v0.70's artifacts are `implemented` with their scope genuinely
+      delivered while their ISSUES must stay open, because the issue is broader than
+      the artifact:
+
+        RQ-70-NPA (#1331)          the f32 relocation shipped and the reporter
+                                   confirmed it; the issue stays open because
+                                   --native-pointer-abi still hits #345
+        RQ-70-FALCONCORPUS (#1318) the corpus question is answered and two reduced
+                                   fixtures landed; the issue names TWO modules and
+                                   opt.wasm still skips 7 of 17 for unrelated causes
+
+      SECOND REFUTING COMMAND, run: is there any EXISTING field that already
+      separates the close-set from the keep-open set? Comparing the field key sets
+      of all five "close" artifacts against both "keep-open" ones — no field is
+      present in all of one and none of the other, in either direction. The only
+      signal is prose.
+
+      So the closure decision lives in `issue_dispositions.md` and in a status
+      comment on the issue, and nothing connects "this artifact is implemented" to
+      "this issue must NOT be closed". That is one bad PR body away from repeating
+      v0.69's accident, which auto-closed cpetig's live blocker from the substring
+      `close #N` inside a DENIAL.
+
+      THE DELIVERABLE IS A CHECK, NOT JUST A FIELD. A field the artifact sets
+      deliberately, PLUS a release-time comparison that the set of issues closed on
+      the tag EQUALS the set the artifacts authorise — so closing the wrong issue is
+      a red at the time, not a discovery in the next retrospective.
+
+      THE MACHINE'S HALF OF THIS IS `contains:scripts/status_evidence_check.py:issue-scope`. The full obligation is:
+      an artifact can declare that its issue outlives its own delivery WITHOUT contradicting R11, and a release-time check compares the issues actually closed on the tag against the set the artifacts authorise, PROVEN red-first by authorising one set and closing a different one
+      The predicate cannot express all of that — it checks that the artefact
+      EXISTS, not that it is right. It is still worth having: v0.70 measured
+      that four releases running declared 100% `manual:` done-when, which R3
+      can never fire on, and printed that as though it were evaluation.
+
+    status: proposed
+    release: v0.71
+    tags:
+      - gate-potency
+      - release-gate
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1250"
+      done-when: "contains:scripts/status_evidence_check.py:issue-scope"

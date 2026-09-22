@@ -1,0 +1,63 @@
+artifacts:
+  - id: RQ-71-MUTANTDRIFT
+    type: system-req
+    title: "A mutant pinned by file:line:col is silently invalidated by any edit ABOVE it, and the resulting red reads as a coverage regression"
+    description: >
+      MEASURED at the v0.70 cut by hitting it. The `mutation survey` job went RED on
+      the release PR while main (da110b89) and c18c185e / 1da8c4c0 / bd65e450 were
+      all GREEN on the same job — so the red belonged to the PR, not to the runners.
+      That question was asked first, and it is the only reason the next step was
+      diagnosis rather than a retry.
+
+      IT WAS NOT A COVERAGE REGRESSION. The failing step is named "Replay the
+      pinned mutant subset (controls must die, survivors must reproduce)", which is
+      exactly what a coverage regression looks like.
+
+      `docs/status/mutation_survey.json` pins every mutant by `file:line:col`. The
+      subset entry `R4-shared/REG/liveness.rs:7346:36` targeted
+      `let aapcs_dead_at_return = [Reg::R2, Reg::R3, Reg::R12, Reg::LR];`. v0.70's
+      `policed` fix and its red-first test added +27/-5 lines to `liveness.rs`, ALL
+      ABOVE that line. The statement moved to 7350; line 7346 now holds
+      `let ends_in_return = matches!(`. The pin was aimed at different code.
+
+      THE LEDGER IS CONTENT-RECOVERABLE AND THE REMEDY ALREADY EXISTS. Every mutant
+      stores its `before` text, and `reanchor` re-locates by it — its own docstring
+      says "the id embeds the line number, so a shifted site must be re-resolved
+      rather than trusted". It fixed this cleanly: 5 sites moved, 0 not found, and
+      nothing re-baselined (mutants 34 -> 34, controls 3 -> 3, ci_subset 10 -> 10,
+      UNTESTED 4 -> 4, claim_check 75/75).
+
+      THE DEFECT IS THAT NOTHING CONNECTS THE TWO. Refuting command, run:
+      `grep -c reanchor .github/workflows/ci.yml` = **0**. CI never reanchors, and
+      the failure message names neither line drift nor the remedy. So any PR that
+      inserts a line above a pinned site gets a red that reads as lost coverage —
+      and the obvious "fix", `pin-subset`, would silently RE-BASELINE coverage
+      instead of re-locating a site. A gate whose failure mode invites the wrong
+      repair is worse than one that simply fails.
+
+      This is the same shape as v0.70's own `.wat` header, which counted the lines
+      the hunk writing it had just added: an anchor that quietly means something
+      else after an unrelated edit.
+
+      THE MACHINE'S HALF OF THIS IS `contains:.github/workflows/ci.yml:reanchor`. The full obligation is:
+      the CI replay re-locates each pinned mutant by its stored `before` text before replaying, and reports drift AS DRIFT (`site moved 7346 -> 7350, re-anchored`) rather than as a survivor failing to reproduce; PROVEN by inserting a line above a pinned site and showing the job stays green while naming the move, and by showing a genuine coverage regression still reds
+      The predicate cannot express all of that — it checks that the artefact
+      EXISTS, not that it is right. It is still worth having: v0.70 measured
+      that four releases running declared 100% `manual:` done-when, which R3
+      can never fire on, and printed that as though it were evaluation.
+
+    status: proposed
+    release: v0.71
+    tags:
+      - gate-potency
+      - release-gate
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1189"
+      done-when: "contains:.github/workflows/ci.yml:reanchor"
