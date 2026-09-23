@@ -40,6 +40,37 @@ artifacts:
       RQ-63-ARCHMODEL because that is where the ARCHMODEL LANE began, which is a
       fact about this lane and not about the artifact corpus. Read the
       predecessor's corrections, not its layout.
+      RE-VERIFIED AT THE v0.72 CUT (2026-09-23), not recalled:
+
+        gh issue view 445 --repo pulseengine/spar
+          state=OPEN  created=2026-09-03  updated=2026-09-03
+          "spar accepts property associations from UNDECLARED property sets
+           silently (rc=0) — a typo'd or invented property is indistinguishable
+           from a satisfied one"
+
+      Created and last updated on the SAME day, and that day is the one the
+      v0.71 cut recorded — so nothing has moved upstream in three weeks. This is
+      the SEVENTH consecutive release in which feature-loop steps 1 (model the
+      architecture in spar) and 2 (generate WIT from spar) are N/A for this
+      reason.
+
+      THE CHAIN WAS WALKED, NOT ASSERTED. Following `carried-from` from this
+      artifact: RQ-72 -> RQ-71 -> RQ-70 -> RQ-69 -> RQ-68 -> RQ-67 -> RQ-66 ->
+      RQ-65 -> RQ-64 -> RQ-63. LENGTH 10. v0.71's cold review found
+      RQ-71-ARCHMODEL claiming to walk that chain while carrying no
+      `carried-from` field at all — a claim true of the lane and false of the
+      artifact. Walking it is cheap; asserting an ordinal is how it goes wrong.
+
+      THE RETRACTED SENTENCE WAS CHECKED FOR, AND WHAT WAS FOUND IS ITS
+      RETRACTION. `grep -r "only exist from" artifacts/release-v0.72/` matches
+      twice — both times inside "DO NOT REINTRODUCE" text, here and in
+      `_release.yaml`. That is the correct state and must NOT be "corrected":
+      quoting what you retract is what stops the un-retraction class, and a
+      grep cannot tell an active claim from a quoted retraction. The underlying
+      fact re-verified at this cut: `artifacts/release-v0.56.yaml` is the
+      earliest release artifact, so "release artifacts only exist from v0.63"
+      is false.
+
     status: proposed
     release: v0.72
     tags:
@@ -53,11 +84,19 @@ artifacts:
         target: BR-001
     fields:
       req-type: process
+      disposition: deferred
       priority: carried
       verification-track: manual
       issue: "#1136"
       carried-from: RQ-71-ARCHMODEL
-      done-when: "manual: spar#445 re-verified at the v0.72 cut and the date recorded; steps 1-2 declared N/A with the unchanged upstream reason named"
+      # R4 wants the delivery commit ACKNOWLEDGED even when the artifact
+      # is not claiming — a commit landing on main under this id with no
+      # `landed:` is indistinguishable from one nobody noticed. It sits
+      # beside `disposition: deferred`, which is what R11 requires of a
+      # `landed:` record under a non-claiming status: the increment
+      # landed, the DELIVERABLE did not, and both are stated.
+      landed: "#1367"
+      done-when: "manual: spar#445 re-verified 2026-09-23 — OPEN, created AND last updated 2026-09-03, unchanged since the v0.71 cut; steps 1-2 N/A for the SEVENTH consecutive release on that unchanged upstream reason"
       verified-by: >-
         Deliberately `manual:` and not mechanical. This artifact's deliverable is
         a re-verification with a DATE, and a `contains:` predicate would go true
