@@ -60,6 +60,65 @@ artifacts:
       that four releases running declared 100% `manual:` done-when, which R3
       can never fire on, and printed that as though it were evaluation.
 
+
+      DEFERRED, WITH THE BLOCKER MEASURED RATHER THAN GUESSED. v0.71 did NOT
+      ship constant islands. What it shipped is the class, made reproducible
+      in-repo, plus the measurement of why the fix is larger than the plan
+      assumed.
+
+      REPRODUCED IN-REPO. `scripts/repro/litpool_islands_345.wat` (609 lines,
+      generated dense i64 filler) triggers cpetig's exact error on the exact
+      route they use:
+
+        LdrSym literal pool out of range (#345): imm12=5716 > 4095
+          for symbol __synth_wasm_data
+        (--target cortex-m7 --relocatable --all-exports --native-pointer-abi)
+
+      Their 50722-byte function is an issue attachment and is not in this
+      repository, so without this fixture the class would be unreproducible
+      here — the RQ-70-FALCONCORPUS criticism of v0.69, applied BEFORE the fact
+      instead of after it. The margin is ~40% over the 4095 threshold so
+      ordinary codegen drift cannot quietly turn it green.
+
+      WHY THE FIX IS NOT A PLACEMENT CHANGE, measured on this tree:
+
+        - Branch displacements are PRE-COMPUTED UPSTREAM of the encoder, in
+          final machine terms. `arm_encoder.rs` says so itself: "offset is
+          already the halfword displacement: (target - branch - 4) / 2". Two
+          `ArmOp` variants carry them (`BOffset`, `BCondOffset`).
+        - There is NO post-encode branch relaxation or fixup pass.
+          `grep -nE 'fn [a-z_]*(relax|fixup|patch)'` over `arm_backend.rs` and
+          `arm_encoder.rs` finds only literal-pool patching.
+
+      So inserting an island mid-function silently corrupts EVERY branch that
+      spans the insertion point, with nothing to repair it. That is worse than
+      the "branch into data" hazard this artifact anticipated: it is a branch to
+      the WRONG PLACE, silently — the miscompile class VCR exists to prevent.
+      The real blocker is a missing branch-relaxation pass over the byte stream,
+      which is its own substantial lane on the highest-risk path.
+
+      ONE ALTERNATIVE WAS CHECKED AND IS ALSO INSUFFICIENT. A pool at the
+      function START, branched over once, needs NO fixup pass: inserting N bytes
+      at offset 0 shifts every body instruction uniformly, so each intra-body
+      relative displacement is preserved exactly. But it requires the U=0
+      (backward) LDR-literal form, of which synth emits ZERO today, and
+      start-pool plus end-pool still only serve accesses within 4 KB of either
+      END. A 50722-byte function with accesses throughout genuinely needs N
+      islands, which needs the pass.
+
+      WHAT THIS RELEASE DOES INSTEAD, and it is not nothing: the refusal is now
+      PINNED by `scripts/repro/litpool_islands_345.py` (CI-wired, with a potency
+      control proving the same shape COMPILES with a short body, so the pin is
+      the 4 KB range and not an unbuildable fixture). `imm12 > 0xFFF` is the one
+      `if` standing between an out-of-range pool word and a load from a wrong
+      address; if it is ever loosened, that script goes red. And WHEN ISLANDS
+      LAND THE SCRIPT FAILS BY DESIGN, forcing whoever lands them to update this
+      artifact rather than leave a stale pin describing a defect that is gone.
+
+      NOT A BLOCKER FOR THE REPORTER, which is why deferring is defensible:
+      cpetig ships today via `--embedder-data-init --embedder-global-init`
+      (rc=0, 21 functions, 0 skipped, 68374 B). `--native-pointer-abi` is a
+      PREFERENCE route for them, established by demonstration in v0.70.
     status: proposed
     release: v0.71
     tags:
@@ -75,4 +134,9 @@ artifacts:
       priority: must
       verification-track: differential
       issue: "#345"
-      done-when: "file:scripts/repro/litpool_islands_345.wat"
+      disposition: deferred
+      # NOT `file:...litpool_islands_345.wat`: that fixture is committed by THIS
+      # release, so such a predicate would evaluate TRUE while the lane is
+      # deferred and nothing is fixed — a done-when that cannot fail. The
+      # predicate names the FIX instead, and is FALSE today by construction.
+      done-when: "contains:scripts/repro/litpool_islands_345.py:ISLANDS HAVE LANDED"
