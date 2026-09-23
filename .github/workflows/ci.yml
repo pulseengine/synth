@@ -439,6 +439,25 @@ jobs:
       # Lives in the already-REQUIRED claim-check job for the standing
       # reason: a brand-new job is not a required context on main, so it
       # could sit red for weeks blocking nothing.
+      # RQ-72-CIPOOL (#1062 increment 3). Lives in THIS job, on the
+      # self-hosted `light` pool, rather than in a new job of its own: a
+      # tripwire about pool share that itself consumed a GitHub-hosted slot
+      # would be its own counterexample. It is inside a REQUIRED context on
+      # purpose — a ratchet nothing blocks on is a number, not a ratchet.
+      #
+      # The deadlock guard runs from a PINNED contract in the script and needs
+      # no network. The first version read the required-context list via `gh`
+      # and skipped when it was unavailable — and no other job in this file
+      # calls `gh`, so on this runner it did not skip gracefully, it FAILED the
+      # required context it lives in. A guard that cannot execute where it is
+      # installed is the "gate nobody asks" defect one lane over, reproduced by
+      # the lane meant to fix the pool. The API is now a CROSS-CHECK only: it
+      # reports drift between the pin and branch protection when reachable, and
+      # says so plainly when not.
+      - name: "CI pool tripwire — ubuntu-latest share + required-context deadlock guard (#1062)"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_pool_tripwire.py
       - name: Status-evidence gate — a release status must agree with the evidence on main (1064)
         run: |
           set -euo pipefail
@@ -4792,7 +4811,13 @@ jobs:
     #       positives — the guard against the R11-linmem-base regression this lane
     #       found (a join reading the reserved base register, defined nowhere in
     #       the stream, must be seeded available not flagged).
-    runs-on: ubuntu-latest
+    # RQ-72-CIPOOL (#1062 increment 3): moved off the GitHub-hosted quota.
+    # This job is PURE cargo — actions/checkout, dtolnay/rust-toolchain,
+    # actions/cache and nothing else — which is the same shape as `Clippy`,
+    # a REQUIRED context that has run on this pool since increment 2. It is
+    # NOT required, so the worst case of a pool problem here is a red to
+    # revert, never a deadlocked merge.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4859,7 +4884,13 @@ jobs:
     #       (control_step 0x00210A55 byte-identical) is the "Consistent on every
     #       real RV32 function" proof — PLUS a dedicated repro sweeping 9 fixtures
     #       × {relocatable, default} = 18 pairs asserting ZERO false positives.
-    runs-on: ubuntu-latest
+    # RQ-72-CIPOOL (#1062 increment 3): moved off the GitHub-hosted quota.
+    # This job is PURE cargo — actions/checkout, dtolnay/rust-toolchain,
+    # actions/cache and nothing else — which is the same shape as `Clippy`,
+    # a REQUIRED context that has run on this pool since increment 2. It is
+    # NOT required, so the worst case of a pool problem here is a red to
+    # revert, never a deadlocked merge.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4912,7 +4943,13 @@ jobs:
     #   unexpected divergence on the REAL backends — proving it detects a genuine
     #   one-sided op-gap, not a synthetic one, with no shipping-code change.
     # Test-only: emits nothing (.text byte-identical; frozen 10/10 unaffected).
-    runs-on: ubuntu-latest
+    # RQ-72-CIPOOL (#1062 increment 3): moved off the GitHub-hosted quota.
+    # This job is PURE cargo — actions/checkout, dtolnay/rust-toolchain,
+    # actions/cache and nothing else — which is the same shape as `Clippy`,
+    # a REQUIRED context that has run on this pool since increment 2. It is
+    # NOT required, so the worst case of a pool problem here is a red to
+    # revert, never a deadlocked merge.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
