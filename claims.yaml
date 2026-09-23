@@ -3797,7 +3797,7 @@ claims:
     #   is EXACT (RQ-63-FLOOREQ), so this bump is not optional bookkeeping —
     #   CI reddened on `Claim Check` until ci.yml AND this line moved together,
     #   which is the pair working as designed.
-    text: "--exact-emulation-floor 367762"
+    text: "--exact-emulation-floor 367846"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

@@ -146,6 +146,15 @@ EXPECTED_DECLINES = {
     # The other 38 (i64 binary/unary/shift/rotate/load/store/select, the #1222
     # get->set->use pair) compile and execute equal to wasmtime on this path.
     "home_alias_class_1189_i64.wat": "i64 compare -> i64.extend_i32_u (10 c_* exports, #952)",
+    # RQ-71-VFPALIAS (#881/#1069). The redefined-frame-home fixture. Its three
+    # f64 legs (`redef_*_d`) decline on this sweep's ARM target for the SAME
+    # pre-existing reason as `below_fp` above — scalar f64 needs a
+    # double-precision FPU and thumbv7m-none-eabi has none (GI-FPU-002) — so the
+    # module fails via #952. The three f32 legs DO compile and execute here; the
+    # f64 halves are covered on cortex-m7dp by
+    # `vfp_home_redef_881_differential.py`, which is where that width belongs.
+    # Not a regression and not about the narrowing this fixture exercises.
+    "vfp_home_redef_881.wat": "f64 legs need a double-precision FPU (GI-FPU-002, #952)",
     "aarch64_brtable_blockvals_851.wat": "i64/f32/f64 block result values",
     "aarch64_divrem_851.wat": "i64 f64-reinterpret round trip",
     "aarch64_float_completion_851.wat": "f32/f64 ceil/floor/trunc/nearest + i64<->float",
