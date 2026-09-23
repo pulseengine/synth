@@ -121,11 +121,21 @@ def main():
             [SYNTH, "compile", short, "-o", os.path.join(td, "short.o"),
              "--target", "cortex-m7", "--relocatable", "--all-exports",
              "--native-pointer-abi"],
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, text=True, timeout=180, env=env,
         )
+        # `env=env` above is load-bearing and was MISSING until the v0.72
+        # gate-potency cold review. Without it the control ran with islands
+        # ON — the configuration in which EVERYTHING compiles, including the
+        # long fixture — so it could not discriminate and the assertion below
+        # was true for the wrong reason. Measured four ways:
+        #   short + islands ON  rc=0     short + islands OFF rc=0
+        #   long  + islands ON  rc=0     long  + islands OFF rc=1 (the pin)
+        # Only the islands-OFF row separates short from long, so only that
+        # row is a control.
         assert r2.returncode == 0, (
-            "POTENCY FAILED: the SHORT control must compile. If it does not, "
-            "this script is pinning something other than the 4 KB range:\n"
+            "POTENCY FAILED: the SHORT control must compile with islands "
+            "DISABLED. If it does not, this script is pinning something "
+            "other than the 4 KB range:\n"
             + (r2.stdout + r2.stderr)[:900]
         )
         print("  OK potency: the same shape with a short body COMPILES — "

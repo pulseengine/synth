@@ -37,6 +37,7 @@ import argparse
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 ADVISORY = ("codecov", "advisory")
 
@@ -48,6 +49,14 @@ def sh(*args: str) -> str:
 def is_advisory(name: str) -> bool:
     n = (name or "").lower()
     return any(k in n for k in ADVISORY)
+
+
+# The required-context contract lives in ONE place. `ci_pool_tripwire` owns it
+# (it is the module whose whole subject is the required set); importing it here
+# is what stops a fifth copy from appearing. sys.path is extended because these
+# scripts are invoked as files, not as a package.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ci_pool_tripwire import REQUIRED_CONTEXTS  # noqa: E402
 
 
 def branch_currency(head: str, base_ref: str = "origin/main"):
@@ -73,9 +82,12 @@ def squash_fidelity(pr_head: str, merged: str, base_at_merge: str):
     the number alone proves nothing — which is what it silently did for 45
     merges before #1268 made it visible.
 
-    Returns (verdict, diff_lines, advance_lines)."""
+    Returns (verdict, diff_lines, behind) — where `behind` is a COMMIT
+    count and is meaningful ONLY in the INDETERMINATE case; the two decided
+    verdicts return 0 for it. An earlier docstring called the third value
+    `advance_lines` and the code computed a diff of a commit against itself,
+    which is always empty and was never returned. Named for what it is."""
     diff_lines = len(sh("git", "diff", pr_head, merged).splitlines())
-    advance_lines = len(sh("git", "diff", base_at_merge, base_at_merge).splitlines())
     current, behind = branch_currency(pr_head, base_at_merge)
     if not current:
         return ("INDETERMINATE", diff_lines, behind)
@@ -97,7 +109,16 @@ def gate(pr: str, repo: str, required: list[str]):
     pend = [n for n, s in roll.items() if s == "PENDING" and not is_advisory(n)]
     current, behind = branch_currency(d["headRefOid"])
     return {
-        "CHECK1": (len(required) == 9 and not missing, missing),
+        # (v0.72 cold review, F5) The literal `9` was a FOURTH hand-written
+        # copy of a contract that already exists in
+        # `ci_pool_tripwire.REQUIRED_CONTEXTS`. Demonstrated failure: with TEN
+        # required contexts, ALL SUCCESS, this returned GATEFAIL and `missing`
+        # was EMPTY — refusing a correct merge while naming nothing. The count
+        # is now DERIVED from the pinned contract, which is the repo's own
+        # "derive what you check against from the artifact you ship" rule
+        # applied to the one place that had four copies of it.
+        "CHECK1": (len(required) == len(REQUIRED_CONTEXTS) and not missing,
+                   missing),
         # #1269a: the BRANCH must be current. `baseRefOid` agreement is reported
         # beside it, deliberately NOT as the check — it is what was mistaken for
         # this one.

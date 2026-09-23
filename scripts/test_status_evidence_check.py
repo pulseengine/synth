@@ -1865,6 +1865,79 @@ class StatusGate1250(unittest.TestCase):
     # v0.71's cold review showed exactly that: disabling R12's vocabulary
     # branch left BOTH suites rc=0.
 
+    # -- R13 (v0.72 gate-potency cold review) ------------------------------
+    #
+    # The class R12 could NOT see. `issue-scope` written one level too high is
+    # valid YAML, a real key, and read by nothing — so it breaks no invariant
+    # and no gate can go red on it. At the v0.71 cut exactly this landed, passed
+    # `assert count == 1`, a duplicate-key-strict load and all five gates, and
+    # changed nothing; only re-deriving the close-set caught it. The cold
+    # review then showed the hole was still open a release later.
+    #
+    # These tests assert on the DERIVED close-set as well as on the failure
+    # string, because the derived value is the only thing that discriminated
+    # last time.
+
+    def test_r13_misnested_field_key_is_red(self):
+        for key in ("issue-scope", "landed", "done-when", "disposition"):
+            with self.subTest(key=key):
+                fx = Fixture()
+                a = art("RQ-72-X", "implemented",
+                        {"done-when": self.MANUAL, "landed": "PR #1400",
+                         "verified-by": "re-run at the cut", "issue": "#900"})
+                a[key] = "outlives" if key == "issue-scope" else "x"
+                fx.release("release-v0.72/RQ-72-X.yaml", [a])
+                out = fx.run([])
+                self.assertTrue(has(out, "R13 RQ-72-X"), fails(out))
+
+    def test_r13_correctly_nested_is_green(self):
+        fx = Fixture()
+        fx.release("release-v0.72/RQ-72-X.yaml", [art(
+            "RQ-72-X", "implemented",
+            {"done-when": self.MANUAL, "landed": "PR #1400",
+             "verified-by": "re-run at the cut",
+             "issue": "#900", "issue-scope": "outlives"},
+        )])
+        out = fx.run([])
+        self.assertFalse(has(out, "R13 RQ-72-X"), fails(out))
+
+    def test_r13_misnesting_flips_the_derived_close_set(self):
+        """The failure R13 exists for, asserted on the VALUE not the message.
+
+        A `status_evidence_check` that merely stayed green would be
+        indistinguishable from one that had nothing to say. What makes the
+        mis-nesting dangerous is that it silently moves an issue OUT of the
+        held-open set and INTO the authorised-for-closure set.
+        """
+        import status_evidence_check as sec
+
+        def close_set(misnested):
+            fx = Fixture()
+            a = art("RQ-72-X", "implemented",
+                    {"done-when": self.MANUAL, "landed": "PR #1400",
+                     "verified-by": "re-run at the cut", "issue": "#1331"})
+            if misnested:
+                a["issue-scope"] = "outlives"
+            else:
+                a["fields"]["issue-scope"] = "outlives"
+            fx.release("release-v0.72/RQ-72-X.yaml", [a])
+            arts, errs = sec.load_release_artifacts(fx.root, sec.RELEASE_GLOB)
+            auth, held = sec.authorised_close_set(arts, (0, 72))
+            return sorted(auth), sorted(held), [e for e in errs
+                                                if e.startswith("R13")]
+
+        auth_ok, held_ok, r13_ok = close_set(misnested=False)
+        self.assertEqual(held_ok, [1331])
+        self.assertEqual(auth_ok, [])
+        self.assertEqual(r13_ok, [])
+
+        auth_bad, held_bad, r13_bad = close_set(misnested=True)
+        # The whole point: the issue silently becomes closable.
+        self.assertEqual(held_bad, [])
+        self.assertEqual(auth_bad, [1331])
+        # ...and R13 is what makes that visible.
+        self.assertEqual(len(r13_bad), 1, r13_bad)
+
     def test_r12_unknown_vocabulary_is_red(self):
         fx = Fixture()
         fx.release("release-v0.72/RQ-72-X.yaml", [art(

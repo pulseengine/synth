@@ -86,10 +86,45 @@ artifacts:
       disabling it left BOTH suites rc=0. `status_evidence_check.py` restored
       byte-identical (sha compared).
 
-      (c) The `issue-scope:` census line is pinned in ci.yml with `[0-9]+`, the
-      last census line in that step without one. Verified the pattern MATCHES
-      the live output rather than merely existing — a pin that never matches is
-      worse than none.
+      (c) The `issue-scope:` census line is pinned in ci.yml, the last census
+      line in that step without one.
+
+      CORRECTED BY THIS RELEASE'S OWN GATE-POTENCY COLD REVIEW, and the
+      correction is more interesting than the deliverable. The pin shipped as
+      `[0-9]+` on the AUTHORISED COUNT, and this artifact said: "Verified the
+      pattern MATCHES the live output rather than merely existing — a pin that
+      never matches is worse than none." Every word of that is true, and it
+      names only ONE of the two questions. `[0-9]+` matches `0`, so the pin
+      passed on precisely the vacuous census it was added to catch:
+
+        echo 'issue-scope: v0.72 — 0 issue(s) authorised ...' \
+          | grep -qE '^issue-scope: v[0-9]+\.[0-9]+ — [0-9]+ issue\(s\) authorised'
+        -> MATCHES
+
+      A lane whose whole subject is "the gate nobody asks" shipped a pin nobody
+      asked the second question of. "Can it pass?" and "can it fail?" are not
+      one check, and v0.71 shipped the mirror failure — a musl gate that could
+      never PASS — one release earlier.
+
+      THE NAIVE REPAIR IS ALSO WRONG, and measuring is what says so.
+      `[1-9][0-9]*` is the shape the 17 sibling pins in that step use, but zero
+      authorised is the LEGITIMATE plan-time state: across v0.72's own history
+      the claiming count went 0 at the planning commit 1e9236d7, then
+      1 -> 2 -> 3 -> 4 -> 5. That pin would red every future planning PR.
+
+      What must never be zero is the POPULATION the close-set was derived OVER.
+      An empty population and a genuinely empty answer print the same count and
+      mean opposite things. So `status_evidence_check.py` now prints
+      `over N artifact(s)` on that line, CI pins N with `[1-9][0-9]*` and keeps
+      `[0-9]+` on the authorised count, and the HELD-OPEN count — previously
+      unpinned entirely, with RQ-72-ISLANDS' `outlives` on #1331 riding on it —
+      is pinned too. This is the repo's own RQ-65-FLOORSHAPE idiom: pin that
+      the derivation RAN over a non-empty set, not that its answer was non-zero.
+
+      Both directions are now demonstrated, not asserted: the pin matches the
+      live line (`v0.72 over 8 artifact(s) — 4 ... 1 held open`), and it refuses
+      a zero population, the old unpinned shape, and a line whose held-open
+      count has been dropped.
 
       (d) The replay's "frozen, so it cannot go vacuous" sentence was FALSE and
       is corrected in place rather than deleted. It reads LIVE artifacts, and

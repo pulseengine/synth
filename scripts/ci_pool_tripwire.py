@@ -183,6 +183,21 @@ def main():
         if not j.get("runs-on"):
             failures.append(f"DEADLOCK: required context `{c}` has no `runs-on:`.")
             continue
+        # (v0.72 cold review, F3) A rename was caught; GATING THE JOB OFF was
+        # not — and a required context that never REPORTS is the same deadlock
+        # as one that does not exist, reached by a one-line `if:` instead of a
+        # rename. Demonstrated: adding
+        # `if: github.event_name == 'schedule'` to `Kani Verification` left
+        # this guard at rc=0 with 0 failures. No required job carries an `if:`
+        # today, so this is a latent class closed before it fires.
+        if j.get("if") is not None:
+            failures.append(
+                f"DEADLOCK: required context `{c}` carries an `if:` "
+                f"({j['if']!r}). A required NAME that is conditionally skipped "
+                f"never reports, and a never-reporting required context blocks "
+                f"every merge with no red to revert. Remove the condition, or "
+                f"retire the context from branch protection FIRST.")
+            continue
         if pool_of(j.get("runs-on")) == EXACT_LABEL:
             on_hosted += 1
     print(f"ci-pool: {len(REQUIRED_CONTEXTS)} required contexts (pinned), "
