@@ -446,6 +446,9 @@ fn compile_function_with_opts(
         // per-op cycle table yet) — no bound emitted for this backend.
         wcet: None,
         wcet_intermediate: None,
+        // No ArmInstruction stream on this backend -> no stack profile.
+        // The CLI reports this as an explicit decline, never as 0 bytes.
+        stack_frame: None,
     })
 }
 
@@ -734,6 +737,9 @@ mod tests {
             branch_map: Vec::new(),
             wcet: None,
             wcet_intermediate: None,
+            // No ArmInstruction stream on this backend -> no stack profile.
+            // The CLI reports this as an explicit decline, never as 0 bytes.
+            stack_frame: None,
         };
         let cfg = CompileConfig {
             target: TargetSpec::riscv32imac(),

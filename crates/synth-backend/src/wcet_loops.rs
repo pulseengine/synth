@@ -1089,7 +1089,7 @@ fn sym_add(a: Sym, b: Sym, sign: i64) -> Sym {
 /// (crates/synth-backend/tests/a32_no_silent_nop_615.rs) pins it, and goes red
 /// against the pre-#1272 encoder.
 #[allow(clippy::match_same_arms)] // grouped by REASON, not by answer
-fn may_move_sp(op: &ArmOp) -> bool {
+pub(crate) fn may_move_sp(op: &ArmOp) -> bool {
     use ArmOp::*;
     match op {
         // RQ-67-VFPREACH (#1267): VPUSH/VPOP {d8-d15} are the `sp!`

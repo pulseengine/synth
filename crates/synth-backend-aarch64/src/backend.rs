@@ -132,6 +132,9 @@ impl AArch64Backend {
             // #778: WCET cycle model is ARM(Thumb-2)-only in v1.
             wcet: None,
             wcet_intermediate: None,
+            // No ArmInstruction stream on this backend -> no stack profile.
+            // The CLI reports this as an explicit decline, never as 0 bytes.
+            stack_frame: None,
         })
     }
 }

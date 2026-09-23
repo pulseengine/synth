@@ -35,11 +35,12 @@ pub mod arm_startup;
 pub mod cortex_m;
 #[cfg(feature = "arm-cortex-m")]
 pub mod reset_handler;
+pub mod stack_depth;
 #[cfg(feature = "arm-cortex-m")]
 pub mod vector_table;
 pub mod wcet;
 pub mod wcet_compose;
-mod wcet_loops;
+pub(crate) mod wcet_loops;
 mod wcet_recursion;
 
 #[cfg(feature = "arm-cortex-m")]

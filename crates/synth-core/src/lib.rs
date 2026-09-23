@@ -15,6 +15,7 @@ pub mod proven_safe;
 pub mod provenance;
 pub mod safety_manifest;
 pub mod sbom;
+pub mod stack_depth;
 pub mod static_data_addr;
 pub mod target;
 pub mod wasm_decoder;

@@ -600,7 +600,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 367759 \
+            --exact-emulation-floor 367762 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3624,7 +3624,7 @@ jobs:
           # and this release commits ONE new fixture there —
           # spill_slot_alias_1321.wat, the reduction of cpetig's falcon-cascade
           # `step`. One exported function x 4 legs = +4 functions and +4 homes,
-          # exactly the delta. `hits: 0` and the 217081 attributed instructions
+          # exactly the delta. `hits: 0` and the then-current attributed-instruction count
           # are UNCHANGED, and the audit was re-run against the PRE-FIX binary
           # on the same tree and printed the identical 7203/8214 — so this is
           # corpus growth from a new fixture, not a codegen change and not a new
@@ -3635,8 +3635,24 @@ jobs:
           # hard-float legs only (the soft-float legs decline f32), so +4
           # functions and +6 homes. MEASURED on the rebased tree, not added to
           # the previous figure. `hits: 0` unchanged.
-          grep -Eq '^functions audited: 7207$' haa1189.txt
-          grep -Eq '^homes watched: 8220$' haa1189.txt
+          # RQ-71-STACKDEPTH (#1341): 7207 -> 7239 and 8220 -> 8228. Three new
+          # scripts/repro/*.wat fixtures enter the audit corpus
+          # (stack_depth_{branch,chain,indirect}_1341.wat). PROVEN corpus growth
+          # and not a codegen change, by the same isolation the #1321 note used:
+          # holding the three fixtures aside and re-running THIS BINARY over
+          # main's corpus reproduces 7207/8220 EXACTLY. The stack-depth pass is a
+          # pure read of the final stream and emits nothing — which that
+          # measurement confirms rather than assumes.
+          grep -Eq '^functions audited: 7239$' haa1189.txt
+          grep -Eq '^homes watched: 8228$' haa1189.txt
+          # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
+          # the #1321 comment above as "217081 attributed instructions ...
+          # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
+          # (+4 functions, +6 homes), which necessarily added instructions, so
+          # 217081 could not still hold. Nothing caught it because no grep ever
+          # read it: exactly the "a ratchet fixes the number and cannot fix the
+          # prose" shape this project keeps paying for. Derived here: 217291.
+          grep -Eq '^attributed instructions: 217291 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
@@ -5435,6 +5451,13 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/wcet_phase6_936_i64_leaf_soundness.py
       - name: WCET phase-7 I32WrapI64/I64ExtendI32S/U conversion soundness (RQ-59-WCETI64, #936)
         run: python scripts/oracle_run.py scripts/repro/wcet_phase7_936_i64_conv_soundness.py
+      # RQ-71-STACKDEPTH (#1341): the stack figure is not a WCET phase — it is a
+      # sibling pass with a different composition rule (MAX over the call tree,
+      # not a trip-weighted sum) and a different decline set. It rides in this
+      # job because it needs the same unicorn dependency, which the cargo gates
+      # do not have.
+      - name: Stack-depth bound soundness — peak SP under execution (RQ-71-STACKDEPTH, #1341)
+        run: python scripts/oracle_run.py scripts/repro/stack_depth_1341.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
       # met its declared floor AND that the expected number of them
       # reported at all — a step deleted, commented out, or skipped by an
@@ -5445,7 +5468,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 6
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 7
 
   mcdc-structural-coverage:
     name: MC/DC structural coverage over synth's decision logic (RQ-57-MCDC, #912)
