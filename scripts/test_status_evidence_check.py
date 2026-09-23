@@ -1855,6 +1855,85 @@ class StatusGate1250(unittest.TestCase):
                 )])
                 self.assertEqual(fails(fx.run([])), [])
 
+    # -- R12 (#1250, RQ-71-ISSUESCOPE) -------------------------------------
+    #
+    # RQ-72-ISSUEGATE (#1250) deliverable (b). R12 shipped in v0.71 as the ONLY
+    # rule in status_evidence_check.py with zero unit tests — measured at the
+    # v0.72 cut: R0 had 14 mentions, R1 24, R4 30, R7 20, R10 10, R11 7, R12 0.
+    # Its coverage came entirely from the live artifacts happening to exercise
+    # it, which is coverage that disappears the moment nobody uses the field.
+    # v0.71's cold review showed exactly that: disabling R12's vocabulary
+    # branch left BOTH suites rc=0.
+
+    def test_r12_unknown_vocabulary_is_red(self):
+        fx = Fixture()
+        fx.release("release-v0.72/RQ-72-X.yaml", [art(
+            "RQ-72-X", "implemented",
+            {"done-when": self.MANUAL, "landed": "PR #1400",
+             "verified-by": "the stated outcome was re-run at the cut",
+             "issue": "#900", "issue-scope": "sometimes"},
+        )])
+        self.assertTrue(has(fx.run([]), "R12 RQ-72-X"), fails(fx.run([])))
+
+    def test_r12_known_vocabulary_is_green(self):
+        for scope in ("closes", "outlives"):
+            with self.subTest(scope=scope):
+                fx = Fixture()
+                fx.release("release-v0.72/RQ-72-X.yaml", [art(
+                    "RQ-72-X", "implemented",
+                    {"done-when": self.MANUAL, "landed": "PR #1400",
+                     "verified-by": "the stated outcome was re-run at the cut",
+                     "issue": "#900", "issue-scope": scope},
+                )])
+                self.assertEqual(fails(fx.run([])), [])
+
+    def test_r12_scope_without_an_issue_is_red(self):
+        # Scoping the closure of an issue the artifact does not name declares
+        # nothing, and would read as a deliberate hold that no one can act on.
+        fx = Fixture()
+        # `art()` stamps a default `issue:` via setdefault, so this branch is
+        # only reachable with issue=None — the same escape its docstring names
+        # for R5's own tests. Without it the fixture silently HAS an issue and
+        # the assertion tests nothing, which is how a rule ends up with
+        # coverage that never exercised it.
+        fx.release("release-v0.72/RQ-72-X.yaml", [art(
+            "RQ-72-X", "implemented",
+            {"done-when": self.MANUAL, "landed": "PR #1400",
+             "verified-by": "the stated outcome was re-run at the cut",
+             "issue-scope": "outlives"},
+            issue=None,
+        )])
+        out = fx.run([])
+        # R5 fires too (an artifact must name an issue at all); R12 is the one
+        # under test and must name the SCOPE as the reason.
+        self.assertTrue(has(out, "R12 RQ-72-X"), fails(out))
+
+    def test_r12_outlives_beside_a_non_claiming_status_is_red(self):
+        # `outlives` says "my scope shipped, the ISSUE is wider". Beside a
+        # non-claiming status nothing shipped, so the issue stays open anyway
+        # and the field declares nothing — `disposition:` is the right field.
+        fx = Fixture()
+        fx.release("release-v0.72/RQ-72-X.yaml", [art(
+            "RQ-72-X", "proposed",
+            {"done-when": self.MANUAL, "landed": "NOT LANDED",
+             "disposition": "deferred",
+             "issue": "#900", "issue-scope": "outlives"},
+        )])
+        self.assertTrue(has(fx.run([]), "R12 RQ-72-X"), fails(fx.run([])))
+
+    def test_r12_closes_beside_a_non_claiming_status_is_green(self):
+        # Only `outlives` is status-conditioned; `closes` is the default and
+        # says nothing a non-claiming status contradicts. Pinned so a future
+        # tightening of R12 is a deliberate choice rather than a side effect.
+        fx = Fixture()
+        fx.release("release-v0.72/RQ-72-X.yaml", [art(
+            "RQ-72-X", "proposed",
+            {"done-when": self.MANUAL, "landed": "NOT LANDED",
+             "disposition": "deferred",
+             "issue": "#900", "issue-scope": "closes"},
+        )])
+        self.assertEqual(fails(fx.run([])), [])
+
     def test_r11_unknown_disposition_is_red(self):
         fx = Fixture()
         fx.release("release-v0.68/RQ-68-SUBTRACT.yaml", [art(

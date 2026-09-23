@@ -73,7 +73,45 @@ artifacts:
       The lane has no live tracker. Decide whether it needs one before the field
       is used to authorise anything else.
 
-    status: proposed
+      DELIVERED, all five, each proven rather than asserted:
+
+      (a) `docs/release-process.md` now has a "Closing issues on the tag" section
+      that RUNS the gate, with both directions and the state-vs-window caveat
+      written down. It had NO issue-closing section at all, which is why the
+      gate had no invocation site.
+
+      (b) R12 has unit coverage: 0 mentions in the test file before, 9 after,
+      113 tests passing (was 108). PROVEN POTENT by disabling R12's three
+      branches — 3 tests then fail, where v0.71's cold review measured that
+      disabling it left BOTH suites rc=0. `status_evidence_check.py` restored
+      byte-identical (sha compared).
+
+      (c) The `issue-scope:` census line is pinned in ci.yml with `[0-9]+`, the
+      last census line in that step without one. Verified the pattern MATCHES
+      the live output rather than merely existing — a pin that never matches is
+      worse than none.
+
+      (d) The replay's "frozen, so it cannot go vacuous" sentence was FALSE and
+      is corrected in place rather than deleted. It reads LIVE artifacts, and
+      v0.71 is what made it pass by retroactively adding `issue-scope: outlives`
+      to two shipped v0.70 artifacts. Kept live deliberately — the property
+      worth asserting is that the SHIPPED artifacts still express v0.70's
+      decision — and the real property PROVEN: removing one `outlives` line reds
+      FOUR assertions (measured, then restored byte-identical).
+
+      (e) The gate no longer states a falsehood. `closed_since` answers "who
+      closed this DURING the release", which is right for the
+      closed-but-not-authorised direction and WRONG for the other two. At the
+      v0.71 tag it printed `AUTHORISED BUT NOT CLOSED: #1250` while the issue
+      was CLOSED — closed before the tag, so outside the window — and
+      `--allow-unclosed` hid that rather than correcting it. Those directions
+      now compare STATE. Re-run on v0.71.0: 0 failures. The same fix closed a
+      blind spot in the mirror direction: an `outlives` issue closed BEFORE the
+      window was previously invisible, and now reds as HELD OPEN BUT ALREADY
+      CLOSED. When live state cannot be read the gate SAYS so and falls back to
+      the window instead of dressing a sentence about timing as one about state.
+
+    status: implemented
     release: v0.72
     tags:
       - gate-potency
@@ -87,5 +125,6 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1250"
+      landed: "#1250 (PR #1365)"
       done-when: "contains:docs/release-process.md:issue_closure_check.py"
       verified-by: "The mechanical half names the RELEASE PROCESS step, not the script and not its test — because the whole finding is that the script exists and nothing asks it. R12's coverage is evidenced red-first the way every other rule in that file is: disable the rule, watch the suite red, restore with a sha check."

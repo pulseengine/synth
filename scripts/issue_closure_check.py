@@ -92,9 +92,40 @@ def closed_since(tag: str, repo: str) -> set[int]:
     return {int(r["number"]) for r in json.loads(out)}
 
 
+def open_issues_now(repo: str) -> set[int] | None:
+    """Every OPEN issue number, or None when it cannot be read.
+
+    RQ-72-ISSUEGATE (#1250) deliverable (e). The window (`closed_since`) answers
+    "who closed this DURING the release", which is the right question for the
+    closed-but-not-authorised direction. It is the WRONG question for the other
+    two, and answering it there made the gate state a falsehood: at the v0.71
+    tag it printed `AUTHORISED BUT NOT CLOSED: #1250` while `gh issue view 1250`
+    said CLOSED — closed on 2026-09-17, simply BEFORE the tag. `--allow-unclosed`
+    downgraded that to a warning, which hid the false sentence instead of
+    correcting it."""
+    try:
+        out = subprocess.run(
+            ["gh", "issue", "list", "--repo", repo, "--state", "open",
+             "--limit", "500", "--json", "number"],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        return {int(r["number"]) for r in json.loads(out.stdout)}
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 def check(root: Path, release: str, closed: set[int],
-          allow_unclosed: bool = False):
-    """Returns (failures, warnings, authorised, held_open)."""
+          allow_unclosed: bool = False, open_issues: set[int] | None = None):
+    """Returns (failures, warnings, authorised, held_open).
+
+    `closed` is the WINDOW — issues closed at or after the tag. `open_issues`,
+    when given, is the live OPEN set and is what the authorised/held-open
+    directions are judged against, because their question is about an issue's
+    STATE and not about when it changed."""
     version = parse_version(release)
     artifacts, _bad = load_release_artifacts(root, RELEASE_GLOB)
     authorised, held_open = authorised_close_set(artifacts, version)
@@ -120,10 +151,33 @@ def check(root: Path, release: str, closed: set[int],
                 f"blocker). Reopen it, or name it in the artifact that "
                 f"delivered it")
     for n in sorted(authorised):
-        if n not in closed:
-            msg = (f"AUTHORISED BUT NOT CLOSED: #{n} — {authorised[n]} is "
-                   f"delivered and entitles the release to close it")
+        if open_issues is not None:
+            # STATE, not window. An authorised issue that is closed — whenever
+            # it closed — satisfies the obligation.
+            if n in open_issues:
+                msg = (f"AUTHORISED BUT STILL OPEN: #{n} — {authorised[n]} is "
+                       f"delivered and entitles the release to close it, and "
+                       f"the issue is OPEN right now")
+                (warnings if allow_unclosed else failures).append(msg)
+        elif n not in closed:
+            msg = (f"AUTHORISED BUT NOT CLOSED IN THIS WINDOW: #{n} — "
+                   f"{authorised[n]} is delivered and entitles the release to "
+                   f"close it. NOTE: the live issue state was not available, so "
+                   f"this says only that it did not close since the tag; it may "
+                   f"already have been closed earlier")
             (warnings if allow_unclosed else failures).append(msg)
+
+    # The mirror direction, which the window ALSO could not see: an issue
+    # declared `issue-scope: outlives` must be OPEN. The window catches it only
+    # if it was closed AFTER the tag; a closure BEFORE the tag was invisible.
+    if open_issues is not None:
+        for n in sorted(held_open):
+            if n not in open_issues and n not in closed:
+                failures.append(
+                    f"HELD OPEN BUT ALREADY CLOSED: #{n} — {held_open[n]} "
+                    f"declares `issue-scope: outlives`, but the issue is not "
+                    f"open. It was closed OUTSIDE this release's window, which "
+                    f"the closed-set alone cannot see")
     return failures, warnings, authorised, held_open
 
 
@@ -136,7 +190,13 @@ def main() -> int:
     g.add_argument("--closed", help="comma-separated issue numbers (offline)")
     g.add_argument("--since-tag", help="derive the closed set via gh, e.g. v0.70.0")
     ap.add_argument("--allow-unclosed", action="store_true",
-                    help="report AUTHORISED BUT NOT CLOSED as a warning")
+                    help="report an authorised-but-open issue as a warning")
+    ap.add_argument("--open",
+                    help="comma-separated OPEN issue numbers (offline; the "
+                         "authorised/held-open directions are judged against "
+                         "this STATE, not against the closed window)")
+    ap.add_argument("--no-state", action="store_true",
+                    help="do not consult live issue state (window only)")
     args = ap.parse_args()
 
     if args.closed is not None:
@@ -144,8 +204,25 @@ def main() -> int:
     else:
         closed = closed_since(args.since_tag, args.repo)
 
+    # STATE beats the window for the authorised / held-open directions (e).
+    # `--open` lets the tests drive it offline; otherwise ask the API, and if
+    # that cannot be read, SAY the state was unavailable rather than silently
+    # falling back to a sentence about the window that reads like one about the
+    # issue.
+    if args.open is not None:
+        open_issues = {int(x) for x in args.open.split(",") if x.strip()}
+    elif args.no_state:
+        open_issues = None
+    else:
+        open_issues = open_issues_now(args.repo)
+        if open_issues is None:
+            print("issue-closure: live issue STATE unavailable — the "
+                  "authorised/held-open directions fall back to the window, "
+                  "which cannot distinguish 'never closed' from 'closed before "
+                  "the tag'")
+
     failures, warnings, authorised, held_open = check(
-        args.root, args.release, closed, args.allow_unclosed)
+        args.root, args.release, closed, args.allow_unclosed, open_issues)
     for w in warnings:
         print(f"WARN {w}")
     for f in failures:

@@ -44,12 +44,17 @@ def art(art_id: str, status: str, issue: str, version=(0, 71), scope=None):
             version, art_id, status, fields, [], f"v{version[0]}.{version[1]}")
 
 
-def run(artifacts, closed, allow_unclosed=False):
-    """Drive C.check without touching disk, by stubbing the loader."""
+def run(artifacts, closed, allow_unclosed=False, open_issues=None):
+    """Drive C.check without touching disk, by stubbing the loader.
+
+    `open_issues=None` means "live state unavailable" and exercises the WINDOW
+    fallback; a list (even an empty one) exercises the STATE path, which is the
+    one the gate should normally take."""
     orig = C.load_release_artifacts
     C.load_release_artifacts = lambda root, glob: (artifacts, [])
     try:
-        return C.check(Path("."), "v0.71", set(closed), allow_unclosed)
+        return C.check(Path("."), "v0.71", set(closed), allow_unclosed,
+                       None if open_issues is None else set(open_issues))
     finally:
         C.load_release_artifacts = orig
 
@@ -84,12 +89,42 @@ def main() -> int:
           "the specific diagnosis must win over the generic one")
 
     # ---- RED 3: authorised but left open -----------------------------------
+    #
+    # RQ-72-ISSUEGATE (#1250) deliverable (e): with no live state this can only
+    # speak about the WINDOW, and the message now says so. Answering "did it
+    # close since the tag?" while appearing to answer "is it closed?" is what
+    # made the gate state a falsehood at the v0.71 tag.
     f, _w, _a, _h = run([delivered], closed=[])
-    check("RED authorised-but-not-closed fires",
-          any("AUTHORISED BUT NOT CLOSED: #100" in x for x in f), str(f))
+    check("RED authorised-but-not-closed fires (window wording, no state)",
+          any("AUTHORISED BUT NOT CLOSED IN THIS WINDOW: #100" in x for x in f),
+          str(f))
+    check("the window message ADMITS it did not check state",
+          any("live issue state was not available" in x for x in f), str(f))
     f, w, _a, _h = run([delivered], closed=[], allow_unclosed=True)
     check("--allow-unclosed downgrades it to a warning",
-          not f and any("AUTHORISED BUT NOT CLOSED: #100" in x for x in w))
+          not f and any("AUTHORISED BUT NOT CLOSED IN THIS WINDOW: #100" in x
+                        for x in w))
+
+    # ---- RED 3b: judged by STATE, which is the honest question --------------
+    f, _w, _a, _h = run([delivered], closed=[], open_issues=[100])
+    check("STATE: an authorised issue that is OPEN fires",
+          any("AUTHORISED BUT STILL OPEN: #100" in x for x in f), str(f))
+
+    # THE v0.71 CASE, as a regression. #1250 was authorised AND closed — just
+    # closed BEFORE the tag, so it was absent from the window. The old gate
+    # printed "AUTHORISED BUT NOT CLOSED" about an issue that was closed.
+    f, _w, _a, _h = run([delivered], closed=[], open_issues=[])
+    check("STATE: authorised + closed-before-the-window is SATISFIED",
+          not f, str(f))
+
+    # ---- RED 3c: the mirror the window could not see ------------------------
+    # An `issue-scope: outlives` issue closed OUTSIDE the window is invisible to
+    # the closed-set, because the closed-set only holds what closed since the tag.
+    f, _w, _a, _h = run([outlives], closed=[], open_issues=[])
+    check("STATE: held-open but already closed (outside the window) fires",
+          any("HELD OPEN BUT ALREADY CLOSED: #300" in x for x in f), str(f))
+    f, _w, _a, _h = run([outlives], closed=[], open_issues=[300])
+    check("STATE: held-open and genuinely open is SATISFIED", not f, str(f))
 
     # ---- GREEN: the authorised set closed exactly, held-open left open -----
     f, _w, _a, _h = run([delivered, undelivered, outlives], closed=[100])
@@ -113,8 +148,24 @@ def main() -> int:
     # ---- THE v0.70 REPLAY, against the real shipped release ---------------
     # The synthetic sets above prove each rule fires. This proves the rule
     # would have caught the thing it was built for, using the REAL artifacts
-    # of a SHIPPED release — frozen, so it cannot go vacuous as the programme
-    # moves on (the replay discipline test_status_evidence_check.py uses).
+    # of a SHIPPED release.
+    #
+    # RQ-72-ISSUEGATE (#1250) deliverable (d) — THE PREVIOUS SENTENCE HERE WAS
+    # FALSE and is corrected rather than deleted. It said the replay was
+    # "frozen, so it cannot go vacuous as the programme moves on". It is not
+    # frozen: `C.check(root, ...)` loads the LIVE artifacts under
+    # artifacts/release-v0.70/, which are editable files. v0.71 is what made
+    # this replay pass, by retroactively adding `issue-scope: outlives` to two
+    # already-shipped v0.70 artifacts — so the expected values were reached by
+    # editing the data the test reads.
+    #
+    # It is kept live, not snapshotted, deliberately: the thing worth asserting
+    # is that the SHIPPED artifacts still express v0.70's decision, and a
+    # snapshot would assert only that a copy in this file still does. What it
+    # therefore is NOT is protection against someone changing those artifacts —
+    # it is the DETECTOR for exactly that. Deleting either `issue-scope:
+    # outlives` line reds four assertions below, which is the property that
+    # matters and is a different property from "frozen".
     #
     # v0.70 closed exactly five issues on its tag and deliberately left #1331
     # (RQ-70-NPA) and #1318 (RQ-70-FALCONCORPUS) OPEN, because each issue asks
