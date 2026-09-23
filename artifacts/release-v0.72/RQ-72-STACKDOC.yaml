@@ -61,7 +61,7 @@ artifacts:
       against the committed fixture BEFORE writing the prose, and quote what it
       actually prints — the recurring class this programme keeps re-learning is
       a number measured against something other than the thing it names.
-    status: proposed
+    status: implemented
     release: v0.72
     tags:
       - embedder-abi

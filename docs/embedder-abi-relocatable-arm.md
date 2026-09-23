@@ -140,6 +140,92 @@ Per-call re-establishment is therefore unnecessary but harmless.
   (locals + spill area + outgoing args) on SP; there is no shadow-stack or
   split-stack machinery on this path.
 
+  **synth will tell you the size — ask for it with `--emit-stack-depth`**
+  (#1341). You still own placement, but you no longer have to guess the
+  number:
+
+  ```
+  $ synth compile module.wasm --target cortex-m7 --relocatable --all-exports \
+      --emit-stack-depth -o module.o
+    Stack: wrote module.o.stack.json (4 bounded, 0 declined, deepest 120 B) — synth-stack-v1
+  ```
+
+  The `synth-stack-v1` sidecar lands at `<output>.stack.json`, beside the
+  object, the same way `--emit-wcet`'s does. Read the entry whose `name`
+  matches the export you call:
+
+  ```json
+  { "schema": "synth-stack-v1", "module": "module.wasm",
+    "exports": [ { "name": "controller#step", "status": "bounded", "bytes": 120 },
+                 { "name": "func_0",          "status": "bounded", "bytes": 8 } ] }
+  ```
+
+  Two notes on reading it. The array is named `exports` but carries **every**
+  compiled function, exported or not — match on `name`, do not assume the
+  export is first. And an export name containing `#` or `@` is carried
+  through **verbatim**, in the sidecar and in the ELF symbol table alike, so
+  `controller#step` is the key you look up (this is *not* affected by the
+  `@`-in-export-names hazard described below, which is about linking, not
+  about this file).
+
+  **What the number is.** A MAX over the direct call tree, derived by walking
+  the **emitted instruction stream** and tracking the running SP delta at every
+  instruction boundary (`crates/synth-backend/src/stack_depth.rs`). It counts
+  the callee-saved `push`, any `vpush` of the VFP half, the `sub sp` frame, and
+  transient `PUSH`/`POP` inside encoder expansions. It is a maximum, not a sum:
+  a callee invoked a thousand times in a loop costs its frame **once**, because
+  frames are popped between calls.
+
+  **Do not compute this yourself from the object.** Summing every
+  `sub sp, #N` — the obvious reading — is wrong in the dangerous direction:
+  it misses the callee-saved push entirely, and misses every function whose
+  frame size is 0, which emits no `sub sp` at all while still consuming 8 or
+  24 bytes. On the shipped fixture `scripts/repro/stack_depth_branch_1341.wat`
+  that method yields 96 B against a true **120 B** — a 20 % UNDER-report. (The
+  immediate is also printed in hex, so a `#[0-9]+` regex silently reads `#0x20`
+  as 0.)
+
+  **An absent number is information, not a gap.** When synth cannot prove a
+  bound it says so per export and never emits a lower bound, because a silent
+  lower bound would reproduce exactly the corruption this flag exists to
+  prevent:
+
+  ```json
+  { "name": "top", "status": "declined", "reason": "call_indirect" }
+  ```
+
+  The reasons are `recursion` (a cycle in the direct call graph), `call_indirect`
+  (the callee set is not statically known), `external-call` (a direct call to an
+  import, whose frame is code synth did not emit), `callee-unbounded` (a decline
+  propagates up), and `unknown-sp-move` (an SP movement the walker cannot price).
+  A `declined` export means **you** must bound that call tree; it does not mean
+  the module is unsafe.
+
+  **WHAT YOU MUST STILL ADD ON TOP — synth cannot see it.** This number covers
+  the frames synth itself emits. It does **not** include the exception frame
+  your core pushes on entry to an interrupt, anything your ISRs then use, or
+  nesting between them. The stack-depth pass has no model of interrupts at
+  all; it walks the instruction stream and nothing else.
+
+  Splitting MSP/PSP does **not** remove this from your budget, which is the
+  part that is easy to get backwards: on Cortex-M the exception **stacking**
+  uses whichever stack pointer was active, so if synth's export is running on
+  a task stack (PSP) the hardware frame — 8 words, or 26 with FP context
+  stacking enabled — lands on **that** stack. Only the handler body then runs
+  on MSP. So a task stack must budget synth's number plus at least one
+  exception frame, plus a tail-chained or late-arriving one if your priority
+  configuration allows it. So:
+
+  > **region size ≥ synth's number + your worst-case interrupt/nesting
+  > allowance**, not synth's number.
+
+  Sizing the region to the reported bytes exactly re-creates the original
+  #1341 failure — a correct result followed by a corrupted neighbour — with
+  the extra hazard that the number now looks authoritative. If your export
+  runs on a task stack, size the **task**, and remember that a bound is a
+  worst case over the call tree, not an observation like DWT or stack
+  colouring.
+
 ## Initialization obligations (the two `--embedder-*` promises)
 
 Emitted code assumes, before any export runs:
