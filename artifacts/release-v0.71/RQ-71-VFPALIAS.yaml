@@ -96,5 +96,5 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1354"
-      landed: "#1354"
+      landed: "#1354 (PR #1355)"
       done-when: "contains:.github/workflows/ci.yml:vfp_home_redef_881_differential.py"
