@@ -15,11 +15,27 @@ artifacts:
       cannot carry an architecture claim, which is why this step stays N/A rather
       than being performed badly.
 
-      THE COUNT IS THE CHAIN, WALKED. `grep -rln ARCHMODEL artifacts/` gives one
-      ARCHMODEL artifact per release for v0.63, v0.64, v0.65, v0.66, v0.67, v0.68,
-      v0.69, v0.70 and v0.71 — NINE consecutive releases, this one being the ninth.
-      (v0.62's RQ-62-LOOPCONFORM mentions ARCHMODEL but is not one; the
-      `_release.yaml` hits from v0.64 on are plan prose, not artifacts.)
+      THE COUNT IS THE `carried-from` CHAIN — AND THE FIRST VERSION OF THIS
+      ARTIFACT DID NOT WALK IT. Corrected by the v0.71 cold review. What stood
+      here claimed "THE COUNT IS THE CHAIN, WALKED" while citing
+      `grep -rln ARCHMODEL artifacts/` — a FILENAME grep, not a chain walk — and
+      this artifact carried no `carried-from` field at all, so the chain ran
+      v0.63..v0.70 and stopped. That breaks RQ-70-ARCHMODEL's own done-when
+      verbatim: "the carried-from chain is extended rather than an ordinal
+      asserted". Asserting the ordinal is precisely what the predecessor
+      forbade, and this artifact's title asserted it.
+
+      FIXED IN THE FIELD, NOT THE PROSE: `carried-from: RQ-70-ARCHMODEL` is now
+      set, so the chain reaches this artifact and the count is derivable by
+      walking `fields.carried-from` back to the v0.63 head. Walked:
+      v0.71 -> v0.70 -> v0.69 -> v0.68 -> v0.67 -> v0.66 -> v0.65 -> v0.64 ->
+      v0.63 (chain head, no carried-from) = NINE. The number was right; the
+      method claimed for it was not, which is the harder defect to see.
+
+      The filename grep's exceptions, now COMPLETE (the earlier list named two of
+      four): v0.62's RQ-62-LOOPCONFORM, v0.68's RQ-68-STATUSGATE and v0.70's
+      RQ-70-DONEWHEN all MENTION ARCHMODEL without being one, and the
+      `_release.yaml` hits from v0.64 on are plan prose.
 
       AND THE SENTENCE THAT KEEPS COMING BACK IS NOT WRITTEN HERE. "Release
       artifacts only exist from v0.63" is FALSE and is not restated: measured on
@@ -58,5 +74,6 @@ artifacts:
       priority: should
       verification-track: manual
       issue: "#1136"
+      carried-from: RQ-70-ARCHMODEL
       disposition: deferred
-      done-when: "manual: spar#445 re-verified at the v0.71 cut (OPEN, created 2026-09-03, last updated 2026-09-03, checked 2026-09-23), the carried-from chain WALKED to nine consecutive releases v0.63..v0.71, and loop_conformance_check reports the steps-1-2 slot NA-FILED naming this artifact"
+      done-when: "manual: spar#445 re-verified at the v0.71 cut (OPEN, created 2026-09-03, last updated 2026-09-03, checked 2026-09-23), the `carried-from` chain is EXTENDED by this artifact (carried-from: RQ-70-ARCHMODEL) and walks back to the v0.63 head = nine consecutive releases, and loop_conformance_check reports the steps-1-2 slot NA-FILED naming this artifact"
