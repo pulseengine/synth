@@ -77,6 +77,30 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             musl: true
+          # RQ-72-ARM64MUSL (#1349), the SECOND triple the issue names by name.
+          # v0.71 shipped only the x86_64 one, so the arm64 payload still set
+          # the varve layer's portability floor that the x86_64 one no longer
+          # did — arm64 Alpine and distroless-static were unserved.
+          #
+          # `os: ubuntu-24.04-arm` is a NATIVE arm64-Linux runner, so this is
+          # not a cross entry: `musl-tools` supplies an aarch64 musl-gcc, the
+          # build needs no RUSTFLAGS and no cross container, and the smoke test
+          # below EXECUTES the tarball directly with no emulator and no
+          # sysroot. That is why `cross:` is deliberately absent here.
+          #
+          # The alternative — cross-building from x86_64 with
+          # `-C linker=rust-lld -C link-self-contained=yes` — was MEASURED to
+          # work (ci.yml `arm64-musl-portable-asset`, link successful in 199 s
+          # with no cross-gcc present) and deliberately NOT taken: it would
+          # ship a link that no CI job proves under the flags release.yml
+          # actually uses, and it can only be smoke-tested through an
+          # emulator. The native entry is proven end-to-end by
+          # `arm64-musl-native-execution`, which runs the same host class, the
+          # same packages and the same command as this entry.
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            archive: tar.gz
+            musl: true
           # x86_64-apple-darwin cross-compiles on the arm64 macos-14
           # runner — matches pulseengine/rivet and pulseengine/witness
           # (both Rust-workspace CLIs, the closest analogs to synth).
@@ -175,11 +199,16 @@ jobs:
       # capability error. Without this step, "we ship the feature" regresses
       # silently to "we ship the help text" — the exact #1000 class.
       #
-      # Execution per target: linux-x86_64 + both macOS tarballs run natively
-      # (x86_64-apple-darwin under Rosetta 2 on the arm64 macos-14 runner);
-      # the cross-built aarch64-linux tarball runs under qemu-user against
-      # the gcc-aarch64-linux-gnu sysroot — all four tarballs are EXECUTED,
-      # none is exempt.
+      # Execution per target, re-derived when the arm64 musl entry landed
+      # rather than carried: linux-x86_64-gnu, linux-x86_64-musl,
+      # linux-aarch64-MUSL and both macOS tarballs run NATIVELY
+      # (x86_64-apple-darwin under Rosetta 2 on the arm64 macos-14 runner,
+      # aarch64-linux-musl on the arm64 runner its matrix entry names); only
+      # the cross-built aarch64-linux-GNU tarball needs qemu-user, against
+      # the gcc-aarch64-linux-gnu sysroot its glibc link requires. All SIX
+      # tarballs are EXECUTED, none is exempt — and the arm64 pair is the
+      # contrast worth reading: same architecture, and the musl one needs no
+      # emulator and no sysroot to be run.
       - name: Install qemu-user + aarch64 sysroot (cross smoke)
         if: matrix.cross
         run: |

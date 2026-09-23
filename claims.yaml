@@ -4178,8 +4178,27 @@ claims:
         pattern: 'oracle_run\.py scripts/repro/arm64_linux_host_link_rq64_differential\.py'
         glob: ['.github/workflows/ci.yml']
         expect: 2
-      - kind: count-eq                       # ...one of them the NATIVE runner
+      # THE ARM64 POOL, and the job this claim is actually about.
+      #
+      # This pin read `expect: 1` as a proxy for "one of those two jobs is on
+      # the NATIVE runner". RQ-72-ARM64MUSL (#1349) then added
+      # `arm64-musl-native-execution` to the same pool and turned it red — the
+      # ratchet doing its job, and the pin doing its job badly: a
+      # pool-POPULATION count is a proxy any unrelated lane can move without
+      # touching this claim or its doc.
+      #
+      # So the count moves to the derived 2 AND the oracle's own native job is
+      # pinned by name beside it. Retargeting `arm64-linux-native` off the arm64
+      # pool now drops the population to 1 and goes RED, which the bare
+      # population count would no longer have caught once a second job existed.
+      # The doc sentence is UNCHANGED and still true: it says this ORACLE runs
+      # natively on `ubuntu-24.04-arm`, not that it is alone there.
+      - kind: count-eq                       # both jobs that use the arm64 pool
         pattern: 'runs-on: ubuntu-24\.04-arm'
+        glob: ['.github/workflows/ci.yml']
+        expect: 2
+      - kind: count-eq                       # ...and THIS one is the oracle's
+        pattern: '^  arm64-linux-native:$'   # native leg, bound by job name
         glob: ['.github/workflows/ci.yml']
         expect: 1
 
