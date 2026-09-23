@@ -216,6 +216,48 @@ After the workflow finishes:
       `cargo install synth-cli` works on a clean machine, or check
       <https://crates.io/crates/synth-cli> shows the new version.
 
+## Closing issues on the tag — run the gate, do not eyeball it
+
+Closing the release's issues is the last step and was, until v0.72, the only
+one performed entirely by hand. `scripts/issue_closure_check.py` was written
+in v0.71 to check it, proven able to fire by mutation — and then **asked by
+nothing**: repo-wide its only references were its own docstring, its unit
+test, and a CI step that ran the TEST rather than the CHECK. An unasked gate
+is indistinguishable from an absent one.
+
+After the tag is published, and after every closure comment is posted:
+
+```bash
+python3 scripts/issue_closure_check.py --release vX.Y.0 --since-tag vX.Y.0
+```
+
+It compares the issues the release actually closed against the set its
+artifacts AUTHORISE — imported from `status_evidence_check.authorised_close_set`,
+the same function whose census line prints on every CI run, because two
+derivations of one set is how the closed set and the authorised set drift
+apart. It checks **both** directions:
+
+- **CLOSED BUT NOT AUTHORISED** — an issue closed that no delivered artifact
+  entitles the release to close. This is the v0.69 accident, where the
+  substring `close #N` inside a PR body closed an external reporter's live
+  blocker.
+- **HELD OPEN BUT CLOSED** — an artifact declared `issue-scope: outlives`, so
+  its issue asks a wider question than the artifact delivered, and it was
+  closed anyway.
+- **AUTHORISED BUT STILL OPEN** — delivered, entitled, and the issue is open
+  right now.
+
+The last two are judged against the issue's **state**, not against the window
+of "what closed since the tag". Judging them by the window made the gate state
+a falsehood at the v0.71 tag: it printed `AUTHORISED BUT NOT CLOSED: #1250`
+while `gh issue view 1250` said CLOSED — closed on 2026-09-17, simply *before*
+the tag. If the live state cannot be read the gate says so and falls back to
+the window, rather than dressing a sentence about timing as one about state.
+
+- [ ] `issue_closure_check.py` run for this tag, exit 0.
+- [ ] `closedAt > <today>` audited afterwards: posting a residual note on an
+      issue is itself a chance to auto-close one.
+
 ## npm distribution channel
 
 Alongside crates.io, synth publishes an npm CLI wrapper — `@pulseengine/synth`

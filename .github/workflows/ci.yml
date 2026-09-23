@@ -478,6 +478,17 @@ jobs:
           # exactly like R7's.
           grep -qE '^status-evidence-window: [0-9]+ delivery-shaped commits since v[0-9]+\.[0-9]+' \
             /tmp/status-evidence.log
+          # RQ-72-ISSUEGATE (#1250) deliverable (c). `issue-scope:` was the ONLY
+          # census line in this step without a grep pin — measured at the v0.72
+          # cut, where status-evidence, programme-status, programme-staleness,
+          # floor-prose, status-evidence-anchor and status-evidence-window all
+          # had one and this had none. Unpinned, it could print
+          # "0 issue(s) authorised" — the exact reading a glob rot or a
+          # version-key change produces — and nothing would notice, while the
+          # closure gate downstream happily compared an empty set to an empty
+          # set and passed. The `[0-9]+` is what turns that into a red.
+          grep -qE '^issue-scope: v[0-9]+\.[0-9]+ — [0-9]+ issue\(s\) authorised' \
+            /tmp/status-evidence.log
           # #1133 (RQ-62-ROADMAPGATE): the programme-status scan must have
           # RUN and covered a real population — a checker edit that drops
           # the P-rules (or a glob rot that scans nothing) fails this pin,
