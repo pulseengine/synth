@@ -76,7 +76,7 @@
 #                     the #1069 rung producing two differently-versioned stores
 #                     to one half.
 #   carried PAGELIB   #1339 — still waiting on gale/#1145; re-verify at the cut.
-#   carried ARCHMODEL #1136 — spar#445, fifth consecutive N/A; re-verify at the
+#   carried ARCHMODEL #1136 — spar#445 — the count is the `carried-from` chain, which walks to NINE at v0.71 (v0.63..v0.71). This line said "fifth" when the plan was written; the v0.71 cold review caught it contradicting the artifact's own derived count, and the artifact is the authority; re-verify at the
 #                     cut and CHECK THE TAGS against the predecessor artifact
 #                     (v0.69's lost its `feature-loop` tag and went invisible).
 #

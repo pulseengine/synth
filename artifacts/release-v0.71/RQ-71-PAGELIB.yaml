@@ -1,26 +1,60 @@
 artifacts:
   - id: RQ-71-PAGELIB
     type: system-req
-    title: "A caller of the PUBLISHED synth-core still gets a custom page size silently ignored — the CLI refuses it, the library does not"
+    title: "The custom-page-size refusal is CLI-only — and the downstream consumer has now ANSWERED: do not move it into synth-core"
     description: >
       Carried from v0.70 (RQ-70-PAGELIB, #1339), which deferred it WITH the
-      measurement rather than dropping it. Re-verify at the v0.71 cut before
-      scoping: `refuse_custom_page_size` / `refuse_shared_memory` live in
-      `crates/synth-cli/src/main.rs`, while `crates/synth-core/src/wasm_decoder.rs`
-      DECODES `page_size_log2` — its own comment says "Consumed by
-      `refuse_custom_page_size` in synth-cli" — and does not refuse.
+      measurement rather than dropping it. The v0.71 plan required two things at
+      the cut: re-verify the measurement, and CONSULT #1145 before scoping. Both
+      were done, and the consultation is what settles the lane.
 
-      So the refusal is CLI-only. A downstream consumer of the published
-      `synth-core` crate gets a declared custom page size silently ignored: exactly
-      the shape #1317 closed in the SAME release, on the opposite principle.
+      RE-VERIFIED AT THE v0.71 CUT (2026-09-23), not recalled. Both definitions
+      and all SIX calls — at THREE call sites, the two functions always invoked
+      as a pair — of `refuse_custom_page_size` / `refuse_shared_memory`
+      are in `crates/synth-cli/src/main.rs` (3701, 3749; called at 2088-2089,
+      3975-3976, 4209-4210). `crates/synth-core/src/wasm_decoder.rs` still only
+      DECODES — `pub page_size_log2: Option<u32>` at line 67, assigned at 1141 —
+      and its comment still reads "Consumed by `refuse_custom_page_size` in
+      `synth-cli`". The refusal is still CLI-only. The measurement holds.
 
-      WHY IT IS STILL DEFERRED RATHER THAN SCOPED. Where the refusal belongs depends
-      on gale's page-granular sizing (`REQ-OS-MULTITENANT-001`, #1145). Moving it
-      into `synth-core` ahead of that answer would fix the layering twice — once
-      now and once when the downstream requirement lands. CONSULT #1145 before
-      scoping; if gale has answered by the v0.71 cut, this becomes a `should` with a
-      concrete shape, and if not it defers again WITH the measurement restated, not
-      quietly.
+      THE CONSULTATION WAS ANSWERED, AND IT REFUTES THE PLANNED DIRECTION. gale
+      replied on #1145 (2026-09-22), and the answer is not "not yet" — it is "do
+      not do this", with reasons:
+
+        "Does gale call `synth-core` as a library? NO — CLI only. Measured on
+        main: `git grep -n 'synth-core\\|synth_core'` across every Cargo.toml and
+        .rs returns nothing. Every invocation is the binary (46 call sites). So
+        the published-library gap is real but gale is not standing in it, and it
+        should not outrank your other v0.71 candidates on gale's account."
+
+        "Refused or honoured? HONOURED — and please do not spend the effort on
+        relocating the refusal. Refusing in the library closes a door gale wants
+        open. The CLI refusal you shipped is exactly right as an interim, because
+        it converts a silent wrong answer into a loud one, and gale only uses the
+        CLI."
+
+      SO THE LANE DEFERS AGAIN, AND THE DEFERRAL IS NOW A DIFFERENT KIND OF FACT.
+      v0.70 deferred because the right shape was unknown. v0.71 defers because the
+      only known downstream consumer asked for the opposite of the planned change
+      and explained why: moving the refusal into `synth-core` would close a door
+      it wants open. Shipping the planned fix would have been the exact error
+      v0.68 already made once — scoping a refusal against a downstream need
+      nobody had asked about (see the standing lesson: consult the downstream
+      before scoping a flag change).
+
+      WHAT WOULD RE-OPEN IT, stated so the next release does not re-derive this: a
+      library consumer of the published `synth-core` crate that is NOT gale. The
+      layering gap is real and unchanged — a library caller still gets a declared
+      custom page size silently ignored — but the gap currently has no occupant,
+      and closing it now would have to be undone when gale's `pagesize` work lands.
+
+      gale's architectural correction, recorded because it changes what a future
+      page-size lane should aim at: ARMv7-M PMSA needs power-of-two regions >= 32
+      bytes, ARMv6-M >= 256 (measured on a G031K8, MPU_TYPE 0x00000800). "The win
+      is not byte-exactness. It is getting the declared extent below 64 KiB at
+      all." So page granularity finer than 32 B is wasted effort, and honouring
+      power-of-two pages >= 32 B is the cheap version that loses gale nothing.
+
     status: proposed
     release: v0.71
     tags:
@@ -35,5 +69,6 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1339"
+      landed: "PR #1358. NOT LANDED as a fix — the refusal stays CLI-only and, per gale on #1145, must NOT move into synth-core. What landed is the INCREMENT this deferral owed: the CLI-only measurement RE-VERIFIED at the v0.71 cut (both definitions and all six calls at three sites still in synth-cli; the decoder still only decodes), and the consultation the v0.71 plan required RECORDED with gale's answer quoted. The deferral therefore changed KIND — v0.70 deferred for want of a shape, v0.71 defers because the only known downstream consumer asked for the opposite."
       disposition: deferred
-      done-when: "manual: either the refusal moves into synth-core so a library caller gets the same loud decline as a CLI caller, PROVEN by a test that calls the published crate API directly and expects an Err; or #1145's answer is recorded and this defers again with the measurement restated"
+      done-when: "manual: #1145's answer is recorded — gale asked that the refusal NOT move into synth-core, because it only uses the CLI and a library refusal closes a door it wants open — and the CLI-only measurement is re-verified at the cut rather than recalled"
