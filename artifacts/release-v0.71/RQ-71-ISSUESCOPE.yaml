@@ -95,5 +95,5 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1250"
-      landed: "#1250"
+      landed: "#1250 (PR #1356)"
       done-when: "contains:.github/workflows/ci.yml:test_issue_closure_check.py"

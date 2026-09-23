@@ -78,5 +78,5 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1349"
-      landed: "#1349"
+      landed: "#1349 (PR #1357)"
       done-when: "contains:.github/workflows/ci.yml:musl-portable-asset"
