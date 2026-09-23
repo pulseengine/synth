@@ -49,15 +49,161 @@ artifacts:
       and so emits a `-static-pie` that `file` never calls "statically linked".
       That checker is arch-agnostic and is the verification for this target too.
 
-      WHAT WOULD MAKE THIS WRONG TO BUILD. If the aarch64 musl binary cannot be
-      EXECUTED in CI (the existing arm64 assets are exercised under
-      `qemu-aarch64`), then the asset ships unverified beyond its ELF shape, and
-      an unexecuted release asset is how a broken artifact reaches a consumer.
-      Check that `qemu-aarch64` can run a static-pie musl binary WITHOUT the
+      WHAT WOULD MAKE THIS WRONG TO BUILD (written before the work; the
+      outcome is recorded below). If the aarch64 musl binary cannot be EXECUTED
+      in CI (the existing arm64 assets are exercised under `qemu-aarch64`), then
+      the asset ships unverified beyond its ELF shape, and an unexecuted release
+      asset is how a broken artifact reaches a consumer. Check that
+      `qemu-aarch64` can run a static-pie musl binary WITHOUT the
       `-L /usr/aarch64-linux-gnu` sysroot before promising execution evidence;
       if it cannot, say so and ship the ELF-property check alone, named as the
       weaker claim it is.
-    status: proposed
+
+      OUTCOME: the contingency did NOT fire, and the reason it appeared to is
+      the lane's main finding — see "THE THIRD ASSERTION WENT RED" below. The
+      asset ships with execution evidence STRONGER than the qemu leg would have
+      produced: it runs natively on arm64 with no emulator at all. No weaker
+      claim is needed, and none is made.
+      PARTIAL, AND THE SEQUENCING IS THE REASON. `create-release` depends on
+      `build-binaries`, so a release-matrix entry that cannot build means NO
+      RELEASE AT ALL — v0.71 shipped exactly that shape (a musl gate that could
+      never pass) and only the cold review caught it before the tag. So the
+      per-PR CI job goes in FIRST and proves the build; the matrix entry, which
+      is what this artifact's `done-when` names, follows once that job is green.
+      Until then the predicate is FALSE and the status is honestly non-claiming.
+
+      THE LOCAL ATTEMPT WAS MADE, AND IS RECORDED FOR WHAT IT DOES NOT SHOW.
+      `aarch64-unknown-linux-musl` IS installed on the dev host, so the cross
+      build was tried rather than assumed. It compiled the entire dependency
+      graph and failed at LINK:
+
+        ld: unknown options: --as-needed -Bstatic -Bdynamic --eh-frame-hdr -z
+            --gc-sections -z -z --strip-all
+        clang: error: linker command failed with exit code 1
+
+      Two routes around it also failed: `-C link-self-contained=+linker` is
+      unstable, and `-C linker=<rust-lld> -C link-arg=-flavor` is rejected by
+      rust-lld.
+
+      That failure is the HOST's linker — rustc drove the link through `cc`,
+      which on macOS is clang driving Apple's `ld`, and Apple's `ld` does not
+      accept GNU linker options. It is therefore NOT evidence about the Linux
+      runner, where `cc` is gcc and consumes those options natively. Reading it
+      as a prediction would repeat v0.71's own error of treating
+      `file | grep 'statically linked'` as a property of musl binaries rather
+      than of `file`'s wording.
+
+      IT ALSO LEAVES v0.71's RECORDED UNVERIFIED NOTE UNCHANGED: whether rust's
+      bundled musl crt + rust-lld make `musl-gcc` unnecessary for a pure-Rust
+      workspace is still unanswered, because this host could not run the
+      experiment that would answer it. Saying so is the point; v0.71 wrote that
+      note precisely so a later release would not quietly assume either way.
+
+      AND CI ANSWERED THE FIRST TWO. Run on pulseengine-ci-01-10:
+
+        Build synth for aarch64-unknown-linux-musl (rust-lld)  SUCCESS  199 s
+        The issue's acceptance property (elf_static_check)     SUCCESS
+
+      So the cross build DOES work on Linux, and the artifact IS static. The
+      first attempt failed and the difference is the whole finding: leaving the
+      linker to `cc` has no driver, because Debian/Ubuntu ship no
+      `aarch64-linux-musl-gcc`. Naming `-C linker=rust-lld
+      -C link-self-contained=yes` made it link.
+
+      THAT RESOLVES v0.71's RECORDED UNVERIFIED NOTE, which asked exactly this:
+      whether rust's bundled musl crt + rust-lld make `musl-gcc` unnecessary
+      for a pure-Rust workspace. The answer is YES, measured — and the note in
+      ci.yml is updated in place rather than left standing, because an
+      UNVERIFIED that has been verified is a false statement the moment the
+      measurement exists.
+
+      THE POTENCY LEG THEN FAILED, AND IT WAS THE CONTROL, NOT THE ARTIFACT.
+      The control built `aarch64-unknown-linux-gnu` and could not link: rust-lld
+      can self-contain a MUSL link because rustc ships the musl crt, but it
+      cannot conjure a glibc sysroot. That failure said nothing about the musl
+      binary, which had already passed the check two steps earlier — it only
+      made a green result unobtainable, which is the "gate that cannot pass"
+      shape v0.71 shipped and the cold review caught. The control is now a
+      NATIVE x86_64 gnu build: `elf_static_check.py` reads PT_INTERP and GLIBC_
+      references, both architecture-independent — which is precisely why it was
+      written that way instead of grepping `file`'s wording — so a native
+      dynamically linked binary exercises both assertions and needs no cross
+      toolchain.
+
+      WHAT THE CI JOB ASSERTS, so nothing is implied that was not run:
+        1. the cross build succeeds on Linux;
+        2. the artifact is genuinely static — `scripts/elf_static_check.py`,
+           arch-agnostic, reading PT_INTERP and GLIBC_ rather than `file`'s
+           wording, WITH the aarch64 gnu build as a potency control that must
+           be REFUSED by the same check;
+        3. the asset RUNS — NATIVELY, on an arm64 Linux runner, with no
+           emulator and no sysroot anywhere. See below: this is not the check
+           the artifact originally planned, and the reason it changed is the
+           lane's main finding.
+
+      THE THIRD ASSERTION WENT RED AND THE RED WAS NOT ITS LABEL. The step was
+      named "Execution — qemu-aarch64 with NO gnu sysroot", and read at its
+      label it says the artifact's own contingency fired: qemu cannot run a
+      static-pie musl binary without the sysroot, so ship the ELF shape alone
+      as the weaker claim. THAT READING IS FALSE. The step failed with
+
+        qemu-aarch64: command not found      (exit 127)
+
+      so qemu was never invoked and the step produced ZERO evidence about
+      qemu's capability in either direction. Promoting a shell error into a
+      fact about an emulator that never ran would have shipped an unfalsifiable
+      sentence — and this is the FOURTH time in v0.72 that a red was not the
+      defect its label named (Clippy: wrong invocation; the islands job: PEP
+      668; the mutation survey: region loss). The rule that catches all four is
+      the same one: read the failure, never the failure's name.
+
+      WHAT ACTUALLY FAILED WAS THE STEP THAT REPORTED SUCCESS.
+
+        sudo: The "no new privileges" flag is set, which prevents sudo from
+              running as root.
+        install failed; letting the build be the judge
+
+      `no_new_privs` is set on the self-hosted pool's containers, so NO
+      self-hosted job can `apt-get install` anything — and the step's
+      `|| echo "install failed; letting the build be the judge"` turned that
+      into a green tick. The fallback is CORRECT for the linker (the build is
+      genuinely the judge there, and it succeeded with no cross-gcc at all) and
+      WRONG for an interpreter nothing else checks: a precondition step that
+      cannot fail its own precondition is this project's recurring "can this
+      gate fail?" class, which v0.71 shipped as a musl gate that could never
+      PASS. Both halves of that question have now bitten within two releases.
+
+      That measurement also SHARPENS RQ-72-CIPOOL rather than refuting it.
+      CIPOOL declined to move `Test`, `Z3 Verification`, `Kani` and `Bazel`
+      because each carries "an external-toolchain marker" — a heuristic.
+      `no_new_privs` upgrades it to a structural impossibility: a job needing
+      `apt-get` can NEVER run on that pool, however the migration plan evolves.
+      CIPOOL's named follow-up (the other 40 jobs, which need python/pip) is
+      unaffected, because pip works there without sudo under the PEP 668 guard
+      the islands job proved.
+
+      WHAT SHIPS INSTEAD, AND WHY IT IS STRONGER. `ubuntu-24.04-arm` is a
+      GitHub-hosted arm64-Linux pool ALREADY used in this file by
+      `arm64-linux-native` (RQ-64-ARM64LINUX), green on main at this cut. On a
+      real arm64 host the binary is EXECUTED DIRECTLY: no qemu, no sysroot, and
+      the question the artifact told the lane to answer first is retired rather
+      than answered. The host is ASSERTED (`uname -m | grep -qx aarch64`), never
+      skipped, for the reason RQ-64-ARM64LINUX gives: an execution gate that
+      silently skips on the wrong host is vacuous.
+
+      AND IT CORRECTED A DISCREPANCY THE GREEN LEG WAS HIDING. The cross job
+      builds with `RUSTFLAGS="-C linker=rust-lld -C link-self-contained=yes"`.
+      `release.yml` sets NO RUSTFLAGS ANYWHERE — checked by grepping the file,
+      not assumed — so its musl entries link through `musl-gcc` from
+      `musl-tools`. CI was therefore proving a link the release would not
+      perform. A job that proves the wrong path is worth less than no job,
+      because it reports green about something nobody ships. The native job
+      uses the release's host class, packages, flags and command, so the matrix
+      entry is proven as shipped; the rust-lld cross result KEEPS its own job
+      and remains the measured answer to v0.71's UNVERIFIED note, stated as
+      what it is — a cross-build fact, not the shipping path.
+
+    status: implemented
     release: v0.72
     tags:
       - release-engineering
@@ -71,6 +217,7 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1349"
+      landed: "#1368"
       done-when: "contains:.github/workflows/release.yml:aarch64-unknown-linux-musl"
       verified-by: >-
         The predicate names the RELEASE MATRIX, because the ask is an asset that

@@ -5929,6 +5929,209 @@ jobs:
       - name: "Islands differential — accept, byte-identity, execution"
         run: SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py scripts/repro/litpool_islands_345_differential.py
 
+  arm64-musl-portable-asset:
+    name: "Portable arm64 musl asset cross-builds and is static (#1349)"
+    # SELF-HOSTED, per the RQ-72-CIPOOL ceiling: a new job defaulting to the
+    # GitHub-hosted quota makes every other lane queue longer during a burst.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl, x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: arm64-musl-portable
+      # WHY THIS JOB EXISTS BEFORE THE RELEASE-MATRIX ENTRY. `create-release`
+      # depends on `build-binaries`, so a matrix entry that cannot build means
+      # NO RELEASE AT ALL — v0.71 shipped exactly that shape (a musl gate that
+      # could never pass) and the cold review caught it before the tag. The
+      # matrix entry is added only once THIS job is green.
+      #
+      # The local attempt is recorded rather than hidden: the cross build was
+      # tried on the macOS dev host, where it compiled the whole dependency
+      # graph and then failed at LINK with `ld: unknown options: --as-needed
+      # -Bstatic ...`. That is Apple's `ld` refusing GNU linker options — a
+      # fact about THAT HOST, not about this target, and explicitly not a
+      # prediction about this runner, where `cc` is gcc.
+      - name: Cross-linker, if the build turns out to need one
+        run: |
+          set -uo pipefail
+          if command -v aarch64-linux-musl-gcc >/dev/null 2>&1; then
+            echo "aarch64 musl cross-gcc present: $(command -v aarch64-linux-musl-gcc)"
+          elif command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu qemu-user || \
+              echo "install failed; letting the build be the judge"
+          else
+            echo "no apt-get on this runner; letting the build be the judge"
+          fi
+      # THE LINKER IS NAMED EXPLICITLY, because the first attempt left it to
+      # `cc` and the build FAILED on this runner. `musl-tools` provides an
+      # x86_64 `musl-gcc` only — Debian/Ubuntu ship no `aarch64-linux-musl-gcc`
+      # — so the aarch64 musl link had no driver, which is what #1349's own
+      # analysis predicted ("needs a musl cross toolchain, `cross`, or an arm64
+      # runner").
+      #
+      # `rust-lld` + rust's bundled musl crt is the fourth option, and whether
+      # it suffices for a pure-Rust workspace is the question v0.71 recorded as
+      # UNVERIFIED and could not answer on a macOS host. This step is that
+      # experiment. The linker in use is printed so the answer is in the log
+      # rather than inferred from a green tick.
+      - name: Build synth for aarch64-unknown-linux-musl (rust-lld, self-contained)
+        env:
+          RUSTFLAGS: "-C linker=rust-lld -C link-self-contained=yes"
+        run: |
+          set -euo pipefail
+          echo "  aarch64-linux-musl-gcc present: $(command -v aarch64-linux-musl-gcc || echo NO)"
+          echo "  RUSTFLAGS: $RUSTFLAGS"
+          cargo build --release --target aarch64-unknown-linux-musl -p synth-cli --features verify
+      # The PROPERTY, read from the ELF. `scripts/elf_static_check.py` is
+      # arch-agnostic — it reads PT_INTERP and GLIBC_ symbol references, not
+      # `file`'s wording, which is what made the x86_64 gate correct at v0.71.
+      - name: The issue's acceptance property, on the built artifact
+        run: python3 scripts/elf_static_check.py target/aarch64-unknown-linux-musl/release/synth
+      # POTENCY, on the NATIVE gnu target rather than the aarch64 one.
+      #
+      # The first version built `aarch64-unknown-linux-gnu` as the control and
+      # FAILED — measured on this runner. rust-lld can self-contain a musl link
+      # because rustc ships the musl crt; it cannot conjure a glibc sysroot, so
+      # the aarch64 GNU cross link has no libc to bind against. That failure
+      # said nothing about the musl artifact, which had already passed the
+      # check two steps earlier — it only made a green result unobtainable.
+      #
+      # `elf_static_check.py` reads PT_INTERP and GLIBC_ symbol references,
+      # both architecture-independent, which is exactly why it was written that
+      # way at v0.71 instead of grepping `file`'s wording. So a NATIVE
+      # x86_64-unknown-linux-gnu binary exercises both assertions and needs no
+      # cross toolchain at all. Same control, obtainable.
+      - name: Potency — the SAME check must FAIL on a dynamically linked binary
+        run: |
+          set -euo pipefail
+          cargo build --release --target x86_64-unknown-linux-gnu -p synth-cli --features verify
+          if python3 scripts/elf_static_check.py \
+               target/x86_64-unknown-linux-gnu/release/synth; then
+            echo "FAIL(potency): a dynamically linked gnu build PASSED the static"
+            echo "check, so the musl result above is vacuous — it would pass on"
+            echo "anything."
+            exit 1
+          fi
+          echo "potency OK: the dynamically linked build is correctly REFUSED"
+      # THERE IS NO EXECUTION STEP IN THIS JOB, and the reason is measured.
+      #
+      # The first version asked "can qemu-aarch64 run a static-pie musl binary
+      # WITHOUT the `-L /usr/aarch64-linux-gnu` sysroot?" and asserted it here.
+      # It went RED — and the red was NOT that question being answered `no`.
+      # `qemu-aarch64: command not found`, exit 127: qemu was never invoked, so
+      # the step produced ZERO evidence about qemu either way. Reading that red
+      # at its label would have promoted a shell error into a fact about an
+      # emulator that never ran.
+      #
+      # The step that actually failed is the INSTALL step above, which reported
+      # `success`:
+      #
+      #     sudo: The "no new privileges" flag is set, which prevents sudo
+      #           from running as root.
+      #
+      # `no_new_privs` is set on this runner pool's containers, so NO
+      # self-hosted job can `apt-get install` anything, ever — and the
+      # `|| echo "install failed; letting the build be the judge"` swallowed
+      # it into a green tick. That fallback is right for the LINKER (the build
+      # below is the judge, and it succeeded with no cross-gcc at all) and
+      # wrong for an interpreter nothing else checks. A precondition step that
+      # cannot fail its own precondition is this project's recurring
+      # "can this gate fail?" class.
+      #
+      # So execution moved to `arm64-musl-native-execution` below, on a real
+      # arm64 runner, where the binary runs with NO emulator at all. That is
+      # strictly stronger evidence than the qemu leg would have been, and it
+      # retires the sysroot question rather than answering it.
+
+  arm64-musl-native-execution:
+    name: "Portable arm64 musl asset RUNS, natively (#1349)"
+    # THE SHIPPING PATH, PROVEN AS SHIPPED. This job exists because the leg
+    # above proves a DIFFERENT link than the release would perform, and a CI
+    # job that proves the wrong path is worth less than no job:
+    #
+    #   above      cross from x86_64, `-C linker=rust-lld -C link-self-contained=yes`
+    #   release.yml  native, NO RUSTFLAGS at all, `musl-tools` supplying musl-gcc
+    #
+    # `release.yml` sets no RUSTFLAGS anywhere (checked, not assumed), so its
+    # musl entry links through `musl-gcc` exactly as the shipped x86_64 musl
+    # asset already does. This job is that entry, one release early: same host
+    # class, same packages, same flags, same command.
+    #
+    # `ubuntu-24.04-arm` is a GitHub-hosted arm64-Linux pool ALREADY used by
+    # `arm64-linux-native` in this file, which is green on main. It is NOT
+    # `ubuntu-latest`, so it does not count against the RQ-72-CIPOOL ceiling
+    # and does not contend with the queue that lane measured — verified by
+    # running `scripts/ci_pool_tripwire.py` against this edit, whose
+    # EXACT_LABEL match is what makes that true rather than a hope.
+    #
+    # NOT a required check: a new runner pool must never be able to deadlock
+    # merges. Same reasoning as `arm64-linux-native`, and the same reasoning
+    # RQ-72-CIPOOL applies to the four required contexts it declined to move.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Keyed by ARCH: the x86_64 jobs' `target/` is not reusable here.
+          key: arm64-musl-native-${{ runner.arch }}
+      # THE HOST IS ASSERTED, NEVER SKIPPED. A non-arm64 host is RED. The
+      # failure this guards is the one that makes an execution gate vacuous:
+      # if this job ever lands on an x86_64 runner, `./synth --version` would
+      # fail on `Exec format error` and a `|| true` would turn that into a
+      # green tick claiming the binary ran. `arm64-linux-native` uses the same
+      # REQUIRE_NATIVE discipline for the same reason.
+      - name: Assert this runner IS arm64 Linux (the leg the claim is about)
+        run: |
+          set -euo pipefail
+          uname -m | grep -qx aarch64
+          uname -s | grep -qx Linux
+      # Exactly what release.yml's `Install musl toolchain` step does. On this
+      # host `musl-tools` supplies an AARCH64 musl-gcc, which is why the
+      # native build needs no RUSTFLAGS and no cross toolchain.
+      - name: Install musl toolchain (release.yml's own step)
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # NO RUSTFLAGS — deliberately. release.yml sets none, and proving a
+      # link the release does not perform is how a gate goes vacuous while
+      # staying green.
+      - name: Build synth for aarch64-unknown-linux-musl (native, as release.yml would)
+        run: |
+          set -euo pipefail
+          echo "  musl-gcc: $(command -v musl-gcc || echo NO)"
+          echo "  RUSTFLAGS: ${RUSTFLAGS:-<unset, as release.yml leaves it>}"
+          cargo build --release --target aarch64-unknown-linux-musl -p synth-cli --features verify
+      - name: The issue's acceptance property, on the built artifact
+        run: python3 scripts/elf_static_check.py target/aarch64-unknown-linux-musl/release/synth
+      # POTENCY, on this host's own dynamically linked build. Native gnu is
+      # the host default here, so the control needs no cross toolchain — the
+      # same argument the x86_64 leg above makes, one architecture over.
+      - name: Potency — the SAME check must FAIL on a dynamically linked binary
+        run: |
+          set -euo pipefail
+          cargo build --release -p synth-cli --features verify
+          if python3 scripts/elf_static_check.py target/release/synth; then
+            echo "FAIL(potency): a dynamically linked build PASSED the static check,"
+            echo "so the musl result above is vacuous — it would pass on anything."
+            exit 1
+          fi
+          echo "potency OK: the dynamically linked build is correctly REFUSED"
+      # THE CLAIM #1349 ACTUALLY MAKES: the asset RUNS. No emulator, no
+      # sysroot, no interpreter — the host executes it directly.
+      - name: Execution — natively, with no emulator anywhere
+        run: |
+          set -euo pipefail
+          OUT=$(./target/aarch64-unknown-linux-musl/release/synth --version)
+          echo "  $OUT"
+          case "$OUT" in
+            synth\ *) echo "execution OK: ran natively on arm64 Linux, and reports its own name+version" ;;
+            *) echo "FAIL: --version printed '$OUT', which is not '<binary-name> <semver>'"; exit 1 ;;
+          esac
+
   musl-portable-asset:
     name: Portable musl asset builds and is static (#1349)
     # SELF-HOSTED on purpose. 56 of this file's 67 jobs target `ubuntu-latest`,
@@ -5946,13 +6149,33 @@ jobs:
         with:
           key: musl-portable
       # `musl-gcc` is the linker driver rustc invokes for this target IF it is
-      # not self-containing the link. Whether rust's bundled musl crt +
-      # `rust-lld` make this unnecessary for a pure-Rust workspace is UNVERIFIED
-      # here — it cannot be checked on this macOS host (no musl std installed,
-      # no nightly for `--print target-spec-json`), so it is not asserted either
-      # way. Installed only when absent and never fatal: if the link genuinely
-      # needs a driver that is missing, the BUILD step below says so loudly,
-      # which is the honest place for that answer rather than a guess here.
+      # not self-containing the link. v0.71 recorded as UNVERIFIED whether
+      # rust's bundled musl crt + `rust-lld` make it unnecessary for a
+      # pure-Rust workspace, because it could not be checked on the macOS host.
+      #
+      # ANSWERED IN v0.72 (RQ-72-ARM64MUSL, #1349), and the answer is YES —
+      # but read what it is evidence OF. `arm64-musl-portable-asset` ABOVE
+      # (not below; this file orders it first) CROSS-builds this workspace
+      # from x86_64 with `RUSTFLAGS="-C linker=rust-lld -C
+      # link-self-contained=yes"` and no musl cross-gcc on the runner at all:
+      # link successful in 199 s, and the resulting binary passes
+      # `elf_static_check.py`. Its FIRST attempt, which left the linker to
+      # `cc`, failed — Debian/Ubuntu ship no `aarch64-linux-musl-gcc`, so
+      # there was no driver. Naming rust-lld is what made it work.
+      #
+      # That measures the CROSS path, which is NOT what release.yml performs
+      # for a musl target: release.yml sets no RUSTFLAGS and links natively
+      # through musl-gcc, which is this step. So this step IS still
+      # load-bearing for the shipped x86_64 asset, and the rust-lld result
+      # stands as the answer to v0.71's recorded UNVERIFIED question rather
+      # than as a licence to delete this one. `arm64-musl-native-execution`
+      # is the job that proves the shipping path, on the shipping flags.
+      #
+      # This step is therefore KEPT, and for a stronger reason than the first
+      # draft gave: it is the linker driver the release actually uses. The
+      # rust-lld flags are a PROVEN alternative, not a supersession — if this
+      # step is ever dropped, they are the replacement and the cross job above
+      # is the evidence they suffice.
       - name: Install musl toolchain if absent
         run: |
           if command -v musl-gcc >/dev/null 2>&1; then
