@@ -608,7 +608,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 367762 \
+            --exact-emulation-floor 367846 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2191,6 +2191,18 @@ jobs:
       # any mixup flips result bits).
       - name: Run frame-homed VFP locals oracle (#1069, m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_local_pressure_1069_differential.py
+      # RQ-71-VFPALIAS (#881/#1069): the twin narrowing's execution half. The
+      # #881 VFP slot-aliasing check policed EVERY `[sp,#off]` VFP access,
+      # including the permanent home the #1069 rung gives an overflow local —
+      # where `local.set` IS the def, so a legal wasm REDEFINITION writes it
+      # again with a different value and was refused as "a compiler bug"
+      # (measured: f32 from 14 homed locals, f64 from 8). Narrowing the check
+      # to exclude declared homes turns that LOUD refusal into silence, so this
+      # oracle supplies what compiling cannot: the emitted code is right.
+      # Gate 2 is the potency control — `redef_none` is `redef_diff` minus the
+      # redefinition, so a STALE home read would make the two agree.
+      - name: Run redefined frame-home VFP oracle (#881/#1069, m7dp)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_home_redef_881_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values
@@ -2519,7 +2531,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 32
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 33
 
   instrument-independence-oracle:
     name: VCR-VER-004 instrument independence (#242, v0.53's mutation re-run)
@@ -3668,8 +3680,26 @@ jobs:
           # the file small but costs INSTRUCTIONS here. Recorded because it is
           # the real CI cost of the fixture, and the line count is not.
           # `hits: 0` unchanged.
-          grep -Eq '^functions audited: 7243$' haa1189.txt
-          grep -Eq '^homes watched: 8236$' haa1189.txt
+          # RQ-71-VFPALIAS (#881/#1069): 7243 -> 7249, 8236 -> 8314, attributed
+          # 219699 -> 220423. This release commits ONE new fixture into
+          # `scripts/repro/` (vfp_home_redef_881.wat, six exports), which the
+          # audit's corpus() globs.
+          #
+          # THE CONTROL THAT MATTERS, and it is stronger than the #1321 one
+          # above: this lane NARROWS a validator, so functions that previously
+          # REFUSED now compile — corpus growth and a codegen change would look
+          # identical in these three numbers. So the audit was re-run on the
+          # FIXED binary with only the new fixture removed from the tree, and it
+          # printed 7243 / 8236 / 219699 — the pinned values, exactly. The
+          # narrowing therefore moved NOTHING in this census; the whole delta is
+          # the new fixture. `hits: 0` unchanged, so no new home-alias defect.
+          #
+          # The per-leg arithmetic the #1321 note above uses is deliberately NOT
+          # restated here: which of the four legs accept a hard-float fixture was
+          # not measured, and a derived-looking number nobody derived is this
+          # programme's most persistent defect.
+          grep -Eq '^functions audited: 7249$' haa1189.txt
+          grep -Eq '^homes watched: 8314$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -3677,7 +3707,7 @@ jobs:
           # 217081 could not still hold. Nothing caught it because no grep ever
           # read it: exactly the "a ratchet fixes the number and cannot fix the
           # prose" shape this project keeps paying for. Derived here: 217291.
-          grep -Eq '^attributed instructions: 219699 ' haa1189.txt
+          grep -Eq '^attributed instructions: 220423 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

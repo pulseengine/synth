@@ -5569,6 +5569,41 @@ pub fn validate_final_allocation_in_areas(
     instrs: &[ArmInstruction],
     spill_areas: Option<&[std::ops::Range<i32>]>,
 ) -> RaFinalVerdict {
+    // VFP frame homes unknown => the #881 twin polices every `[sp,#N]` VFP
+    // offset, exactly as before. Same conservative default, same reason.
+    validate_final_allocation_in_areas_with_vfp_homes(instrs, spill_areas, None)
+}
+
+/// [`validate_final_allocation_in_areas`], with the permanent frame HOMES of
+/// frame-resident f32/f64 locals named explicitly as well (RQ-71-VFPALIAS,
+/// #881/#1069).
+///
+/// The integer narrowing above could be expressed as RANGES because the
+/// allocator's spill areas are contiguous reserved regions. Its VFP twin cannot:
+/// `alloc_vfp_local_frame_slot` draws a frame home from the SAME pool as the
+/// operand-stack spills (`SpillState::alloc`), so homes and spill slots are
+/// interleaved and range-indistinguishable. Hence an enumerated set of 4-byte
+/// half offsets rather than another area list.
+///
+/// Excluding a home is not a weakening of the #331 rule. A home is allocated
+/// once and NEVER freed — `alloc_vfp_local_frame_slot` has no matching
+/// `SpillState::free` — so the allocator can never hand that offset out as a
+/// spill slot later in the same function. There is no spill at a home to alias,
+/// so nothing that the rule would have caught stops being caught. What stops is
+/// reporting a wasm local's legal REDEFINITION as a miscompile: under the #1069
+/// rung the local's `local.set` IS its def, stored to the home, and two
+/// different values over the local's lifetime is ordinary wasm.
+///
+/// `vfp_frame_home_halves` is `None` when the caller cannot name them (every sp
+/// offset policed, historical behaviour bit for bit) and `Some(&[])` when
+/// selection ran and granted no home at all — which is every compile that never
+/// engaged the #1069 rung. The two are NOT interchangeable, and `Some(&[])` must
+/// not re-widen: it is already the historical behaviour, reached honestly.
+pub fn validate_final_allocation_in_areas_with_vfp_homes(
+    instrs: &[ArmInstruction],
+    spill_areas: Option<&[std::ops::Range<i32>]>,
+    vfp_frame_home_halves: Option<&[i32]>,
+) -> RaFinalVerdict {
     use ArmOp::*;
     // #1204: this validator is described as "the construction-level answer to
     // the #490/#496/#331/#782b clobber class" and it ran on every ARM
@@ -5853,7 +5888,7 @@ pub fn validate_final_allocation_in_areas(
     // per straight-line segment, and caller-saved liveness across calls —
     // over the shared S-word file (D(i) = S(2i):S(2i+1) aliasing modeled at
     // word granularity).
-    if let Some(v) = check_vfp_slot_aliasing(instrs) {
+    if let Some(v) = check_vfp_slot_aliasing(instrs, vfp_frame_home_halves) {
         return RaFinalVerdict::Violation(v);
     }
     // RQ-69-VFPUNKNOWN (#1303): three outcomes, not two. A scan that stopped at
@@ -6131,7 +6166,10 @@ pub fn vfp_word_effect(op: &ArmOp) -> Option<(Vec<usize>, Vec<usize>)> {
 /// #881 (VFP twin of invariant 2): per-straight-line-segment VFP spill-slot
 /// non-aliasing at 4-byte-half granularity. See
 /// [`RaFinalViolation::VfpSpillSlotAliased`].
-fn check_vfp_slot_aliasing(instrs: &[ArmInstruction]) -> Option<RaFinalViolation> {
+fn check_vfp_slot_aliasing(
+    instrs: &[ArmInstruction],
+    frame_home_halves: Option<&[i32]>,
+) -> Option<RaFinalViolation> {
     use ArmOp::*;
     #[derive(Clone)]
     struct HalfState {
@@ -6183,6 +6221,22 @@ fn check_vfp_slot_aliasing(instrs: &[ArmInstruction]) -> Option<RaFinalViolation
                     load_halves.push(slot + 4);
                 }
                 _ => {}
+            }
+            // RQ-71-VFPALIAS (#881/#1069): a PERMANENT FRAME HOME is not an
+            // allocator spill slot, so drop it from both directions before any
+            // tracking happens. Under the #1069 rung a frame-resident local's
+            // `local.set` IS its def and stores straight to this offset, so the
+            // slot legitimately holds several different values over the local's
+            // lifetime — a redefinition, which the single-value-per-slot rule
+            // would otherwise report as `VfpSpillSlotAliased` (the VFP twin of
+            // #1321). Dropping a home loses no #331 coverage: the home is never
+            // freed back to the pool, so no spill can ever land at that offset.
+            //
+            // `None` means the caller could not name the homes — then every
+            // offset is policed, exactly as before this narrowing existed.
+            if let Some(homes) = frame_home_halves {
+                store_halves.retain(|(half, _)| !homes.contains(half));
+                load_halves.retain(|half| !homes.contains(half));
             }
             for half in load_halves {
                 if let Some(st) = halves.get_mut(&half) {
@@ -19250,6 +19304,110 @@ mod tests {
                 RaFinalVerdict::Violation(RaFinalViolation::VfpSpillSlotAliased { slot: 0, .. })
             ),
             "two live VFP values sharing a slot must be a violation"
+        );
+    }
+
+    /// RQ-71-VFPALIAS (#881/#1069) — the POTENCY CONTROL for the frame-home
+    /// narrowing. ONE aliasing stream, four scopings: the narrowing must be
+    /// exactly as wide as the set it is handed, and no wider. Without this pair
+    /// a narrowing is indistinguishable from an off switch (the v0.57 lesson:
+    /// ask whether the check could still FAIL).
+    #[test]
+    fn ra003_vfp_frame_home_narrowing_is_exactly_as_wide_as_declared_881() {
+        // Two DIFFERENT values to [sp,0], then a reload — the #331 shape.
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            f32c(VfpReg::S2),
+            f32st(VfpReg::S2, 0),
+            f32c(VfpReg::S3),
+            f32st(VfpReg::S3, 0),
+            f32ld(VfpReg::S4, 0),
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        let v = |homes: Option<&[i32]>| {
+            validate_final_allocation_in_areas_with_vfp_homes(&body, None, homes)
+        };
+        let caught = |r: RaFinalVerdict| {
+            matches!(
+                r,
+                RaFinalVerdict::Violation(RaFinalViolation::VfpSpillSlotAliased { slot: 0, .. })
+            )
+        };
+        // (a) homes UNKNOWN -> police every offset, exactly as before.
+        assert!(
+            caught(v(None)),
+            "None must police every offset, exactly as before the narrowing"
+        );
+        // (b) selection ran and granted NO home. `Some(&[])` must not be read as
+        // "no record" NOR silence anything — it is the historical behaviour
+        // reached honestly. This is the `Some([])` vacuity trap v0.70 found in
+        // this validator's own `policed` helper, pinned here for the twin.
+        assert!(
+            caught(v(Some(&[]))),
+            "an EMPTY home set must not silence the check"
+        );
+        // (c) a home declared at some OTHER offset must not leak onto slot 0.
+        assert!(
+            caught(v(Some(&[4, 64]))),
+            "declaring another offset a home must not silence slot 0"
+        );
+        // (d) ...and only when THIS offset is a declared home does the legal
+        // redefinition stop being reported. The one scoping that may go quiet.
+        //
+        // The expected outcome is NO VIOLATION, not `Consistent`: these
+        // synthetic bodies carry VFP ops the join modelling declines on, so the
+        // verdict is the LOUD `NotAttempted`. That decline is not what is under
+        // test here and it cannot mask the result — (a)-(c) reach `Violation`
+        // through the same path, which is what proves the VFP twin still runs.
+        assert!(
+            !matches!(v(Some(&[0])), RaFinalVerdict::Violation(_)),
+            "a declared frame home must not be policed as a spill slot; got {:?}",
+            v(Some(&[0]))
+        );
+    }
+
+    /// RQ-71-VFPALIAS (#881/#1069) — the f64 twin: an f64 home occupies TWO
+    /// 4-byte halves, so declaring only the base must NOT silence a clobber of
+    /// the hi half. Pins that the selector's `slot` + `slot + 4` recording is
+    /// load-bearing rather than belt-and-braces.
+    #[test]
+    fn ra003_vfp_frame_home_f64_needs_both_halves_declared_881() {
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            ins(ArmOp::F64Const {
+                dd: VfpReg::D1,
+                value: 2.25,
+            }),
+            ins(ArmOp::F64Store {
+                dd: VfpReg::D1,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            f32c(VfpReg::S1),
+            f32st(VfpReg::S1, 12), // clobbers the HI half
+            ins(ArmOp::F64Load {
+                dd: VfpReg::D2,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        let v = |homes: Option<&[i32]>| {
+            validate_final_allocation_in_areas_with_vfp_homes(&body, None, homes)
+        };
+        // Only the BASE half declared: the hi half is still policed, so the
+        // clobber at offset 12 is still caught.
+        assert!(
+            matches!(
+                v(Some(&[8])),
+                RaFinalVerdict::Violation(RaFinalViolation::VfpSpillSlotAliased { slot: 12, .. })
+            ),
+            "declaring only the base half must leave the hi half policed"
+        );
+        // Both halves declared (what the selector actually records for an f64
+        // home): the whole home is the local's, and nothing is reported.
+        assert!(
+            !matches!(v(Some(&[8, 12])), RaFinalVerdict::Violation(_)),
+            "a declared f64 home covers both of its halves; got {:?}",
+            v(Some(&[8, 12]))
         );
     }
 

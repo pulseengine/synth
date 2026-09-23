@@ -6286,6 +6286,31 @@ pub struct InstructionSelector {
     /// `frame_size` rides along so a consumer can prove the record still
     /// describes the stream it is about to check (see `frame_spill_areas`).
     frame_spill_areas: Option<(i32, Vec<std::ops::Range<i32>>)>,
+    /// #881/#1069 (RQ-71-VFPALIAS): the 4-byte frame HALVES that the last
+    /// `select_with_stack` handed out as PERMANENT homes for frame-resident
+    /// f32/f64 locals — one entry per f32 home, two (`slot`, `slot + 4`) per
+    /// f64 home.
+    ///
+    /// These are NOT allocator spill slots, and the distinction cannot be made
+    /// from the emitted stream or from an offset range: `alloc_vfp_local_frame_slot`
+    /// draws them from the SAME pool as the operand-stack spills, so a home and
+    /// a spill slot are interleaved and range-indistinguishable. That is why
+    /// this is an explicit slot set and not another `frame_spill_areas` entry.
+    ///
+    /// What makes excluding them lossless rather than a weakening: a home is
+    /// allocated once and NEVER freed (`alloc_vfp_local_frame_slot` has no
+    /// matching `SpillState::free`), so the allocator can never hand the same
+    /// offset out as a spill slot later in the function. Excluding a home
+    /// therefore hides no #331 spill-aliasing bug — there is no spill there to
+    /// alias. What it does stop is policing a wasm local's own home, where two
+    /// different values over the local's lifetime is a legal REDEFINITION, not
+    /// an aliased slot (the store sits exactly where wasm writes the local —
+    /// see the dominance argument at the `f32_frame` emission site).
+    ///
+    /// `frame_size` rides along for the same staleness proof `frame_spill_areas`
+    /// needs: a post-selection pass can re-lay the frame, and a stale set would
+    /// silence the check over the wrong offsets.
+    vfp_frame_home_halves: Option<(i32, Vec<i32>)>,
 }
 
 /// #642/#650/#664/#676: resolved `call_indirect` guard inputs —
@@ -6307,12 +6332,25 @@ impl InstructionSelector {
         self.frame_spill_areas.as_ref()
     }
 
+    /// #881/#1069 (RQ-71-VFPALIAS): the permanent frame-home HALVES the last
+    /// `select_with_stack` handed out to frame-resident f32/f64 locals, as
+    /// `(frame_size, halves)`. `None` before any selection, and empty in every
+    /// compile that never engaged the #1069 rung — which is every function that
+    /// compiles through the base path or the plain #881 rung.
+    ///
+    /// Same obligation as [`frame_spill_areas`](Self::frame_spill_areas): the
+    /// caller MUST check `frame_size` against the stream it intends to validate.
+    pub fn vfp_frame_home_halves(&self) -> Option<&(i32, Vec<i32>)> {
+        self.vfp_frame_home_halves.as_ref()
+    }
+
     /// Create a new instruction selector
     pub fn new(rules: Vec<SynthesisRule>) -> Self {
         Self {
             matcher: PatternMatcher::new(rules),
             regs: RegisterState::new(),
             frame_spill_areas: None,
+            vfp_frame_home_halves: None,
             bounds_check: BoundsCheckConfig::None,
             num_imports: 0,
             relocatable: false,
@@ -6367,6 +6405,7 @@ impl InstructionSelector {
             matcher: PatternMatcher::new(rules),
             regs: RegisterState::new(),
             frame_spill_areas: None,
+            vfp_frame_home_halves: None,
             bounds_check,
             num_imports: 0,
             relocatable: false,

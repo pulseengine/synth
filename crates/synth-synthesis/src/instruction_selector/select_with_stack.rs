@@ -8583,6 +8583,33 @@ impl InstructionSelector {
             &f64_home,
         )?;
 
+        // #881/#1069 (RQ-71-VFPALIAS): record the PERMANENT frame homes this
+        // selection handed out, so VCR-RA-003's #881 VFP twin can tell a wasm
+        // local's OWN HOME from an allocator spill slot. Both are drawn from
+        // the same pool (`alloc_vfp_local_frame_slot` calls `SpillState::alloc`),
+        // so the two are interleaved and range-indistinguishable — which is why
+        // this is an enumerated slot set and not another `frame_spill_areas`
+        // entry. Recorded here, after the walk that fills the maps and before
+        // the post-passes below, neither of which moves a frame offset.
+        //
+        // An f64 home occupies two 4-byte halves, matching how
+        // `check_vfp_slot_aliasing` tracks an `F64Store` as `slot` and `slot + 4`.
+        // `Some(vec![])` (selection ran, granted no home) is deliberately
+        // DISTINCT from `None` (no record): a consumer must not read an empty
+        // set as "no record" and silently re-widen itself — the `Some([])`
+        // vacuity trap v0.70 found in this validator's own `policed` helper.
+        self.vfp_frame_home_halves = {
+            let mut halves: Vec<i32> = Vec::with_capacity(f32_frame.len() + 2 * f64_frame.len());
+            halves.extend(f32_frame.values().copied());
+            for &slot in f64_frame.values() {
+                halves.push(slot);
+                halves.push(slot + 4);
+            }
+            halves.sort_unstable();
+            halves.dedup();
+            Some((layout.frame_size, halves))
+        };
+
         // RQ-67-VFPREACH (#1267): restore the callee-saved VFP half before every
         // return. Done as ONE post-pass over the finished stream rather than at
         // each epilogue site, so a site added later cannot silently miss the

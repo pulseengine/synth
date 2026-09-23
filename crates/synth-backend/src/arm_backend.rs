@@ -533,6 +533,13 @@ fn compile_wasm_to_arm(
     // offset", i.e. exactly today's behaviour.
     let selected_spill_areas: std::cell::RefCell<Option<(i32, Vec<std::ops::Range<i32>>)>> =
         std::cell::RefCell::new(None);
+    // RQ-71-VFPALIAS (#881/#1069): the companion record — the PERMANENT frame
+    // homes of frame-resident f32/f64 locals. Kept beside the spill areas rather
+    // than folded into them because it is a different KIND of fact: the areas say
+    // where the allocator's slots live, this says which offsets inside that same
+    // pool are a wasm local's own home and carry no single-value obligation.
+    let selected_vfp_frame_homes: std::cell::RefCell<Option<(i32, Vec<i32>)>> =
+        std::cell::RefCell::new(None);
     let select_direct_attempt = |spill_on_exhaustion: bool,
                                  param_backing_on_exhaustion: bool,
                                  local_promote: bool,
@@ -683,6 +690,7 @@ fn compile_wasm_to_arm(
             // #1321: only a SUCCESSFUL attempt's layout describes the stream we
             // return; a failed rung's frame is discarded with it.
             *selected_spill_areas.borrow_mut() = selector.frame_spill_areas().cloned();
+            *selected_vfp_frame_homes.borrow_mut() = selector.vfp_frame_home_halves().cloned();
         }
         selected
     };
@@ -1440,6 +1448,7 @@ fn compile_wasm_to_arm(
                             post_exhaust,
                             true,
                             selected_spill_areas.borrow().as_ref(),
+                            selected_vfp_frame_homes.borrow().as_ref(),
                         ) {
                             Ok(f) => f,
                             Err(e) => {
@@ -1569,6 +1578,7 @@ fn compile_wasm_to_arm(
         post_exhaust,
         ran_realloc,
         selected_spill_areas.borrow().as_ref(),
+        selected_vfp_frame_homes.borrow().as_ref(),
     )?;
 
     // Encode to binary — use Thumb-2 for Cortex-M targets
@@ -1789,6 +1799,10 @@ fn finish_allocated_stream(
     // after `frame_size` is re-proven against this stream (see the use site).
     // `None` on the optimized path and whenever no area was reserved.
     recorded_spill_areas: Option<&(i32, Vec<std::ops::Range<i32>>)>,
+    // RQ-71-VFPALIAS (#881/#1069): the permanent VFP frame homes from that same
+    // attempt, proven against this stream by the identical `frame_size` test.
+    // `None` on the optimized path and whenever selection granted no home.
+    recorded_vfp_frame_homes: Option<&(i32, Vec<i32>)>,
 ) -> Result<Vec<synth_synthesis::ArmInstruction>, String> {
     let arm_instrs = if ran_realloc {
         let out = arm_instrs;
@@ -2237,24 +2251,38 @@ fn finish_allocated_stream(
     // eliminated frame, optimized path, no record) we pass `None` and every
     // `[sp,#N]` offset is policed, bit for bit as before. The fix can go stale;
     // it cannot go wrong.
+    // The staleness proof, shared by both records: this stream still allocates
+    // EXACTLY the frame they were computed for. Factored into one closure so the
+    // spill areas and the VFP frame homes cannot drift apart — they come from
+    // the same selection and must stand or fall together.
+    let frame_still_matches = |frame_size: &i32| {
+        arm_instrs.iter().any(|ins| {
+            matches!(
+                &ins.op,
+                synth_synthesis::rules::ArmOp::Sub {
+                    rd: synth_synthesis::rules::Reg::SP,
+                    rn: synth_synthesis::rules::Reg::SP,
+                    op2: synth_synthesis::rules::Operand2::Imm(n),
+                } if n == frame_size
+            )
+        })
+    };
     let spill_areas: Option<&[std::ops::Range<i32>]> = match recorded_spill_areas {
-        Some((frame_size, areas))
-            if arm_instrs.iter().any(|ins| {
-                matches!(
-                    &ins.op,
-                    synth_synthesis::rules::ArmOp::Sub {
-                        rd: synth_synthesis::rules::Reg::SP,
-                        rn: synth_synthesis::rules::Reg::SP,
-                        op2: synth_synthesis::rules::Operand2::Imm(n),
-                    } if n == frame_size
-                )
-            }) =>
-        {
-            Some(areas.as_slice())
-        }
+        Some((frame_size, areas)) if frame_still_matches(frame_size) => Some(areas.as_slice()),
         _ => None,
     };
-    match synth_synthesis::liveness::validate_final_allocation_in_areas(&arm_instrs, spill_areas) {
+    // RQ-71-VFPALIAS (#881/#1069): same gate, same failure direction. A stale or
+    // absent home set means the #881 twin polices every VFP `[sp,#N]` offset,
+    // which is what it did before this narrowing existed.
+    let vfp_frame_homes: Option<&[i32]> = match recorded_vfp_frame_homes {
+        Some((frame_size, halves)) if frame_still_matches(frame_size) => Some(halves.as_slice()),
+        _ => None,
+    };
+    match synth_synthesis::liveness::validate_final_allocation_in_areas_with_vfp_homes(
+        &arm_instrs,
+        spill_areas,
+        vfp_frame_homes,
+    ) {
         synth_synthesis::liveness::RaFinalVerdict::Violation(v) => {
             return Err(format!(
                 "VCR-RA-003: register-allocation validation FAILED — {v:?}. \

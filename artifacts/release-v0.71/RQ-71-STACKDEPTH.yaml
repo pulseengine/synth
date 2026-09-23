@@ -110,10 +110,20 @@ artifacts:
       first version asserted `--relocatable` and self-contained builds report the
       same number. They do not: 8/64/64/120 against 16/72/72/128 on the same
       fixture. `--relocatable` forces the DIRECT selector (#197); the optimized
-      path's prologue costs 8 more bytes per frame. So the number is a property
+      path's LEAF prologue costs 8 more bytes. So the number is a property
       of THE BUILD YOU SHIP and an embedder must read it from their own object —
       the oracle now asserts the two paths agree on WHICH functions are
       boundable, and lets the figures differ.
+
+      CORRECTED BY THE v0.71 COLD REVIEW. This said "8 more bytes PER FRAME",
+      which is false and causally wrong. Re-measured from the two sidecars on one
+      tree: 8/64/120 against 16/72/128. The delta is a CONSTANT +8 arising in the
+      zero-frame LEAF (`func_0`: 8 -> 16) and propagating once up the chain. Were
+      it per-frame, `top` — whose chain carries three frames — would differ by
+      more than 8; it differs by exactly 8. The non-leaf own-frames are 56 in
+      BOTH modes (`push.w {r4-r8,lr}` + `sub.w sp,sp,#0x20`, identical). The
+      CONCLUSION the sentence supported is unaffected and still holds: the number
+      is a property of the build you ship.
 
       THE DECLINE SET IS NOT THE WCET ONE, and reusing it would have been a
       silent mistake. `WcetDecline` carries `Loop`, `LoopedExpansion`,

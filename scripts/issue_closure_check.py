@@ -64,12 +64,25 @@ def parse_version(release: str) -> tuple[int, int]:
 
 def closed_since(tag: str, repo: str) -> set[int]:
     """Issues closed at or after `tag`'s creation, via gh. Network; only used
-    on the live path, never in the tests."""
-    when = subprocess.run(
-        ["gh", "api", f"repos/{repo}/git/refs/tags/{tag}", "--jq", ".object.sha"],
-        capture_output=True, text=True, check=True).stdout.strip()
+    on the live path, never in the tests.
+
+    RESOLVE THE TAG NAME DIRECTLY. The first version of this walked
+    `git/refs/tags/<tag>` and fed `.object.sha` to `commits/<sha>`, which is
+    WRONG for an ANNOTATED tag: `.object.sha` is then the TAG OBJECT's sha, not
+    the commit's, and the API answers
+
+        422 No commit found for SHA: f414f078...
+
+    Every synth release tag is annotated and unsigned by policy, so that path
+    could never have worked — and it would have failed first at the v0.71 tag,
+    the release that shipped this checker. `repos/<repo>/commits/<tag-name>`
+    makes GitHub do the dereference, in one call with nothing to get wrong.
+
+    MEASURED against the shipped v0.70.0 tag: `git/refs/tags/v0.70.0` gives
+    `object.type=tag`, and `commits/v0.70.0` returns 2026-09-22T21:33:30Z.
+    """
     date = subprocess.run(
-        ["gh", "api", f"repos/{repo}/commits/{when}", "--jq", ".commit.committer.date"],
+        ["gh", "api", f"repos/{repo}/commits/{tag}", "--jq", ".commit.committer.date"],
         capture_output=True, text=True, check=True).stdout.strip()
     out = subprocess.run(
         ["gh", "issue", "list", "--repo", repo, "--state", "closed",

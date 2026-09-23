@@ -27,8 +27,12 @@ WHY THE FIX IS NOT A ONE-LINE PLACEMENT CHANGE, measured on this tree:
     already the halfword displacement: (target - branch - 4) / 2". Two ArmOp
     variants carry them (`BOffset`, `BCondOffset`).
   - There is NO post-encode branch relaxation or fixup pass:
-    `grep -nE 'fn [a-z_]*(relax|fixup|patch)'` over `arm_backend.rs` and
-    `arm_encoder.rs` finds only literal-pool patching.
+    `resolve_label_branches` (arm_backend.rs:2333, called at 1468/1590) IS such
+    a pass, with a size fixed point, and it DOES run on the direct/--relocatable
+    path. Corrected by the v0.71 cold review, which also showed the grep this
+    text previously cited prints NOTHING AT ALL (rc=1) and so proved nothing.
+    What has no post-encode fixup is the OPTIMIZED path's inline
+    `BOffset`/`BCondOffset`, which carry no label and are left untouched.
 
 So inserting an island mid-function silently corrupts every branch that spans
 the insertion point, with nothing to repair it. That is worse than the "branch
