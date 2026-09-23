@@ -70,7 +70,64 @@ artifacts:
       v0.71 added one by copying the surrounding convention without thinking
       about capacity. Nothing catches that today.
 
-    status: proposed
+      RE-MEASURED AT THE v0.72 CUT, AND THE MEASUREMENT RESHAPED THE LANE. Three
+      samples 50 s apart on run 35888386080 all read `queued={}`. The v0.71 readings
+      (55 queued/0 running; 57 queued/0 running) are NOT refuted — they were real.
+      What is refuted is reading either as a STEADY STATE. The pool is not saturated,
+      it is BURST-SENSITIVE, and that decides what a gate may assert: a queue-depth
+      check would be red during a burst and green ten minutes later on an UNCHANGED
+      repo — the "rate read off one INSTANT" defect v0.61 already recorded. So the
+      tripwire pins a STRUCTURAL fact about ci.yml instead.
+
+      A MISCOUNT I MADE AND CORRECTED, recorded because a gate inherits it
+      permanently otherwise: a first pass matched the SUBSTRING `ubuntu` and reported
+      56/67. That also caught `ubuntu-24.04-arm`, a DIFFERENT hosted pool with its own
+      queue, and inflated the number this lane exists to reduce — in the flattering
+      direction. The tripwire matches the runner label EXACTLY.
+
+      THE BRIEF'S PRECONDITION WAS ALREADY MET, measured rather than assumed. It says
+      the four required contexts move "only after the tripwire proves the pool serves
+      them". On run 35888386080, FIVE of the nine required contexts ALREADY ran on
+      self-hosted and passed — Format, Clippy, Claim Check, Version Pin Sweep and
+      Rivet Validation, on pulseengine-ci-01-8/-9/-10. The pool demonstrably serves
+      required checks today.
+
+      WHY THE REMAINING FOUR STILL DO NOT MOVE, checked individually rather than
+      deferred as a group: Test and Z3 Verification both `sudo apt-get`, Kani installs
+      a verifier toolchain, Bazel installs Nix + Bazel. Every one carries an
+      external-toolchain marker, which is exactly the hold-back #1062 increment 2
+      already wrote down. A hypothesis that `Test` was plain cargo like `Clippy` was
+      checked and REFUTED — it installs llvm-dwarfdump via apt.
+
+      WHAT THIS INCREMENT ACTUALLY MOVES. Of 55 ubuntu-latest definitions, 43 are
+      non-required with no external toolchain; of those, exactly THREE are PURE cargo
+      (checkout + rust-toolchain + cache, the shape Clippy runs on this pool with).
+      Those three moved: 55 -> 52 definitions, 81% -> 76%, self-hosted 10 -> 13. The
+      other 40 need python/pip, which v0.72 proved works on this pool ONLY with the
+      PEP 668 guard the islands job needed; they are a NAMED follow-up, not a silent
+      omission.
+
+      THE TRIPWIRE IS PROVEN ABLE TO FAIL in all three directions, on copies, with the
+      worktree restored to a 0-line diff afterwards: adding an ubuntu-latest job trips
+      the CEILING; moving one off trips the RATCHET, which demands the ceiling be
+      lowered in the SAME PR so a win cannot be silently given back; renaming a
+      required job trips the DEADLOCK guard — the one genuinely unsafe move here,
+      because a required NAME that never runs blocks every merge with no red to
+      revert.
+
+      AND THE GUARD ITSELF FIRST FAILED THE WAY THE LANE IS ABOUT. Its first
+      version read the required-context list through `gh` and "skipped" when that
+      was unavailable. No other job in ci.yml calls `gh`, so on the self-hosted
+      runner the step did not skip gracefully — it FAILED `Claim Check`, a
+      REQUIRED context, on its first CI round. A guard that cannot execute where
+      it is installed is exactly the "gate nobody asks" shape RQ-72-ISSUEGATE
+      records, reproduced by the lane meant to fix the pool. The contract is now
+      PINNED in the script and the guard runs offline; the API is a cross-check
+      that reports DRIFT between the pin and branch protection when reachable and
+      says plainly when it could not look. Re-proven offline: renaming a required
+      job still trips the guard with no network at all.
+
+    status: implemented
     release: v0.72
     tags:
       - ci-capacity
@@ -84,5 +141,6 @@ artifacts:
       priority: must
       verification-track: measurement
       issue: "#1062"
+      landed: "#1062 (PR #1364)"
       done-when: "contains:scripts/ci_pool_tripwire.py:ubuntu-latest"
       verified-by: "The MECHANICAL half names the tripwire, because it is the half that survives this lane: a new job defaulting to the stalled pool must be caught by something other than a maintainer noticing. The MOVE itself cannot have a file-existence predicate — `runs-on` changing in ci.yml proves the edit, not that the toolchain works there — so it is evidenced by the queue-wait measured before and after on the same PR shape, and by the retargeted context being green on several consecutive main runs BEFORE it is relied on."
