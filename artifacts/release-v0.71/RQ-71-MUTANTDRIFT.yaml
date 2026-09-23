@@ -46,6 +46,54 @@ artifacts:
       that four releases running declared 100% `manual:` done-when, which R3
       can never fire on, and printed that as though it were evaluation.
 
+
+      REFUTED. The premise was wrong, and it was wrong because it was built on a
+      STEP NAME instead of a log line.
+
+      THE CLAIM: "a drifted anchor reds saying 'controls must die, survivors must
+      reproduce', which READS AS A COVERAGE REGRESSION ... the failure names
+      neither line drift nor the remedy."
+
+      MEASURED ON THIS TREE — it names BOTH:
+
+        - `enumerate_sites()` keys live sites by an id embedding the line number,
+          so a stale anchor simply does not resolve. Verified: the ci_subset's 10
+          entries all resolve today, and the same id with its line shifted by +8
+          resolves to `None`. That takes the branch which reports
+          "<id>: site no longer exists on this tree (re-anchor the ledger)" —
+          the remedy, in the message.
+        - `Edit.__enter__` independently raises "site drifted: <id>" and prints
+          --have-- against --want--, so the wrong text is shown, not inferred.
+
+      WHAT I ACTUALLY SAW IN v0.70 was the step's NAME, because the run was still
+      in progress when I asked for its log and `gh run view --log-failed`
+      returned "logs will be available when it is complete". I inferred the
+      message from the title and wrote the inference down as a measurement. That
+      is the same error class this release keeps finding, committed by the
+      artifact that was supposed to fix a reporting problem.
+
+      SO THE PROPOSED FIX WOULD HAVE MADE THINGS WORSE. Having CI re-anchor
+      automatically means either mutating a committed ledger from CI, or turning
+      a real drift into a green run. A loud red that names the remedy is the
+      better behaviour, and it already shipped.
+
+      WHAT SURVIVES, and it is small and real: the step NAME was the one
+      genuinely misleading surface — a drifted anchor is not a survivor failing
+      to reproduce — and the remedy COMMAND was not written anywhere a reader
+      landing on that step would see it. Both are fixed:
+
+        - the step is renamed to include "anchors must still resolve — a drifted
+          anchor reds here and is re-anchored, not re-baselined";
+        - the exact command (`python3 scripts/mutation_survey.py reanchor`) and
+          the `pin-subset` trap are recorded at the step, together with the
+          check that distinguishes a re-location from a re-baseline: the
+          mutants/controls/ci_subset/UNTESTED counts must be UNCHANGED;
+        - `Edit`'s drift message now names the remedy and the trap too, for
+          anyone who reaches drift by another path.
+
+      `grep -c reanchor .github/workflows/ci.yml` was 0 and is now 1 — but as
+      DOCUMENTATION at the point of failure, not as an automatic re-anchor,
+      which is the thing this artifact set out to build and should not.
     status: proposed
     release: v0.71
     tags:
@@ -60,4 +108,20 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1189"
-      done-when: "contains:.github/workflows/ci.yml:reanchor"
+      disposition: refuted
+      # R4: the squash commit for this artifact is delivery-shaped, so the
+      # increment is RECORDED rather than the status flipped — what landed is
+      # a REFUTATION plus two documentation fixes, not the feature the
+      # artifact proposed. `disposition: refuted` beside it is what R11 wants
+      # next to a non-claiming status.
+      landed: "PR #1353. NOT LANDED as the proposed feature — the premise was REFUTED. What landed: the measurement showing a drifted anchor already reports \"site no longer exists on this tree (re-anchor the ledger)\" and \"site drifted: <id>\" with have-vs-want; the step renamed so a drifted anchor is not read as a survivor failing to reproduce; and the remedy command plus the pin-subset trap recorded at the step. CI deliberately does NOT auto-re-anchor: that would mutate a committed ledger from CI or mask real drift."
+      # A REFUTATION CANNOT HAVE A MECHANICAL DONE-WHEN, and trying to give it
+      # one is what R3 caught. The deliverable is a FINDING, not an artefact,
+      # so no file's existence can mean "this was refuted" — the `contains:`
+      # predicate went TRUE the moment the remedy was documented, and R3
+      # correctly read that as a `proposed` status under-reporting shipped
+      # work. Flipping to `implemented` is not available either: R11 forbids
+      # `disposition: refuted` beside a claiming status, and rightly.
+      # `manual:` is the shape v0.69 used for RQ-69-PROSEGATE, the previous
+      # refutation, and it is the honest one.
+      done-when: "manual: the premise is tested against the LOG rather than the step name — a drifted anchor must be shown to already name both the drift and the remedy, and CI must NOT auto-re-anchor (which would mutate a committed ledger from CI or mask real drift)"

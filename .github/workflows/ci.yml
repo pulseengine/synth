@@ -3751,7 +3751,29 @@ jobs:
         run: pip install wasmtime unicorn pyelftools capstone pyyaml
       - name: "The checker's own tests — the reach-wide decision from both sides (RQ-66-DELETE)"
         run: python3 scripts/test_mutation_survey.py
-      - name: "Replay the pinned mutant subset (controls must die, survivors must reproduce)"
+        # RQ-71-MUTANTDRIFT (#1189) — REFUTED, and the record is here because a
+        # refutation nobody can find gets re-filed. v0.71 set out to make this
+        # job re-locate drifted anchors itself, on the premise that a drifted
+        # site "names neither the drift nor the remedy". MEASURED: it names
+        # both. A stale anchor does not resolve in `enumerate_sites()`, so the
+        # replay reports
+        #   "<id>: site no longer exists on this tree (re-anchor the ledger)"
+        # and `Edit` separately raises "site drifted: <id>" with have-vs-want.
+        # The premise came from reading this STEP NAME rather than the log.
+        #
+        # So CI deliberately does NOT re-anchor automatically. Doing so would
+        # either mutate a committed ledger from CI, or mask real drift behind a
+        # green run. A loud red naming the remedy is the better behaviour and
+        # is what already shipped.
+        #
+        # THE REMEDY, when this step reds on a drifted anchor:
+        #   python3 scripts/mutation_survey.py reanchor
+        # It re-locates every site by its stored `before` text. Do NOT reach for
+        # `pin-subset`: that RE-BASELINES coverage rather than re-locating a
+        # site, and silently accepts whatever the tree does now. After running
+        # it, check mutants/controls/ci_subset/UNTESTED are UNCHANGED — equal
+        # counts are what distinguishes a re-location from a re-baseline.
+      - name: "Replay the pinned mutant subset (controls must die, survivors must reproduce, anchors must still resolve — a drifted anchor reds here and is re-anchored, not re-baselined)"
         run: |
           set -euo pipefail
           python3 scripts/mutation_survey.py ci | tee mutants-ci.txt

@@ -580,7 +580,14 @@ class Edit:
         s, e = self.site["start"], self.site["end"]
         have = "\n".join(lines[s - 1:e])
         if have != self.site["before"]:
-            raise RuntimeError(f"site drifted: {self.site['id']}\n--have--\n{have}\n--want--\n{self.site['before']}")
+            raise RuntimeError(
+                f"site drifted: {self.site['id']}\n"
+                f"--have--\n{have}\n--want--\n{self.site['before']}\n"
+                f"REMEDY: `python3 scripts/mutation_survey.py reanchor` re-locates every\n"
+                f"site by its stored `before` text. Do NOT use `pin-subset` for this: it\n"
+                f"RE-BASELINES coverage instead of re-locating a site, which silently\n"
+                f"accepts whatever the tree does now."
+            )
         lines[s - 1:e] = self.text.split("\n")
         self.path.write_text("\n".join(lines))
         return self
