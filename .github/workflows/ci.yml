@@ -494,8 +494,30 @@ jobs:
           # "0 issue(s) authorised" — the exact reading a glob rot or a
           # version-key change produces — and nothing would notice, while the
           # closure gate downstream happily compared an empty set to an empty
-          # set and passed. The `[0-9]+` is what turns that into a red.
-          grep -qE '^issue-scope: v[0-9]+\.[0-9]+ — [0-9]+ issue\(s\) authorised' \
+          # set and passed.
+          #
+          # CORRECTED BY THE v0.72 GATE-POTENCY COLD REVIEW. The shipped pin
+          # was `[0-9]+` on the AUTHORISED COUNT, and the comment here claimed
+          # that was "what turns that into a red". It is not: `[0-9]+` matches
+          # `0`, so the pin passed on exactly the vacuous census it was added
+          # to catch. Only (B) "can it pass?" had been checked, never (A) "can
+          # it fail?".
+          #
+          # The naive repair — `[1-9][0-9]*` on that count, the shape the 17
+          # sibling pins in this step use — is WRONG HERE, and measuring
+          # v0.72's own history is what says so: the claiming count went
+          # 0 (the planning commit 1e9236d7) -> 1 -> 2 -> 3 -> 4 -> 5. Zero
+          # authorised is the LEGITIMATE plan-time state, so that pin would
+          # red every future planning PR.
+          #
+          # What must never be zero is the POPULATION the close-set was
+          # derived OVER. An empty population and a genuinely-empty answer
+          # print the same count and mean opposite things. So the line now
+          # carries `over N artifact(s)`, N is pinned `[1-9][0-9]*`, and the
+          # authorised count keeps `[0-9]+` because zero is a real answer.
+          # The held-open count is pinned too — RQ-72-ISLANDS' `outlives` on
+          # #1331 riding on it, previously unpinned entirely.
+          grep -qE '^issue-scope: v[0-9]+\.[0-9]+ over [1-9][0-9]* artifact\(s\) — [0-9]+ issue\(s\) authorised for closure by a delivered artifact, [0-9]+ held open' \
             /tmp/status-evidence.log
           # #1133 (RQ-62-ROADMAPGATE): the programme-status scan must have
           # RUN and covered a real population — a checker edit that drops
@@ -3733,8 +3755,17 @@ jobs:
           # restated here: which of the four legs accept a hard-float fixture was
           # not measured, and a derived-looking number nobody derived is this
           # programme's most persistent defect.
-          grep -Eq '^functions audited: 7249$' haa1189.txt
-          grep -Eq '^homes watched: 8314$' haa1189.txt
+          # RQ-72 cold review: these three moved because
+          # `litpool_islands_345_branchspan.wat` joined the corpus — ONE
+          # function compiled on FOUR legs, so +4 functions and +4 homes
+          # exactly, and the instructions that come with them. Derived from the
+          # run that went red, not adjusted until it passed: 7253 / 8318 /
+          # 224619. This is the movement the comment above already warns about
+          # ("that note added a fixture (+4 functions, +6 homes), which
+          # necessarily added instructions"), happening again and caught by the
+          # pin that exists for it.
+          grep -Eq '^functions audited: 7253$' haa1189.txt
+          grep -Eq '^homes watched: 8318$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -3742,7 +3773,7 @@ jobs:
           # 217081 could not still hold. Nothing caught it because no grep ever
           # read it: exactly the "a ratchet fixes the number and cannot fix the
           # prose" shape this project keeps paying for. Derived here: 217291.
-          grep -Eq '^attributed instructions: 220423 ' haa1189.txt
+          grep -Eq '^attributed instructions: 224619 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

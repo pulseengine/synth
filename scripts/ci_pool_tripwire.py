@@ -21,10 +21,10 @@ merge-wave transient.)
 
 MATCH THE LABEL EXACTLY, NEVER BY SUBSTRING
 -------------------------------------------
-A first pass at this counted `ubuntu` as a substring and reported 56/67. That
+A first pass at this counted `ubuntu` as a substring and reported 56/68. That
 swept in `ubuntu-24.04-arm`, which is a DIFFERENT hosted pool with its own
 queue, and inflated the number this lane exists to reduce — in the flattering
-direction. The honest figure is 55/67. Exact-label matching is not a style
+direction. The honest figure is 55/68. Exact-label matching is not a style
 preference here; it is the difference between a true and a false number.
 
 THE DEADLOCK GUARD
@@ -59,7 +59,7 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 #   vcr-sel-005-cross-backend-op-parity-gate. Each uses only
 #   checkout + rust-toolchain + cache, which is the shape `Clippy` (a
 #   REQUIRED context) has run on this pool with since increment 2. The programme's earlier
-#   readings were 56/65 (86.2%, #1062 increment 2) and 55/67 (82%) here — the
+#   readings were 56/65 (86.2%, #1062 increment 2) and 55/68 (81%) here — the
 #   share is falling because v0.71's musl job and v0.72's litpool-islands job
 #   were placed on the self-hosted pool rather than defaulting.
 UBUNTU_LATEST_CEILING = 52
@@ -182,6 +182,21 @@ def main():
             continue
         if not j.get("runs-on"):
             failures.append(f"DEADLOCK: required context `{c}` has no `runs-on:`.")
+            continue
+        # (v0.72 cold review, F3) A rename was caught; GATING THE JOB OFF was
+        # not — and a required context that never REPORTS is the same deadlock
+        # as one that does not exist, reached by a one-line `if:` instead of a
+        # rename. Demonstrated: adding
+        # `if: github.event_name == 'schedule'` to `Kani Verification` left
+        # this guard at rc=0 with 0 failures. No required job carries an `if:`
+        # today, so this is a latent class closed before it fires.
+        if j.get("if") is not None:
+            failures.append(
+                f"DEADLOCK: required context `{c}` carries an `if:` "
+                f"({j['if']!r}). A required NAME that is conditionally skipped "
+                f"never reports, and a never-reporting required context blocks "
+                f"every merge with no red to revert. Remove the condition, or "
+                f"retire the context from branch protection FIRST.")
             continue
         if pool_of(j.get("runs-on")) == EXACT_LABEL:
             on_hosted += 1

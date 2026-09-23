@@ -411,6 +411,14 @@ DISPOSITIONS = {"partial", "refuted", "deferred"}
 # `fields.get("disposition")` and nothing else, so declaring that an issue
 # outlives its artifact's delivery cannot trip it — the artifact keeps claiming
 # its own outcome, which is true, and says only that the ISSUE is wider.
+# The keys every consumer reads out of `fields:`. Kept beside the rule that
+# enforces their nesting (R13) so adding a new `fields.get(...)` read without
+# listing it here is a visible omission rather than a silent one.
+FIELD_KEYS = {
+    "disposition", "done-when", "issue", "issue-scope",
+    "landed", "shipped-in", "verified-by",
+}
+
 ISSUE_SCOPES = {"closes", "outlives"}
 
 
@@ -848,6 +856,29 @@ def load_release_artifacts(root: Path, release_glob: str):
             )
             continue
         for art in arts:
+            # R13 (v0.72 gate-potency cold review). A `fields:` key written one
+            # level too high is VALID YAML, a REAL key, and read by NOTHING —
+            # indistinguishable from absent. Not hypothetical: at the v0.71 cut
+            # `issue-scope: outlives` landed at an artifact's top level, passed
+            # an `assert count == 1`, a duplicate-key-strict load and all five
+            # gates, and changed nothing; only re-deriving the close-set caught
+            # it. The reviewer showed the hole was STILL open afterwards —
+            # moving `issue-scope` up one level flips an issue from
+            # deliberately-held-open to authorised-for-closure with every gate
+            # green, and `rivet validate` does not discriminate either.
+            #
+            # It has to be checked HERE because this is the only place the raw
+            # artifact mapping exists; every consumer downstream sees the
+            # flattened tuple, in which a mis-nested key has already vanished.
+            # A uniqueness assert guards the wrong TEXT, never the wrong PARENT.
+            for _k in sorted(FIELD_KEYS & set(art.keys())):
+                bad_files.append(
+                    f"R13 {art['id']}: `{_k}:` sits at the artifact's TOP "
+                    f"LEVEL in {path.name}, but every consumer reads it from "
+                    f"`fields:`. A key one level too high is valid YAML that "
+                    f"nothing reads — it breaks no invariant, so no other gate "
+                    f"can go red on it. Move it under `fields:`."
+                )
             out.append(
                 (
                     path,
@@ -1989,6 +2020,14 @@ def main() -> int:
     # step consumes. An all-history set would be 96 issues and read as noise.
     _cut = max((a[1] for a in artifacts), default=None)
     _auth, _held = authorised_close_set(artifacts, _cut)
+    # The POPULATION the close-set was derived over. Printed because the
+    # authorised count alone cannot distinguish "nothing is authorised yet"
+    # (the legitimate plan-time state, and v0.72's own history shows the
+    # count climbing 0 -> 5 across the release) from "the derivation ran over
+    # an EMPTY set" (a glob rot, a version-key change, or a newer release
+    # directory stealing `_cut`). Those two readings are identical in the
+    # answer and opposite in meaning, so the population is what CI pins.
+    _pop = sum(1 for a in artifacts if a[1] == _cut)
     print(
         f"status-evidence: {len(artifacts)} artifacts across {files} release "
         f"files, {hits} delivery commits matched, {preds} done-when "
@@ -1996,7 +2035,8 @@ def main() -> int:
         f"checks ({r7_skipped} skipped), {len(failures)} failures"
     )
     print(
-        f"issue-scope: v{_cut[0]}.{_cut[1]} — {len(_auth)} issue(s) authorised for closure by a "
+        f"issue-scope: v{_cut[0]}.{_cut[1]} over {_pop} artifact(s) — "
+        f"{len(_auth)} issue(s) authorised for closure by a "
         f"delivered artifact, {len(_held)} held open by `issue-scope: outlives` "
         f"(authorised: {' '.join('#' + str(n) for n in sorted(_auth)) or '-'})"
     )

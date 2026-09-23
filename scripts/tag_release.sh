@@ -74,5 +74,26 @@ echo "  GATE4 tagged commit signature: %G?=$GQ %GK=$GK rc=$G4"
   && echo "  PUSHED $VER" \
   || { echo "  REFUSED — not pushing $VER"; rm -rf "$SCR"; exit 1; }
 rm -rf "$SCR"
+
+# GATE5 — THE CLOSURE GATE IS ASKED, not echoed.
+#
+# v0.72's gate-potency cold review found that RQ-72-ISSUEGATE, the lane titled
+# "the closure gate now gets asked", left `issue_closure_check.py` with no
+# automated invocation at all: a doc section, a human checklist, and the two
+# lines BELOW — which printed the command instead of running it. The script was
+# fully potent; nothing ran it. That is the lane's own subject, one release
+# late, and the same release had already committed this file, so the gate was
+# one line from being asked.
+#
+# It runs AFTER the push on purpose. Before the tag exists there is nothing to
+# compare a close-set against, and the issues are closed after the release
+# workflows publish. So this is ADVISORY here — it reports, and the operator
+# acts on it — while the authoritative run is the one at the closing step,
+# after the issues have actually been closed.
+echo "  GATE5: asking the closure gate (advisory at this point — no issue is closed yet)"
+python3 "$ROOT/scripts/issue_closure_check.py" --release "$VER" --since-tag "$VER" \
+  --allow-unclosed || echo "  GATE5 reported findings above — act on them at the closing step"
+
 echo "  NEXT: assert RETRO CONFORMS after the release workflows publish, then"
-echo "        run scripts/issue_closure_check.py --release $VER --since-tag $VER"
+echo "        re-run scripts/issue_closure_check.py --release $VER --since-tag $VER"
+echo "        WITHOUT --allow-unclosed, once the issues it authorises are closed."

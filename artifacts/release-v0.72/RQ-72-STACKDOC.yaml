@@ -10,7 +10,12 @@ artifacts:
 
       WHAT v0.71 DELIVERED. #1341 asks for three things. Items 1 and 2 shipped:
       `synth compile --emit-stack-depth` emits a per-export maximum native stack
-      depth, and the number is recorded in the object (`synth-stack-v1`). Item 3
+      depth, and the number is written to a `synth-stack-v1` JSON sidecar BESIDE
+      the object, at `<output>.stack.json` — NOT into the ELF, which is
+      untouched (corrected by the v0.72 cold review; the first draft said
+      "recorded in the object", and an embedder who reads that goes looking
+      in the ELF. The delivered doc says "beside the object", so the
+      artifact contradicted its own deliverable). Item 3
       — a line in `docs/embedder-abi-relocatable-arm.md` under "Region
       requirements" — was scoped OUT, on the reasoning that the section already
       says under **Stack** "plain AAPCS — the embedder owns placement and size",
