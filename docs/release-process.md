@@ -46,7 +46,8 @@ an existing tag).
    decision". That decision was TAKEN in v0.58 — RQ-58-SHIPVERIFY (#1000, PR
    #1002) put `--features verify` on both the native and the `cross` build
    lines — and the sentence has been false for thirteen releases. Measured on
-   the published v0.70.0 x86_64 asset: 20 `ordeal` strings present and ZERO
+   the published v0.70.0 x86_64 asset: 19 `ordeal` byte-occurrences
+   (case-sensitive) and ZERO
    occurrences of the degraded-path message, so `synth verify` WORKS in a
    released binary. Historically the feature pulled `z3-sys` (a vendored C++ Z3
    build), which is why it was once excluded; since #553 it is pure Rust.

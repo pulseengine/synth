@@ -54,7 +54,9 @@ artifacts:
       follow-up decision". That decision was TAKEN in v0.58 — RQ-58-SHIPVERIFY
       (#1000, PR #1002) put `--features verify` on both the native and `cross`
       build lines — so the sentence had been false for thirteen releases.
-      Measured on the shipped v0.70.0 asset: 20 `ordeal` strings and ZERO
+      Measured on the shipped v0.70.0 asset: 19 `ordeal` byte-occurrences
+      (case-sensitive; 21 case-insensitively — the earlier text said "20",
+      which is neither, and the v0.71 cold review caught it) and ZERO
       occurrences of the degraded-path message, so `synth verify` works in a
       released binary. Nobody would have found this from the workflow alone;
       it surfaced because this lane had to read what the release actually
