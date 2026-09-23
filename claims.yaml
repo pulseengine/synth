@@ -1847,9 +1847,44 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 19538
+        value: 19604
         baseline: 17897
         waivers:
+          - to: 19604
+            reason: >-
+              RQ-71-VFPALIAS (#881/#1069): 19538 -> 19604, a RISE of 66, and it
+              adds NO lowering decision — no new arm, no new match case, no new
+              op handled. It records a fact the selector already computed so a
+              validator can stop being wrong about it.
+
+              Re-derived per file over the non-test region, added lines only
+              (nothing was removed), classified by line kind:
+              `instruction_selector.rs` +39 = 32 comment + 6 code + 1 blank (the
+              `vfp_frame_home_halves` field and its accessor);
+              `select_with_stack.rs` +27 = 15 comment + 11 code + 1 blank (the
+              block collecting `f32_frame`/`f64_frame` into that field).
+              47 + 17 + 2 = 66, and 19538 + 66 = 19604. The 17 code lines are a
+              HashMap-values collect, an f64 half expansion, a sort/dedup and
+              two struct initializers.
+
+              What buys it: VCR-RA-003's #881 VFP twin policed every `[sp,#off]`
+              VFP access, including the permanent home the #1069 rung gives an
+              overflow float local. There `local.set` IS the def, so a legal
+              wasm REDEFINITION writes the home again with a different value and
+              the compile was REFUSED as "a compiler bug" — from 14 homed f32
+              locals and 8 homed f64, the exact pressure that rung exists to
+              serve. v0.70 fixed the INTEGER twin (#1321, cpetig's
+              `falcon-cascade#step`) by scoping the check to allocator spill
+              AREAS. A range cannot carry the VFP twin: `alloc_vfp_local_frame_slot`
+              draws a home from the SAME pool as the operand-stack spills, so
+              homes and spill slots interleave and are range-indistinguishable.
+              The set therefore has to be enumerated where it is known — the
+              selector — which is why these lines are here and not in the
+              validator.
+
+              The ratchet counts hand-maintained DECISIONS. This adds none, and
+              it is a waiver rather than a re-baseline so the next rise needs its
+              own reason.
           - to: 19538
             reason: >-
               v0.70 COLD REVIEW: 19529 -> 19538, a RISE of 9, and every one of the
@@ -2549,7 +2584,11 @@ claims:
         # moves by exactly the region-scoped amount. `direction: track` owes no
         # waiver, but it does owe this line: the convention on this pin is that
         # every move is recorded, and the move was initially made without one.
-        value: 30131
+        # RQ-71-VFPALIAS (#881/#1069): 30131 -> 30197. The same +66 as
+        # `selector_lines_code` — all of it outside the test module — so the
+        # whole-file count moves by exactly the region-scoped amount again.
+        # `direction: track` owes no waiver; the reason is on the directed pin.
+        value: 30197
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

@@ -1,31 +1,34 @@
 ;; RQ-71-VFPALIAS (#881) — a FRAME-HOMED VFP local written TWICE.
 ;;
-;; The #1069 rung frame-homes an overflow f32 local from birth: `local.set`
+;; The #1069 rung frame-homes an overflow f32/f64 local from birth: `local.set`
 ;; stores to the local's PERMANENT [sp,#slot] and "the def IS the store"
-;; (instruction_selector.rs, the `f32_frame` arm). A wasm local may legally be
-;; redefined, so that slot legitimately holds two different values over the
-;; function's extent, with the first one dead.
+;; (instruction_selector.rs, the `f32_frame`/`f64_frame` arms). A wasm local may
+;; legally be redefined, so that slot holds several different values over the
+;; function's extent, with the earlier ones dead.
 ;;
-;; `check_vfp_slot_aliasing` (liveness.rs) polices EVERY `[sp,#off]` VFP
+;; `check_vfp_slot_aliasing` (liveness.rs) policed EVERY `[sp,#off]` VFP
 ;; store/reload. It excuses a re-store it can prove identical (`src_word` +
-;; `src_version`), but a redefinition is a DIFFERENT value, so it reports
-;; VfpSpillSlotAliased and the compile is REFUSED as "a compiler bug".
+;; `src_version`), but a redefinition carries a DIFFERENT value, so it reported
+;; VfpSpillSlotAliased and the compile was REFUSED as "a compiler bug" — the VFP
+;; twin of the #1321 false positive v0.70 fixed for the INTEGER check by scoping
+;; it to the allocator's own spill areas. A range could not carry the VFP twin:
+;; `alloc_vfp_local_frame_slot` draws a home from the SAME pool as the
+;; operand-stack spills, so homes and spill slots interleave.
 ;;
-;; This is the VFP twin of the #1321 false positive v0.70 fixed for the
-;; INTEGER check by SCOPING it to the allocator's own spill areas
-;; (`validate_final_allocation_in_areas`). The VFP twin never received that
-;; narrowing: it takes no areas parameter at all.
+;; Three legs per width, one variable — whether the second store carries a new
+;; value. `redef_none` doubles as the differential's POTENCY control: it is
+;; `redef_diff` minus the redefinition, so if the compiled code ever read the
+;; STALE home the two would return the same value. They must not.
 ;;
-;; Three legs, one variable — whether the second store carries a new value:
-;;   redef_none  NEGATIVE CONTROL: every local written once      -> compiles
-;;   redef_diff  local 24 rewritten with a DIFFERENT value       -> the red
-;;   redef_same  local 24 re-stored with the IDENTICAL value     -> compiles
-;;               (the `src_version` benign path, working as designed — it is
-;;                what proves the red is about REDEFINITION, not re-storing)
+;;   redef_none / _d   every local written once          (negative control)
+;;   redef_diff / _d   the last local rewritten, NEW value        (the red)
+;;   redef_same / _d   the last local re-stored, SAME value
+;;                     (the `src_version` path, working as designed)
 ;;
-;; All three need 24 locals so the base path exhausts and the backend's retry
-;; ladder engages the frame-home rung; `local 24` is high enough to be
-;; frame-homed rather than register-homed (the S7 cap).
+;; The f32 legs need 24 locals and the f64 legs 8 for the base path to exhaust
+;; and the backend's retry ladder to engage the frame-home rung; the rewritten
+;; local is the highest index, so it is frame-homed rather than register-homed
+;; (the S7/D3 cap).
 (module
   (func $redef_none (param f32) (result f32) (local f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32 f32)
     local.get 0
@@ -468,4 +471,157 @@
     local.get 24
     f32.mul)
   (export "redef_same" (func $redef_same))
+  (func $redef_none_d (param f64) (result f64) (local f64 f64 f64 f64 f64 f64 f64 f64)
+    local.get 0
+    f64.const 1.5
+    f64.mul
+    local.set 1
+    local.get 0
+    f64.const 2.5
+    f64.mul
+    local.set 2
+    local.get 0
+    f64.const 3.5
+    f64.mul
+    local.set 3
+    local.get 0
+    f64.const 4.5
+    f64.mul
+    local.set 4
+    local.get 0
+    f64.const 5.5
+    f64.mul
+    local.set 5
+    local.get 0
+    f64.const 6.5
+    f64.mul
+    local.set 6
+    local.get 0
+    f64.const 7.5
+    f64.mul
+    local.set 7
+    local.get 0
+    f64.const 8.5
+    f64.mul
+    local.set 8
+    local.get 1
+    local.get 2
+    f64.mul
+    local.get 3
+    f64.mul
+    local.get 4
+    f64.mul
+    local.get 5
+    f64.mul
+    local.get 6
+    f64.mul
+    local.get 7
+    f64.mul
+    local.get 8
+    f64.mul)
+  (export "redef_none_d" (func $redef_none_d))
+  (func $redef_diff_d (param f64) (result f64) (local f64 f64 f64 f64 f64 f64 f64 f64)
+    local.get 0
+    f64.const 1.5
+    f64.mul
+    local.set 1
+    local.get 0
+    f64.const 2.5
+    f64.mul
+    local.set 2
+    local.get 0
+    f64.const 3.5
+    f64.mul
+    local.set 3
+    local.get 0
+    f64.const 4.5
+    f64.mul
+    local.set 4
+    local.get 0
+    f64.const 5.5
+    f64.mul
+    local.set 5
+    local.get 0
+    f64.const 6.5
+    f64.mul
+    local.set 6
+    local.get 0
+    f64.const 7.5
+    f64.mul
+    local.set 7
+    local.get 0
+    f64.const 8.5
+    f64.mul
+    local.set 8
+    local.get 0
+    f64.const 99.25
+    f64.mul
+    local.set 8
+    local.get 1
+    local.get 2
+    f64.mul
+    local.get 3
+    f64.mul
+    local.get 4
+    f64.mul
+    local.get 5
+    f64.mul
+    local.get 6
+    f64.mul
+    local.get 7
+    f64.mul
+    local.get 8
+    f64.mul)
+  (export "redef_diff_d" (func $redef_diff_d))
+  (func $redef_same_d (param f64) (result f64) (local f64 f64 f64 f64 f64 f64 f64 f64)
+    local.get 0
+    f64.const 1.5
+    f64.mul
+    local.set 1
+    local.get 0
+    f64.const 2.5
+    f64.mul
+    local.set 2
+    local.get 0
+    f64.const 3.5
+    f64.mul
+    local.set 3
+    local.get 0
+    f64.const 4.5
+    f64.mul
+    local.set 4
+    local.get 0
+    f64.const 5.5
+    f64.mul
+    local.set 5
+    local.get 0
+    f64.const 6.5
+    f64.mul
+    local.set 6
+    local.get 0
+    f64.const 7.5
+    f64.mul
+    local.set 7
+    local.get 0
+    f64.const 8.5
+    f64.mul
+    local.set 8
+    local.get 8
+    local.set 8
+    local.get 1
+    local.get 2
+    f64.mul
+    local.get 3
+    f64.mul
+    local.get 4
+    f64.mul
+    local.get 5
+    f64.mul
+    local.get 6
+    f64.mul
+    local.get 7
+    f64.mul
+    local.get 8
+    f64.mul)
+  (export "redef_same_d" (func $redef_same_d))
 )

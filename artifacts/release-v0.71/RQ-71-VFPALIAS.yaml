@@ -1,61 +1,86 @@
 artifacts:
   - id: RQ-71-VFPALIAS
     type: system-req
-    title: "check_vfp_slot_aliasing carries the single-value-per-slot model over the VFP word file — the sibling of v0.70's headline, and NOT known to be clean"
+    title: "The #881 VFP twin refused a LEGAL wasm program: a frame-homed float local, redefined — the same class as v0.70's headline, and the red WAS buildable"
     description: >
       v0.70 fixed `VCR-RA-003` policing a wasm LOCAL'S frame home with a rule that
-      only holds for allocator SPILL SLOTS. `check_vfp_slot_aliasing` (#881) carries
-      the same premise over the VFP word file, and under the #1069 rung VFP locals
-      also get PERMANENT frame homes — the same shape, one tier over. v0.70 left it
-      untouched and said so: its traffic is `VStr`/`VLdr`, which the integer check
-      never matches.
+      only holds for allocator SPILL SLOTS (#1321, cpetig's `falcon-cascade#step`:
+      slot 184 = local 31, 78 writes / 76 reads, refused with no object emitted).
+      `check_vfp_slot_aliasing` (#881) carries the same premise over the VFP word
+      file, and under the #1069 rung VFP locals also get PERMANENT frame homes.
+      v0.70 left it untouched and said so.
 
-      THE REFUTING COMMAND WAS RUN, AND IT NARROWED THE CLAIM RATHER THAN
-      CONFIRMING IT. Reading `check_vfp_slot_aliasing`: unlike the integer check it
-      tracks a VALUE IDENTITY per half — `src_word` plus a `src_version` bumped on
-      every def — and treats a provably-identical re-store as benign:
+      THE PLAN SAID: START BY TRYING TO BUILD THE RED, and publish a REFUTATION if
+      it could not be built. IT COULD BE BUILT. The plan's own reading was right
+      about the narrow point — the VFP twin tracks a value identity per half
+      (`src_word` plus a `src_version` bumped on every def) and so already excuses
+      a redundant REFRESH that the integer check could not — and right that this
+      says nothing about the #1321 case. It is that second case that is real.
 
-          Some(prev) if !prev.owner_reloaded => {
-              if prev.src_word == src_word && prev.src_version == v {
-                  prev.shadowed          // same value re-stored: benign
-              } else {
-                  Some((prev.owner_store, i))
-              }
-          }
+      WHAT WAS MEASURED. Under the #1069 rung `local.set` IS a frame-homed local's
+      def and stores straight to its permanent `[sp,#slot]`
+      (`instruction_selector.rs`, the `f32_frame`/`f64_frame` arms — "the def IS
+      the store"). A legal wasm REDEFINITION therefore writes that home a second
+      time with a DIFFERENT value; `src_version` cannot excuse it, and the compile
+      was REFUSED:
 
-      So the VFP twin ALREADY defends the case the integer check could not: a
-      redundant REFRESH of one value. It does NOT defend the #1321 case — a local
-      home holding two DIFFERENT values over its lifetime, where `src_version`
-      legitimately differs and the store is a `local.set`, not an aliased spill.
+          VCR-RA-003: register-allocation validation FAILED —
+          VfpSpillSlotAliased { slot: 224, first_store: 80,
+                                overwriting_store: 83, stale_reload: 122 }
+          ... this is a compiler bug, not a program error.
 
-      THE LANE IS THEREFORE REAL BUT SMALLER AND SHARPER than "the same class one
-      tier over", which is what it would have been scoped as without running the
-      command. The only open question is whether a frame-homed VFP local under the
-      #1069 rung produces two differently-versioned stores to one half with no
-      intervening reload — and if it does, whether the fix is the same SCOPE
-      narrowing v0.70 applied (police allocator areas, not local homes) or whether
-      the version tracking already makes the narrowing unnecessary.
+      Three legs per width, one variable — whether the second store carries a new
+      value. `redef_none` compiled, `redef_diff` was REFUSED, `redef_same` compiled
+      (the `src_version` path, working as designed, which is what proves the red is
+      about REDEFINITION and not about re-storing). Refused from 14 homed f32
+      locals and from 8 homed f64 — the exact pressure the #1069 rung exists to
+      serve, jess's measured `attitude#tick` / `ekf#estimate` wall.
 
-      START BY TRYING TO BUILD THE RED. If a fixture cannot be constructed that
-      makes `check_vfp_slot_aliasing` report `VfpSlotAliased` on a legal
-      two-value local home, the class does not exist there and this artifact
-      publishes that as a REFUTATION — which is a result, not a failure. v0.70's
-      own headline began as a fix that was thrown away; a lane that ends in "we
-      looked and it was clean" is cheaper than the same question asked again in
-      v0.72.
+      NOT a miscompile: the failure is a LOUD refusal, no object emitted. It is a
+      REACH defect — ordinary wasm that synth declines to compile — and it sat
+      behind the rung that was added to accept exactly this pressure.
 
-      THE MACHINE'S HALF OF THIS IS `file:scripts/repro/vfp_alias_881.wat`. The full obligation is:
-      a fixture is built that makes check_vfp_slot_aliasing report VfpSlotAliased on a LEGAL two-value VFP local home and the check is narrowed the way VCR-RA-003 was — or the attempt is published as a REFUTATION naming the src_version mechanism that makes the class unreachable, with the fixture that failed to trip it committed either way
-      The predicate cannot express all of that — it checks that the artefact
-      EXISTS, not that it is right. It is still worth having: v0.70 measured
-      that four releases running declared 100% `manual:` done-when, which R3
-      can never fire on, and printed that as though it were evaluation.
+      THE FIX IS THE SAME IDEA AS v0.70'S AND NOT THE SAME MECHANISM, because the
+      mechanism does not transfer. v0.70 scoped the integer check to allocator
+      spill AREAS. A range cannot carry the VFP twin: `alloc_vfp_local_frame_slot`
+      draws a home from the SAME pool as the operand-stack spills
+      (`SpillState::alloc`), so homes and spill slots interleave and are
+      range-indistinguishable. The selector therefore ENUMERATES the home halves it
+      granted (`vfp_frame_home_halves`, one entry per f32 home and two per f64),
+      and the check skips exactly those. Excluding them loses no #331 coverage: a
+      home is allocated once and NEVER freed, so the allocator can never hand that
+      offset out as a spill slot later — there is no spill there to alias.
 
-    status: proposed
+      WHY A NARROWING NEEDS MORE EVIDENCE THAN A FIX. It converts a LOUD refusal
+      into silence, so "it compiles now" is a fact about the validator, not about
+      the emitted code, which had never executed. Four things were required and
+      produced: (1) EXECUTION — 84 emulations bit-identical to wasmtime under
+      unicorn on `-t cortex-m7dp --relocatable`; (2) a POTENCY GATE inside that
+      oracle — `redef_none` is `redef_diff` minus the redefinition, so a STALE home
+      read would make the two agree, and the gate asserts they do not (it rejected
+      the first input list, where a 24-term product underflowed to 0.0 and made the
+      comparison vacuous); (3) POTENCY UNIT PINS on the narrowing itself — one
+      aliasing stream under four scopings, proving it is exactly as wide as the set
+      it is handed, that `Some(&[])` does NOT silence, and that declaring only an
+      f64 home's base half leaves its hi half policed; (4) BYTE IDENTITY — the
+      negative control emits the same 692 bytes, sha256 `d961faa6…`, before and
+      after, because the narrowing only inspects.
+
+      FILED AS #1354, because #881 / #1069 / #1321 are all closed and a reach
+      defect that refuses legal wasm needs a record an outsider can check — the
+      same role #1321 played for the integer twin.
+
+      COST, RECORDED: the selector ratchet rose 19538 -> 19604 (+66 = 47 comment +
+      17 code + 2 blank, re-derived per file), waived in the same PR. No lowering
+      decision was added; the lines record a fact the selector already knew so the
+      validator can stop being wrong about it.
+
+    status: implemented
     release: v0.71
     tags:
       - vcr
       - checker-model
+      - reach
       - feature-loop
     links:
       - type: derives-from
@@ -65,4 +90,5 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#881"
-      done-when: "file:scripts/repro/vfp_alias_881.wat"
+      landed: "#1354"
+      done-when: "contains:.github/workflows/ci.yml:vfp_home_redef_881_differential.py"

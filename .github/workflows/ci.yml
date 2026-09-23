@@ -2191,6 +2191,18 @@ jobs:
       # any mixup flips result bits).
       - name: Run frame-homed VFP locals oracle (#1069, m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_local_pressure_1069_differential.py
+      # RQ-71-VFPALIAS (#881/#1069): the twin narrowing's execution half. The
+      # #881 VFP slot-aliasing check policed EVERY `[sp,#off]` VFP access,
+      # including the permanent home the #1069 rung gives an overflow local —
+      # where `local.set` IS the def, so a legal wasm REDEFINITION writes it
+      # again with a different value and was refused as "a compiler bug"
+      # (measured: f32 from 14 homed locals, f64 from 8). Narrowing the check
+      # to exclude declared homes turns that LOUD refusal into silence, so this
+      # oracle supplies what compiling cannot: the emitted code is right.
+      # Gate 2 is the potency control — `redef_none` is `redef_diff` minus the
+      # redefinition, so a STALE home read would make the two agree.
+      - name: Run redefined frame-home VFP oracle (#881/#1069, m7dp)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_home_redef_881_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values
