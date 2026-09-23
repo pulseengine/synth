@@ -527,9 +527,9 @@ def authorised_close_set(artifacts, only_version: tuple | None = None):
 # a wrong hand-copy fails A1/A2 in the same PR. claims.yaml pins the three
 # lines verbatim (SYNTH-STATUS-EVIDENCE-ANCHOR-1183) so every move is a
 # visible ledger diff, and pins that the `!=` checks stay wired.
-ANCHOR_TAG = "v0.70.0"
-ANCHOR_DELIVERY = 90
-ANCHOR_PROGRAMME = 451
+ANCHOR_TAG = "v0.71.0"
+ANCHOR_DELIVERY = 96
+ANCHOR_PROGRAMME = 459
 # A3-programme waiver channel, empty by construction: the programme count has
 # never decreased at any of the 129 first-parent commits touching artifacts/
 # since v0.56.0 (measured). A deliberate net deletion declares its size here

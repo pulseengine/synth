@@ -1,0 +1,91 @@
+artifacts:
+  - id: RQ-72-ISSUEGATE
+    type: system-req
+    title: "v0.71 built a closure gate, proved every rule fires, and never wired it to anything — the gate nobody asks"
+    description: >
+      RQ-71-ISSUESCOPE shipped `scripts/issue_closure_check.py`. Its rules were
+      proven to fire by mutation — nine planted defects, eight killed — and it
+      replays v0.70's real five-issue closure correctly. It has NO INVOCATION
+      SITE.
+
+      MEASURED 2026-09-23, repo-wide excluding `.git`: the only references are
+      its own docstring, its unit test, one prose line inside
+      `status_evidence_check.py`, and `ci.yml:514` — which runs the TEST, not the
+      CHECK. Its `done-when` reads
+      `contains:.github/workflows/ci.yml:test_issue_closure_check.py`, so it pins
+      THE TEST'S PRESENCE IN A YAML FILE. The comparison it exists to perform is
+      run by a human, by hand, at the tag.
+
+      That is v0.70's "counted declarations and printed them as evaluation" one
+      layer out. Not a gate that cannot fail — a gate nothing ever asks.
+
+      AND ITS SIBLING RULE HAS NO COVERAGE. R12, added to
+      `status_evidence_check.py` by the same release, is the ONLY rule in that
+      file without a unit test: R0 has 11, R1 7, R2 7, R3 4, R4 32, R5 6, R6 2,
+      R7 20, R8 17, R9 10, R10 10, R11 7, R12 ZERO. Measured from the repo root
+      with sha-verified restore, disabling R12's vocabulary branch leaves BOTH
+      suites rc=0.
+
+      RECORDED BECAUSE THE WRONG MEASUREMENT WAS THE COMFORTABLE ONE: the first
+      attempt at that check ran the suites from the scratchpad rather than the
+      repo root, both went red for an unrelated reason, and it LOOKED like the
+      finding was refuted. Re-run correctly it confirmed it. A measurement that
+      happens to exonerate you is the one to repeat.
+
+      FOUR DELIVERABLES, all from the v0.71 cold review, all measured:
+        (a) INVOKE the closure check at the tag, from the documented release
+            process, and re-point its done-when at the invocation rather than at
+            the test's presence;
+        (b) give R12 unit coverage;
+        (c) pin the `issue-scope:` census line in ci.yml — it is the ONLY line in
+            that step without a grep pin, while `status-evidence:`,
+            `programme-status:`, `programme-staleness:`, `floor-prose:`,
+            `status-evidence-anchor:` and `status-evidence-window:` all have one.
+            It could print "0 issue(s) authorised" and nothing would notice;
+        (d) the v0.70 "frozen replay" is not frozen. It reads live, editable
+            artifacts, and v0.71 is what made it pass, by retroactively adding
+            `issue-scope: outlives` to two shipped v0.70 artifacts. It IS
+            load-bearing — deleting those two lines reds four assertions — but
+            the docstring's claim that it "cannot go vacuous as the programme
+            moves on" is false of the mechanism. Freeze it or restate it.
+
+        (e) AND THE GATE MAKES A FALSE STATEMENT, found by RUNNING IT at the
+            v0.71 tag rather than by reading it. `closed` comes from
+            `closed_since(tag)` — "issues closed AT OR AFTER the tag's
+            creation". An authorised issue closed BEFORE the tag is therefore
+            absent from that set, and the gate reports
+
+              FAIL AUTHORISED BUT NOT CLOSED: #1250 — RQ-71-ISSUESCOPE is
+              delivered and entitles the release to close it
+
+            while `gh issue view 1250 --json state` says CLOSED (2026-09-17).
+            The sentence is false about the issue; it is true only about the
+            window. The docstring anticipated the opposite skew — "a closure can
+            legitimately lag a tag by minutes" — and `--allow-unclosed`
+            downgrades it to a warning, which HIDES the false statement rather
+            than correcting it. Fix: an authorised issue that is CLOSED, whenever
+            it closed, satisfies the obligation; compare STATE, and keep the
+            window only for the closed-but-not-authorised direction, where "who
+            closed it during this release" is the question actually being asked.
+
+      ALSO NOTED, not a deliverable: `issue: "#1250"` on RQ-71-ISSUESCOPE points
+      at an issue CLOSED 2026-09-17 for a different defect (RQ-68-STATUSGATE's).
+      The lane has no live tracker. Decide whether it needs one before the field
+      is used to authorise anything else.
+
+    status: proposed
+    release: v0.72
+    tags:
+      - gate-potency
+      - release-gate
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1250"
+      done-when: "contains:docs/release-process.md:issue_closure_check.py"
+      verified-by: "The mechanical half names the RELEASE PROCESS step, not the script and not its test — because the whole finding is that the script exists and nothing asks it. R12's coverage is evidenced red-first the way every other rule in that file is: disable the rule, watch the suite red, restore with a sha check."

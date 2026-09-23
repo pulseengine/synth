@@ -1,0 +1,82 @@
+artifacts:
+  - id: RQ-72-ARM64MUSL
+    type: system-req
+    title: "#1349 names two musl triples and v0.71 shipped one — the arm64 payload still sets the varve layer's portability floor the x86_64 one no longer does"
+    description: >
+      HELD OPEN ON THE v0.71 TAG via `issue-scope: outlives` on RQ-71-MUSL, so
+      `issue_closure_check` refuses to close #1349 while this is outstanding.
+
+      WHAT #1349 ASKED FOR, quoted rather than summarised: "Add the two musl
+      targets to this repo's release matrix, alongside the existing gnu ones:
+      x86_64-unknown-linux-musl / aarch64-unknown-linux-musl."
+
+      WHAT v0.71 SHIPPED, measured at the cut by reading the matrix rather than
+      the artifact's prose:
+
+        python3 - <<'PY'   # every `target:` in .github/workflows/release.yml
+        x86_64-unknown-linux-gnu
+        aarch64-unknown-linux-gnu
+        x86_64-unknown-linux-musl     <- the one that landed
+        x86_64-apple-darwin
+        aarch64-apple-darwin
+        linux-x86
+        PY
+
+      There is no `aarch64-unknown-linux-musl`. So an arm64 Alpine or
+      `distroless-static` consumer — the case #1349 was filed from, by the varve
+      side where the floor is visible — is still unserved.
+
+      WHY IT IS NOT "HALF THE WIN". A varve layer's portability is the MAXIMUM
+      floor across its payloads, not the average. The arm64 payload is still
+      `aarch64-unknown-linux-gnu` with a glibc floor, so the layer's floor is
+      unchanged by v0.71 for any consumer that needs both arches. The x86_64
+      musl asset removes the floor for x86_64-only consumers and for nobody
+      else. Stating that plainly is the difference between an honest partial and
+      a claimed win.
+
+      WHAT THIS NEEDS THAT v0.71's LANE DID NOT. The x86_64 musl job builds
+      natively on `[self-hosted, linux, x64, rust-cpu]`. aarch64 musl needs a
+      cross path, and the release workflow's existing aarch64 story is
+      `gcc-aarch64-linux-gnu` + `qemu-user` under `SYNTH_RUNNER` — a GNU
+      sysroot, which is the wrong libc for this target. So this is a new
+      toolchain question, not a matrix row: either a musl cross toolchain, or
+      `cross`, or an arm64 runner. MEASURE WHICH BEFORE SCOPING.
+
+      REUSE, DO NOT REINVENT: `scripts/elf_static_check.py` already reads
+      PT_INTERP from the ELF directly rather than grepping `file`'s wording —
+      which is the correction v0.71's cold review forced, because rustc's musl
+      target sets `crt-static-default` + `static-position-independent-executables`
+      and so emits a `-static-pie` that `file` never calls "statically linked".
+      That checker is arch-agnostic and is the verification for this target too.
+
+      WHAT WOULD MAKE THIS WRONG TO BUILD. If the aarch64 musl binary cannot be
+      EXECUTED in CI (the existing arm64 assets are exercised under
+      `qemu-aarch64`), then the asset ships unverified beyond its ELF shape, and
+      an unexecuted release asset is how a broken artifact reaches a consumer.
+      Check that `qemu-aarch64` can run a static-pie musl binary WITHOUT the
+      `-L /usr/aarch64-linux-gnu` sysroot before promising execution evidence;
+      if it cannot, say so and ship the ELF-property check alone, named as the
+      weaker claim it is.
+    status: proposed
+    release: v0.72
+    tags:
+      - release-engineering
+      - portability
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1349"
+      done-when: "contains:.github/workflows/release.yml:aarch64-unknown-linux-musl"
+      verified-by: >-
+        The predicate names the RELEASE MATRIX, because the ask is an asset that
+        ships and a matrix entry is what makes one. It is deliberately not a
+        grep for the triple anywhere in the repo, which a comment would satisfy.
+        The asset's static-ness is verified by scripts/elf_static_check.py,
+        already proven in both directions at v0.71 (it refuses the real v0.70.0
+        gnu asset on PT_INTERP + 17 GLIBC_ symbols, and accepts a synthesised
+        static-pie at rc=0).

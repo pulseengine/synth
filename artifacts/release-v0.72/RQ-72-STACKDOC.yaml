@@ -1,0 +1,85 @@
+artifacts:
+  - id: RQ-72-STACKDOC
+    type: system-req
+    title: "v0.71 shipped the stack-depth number and left the page the embedder reads silent — #1341 item 3, the half cpetig said would have saved the investigation"
+    description: >
+      HELD OPEN ON THE v0.71 TAG, deliberately and mechanically:
+      RQ-71-STACKDEPTH carries `issue-scope: outlives`, so `issue_closure_check`
+      refuses to close #1341 while this is outstanding. That is the first time
+      that field has had a live user, and this artifact is the reason it does.
+
+      WHAT v0.71 DELIVERED. #1341 asks for three things. Items 1 and 2 shipped:
+      `synth compile --emit-stack-depth` emits a per-export maximum native stack
+      depth, and the number is recorded in the object (`synth-stack-v1`). Item 3
+      — a line in `docs/embedder-abi-relocatable-arm.md` under "Region
+      requirements" — was scoped OUT, on the reasoning that the section already
+      says under **Stack** "plain AAPCS — the embedder owns placement and size",
+      so "the words are not missing; the gap is that no NUMBER is offered".
+
+      THAT REASONING WAS RIGHT WHEN WRITTEN AND IS NOW STALE, which is the whole
+      point of re-running a refuting command at the cut rather than trusting the
+      plan. The deferral's premise was "there is no number to point at". Items
+      1/2 shipping DISSOLVED that premise: there is now a number, a flag that
+      emits it and a sidecar that carries it, and the page an embedder actually
+      reads mentions none of them.
+
+      REFUTING COMMANDS, run at the v0.71 cut (2026-09-23), all three agreeing:
+
+        git diff --stat v0.70.0..HEAD -- docs/embedder-abi-relocatable-arm.md
+          -> EMPTY. The file is untouched by the entire release.
+        grep -c 'stack depth\|synth-stack-v1\|emit-stack-depth' \
+            docs/embedder-abi-relocatable-arm.md
+          -> 0
+        sed -n '107,143p' docs/embedder-abi-relocatable-arm.md
+          -> the **Stack** bullet offers no number and no pointer to the flag.
+
+      WHY THIS IS A MUST AND NOT A DOC CHORE. cpetig's own words on #1341:
+      "Even 'the embedder must size this itself, synth does not bound it' would
+      have saved the investigation." The investigation it would have saved cost
+      them four flash/crash cycles chasing the logging path, the print format
+      and out-of-bounds writes, while `dump_stackinfo: size: 00001984` sat in
+      the first fault dump. Under v0.71's theme — "the number the consumer
+      needs" — a number the consumer cannot discover is the theme half-done.
+
+      SCOPE, three parts, and the third is why this needs measuring rather than
+      writing. The **Stack** bullet gains (a) the existence of
+      `--emit-stack-depth` and the `synth-stack-v1` sidecar; (b) what the number
+      covers and what it does NOT — it is a MAX over the DIRECT call graph, and
+      `call_indirect`, recursion and external calls LOUD-DECLINE rather than
+      under-report, so the absence of a number is itself information; and (c)
+      what the embedder must still add ON TOP, namely the interrupt and
+      exception frames the RTOS pushes on that same stack, which synth does not
+      model and cannot see. (c) is the part that makes this more than a
+      cross-reference: an embedder who reads synth's number as the whole
+      requirement and sizes the region to it exactly will fault under interrupt
+      load, which is the SAME failure #1341 reported, re-introduced by the fix
+      for it.
+
+      WHAT WOULD MAKE THIS WRONG TO BUILD. If `--emit-stack-depth` DECLINES on
+      cpetig's actual module shape, the doc must say the number is unavailable
+      for that shape rather than describe a number they cannot get. Run the flag
+      against the committed fixture BEFORE writing the prose, and quote what it
+      actually prints — the recurring class this programme keeps re-learning is
+      a number measured against something other than the thing it names.
+    status: proposed
+    release: v0.72
+    tags:
+      - embedder-abi
+      - documentation
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: documentation
+      issue: "#1341"
+      done-when: "contains:docs/embedder-abi-relocatable-arm.md:--emit-stack-depth"
+      verified-by: >-
+        The predicate names the CONSUMER-FACING page, not the flag's
+        implementation and not a test, because the finding is precisely that the
+        implementation exists and the page does not mention it. A grep that
+        passes proves the cross-reference landed; parts (b) and (c) of the scope
+        are prose a reviewer must read, and are called out here rather than
+        pretended to be mechanical.

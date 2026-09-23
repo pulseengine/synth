@@ -1,0 +1,83 @@
+artifacts:
+  - id: RQ-72-ISLANDS
+    type: system-req
+    title: "cpetig's 50722-byte function has a literal pool it cannot reach by construction — one pool per function, appended at the end, and Thumb-2 LDR(literal) reaches 4 KB"
+    description: >
+      CARRIED FROM v0.71, where it was deferred for SIZE and not for absence —
+      and that distinction is itself a v0.71 cold-review correction worth
+      restating, because the artifact first claimed the fix was blocked on
+      machinery that does not exist. It cited
+
+        grep -nE 'fn [a-z_]*(relax|fixup|patch)' crates/synth-backend/src/arm_backend.rs
+
+      which prints NOTHING and exits 1. A grep that matches nothing is not
+      evidence of absence; it is evidence the grep was wrong. `resolve_label_branches`
+      IS a branch-relaxation pass with a size fixed point, and it DOES run on
+      the `--relocatable` path. THE MACHINERY EXISTS. Do not re-file this as
+      "needs a relaxation pass built from scratch".
+
+      ALL LINE NUMBERS RE-MEASURED ON MAIN AT 87fb06d7 (2026-09-23), because
+      v0.71's own edits to this file moved them and stale anchors are this
+      programme's most-repeated defect:
+
+        arm_backend.rs:1745   `if imm12 > 0xFFF {`      (the refusal)
+        arm_backend.rs:2361   `fn resolve_label_branches(`   (was 2333 in v0.71)
+        arm_backend.rs:1477   call site                     (was 1468)
+        arm_backend.rs:1600   call site                     (was 1590)
+        arm_backend.rs:1624   "#345: literal-pool address loads"
+        arm_backend.rs:1638   "the literal pool is appended at [the end]"
+
+      THE REFUSAL IS CORRECT AND MUST STAY. Thumb-2 LDR(literal) genuinely
+      carries a 12-bit unsigned offset. Failing beats miscompiling, and v0.70's
+      whole f32 win was won by keeping refusals loud. What is WRONG is the
+      assumption in the comment beside it — "these function bodies are far
+      smaller" — combined with the placement decision at 1624/1638: ONE pool per
+      function, APPENDED AT THE END. So in a 50722-byte function every `LdrSym`
+      more than 4 KB from that end is unreachable BY CONSTRUCTION, not by bad
+      luck. The bigger the function, the larger the fraction of it that cannot
+      reach its own pool.
+
+      THE LANE IS CONSTANT ISLANDS (LLVM's ARMConstantIslandPass shape): split
+      the single trailing pool into multiple pools placed WITHIN reach of their
+      referents, at points where control flow does not fall through them.
+      `resolve_label_branches` already owns the hard part — iterating to a size
+      fixed point as placement changes instruction sizes — so this is an
+      extension of an existing pass, not a new one.
+
+      WHO IS BLOCKED: cpetig, a REAL EXTERNAL reporter, on their own module.
+      They CONFIRMED v0.70's f32 fix on it ("the f32 static-data declines are
+      gone", rc=0, 21 functions, 0 skipped, 68374 B code, verify-embedder OK)
+      and then named this wall themselves as the next one. v0.71 shipped them a
+      stack-depth number for the same module; this is the thing that stops the
+      module compiling at all on the `--native-pointer-abi` route.
+
+      WHAT WOULD MAKE THIS WRONG TO BUILD, and it is the real risk: moving pool
+      placement MOVES EMITTED BYTES for every module that already compiles. This
+      repo's own rule is that a deletion or motion that moves bytes without an
+      oracle proving the new bytes correct is REFUSED, not explained. So the
+      execution differential comes FIRST and must cover modules whose pools
+      already fit — byte-identity on those is the negative control that proves
+      the change is confined to the shapes it is meant to fix.
+    status: proposed
+    release: v0.72
+    tags:
+      - arm-backend
+      - reach
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: system
+      priority: must
+      verification-track: differential
+      issue: "#345"
+      done-when: "file:scripts/repro/litpool_islands_345_differential.py"
+      verified-by: >-
+        The predicate names a DIFFERENTIAL, not the pass, because this lane's
+        whole risk is moved bytes: the oracle must show the previously-refused
+        function compiling AND executing bit-identically to wasmtime, and must
+        show byte-identity on modules whose pools already fit. v0.71 committed
+        scripts/repro/litpool_islands_345.py, which pins the REFUSAL; this
+        extends it to the accept side. A pass landing without the byte-identity
+        control is refused.

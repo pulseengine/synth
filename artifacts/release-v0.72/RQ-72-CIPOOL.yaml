@@ -1,0 +1,88 @@
+artifacts:
+  - id: RQ-72-CIPOOL
+    type: system-req
+    title: "Four required contexts stall every release on a pool that idles beside twelve free machines — five others finish in four minutes"
+    description: >
+      RAISED BY THE MAINTAINER during the v0.71 cut ("Any reasons why you choose
+      the gh runners and not ours this is queuing up") and then MEASURED on
+      v0.71's own rounds rather than assumed.
+
+      THE MEASUREMENT, run 35823595867, 66 jobs. The 8 self-hosted jobs ALL
+      completed between 05:44:43 and 05:48:47 — about four minutes. Then nothing
+      started for 25 minutes with 55 queued. Two samples 45s apart both read
+      queued=55 running=0 done=11, so a sustained stall and not a point reading.
+      It recurred: on run 35837258069, three samples 50s apart all read
+      queued=57 running=0 done=9, with ONE job completing in eleven minutes.
+
+      THE SHARPEST DATUM, taken on run 35837258069 while v0.71's last lane sat
+      blocked: of ELEVEN completed jobs, EIGHT were self-hosted and THREE were
+      macOS/arm. ZERO were `ubuntu-latest`. All FIFTY-FIVE queued jobs were
+      `ubuntu-latest`. The hosted x64 Linux pool contributed nothing to that
+      round at all, while holding 4 of the 9 required contexts.
+
+      AND IT IS NOT A DEAD POOL, which is the part that makes this a capacity
+      problem rather than an outage: the SAME branch's Spec Suite run had an
+      `ubuntu-latest` job complete at 09:51:41, six minutes before that reading.
+      The pool schedules; this run simply gets no slots. Checked and excluded:
+      the Spec Suite run was already finished (queued=0 running=0) and is NOT a
+      required context, so it was not the competitor either.
+
+      THE SPLIT IS THE FINDING. Of the nine required contexts:
+
+        self-hosted, ALL GREEN IN FOUR MINUTES
+          Format, Clippy, Claim Check, Version Pin Sweep, Rivet Validation
+        hosted, ALL STALLED
+          Test, Z3 Verification, Bazel Build & Proofs, Kani Verification
+
+      Those four are EXACTLY the residual RQ-61-CICAP (#1062) named and
+      deliberately did not move: "per-toolchain questions (apt llvm, bazel+nix,
+      z3, kani), each needing its own proof on that pool". That scoping was right
+      when it was written. What changed is that it is now the critical path.
+
+      WHY IT IS A MUST AND NOT A CONVENIENCE. CHECK3b requires ZERO non-advisory
+      pending, so a release waits on ALL 66 jobs, not merely the required nine.
+      v0.71 needed FOUR full rounds after rebases and not one completed inside a
+      working session. The bottleneck is the GitHub-hosted quota, not the fleet:
+      56 of ci.yml's 67 jobs target a pool that stalls while a dozen machines
+      sit idle.
+
+      MEASURED ON THIS RELEASE, not inferred: RQ-71-MUSL's new job was written
+      for `ubuntu-latest` out of habit, moved to
+      `[self-hosted, linux, x64, rust-cpu]` after the maintainer's question, and
+      passed first time on `pulseengine-ci-01-12` in 3m38s.
+
+      WHY IT IS NOT A BATCH, and the reason this lane is careful rather than
+      quick: retargeting a REQUIRED context is the one move that can DEADLOCK
+      merges — a required name that never runs blocks every PR forever. So it is
+      ONE TOOLCHAIN PER PR, each proven green on the pool for several
+      consecutive main runs before the next, exactly as RQ-61-CICAP moved
+      Clippy. Order by stall cost, cheapest toolchain first.
+
+      AND THE NON-REQUIRED ORACLE JOBS ARE NOT THE EASY HALF. They
+      `pip install wasmtime unicorn pyelftools capstone` and need
+      `arm-none-eabi-ld` — system-package installs, which is precisely the
+      predicate RQ-61-CICAP used to exclude them. Moving them needs the same
+      per-toolchain proof; a non-required job that silently never runs blocks
+      CHECK3b just as hard.
+
+      A TRIPWIRE IS PART OF THE DELIVERABLE, not an afterthought: a NEW job
+      defaulting to `ubuntu-latest` makes this worse for every other lane, and
+      v0.71 added one by copying the surrounding convention without thinking
+      about capacity. Nothing catches that today.
+
+    status: proposed
+    release: v0.72
+    tags:
+      - ci-capacity
+      - release-gate
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: measurement
+      issue: "#1062"
+      done-when: "contains:scripts/ci_pool_tripwire.py:ubuntu-latest"
+      verified-by: "The MECHANICAL half names the tripwire, because it is the half that survives this lane: a new job defaulting to the stalled pool must be caught by something other than a maintainer noticing. The MOVE itself cannot have a file-existence predicate — `runs-on` changing in ci.yml proves the edit, not that the toolchain works there — so it is evidenced by the queue-wait measured before and after on the same PR shape, and by the retargeted context being green on several consecutive main runs BEFORE it is relied on."
