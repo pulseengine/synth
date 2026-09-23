@@ -30,18 +30,27 @@ an existing tag).
    synth-cli`) for a host matrix:
    - `x86_64-unknown-linux-gnu`
    - `aarch64-unknown-linux-gnu` (via `cross`)
+   - `x86_64-unknown-linux-musl` — **the portable payload**, statically
+     linked (RQ-71-MUSL, #1349; see *Linux portability* below)
    - `x86_64-apple-darwin`
    - `aarch64-apple-darwin`
 
    Each target is stripped, packaged as `synth-<version>-<target>.tar.gz`
    (with `README.md` + `LICENSE`), and uploaded as a workflow artifact.
 
-   The build uses only the `riscv` feature (the workspace default). The
-   `verify` feature is **not** enabled — historically it pulled `z3-sys`
-   (vendored C++ Z3 build); since #553 it is pure Rust (ordeal engine), so
-   enabling it in release builds is now feasible but remains a deliberate
-   follow-up decision. The CLI degrades gracefully: `synth verify` without
-   the feature fails loudly with "rebuild with `--features verify`".
+   The build enables the `verify` feature on every target
+   (`cargo build --release -p synth-cli --features verify`).
+
+   CORRECTED v0.71 (RQ-71-MUSL). This paragraph said the `verify` feature was
+   **not** enabled and that turning it on "remains a deliberate follow-up
+   decision". That decision was TAKEN in v0.58 — RQ-58-SHIPVERIFY (#1000, PR
+   #1002) put `--features verify` on both the native and the `cross` build
+   lines — and the sentence has been false for thirteen releases. Measured on
+   the published v0.70.0 x86_64 asset: 19 `ordeal` byte-occurrences
+   (case-sensitive) and ZERO
+   occurrences of the degraded-path message, so `synth verify` WORKS in a
+   released binary. Historically the feature pulled `z3-sys` (a vendored C++ Z3
+   build), which is why it was once excluded; since #553 it is pure Rust.
 
 2. **`create-release`** — collects all archives, then:
    - Generates a CycloneDX 1.5 JSON SBOM for the synth toolchain via
@@ -64,6 +73,60 @@ an existing tag).
 4. **`release-npm.yml`** (chained via `workflow_run` after `release.yml`
    completes) — publishes the `@pulseengine/synth` npm wrapper. See the
    "npm distribution channel" section below.
+
+## Linux portability — which asset a pinned layer should take
+
+RQ-71-MUSL (#1349). The two `-linux-gnu` assets are built on `ubuntu-latest` and
+are dynamically linked against that image's glibc. MEASURED on the published
+v0.70.0 x86_64 asset with the issue's own two commands:
+
+```
+$ file synth
+ELF 64-bit LSB pie executable, dynamically linked,
+interpreter /lib64/ld-linux-x86-64.so.2
+$ strings -a synth | grep -oE 'GLIBC_[0-9.]+' | sort -V | tail -1
+GLIBC_2.39
+```
+
+A **2.39** floor excludes Ubuntu 22.04 (2.35), Debian 12 bookworm (2.36), RHEL 9
+and Amazon Linux 2023 (2.34), Ubuntu 20.04 (2.31), and Alpine / distroless-static
+entirely.
+
+That is not only a convenience problem. These binaries are ingested into the
+varve `pulseengine` realm's rolling layer — the pinned toolchain an air-gapped or
+enterprise consumer installs — and **a layer's portability is the MAXIMUM floor
+across its payloads**, so one 2.39 payload sets the floor for everything pinned
+beside it.
+
+### The rule
+
+| asset | take it when |
+|---|---|
+| `x86_64-unknown-linux-musl` | **A varve layer, a container image, or any host whose glibc you do not control.** Statically linked: no loader, no glibc floor at all. This is the payload a pinned layer should reference. |
+| `x86_64-unknown-linux-gnu` | A glibc host at 2.39 or newer that you control, and you want the dynamically-linked build. |
+| `aarch64-unknown-linux-gnu` | arm64 Linux. **Still carries a glibc floor** — there is no arm64 musl asset yet; see *Residual*. |
+
+### How it is enforced
+
+Both the release job and a per-PR CI job (`musl-portable-asset`) run the issue's
+two acceptance commands against the built binary: it must be `statically linked`,
+must carry no `interpreter`, and must contain **zero** `GLIBC_` version symbols.
+The CI job additionally builds the **gnu** target on the same runner and asserts
+those checks FAIL there — otherwise they would pass on anything and prove nothing.
+
+The per-PR job exists because `release.yml` only runs on a tag push: a target
+added there is unverified until the tag, and changing the release workflow
+between an RC and its tag is the unreviewed late change this process exists to
+prevent. (v0.70 shipped the 2.39 floor rather than make one.)
+
+### Residual, named rather than implied
+
+- **arm64 Linux is still glibc-floored.** Only `x86_64-unknown-linux-musl` is
+  published. An `aarch64-unknown-linux-musl` asset needs the `cross` path and its
+  own measurement, and is not claimed here.
+- The musl build is **additive**: the gnu assets keep their names, their
+  consumers and their attestation path unchanged. Nothing that works today
+  changes.
 
 ## Provenance and signing model
 
@@ -144,7 +207,7 @@ Before pushing a `v*` tag:
 
 After the workflow finishes:
 
-- [ ] GitHub Release page shows 4 `.tar.gz` archives + `SHA256SUMS.txt` +
+- [ ] GitHub Release page shows 5 `.tar.gz` archives + `SHA256SUMS.txt` +
       `SHA256SUMS.txt.{cosign.bundle,sig,pem}` + `build-env.txt` +
       `synth-<VERSION>.cdx.json` (toolchain SBOM, Phase 6).
 - [ ] Spot-check one binary: download, `gh attestation verify`, run

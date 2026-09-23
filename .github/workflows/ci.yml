@@ -5751,3 +5751,87 @@ jobs:
           set -euo pipefail
           python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
+
+  # RQ-71-MUSL (#1349): PROVE the portable release asset before promising it.
+  #
+  # `release.yml` only runs on a tag push, so a new target added there is
+  # UNVERIFIED until the tag — and changing the release workflow between an RC
+  # and its tag is the unreviewed late change this process exists to prevent
+  # (v0.70 shipped the 2.39 floor rather than make one). This job builds the
+  # SAME target with the SAME feature set on every PR, and runs the issue's own
+  # two acceptance commands on the result, so the release.yml matrix entry is
+  # verified by construction rather than on the day it matters.
+  #
+  # MEASURED on the published v0.70.0 x86_64 asset: `ELF 64-bit LSB pie
+  # executable, dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2`,
+  # max GLIBC_ symbol GLIBC_2.39 — excluding Ubuntu 22.04 (2.35), Debian 12
+  # (2.36), RHEL 9 / AL2023 (2.34), Ubuntu 20.04 (2.31) and Alpine entirely.
+  # These binaries feed the varve `pulseengine` realm's rolling layer, whose
+  # portability is the MAXIMUM floor across its payloads.
+  #
+  # Deliberately NOT a required context: it is new, and a required name that has
+  # never run deadlocks merges. It reddens the PR that breaks it, which is the
+  # job's whole purpose.
+  musl-portable-asset:
+    name: Portable musl asset builds and is static (#1349)
+    # SELF-HOSTED on purpose. 56 of this file's 67 jobs target `ubuntu-latest`,
+    # which RQ-61-CICAP measured as THE bottleneck: runs queue for hours beside
+    # idle self-hosted machines, because the constraint is the GitHub-hosted
+    # quota and not the fleet. A new job defaulting to ubuntu-latest makes that
+    # worse for every other lane, so this one goes to the pool that has capacity.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-portable
+      # `musl-gcc` is the linker driver rustc invokes for this target IF it is
+      # not self-containing the link. Whether rust's bundled musl crt +
+      # `rust-lld` make this unnecessary for a pure-Rust workspace is UNVERIFIED
+      # here — it cannot be checked on this macOS host (no musl std installed,
+      # no nightly for `--print target-spec-json`), so it is not asserted either
+      # way. Installed only when absent and never fatal: if the link genuinely
+      # needs a driver that is missing, the BUILD step below says so loudly,
+      # which is the honest place for that answer rather than a guess here.
+      - name: Install musl toolchain if absent
+        run: |
+          if command -v musl-gcc >/dev/null 2>&1; then
+            echo "musl-gcc already present: $(command -v musl-gcc)"
+          elif command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y musl-tools || \
+              echo "musl-tools install failed; letting the build be the judge"
+          else
+            echo "no apt-get on this runner; letting the build be the judge"
+          fi
+      # The SAME command release.yml runs for this target. If these diverge the
+      # job stops testing the thing it claims to test.
+      - name: Build synth for x86_64-unknown-linux-musl
+        run: cargo build --release --target x86_64-unknown-linux-musl -p synth-cli --features verify
+      # The PROPERTY, read from the ELF — not `file`'s wording. The first
+      # version of this grepped `file` for "statically linked", which rustc's
+      # musl target never produces: its spec sets crt-static-default AND
+      # static-position-independent-executables, so the link is `-static-pie`
+      # and `file` says "static-pie linked". That gate would have REFUSED A
+      # CORRECT ARTIFACT (v0.71 cold review). "No loader" is exactly "no
+      # PT_INTERP", which is read directly and needs no `file` and no `strings`.
+      - name: The issue's acceptance property, on the built artifact
+        run: python3 scripts/elf_static_check.py target/x86_64-unknown-linux-musl/release/synth
+      # POTENCY: the SAME check must FAIL on the gnu build, or it proves nothing
+      # about this binary — it would pass on anything. This now exercises BOTH
+      # assertions (PT_INTERP and GLIBC_), which the previous version did not:
+      # its gnu block never asserted the loader was present, so the musl
+      # `interpreter` assertion had no negative control (v0.71 cold review).
+      - name: Potency — the SAME check must FAIL on the gnu target
+        run: |
+          set -euo pipefail
+          cargo build --release --target x86_64-unknown-linux-gnu -p synth-cli --features verify
+          if python3 scripts/elf_static_check.py \
+               target/x86_64-unknown-linux-gnu/release/synth; then
+            echo "FAIL(potency): the gnu build passed the static check, so the"
+            echo "musl result above is vacuous — it would pass on anything."
+            exit 1
+          fi
+          echo "potency OK: the gnu build is correctly REFUSED by the same check"

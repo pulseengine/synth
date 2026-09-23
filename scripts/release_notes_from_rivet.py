@@ -60,6 +60,31 @@ PINNED_RIVET = (0, 37, 0)
 CONFIG = "rivet.yaml"
 
 VERSION_RE = re.compile(r"^rivet (\d+)\.(\d+)\.(\d+)")
+def _entry_id(entry):
+    """Normalise one `rivet diff` entry to `(id, changes)`.
+
+    RQ-71 (#1337): rivet reports `added` and `removed` as bare id STRINGS but
+    `modified` as `{"id": ..., "changes": [...]}`. This renderer f-stringed the
+    entry directly, so a modified artifact printed its whole Python dict into
+    the CHANGELOG:
+
+        - *(modified)* **{'changes': ['field changed: issue-scope'], 'id': 'RQ-70-NPA'}**
+
+    The path had never run. v0.70 shipped this tool and no release had modified
+    a PRIOR release's artifact until v0.71 did (RQ-71-ISSUESCOPE applies
+    `issue-scope: outlives` to two v0.70 artifacts), so the defect shipped
+    behind a code path nothing reached — the same shape as the four gates v0.70
+    found that could not fail.
+
+    The `changes` list is kept rather than dropped: "which field moved on a
+    shipped artifact" is exactly what a reader of a release note needs, and it
+    is the reason a modified entry is richer than an added one.
+    """
+    if isinstance(entry, dict):
+        return str(entry.get("id", entry)), [str(c) for c in (entry.get("changes") or [])]
+    return str(entry), []
+
+
 SUMMARY_RE = re.compile(r"^(\d+) added, (\d+) removed, (\d+) modified, (\d+) unchanged")
 DIAG_RE = re.compile(
     r"^(\d+) new errors?, (\d+) resolved errors?, (\d+) new warnings?, (\d+) resolved warnings?"
@@ -175,9 +200,12 @@ def main() -> int:
     print(f"\n### Artifacts ({data.get('summary', '')})\n")
     for aid in added:
         print(f"- **{aid}** — {titles.get(aid, '(title unavailable)')}")
-    for aid in data.get("modified") or []:
-        print(f"- *(modified)* **{aid}**")
-    for aid in data.get("removed") or []:
+    for entry in data.get("modified") or []:
+        aid, changes = _entry_id(entry)
+        why = f" — {', '.join(changes)}" if changes else ""
+        print(f"- *(modified)* **{aid}**{why}")
+    for entry in data.get("removed") or []:
+        aid, _ = _entry_id(entry)
         print(f"- *(removed)* **{aid}**")
 
     print("\n### Trace-graph delta\n")
