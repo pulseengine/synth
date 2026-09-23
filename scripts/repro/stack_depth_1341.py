@@ -262,7 +262,9 @@ def main():
             # THE TWO FIGURES LEGITIMATELY DIFFER, and asserting they match was
             # this oracle's own first mistake. `--relocatable` forces the DIRECT
             # selector (#197); the self-contained build uses the optimized one,
-            # whose prologue costs 8 more bytes per frame. Measured on `branch`:
+            # whose LEAF prologue costs 8 more bytes (a CONSTANT +8 propagating once,
+            # NOT a per-frame cost — corrected by the v0.71 cold review).
+            # Measured on `branch`:
             # relocatable leaf/a/b/top = 8/64/64/120, self-contained = 16/72/72/128.
             #
             # So the number is a property of THE BUILD YOU SHIP, not of the

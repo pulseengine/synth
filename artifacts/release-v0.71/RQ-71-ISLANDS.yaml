@@ -12,8 +12,10 @@ artifacts:
       THE LANE AS FIRST FILED WAS MISNAMED, AND THE REFUTING COMMAND IS WHAT FOUND
       THAT. The candidate said "reproduce #345 and see whether the real cause is a
       missing pool FLUSH rather than a range limit". It is the flush.
-      `arm_backend.rs:1727` refuses on `imm12 > 0xFFF`, and that refusal is
-      CORRECT: Thumb-2 `LDR (literal)` genuinely has a 12-bit unsigned offset, and
+      `arm_backend.rs` refuses on `imm12 > 0xFFF` (line 1745 on this tree; 1727
+      when this lane was planned, 1735 when the artifact landed — A LINE NUMBER
+      IS NOT A STABLE ANCHOR, which is this release's own RQ-71-MUTANTDRIFT
+      finding applied to prose), and that refusal is
       failing cleanly beats miscompiling. There is no bug at the check.
 
       What broke is the assumption in the comment beside it — "these function
@@ -66,9 +68,11 @@ artifacts:
       in-repo, plus the measurement of why the fix is larger than the plan
       assumed.
 
-      REPRODUCED IN-REPO. `scripts/repro/litpool_islands_345.wat` (609 lines,
-      generated dense i64 filler) triggers cpetig's exact error on the exact
-      route they use:
+      REPRODUCED IN-REPO. `scripts/repro/litpool_islands_345.wat` (609 CODE
+      lines of 633 total — the earlier text called 609 the line count; only the
+      edit-stable code-line figure is quoted now, per the v0.70 lesson about
+      counting the file you are writing in. Generated dense i64 filler.) It
+      triggers cpetig's exact error on the exact
 
         LdrSym literal pool out of range (#345): imm12=5716 > 4095
           for symbol __synth_wasm_data
@@ -86,16 +90,44 @@ artifacts:
           final machine terms. `arm_encoder.rs` says so itself: "offset is
           already the halfword displacement: (target - branch - 4) / 2". Two
           `ArmOp` variants carry them (`BOffset`, `BCondOffset`).
-        - There is NO post-encode branch relaxation or fixup pass.
-          `grep -nE 'fn [a-z_]*(relax|fixup|patch)'` over `arm_backend.rs` and
-          `arm_encoder.rs` finds only literal-pool patching.
+        - There is no post-encode fixup of an ALREADY-ENCODED displacement.
 
-      So inserting an island mid-function silently corrupts EVERY branch that
-      spans the insertion point, with nothing to repair it. That is worse than
-      the "branch into data" hazard this artifact anticipated: it is a branch to
-      the WRONG PLACE, silently — the miscompile class VCR exists to prevent.
-      The real blocker is a missing branch-relaxation pass over the byte stream,
-      which is its own substantial lane on the highest-risk path.
+      CORRECTED BY THE v0.71 COLD REVIEW, and the correction changes this lane's
+      conclusion, not just its wording. Two sentences stood here:
+
+        "There is NO post-encode branch relaxation or fixup pass.
+         `grep -nE 'fn [a-z_]*(relax|fixup|patch)'` over `arm_backend.rs` and
+         `arm_encoder.rs` finds only literal-pool patching."
+
+      The second is FALSE AS EVIDENCE: that command produces NO OUTPUT AT ALL
+      (rc=1), both on this tree and at 23c6b2d2 where this artifact landed, so it
+      cannot "find only literal-pool patching". An empty result over a guessed
+      function-name pattern is not evidence of absence — and it missed the
+      function that refutes the first sentence.
+
+      `resolve_label_branches` (arm_backend.rs:2333, called at 1468 and 1590) IS
+      a branch-relaxation pass WITH A SIZE FIXED POINT, and it runs on the DIRECT
+      selector — exactly the `--relocatable` path this lane is about (#197). Its
+      own comment: "Sizes only grow (16->32-bit), so this converges quickly; cap
+      for safety." It encodes each instruction to learn its real byte length,
+      maps every `Label` to a byte position, and rewrites each label branch to
+      `(target - branch - 4) / 2`, re-running until sizes settle. Inserting an
+      island mid-function therefore does NOT silently corrupt branches on this
+      path; label branches are re-resolved against the new positions.
+
+      WHAT REMAINS TRUE, and what the deferral now rests on: the OPTIMIZED path
+      emits `BOffset`/`BCondOffset` inline (optimizer_bridge.rs:4848) carrying no
+      label, and `resolve_label_branches` leaves those untouched by design. So
+      islands are safe where labels survive to that pass and unsafe where
+      displacements were already materialised — bounded by SELECTOR PATH rather
+      than blocked outright, which is both narrower and more useful than "no pass
+      exists".
+
+      THE DEFERRAL STANDS, on the honest reason. A constant-island pass is real
+      work — pool splitting, placement, proving each entry reachable from its
+      users, and its interaction with that fixed point — and v0.71 had no
+      capacity for it after the two musts. It is deferred for SIZE, not for an
+      absent mechanism.
 
       ONE ALTERNATIVE WAS CHECKED AND IS ALSO INSUFFICIENT. A pool at the
       function START, branched over once, needs NO fixup pass: inserting N bytes
@@ -141,7 +173,7 @@ artifacts:
       # `disposition: deferred` beside it is the honest pair, and R11
       # accepts `landed:` next to a non-claiming status precisely when a
       # disposition says why it is not claiming.
-      landed: "PR #1352. NOT LANDED as a fix. What landed: scripts/repro/litpool_islands_345.wat (reproduces #345 in-repo at imm12=5716 > 4095 on --relocatable --native-pointer-abi) and scripts/repro/litpool_islands_345.py (CI-wired, pins that #345 is a REFUSAL and not a miscompile, with a potency control showing the same shape compiles with a short body). Constant islands are BLOCKED on a post-encode branch-relaxation pass that does not exist: branch displacements are pre-computed upstream as halfwords and nothing repairs them after an insertion."
+      landed: "PR #1352. NOT LANDED as a fix. What landed: scripts/repro/litpool_islands_345.wat (reproduces #345 in-repo at imm12=5716 > 4095 on --relocatable --native-pointer-abi) and scripts/repro/litpool_islands_345.py (CI-wired, pins that #345 is a REFUSAL and not a miscompile, with a potency control showing the same shape compiles with a short body). Constant islands are DEFERRED FOR SIZE, not blocked for want of a mechanism — a claim the v0.71 cold review CORRECTED. `resolve_label_branches` (arm_backend.rs:2333, called at 1468/1590) IS a branch-relaxation pass with a size fixed point and it DOES run on the direct/--relocatable path, so label branches are re-resolved after an insertion. What it leaves untouched by design is the optimized path's inline `BOffset`/`BCondOffset`, which carry no label. The remaining work is the island pass itself: pool splitting, placement, per-entry reachability, and its interaction with that fixed point."
       # NOT `file:...litpool_islands_345.wat`: that fixture is committed by THIS
       # release, so such a predicate would evaluate TRUE while the lane is
       # deferred and nothing is fixed — a done-when that cannot fail. The

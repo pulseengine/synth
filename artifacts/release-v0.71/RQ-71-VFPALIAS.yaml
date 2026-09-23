@@ -63,8 +63,23 @@ artifacts:
       aliasing stream under four scopings, proving it is exactly as wide as the set
       it is handed, that `Some(&[])` does NOT silence, and that declaring only an
       f64 home's base half leaves its hi half policed; (4) BYTE IDENTITY — the
-      negative control emits the same 692 bytes, sha256 `d961faa6…`, before and
-      after, because the narrowing only inspects.
+      negative control emits the same 692 bytes before and after, because the
+      narrowing only inspects.
+
+      THE DIGEST THAT STOOD HERE WAS WITHDRAWN BY THE v0.71 COLD REVIEW. It read
+      "692 bytes, sha256 `d961faa6…`". The SIZE reproduces exactly; the digest
+      matches nothing in the tree, because it was taken from a SINGLE-EXPORT
+      probe module used while building the red, not from the committed
+      six-export `vfp_home_redef_881.wat`. Re-derived from the committed fixture,
+      `redef_none` is 692 bytes with sha256 `844dfce7…` — a different module, so
+      different bytes. The published number described an artifact that is not in
+      the repository: the v0.70 class (a number measured against something other
+      than the thing it names) recurring in the release that named it.
+
+      The byte-identity CLAIM is unaffected — it was and remains a before/after
+      comparison of the same negative control on the same tree — but only the
+      SIZE is quotable evidence, since reproducing the before half needs a
+      pre-fix binary this tree no longer builds.
 
       FILED AS #1354, because #881 / #1069 / #1321 are all closed and a reach
       defect that refuses legal wasm needs a record an outsider can check — the

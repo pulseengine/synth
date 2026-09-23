@@ -16,9 +16,27 @@ artifacts:
       `docs/status/mutation_survey.json` pins every mutant by `file:line:col`. The
       subset entry `R4-shared/REG/liveness.rs:7346:36` targeted
       `let aapcs_dead_at_return = [Reg::R2, Reg::R3, Reg::R12, Reg::LR];`. v0.70's
-      `policed` fix and its red-first test added +27/-5 lines to `liveness.rs`, ALL
-      ABOVE that line. The statement moved to 7350; line 7346 now holds
-      `let ends_in_return = matches!(`. The pin was aimed at different code.
+      `policed` fix and its red-first test added +27/-5 lines to `liveness.rs`.
+
+      CORRECTED BY THE v0.71 COLD REVIEW, twice, and both corrections are this
+      artifact's own subject turned on itself.
+
+      (1) This said the +27/-5 was "ALL ABOVE that line". It was not. The commit
+      has exactly two hunks — `@@ -5733,11 +5733,15 @@` (+9/-5, net +4, ABOVE)
+      and `@@ -18313,6 +18317,24 @@` (+18, inside `mod tests`, FAR BELOW). Only
+      +4 shifted the pin, which is exactly why it moved 7346 -> 7350 and not
+      7346 -> 7368. The total was right and the attribution was right; the
+      DISTRIBUTION was asserted rather than read, and had it been true the
+      arithmetic would not have matched the observed drift.
+
+      (2) This said "line 7346 NOW holds `let ends_in_return = matches!(`". True
+      at the v0.70 cut, false on the tree being cut: 7346 now holds
+      `relaxed_exit: bool,` and 7350 holds `eprintln!(`. The subset entry itself
+      is now `R4-shared/REG/liveness.rs:7404:36`, moved by v0.71's OWN re-anchor
+      after RQ-71-VFPALIAS inserted 162 lines into this file — the remedy this
+      artifact documents, applied to this artifact's own example, one release
+      later. A present-tense line citation is a drifting anchor in prose, which
+      is the whole finding.
 
       THE LEDGER IS CONTENT-RECOVERABLE AND THE REMEDY ALREADY EXISTS. Every mutant
       stores its `before` text, and `reanchor` re-locates by it — its own docstring

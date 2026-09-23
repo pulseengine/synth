@@ -1571,34 +1571,33 @@ def check(root: Path, release_glob: str, subjects: list[str],
                         f"`proposed`, #1250); flip to a claiming status, or "
                         f"set `disposition: partial|refuted|deferred`"
                     )
-            # R12 (#1250, RQ-71-ISSUESCOPE): an artifact may declare that its
-            # ISSUE outlives its own delivery. Separate key from `disposition:`
-            # by design — see ISSUE_SCOPES above — so this never trips R11.
-            # Validated wherever the field APPEARS rather than from a version
-            # floor: it is optional, so no shipped artifact is burdened by it,
-            # and the two v0.70 artifacts that carry it retroactively (the ones
-            # whose prose decision this field mechanises) get checked too.
-            if True:
-                iscope = str(fields.get("issue-scope", "")).strip().lower()
-                issue_txt = str(fields.get("issue", "")).strip()
-                if iscope and iscope not in ISSUE_SCOPES:
-                    failures.append(
-                        f"R12 {art_id}: `issue-scope: {iscope}` is not one of "
-                        f"{sorted(ISSUE_SCOPES)}"
-                    )
-                elif iscope and not issue_txt:
-                    failures.append(
-                        f"R12 {art_id}: `issue-scope: {iscope}` with no "
-                        f"`issue:` field — there is no issue to scope"
-                    )
-                elif iscope == "outlives" and status not in CLAIMING:
-                    failures.append(
-                        f"R12 {art_id}: `issue-scope: outlives` beside "
-                        f"non-claiming status `{status}` — the issue of an "
-                        f"undelivered artifact stays open anyway, so this "
-                        f"declares nothing; `disposition:` is the field that "
-                        f"records why the artifact did not land"
-                    )
+        # R12 (#1250, RQ-71-ISSUESCOPE): an artifact may declare that its
+        # ISSUE outlives its own delivery. Separate key from `disposition:`
+        # by design — see ISSUE_SCOPES above — so this never trips R11.
+        # Validated wherever the field APPEARS rather than from a version
+        # floor: it is optional, so no shipped artifact is burdened by it,
+        # and the two v0.70 artifacts that carry it retroactively (the ones
+        # whose prose decision this field mechanises) get checked too.
+        iscope = str(fields.get("issue-scope", "")).strip().lower()
+        issue_txt = str(fields.get("issue", "")).strip()
+        if iscope and iscope not in ISSUE_SCOPES:
+            failures.append(
+                f"R12 {art_id}: `issue-scope: {iscope}` is not one of "
+                f"{sorted(ISSUE_SCOPES)}"
+            )
+        elif iscope and not issue_txt:
+            failures.append(
+                f"R12 {art_id}: `issue-scope: {iscope}` with no "
+                f"`issue:` field — there is no issue to scope"
+            )
+        elif iscope == "outlives" and status not in CLAIMING:
+            failures.append(
+                f"R12 {art_id}: `issue-scope: outlives` beside "
+                f"non-claiming status `{status}` — the issue of an "
+                f"undelivered artifact stays open anyway, so this "
+                f"declares nothing; `disposition:` is the field that "
+                f"records why the artifact did not land"
+            )
         done_when = fields.get("done-when")
         if done_when is None:
             if version >= DECLARE_SINCE:
