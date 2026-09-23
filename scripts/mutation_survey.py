@@ -150,6 +150,15 @@ REGIONS = {
     "R1-routing": [
         ("crates/synth-backend/src/arm_backend.rs", "fn", "has_value_carrying_branch"),
         ("crates/synth-backend/src/arm_backend.rs", "fn", "compile_wasm_to_arm"),
+        # RQ-72-ISLANDS (#345, v0.72): the literal-pool emitter was LIFTED OUT of
+        # `compile_wasm_to_arm` into its own function so the inline island and the
+        # end-of-function pool share one implementation. A region defined as a list
+        # of FUNCTIONS silently loses coverage when code moves between them, and
+        # this one did: the `imm12 > 0xFFF` bound — the single check standing
+        # between an out-of-range pool word and a load from a wrong address —
+        # stopped being a mutation site the moment it moved, while the ledger
+        # still claimed to cover it. Named here so the move costs nothing.
+        ("crates/synth-backend/src/arm_backend.rs", "fn", "emit_literal_pool"),
     ],
     "R2-ir_to_arm": [
         ("crates/synth-synthesis/src/optimizer_bridge.rs", "fn", "fold_mem_offset"),

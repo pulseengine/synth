@@ -350,6 +350,114 @@ type CompileArmOutput = (
     Option<Vec<synth_synthesis::ArmInstruction>>,
 );
 
+/// RQ-71-STACKDEPTH/#345: one deferred `LdrSym` — where its placeholder LDR
+/// sits, and what word the pool must carry for it.
+struct PendingLiteral {
+    ldr_offset: u32,
+    symbol: String,
+    addend: i32,
+}
+
+/// RQ-72-ISLANDS (#345, cpetig via #1331): emit ONE constant island — the
+/// pooled words, optionally preceded by a branch over them — and patch each
+/// pending LDR's `imm12` in place.
+///
+/// SINGLE SOURCE for both placements. The inline island and the
+/// end-of-function pool differ in exactly one thing: whether execution can
+/// fall into the words. That is `branch_over`. Writing the patch arithmetic
+/// twice is how the two would drift, which is the failure this repo's North
+/// Star correction is about.
+///
+/// THE REFUSAL IS PRESERVED, DELIBERATELY. If a literal is out of range even
+/// from here, this still returns the #345 error rather than patching a wrong
+/// offset. Islands widen WHERE a pool may sit; they do not widen the Thumb-2
+/// LDR-literal encoding, which is a 12-bit unsigned field and always will be.
+fn emit_literal_pool(
+    code: &mut Vec<u8>,
+    relocations: &mut Vec<CodeRelocation>,
+    pending: &[PendingLiteral],
+    branch_over: Option<&ArmEncoder>,
+) -> Result<(), String> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    // A mid-stream island sits in the instruction stream, so execution must be
+    // carried over it. The end-of-function pool needs no branch: those bytes
+    // are past the final return and are never reached.
+    if let Some(enc) = branch_over {
+        let n = pending.len();
+        // The branch's own size decides the distance it must cover, and the
+        // distance decides the size (B.N is 2 bytes, B.W is 4). Iterate to the
+        // fixed point rather than assuming one — the same shape
+        // `resolve_label_branches` already uses for label branches.
+        let mut branch_len = 2usize;
+        let bytes = loop {
+            let pad = (4 - ((code.len() + branch_len) % 4)) % 4;
+            let skip = branch_len + pad + 4 * n;
+            // `BOffset` takes the halfword displacement (target - branch - 4)/2.
+            // `code.len()` is even at any Thumb instruction boundary and
+            // `branch_len` is even, so `pad` is even and `skip` is even.
+            let off = ((skip as i32) - 4) / 2;
+            let e = enc
+                .encode(&ArmOp::BOffset { offset: off })
+                .map_err(|x| format!("island branch encoding failed: {}", x))?;
+            if e.len() == branch_len {
+                break e;
+            }
+            branch_len = e.len();
+            if branch_len > 4 {
+                return Err(format!(
+                    "literal-pool island (#345): branch over {} pooled word(s) \
+                     would need {} bytes, which is not a Thumb-2 B encoding",
+                    n, branch_len
+                ));
+            }
+        };
+        code.extend_from_slice(&bytes);
+    }
+    // 4-byte align the pool start (Thumb-2 word loads require it, and
+    // `Align(PC,4)` in the LDR-literal semantics assumes a word-aligned pool).
+    while !code.len().is_multiple_of(4) {
+        code.push(0x00);
+    }
+    // One distinct pooled word per LdrSym (no dedup: different sites carry
+    // different addends, and the REL addend lives in the word).
+    for lit in pending {
+        let word_offset = code.len() as u32;
+
+        // REL semantics: the linker computes `S + A`, where A is the in-place
+        // value of the relocated word. Initialize the word to the addend so
+        // the final loaded address is `symbol + addend`.
+        code.extend_from_slice(&(lit.addend as u32).to_le_bytes());
+        relocations.push(CodeRelocation {
+            offset: word_offset,
+            symbol: lit.symbol.clone(),
+            kind: synth_core::backend::RelocKind::Abs32,
+        });
+
+        // Patch the placeholder `LDR.W rd,[pc,#imm12]`. Thumb-2 LDR (literal):
+        // address = Align(PC,4) + imm12, with PC = ldr_offset + 4. The pool is
+        // always after the LDR, so U=1 (already set in hw1 = 0xF8DF).
+        let pc = lit.ldr_offset + 4;
+        let aligned_pc = pc & !3u32;
+        let imm12 = word_offset.wrapping_sub(aligned_pc);
+        if word_offset < aligned_pc || imm12 > 0xFFF {
+            return Err(format!(
+                "LdrSym literal pool out of range (#345): imm12={} > 4095 \
+                 for symbol {}",
+                imm12, lit.symbol
+            ));
+        }
+        let hw2_off = (lit.ldr_offset + 2) as usize;
+        let mut hw2 = u16::from_le_bytes([code[hw2_off], code[hw2_off + 1]]);
+        hw2 = (hw2 & 0xF000) | (imm12 as u16); // keep Rt, set imm12
+        let hw2_bytes = hw2.to_le_bytes();
+        code[hw2_off] = hw2_bytes[0];
+        code[hw2_off + 1] = hw2_bytes[1];
+    }
+    Ok(())
+}
+
 fn compile_wasm_to_arm(
     wasm_ops: &[WasmOp],
     config: &CompileConfig,
@@ -1625,12 +1733,12 @@ fn compile_wasm_to_arm(
     // `LDR.W rd,[pc,#0]`; record where its instruction sits and what it loads so
     // we can append a pooled word (carrying the symbol address via R_ARM_ABS32)
     // and patch the PC-relative offset once the pool position is known.
-    struct PendingLiteral {
-        ldr_offset: u32,
-        symbol: String,
-        addend: i32,
-    }
     let mut pending_literals: Vec<PendingLiteral> = Vec::new();
+    // RQ-72-ISLANDS (#345): the documented opt-out. With islands disabled the
+    // pool is emitted exactly where it always was — one block at the end — so
+    // the two legs of `litpool_islands_345_differential.py` are a real
+    // differential and not two names for the same path.
+    let islands_disabled = std::env::var_os("SYNTH_NO_LITPOOL_ISLANDS").is_some();
 
     // VCR-DBG-001: per-instruction source map for DWARF `.debug_line`. Captured
     // here because `code.len()` immediately before `encode()` is the final
@@ -1697,67 +1805,68 @@ fn compile_wasm_to_arm(
             });
         }
 
-        // The machine offset of this instruction is the current code length,
-        // captured before the bytes are appended.
-        line_map.push((code.len() as u32, instr.source_line));
-        branch_map.push((code.len() as u32, classify_arm_branch(&instr.op)));
-
+        // Encode BEFORE deciding whether to flush, so the island trigger below
+        // works from this instruction's EXACT size rather than an upper bound.
+        // An over-estimate here would flush early (merely wasteful); an
+        // under-estimate would let the 4 KB window close and patch a wrong
+        // `imm12` — a MISCOMPILE, which is the defect #1341/#345 exist to
+        // prevent. Knowing the real length removes the estimate entirely.
         let encoded = encoder
             .encode(&instr.op)
             .map_err(|e| format!("ARM encoding failed: {}", e))?;
+
+        // RQ-72-ISLANDS (#345): flush the pool INLINE, before the window closes.
+        //
+        // WHY INLINE AND NOT A POST-PASS THAT INSERTS: `line_map` and
+        // `branch_map` are (offset, _) PAIRS captured as `code.len()` just
+        // below, so appending here leaves every later pair correct, while
+        // inserting into an already-built `code` would silently desynchronise
+        // all of them — and `.text` byte-identity on modules that need no
+        // island would not notice.
+        //
+        // If `instr` is itself the `LdrSym` just pushed, its `ldr_offset`
+        // equals `code.len()`, so the computed distance is ~0 and this cannot
+        // fire before the LDR it serves. That is the ordering that would
+        // otherwise place a pool BEFORE its own load.
+        if use_thumb2 && !islands_disabled && !pending_literals.is_empty() {
+            let n = pending_literals.len();
+            // Worst case if we DON'T flush now: this instruction lands, then a
+            // branch (<= 4 B) and alignment (<= 3 B) precede the words.
+            let start = code.len() + encoded.len() + 4;
+            let pad = (4 - (start % 4)) % 4;
+            let last_word = (start + pad + 4 * (n - 1)) as u32;
+            let aligned_pc = (pending_literals[0].ldr_offset + 4) & !3u32;
+            if last_word.saturating_sub(aligned_pc) > 0xFFF {
+                emit_literal_pool(
+                    &mut code,
+                    &mut relocations,
+                    &pending_literals,
+                    Some(&encoder),
+                )?;
+                pending_literals.clear();
+            }
+        }
+
+        // The machine offset of this instruction is the current code length,
+        // captured before the bytes are appended (and AFTER any island above,
+        // so the recorded offset is where the instruction really lands).
+        line_map.push((code.len() as u32, instr.source_line));
+        branch_map.push((code.len() as u32, classify_arm_branch(&instr.op)));
+
         code.extend_from_slice(&encoded);
     }
 
-    // #345: place the literal pool at the end of this function's `.text`. Gated on
-    // there being at least one `LdrSym` — functions without one are byte-identical
-    // to before (no trailing padding, so downstream `func_offsets` are unchanged
-    // and the frozen differential fixtures stay bit-for-bit equal).
+    // #345: place any REMAINING literals at the end of this function's `.text`.
+    // Gated on there being at least one un-flushed `LdrSym` — functions without
+    // one are byte-identical to before (no trailing padding, so downstream
+    // `func_offsets` are unchanged and the frozen differential fixtures stay
+    // bit-for-bit equal). No branch is emitted: these bytes sit past the final
+    // return and are never executed.
     if !pending_literals.is_empty() {
         if !use_thumb2 {
             return Err("LdrSym literal-pool addressing requires Thumb-2".to_string());
         }
-        // 4-byte align the pool start (Thumb-2 word loads require it, and
-        // `Align(PC,4)` in the LDR-literal semantics assumes a word-aligned pool).
-        while code.len() % 4 != 0 {
-            code.push(0x00);
-        }
-        // One distinct pooled word per LdrSym (no dedup: different sites carry
-        // different addends, and the REL addend lives in the word).
-        for lit in &pending_literals {
-            let word_offset = code.len() as u32;
-
-            // REL semantics: the linker computes `S + A`, where A is the in-place
-            // value of the relocated word. Initialize the word to the addend so
-            // the final loaded address is `symbol + addend`.
-            code.extend_from_slice(&(lit.addend as u32).to_le_bytes());
-            relocations.push(CodeRelocation {
-                offset: word_offset,
-                symbol: lit.symbol.clone(),
-                kind: synth_core::backend::RelocKind::Abs32,
-            });
-
-            // Patch the placeholder `LDR.W rd,[pc,#imm12]`. Thumb-2 LDR (literal):
-            // address = Align(PC,4) + imm12, with PC = ldr_offset + 4. The pool is
-            // always after the LDR, so U=1 (already set in hw1 = 0xF8DF).
-            let pc = lit.ldr_offset + 4;
-            let aligned_pc = pc & !3u32;
-            let imm12 = word_offset - aligned_pc;
-            if imm12 > 0xFFF {
-                // Wide LDR-literal range is ±4 KB; these function bodies are far
-                // smaller, but fail cleanly rather than miscompile if exceeded.
-                return Err(format!(
-                    "LdrSym literal pool out of range (#345): imm12={} > 4095 \
-                     for symbol {}",
-                    imm12, lit.symbol
-                ));
-            }
-            let hw2_off = (lit.ldr_offset + 2) as usize;
-            let mut hw2 = u16::from_le_bytes([code[hw2_off], code[hw2_off + 1]]);
-            hw2 = (hw2 & 0xF000) | (imm12 as u16); // keep Rt, set imm12
-            let hw2_bytes = hw2.to_le_bytes();
-            code[hw2_off] = hw2_bytes[0];
-            code[hw2_off + 1] = hw2_bytes[1];
-        }
+        emit_literal_pool(&mut code, &mut relocations, &pending_literals, None)?;
     }
 
     Ok((
