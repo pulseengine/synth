@@ -49,6 +49,25 @@ artifacts:
             the docstring's claim that it "cannot go vacuous as the programme
             moves on" is false of the mechanism. Freeze it or restate it.
 
+        (e) AND THE GATE MAKES A FALSE STATEMENT, found by RUNNING IT at the
+            v0.71 tag rather than by reading it. `closed` comes from
+            `closed_since(tag)` — "issues closed AT OR AFTER the tag's
+            creation". An authorised issue closed BEFORE the tag is therefore
+            absent from that set, and the gate reports
+
+              FAIL AUTHORISED BUT NOT CLOSED: #1250 — RQ-71-ISSUESCOPE is
+              delivered and entitles the release to close it
+
+            while `gh issue view 1250 --json state` says CLOSED (2026-09-17).
+            The sentence is false about the issue; it is true only about the
+            window. The docstring anticipated the opposite skew — "a closure can
+            legitimately lag a tag by minutes" — and `--allow-unclosed`
+            downgrades it to a warning, which HIDES the false statement rather
+            than correcting it. Fix: an authorised issue that is CLOSED, whenever
+            it closed, satisfies the obligation; compare STATE, and keep the
+            window only for the closed-but-not-authorised direction, where "who
+            closed it during this release" is the question actually being asked.
+
       ALSO NOTED, not a deliverable: `issue: "#1250"` on RQ-71-ISSUESCOPE points
       at an issue CLOSED 2026-09-17 for a different defect (RQ-68-STATUSGATE's).
       The lane has no live tracker. Decide whether it needs one before the field
