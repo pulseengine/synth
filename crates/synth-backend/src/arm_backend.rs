@@ -1739,6 +1739,19 @@ fn compile_wasm_to_arm(
     // the two legs of `litpool_islands_345_differential.py` are a real
     // differential and not two names for the same path.
     let islands_disabled = std::env::var_os("SYNTH_NO_LITPOOL_ISLANDS").is_some();
+    // Spans of the ALREADY-RESOLVED branches, so an island is never placed
+    // where it would invalidate one. Computed once, in pre-island coordinates.
+    let branch_spans = if use_thumb2 && !islands_disabled {
+        label_branch_spans(&arm_instrs, &encoder)?
+    } else {
+        Vec::new()
+    };
+    // Bytes of island inserted so far, so `code.len()` can be mapped back to
+    // the pre-island coordinates `branch_spans` is expressed in.
+    let mut island_bytes: u32 = 0;
+    // Set when an island was DECLINED for the reason above, so the refusal the
+    // end-of-function pool then raises can say WHY islands did not help.
+    let mut island_declined_for_branch = false;
 
     // VCR-DBG-001: per-instruction source map for DWARF `.debug_line`. Captured
     // here because `code.len()` immediately before `encode()` is the final
@@ -1837,13 +1850,31 @@ fn compile_wasm_to_arm(
             let last_word = (start + pad + 4 * (n - 1)) as u32;
             let aligned_pc = (pending_literals[0].ldr_offset + 4) & !3u32;
             if last_word.saturating_sub(aligned_pc) > 0xFFF {
-                emit_literal_pool(
-                    &mut code,
-                    &mut relocations,
-                    &pending_literals,
-                    Some(&encoder),
-                )?;
-                pending_literals.clear();
+                // THE GUARD. `code.len()` counts islands already inserted;
+                // `branch_spans` is in pre-island coordinates, so map back
+                // before comparing. A branch is invalidated exactly when the
+                // insertion point separates it from its target.
+                let pre_p = code.len() as u32 - island_bytes;
+                let spanned = branch_spans
+                    .iter()
+                    .any(|&(lo, hi)| lo < pre_p && pre_p <= hi);
+                if spanned {
+                    // Refuse the island rather than mis-target the branch.
+                    // The pool falls through to the end of the function and
+                    // #345's out-of-range error fires there — loud, which is
+                    // the whole point.
+                    island_declined_for_branch = true;
+                } else {
+                    let before = code.len();
+                    emit_literal_pool(
+                        &mut code,
+                        &mut relocations,
+                        &pending_literals,
+                        Some(&encoder),
+                    )?;
+                    island_bytes += (code.len() - before) as u32;
+                    pending_literals.clear();
+                }
             }
         }
 
@@ -1866,7 +1897,24 @@ fn compile_wasm_to_arm(
         if !use_thumb2 {
             return Err("LdrSym literal-pool addressing requires Thumb-2".to_string());
         }
-        emit_literal_pool(&mut code, &mut relocations, &pending_literals, None)?;
+        emit_literal_pool(&mut code, &mut relocations, &pending_literals, None).map_err(|e| {
+            if island_declined_for_branch {
+                format!(
+                    "{} — an inline literal island WOULD have brought the \
+                         pool in range, but every candidate placement fell \
+                         between a local branch and its target, where \
+                         inserting bytes would silently mis-target the branch \
+                         (branch offsets are byte-resolved before this loop). \
+                         Refusing is deliberate: a wrong branch target is a \
+                         silent miscompile, an out-of-range pool is not. \
+                         Serving this shape needs branch resolution and island \
+                         placement in one fixed point.",
+                    e
+                )
+            } else {
+                e
+            }
+        })?;
     }
 
     Ok((
@@ -2467,6 +2515,57 @@ fn classify_arm_branch(op: &ArmOp) -> synth_core::backend::BranchClass {
 /// fixed-point handles an offset growing a branch from 16- to 32-bit (which
 /// shifts later positions). `BCondOffset`/`BOffset` already produced inline by
 /// the optimized path carry no label and are left untouched.
+/// Byte spans of every already-resolved local branch, in PRE-ISLAND
+/// coordinates: `(min(branch, target), max(branch, target))`.
+///
+/// RQ-72-ISLANDS follow-up. `resolve_label_branches` bakes a byte-accurate
+/// offset into each branch and `validate_branch_targets` gates it onto the
+/// instruction-start set — both BEFORE the encode loop that inserts inline
+/// literal islands. Inserting bytes at a point a branch straddles moves the
+/// target without moving the branch (or the reverse, for a backward branch),
+/// so the baked offset is wrong by exactly the island's size. Measured: an
+/// 8-byte island left a `br_if` pointing 8 bytes short, into the middle of the
+/// block it was supposed to skip.
+///
+/// Returned spans let the island placer REFUSE such a point rather than
+/// silently mis-target the branch. Refusing falls through to the
+/// end-of-function pool, which raises the original #345 out-of-range error —
+/// the loud behaviour v0.71 had.
+fn label_branch_spans(
+    instrs: &[ArmInstruction],
+    encoder: &ArmEncoder,
+) -> Result<Vec<(u32, u32)>, String> {
+    let mut positions = Vec::with_capacity(instrs.len());
+    let mut pos: u32 = 0;
+    for instr in instrs {
+        positions.push(pos);
+        pos += encoder
+            .encode(&instr.op)
+            .map_err(|e| format!("island span probe failed: {}", e))?
+            .len() as u32;
+    }
+    let mut spans = Vec::new();
+    for (i, instr) in instrs.iter().enumerate() {
+        // Only the LOCALLY RESOLVED forms carry a baked byte offset. Label
+        // forms that survive to here are external and are relocated, so an
+        // island does not invalidate them.
+        let off = match &instr.op {
+            ArmOp::BCondOffset { offset, .. } => *offset,
+            ArmOp::BOffset { offset } => *offset,
+            _ => continue,
+        };
+        let src = positions[i];
+        // The encoder consumes the field as (target - branch - 4) / 2.
+        let target = (src as i64) + 4 + 2 * (off as i64);
+        if target < 0 {
+            continue;
+        }
+        let t = target as u32;
+        spans.push((src.min(t), src.max(t)));
+    }
+    Ok(spans)
+}
+
 fn resolve_label_branches(
     arm_instrs: Vec<ArmInstruction>,
     encoder: &ArmEncoder,

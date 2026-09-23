@@ -141,6 +141,56 @@ def main():
         print("  OK potency: the same shape with a short body COMPILES — "
               "the pin is the 4 KB range, not the fixture")
 
+    # ------------------------------------------------------------------
+    # THE CLASS THE ORACLE COULD NOT SEE (v0.72 cold review, FINDING 1).
+    #
+    # `resolve_label_branches` bakes a BYTE-ACCURATE offset into every local
+    # branch, and `validate_branch_targets` gates it onto the instruction-start
+    # set — both BEFORE the encode loop that inserts inline islands. An island
+    # placed between a branch and its target moves the target and not the
+    # branch, so the baked offset is short by exactly the island's size.
+    #
+    # Measured on this fixture before the guard landed:
+    #     island        0x100c .. 0x1014      = 8 bytes
+    #     branch target emitted 0x26ba, correct 0x26c2 = 8 bytes early
+    #     at 0x26ba the taken branch ran `str.w r0,[sp,#8]` + `str.w r1,[sp,#0xc]`
+    #     — writing the last filler i64.mul into the local it must skip.
+    #
+    # `litpool_islands_345.wat` has ZERO control-flow ops (`grep -cE
+    # '\(if|\(block|\(loop|br_if|\(br '` -> 0), and the differential's
+    # byte-identity leg only compares modules that need NO island, so neither
+    # could ever see this. This fixture is that gap, closed.
+    #
+    # It must REFUSE ON BOTH LEGS: with islands off because the pool is out of
+    # range (#345), and with islands ON because every candidate placement falls
+    # inside a branch span, so the placer declines rather than mis-target it.
+    # A loud refusal is the correct answer here; a compiled object is the
+    # defect.
+    span_wat = os.path.join(os.path.dirname(__file__),
+                            "litpool_islands_345_branchspan.wat")
+    assert os.path.exists(span_wat), f"missing fixture: {span_wat}"
+    with tempfile.TemporaryDirectory() as td:
+        for label, extra_env in (("islands OFF", {"SYNTH_NO_LITPOOL_ISLANDS": "1"}),
+                                 ("islands ON", {})):
+            e = dict(os.environ)
+            e.update(extra_env)
+            r = subprocess.run(
+                [SYNTH, "compile", span_wat,
+                 "-o", os.path.join(td, f"span_{len(extra_env)}.o"),
+                 "--target", "cortex-m7", "--relocatable", "--all-exports",
+                 "--native-pointer-abi"],
+                capture_output=True, text=True, timeout=300, env=e,
+            )
+            blob = r.stdout + r.stderr
+            assert r.returncode != 0 or "skipping function" in blob, (
+                f"MISCOMPILE RISK ({label}): the branch-spanning fixture "
+                f"COMPILED. An island was placed between a branch and its "
+                f"target, which silently mis-targets the branch by the "
+                f"island's size. A loud refusal is the correct answer.\n"
+                + blob[:900]
+            )
+            print(f"  OK branch-span: REFUSED with {label}")
+
     print(f"litpool-345 declines: {declines}")
     return 0
 
