@@ -188,4 +188,15 @@ artifacts:
       verification-track: differential
       issue: "#1341"
       landed: "#1341"
+      # RQ-71-ISSUESCOPE (#1250): the artifact's scope shipped; the ISSUE is
+      # wider — #1341 asks for THREE things and this lane deliberately delivered
+      # items 1 and 2 (the per-export number at compile time, and that number
+      # recorded in the object). Item 3, a stack line in
+      # docs/embedder-abi-relocatable-arm.md under "Region requirements", is NOT
+      # delivered: that file is untouched by v0.71 and still offers the embedder
+      # no number and no pointer to --emit-stack-depth. cpetig wrote that even
+      # "the embedder must size this itself, synth does not bound it" would have
+      # saved the investigation, so the doc ask is the reporter's, not a nicety.
+      # Carried to v0.72 as STACKDOC.
+      issue-scope: outlives
       done-when: "file:scripts/repro/stack_depth_1341.py"

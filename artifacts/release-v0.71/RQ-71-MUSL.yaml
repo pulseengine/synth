@@ -114,4 +114,12 @@ artifacts:
       verification-track: differential
       issue: "#1349"
       landed: "#1349 (PR #1357)"
+      # RQ-71-ISSUESCOPE (#1250): the artifact's scope shipped; the ISSUE is
+      # wider — #1349 asks for TWO musl triples BY NAME,
+      # x86_64-unknown-linux-musl AND aarch64-unknown-linux-musl. Only the
+      # x86_64 one is in the release matrix; aarch64-unknown-linux-musl is
+      # absent, so an Alpine / distroless-static consumer on arm64 — the case
+      # the issue was filed from — is still unserved. Carried to v0.72 as
+      # ARM64MUSL.
+      issue-scope: outlives
       done-when: "contains:.github/workflows/ci.yml:musl-portable-asset"

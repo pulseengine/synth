@@ -5,6 +5,137 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.71.0] - 2026-09-23
+
+### "The number the consumer needs"
+
+Eight artifacts. Two musts, both from cpetig, both about a number an embedder
+has to have and synth would not tell them.
+
+**STACKDEPTH (#1341)** — a `--relocatable` object said how much LINEAR MEMORY to
+reserve and nothing about NATIVE STACK. Guessing low does not fail loudly: the
+reporter's export returned the bit-exact correct answer every time and then
+overwrote an RTOS pointer. `synth compile --emit-stack-depth` now emits a
+per-export maximum native stack depth in a `synth-stack-v1` sidecar, and records
+it in the object.
+
+The reporter proposed reusing `--emit-wcet`'s call-graph walk. **The traversal
+was right and the arithmetic was not**, which is what shaped the lane:
+`wcet_compose.rs` composes `own + Σ multiplier × callee_total` where multiplier
+is the proven EXECUTION COUNT, so a callee invoked 1000× in a loop would be
+charged 1000× the stack it uses. Stack depth is a MAX over the call tree, not a
+trip-weighted sum — and over-reporting is not the safe direction, because an
+embedder told 2 MB for a 2.3 KB requirement stops believing the number. The new
+pass is a sibling sharing the DFS, with the same honest declines (recursion,
+`call_indirect`, external calls, unknown SP moves).
+
+**Residual, stated rather than discovered:** #1341 asks for three things and
+this release delivers items 1 and 2. Item 3 — a stack line in
+`docs/embedder-abi-relocatable-arm.md` under "Region requirements" — is NOT
+delivered: that document is untouched by v0.71 and still names no number and no
+`--emit-stack-depth`. So the number now exists and the page an embedder reads
+does not yet point at it. #1341 stays OPEN on this tag
+(`issue-scope: outlives`); carried to v0.72 as STACKDOC.
+
+**ISLANDS (#345)** — the literal-pool wall cpetig hit on a 50 KB function is
+reproduced in-repo and the refusal is pinned, with the fix deferred and measured.
+`arm_backend.rs`'s `imm12 > 0xFFF` refusal is CORRECT; what breaks is ONE pool
+per function, appended at the END, so any `LdrSym` more than 4 KB from that end
+is unreachable by construction.
+
+### Also shipped
+
+- **VFPALIAS (#1354)** — the plan expected a refutation; the red was buildable.
+  synth REFUSED a legal wasm program — a frame-homed float local, redefined —
+  from 14 homed f32 locals and 8 homed f64. v0.70 narrowed the INTEGER allocator
+  check for exactly this class; its VFP twin never received the narrowing. The
+  fix mechanism did not transfer: frame homes and spill slots come from the SAME
+  pool, so a range cannot separate them and the selector now enumerates the
+  homes. Backed by 84 emulations bit-identical to wasmtime, a potency gate that
+  rejected its own first input list, and byte-identity on the negative control.
+- **ISSUESCOPE (#1250)** — an artifact can now declare `issue-scope: outlives`
+  when its scope shipped but its ISSUE asks a wider question, and a release-time
+  check compares the issues actually closed on the tag against the set the
+  artifacts authorise. Proven by replaying v0.70, which closed exactly five and
+  deliberately held two open.
+- **MUSL (#1349)** — a statically linked `x86_64-unknown-linux-musl` asset now
+  ships alongside the gnu ones, which carry a GLIBC_2.39 floor that excludes
+  Ubuntu 22.04, Debian 12, RHEL 9, Amazon Linux 2023 and Alpine. Additive: the
+  gnu assets keep their names, consumers and attestation path.
+  **Residual, stated rather than discovered:** #1349 names TWO triples and only
+  `x86_64-unknown-linux-musl` ships. There is still no
+  `aarch64-unknown-linux-musl` asset, so an arm64 Alpine / `distroless-static`
+  consumer is not yet served. #1349 stays OPEN on this tag
+  (`issue-scope: outlives`); carried to v0.72 as ARM64MUSL.
+- **MUTANTDRIFT (#1189)** — REFUTED. The remedy already existed (`reanchor`);
+  what was missing was that CI never ran it and the resulting red reads as a
+  coverage regression. Documented at the step, and exercised for real when this
+  release's own edits drifted nine sites.
+- **PAGELIB (#1339)** and **ARCHMODEL (#1136)** deferred with measurements
+  re-taken at the cut. PAGELIB's deferral changed KIND: gale answered on #1145
+  asking that the refusal NOT move into `synth-core`.
+
+### Where the +20 warnings come from
+
+The derived `Trace-graph delta` section below reports **+20 warnings / +0
+errors**. That number is attributed here rather than left to be read as a
+regression — `rivet validate`: **40 errors -> 40 errors** (unchanged), **485 -> 505
+warnings** (+20). The +20 is fully attributed — it is the standing cost of
+adding eight artifacts in this naming and typing convention, not a new defect
+class:
+
+| class | count |
+|---|---|
+| "needs an incoming `verifies` link from a verification measure" | 8 — one per new artifact |
+| `req-type: process` outside the schema's allowed set | 4 — ARCHMODEL, ISSUESCOPE, MUSL, MUTANTDRIFT |
+| id not usable as a commit-trailer reference (`RQ-71-X` has no all-digit suffix) | 8 — one per new artifact |
+
+8 + 4 + 8 = 20, derived by diffing the full warning set against the v0.70.0
+worktree rather than inferred from the totals. This is the accounting #1337
+added the delta for: v0.69 shipped 22 new warnings nobody looked at.
+
+The last two classes are SYSTEMATIC — every process-typed artifact and every
+`RQ-NN-NAME` id trips them, so the count grows by roughly this much every
+release. That is a naming/schema decision to make deliberately, not a defect to
+fix per-artifact; recorded as a v0.72 observation.
+
+### Corrected in this release
+
+`docs/release-process.md` said the `verify` feature is not enabled in release
+builds. That decision was taken in v0.58 (#1000) and the sentence had been false
+for thirteen releases; the shipped v0.70.0 binary carries ordeal and none of the
+degraded-path message.
+
+Two cold reviewers ran against a simulation of the merged tree before the tag.
+They returned 88 verified / 8 false / 8 misleading / 4 unverified plus 14
+gate-potency findings, and named three tag-blockers — including a gate this
+release itself had built that **could not pass**. All are corrected, with the
+corrections recorded in the artifacts rather than in next release's prose. See
+`docs/reviews/v0.71-cold-review.md`.
+
+<!-- DERIVED by scripts/release_notes_from_rivet.py from `rivet diff` -->
+<!-- base v0.70.0 · rivet 0.37.0 · do not hand-edit the lists -->
+
+### Artifacts (8 added, 0 removed, 2 modified, 591 unchanged)
+
+- **RQ-71-ARCHMODEL** — The AADL/spar step is N/A for the NINTH consecutive release — spar#445 re-verified at the cut, and the chain WALKED rather than recalled
+- **RQ-71-ISLANDS** — synth emits exactly ONE literal pool per function, appended at the end — so any LdrSym more than 4 KB from the end is unreachable by construction and a large function cannot compile
+- **RQ-71-ISSUESCOPE** — Nothing connected `this artifact is implemented` to `this issue must NOT be closed` — now a field says it and a gate compares the tag's actual closures against it
+- **RQ-71-MUSL** — Linux release assets were glibc-2.39-only, so one payload set the portability floor for the whole varve pinned layer — a static musl asset now ships alongside
+- **RQ-71-MUTANTDRIFT** — A mutant pinned by file:line:col is silently invalidated by any edit ABOVE it, and the resulting red reads as a coverage regression
+- **RQ-71-PAGELIB** — The custom-page-size refusal is CLI-only — and the downstream consumer has now ANSWERED: do not move it into synth-core
+- **RQ-71-STACKDEPTH** — A --relocatable object says how much LINEAR MEMORY to reserve and nothing about native stack — guess low and the failure is silent memory corruption with a bit-exact correct result
+- **RQ-71-VFPALIAS** — The #881 VFP twin refused a LEGAL wasm program: a frame-homed float local, redefined — the same class as v0.70's headline, and the red WAS buildable
+- *(modified)* **RQ-70-FALCONCORPUS** — field changed: issue-scope
+- *(modified)* **RQ-70-NPA** — field changed: issue-scope
+
+### Trace-graph delta
+
+- errors: **+0 / -0**
+- warnings: **+20 / -0**
+
+> 20 new warning(s), 0 new errors. Listed so the release says whether it improved the trace graph or degraded it — v0.69 shipped 22 unseen (#1337).
+
 ## [0.70.0] - 2026-09-22
 
 **"Evidence you can re-derive"** — nine artifacts: **seven implemented, two
