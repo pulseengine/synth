@@ -68,7 +68,13 @@ artifacts:
 
       FILED AS #1354, because #881 / #1069 / #1321 are all closed and a reach
       defect that refuses legal wasm needs a record an outsider can check — the
-      same role #1321 played for the integer twin.
+      same role #1321 played for the integer twin. `issue:` NAMES #1354 AND NOT
+      THE LANE'S PLAN NUMBER #881, deliberately: RQ-71-ISSUESCOPE's closure gate
+      derives the release's authorised close-set from `fields.issue`, and #881
+      is already closed, so leaving it there would authorise a no-op while
+      leaving the issue this release actually fixes unauthorised — the gate
+      would then red on the tag for closing #1354. Found by running that gate's
+      own census against a simulation of the merged tree before cutting.
 
       COST, RECORDED: the selector ratchet rose 19538 -> 19604 (+66 = 47 comment +
       17 code + 2 blank, re-derived per file), waived in the same PR. No lowering
@@ -89,6 +95,6 @@ artifacts:
       req-type: functional
       priority: should
       verification-track: differential
-      issue: "#881"
+      issue: "#1354"
       landed: "#1354"
       done-when: "contains:.github/workflows/ci.yml:vfp_home_redef_881_differential.py"
