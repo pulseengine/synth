@@ -69,5 +69,6 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1339"
+      landed: "PR #1358. NOT LANDED as a fix — the refusal stays CLI-only and, per gale on #1145, must NOT move into synth-core. What landed is the INCREMENT this deferral owed: the CLI-only measurement RE-VERIFIED at the v0.71 cut (both definitions and all six calls at three sites still in synth-cli; the decoder still only decodes), and the consultation the v0.71 plan required RECORDED with gale's answer quoted. The deferral therefore changed KIND — v0.70 deferred for want of a shape, v0.71 defers because the only known downstream consumer asked for the opposite."
       disposition: deferred
       done-when: "manual: #1145's answer is recorded — gale asked that the refusal NOT move into synth-core, because it only uses the CLI and a library refusal closes a door it wants open — and the CLI-only measurement is re-verified at the cut rather than recalled"

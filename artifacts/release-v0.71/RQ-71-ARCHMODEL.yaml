@@ -75,5 +75,6 @@ artifacts:
       verification-track: manual
       issue: "#1136"
       carried-from: RQ-70-ARCHMODEL
+      landed: "PR #1358. NOT LANDED as a fix — spar#445 is still OPEN (created 2026-09-03, last updated 2026-09-03, re-verified 2026-09-23), so the AADL/spar step stays N/A for a ninth consecutive release. What landed is the INCREMENT: the state re-verified AT THE CUT with the date recorded, and `carried-from: RQ-70-ARCHMODEL` ADDED so the chain is walked rather than an ordinal asserted — which is what RQ-70-ARCHMODEL's own done-when required and this artifact had failed to do."
       disposition: deferred
       done-when: "manual: spar#445 re-verified at the v0.71 cut (OPEN, created 2026-09-03, last updated 2026-09-03, checked 2026-09-23), the `carried-from` chain is EXTENDED by this artifact (carried-from: RQ-70-ARCHMODEL) and walks back to the v0.63 head = nine consecutive releases, and loop_conformance_check reports the steps-1-2 slot NA-FILED naming this artifact"
