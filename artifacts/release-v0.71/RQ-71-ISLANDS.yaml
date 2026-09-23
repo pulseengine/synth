@@ -135,6 +135,13 @@ artifacts:
       verification-track: differential
       issue: "#345"
       disposition: deferred
+      # R4: a delivery-shaped commit landed for this artifact, so the
+      # increment is RECORDED rather than the status flipped. What landed
+      # is the reproduction and the decline pin, NOT constant islands —
+      # `disposition: deferred` beside it is the honest pair, and R11
+      # accepts `landed:` next to a non-claiming status precisely when a
+      # disposition says why it is not claiming.
+      landed: "NOT LANDED as a fix. What landed: scripts/repro/litpool_islands_345.wat (reproduces #345 in-repo at imm12=5716 > 4095 on --relocatable --native-pointer-abi) and scripts/repro/litpool_islands_345.py (CI-wired, pins that #345 is a REFUSAL and not a miscompile, with a potency control showing the same shape compiles with a short body). Constant islands are BLOCKED on a post-encode branch-relaxation pass that does not exist: branch displacements are pre-computed upstream as halfwords and nothing repairs them after an insertion."
       # NOT `file:...litpool_islands_345.wat`: that fixture is committed by THIS
       # release, so such a predicate would evaluate TRUE while the lane is
       # deferred and nothing is fixed — a done-when that cannot fail. The
