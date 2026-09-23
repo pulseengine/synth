@@ -1,0 +1,73 @@
+artifacts:
+  - id: RQ-72-VEX
+    type: system-req
+    title: "An SBOM says what is in the product; it cannot say whether an advisory reaches it — and only this repo can assert `not_affected because the vulnerable path is unreachable`"
+    description: >
+      ARRIVED DURING THE v0.71 CUT (#1359, 2026-09-23 05:09), so it was triaged
+      rather than absorbed — v0.70 took #1341 and #1349 mid-cut and #1341 became
+      a v0.71 must, so a late arrival is not automatically a deferral.
+
+      BOTH OF THE ISSUE'S CHECKABLE CLAIMS WERE REFUTED AGAINST SOURCE BEFORE
+      THIS WAS WRITTEN, and both HELD:
+
+        ls deny.toml ; git ls-files | grep -c deny.toml
+          -> No such file; 0 tracked.
+        grep -rl 'cargo-deny\|cargo deny' .github/workflows/
+          -> NOTHING. So the advisory check genuinely comes WITH this change;
+             it is not an existing signal being re-published.
+        gh release view v0.70.0 --json assets
+          -> synth-0.70.0.cdx.json IS published, beside SHA256SUMS.txt and its
+             .sig/.pem/.cosign.bundle. So the "slots in beside it with the same
+             machinery" claim is true, and the release.yml phase-6 block
+             (line 235) already generates the SBOM BEFORE SHA256SUMS precisely
+             so the sums cover it.
+
+      THE ASYMMETRY IS THE WHOLE ARGUMENT, and it is why this is asked of synth
+      rather than of varve. varve can match components against an advisory DB
+      from the outside. It can NEVER assert `not_affected` with the
+      justification `vulnerable_code_not_in_execute_path` — that is a fact about
+      THIS source tree, knowable only here. An SBOM answers "what is in it"; a
+      consumer pinned to a varve layer is asking "does RUSTSEC-XXXX-YYYY reach
+      what I am running", and nothing in the ecosystem answers that for a pinned
+      toolchain.
+
+      THE HALF THAT IS EASY TO GET WRONG, and the reason this is a `should` and
+      not a `must`: re-issuing when a NEW advisory matches an ALREADY-SHIPPED
+      release. A VEX generated once at tag time and never revisited is
+      strictly worse than none, because it carries a date that implies currency
+      it does not have. Either the re-issue path exists, or the document says in
+      its own metadata that it is a point-in-time statement — decide which, and
+      do not ship the first while implying the second.
+
+      AND THE TRAP THIS PROGRAMME HAS HIT BEFORE: an auto-generated
+      `not_affected` is a MACHINE GUESS wearing a human assertion's clothes. The
+      justification field is exactly where a plausible false claim would sit and
+      propagate, which is v0.62's measured class. Any `not_affected` this emits
+      must either be human-asserted or be derived from something that can FAIL
+      — a reachability check, not an absence of evidence. `affected` and a
+      blank justification is an honest answer; a fabricated
+      `vulnerable_code_not_in_execute_path` is the kind of statement that gets
+      believed and is worse than silence.
+    status: proposed
+    release: v0.72
+    tags:
+      - supply-chain
+      - release-engineering
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1359"
+      done-when: "file:deny.toml"
+      verified-by: >-
+        The predicate names deny.toml because the advisory check is the part
+        that must exist FIRST — a VEX with no advisory source is a document
+        about nothing, and the issue itself says the check comes with the
+        change. It is deliberately NOT a grep for a .vex.json in release.yml,
+        which a filename in a comment would satisfy. The re-issue half and the
+        justification-honesty half are prose obligations, named here rather
+        than dressed as mechanical.

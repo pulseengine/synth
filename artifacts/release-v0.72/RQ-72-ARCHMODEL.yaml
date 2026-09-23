@@ -1,0 +1,68 @@
+artifacts:
+  - id: RQ-72-ARCHMODEL
+    type: system-req
+    title: "spar#445 unchanged since 2026-09-03 — the SIXTH consecutive N/A for the architecture-model step, filed so the deferral stays visible to the gate rather than silent"
+    description: >
+      RE-VERIFIED AT THE v0.72 PLANNING, not recalled: `gh issue view 445 --repo
+      pulseengine/spar` returns state=OPEN, last updated 2026-09-03 —
+      "spar accepts property associations from UNDECLARED property sets". So the
+      feature loop's step 1 (model the architecture in spar) and step 2 (generate
+      WIT from spar) are N/A for a SIXTH consecutive release, for the same
+      unchanged upstream reason.
+
+      WHY THIS IS FILED AT ALL. The loop's own rule is that a recurring N/A is a
+      BACKLOG ITEM, not an exemption: marking either step N/A for the same
+      reason three features running is supposed to become an issue. #1136 is
+      that issue, and this artifact is what keeps the deferral VISIBLE to
+      `loop_conformance_check`'s steps-1-2 slot each release.
+
+      THE TAGS ARE LOAD-BEARING, and this is not a style note. That slot matches
+      `feature-loop` AND (`aadl` | `spar`). In v0.69 the artifact lost its
+      `feature-loop` tag, and the filing whose entire purpose is to keep a
+      deferral visible became INVISIBLE to the gate that reads it — a deferral
+      that silently stops being declared is indistinguishable from a step that
+      was never needed. Keep `[process, carried, spar, aadl, feature-loop]`
+      exactly.
+
+      THE CHAIN, WALKED RATHER THAN ASSERTED. Following `carried-from` from
+      RQ-71-ARCHMODEL yields RQ-71 -> RQ-70 -> RQ-69 -> RQ-68 -> RQ-67 -> RQ-66
+      -> RQ-65 -> RQ-64 -> RQ-63, length 9; this artifact makes it 10. v0.71's
+      cold review found RQ-71-ARCHMODEL claiming to walk that chain while
+      carrying NO `carried-from` field at all — the claim was true of the lane
+      and false of the artifact. The field below is what makes the sentence
+      checkable.
+
+      DO NOT REINTRODUCE THE SENTENCE "release artifacts only exist from v0.63".
+      It is FALSE — `artifacts/release-v0.56.yaml` onward exist, verified again
+      at this planning — it was explicitly retracted in RQ-69-ARCHMODEL, and it
+      CAME BACK in RQ-70-ARCHMODEL because that artifact was written from its
+      predecessor's SHAPE instead of its CORRECTIONS. The chain stops at
+      RQ-63-ARCHMODEL because that is where the ARCHMODEL LANE began, which is a
+      fact about this lane and not about the artifact corpus. Read the
+      predecessor's corrections, not its layout.
+    status: proposed
+    release: v0.72
+    tags:
+      - process
+      - carried
+      - spar
+      - aadl
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: carried
+      verification-track: manual
+      issue: "#1136"
+      carried-from: RQ-71-ARCHMODEL
+      done-when: "manual: spar#445 re-verified at the v0.72 cut and the date recorded; steps 1-2 declared N/A with the unchanged upstream reason named"
+      verified-by: >-
+        Deliberately `manual:` and not mechanical. This artifact's deliverable is
+        a re-verification with a DATE, and a `contains:` predicate would go true
+        on the artifact's own prose — a gate passing because the claim is
+        written down rather than because it was checked. v0.71 measured the
+        cost of pretending otherwise: a refuted lane forced its done-when to
+        `manual:` anyway, taking the release from a planned 6-of-8 mechanical to
+        5-of-8. Plan the honest one up front.

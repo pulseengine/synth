@@ -1,0 +1,85 @@
+artifacts:
+  - id: RQ-72-RITUAL
+    type: system-req
+    title: "The ritual that gates every merge AND the tag lives only in a session scratchpad — so #1269's two named defects cannot be fixed anywhere, and the rebuild-from-memory already injected a third"
+    description: >
+      TWO FINDINGS THAT BELONG TOGETHER, and only the second was obvious.
+
+      FINDING 1 — IT HAS NO HOME. Refuting commands, run on main at 87fb06d7
+      (2026-09-23), premise held in all three directions:
+
+        ls scripts/ | grep -iE 'merge|tag|release|ritual'
+          -> release_notes_from_rivet.py, release_verify_smoke.sh,
+             test_release_notes_from_rivet.py.  No merge ritual. No tag script.
+        git grep -lIE 'CHECK3b|four-check|baseRefOid'
+          -> artifact PROSE and COLD REVIEWS only, plus
+             .github/workflows/dependabot-auto-merge.yml, a different path.
+        git grep -lIE 'merge --squash' -- scripts .github
+          -> NOTHING. The CHECK4 squash simulation exists nowhere in the repo.
+
+      FINDING 2 — AND THAT IS WHY #1269 IS STILL OPEN. #1269 names two DEFECTS
+      IN THE RITUAL ITSELF, filed 2026 against the v0.66 era, and they cannot be
+      fixed because there is no artifact to fix:
+
+        (a) CHECK2 asserts `baseRefOid == origin/main`. That is the PR's
+            recorded BASE BRANCH TIP, not the commit the branch forked from, so
+            a branch cut from an old commit can carry a perfectly current
+            baseRefOid. The check answers "is this PR pointed at today's main?"
+            while every reader takes it to mean "is this branch rebased onto
+            today's main?". Fix: assert the MERGE-BASE —
+            `git merge-base --is-ancestor origin/main <PR head>`.
+        (b) The step-8 `git diff <PR head> <merged>` conflates "did the squash
+            alter my content?" with "how far did main move?". It read 0 for 45
+            consecutive merges and then 189 on #1268, where the 189 was proven
+            byte-identical to main's own four-dependabot-commit advance. The 45
+            clean rows are not evidence the check discriminates; they are
+            evidence every prior branch happened to be current.
+
+      THE v0.71 RELEASE MERGE WAS CHECKED AGAINST BOTH, because an unfixed
+      defect is not an excuse for an unchecked merge: `git merge-base
+      --is-ancestor 3221ca46 09798252` passed and `git rev-list --count
+      09798252..3221ca46` was 0, so the branch was genuinely current and the
+      recorded 0-line step-8 diff is discriminating rather than vacuous. That
+      check was run BY HAND. Nothing in the repo made it happen.
+
+      AND THE SCRATCHPAD REBUILD INJECTED A THIRD DEFECT. The originals died
+      with the /Volumes/Work volume and were rebuilt from memory during v0.71.
+      The rebuilt CHECK4 PREDICTED GitHub's default squash subject instead of
+      PINNING it — `gh pr merge --squash` takes the PR title only when the
+      branch has MORE THAN ONE commit; with exactly one it takes that commit's
+      subject. So CHECK4 ran `status_evidence_check` at rc=0 on a simulation of
+      a tree that was never created, #1356 landed a different subject, and main
+      went red on R10 with CI green on the same head. A gate that passes on a
+      tree that never existed is worse than one that cannot fail, because the
+      green reading is produced by the gate doing its job on the wrong input.
+
+      WHAT WOULD MAKE THIS WRONG TO BUILD, and it is a real risk rather than a
+      formality: a committed script CI does not run is one more hand-maintained
+      artifact to drift — the exact accumulation this project's North Star
+      correction is about. It is only worth it if the committed script is the
+      SINGLE source the human path also uses. Committing a second copy beside
+      the scratchpad one makes the problem WORSE. Check whether
+      `release_verify_smoke.sh` is the right home before adding a file.
+    status: proposed
+    release: v0.72
+    tags:
+      - release-gate
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: differential
+      issue: "#1269"
+      done-when: "file:scripts/merge_ritual.sh"
+      verified-by: >-
+        The predicate is the script's EXISTENCE, because the finding is that it
+        exists nowhere tracked and #1269's fixes therefore have no landing site.
+        Correctness is evidenced red-first: CHECK2 fed a branch cut from an old
+        commit but pointed at current main must REFUSE (it passes today);
+        CHECK3b fed a PR with a pending non-advisory check must REFUSE; and a
+        squash simulation whose subject deliberately disagrees with the pinned
+        --subject must be caught.

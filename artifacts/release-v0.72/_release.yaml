@@ -1,0 +1,142 @@
+# v0.72 — "The gate that never gets asked"
+#
+# EVERY candidate below had its REFUTING COMMAND RUN AGAINST SOURCE before it
+# was written, during the v0.71 cut. Two were RESHAPED by the answer and one was
+# NARROWED; those are marked. Re-verify at the v0.72 cut, do not re-derive.
+#
+# THE THEME comes from what v0.71's own cold reviews found, twice over. The
+# release built gates and then shipped them unasked:
+#   * `issue_closure_check.py` — every rule proven to fire by mutation, and NO
+#     INVOCATION SITE anywhere. Its done-when pins the TEST's presence in a YAML
+#     file. Measured 2026-09-23: the only repo-wide references are its own
+#     docstring, its unit test, one prose line, and `ci.yml:514` running the
+#     TEST. The check itself is run by a human, by hand, at the tag.
+#   * R12, the rule that release added to `status_evidence_check.py`, has NO
+#     UNIT COVERAGE — the only rule in that file without any. Measured from the
+#     repo root with sha-verified restore: disabling its vocabulary branch
+#     leaves BOTH suites rc=0. (My first attempt at this measurement ran from
+#     the wrong cwd and appeared to refute the finding; re-run correctly it
+#     confirmed it. Recorded because the wrong measurement was the comfortable
+#     one.)
+# That is v0.70's "counted declarations and printed them as evaluation", one
+# layer out: not a gate that cannot fail, but a gate nothing ever asks.
+#
+# PRIORITY — ORDERED BY WHO IS BLOCKED.
+#
+#   must  CIPOOL  (#1062 continuation) — FOUR REQUIRED CONTEXTS STALL EVERY
+#         RELEASE. Measured on v0.71's own #1357 round: of 66 jobs, the 8
+#         self-hosted ones ALL finished in ~4 minutes (05:44:43 -> 05:48:47);
+#         then nothing started for 25 minutes with 55 queued, confirmed by two
+#         samples 45s apart (queued=55 running=0 both times, so a sustained
+#         stall and not a point reading — the v0.61 lesson). Five of the nine
+#         required contexts are already self-hosted and green in four minutes;
+#         the four that stall are Test, Z3 Verification, Bazel Build & Proofs
+#         and Kani Verification, ALL hosted. Those are EXACTLY the residual
+#         RQ-61-CICAP named and deliberately did not move ("per-toolchain
+#         questions: apt llvm, bazel+nix, z3, kani, each needing its own proof
+#         on the pool"). CHECK3b needs ZERO non-advisory pending, so a release
+#         waits on all 66 jobs; v0.71 needed four rounds after rebases and none
+#         completed inside a working session. THE BOTTLENECK IS THE
+#         GITHUB-HOSTED QUOTA, NOT THE FLEET — 86% of jobs target a pool that
+#         stalls while a dozen machines idle. SHAPE: one toolchain per PR, each
+#         proven green on the pool for several consecutive main runs before the
+#         next, exactly as Clippy was moved. Retargeting a REQUIRED context is
+#         the one move that can DEADLOCK merges, so it is never a batch.
+#         RAISED BY THE MAINTAINER mid-release, then measured.
+#
+#   must  ISSUEGATE (#1250 continuation) — ASK THE GATES v0.71 BUILT. Four
+#         findings, one lane: (a) wire `issue_closure_check` into the release
+#         process so the comparison actually runs, and re-point its done-when
+#         at the invocation rather than the test's presence; (b) give R12 unit
+#         coverage; (c) pin the `issue-scope:` census line in ci.yml — it is the
+#         ONLY line in that step without a grep pin, so it could print
+#         "0 issue(s) authorised" unnoticed; (d) the v0.70 "frozen replay" is
+#         not frozen — it reads live, editable artifacts, and v0.71 is what made
+#         it pass. All four measured during the v0.71 cold review.
+#
+#   should VEX (#1359, avrabe) — arrived DURING the v0.71 cut and was scheduled
+#         rather than squeezed. ALL FIVE PREMISES RE-DERIVED AND CONFIRMED
+#         2026-09-23: no `deny.toml` at root (kiln/scry/sigil each vendor one
+#         under `.rivet/repos/`, so the template is there); `cargo-cyclonedx`
+#         ALREADY installed and run in release.yml (187-201) with
+#         `synth-<version>.cdx.json` already a signed asset; `Cargo.lock` IS
+#         tracked, so "audit the SHIPPED lockfile" is satisfiable; NO
+#         vex/cargo-audit/RUSTSEC machinery anywhere; varve#179 OPEN. The
+#         asymmetry is the argument: varve can match components against an
+#         advisory DB but can never say `not_affected because the vulnerable
+#         path is unreachable here` — a fact only this source tree can assert.
+#         UNSETTLED AT SCOPING, flagged to the reporter: re-issuing a VEX for an
+#         ALREADY-SHIPPED release means adding to a signed asset set after the
+#         fact, and whether that is a new asset on the existing tag, a patch
+#         tag, or an out-of-band document is a release-model decision the issue
+#         does not make.
+#
+#   should RITUAL — THE RELEASE RITUAL HAS NO HOME IN THE REPO. Refuting command
+#         run 2026-09-23: `ls scripts/ | grep -iE 'tag|merge|ritual|cut'`
+#         returns NOTHING. THE LANE WAS RESHAPED BY THIS: v0.70 filed it as
+#         "TAGGATE", a defect in the conformance checker. It is not —
+#         `loop_conformance_check.py`'s pretag/retro logic is SOUND (ref=HEAD
+#         for pretag, ref=tag for retro). The defect was in the tag script that
+#         CALLS it, and that script exists only in a session scratchpad, which
+#         is why it died with /Volumes/Work and was rebuilt from prose during
+#         v0.71. It now carries FOUR corrections that live nowhere durable:
+#         gate the push on PRETAG and assert RETRO after publishing; assert a
+#         signature EXISTS (`%G?` != N) rather than demanding `G`, which would
+#         refuse every correct release; verify annotated-and-unsigned by
+#         COUNTING signature blocks in the tag object; and pin the squash
+#         subject (below). TAGGATE was never filed as an issue, so it has no
+#         tracked existence either. EVIDENCE THIS IS REAL AND NOT TIDINESS: the
+#         v0.71 cut found a `cut_release.sh` in the scratchpad dated
+#         2026-09-19, written to cut v0.70, with 4 dead-path and 7 v0.70
+#         references — a plausible-looking ritual for the wrong release on a
+#         volume that no longer exists.
+#
+#   should SQUASHSUBJECT — measured in v0.71 BY BEING BITTEN, and it reddened
+#         main. `gh pr merge --squash` uses the PR TITLE only when the branch
+#         has MORE THAN ONE commit; with exactly one it uses THAT COMMIT'S
+#         subject. #1356 had one commit, so CHECK4 simulated the PR title and
+#         main landed `feat(issuescope): ... (#1356)`. The gate PASSED ON A TREE
+#         THAT WAS NEVER CREATED and main went red on R10. Fixed twice in
+#         flight — pin `--subject`, and give every artifact a `landed:` naming
+#         its PR — but NEITHER fix is enforced by anything, so the next release
+#         can repeat it. The deliverable is the enforcement, not the fix.
+#
+#   should ARM64MUSL — the NAMED RESIDUAL of RQ-71-MUSL, not a new idea. Only
+#         `x86_64-unknown-linux-musl` is published; `aarch64-unknown-linux-gnu`
+#         still carries a glibc floor, and a varve layer's portability is the
+#         MAXIMUM across its payloads — so the arm64 payload still sets the
+#         floor the x86_64 one no longer does. Needs the `cross` path and its
+#         own measurement.
+#
+#   carried ISLANDS (#345) — RE-SCOPED BY v0.71's COLD REVIEW, and the
+#         correction matters for planning. v0.71 deferred it saying "no
+#         post-encode branch-relaxation pass exists". FALSE:
+#         `resolve_label_branches` (arm_backend.rs:2333, called 1468/1590) is
+#         exactly that, with a size fixed point, and it RUNS on the
+#         direct/--relocatable path. What has no post-encode fixup is the
+#         OPTIMIZED path's inline `BOffset`/`BCondOffset`, which carry no label.
+#         So the lane is bounded by SELECTOR PATH, not blocked outright, and the
+#         remaining work is the island pass itself: pool splitting, placement,
+#         per-entry reachability, and its interaction with that fixed point.
+#
+#   carried PAGELIB (#1339) — gale ANSWERED on #1145 (2026-09-22): do NOT move
+#         the refusal into synth-core; it only uses the CLI and a library
+#         refusal closes a door it wants open. Re-opens ONLY for a synth-core
+#         library consumer that is not gale. Do not re-scope without one.
+#
+#   carried ARCHMODEL (#1136) — spar#445 OPEN, created AND last updated
+#         2026-09-03. Tenth consecutive N/A at v0.72. THE COUNT IS THE
+#         `carried-from` CHAIN AND v0.71 HAD TO FIX THIS: its artifact claimed
+#         "the chain, WALKED" while citing a FILENAME GREP and carrying no
+#         `carried-from` field at all, breaking RQ-70-ARCHMODEL's own done-when
+#         verbatim. The field is now set and the chain walks v0.71..v0.63.
+#         EXTEND IT; do not assert an ordinal. And do NOT reintroduce "release
+#         artifacts only exist from v0.63" — FALSE (release-v0.56.yaml onward
+#         exist), retracted in v0.69, returned in v0.70, corrected again in
+#         v0.71.
+#
+# ALREADY ANSWERED IN v0.71 — DO NOT RE-ASK. "Did the OTHER twin check also miss
+# a fix?" Swept 2026-09-23: the across-CALL pair
+# (`check_caller_saved_across_calls` / `check_vfp_caller_saved_across_calls_detail`)
+# both take only `instrs`, neither has a scope parameter, and register-liveness
+# has no home-vs-spill confusion. The divergence had exactly ONE instance.
