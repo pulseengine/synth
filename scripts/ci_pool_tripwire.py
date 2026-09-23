@@ -21,10 +21,10 @@ merge-wave transient.)
 
 MATCH THE LABEL EXACTLY, NEVER BY SUBSTRING
 -------------------------------------------
-A first pass at this counted `ubuntu` as a substring and reported 56/67. That
+A first pass at this counted `ubuntu` as a substring and reported 56/68. That
 swept in `ubuntu-24.04-arm`, which is a DIFFERENT hosted pool with its own
 queue, and inflated the number this lane exists to reduce — in the flattering
-direction. The honest figure is 55/67. Exact-label matching is not a style
+direction. The honest figure is 55/68. Exact-label matching is not a style
 preference here; it is the difference between a true and a false number.
 
 THE DEADLOCK GUARD
@@ -59,7 +59,7 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 #   vcr-sel-005-cross-backend-op-parity-gate. Each uses only
 #   checkout + rust-toolchain + cache, which is the shape `Clippy` (a
 #   REQUIRED context) has run on this pool with since increment 2. The programme's earlier
-#   readings were 56/65 (86.2%, #1062 increment 2) and 55/67 (82%) here — the
+#   readings were 56/65 (86.2%, #1062 increment 2) and 55/68 (81%) here — the
 #   share is falling because v0.71's musl job and v0.72's litpool-islands job
 #   were placed on the self-hosted pool rather than defaulting.
 UBUNTU_LATEST_CEILING = 52

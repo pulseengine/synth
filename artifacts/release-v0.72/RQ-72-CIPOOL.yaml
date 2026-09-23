@@ -7,7 +7,12 @@ artifacts:
       the gh runners and not ours this is queuing up") and then MEASURED on
       v0.71's own rounds rather than assumed.
 
-      THE MEASUREMENT, run 35823595867, 66 jobs. The 8 self-hosted jobs ALL
+      THE MEASUREMENT, run 35823595867, 66 NON-ADVISORY jobs (the run carries
+      67; the advisory one is excluded here, a convention the first draft used
+      without stating). EIGHT self-hosted jobs had completed AT THE SAMPLE
+      INSTANT — the run has NINE, and the ninth (line coverage) took 10m32s
+      and finished later. The first draft's "the 8 self-hosted jobs" reads as
+      the run's whole self-hosted population, which it is not. Those eight ALL
       completed between 05:44:43 and 05:48:47 — about four minutes. Then nothing
       started for 25 minutes with 55 queued. Two samples 45s apart both read
       queued=55 running=0 done=11, so a sustained stall and not a point reading.
@@ -43,7 +48,13 @@ artifacts:
       pending, so a release waits on ALL 66 jobs, not merely the required nine.
       v0.71 needed FOUR full rounds after rebases and not one completed inside a
       working session. The bottleneck is the GitHub-hosted quota, not the fleet:
-      56 of ci.yml's 67 jobs target a pool that stalls while a dozen machines
+      55 of ci.yml's 68 job DEFINITIONS target a pool that stalls while a
+      dozen machines
+      (CORRECTED IN PLACE by the v0.72 cold review: this read "56 of 67",
+      the SUBSTRING count this artifact itself retracts further down — and
+      the retraction never un-said this sentence, so the inflated figure
+      stayed on the page that leads. Re-derived at 7c1c3726^: 68
+      definitions, 55 exact-label, 56 by substring.)
       sit idle.
 
       MEASURED ON THIS RELEASE, not inferred: RQ-71-MUSL's new job was written
@@ -117,7 +128,11 @@ artifacts:
 
       AND THE GUARD ITSELF FIRST FAILED THE WAY THE LANE IS ABOUT. Its first
       version read the required-context list through `gh` and "skipped" when that
-      was unavailable. No other job in ci.yml calls `gh`, so on the self-hosted
+      was unavailable. No other job ON THE SELF-HOSTED POOL calls `gh` — the
+      one job that does (`gh release download`, ci.yml, the MC/DC structural
+      coverage job) runs on `ubuntu-latest`, where `gh` is preinstalled. The
+      first draft said "no other job in ci.yml calls gh", which is false; the
+      conclusion it supported is unaffected. On the self-hosted
       runner the step did not skip gracefully — it FAILED `Claim Check`, a
       REQUIRED context, on its first CI round. A guard that cannot execute where
       it is installed is exactly the "gate nobody asks" shape RQ-72-ISSUEGATE

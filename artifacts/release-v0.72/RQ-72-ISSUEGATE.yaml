@@ -10,8 +10,16 @@ artifacts:
 
       MEASURED 2026-09-23, repo-wide excluding `.git`: the only references are
       its own docstring, its unit test, one prose line inside
-      `status_evidence_check.py`, and `ci.yml:514` — which runs the TEST, not the
-      CHECK. Its `done-when` reads
+      `status_evidence_check.py`, and the ci.yml step that runs
+      `test_issue_closure_check.py` — which runs the TEST, not the CHECK.
+
+      THAT REFERENCE USED TO CARRY A LINE NUMBER, and the v0.72 cold review
+      REMOVED it rather than correcting it. It read `ci.yml:514`, which was true
+      at 87fb06d7 and was ALREADY 533 when this artifact landed — RQ-72-CIPOOL
+      added 19 lines above it in the SAME release — and is 574 now. A line
+      number in an artifact that the same release keeps editing is a number
+      measured before the last edit to the thing it counts, this programme's
+      most repeated defect, so the step is named instead of located. Its `done-when` reads
       `contains:.github/workflows/ci.yml:test_issue_closure_check.py`, so it pins
       THE TEST'S PRESENCE IN A YAML FILE. The comparison it exists to perform is
       run by a human, by hand, at the tag.

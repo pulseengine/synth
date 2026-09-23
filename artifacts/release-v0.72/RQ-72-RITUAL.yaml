@@ -77,7 +77,10 @@ artifacts:
         fidelity: stale branch yields INDETERMINATE, not FAITHFUL
         fidelity: current branch with a 0-line diff is FAITHFUL
 
-      plus the advisory classification the whole gate depends on. Eight checks,
+      plus the advisory classification the whole gate depends on. NINE checks
+      (counted from the runner's own output, `--self-test | grep -c '^  ok'`,
+      not from the list above — the ninth asserts the fixture really advanced,
+      and the first draft said eight),
       offline, no network — which is what makes them testable at all.
 
       (a) CHECK2 no longer asserts `baseRefOid == origin/main`. That is the PR's
