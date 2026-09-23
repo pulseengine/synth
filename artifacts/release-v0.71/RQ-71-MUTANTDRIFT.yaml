@@ -109,6 +109,12 @@ artifacts:
       verification-track: differential
       issue: "#1189"
       disposition: refuted
+      # R4: the squash commit for this artifact is delivery-shaped, so the
+      # increment is RECORDED rather than the status flipped — what landed is
+      # a REFUTATION plus two documentation fixes, not the feature the
+      # artifact proposed. `disposition: refuted` beside it is what R11 wants
+      # next to a non-claiming status.
+      landed: "PR #1353. NOT LANDED as the proposed feature — the premise was REFUTED. What landed: the measurement showing a drifted anchor already reports \"site no longer exists on this tree (re-anchor the ledger)\" and \"site drifted: <id>\" with have-vs-want; the step renamed so a drifted anchor is not read as a survivor failing to reproduce; and the remedy command plus the pin-subset trap recorded at the step. CI deliberately does NOT auto-re-anchor: that would mutate a committed ledger from CI or mask real drift."
       # A REFUTATION CANNOT HAVE A MECHANICAL DONE-WHEN, and trying to give it
       # one is what R3 caught. The deliverable is a FINDING, not an artefact,
       # so no file's existence can mean "this was refuted" — the `contains:`
