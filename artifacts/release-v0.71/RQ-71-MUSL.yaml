@@ -1,62 +1,82 @@
 artifacts:
   - id: RQ-71-MUSL
     type: system-req
-    title: "Linux release assets are glibc-2.39-only, so one payload sets the portability floor for the whole varve pinned layer"
+    title: "Linux release assets were glibc-2.39-only, so one payload set the portability floor for the whole varve pinned layer — a static musl asset now ships alongside"
     description: >
-      #1349, 2026-09-22. Measured on the v0.69.0 Linux x86_64 release asset,
-      downloaded from this repo: `ELF 64-bit LSB pie executable, dynamically
-      linked, interpreter /lib64/ld-linux-x86-64.so.2`, and
-      `strings -a synth | grep -oE 'GLIBC_[0-9.]+' | sort -V | tail -1` gives
-      **GLIBC_2.39**.
+      #1349, 2026-09-22. Both refuting commands were run again on this tree
+      before anything was scoped, and BOTH CONFIRMED the premise rather than
+      narrowing it.
 
-      That excludes Ubuntu 22.04 (2.35), Debian 12 bookworm (2.36), RHEL 9 and
-      Amazon Linux 2023 (2.34), Ubuntu 20.04 (2.31), and Alpine / distroless-static
-      entirely.
+      FIRST: the v0.70.0 asset, the moment it published — if the floor had
+      already dropped, the runner image moved and the premise needed
+      re-measuring. It had not. Downloaded from this repo and measured with the
+      issue's own two commands: `ELF 64-bit LSB pie executable, dynamically
+      linked, interpreter /lib64/ld-linux-x86-64.so.2`, and the maximum of 17
+      distinct `GLIBC_` version symbols is **GLIBC_2.39**.
 
-      WHY IT IS NOT MERELY A CONVENIENCE. These binaries are ingested into the varve
-      `pulseengine` realm's rolling layer — the pinned toolchain an air-gapped or
-      enterprise consumer installs. A layer's portability is the MAXIMUM floor
-      across its payloads, so a single 2.39 payload sets the floor for everything
-      pinned beside it.
+      SECOND: `grep -n 'musl' .github/workflows/*.yml` — one hit, in
+      `fuzz-smoke.yml`, and it is there to FORCE THE GNU TARGET because
+      cargo-fuzz defaults to musl. So no musl release target existed, and this
+      is the larger of the two lanes the plan distinguished: adding a target,
+      not publishing one already built.
 
-      v0.70 SHIPS WITH THIS TOO, AND SAID SO. The issue arrived on the day of the
-      v0.70 cut. Changing the release workflow between an RC and its tag is exactly
-      the unreviewed late change this process exists to prevent, so v0.70's assets
-      carry the same 2.39 floor and its release report states that plainly rather
-      than leaving a consumer to discover it.
+      A 2.39 floor excludes Ubuntu 22.04 (2.35), Debian 12 (2.36), RHEL 9 and
+      Amazon Linux 2023 (2.34), Ubuntu 20.04 (2.31), and Alpine /
+      distroless-static entirely. These binaries are ingested into the varve
+      `pulseengine` realm's rolling layer, and a layer's portability is the
+      MAXIMUM floor across its payloads, so one 2.39 payload sets the floor for
+      everything pinned beside it.
 
-      REFUTING COMMANDS TO RUN BEFORE SCOPING, not after. First: inspect the
-      v0.70.0 asset the moment it publishes, with the same two commands — if the
-      floor is already lower, the runner image moved under us and the premise needs
-      re-measuring. Second: `grep -n 'musl' .github/workflows/*.yml` — measured at
-      the v0.70 cut, the only hit is `fuzz-smoke.yml`, so no musl RELEASE target
-      exists today; publishing an artifact that is already built would be a much
-      smaller lane than adding a target, and the two must not be confused.
+      WHAT SHIPPED. `x86_64-unknown-linux-musl`, statically linked — no loader
+      and no glibc floor at all, rather than a lower one. ADDITIVE on purpose:
+      the gnu assets keep their names, their consumers and their attestation
+      path unchanged, so nothing that works today changes. The workspace has no
+      `build.rs` and no `[build-dependencies]` anywhere, which is why this needs
+      no cross container.
 
-      HONEST RISK: this is release engineering, not compiler work, and it will look
-      cheaper than it is. A second target means a second set of assets, a second
-      path through sigil attestation, and a varve layer decision about which
-      payload is canonical. Measure before promising.
+      THE PART THAT IS NOT RELEASE PLUMBING, and the reason this lane is not as
+      cheap as it looks: `release.yml` runs ONLY on a tag push, so a target added
+      there is UNVERIFIED until the tag — and changing the release workflow
+      between an RC and its tag is precisely the unreviewed late change this
+      process exists to prevent (v0.70 shipped the 2.39 floor rather than make
+      one). So a per-PR CI job builds the SAME target with the SAME feature set
+      and runs the issue's own two acceptance commands on the result. The
+      release.yml entry is verified by construction, not on the day it matters.
 
-      THE MACHINE'S HALF OF THIS IS `contains:.github/workflows/release.yml:musl`. The full obligation is:
-      a Linux release asset is published whose dynamic-loader floor is verified by the issue's own two commands (file + the GLIBC_ strings scan) to run on Ubuntu 22.04, Debian 12 and RHEL 9, or a musl-static asset is published alongside; and the release process documents which asset varve's layer pins
-      The predicate cannot express all of that — it checks that the artefact
-      EXISTS, not that it is right. It is still worth having: v0.70 measured
-      that four releases running declared 100% `manual:` done-when, which R3
-      can never fire on, and printed that as though it were evaluation.
+      WITH A POTENCY CONTROL, because "is statically linked" and "has no GLIBC_
+      symbols" are assertions that could pass on anything: the same job builds
+      the GNU target on the same runner and asserts those checks FAIL there. If
+      they ever pass on both, the musl check proves nothing and the job says so.
 
-    status: proposed
+      A FALSE DOC STATEMENT FOUND ON THE WAY, and corrected in place rather than
+      left. `docs/release-process.md` said the `verify` feature is "**not**
+      enabled" in release builds and that enabling it "remains a deliberate
+      follow-up decision". That decision was TAKEN in v0.58 — RQ-58-SHIPVERIFY
+      (#1000, PR #1002) put `--features verify` on both the native and `cross`
+      build lines — so the sentence had been false for thirteen releases.
+      Measured on the shipped v0.70.0 asset: 20 `ordeal` strings and ZERO
+      occurrences of the degraded-path message, so `synth verify` works in a
+      released binary. Nobody would have found this from the workflow alone;
+      it surfaced because this lane had to read what the release actually
+      builds.
+
+      RESIDUAL, NAMED. arm64 Linux is still glibc-floored — only the x86_64 musl
+      asset is published. An `aarch64-unknown-linux-musl` asset needs the `cross`
+      path and its own measurement, and is NOT claimed here.
+
+    status: implemented
     release: v0.71
     tags:
       - release-engineering
-      - downstream-consumer
+      - downstream-blocker
       - feature-loop
     links:
       - type: derives-from
         target: BR-001
     fields:
-      req-type: constraint
+      req-type: process
       priority: should
       verification-track: differential
       issue: "#1349"
-      done-when: "contains:.github/workflows/release.yml:musl"
+      landed: "#1349"
+      done-when: "contains:.github/workflows/ci.yml:musl-portable-asset"

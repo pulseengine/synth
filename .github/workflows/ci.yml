@@ -5751,3 +5751,70 @@ jobs:
           set -euo pipefail
           python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
+
+  # RQ-71-MUSL (#1349): PROVE the portable release asset before promising it.
+  #
+  # `release.yml` only runs on a tag push, so a new target added there is
+  # UNVERIFIED until the tag — and changing the release workflow between an RC
+  # and its tag is the unreviewed late change this process exists to prevent
+  # (v0.70 shipped the 2.39 floor rather than make one). This job builds the
+  # SAME target with the SAME feature set on every PR, and runs the issue's own
+  # two acceptance commands on the result, so the release.yml matrix entry is
+  # verified by construction rather than on the day it matters.
+  #
+  # MEASURED on the published v0.70.0 x86_64 asset: `ELF 64-bit LSB pie
+  # executable, dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2`,
+  # max GLIBC_ symbol GLIBC_2.39 — excluding Ubuntu 22.04 (2.35), Debian 12
+  # (2.36), RHEL 9 / AL2023 (2.34), Ubuntu 20.04 (2.31) and Alpine entirely.
+  # These binaries feed the varve `pulseengine` realm's rolling layer, whose
+  # portability is the MAXIMUM floor across its payloads.
+  #
+  # Deliberately NOT a required context: it is new, and a required name that has
+  # never run deadlocks merges. It reddens the PR that breaks it, which is the
+  # job's whole purpose.
+  musl-portable-asset:
+    name: Portable musl asset builds and is static (#1349)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-portable
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # The SAME command release.yml runs for this target. If these diverge the
+      # job stops testing the thing it claims to test.
+      - name: Build synth for x86_64-unknown-linux-musl
+        run: cargo build --release --target x86_64-unknown-linux-musl -p synth-cli --features verify
+      - name: The issue's own two acceptance commands, on the built artifact
+        run: |
+          set -euo pipefail
+          BIN=target/x86_64-unknown-linux-musl/release/synth
+          file "$BIN"
+          file "$BIN" | grep -q 'statically linked' \
+            || { echo "FAIL: not statically linked"; exit 1; }
+          if file "$BIN" | grep -q 'interpreter'; then
+            echo "FAIL: carries a dynamic loader"; exit 1
+          fi
+          N="$(strings -a "$BIN" | grep -c '^GLIBC_' || true)"
+          echo "GLIBC_ version symbols: $N (want 0)"
+          [ "$N" = "0" ] || { echo "FAIL: references glibc versions"; exit 1; }
+      # POTENCY: the gnu build on this same runner MUST fail those assertions,
+      # or they prove nothing about staticness — they would pass on anything.
+      - name: Potency — the gnu target must FAIL the same assertions
+        run: |
+          set -euo pipefail
+          cargo build --release --target x86_64-unknown-linux-gnu -p synth-cli --features verify
+          BIN=target/x86_64-unknown-linux-gnu/release/synth
+          file "$BIN"
+          if file "$BIN" | grep -q 'statically linked'; then
+            echo "FAIL(potency): the gnu build is static, so the musl check is vacuous"; exit 1
+          fi
+          N="$(strings -a "$BIN" | grep -c '^GLIBC_' || true)"
+          echo "gnu GLIBC_ version symbols: $N (want > 0)"
+          [ "$N" -gt 0 ] \
+            || { echo "FAIL(potency): no GLIBC_ symbols in the gnu build either"; exit 1; }
+          echo "gnu floor: $(strings -a "$BIN" | grep -oE '^GLIBC_[0-9.]+' | sort -V | tail -1)"

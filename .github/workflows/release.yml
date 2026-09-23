@@ -55,6 +55,28 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             cross: true
+          # RQ-71-MUSL (#1349). The gnu assets above are built on ubuntu-latest
+          # and carry a GLIBC_2.39 floor — MEASURED on the published v0.70.0
+          # x86_64 asset: `ELF 64-bit LSB pie executable, dynamically linked,
+          # interpreter /lib64/ld-linux-x86-64.so.2`, max GLIBC_ symbol
+          # GLIBC_2.39. That excludes Ubuntu 22.04 (2.35), Debian 12 (2.36),
+          # RHEL 9 and Amazon Linux 2023 (2.34), Ubuntu 20.04 (2.31), and
+          # Alpine/distroless-static entirely. These binaries are ingested into
+          # the varve `pulseengine` realm's rolling layer, and a layer's
+          # portability is the MAXIMUM floor across its payloads, so one 2.39
+          # payload sets the floor for everything pinned beside it.
+          #
+          # This target is ADDITIVE on purpose: the gnu assets keep their
+          # names, their consumers and their attestation path unchanged, and
+          # the static musl build is published ALONGSIDE as the portable
+          # payload. Statically linked, so it has no loader and no glibc floor
+          # at all rather than a lower one. `--features verify` is pure Rust
+          # here (no build.rs, no build-dependencies anywhere in the
+          # workspace), which is why this needs no cross container.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            musl: true
           # x86_64-apple-darwin cross-compiles on the arm64 macos-14
           # runner — matches pulseengine/rivet and pulseengine/witness
           # (both Rust-workspace CLIs, the closest analogs to synth).
@@ -77,6 +99,13 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
+      # RQ-71-MUSL (#1349): `musl-tools` supplies `musl-gcc`, the linker driver
+      # rustc invokes for this target. The workspace has no C dependencies and
+      # no build.rs, but the target's own libc.a still links through it.
+      - name: Install musl toolchain
+        if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Install cross
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross --locked
@@ -88,6 +117,28 @@ jobs:
       - name: Build synth (cross)
         if: matrix.cross
         run: cross build --release --target ${{ matrix.target }} -p synth-cli --features verify
+
+      # RQ-71-MUSL (#1349): the ISSUE'S OWN two acceptance commands, executed
+      # on the artifact this job just built, BEFORE it is packaged. A portable
+      # asset that is silently dynamic, or that picked up a glibc symbol, must
+      # redden the release rather than ship and be discovered by a consumer —
+      # which is exactly how the 2.39 floor was found in the first place. Run
+      # before `strip`, because stripping is what would hide the symbols.
+      - name: Verify the musl asset is static with no glibc floor
+        if: matrix.musl
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/synth"
+          file "$BIN"
+          file "$BIN" | grep -q 'statically linked' \
+            || { echo "FAIL: musl asset is not statically linked"; exit 1; }
+          if file "$BIN" | grep -q 'interpreter'; then
+            echo "FAIL: musl asset carries a dynamic loader"; exit 1
+          fi
+          N="$(strings -a "$BIN" | grep -c '^GLIBC_' || true)"
+          echo "GLIBC_ version symbols: $N (want 0)"
+          [ "$N" = "0" ] \
+            || { echo "FAIL: musl asset references glibc versions"; exit 1; }
 
       - name: Strip binary
         if: ${{ !matrix.cross }}
