@@ -454,6 +454,14 @@ jobs:
       # the lane meant to fix the pool. The API is now a CROSS-CHECK only: it
       # reports drift between the pin and branch protection when reachable, and
       # says so plainly when not.
+      # RQ-72-RITUAL (#1269): the merge ritual's decidable half. Committing a
+      # script CI never runs would be one more hand-maintained artifact to
+      # drift — this is what stops that. It asserts the two distinctions #1269
+      # named and the old ritual could not draw: a branch POINTED at a current
+      # base is not the same as a branch that IS current, and a 0-line
+      # head-vs-merge diff means nothing on a stale one.
+      - name: "Merge-ritual gate self-test (#1269, RQ-72-RITUAL)"
+        run: python3 scripts/merge_gate.py --self-test
       - name: "CI pool tripwire — ubuntu-latest share + required-context deadlock guard (#1062)"
         env:
           GH_TOKEN: ${{ github.token }}

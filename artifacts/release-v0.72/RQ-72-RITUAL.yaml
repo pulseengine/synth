@@ -60,7 +60,54 @@ artifacts:
       SINGLE source the human path also uses. Committing a second copy beside
       the scratchpad one makes the problem WORSE. Check whether
       `release_verify_smoke.sh` is the right home before adding a file.
-    status: proposed
+      DELIVERED. The refuting question this artifact set itself — is
+      `release_verify_smoke.sh` the right home? — was ANSWERED FIRST, and the
+      answer is no: that script is #1000/RQ-58-SHIPVERIFY, a non-vacuity gate
+      for `synth verify` on the RELEASED ARTIFACT. Unrelated concern. A new
+      file is justified rather than assumed.
+
+      THE DRIFT RISK THIS ARTIFACT NAMED IS ANSWERED BY CONSTRUCTION, not by
+      promising to maintain it. The decidable half lives in
+      `scripts/merge_gate.py` with a `--self-test` that CI RUNS, so "a committed
+      script CI never runs" does not describe this one. The self-test asserts
+      the two distinctions #1269 named and the old ritual could not draw:
+
+        currency: a branch at the base is CURRENT
+        currency: a branch one commit behind is STALE
+        fidelity: stale branch yields INDETERMINATE, not FAITHFUL
+        fidelity: current branch with a 0-line diff is FAITHFUL
+
+      plus the advisory classification the whole gate depends on. Eight checks,
+      offline, no network — which is what makes them testable at all.
+
+      (a) CHECK2 no longer asserts `baseRefOid == origin/main`. That is the PR's
+      recorded BASE TIP, and it passed on #1268's branch cut from the v0.66.0
+      tag, four dependabot commits behind. It is now
+      `git merge-base --is-ancestor` plus `rev-list --count` = 0. The
+      `baseRefOid` agreement is still REPORTED beside it, deliberately not as
+      the check — it is the thing that was mistaken for it.
+
+      (b) The step-8 diff no longer conflates two questions. `squash_fidelity`
+      returns INDETERMINATE on a stale branch instead of a number that reads
+      like fidelity: the 45 clean rows before #1268 were not evidence the check
+      discriminated, only that every prior branch happened to be current.
+
+      (c) THE THIRD DEFECT, which the scratchpad rebuild injected and #1269 does
+      not mention because it postdates it: the subject is PINNED with
+      `--subject "$TITLE (#$PR)"`, the exact string CHECK4 simulates, so the
+      simulated tree and the real one agree BY CONSTRUCTION rather than by a
+      prediction of GitHub's default.
+
+      `scripts/tag_release.sh` is committed for the same reason and carries the
+      v0.70 TAGGATE correction: gate the push on PRETAG conformance, because
+      once the tag exists locally the checker flips to RETRO and demands a
+      Signing E2E run and live crates — both triggered BY THE PUSH the gate
+      precedes. It also counts signature BLOCKS in the tag object rather than
+      grepping `git tag -v` for the word "signature", and asserts the tagged
+      commit carries SOME signature rather than `G`, since GitHub re-signs
+      squash merges with a key this keyring does not hold.
+
+    status: implemented
     release: v0.72
     tags:
       - release-gate
@@ -74,6 +121,7 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1269"
+      landed: "#1269 (PR #1366)"
       done-when: "file:scripts/merge_ritual.sh"
       verified-by: >-
         The predicate is the script's EXISTENCE, because the finding is that it
