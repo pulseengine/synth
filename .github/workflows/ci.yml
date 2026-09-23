@@ -504,6 +504,14 @@ jobs:
       # the gate reds on each, plus green/red controls for every rule.
       - name: Unit-test the status-evidence gate — seven-instance replay (1064)
         run: python3 scripts/test_status_evidence_check.py
+      # RQ-71-ISSUESCOPE (#1250): the gate deciding which issues a release may
+      # close does not get to be the unchecked one. Each rule is proven
+      # red-first against synthetic artifacts, and the suite REPLAYS v0.70 — a
+      # shipped, frozen release that closed exactly five issues and left #1331
+      # and #1318 open on purpose — so it also proves the rule would have
+      # caught the thing it was built for.
+      - name: Issue-closure gate tests (#1250)
+        run: python3 scripts/test_issue_closure_check.py
 
       # RQ-62-LOOPCONFORM (#1136): the standing release authorization is
       # conditional on the release running the feature loop, and
