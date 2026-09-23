@@ -1,17 +1,16 @@
 artifacts:
   - id: RQ-71-ISSUESCOPE
     type: system-req
-    title: "An artifact whose own scope is delivered while its ISSUE stays broader can say so only in prose — nothing machine-checkable stops the wrong issue being closed"
+    title: "Nothing connected `this artifact is implemented` to `this issue must NOT be closed` — now a field says it and a gate compares the tag's actual closures against it"
     description: >
-      MEASURED at the v0.70 cut, by reading the rule rather than assuming it. R11
-      (`status_evidence_check.py:1488`) makes a `disposition:` beside a CLAIMING
+      R11 (`status_evidence_check.py`) makes a `disposition:` beside a CLAIMING
       status a hard contradiction — "status `implemented` claims the outcome holds
       but `disposition: partial` says it does not — pick one". That is CORRECT for
-      the artifact, and this lane does not propose changing it.
+      the artifact, and this lane did not change it.
 
-      But two of v0.70's artifacts are `implemented` with their scope genuinely
-      delivered while their ISSUES must stay open, because the issue is broader than
-      the artifact:
+      But an artifact's ISSUE is not its scope. Two of v0.70's artifacts are
+      `implemented` with their scope genuinely delivered while their issues must
+      stay OPEN, because the issue is the broader question:
 
         RQ-70-NPA (#1331)          the f32 relocation shipped and the reporter
                                    confirmed it; the issue stays open because
@@ -20,31 +19,69 @@ artifacts:
                                    fixtures landed; the issue names TWO modules and
                                    opt.wasm still skips 7 of 17 for unrelated causes
 
-      SECOND REFUTING COMMAND, run: is there any EXISTING field that already
-      separates the close-set from the keep-open set? Comparing the field key sets
-      of all five "close" artifacts against both "keep-open" ones — no field is
-      present in all of one and none of the other, in either direction. The only
-      signal is prose.
+      THREE REFUTING COMMANDS WERE RUN, and the third CORRECTS THIS ARTIFACT'S OWN
+      PLANNED PROSE.
 
-      So the closure decision lives in `issue_dispositions.md` and in a status
-      comment on the issue, and nothing connects "this artifact is implemented" to
-      "this issue must NOT be closed". That is one bad PR body away from repeating
-      v0.69's accident, which auto-closed cpetig's live blocker from the substring
-      `close #N` inside a DENIAL.
+        1. Is there an EXISTING field that already separates the close-set from the
+           keep-open set? Comparing the field key sets of all five "close"
+           artifacts against both "keep-open" ones: no field is present in all of
+           one and none of the other, in either direction.
+        2. The plan then said the decision "lives in `issue_dispositions.md` and in
+           a status comment on the issue". THE FILE HAS NEVER EXISTED —
+           `git log --all --diff-filter=A -- '*issue_disposition*'` matches
+           nothing. It was a plan-time assumption about where a record was kept,
+           and no such record was kept.
+        3. `scripts/` contained NO tag-time issue closer at all, so closure was an
+           unchecked manual step.
 
-      THE DELIVERABLE IS A CHECK, NOT JUST A FIELD. A field the artifact sets
-      deliberately, PLUS a release-time comparison that the set of issues closed on
-      the tag EQUALS the set the artifacts authorise — so closing the wrong issue is
-      a red at the time, not a discovery in the next retrospective.
+      The correction makes the premise STRONGER, not weaker: it is not that the
+      decision lived somewhere a gate could not reach, it is that the decision was
+      never written down mechanically anywhere, and nothing produced a closed-set
+      to compare against. One bad PR body from repeating v0.69, which auto-closed
+      an external reporter's live blocker from the substring `close #N` inside a
+      DENIAL.
 
-      THE MACHINE'S HALF OF THIS IS `contains:scripts/status_evidence_check.py:issue-scope`. The full obligation is:
-      an artifact can declare that its issue outlives its own delivery WITHOUT contradicting R11, and a release-time check compares the issues actually closed on the tag against the set the artifacts authorise, PROVEN red-first by authorising one set and closing a different one
-      The predicate cannot express all of that — it checks that the artefact
-      EXISTS, not that it is right. It is still worth having: v0.70 measured
-      that four releases running declared 100% `manual:` done-when, which R3
-      can never fire on, and printed that as though it were evaluation.
+      WHAT SHIPPED, in two halves because the closed set is only knowable at the
+      tag while the authorisation must be reviewable on every PR:
 
-    status: proposed
+        `issue-scope: outlives`  a SEPARATE key from `disposition:` by design —
+                                 R11 reads `fields.get("disposition")` and nothing
+                                 else, so declaring that an issue outlives its
+                                 artifact's delivery cannot trip it. The artifact
+                                 keeps claiming its own outcome, which is true, and
+                                 says only that the ISSUE is wider. Validated
+                                 wherever it appears (R12), including the two v0.70
+                                 artifacts that now carry it retroactively — the
+                                 prose decision, finally mechanised.
+
+        `issue_closure_check.py` compares the issues a release ACTUALLY closed
+                                 against the set its artifacts AUTHORISE, in both
+                                 directions: CLOSED BUT NOT AUTHORISED (the v0.69
+                                 shape), HELD OPEN BUT CLOSED (this lane's named
+                                 defect), and AUTHORISED BUT NOT CLOSED.
+
+      The authorised set is NOT derived twice. `authorised_close_set()` is imported
+      by both, and `status_evidence_check` prints it as an `issue-scope:` census
+      line on every CI run, scoped to the release being cut — so the exit-condition
+      step consumes a DERIVED set instead of a remembered one. Two derivations of
+      one set is exactly how a closed set and an authorised set drift apart.
+
+      EVIDENCE. 17 assertions, red-first: six mutations of the rules — dropping
+      each of the three comparisons, dropping the vacuity guard, making `outlives`
+      authorise closure anyway, and authorising a NON-claiming artifact — were
+      applied to a COPY and all six were KILLED by the suite, with both live files
+      verified unchanged by sha256 afterwards. The suite also REPLAYS v0.70, a
+      shipped and frozen release: its real five-issue close-set passes, #1331 and
+      #1318 are held open, and closing #1331 anyway is caught with the specific
+      diagnosis rather than the generic one.
+
+      TWO ANTI-VACUITY GUARDS, because this family of checker has gone vacuous
+      four times: zero artifacts loaded is a failure, and a release where no
+      artifact names an issue is a failure — otherwise the comparison would pass
+      no matter what was closed. `parse_version` raises rather than scoping to
+      nothing.
+
+    status: implemented
     release: v0.71
     tags:
       - gate-potency
@@ -58,4 +95,5 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1250"
-      done-when: "contains:scripts/status_evidence_check.py:issue-scope"
+      landed: "#1250"
+      done-when: "contains:.github/workflows/ci.yml:test_issue_closure_check.py"

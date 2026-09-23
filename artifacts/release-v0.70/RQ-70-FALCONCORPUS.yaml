@@ -96,6 +96,9 @@ artifacts:
     issue: '#1318'
     done-when: file:scripts/repro/npa_static_f32_1331.wat
     landed: '#1318'
+    # RQ-71-ISSUESCOPE (#1250): the artifact's scope shipped; the ISSUE is
+    # wider — the issue names TWO modules and opt.wasm still skips 7 of 17 for causes unrelated to the corpus question this artifact answered.
+    issue-scope: outlives
     verified-by: |-
       The signature names the SECOND of the two committed reductions, because that is
       the one this PR lands (the first, spill_slot_alias_1321.wat, ships with

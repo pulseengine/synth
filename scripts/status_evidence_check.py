@@ -378,6 +378,75 @@ DISPOSITION_SINCE = (0, 67)
 DISPOSITION_FIELD_SINCE = (0, 68)
 DISPOSITIONS = {"partial", "refuted", "deferred"}
 
+# ---- issue-scope (R12, #1250 / RQ-71-ISSUESCOPE) --------------------------
+#
+# R11 above makes `disposition:` beside a CLAIMING status a contradiction, and
+# that is CORRECT: an artifact cannot both claim its outcome holds and record
+# that it does not. But an artifact's ISSUE is not its scope. Two of v0.70's
+# artifacts were `implemented` with their scope genuinely delivered while their
+# issues had to stay OPEN, because the issue was the broader question:
+#
+#   RQ-70-NPA (#1331)          the f32 relocation shipped and the reporter
+#                              confirmed it; the issue stays open because
+#                              --native-pointer-abi still hits #345
+#   RQ-70-FALCONCORPUS (#1318) the corpus question is answered and two reduced
+#                              fixtures landed; the issue names TWO modules
+#
+# MEASURED before this rule was written (RQ-71-ISSUESCOPE, three commands):
+#   1. comparing the field key sets of the five "close" artifacts against both
+#      "keep-open" ones, NO existing field is present in all of one and none of
+#      the other, in either direction — the only signal was prose;
+#   2. `issue_dispositions.md` — named at the v0.70 cut as where the decision
+#      lives — has NEVER existed in git history (`git log --all --diff-filter=A`
+#      matches nothing);
+#   3. `scripts/` contains NO tag-time issue closer at all, so closure is an
+#      unchecked manual step at the exit condition.
+#
+# So nothing connected "this artifact is implemented" to "this issue must NOT
+# be closed" — one bad PR body away from repeating v0.69, which auto-closed an
+# external reporter's live blocker from the substring `close #N` inside a
+# DENIAL.
+#
+# `issue-scope:` is a SEPARATE key from `disposition:` on purpose. R11 reads
+# `fields.get("disposition")` and nothing else, so declaring that an issue
+# outlives its artifact's delivery cannot trip it — the artifact keeps claiming
+# its own outcome, which is true, and says only that the ISSUE is wider.
+ISSUE_SCOPES = {"closes", "outlives"}
+
+
+def authorised_close_set(artifacts, only_version: tuple | None = None):
+    """R12 (#1250): the issues that delivering these artifacts AUTHORISES the
+    release to close, and the ones deliberately held open.
+
+    The default under a CLAIMING status is that the artifact's `issue:` may be
+    closed — that is what every release before v0.71 did implicitly. An artifact
+    opts OUT with `issue-scope: outlives`, which says its own scope shipped but
+    the issue asks a wider question.
+
+    SINGLE SOURCE on purpose: `status_evidence_check` prints this set every CI
+    run and `issue_closure_check` compares the tag's ACTUAL closures against it.
+    Two derivations of the same set is how the closed-set and the authorised set
+    drift apart, which is the whole failure this rule exists to stop.
+
+    Returns (authorised, held_open) as {issue_number: artifact_id} maps.
+    """
+    authorised: dict[int, str] = {}
+    held_open: dict[int, str] = {}
+    for _path, version, art_id, status, fields, _links, _release in artifacts:
+        if only_version is not None and version != only_version:
+            continue
+        issue_txt = str(fields.get("issue", "")).strip()
+        if not issue_txt:
+            continue
+        iscope = str(fields.get("issue-scope", "")).strip().lower()
+        target = held_open if iscope == "outlives" else (
+            authorised if status in CLAIMING else None)
+        if target is None:
+            continue
+        for m in ISSUE_ANYWHERE.finditer(issue_txt):
+            target.setdefault(int(m.group(1)), art_id)
+    return authorised, held_open
+
 # ---- Release-anchored non-vacuity (A-rules, #1183 / RQ-65-FLOORSHAPE) ------
 #
 # Two population counts guard this script against doing LESS work than
@@ -1468,7 +1537,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
                 f"releases"
             )
 
-    # ---- Declared-evidence half (R1/R2/R3 + R9 + R7) ----------------------
+    # ---- Declared-evidence half (R1/R2/R3 + R9 + R7 + R12) ----------------
     r7_checked = 0
     r7_skipped = 0
     git_state: str | None = None  # probed lazily, once
@@ -1501,6 +1570,34 @@ def check(root: Path, release_glob: str, subjects: list[str],
                         f"unflipped (v0.67 cut with all seven artifacts "
                         f"`proposed`, #1250); flip to a claiming status, or "
                         f"set `disposition: partial|refuted|deferred`"
+                    )
+            # R12 (#1250, RQ-71-ISSUESCOPE): an artifact may declare that its
+            # ISSUE outlives its own delivery. Separate key from `disposition:`
+            # by design — see ISSUE_SCOPES above — so this never trips R11.
+            # Validated wherever the field APPEARS rather than from a version
+            # floor: it is optional, so no shipped artifact is burdened by it,
+            # and the two v0.70 artifacts that carry it retroactively (the ones
+            # whose prose decision this field mechanises) get checked too.
+            if True:
+                iscope = str(fields.get("issue-scope", "")).strip().lower()
+                issue_txt = str(fields.get("issue", "")).strip()
+                if iscope and iscope not in ISSUE_SCOPES:
+                    failures.append(
+                        f"R12 {art_id}: `issue-scope: {iscope}` is not one of "
+                        f"{sorted(ISSUE_SCOPES)}"
+                    )
+                elif iscope and not issue_txt:
+                    failures.append(
+                        f"R12 {art_id}: `issue-scope: {iscope}` with no "
+                        f"`issue:` field — there is no issue to scope"
+                    )
+                elif iscope == "outlives" and status not in CLAIMING:
+                    failures.append(
+                        f"R12 {art_id}: `issue-scope: outlives` beside "
+                        f"non-claiming status `{status}` — the issue of an "
+                        f"undelivered artifact stays open anyway, so this "
+                        f"declares nothing; `disposition:` is the field that "
+                        f"records why the artifact did not land"
                     )
         done_when = fields.get("done-when")
         if done_when is None:
@@ -1889,11 +1986,20 @@ def main() -> int:
     for f in failures:
         print(f"FAIL {f}")
     files = len({a[0] for a in artifacts})
+    # Scoped to the release being CUT — that is the set the exit-condition
+    # step consumes. An all-history set would be 96 issues and read as noise.
+    _cut = max((a[1] for a in artifacts), default=None)
+    _auth, _held = authorised_close_set(artifacts, _cut)
     print(
         f"status-evidence: {len(artifacts)} artifacts across {files} release "
         f"files, {hits} delivery commits matched, {preds} done-when "
         f"predicates evaluated, {r7_checked} release-scope archaeology "
         f"checks ({r7_skipped} skipped), {len(failures)} failures"
+    )
+    print(
+        f"issue-scope: v{_cut[0]}.{_cut[1]} — {len(_auth)} issue(s) authorised for closure by a "
+        f"delivered artifact, {len(_held)} held open by `issue-scope: outlives` "
+        f"(authorised: {' '.join('#' + str(n) for n in sorted(_auth)) or '-'})"
     )
     print(
         f"programme-status: {p_checked} artifacts across {p_files} artifact "

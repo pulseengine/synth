@@ -113,6 +113,9 @@ artifacts:
     issue: '#1331'
     done-when: file:scripts/repro/npa_static_f32_1331.wat
     landed: '#1331'
+    # RQ-71-ISSUESCOPE (#1250): the artifact's scope shipped; the ISSUE is
+    # wider — --native-pointer-abi still hits the #345 literal-pool wall, which is RQ-71-ISLANDS and deferred with measurements.
+    issue-scope: outlives
     verified-by: |-
       The fixture's presence in scripts/repro/ arms the outcome gate:
       `arm_corpus_sweep_973.py` (`# ci-status: wired`) compiles every scripts/repro/*.wat
