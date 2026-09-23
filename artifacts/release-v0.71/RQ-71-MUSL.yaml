@@ -60,6 +60,39 @@ artifacts:
       it surfaced because this lane had to read what the release actually
       builds.
 
+      THE COLD REVIEW FOUND THIS LANE'S GATE COULD NOT PASS, and it is recorded
+      rather than quietly fixed. The acceptance step asserted
+      `file "$BIN" | grep -q 'statically linked'`. rustc's musl target NEVER
+      produces that string: its spec sets `crt-static-default` AND
+      `static-position-independent-executables`, so the link is `-static-pie`
+      and `file` reports "static-pie linked". The gate would have REFUSED A
+      CORRECT ARTIFACT — and `create-release` has `needs: [build-binaries]`, so
+      that is not one missing archive, it is NO RELEASE AT ALL. A gate that
+      cannot pass, in the workflow that publishes the release, in the lane whose
+      whole point is that the asset is checkable.
+
+      The fix is not a better string. `file`'s wording is a presentation detail
+      of a tool this repo does not control; the property is "asks no loader to
+      run it", which is exactly "no PT_INTERP program header".
+      `scripts/elf_static_check.py` reads it from the ELF with nothing beyond
+      the stdlib, and is validated BOTH ways before shipping: it REFUSES the
+      real published v0.70.0 gnu asset (PT_INTERP=1, 17 GLIBC_ occurrences,
+      rc=1) and ACCEPTS a synthesised static-pie shape (rc=0).
+
+      The potency control was widened at the same time: the gnu leg now runs the
+      SAME check and must fail it, so both assertions have a negative control.
+      Previously the gnu block never asserted a loader was present, leaving the
+      musl `interpreter` assertion uncontrolled.
+
+      AND THE JOB WAS PUT ON THE POOL THAT HAS CAPACITY. 56 of ci.yml's 67 jobs
+      target `ubuntu-latest`, which RQ-61-CICAP measured as THE bottleneck —
+      runs queue for hours beside idle self-hosted machines, because the
+      constraint is the GitHub-hosted quota, not the fleet. This job now runs on
+      `[self-hosted, linux, x64, rust-cpu]`, and its apt step is conditional and
+      non-fatal: whether rust's bundled musl crt makes `musl-tools` unnecessary
+      is UNVERIFIED here (it cannot be checked on this macOS host) and is
+      therefore not asserted — the build step is left to answer it loudly.
+
       RESIDUAL, NAMED. arm64 Linux is still glibc-floored — only the x86_64 musl
       asset is published. An `aarch64-unknown-linux-musl` asset needs the `cross`
       path and its own measurement, and is NOT claimed here.
