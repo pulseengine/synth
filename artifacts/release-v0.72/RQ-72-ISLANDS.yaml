@@ -58,7 +58,7 @@ artifacts:
       execution differential comes FIRST and must cover modules whose pools
       already fit — byte-identity on those is the negative control that proves
       the change is confined to the shapes it is meant to fix.
-    status: proposed
+    status: implemented
     release: v0.72
     tags:
       - arm-backend
@@ -71,7 +71,23 @@ artifacts:
       req-type: system
       priority: must
       verification-track: differential
-      issue: "#345"
+      # MEASURED at the v0.72 cut, not carried: #345 is CLOSED (2026-06-14,
+      # by avrabe) and is a DIFFERENT issue — "dissolved --relocatable objects
+      # carry full wasm linmem + absolute MOVW relocs". The refusal message
+      # cites it because the pool mechanism came from that work. The LIVE issue
+      # this lane unblocks is #1331, where cpetig wrote on 2026-09-19: "The f32
+      # static-data declines are gone. --native-pointer-abi is still blocked on
+      # this module, now by a different failure: LdrSym literal pool out of
+      # range (#345) in a single 50722-byte function."
+      issue: "#1331"
+      landed: "#1331 (PR #1363)"
+      # RQ-71-ISSUESCOPE (#1250): the artifact's scope shipped; the ISSUE is
+      # wider. cpetig's 50722-byte module is an issue attachment and is NOT in
+      # this repository, so what is proven here is that the CLASS is fixed on a
+      # committed fixture that reproduces it — not that THEIR module now
+      # compiles, which only they can run. #1331 stays open for their
+      # confirmation, and for whatever wall is behind this one.
+      issue-scope: outlives
       done-when: "file:scripts/repro/litpool_islands_345_differential.py"
       verified-by: >-
         The predicate names a DIFFERENTIAL, not the pass, because this lane's

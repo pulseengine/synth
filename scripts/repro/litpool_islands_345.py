@@ -20,6 +20,19 @@ The pin exists so that:
      forced to come here, flip the expectation, and update RQ-71-ISLANDS
      rather than leaving a stale pin claiming a defect that is gone.
 
+ISLANDS LANDED IN v0.72 (RQ-72-ISLANDS), AND THIS PIN WAS FLIPPED AS ITEM 3
+INSTRUCTED. It went red on exactly that assertion, which is the design working
+rather than a regression. What it pins now is NARROWER and still worth pinning:
+the refusal itself, reached via the documented opt-out
+`SYNTH_NO_LITPOOL_ISLANDS=1`. `emit_literal_pool` carries exactly ONE
+`return Err` for this condition, so the off-leg and the on-leg reach the SAME
+check — pinning it here keeps `imm12 > 0xFFF` from being loosened into a
+wrong-address load, which was always reason (2) and is untouched by islands.
+
+The ACCEPT side is owned by `litpool_islands_345_differential.py`, which also
+proves byte-identity across the 165 corpus modules that need no island and
+executes the islanded fixture against wasmtime.
+
 WHY THE FIX IS NOT A ONE-LINE PLACEMENT CHANGE, measured on this tree:
 
   - Branch displacements are PRE-COMPUTED UPSTREAM of the encoder, in final
@@ -69,18 +82,23 @@ def main():
     declines = 0
     with tempfile.TemporaryDirectory() as td:
         obj = os.path.join(td, "litpool.o")
+        # ISLANDS OFF: this pin is about the REFUSAL, which is now reachable
+        # only with the opt-out. Same `return Err`, same arithmetic.
+        env = dict(os.environ)
+        env["SYNTH_NO_LITPOOL_ISLANDS"] = "1"
         r = subprocess.run(
             [SYNTH, "compile", FIXTURE, "-o", obj,
              "--target", "cortex-m7", "--relocatable", "--all-exports",
              "--native-pointer-abi"],
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, text=True, timeout=180, env=env,
         )
         blob = r.stdout + r.stderr
         m = REFUSAL.search(blob)
         assert m, (
-            "litpool-345: the fixture COMPILED (or failed differently) — if "
-            "constant islands landed, that is the good news, and this pin must "
-            "now be flipped and RQ-71-ISLANDS updated. Output:\n"
+            "litpool-345: the fixture COMPILED (or failed differently) WITH "
+            "SYNTH_NO_LITPOOL_ISLANDS=1 — the opt-out is unwired, so the "
+            "islands differential's two legs are the same path and its "
+            "byte-identity result is vacuous. Output:\n"
             + blob[:900]
         )
         imm12 = int(m.group(1))

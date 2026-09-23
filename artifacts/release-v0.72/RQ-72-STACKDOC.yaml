@@ -75,6 +75,7 @@ artifacts:
       priority: must
       verification-track: documentation
       issue: "#1341"
+      landed: "#1341 (PR #1362)"
       done-when: "contains:docs/embedder-abi-relocatable-arm.md:--emit-stack-depth"
       verified-by: >-
         The predicate names the CONSUMER-FACING page, not the flag's

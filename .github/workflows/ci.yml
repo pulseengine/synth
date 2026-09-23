@@ -2173,14 +2173,11 @@ jobs:
       # reddens the run even when the numeric answer coincides.
       - name: Run AEABI i64<->f32 routing oracle (#1069, m4f)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aeabi_i64_float_1069_differential.py
-      - name: "Literal-pool range DECLINE pin — #345 is a refusal, not a miscompile (RQ-71-ISLANDS)"
-        # v0.71 did NOT ship constant islands; it reproduced the class
-        # in-repo and measured why the fix needs a branch-relaxation pass
-        # that does not exist. This pin keeps the class reproducible
-        # WITHOUT cpetig's 50722-byte attachment, and keeps the
-        # `imm12 > 0xFFF` refusal from quietly becoming a wrong-address
-        # load. WHEN ISLANDS LAND THIS GOES RED, by design.
-        run: SYNTH_BIN=./target/debug/synth python scripts/oracle_run.py scripts/repro/litpool_islands_345.py
+      # RQ-72-ISLANDS: the #345 decline pin MOVED to the `litpool-islands-345`
+      # job, which runs it beside the accept/byte-identity/execution
+      # differential on the self-hosted pool. Kept out of this ubuntu-latest
+      # job deliberately: running it in both places would duplicate work on
+      # the pool RQ-72-CIPOOL measured as the bottleneck.
       # #1069 (RQ-60-VFPPRESSURE increment 2): VFP pressure from HOMED locals
       # — jess's 13-ok/14-exhausted wall (attitude#tick / ekf#estimate shape).
       # Frame-homed overflow locals (rung-only) on cortex-m7dp --relocatable:
@@ -5802,6 +5799,49 @@ jobs:
   # Deliberately NOT a required context: it is new, and a required name that has
   # never run deadlocks merges. It reddens the PR that breaks it, which is the
   # job's whole purpose.
+  litpool-islands-345:
+    name: "Constant islands place a reachable literal pool (#345, RQ-72-ISLANDS)"
+    # SELF-HOSTED on purpose, for the reason RQ-72-CIPOOL exists and the
+    # maintainer raised during the v0.71 cut. This job compiles the whole
+    # scripts/repro corpus TWICE — once with islands, once with the opt-out —
+    # which is ~400 compiles plus six unicorn emulations. Putting that on
+    # `ubuntu-latest`, which RQ-61-CICAP and the v0.71 measurements both found
+    # saturated while the self-hosted pool idled, would make the queue worse
+    # for every other lane in this file.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: litpool-islands
+      # Self-hosted distro python can be PEP 668 externally-managed, where a
+      # bare `pip install --user` REFUSES — the same guard the `Ensure PyYAML`
+      # step above uses, and the reason the first version of this job failed.
+      # Versions are PINNED rather than floating: an oracle whose emulator
+      # moves under it reports a different population next release without
+      # anyone deciding to (the reason the spec-corpus job pins these too).
+      - name: Install oracle deps
+        run: |
+          python3 -c "import elftools, unicorn, wasmtime" \
+            || python3 -m pip install --user wasmtime==48.0.0 unicorn==2.1.4 pyelftools \
+            || python3 -m pip install --user --break-system-packages wasmtime==48.0.0 unicorn==2.1.4 pyelftools
+          python3 -c "import elftools, unicorn, wasmtime; print('  oracle deps OK')"
+      - name: Build synth
+        run: cargo build -p synth-cli
+      # THE DECLINE PIN, now narrowed to the opt-out leg. `emit_literal_pool`
+      # has exactly ONE `return Err` for the #345 condition, so this still
+      # guards `imm12 > 0xFFF` against being loosened into a wrong-address
+      # load — the reason that pin existed and that islands do not change.
+      - name: "Literal-pool range refusal survives (islands OFF)"
+        run: SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py scripts/repro/litpool_islands_345.py
+      # THE ACCEPT SIDE plus the negative control. Byte-identity across every
+      # corpus module that needs no island is what proves the change is
+      # confined to the shapes it targets; execution is what proves the
+      # islanded code is CORRECT and not merely accepted.
+      - name: "Islands differential — accept, byte-identity, execution"
+        run: SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py scripts/repro/litpool_islands_345_differential.py
+
   musl-portable-asset:
     name: Portable musl asset builds and is static (#1349)
     # SELF-HOSTED on purpose. 56 of this file's 67 jobs target `ubuntu-latest`,
