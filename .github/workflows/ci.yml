@@ -2165,6 +2165,14 @@ jobs:
       # reddens the run even when the numeric answer coincides.
       - name: Run AEABI i64<->f32 routing oracle (#1069, m4f)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aeabi_i64_float_1069_differential.py
+      - name: "Literal-pool range DECLINE pin — #345 is a refusal, not a miscompile (RQ-71-ISLANDS)"
+        # v0.71 did NOT ship constant islands; it reproduced the class
+        # in-repo and measured why the fix needs a branch-relaxation pass
+        # that does not exist. This pin keeps the class reproducible
+        # WITHOUT cpetig's 50722-byte attachment, and keeps the
+        # `imm12 > 0xFFF` refusal from quietly becoming a wrong-address
+        # load. WHEN ISLANDS LAND THIS GOES RED, by design.
+        run: SYNTH_BIN=./target/debug/synth python scripts/oracle_run.py scripts/repro/litpool_islands_345.py
       # #1069 (RQ-60-VFPPRESSURE increment 2): VFP pressure from HOMED locals
       # — jess's 13-ok/14-exhausted wall (attitude#tick / ekf#estimate shape).
       # Frame-homed overflow locals (rung-only) on cortex-m7dp --relocatable:
@@ -3643,8 +3651,17 @@ jobs:
           # main's corpus reproduces 7207/8220 EXACTLY. The stack-depth pass is a
           # pure read of the final stream and emits nothing — which that
           # measurement confirms rather than assumes.
-          grep -Eq '^functions audited: 7239$' haa1189.txt
-          grep -Eq '^homes watched: 8228$' haa1189.txt
+          # RQ-71-ISLANDS (#345): 7239 -> 7243, 8228 -> 8236, and attributed
+          # 217291 -> 219699. ONE more scripts/repro/*.wat fixture enters the
+          # audit corpus (litpool_islands_345.wat): one exported function x 4
+          # legs = +4 functions, +8 homes. The attributed jump is larger than
+          # the previous fixtures' because this one is deliberately DENSE —
+          # ~150 i64.mul ops buy the >4 KB distance in few LINES, which keeps
+          # the file small but costs INSTRUCTIONS here. Recorded because it is
+          # the real CI cost of the fixture, and the line count is not.
+          # `hits: 0` unchanged.
+          grep -Eq '^functions audited: 7243$' haa1189.txt
+          grep -Eq '^homes watched: 8236$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -3652,7 +3669,7 @@ jobs:
           # 217081 could not still hold. Nothing caught it because no grep ever
           # read it: exactly the "a ratchet fixes the number and cannot fix the
           # prose" shape this project keeps paying for. Derived here: 217291.
-          grep -Eq '^attributed instructions: 217291 ' haa1189.txt
+          grep -Eq '^attributed instructions: 219699 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
