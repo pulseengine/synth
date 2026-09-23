@@ -291,6 +291,34 @@ jobs:
           test -n "$SBOM_SRC" && test -f "$SBOM_SRC"
           cp "$SBOM_SRC" "release-assets/synth-${BARE}.cdx.json"
           echo "::notice::Toolchain SBOM written to release-assets/synth-${BARE}.cdx.json"
+
+      # RQ-72-VEX (#1359). Beside the SBOM and, like it, BEFORE SHA256SUMS — so
+      # its digest enters the sums and cosign signs it along with everything
+      # else. An SBOM says what is in the product; it cannot say what an
+      # advisory MEANS for it, and that is the question a consumer pinned to a
+      # varve layer actually asks.
+      #
+      # Every `not_affected` in the emitted document comes from a human-written
+      # `{ id, reason }` in deny.toml, copied verbatim into `analysis.detail`,
+      # and the emitter REFUSES an ignore entry that states none. No
+      # CycloneDX `justification` enum is emitted at all: it is optional in
+      # the spec, and a generated one asserts a mechanism no human chose —
+      # which #1359 ask 5 calls "a false statement signed into a release". An advisory
+      # nobody has assessed is `affected` with nothing further, which is honest
+      # where a fabricated `vulnerable_code_not_in_execute_path` would not be.
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny || cargo deny --version
+      - name: Generate the CycloneDX VEX (Phase 7, #1359)
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          BARE="${VERSION#v}"
+          python3 scripts/emit_vex.py --version "$BARE" \
+            -o "release-assets/synth-${BARE}.vex.json"
+          test -s "release-assets/synth-${BARE}.vex.json"
+          echo "::notice::CycloneDX VEX written to release-assets/synth-${BARE}.vex.json"
           ls -la release-assets/
 
       - name: Generate SHA256 checksums

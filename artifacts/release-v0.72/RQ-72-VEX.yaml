@@ -48,7 +48,107 @@ artifacts:
       blank justification is an honest answer; a fabricated
       `vulnerable_code_not_in_execute_path` is the kind of statement that gets
       believed and is worse than silence.
-    status: proposed
+      DELIVERED, and the advisory it found is the argument for the whole lane.
+
+      BOTH OF #1359's CHECKABLE CLAIMS WERE RE-VERIFIED AGAINST THE PRE-CHANGE
+      TREE (they describe the state this lane CHANGES, so they are false of the
+      shipped tree by construction — the round-2 cold review flagged the
+      original present-tense wording under an "AT THIS CUT" heading): zero
+      `deny.toml`
+      tracked, zero cargo-deny in any workflow, and `synth-<version>.cdx.json`
+      really does ship with the SBOM generated BEFORE SHA256SUMS. So the
+      advisory check genuinely comes WITH this change.
+
+      AND THE WORKSPACE HAS A LIVE ADVISORY, found by running the new check
+      rather than assumed: RUSTSEC-2026-0204, crossbeam-epoch 0.9.18 — an
+      invalid pointer dereference in the `fmt::Display` impl for `Atomic` and
+      `Shared`.
+
+      THE `not_affected` IS DERIVED FROM A COMMAND THAT COULD HAVE REFUTED IT:
+
+        cargo tree -p synth-cli --edges normal -i crossbeam-epoch
+          -> error: package ID specification `crossbeam-epoch` did not match
+             any packages
+
+      It enters the repository ONLY as criterion (a DEV-dependency benchmark
+      harness) -> rayon -> rayon-core -> crossbeam-deque -> crossbeam-epoch, so
+      it is absent from the shipped binary's graph entirely. Corroborated: 0
+      synth sources mention crossbeam, 0 Cargo.toml declares it, 0 files use
+      `{:p}`. Had it been in the shipped graph the query would have printed the
+      path — which is exactly what makes this an assertion and not a guess.
+
+      THIS IS THE ASYMMETRY #1359 ARGUES FROM, made concrete: varve can match
+      components against an advisory DB from outside and would report synth as
+      carrying a vulnerable crossbeam-epoch. It could never determine that the
+      crate is dev-only here. That determination is a fact about this source
+      tree, and this is the repository that can state it.
+
+      THE MACHINE-GUESS TRAP IS CLOSED BY CONSTRUCTION, not by care.
+      `scripts/emit_vex.py` has exactly ONE source for `not_affected`: a
+      human-written `{ id = "...", reason = "..." }` in deny.toml, copied
+      VERBATIM into `analysis.detail`. It composes no justification, and it
+      REFUSES an ignore entry that states no reason — proven: stripping the
+      reason gives rc=1 with "an exemption with no stated basis becomes a
+      not_affected nobody can check". An advisory nobody has assessed comes out
+      `affected` with no justification field at all — also proven, by emptying
+      the ignore list.
+
+      THE GATE CAN PASS AND CAN FAIL, both measured: with the exemption
+      `cargo deny check advisories` is rc=0; without it, rc=1 on
+      RUSTSEC-2026-0204; restored, rc=0.
+
+      THE ISSUE'S FIVE ASKS, AUDITED ONE BY ONE RATHER THAN AS A GROUP —
+      because the v0.71 tag nearly closed two issues whose asks were only
+      partly delivered, and both looked complete from a summary:
+
+        1. generate at release, BEFORE the checksums, so the digest enters
+           SHA256SUMS and cosign signs it              SHIPPED (release.yml)
+        2. audit the SHIPPED lockfile, not main's      SHIPPED BY CONSTRUCTION
+           — the release workflow checks out the tag, so cargo-deny reads that
+           tag's committed Cargo.lock. Recorded here as reasoning rather than
+           as a separate mechanism, because there is none to point at.
+        3. NAME WHAT MADE IT TRUE                      SHIPPED
+        4. re-issue on new advisories                  DECLINED, disclosed
+        5. generate matches, hand-author judgements    SHIPPED, potency-gated
+           (CORRECTED by the round-2 cold review: the first draft ALSO
+           emitted a hardcoded CycloneDX `justification: code_not_reachable`
+           for every exemption, which is precisely what ask 5 forbids — "a
+           generated one is a false statement signed into a release" — while
+           this artifact, release.yml and the emitted document all said the
+           emitter composed no justification. The enum is now not emitted at
+           all; the human's reason is carried verbatim in `analysis.detail`,
+           and CI asserts the key is absent so it cannot return.)
+
+      ASK 3 WAS MISSING FROM THE FIRST DRAFT AND IS THE REASON THIS AUDIT
+      EXISTS. The issue asks for `advisory-db.commit` and `asserted-at` by
+      name, and quotes its own reason: "A VEX without those is a claim that
+      rots silently." The emitter recorded a timestamp and no database commit,
+      so the document could not say WHICH advisory database produced its
+      answers — the one fact that makes a `not_affected` checkable later.
+      `advisory_db_commit()` now reads the cargo-deny advisory-db checkout
+      under `$CARGO_HOME/advisory-dbs`, and BOTH of its paths are exercised:
+      on a runner with exactly one checkout it returns that commit (proven
+      against a constructed single-checkout CARGO_HOME, value equal to
+      `git rev-parse HEAD`), and where the checkout is absent or AMBIGUOUS it
+      returns an explicit `unavailable: <reason>` that is still emitted as the
+      property. The ambiguous branch is not hypothetical — it fired on the dev
+      host, which carries three checkouts, and it names the count rather than
+      silently picking one.
+
+      THE PROPERTY IS NEVER OMITTED, and that is the design, not a convenience.
+      An absent property and an unchecked one are indistinguishable to a
+      consumer, which is precisely the failure class this programme measured as
+      "an unread key looks exactly like an absent one". A VEX is the document
+      where that distinction carries the entire weight, so the emitter states
+      its own ignorance in the field rather than leaving the field out.
+
+      SCOPE HELD DELIBERATELY NARROW. cargo-deny also checks licences, bans and
+      sources. Turning those on here would make this lane about dependency
+      policy rather than about #1359's question, and that policy is a separate
+      decision with a separate owner. `deny.toml` says so rather than silently
+      adopting one.
+
+    status: implemented
     release: v0.72
     tags:
       - supply-chain
@@ -62,6 +162,14 @@ artifacts:
       priority: should
       verification-track: differential
       issue: "#1359"
+      landed: "#1369"
+      # RQ-71-ISSUESCOPE (#1250): the artifact's scope shipped; the ISSUE is
+      # wider. #1359 asks for a VEX AND for RE-ISSUE when a new advisory later
+      # matches an already-shipped release. The re-issue half is NOT built —
+      # the document instead states in its own metadata that it is
+      # point-in-time and names what makes it stale. Implying a freshness we do
+      # not maintain would be worse than the gap, but it IS a gap.
+      issue-scope: outlives
       done-when: "file:deny.toml"
       verified-by: >-
         The predicate names deny.toml because the advisory check is the part
