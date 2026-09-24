@@ -55,6 +55,20 @@ ARGS = ["--target", "cortex-m7", "--relocatable", "--all-exports", "--native-poi
 OFF = "SYNTH_NO_LITPOOL_ISLANDS"
 REFUSAL = "LdrSym literal pool out of range"
 
+# RQ-73-ISLANDPASS (#1331): modules that DECLINE with inline islands off and
+# COMPILE with them on, by design. Before the fixed point there were none — a
+# spanning placement was refused rather than resolved — so this set existing at
+# all is the deliverable. Each entry is asserted in BOTH directions below.
+INTENDED_ACCEPTANCES = {
+    # The v0.72 red-first fixture: a forward `br_if` spanning the placement.
+    "litpool_islands_345_branchspan.wat",
+    # The #1331 fixture: spanning branch PLUS a direct call inside the span and
+    # three distinct literals — the two things v0.72's execution leg could not
+    # see. Its own execution gate is falcon-style bit-exactness against
+    # wasmtime in islandpass_1331_execution_differential.py.
+    "islandpass_1331_spanning.wat",
+}
+
 
 def compile_once(wat, obj, islands):
     env = dict(os.environ)
@@ -197,7 +211,7 @@ def main():
             f"pass did not place a reachable island. Output:\n{on_blob[:600]}")
 
     # ---- GATE 2: byte identity on everything that did not need an island ---
-    same = diff = skipped = 0
+    same = diff = skipped = accepted = 0
     with tempfile.TemporaryDirectory() as td:
         for wat in sorted(glob.glob(os.path.join(REPRO, "*.wat"))):
             if os.path.abspath(wat) == os.path.abspath(FIXTURE):
@@ -206,9 +220,31 @@ def main():
             b = os.path.join(td, "b.o")
             ra = compile_once(wat, a, islands=True)
             rb = compile_once(wat, b, islands=False)
+            base = os.path.basename(wat)
+            if base in INTENDED_ACCEPTANCES:
+                # RQ-73-ISLANDPASS (#1331). The message below has always said
+                # "or be a named, intended acceptance"; until now nothing was
+                # named, so the branch did not exist. These two modules are the
+                # whole point of the fixed point, and the assertion is
+                # DIRECTIONAL: islands ON must ACCEPT and islands OFF must
+                # DECLINE. A pin that merely tolerated "the two legs differ"
+                # would stay green if the pass regressed to refusing again.
+                if ra.returncode != 0:
+                    failures.append(
+                        f"GATE2 {base}: pinned as an intended acceptance, but it "
+                        f"DECLINED with islands on (rc={ra.returncode}) — the "
+                        f"#1331 fixed point has regressed")
+                elif rb.returncode == 0:
+                    failures.append(
+                        f"GATE2 {base}: accepted with islands OFF too, so it no "
+                        f"longer demonstrates that inline placement is what "
+                        f"serves this shape — the fixture has gone vacuous")
+                else:
+                    accepted += 1
+                continue
             if ra.returncode != rb.returncode:
                 failures.append(
-                    f"GATE2 {os.path.basename(wat)}: islands changed the "
+                    f"GATE2 {base}: islands changed the "
                     f"ACCEPT/DECLINE outcome (on rc={ra.returncode}, "
                     f"off rc={rb.returncode}) — a module that declined before "
                     f"must still decline, or be a named, intended acceptance")
@@ -225,6 +261,12 @@ def main():
                     f"GATE2 {os.path.basename(wat)}: .text MOVED with islands "
                     f"enabled ({sa[:12]} vs {sb[:12]}) although the module "
                     f"never needed one — the change is not confined")
+
+    if accepted != len(INTENDED_ACCEPTANCES):
+        failures.append(
+            f"GATE2 vacuity: {accepted} of {len(INTENDED_ACCEPTANCES)} pinned "
+            f"intended acceptances were exercised — a named acceptance that the "
+            f"corpus never reaches is a pin nothing checks")
 
     if same < 160:
         failures.append(

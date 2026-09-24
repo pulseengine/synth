@@ -3805,8 +3805,24 @@ jobs:
           # UNTRACKED next-lane fixture was still sitting in scripts/repro/, which
           # the corpus globs. A control is only a control when the tree is the
           # PR's tree.) `hits: 0` unchanged.
-          grep -Eq '^functions audited: 7257$' haa1189.txt
-          grep -Eq '^homes watched: 8326$' haa1189.txt
+          # RQ-73-ISLANDPASS (#1331): 7257 -> 7263, 8326 -> 8328, attributed
+          # 224643 -> 229537. ONE new scripts/repro/*.wat fixture enters the
+          # corpus (islandpass_1331_spanning.wat). The attributed jump is large
+          # for the same reason litpool_islands_345.wat's was: the fixture is
+          # deliberately DENSE — 300 i64.mul rounds buy the >4 KB distance the
+          # island case needs in few LINES, which keeps the file readable and
+          # costs INSTRUCTIONS here. That is the real CI cost of the fixture;
+          # the line count is not.
+          #
+          # ISOLATION CONTROL, and this release needs it more than any before:
+          # this lane changes the EMIT PATH, so corpus growth and a codegen
+          # change are indistinguishable in these three numbers. With the
+          # fixture held aside, THIS binary printed 7257 / 8326 / 224643 — the
+          # pinned values, EXACTLY. The fixed point therefore moves nothing in
+          # this census, which the islands differential says independently:
+          # 165 byte-identical, 0 MOVED. `hits: 0` unchanged.
+          grep -Eq '^functions audited: 7263$' haa1189.txt
+          grep -Eq '^homes watched: 8328$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -3814,7 +3830,7 @@ jobs:
           # 217081 could not still hold. Nothing caught it because no grep ever
           # read it: exactly the "a ratchet fixes the number and cannot fix the
           # prose" shape this project keeps paying for. Derived here: 217291.
-          grep -Eq '^attributed instructions: 224643 ' haa1189.txt
+          grep -Eq '^attributed instructions: 229537 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
@@ -5994,6 +6010,20 @@ jobs:
       # than consulting the bookkeeping that was wrong.
       - name: island offsets still point at their own instruction (#345 follow-up)
         run: SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py scripts/repro/island_offset_invariant_345.py
+
+      # RQ-73-ISLANDPASS (#1331): the EXECUTION gate on a module whose control
+      # flow SPANS an island placement — the shape v0.72 could only refuse.
+      # Deep rather than broad: ONE module, RUN, because the invariant check
+      # above cannot see a branch that is mis-targeted but still lands on an
+      # instruction boundary (such a target IS in the instruction-start set).
+      # Demonstrated, not assumed: with the v0.72 span guard disabled, INV1
+      # PASSED on the emitted object while this gate caught the wrong answer.
+      - name: "spanning module compiles AND executes bit-exact (#1331)"
+        run: |
+          set -euo pipefail
+          SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
+            scripts/repro/islandpass_1331_execution_differential.py | tee /tmp/1331.txt
+          grep -q '^RESULT: PASS' /tmp/1331.txt
 
   arm64-musl-portable-asset:
     name: "Portable arm64 musl asset cross-builds and is static (#1349)"

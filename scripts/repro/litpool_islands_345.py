@@ -182,14 +182,40 @@ def main():
                 capture_output=True, text=True, timeout=300, env=e,
             )
             blob = r.stdout + r.stderr
-            assert r.returncode != 0 or "skipping function" in blob, (
-                f"MISCOMPILE RISK ({label}): the branch-spanning fixture "
-                f"COMPILED. An island was placed between a branch and its "
-                f"target, which silently mis-targets the branch by the "
-                f"island's size. A loud refusal is the correct answer.\n"
-                + blob[:900]
-            )
-            print(f"  OK branch-span: REFUSED with {label}")
+            declined = r.returncode != 0 or "skipping function" in blob
+            if label == "islands OFF":
+                # UNCHANGED, and it is the #345 range pin: with no inline
+                # placement the pool lands past the 12-bit window and the
+                # compile must REFUSE rather than patch a wrong imm12.
+                assert declined, (
+                    f"MISCOMPILE RISK ({label}): the branch-spanning fixture "
+                    f"COMPILED with inline islands disabled, so the pool is out "
+                    f"of range and the load address is wrong.\n" + blob[:900]
+                )
+                print(f"  OK branch-span: REFUSED with {label}")
+            else:
+                # FLIPPED BY RQ-73-ISLANDPASS (#1331). This assertion used to
+                # require a refusal here too, and its stated reason was "every
+                # candidate placement falls inside a branch span, so the placer
+                # declines rather than mis-target it". That was true while
+                # branch offsets were baked BEFORE islands were inserted; it is
+                # no longer, because `place_literal_islands_fixedpoint` resolves
+                # them against island-inclusive positions. Keeping the old
+                # assertion would pin the ABSENCE of the fix.
+                #
+                # DIRECTIONAL, so the flip cannot rot into "anything goes": the
+                # module must now COMPILE. That the compiled bytes are CORRECT
+                # is not asserted here — a compile check cannot know — it is
+                # `islandpass_1331_execution_differential.py`, which runs the
+                # spanning shape against wasmtime.
+                assert not declined, (
+                    f"REGRESSION ({label}): the branch-spanning fixture was "
+                    f"REFUSED. #1331 made this shape compile; a refusal means "
+                    f"the island fixed point has regressed to declining "
+                    f"spanning placements.\n" + blob[:900]
+                )
+                print(f"  OK branch-span: COMPILES with {label} (#1331; "
+                      f"correctness is the execution differential's job)")
 
     print(f"litpool-345 declines: {declines}")
     return 0
