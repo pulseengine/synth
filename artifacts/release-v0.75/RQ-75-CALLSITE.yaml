@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-75-CALLSITE
     type: system-req
     release: v0.75
-    status: proposed
+    status: implemented
     title: "Three releases running, a gate was tested one call short of where it runs — `gate()` and `main()` have never been driven"
     description: >
       REFUTING COMMANDS TO RUN BEFORE SCOPING THIS, and what they returned at
