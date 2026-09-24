@@ -432,12 +432,16 @@ status_fields:
       # with an exact count -- this population's stated inclusion criterion.
       - file: scripts/repro/invalid_accept_1207_differential.py
         name: KNOWN
+        issue: 1207
       - file: scripts/repro/false_reject_1229_differential.py
         name: KNOWN
+        issue: 1229
       - file: scripts/repro/ra003_join_1230_differential.py
         name: KNOWN
+        issue: 1230
       - file: scripts/repro/aarch64_operand_class_1231_differential.py
         name: KNOWN
+        issue: 1231
       # RQ-66-WATCHED (#1189): the pin debt did not grow here — its
       # MEASUREMENT did. Both tables below are findings (#1204/#1240/#1241,
       # #1211) that had no execution oracle at all until this lane wrote

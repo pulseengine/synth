@@ -573,6 +573,24 @@ jobs:
       - name: Issue-closure gate tests (#1250)
         run: python3 scripts/test_issue_closure_check.py
 
+      # RQ-73-PINDEBT (#1373): a red-first pin keeps CI green without hiding the
+      # bug, and `known_open_pins` makes the COUNT a ratchet — but nothing made a
+      # pin's ISSUE mean anything. #1229 was CLOSED on 2026-09-10 by the very PR
+      # that shipped its oracle, from a sentence describing a HYPOTHETICAL future
+      # fix, while that oracle went on observing 130 false rejections of valid
+      # WASM on every run. The board said fixed, the compiler said otherwise, and
+      # for two weeks nothing looked. This is that look. REST, not `gh` — absent
+      # on this pool, and a missing binary raises rather than returning non-zero.
+      - name: "Stale-pin gate — no live pin may be charged to a CLOSED issue (#1373)"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/stale_pin_check.py --self-test
+          python3 scripts/stale_pin_check.py | tee /tmp/stalepin.txt
+          grep -qE '^RESULT: PASS' /tmp/stalepin.txt
+          grep -qE 'total 85 = known_open_pins\)$' /tmp/stalepin.txt
+
       # RQ-62-LOOPCONFORM (#1136): the standing release authorization is
       # conditional on the release running the feature loop, and
       # scripts/loop_conformance_check.py is the gate that DERIVES that
