@@ -59,6 +59,7 @@ artifacts:
       priority: must
       issue: "#1318"
       landed: "#1383"
+      issue-scope: outlives
       carried-from: RQ-73-FALCONFIXTURE
       done-when: "contains:scripts/repro/falcon_opt_1318_differential.py:e_machine"
       verified-by: >-

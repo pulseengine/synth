@@ -4128,12 +4128,14 @@ jobs:
     # params alias). Its first run on main found THREE silent wrong answers:
     # #1221 (aarch64 rotl negates the count IN PLACE in a param's home),
     # #1222 (the direct selector's local.set/tee of an i64 param writes only
-    # the lo half), #1223 (the optimized path folds (x-x)+x to 0 — an IR
-    # defect, filed and pinned OPEN). The committed fixture holds main's
-    # (af819788) own objects for the five affected (module, leg) pairs and
-    # the 10 recorded wrong values must reproduce every run; the live half
-    # must match wasmtime on all four legs except the pinned-open #1223
-    # vector. Declines per leg are pinned EXACTLY (reach moved = red).
+    # the lo half), #1223 (the optimized path folded (x-x)+x to 0 — an IR
+    # defect; CLOSED BY A FIX in RQ-74-PINDEBT2, v0.74). The committed
+    # fixture holds main's (af819788) own objects for the five affected
+    # (module, leg) pairs and the 10 recorded wrong values must reproduce
+    # every run; the live half must match wasmtime on ALL four legs, with no
+    # exception — the #1223 vector was the last pinned-open one and it now
+    # matches, which is why the known-open grep below reads 0 (of 0).
+    # Declines per leg are pinned EXACTLY (reach moved = red).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -4165,7 +4167,16 @@ jobs:
           SYNTH=./target/debug/synth \
             python scripts/oracle_run.py scripts/repro/home_alias_class_1189_differential.py | tee hac1189.txt
           grep -Eq '^silent-wrong vectors: 10 \(of 10 pinned\); fixture match vectors: [1-9][0-9]*$' hac1189.txt
-          grep -Eq '^known-open vectors: 1 \(of 1\)$' hac1189.txt
+          # RQ-74-PINDEBT2 (#1223): 1 (of 1) -> 0 (of 0). The single
+          # known-open vector was `(x - x) + x` returning 0 on the
+          # optimized path; the fold that dropped the surviving use of x
+          # is FIXED, so the pin is gone and its vector moved into the
+          # LIVE population (999 matched, 0 diverged — unchanged, because
+          # it was already being executed, just with a wrong expectation).
+          # The ten frozen silent-wrong vectors above are untouched: they
+          # are this oracle's potency evidence and do not move when a fix
+          # lands.
+          grep -Eq '^known-open vectors: 0 \(of 0\)$' hac1189.txt
           grep -Eq '^live vectors: 999 matched, 0 diverged$' hac1189.txt
           grep -q '^RESULT: PASS' hac1189.txt
       - name: Differential evidence ledger (#910)

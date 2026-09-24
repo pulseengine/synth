@@ -171,9 +171,14 @@ PINNED_WRONG = {
 # Vectors STILL wrong on the live compiler because their defect is filed and
 # OPEN: the live half requires the recorded wrong value (and a divergence from
 # wasmtime), so the fix that closes the issue must flip this pin in its PR.
-KNOWN_OPEN = {
-    ("i32", "arm-self", "same_twice", (7,)): (0x0, "#1223"),
-}
+# RQ-74-PINDEBT2: #1223 CLOSED at the v0.74 cut — `(x - x) + x` returned the
+# constant 0 because the `x + 0 = x` simplification marked the Add DEAD without
+# defining `dest` (its own comment said "would need copy propagation", and that
+# copy propagation did not exist). It now emits a Copy. The vector that stood
+# here is not deleted from the run: it moved into the LIVE population above, so
+# the shape is still executed on every run and a regression re-diverges rather
+# than going unmeasured.
+KNOWN_OPEN: dict = {}
 
 CODE, LIN = 0x100000, 0x40000
 LINMEM_SELF = 0x20000100  # the optimized path's absolute linear-memory base

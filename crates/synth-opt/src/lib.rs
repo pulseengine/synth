@@ -2036,29 +2036,35 @@ impl AlgebraicSimplification {
                 }
 
                 // Simplify: x + 0 = x, 0 + x = x
-                Opcode::Add {
-                    dest: _,
-                    src1,
-                    src2,
-                } => {
+                Opcode::Add { dest, src1, src2 } => {
                     let val1 = const_values.get(&src1);
                     let val2 = const_values.get(&src2);
 
                     match (val1, val2) {
                         (Some(&0), _) => {
-                            // 0 + x = x (mark as dead, would need copy propagation)
-                            inst.is_dead = true;
+                            // 0 + x = x. RQ-74-PINDEBT2 (#1223): this was
+                            // `inst.is_dead = true`, with the comment "would need
+                            // copy propagation" — and that copy propagation does
+                            // not exist. Killing the instruction leaves `dest`
+                            // UNDEFINED while its consumers still read it, so they
+                            // get whatever the allocator happens to leave in that
+                            // register. For `(x - x) + x` the sub-fold leaves a 0
+                            // there and the function returns 0 instead of x: a
+                            // silent wrong answer, exit 0, no decline. Emitting a
+                            // Copy keeps `dest` defined; removing a redundant copy
+                            // is the coalescer's job, not correctness's.
+                            inst.opcode = Opcode::Copy { dest, src: src2 };
                             modified += 1;
                             if self.verbose {
-                                eprintln!("Simplified: 0 + r{} -> r{}", src2.0, src2.0);
+                                eprintln!("Simplified: 0 + r{} -> copy r{}", src2.0, src2.0);
                             }
                         }
                         (_, Some(&0)) => {
-                            // x + 0 = x
-                            inst.is_dead = true;
+                            // x + 0 = x (see above).
+                            inst.opcode = Opcode::Copy { dest, src: src1 };
                             modified += 1;
                             if self.verbose {
-                                eprintln!("Simplified: r{} + 0 -> r{}", src1.0, src1.0);
+                                eprintln!("Simplified: r{} + 0 -> copy r{}", src1.0, src1.0);
                             }
                         }
                         _ => {}
@@ -2070,11 +2076,16 @@ impl AlgebraicSimplification {
                     let val2 = const_values.get(&src2);
 
                     if let Some(&0) = val2 {
-                        // x - 0 = x
-                        inst.is_dead = true;
+                        // x - 0 = x. Same class as the Add arms above (#1223):
+                        // NOT observably wrong on the probes measured at the
+                        // v0.74 cut, but unsound by the same construction — it
+                        // left `dest` undefined and was masked only by the
+                        // allocator's incidental assignment. Repaired with its
+                        // siblings rather than left as a latent instance.
+                        inst.opcode = Opcode::Copy { dest, src: src1 };
                         modified += 1;
                         if self.verbose {
-                            eprintln!("Simplified: r{} - 0 -> r{}", src1.0, src1.0);
+                            eprintln!("Simplified: r{} - 0 -> copy r{}", src1.0, src1.0);
                         }
                     } else if src1 == src2 {
                         // x - x = 0
@@ -2103,19 +2114,19 @@ impl AlgebraicSimplification {
                             }
                         }
                         (Some(&1), _) => {
-                            // 1 * x = x
-                            inst.is_dead = true;
+                            // 1 * x = x — same class as #1223, latent (see Sub).
+                            inst.opcode = Opcode::Copy { dest, src: src2 };
                             modified += 1;
                             if self.verbose {
-                                eprintln!("Simplified: 1 * r{} -> r{}", src2.0, src2.0);
+                                eprintln!("Simplified: 1 * r{} -> copy r{}", src2.0, src2.0);
                             }
                         }
                         (_, Some(&1)) => {
-                            // x * 1 = x
-                            inst.is_dead = true;
+                            // x * 1 = x — same class as #1223, latent (see Sub).
+                            inst.opcode = Opcode::Copy { dest, src: src1 };
                             modified += 1;
                             if self.verbose {
-                                eprintln!("Simplified: r{} * 1 -> r{}", src1.0, src1.0);
+                                eprintln!("Simplified: r{} * 1 -> copy r{}", src1.0, src1.0);
                             }
                         }
                         _ => {}
@@ -3472,10 +3483,16 @@ mod tests {
         let mut simplify = AlgebraicSimplification::new();
         let result = simplify.run(&mut cfg, &mut instructions);
 
-        // r1 + 0 should be simplified (marked dead)
+        // r1 + 0 should be simplified to a copy of r1
         assert!(result.changed);
         assert_eq!(result.modified_count, 1);
-        assert!(instructions[1].is_dead);
+        // RQ-74-PINDEBT2 (#1223): this used to assert `is_dead`, i.e. it
+        // PINNED THE DEFECT. Marking the instruction dead leaves `dest`
+        // undefined while consumers still read it — the silent wrong answer
+        // behind `(x - x) + x` returning 0. The sound outcome is that `dest`
+        // STAYS DEFINED, as a Copy from the surviving operand.
+        assert!(!instructions[1].is_dead);
+        assert!(matches!(instructions[1].opcode, Opcode::Copy { src, .. } if src == Reg(1)));
     }
 
     #[test]
@@ -3513,10 +3530,16 @@ mod tests {
         let mut simplify = AlgebraicSimplification::new();
         let result = simplify.run(&mut cfg, &mut instructions);
 
-        // r1 - 0 should be simplified
+        // r1 - 0 should be simplified to a copy of r1
         assert!(result.changed);
         assert_eq!(result.modified_count, 1);
-        assert!(instructions[1].is_dead);
+        // RQ-74-PINDEBT2 (#1223): this used to assert `is_dead`, i.e. it
+        // PINNED THE DEFECT. Marking the instruction dead leaves `dest`
+        // undefined while consumers still read it — the silent wrong answer
+        // behind `(x - x) + x` returning 0. The sound outcome is that `dest`
+        // STAYS DEFINED, as a Copy from the surviving operand.
+        assert!(!instructions[1].is_dead);
+        assert!(matches!(instructions[1].opcode, Opcode::Copy { src, .. } if src == Reg(1)));
     }
 
     #[test]
@@ -3635,10 +3658,16 @@ mod tests {
         let mut simplify = AlgebraicSimplification::new();
         let result = simplify.run(&mut cfg, &mut instructions);
 
-        // r1 * 1 should be simplified
+        // r1 * 1 should be simplified to a copy of r1
         assert!(result.changed);
         assert_eq!(result.modified_count, 1);
-        assert!(instructions[1].is_dead);
+        // RQ-74-PINDEBT2 (#1223): this used to assert `is_dead`, i.e. it
+        // PINNED THE DEFECT. Marking the instruction dead leaves `dest`
+        // undefined while consumers still read it — the silent wrong answer
+        // behind `(x - x) + x` returning 0. The sound outcome is that `dest`
+        // STAYS DEFINED, as a Copy from the surviving operand.
+        assert!(!instructions[1].is_dead);
+        assert!(matches!(instructions[1].opcode, Opcode::Copy { src, .. } if src == Reg(1)));
     }
 
     #[test]
@@ -3708,8 +3737,12 @@ mod tests {
         // All three should be simplified
         assert!(result.changed);
         assert_eq!(result.modified_count, 3);
-        assert!(instructions[2].is_dead); // r2 + 0
-        assert!(instructions[3].is_dead); // r3 * 1
+        // (#1223) both are now COPIES, not dead: see the note in
+        // test_algebraic_add_zero.
+        assert!(!instructions[2].is_dead); // r2 + 0 -> copy
+        assert!(matches!(instructions[2].opcode, Opcode::Copy { .. }));
+        assert!(!instructions[3].is_dead); // r3 * 1 -> copy
+        assert!(matches!(instructions[3].opcode, Opcode::Copy { .. }));
         assert_eq!(
             instructions[4].opcode,
             Opcode::Const {
