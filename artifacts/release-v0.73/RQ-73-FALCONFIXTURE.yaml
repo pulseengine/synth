@@ -1,7 +1,7 @@
 artifacts:
   - id: RQ-73-FALCONFIXTURE
     type: system-req
-    title: "#1318 cannot be measured in this repository — the reporter's opt.wasm is an issue attachment, so the first deliverable is a fixture, not a fix"
+    title: "#1318 WAS measurable all along — the reporter's opt.wasm is IN the issue's errors.zip, and 6 of its 7 declines reduce to a value-carrying branch at float type"
     description: >
       REFUTING COMMANDS RUN at the v0.72.0 cut, and they refuted the obvious
       scoping:
@@ -17,7 +17,12 @@ artifacts:
       it): the second line above first read "only the I64 pool remains", and
       that is FALSE. `VFP_FRAME_HOME_SLOT_EXHAUSTION` is live at
       `instruction_selector.rs:3235`, emitted at `:3245` behind the `#1069:`
-      prefix and matched in `arm_backend.rs:1061` to drive the pool-grow
+      prefix and matched in `arm_backend.rs` (the VFP_FRAME_HOME arm of
+      the pool-grow retry's error match; the LINE number this said was
+      invalidated by RQ-73-ISLANDPASS in this same release, which shifted
+      every site in that file by -22 and re-anchored the machine-readable
+      mutation ledger for exactly that drift while leaving this prose
+      pointing at the old line) to drive the pool-grow
       retry — it is precisely the rung the reporter's `step` export hits. A
       lane that believed the sentence would have scoped around a path that is
       very much still there.
@@ -47,7 +52,7 @@ artifacts:
 
       MEASURED at v0.72.0 with the reporter's own command line:
 
-        fused.wasm   rc=0, 0 of 26 skipped        (still clean, as at v0.70.0)
+        fused.wasm   rc=0, 0 of 21 skipped        (still clean, as at v0.70.0)
         opt.wasm     rc=1, 7 of 17 skipped
                      -> 1x #1069 (the `controller@0.10.0#step` export)
                      -> 6x GI-FPU-002 (func_4/5/8/10/11/12)

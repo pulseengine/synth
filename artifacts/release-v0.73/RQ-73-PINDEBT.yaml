@@ -25,15 +25,21 @@ artifacts:
       WHY THE NUMBER IS THE ANSWER. Each pin is a CI-wired oracle that OBSERVES
       a divergence on the LIVE compiler and passes over it, keyed to an issue
       with an exact count. So the pin count is the still-broken count; it is not
-      an opinion about the board. Several of the suppressed issues are titled
-      SILENT MISCOMPILE or "accepts an INVALID module".
-
+      an opinion about the board. RE-DERIVED at this cut, because the first
+      draft said "several ... are TITLED SILENT MISCOMPILE" and ZERO of the
+      eight pinned issues' titles contain that phrase — exactly one (#1207)
+      matches "accepts an INVALID module". What the titles DO say is the
+      same class in other words: "is wrong on both" (#1215), "folds to the
+      constant 0" (#1223), "loses its value" (#1241), "refuses its own
+      emitted stream" (#1230). The point stands; the sentence carrying it
+      did not.
       RQ-66-PINDEBT exists to stop exactly this: "a release that ends with more
       pins than it began is red; adding a pin is paid for by closing one, or by
       a `waivers:` entry with a written reason in the same PR". The ratchet has
-      been satisfied by WAIVERS rather than by fixes, and the number nearly
-      tripled while every release stayed green.
-
+      been satisfied by WAIVERS rather than by fixes, and the number MORE than
+      tripled (27 -> 85 is 3.15x; "nearly tripled" understated this
+      artifact's own headline in the direction that makes it less alarming)
+      while every release stayed green.
       AND THE BOARD IS NOT OLD, which is the part that surprised. 40 open
       issues; exactly ONE older than 30 days (#242, an epic) and NOTHING over
       six months. The problem is not age — 28 of 40 have not been touched since
@@ -44,8 +50,11 @@ artifacts:
       (a) Drive `known_open_pins` DOWN. Every removed pin is a fix or a pin
           proven obsolete, and either way the oracle must still DISCRIMINATE
           afterwards — shown by mutation, not by the suite staying green.
-      (b) Re-verify the 28 UNPINNED open issues against the v0.72.0 binary.
-          The pin method says nothing about them, so each needs "still fails,
+      (b) Re-verify the 33 UNPINNED open issues against the v0.72.0 binary.
+          (CORRECTED: the first draft said 28, which is the
+          untouched-since-filed figure from eight lines above, reused for a
+          different set. The board is 40 and 7 pinned issues were open at
+          plan time — #1229 was closed, so off the 40 — giving 33.)          The pin method says nothing about them, so each needs "still fails,
           repro attached" or "no longer reproduces, closing with the command".
       (c) Make a STALE pin visible: a pin whose issue is already CLOSED is debt
           with no owner and nothing notices today. `scripts/stale_pin_check.py`
