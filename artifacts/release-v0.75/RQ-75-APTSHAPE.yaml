@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-75-APTSHAPE
+    type: system-req
+    release: v0.75
+    status: proposed
+    title: "`APT_RE` only ever sees an installer that is the FIRST TOKEN of its `run:` value, because `str(job)` is a dict repr"
+    description: >
+      v0.74 widened this detector from `apt-get` to `apt(-get)?` and added a
+      `SCRIPT_RE` for one level of `bash scripts/x.sh`, and enumerated NINE spellings
+      it still misses.
+
+      ROUND 2 FOUND SOMETHING DEEPER THAN A SPELLING. The body being scanned is
+      `str(job)` — a dict REPR — so newlines render as a backslash and an `n`, and a
+      quote precedes the command. The detector therefore only ever matches an
+      installer that is the FIRST TOKEN of its `run:` value. Swapping two lines flips
+      CAUGHT to MISSED:
+
+          run: |                          run: |
+            apt-get install -y x            set -euo pipefail
+            set -euo pipefail               apt-get install -y x
+          -> CAUGHT                       -> MISSED
+
+      That subsumes the heredoc case and most of the nine spellings, which is why
+      widening the alternation further is the wrong shape: the real check is whether
+      the job's install step can RUN under `no_new_privs`, which needs executing it,
+      not grepping it.
+
+      NOTE THE POPULATION IS LATENT: no required context is on the self-hosted pool
+      today, so this is a tripwire for a future move, not a live gate. That is a
+      reason to keep it honest, not a reason to defer it.
+
+      AT DELIVERY this artifact must carry `issue-scope: outlives` — #1062 is a
+      standing capacity issue that no single lane closes. Not set while `proposed`
+      (R12).
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1062"
+      done-when: "contains:scripts/ci_pool_tripwire.py:RQ-75-APTSHAPE"
+      verified-by: >-
+        The line-swap mutation must go from MISSED to CAUGHT, and the mutation shown to have applied.

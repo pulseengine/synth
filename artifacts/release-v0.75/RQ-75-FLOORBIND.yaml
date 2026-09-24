@@ -1,0 +1,41 @@
+artifacts:
+  - id: RQ-75-FLOORBIND
+    type: system-req
+    release: v0.75
+    status: proposed
+    title: "The islandpass floor is bound to the literal 3x5, so a fourth fixture silently restores the skip v0.74 closed"
+    description: >
+      v0.74 moved this oracle's floor from `compiles >= 4` to `emulations >= 15`,
+      which closed a real silent skip: a fixture reverting from "executes bit-exact"
+      to "refused" used to score green, because a refusing compiler still makes the
+      subprocess call the old floor counted.
+
+      THE NEW FLOOR IS A LITERAL. 15 is `3 fixtures x 5 ARGVALS` written out, not
+      derived, so adding a fourth fixture leaves the floor satisfiable by three — the
+      skip returns, quietly, in the commit that grows the corpus.
+
+      THREE MORE DEFEATS OF THE SAME ORACLE, each recorded with its mutation in
+      v0.74's round 2:
+        * it can be made to compare the compiler WITH ITSELF (`wasmtime_calls = 0`),
+          and the floor RISES while it prints "5/5 bit-exact vs wasmtime";
+        * `ARGVALS` can be set to all zeros with byte-identical output;
+        * the ungenerated spanning fixture can be shrunk BELOW the 4,095-byte imm12
+          reach — no island is placed at all — and the differential still reports
+          "compiles AND executes bit-exact", with `--check` green.
+
+      DELIVERABLE: bind the floor to `len(FIXTURES) * len(ARGVALS)`; refuse
+      `wasmtime_calls == 0`; refuse a degenerate ARGVALS; assert `.text >= 4096` per
+      spanning fixture. Four mutations, four reds, each shown to have applied.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1331"
+      done-when: "contains:scripts/repro/islandpass_1331_execution_differential.py:RQ-75-FLOORBIND"
+      verified-by: >-
+        Four recorded mutations are the oracle; the needle only locates the change.

@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-75-REPLAY
+    type: system-req
+    release: v0.75
+    status: proposed
+    title: "#1318's repaired gate still asks what the file IS and never what it CONTAINS — a recorded ELF replays forever"
+    description: >
+      EXTERNAL REPORTER (cpetig). v0.74 repaired the null-stub defeat: the gate now
+      checks ELF magic, `e_machine` per leg, a non-empty `.text`, and a symbol per
+      non-declined export, across two invocations.
+
+      IT IS STILL DEFEATED, and v0.74 disclosed this rather than claiming otherwise.
+      A 30-line script that copies three PRE-RECORDED ELFs — right machine, right
+      symbols, `.text` overwritten with 0xDE filler — and prints the canned warning
+      lines passes the entire repaired step: rc=0, CHECKS=12/12, RESULT: PASS, both
+      CI greps satisfied.
+
+      TWO SEPARATE RESIDUALS, both recorded with their mutations:
+        (a) nothing reads the emitted CODE, so a replay is indistinguishable from a
+            compile. Closing it needs a decode or an execution differential.
+        (b) the two invocations are never cross-checked: `inspect_object` asserts
+            `compiled SUBSET-OF symbols` but never `declined INTERSECT symbols = {}`,
+            so an object carrying the three exports leg 1 just reported as DECLINED
+            passes.
+
+      AND THE FLOOR MOVE 3 -> 6 BOUGHT NOTHING, which is worth restating because it
+      is the tempting non-fix: `mode=compiles` counts subprocess INVOCATIONS, so
+      doubling the invocations doubled the floor and a stub satisfies both.
+
+      AT DELIVERY this artifact must carry `issue-scope: outlives`: #1318 stays OPEN
+      because the reporter's original ask is not what it delivers. The field is NOT set
+      while the status is `proposed` — R12 refuses it there, correctly, since an
+      undelivered artifact's issue stays open anyway and the declaration would be
+      empty.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1318"
+      done-when: "contains:scripts/repro/falcon_opt_1318_differential.py:RQ-75-REPLAY"
+      verified-by: >-
+        Acceptance is the 30-line replay stub going RED, demonstrated with the stub committed as a negative control — not the presence of the needle.
