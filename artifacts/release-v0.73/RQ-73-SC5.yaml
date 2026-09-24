@@ -38,7 +38,11 @@ artifacts:
       says "not an instruction BOUNDARY". An earlier draft quoted it as
       "not an instruction start", which is this file's own oracle's phrasing
       and something the compiler has never emitted
-      (`git log -S "not an instruction start"` -> no commit).
+      (`git log -S "not an instruction start" --
+      crates/synth-backend/src/arm_backend.rs` -> no commit, ever. The
+      PATHSPEC is load-bearing: without it the same command now returns a
+      commit, because THIS ARTIFACT introduced the string into the tree).
+
       THE SECOND THING IS THIS ARTIFACT'S OWN `done-when`, because the artifact
       is explicit that moving the call site without a demonstration "would
       restore the wording and not the guarantee":

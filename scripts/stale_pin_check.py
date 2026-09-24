@@ -197,18 +197,31 @@ def entry_issues(path: pathlib.Path, name: str) -> collections.Counter:
                 if m:
                     found[int(m.group(1))] += 1
                     hit = True
-                elif _HASH_NUM.search(t) and t not in REASON_STRINGS:
-                    # AMBIGUOUS: carries a `#N` but is not an issue reference
-                    # and is not a declared reason. Silently booking this as
-                    # "reason-charged" is how a typo'd issue reference stops
-                    # being checked while every count still balances.
+                elif t not in REASON_STRINGS:
+                    # NOT an exact issue reference and NOT a declared reason.
+                    #
+                    # (v0.73 cold review round 2, finding 1) This condition used
+                    # to be `_HASH_NUM.search(t) and t not in REASON_STRINGS` —
+                    # i.e. it only refused a value that RETAINED a `#`. The
+                    # reviewer reached the very hole round 1 built this to close
+                    # with a ONE-character typo instead of a three-character one:
+                    # `('#1206', 2)` -> `('1206', 2)` misses ISSUE_RE, misses
+                    # _HASH_NUM, books `reasoned += 1`, and BOTH accounting
+                    # invariants still balance (8 issues -> 7, attributed
+                    # 68 -> 67, reasoned 17 -> 18, total still 85) — so the
+                    # invariant cannot catch it by construction, which is round
+                    # 1's own F1 reasoning applied to its own residual.
+                    #
+                    # It is now an ALLOWLIST: a string is an exact `#N`, or it is
+                    # a declared reason, or the derivation refuses. There is no
+                    # third bucket for a value to fall into quietly.
                     raise StalePinError(
-                        f"{path.name}::{name}: value {part!r} carries a `#N` "
-                        f"but is neither an exact issue reference nor one of "
-                        f"the declared REASON_STRINGS. If it is a suppression "
-                        f"reason, declare it; if it is meant to name an issue, "
-                        f"write it as `#1234` exactly. Left alone it would be "
-                        f"counted as a reason and the issue never checked."
+                        f"{path.name}::{name}: value {part!r} is neither an "
+                        f"exact issue reference nor one of the declared "
+                        f"REASON_STRINGS. If it is a suppression reason, "
+                        f"declare it; if it is meant to name an issue, write it "
+                        f"as `#1234` exactly. Left alone it would be counted as "
+                        f"a reason and the issue never checked."
                     )
         if not hit:
             found.reasoned += 1

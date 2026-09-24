@@ -85,6 +85,13 @@ echo "  #$PR state=$STATE"
 # happened, so this REPORTS rather than gates, and a non-FAITHFUL verdict is
 # printed loudly for the operator to act on.
 if [ "$STATE" = "MERGED" ]; then
+  # (v0.73 cold review round 2, finding 4) The squash commit is created by the
+  # merge above and is NOT in the local object store — every fetch happens
+  # before the merge. Without this, `git diff <head> <merged>` fatals and the
+  # attestation reported FAITHFUL unconditionally: the same shape #1269
+  # describes, where 45 merges read 0 because the number answered a different
+  # question.
+  git fetch -q origin main
   python3 scripts/merge_gate.py --pr "$PR" --repo "$REPO" --squash-fidelity \
     || echo "  !! squash fidelity NOT confirmed for #$PR — read the verdict above"
 fi

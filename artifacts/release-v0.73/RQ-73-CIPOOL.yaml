@@ -1,7 +1,7 @@
 artifacts:
   - id: RQ-73-CIPOOL
     type: system-req
-    title: "#1062 increment 4 — the 40 non-required ubuntu-latest jobs that need python, and the four required ones that can NEVER move"
+    title: "#1062 increment 4 — the 40 non-required ubuntu-latest jobs that need python, and the two required ones that genuinely cannot move"
     description: >
       HELD OPEN ON THE v0.72 TAG via `issue-scope: outlives` on RQ-72-CIPOOL.
 
@@ -69,10 +69,20 @@ artifacts:
       THE apt BLOCK IS STRUCTURAL, and the derivation now says so rather than
       the plan asserting it: `no_new_privs` on the self-hosted containers means
       no job needing `apt-get` can EVER run there. Eight jobs are blocked that
-      way and four are required contexts, which no increment may move —
-      retargeting a required NAME leaves it never running and deadlocks every
-      merge with no red to revert. The tripwire refuses if a required context
-      is ever reported movable.
+      way. FOUR required contexts sit on ubuntu-latest and the tripwire refuses
+      to report ANY of them movable — retargeting a required NAME leaves it
+      never running and deadlocks every merge with no red to revert.
+
+      BUT THE REASON THIS ARTIFACT GAVE WAS WRONG FOR HALF THE SET, and the
+      refutation is already in `ci_pool_tripwire.py`: of those four, only TWO
+      (`Test`, `Z3 Verification`) need apt at all. `Kani Verification` and
+      `Bazel Build & Proofs` do not, and FIVE required contexts already run
+      self-hosted today (Format, Clippy, Claim Check, Version Pin Sweep, Rivet
+      Validation). So "a required context can never move" is FALSE as a general
+      claim. The true statement is narrower — a required context that NEEDS apt
+      can never run self-hosted — and that is what the new check enforces. The
+      general claim would eventually license working around a blocker that was
+      never there.
 
       MOVED THIS RELEASE: six oracle jobs. ubuntu-latest 52 -> 46 (73% -> 65%),
       self-hosted 15 -> 21, ceiling lowered 52 -> 46 in the same PR because the
@@ -102,6 +112,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1062"
+      issue-scope: outlives
       landed: "#1380"
       verification-track: differential
       done-when: "contains:scripts/ci_pool_tripwire.py:PEP668_POOL_READY"

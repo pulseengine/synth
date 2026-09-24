@@ -5,6 +5,167 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.73.0] - 2026-09-24
+
+### "Is it still broken?"
+
+The maintainer's own question after v0.72, asked of a board carrying 42 open
+issues at this cut: "we have a lot of issues and I have no clue if we fixed
+them". Every
+oracle-found divergence in this repository is pinned red-first, so the pin count
+IS the still-broken count — and this release is about making "open" mean
+something. Eight artifacts, ordered by who was blocked.
+
+**PINDEBT (#1373)** — a pin says "this function returns this wrong answer today,
+issue #N". `known_open_pins` makes the COUNT a ratchet. Nothing made a pin's
+ISSUE mean anything: an issue can close while its oracle goes on observing the
+divergence on every run, and nothing looks. `scripts/stale_pin_check.py` looks.
+
+It found exactly one specimen in the whole population, and it is the question in
+miniature: **#1229 was closed while its oracle was observing 130 false
+rejections of valid WASM on every CI run** — 12 (file, backend) cells, exact in
+both directions, so the oracle being green IS the statement that nothing moved.
+It was auto-closed by the very PR that shipped that oracle, from a sentence
+describing what a HYPOTHETICAL future fix would achieve; two lines below, the
+same PR says "filed as watched, not fixed". Merge at `02:37:11Z`, close at
+`02:37:12Z`, no comment — and the other three issues in that PR are all still
+open. Evidence posted, issue reopened.
+
+**Deliverable (a) was not achieved, and the theme obliges saying so:**
+`known_open_pins` ends at **85**, the value it began at. No pin was closed by any
+lane. What shipped is the tripwire and the attribution that makes the number
+mean something — 8 issues carrying 68 pins, plus 17 charged to a documented
+reason rather than an issue, reconciling to 85 by an assertion the gate refuses
+to skip.
+
+**ISLANDPASS (#1331 — cpetig)** — 4 KB+ functions with spanning control flow
+compile now. v0.72 placed literal pools inline, but branch offsets were
+byte-resolved BEFORE the encode loop, so an island between a branch and its
+target moved the target and not the branch; v0.72 refused such placements, which
+was correct and meant the shape did not compile at all.
+`place_literal_islands_fixedpoint` resolves branch offsets against
+ISLAND-INCLUSIVE positions. The circularity is smaller than it looks: an island
+only moves code AFTER it, so one left-to-right walk decides every placement, and
+the iteration that remains is the branch-encoding one that was always there. The
+emit loop no longer decides anything — it obeys the plan, and refuses if the
+pending-literal count at a planned placement differs from the prediction.
+
+Measured: the fixture that had refused since v0.72 compiles; **5/5 arguments
+bit-exact against wasmtime**; **165 byte-identical, 0 MOVED**; 306 objects clean
+on the invariant oracle. The audit census is unmoved with the new fixture held
+aside, so the change is confined to the modules that need an island.
+
+**And measured on the reporter's own modules, which is the part the corpus
+control structurally cannot cover** — it compares only modules needing NO
+island, while the affected ones previously REFUSED and so have no baseline in
+it. Both attachments on #1331, run with cpetig's own command line, against a
+v0.72.0 binary as the potency control:
+
+| module | v0.72.0 | v0.73 |
+|---|---|---|
+| `inv-a-dist-leaves.wasm` | rc=1, `imm12=5088 > 4095`, `position#tick` skipped, no object | rc=0, **0 skipped**, 22 functions |
+| `cascade-v1139-fused.wasm` | rc=1, `imm12=10940 > 4095`, `controller#step` skipped, no object | rc=0, **0 skipped**, 21 functions |
+
+236 and 577 local branch targets in those objects were decoded by Thumb-2 rules
+independently of the compiler; none is mis-targeted. Per-symbol, the fused
+module is **22 of 22 byte-identical**; the other moves exactly one function,
+`ekf#estimate`, by **+4 bytes** — and the delta is derived rather than excused:
+the instruction COUNT is identical (1339 either side) and exactly two
+conditional branches re-encode from narrow to wide (`B<c>.N` 25 → 23, `B<c>.W`
+7 → 9, 2 × 2 B = 4 B). The pool moved earlier, two branches left ±254 B range,
+and the fixed point widened them. That is the pass converging, not drifting.
+
+`label_branch_spans` and the `island_declined_for_branch` refusal are DELETED —
+that refusal's own message ended "serving this shape needs branch resolution and
+island placement in one fixed point", and keeping it would have made it a false
+statement.
+
+**FALCONFIXTURE (#1318 — cpetig)** — the lane opened with "the reporter's module
+is an issue attachment and not in this repository". **It was in the issue's
+`errors.zip` the whole time**, along with `fused.wasm`. Measured here rather than
+by spending the reporter's time: `fused.wasm` clean (0 of 21 skipped),
+`opt.wasm` **7 of 17 skipped** — 1×`#1069` and 6×`GI-FPU-002`, identical to the
+v0.70 status because both emit sites are untouched since.
+
+Each of the six reduces to an **eight-line module** that wasmtime validates and
+runs: a value-carrying `br_if` at f32. ARM compiles the i32 form, declines i64
+with a named message, and gives `GI-FPU-002` at float — a message naming the
+wrong subsystem, which is why six declines in a real flight-control module were
+never connected to a known gap. AArch64 compiles all four.
+
+**SC5 (#345)** — `validate_branch_targets` claimed to gate "the final stream"
+while running BEFORE island insertion. It now measures in post-island
+coordinates, and `sc5_postisland_345.py` DECODES the emitted `.text` by Thumb-2
+rules to build the instruction-start set independently of anything the compiler
+recorded. It carries a frozen mis-targeted stream it must flag, so it is a gate
+that has been watched fail.
+
+**STEP8 (#1269)** — `squash_fidelity` existed and was reachable only from its
+own self-test. It is now called from the merge ritual after every merge, so the
+post-merge diff is recorded without a human producing it. The artifact asked
+whether head refs are durably fetchable: via the branch they are not
+(`--delete-branch`), via `refs/pull/<N>/head` they are.
+
+**GATETRUTH (#1319)** — three v0.72 corrections that did not do what they said.
+The census pin was a tautology (`max()` over the same set it counts); CHECK1
+compared cardinality, so nine contexts named `Bogus 0..8` returned `GATEOK`; and
+`FIELD_KEYS` claimed a mechanism it did not have. Each is fixed WITH its
+demonstration, and `merge_gate --self-test` goes from 9 checks to 19 on a new
+offline seam. The artifact's own proposed fix for the rivet step was REFUTED and
+replaced: a bare `pipefail` there would have turned a required context red and
+deadlocked every merge.
+
+**CIPOOL (#1062)** — the 40 candidate jobs could not have moved: every one ran a
+bare `pip install` against PEP 668 containers. `PEP668_POOL_READY` derives the
+movable set with that as a precondition. ubuntu-latest **52 → 46** (73% → 65%).
+The artifact's claim that the four required contexts can never move because of
+`no_new_privs` holds for only two of them.
+
+**ARCHMODEL (#1136)** — spar#445 unchanged; the eleventh consecutive N/A, with
+the ordinal WALKED from the `carried-from` chain rather than incremented.
+
+### What this tag closes, and what it deliberately does not
+
+The theme applies to the release's own bookkeeping. The close-set is DERIVED
+(`authorised_close_set`, the same function CI prints and the tag audits), and
+derived first it authorised **seven** closures with **nothing** held open —
+the exact shape that, one release earlier, would have closed an external
+reporter's live blocker. Reading each issue's actual text against what shipped
+left **four** held open:
+
+- **Closed: #1331** — verified on the reporter's own modules, with a v0.72
+  control that still refuses them.
+- **Closed: #1269** — both asks delivered; ask 2's verdict is now produced by
+  the merge ritual itself rather than by hand.
+- **Held open: #1373** — its ask 1 was "drive `known_open_pins` DOWN" and the
+  number ends where it started.
+- **Held open: #1318** — the declines were measured and named, and still
+  decline.
+- **Held open: #1062** — ubuntu-latest fell 52 → 46; the issue asks for more.
+- **Held open: #1319** — three v0.72 corrections shipped under this number;
+  the issue's own ask is a different gate, and no rule implements it.
+
+**#345 is a case worth naming**, because this release got it wrong twice in
+opposite directions. It was first read as untouched and marked to be held open
+— but #345 has been CLOSED since 2026-06-14, verified on real G474RE silicon
+(`MOVW_ABS` relocs 22 → 0, `.data` 65548 → 4). Its asks shipped in v0.11.43.
+The reason it keeps resurfacing is that the modern decline message
+`LdrSym literal pool out of range (#345)` REUSES the number for an unrelated
+function-size limit. Reading an issue's body without reading its STATE is how
+that mistake is made; the audit caught it.
+
+An issue closed because a lane cited it is how a board stops meaning anything,
+which is the thing this release is about.
+
+### Reviewed
+
+Two fresh-context cold reviews before the tag. Round 1 found **9 false
+statements and 8 gate findings**, including a typo'd issue reference that a
+tripwire silently absorbed while its own accounting still balanced, and a
+quotation attributed to the compiler that `git log -S` proves it has never
+emitted. Round 2 attacked round 1's corrections. `docs/reviews/v0.73-cold-review.md`
+records both, and what neither could settle.
+
 ## [0.72.0] - 2026-09-24
 
 ### "Built, and out of reach"
@@ -43,6 +204,14 @@ the ones that previously refused.
 **#1331 stays open.** The literal-pool half shipped; a function whose branches
 span every candidate placement still refuses, and the native-pointer f32
 static-data half is untouched.
+
+> **CORRECTION, added at the v0.73 cut.** The last clause is FALSE and was
+> false when published: the native-pointer f32 static-data lowering shipped in
+> **v0.70.0** (RQ-70-NPA). It is corrected here rather than rewritten, because
+> the sentence reached an external reporter on #1331 and a retraction that
+> edits only the thread leaves the published notes still saying it. The
+> statement that was true of v0.72 is the other one — the branch-spanning
+> literal-pool limit — and v0.73 fixes that too.
 
 **STACKDOC (#1341 item 3 — cpetig)** — v0.71 emitted a per-export maximum
 native stack depth and the page an embedder actually reads never named it. The

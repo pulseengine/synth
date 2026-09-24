@@ -266,10 +266,22 @@ ever-growing pile of locally-correct patches.**
 > tripwire sees only a top-level `NAME = { ... }` dict LITERAL (matching what
 > `_pin_table` itself can read without running the oracle); a table built via
 > `dict(...)`, a comprehension, or `.update()` calls would slip past both and
-> is a review-time obligation, not a caught one. The
+> is a review-time obligation, not a caught one. **It is also scoped BY NAME**
+> (`^(?:KNOWN|PINNED)[A-Z0-9_]*`), so a suppression table called anything else
+> — `SUPPRESSED_CASES`, say — escapes the tripwire AND the ratchet entirely.
+> Demonstrated in the v0.73 round-2 gate review: a byte-identical table under a
+> non-matching name left `claim_check` at 75/75. The
 > summed pinned case count rides beside it as `known_open_pinned_cases`
-> (`direction: track`) so that merging per-function pins into one wildcard
-> entry — which the parity oracle accepts — cannot read as progress. A
+> (`direction: track`). **What that actually catches is a merge that MOVES the
+> case total** — proven potent: changing one entry's count 2 -> 9 reds with
+> "tracked number 'known_open_pinned_cases' MOVED". It does NOT catch the merge
+> the earlier wording claimed it did: merging two per-function pins into one
+> wildcard while SUMMING their cases leaves the total at 158, so `direction:
+> track` stays silent, `known_open_pins` falls 85 -> 84, and the operator adds
+> the `waivers:` entry the ratchet's own error message instructs them to add.
+> That path was executed in round 2 and every claim held. So a case-preserving
+> pin merge is a REVIEW-TIME obligation, not a caught one — this file previously
+> said it "cannot read as progress", which was false about a safeguard. A
 > release that ends with more pins than it began is red; adding a pin is
 > paid for by closing one, or by a `waivers:` entry with a written reason in
 > the same PR.

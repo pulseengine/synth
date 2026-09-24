@@ -4,7 +4,7 @@ point at the instruction it was recorded for, after an inline literal island
 has been inserted.
 
 # ci-status: wired
-# ci-checks: stdout /^objects checked: ([0-9]+)$/ >= 150
+# ci-checks: stdout /^objects checked: ([0-9]+)$/ >= 306
 
 WHY THIS EXISTS. v0.72's first island guard reasoned only about BRANCH offsets
 (`BOffset`/`BCondOffset`) and missed that the same loop records FOUR other
