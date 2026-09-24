@@ -4,7 +4,29 @@ point at the instruction it was recorded for, after an inline literal island
 has been inserted.
 
 # ci-status: wired
-# ci-checks: stdout /^objects checked: ([0-9]+)$/ >= 306
+# ci-checks: stdout /^objects checked: ([0-9]+)$/ >= 308
+
+WHAT THIS ORACLE CANNOT SEE (RQ-74-ISLANDREACH, v0.74) — disclosed here rather
+than left for the next reviewer to rediscover. INV1/INV2 check that a RECORDED
+offset still points at the instruction it was recorded for. They do NOT check
+that a branch's TARGET is the right instruction. v0.73's round-2 gate review
+advanced every local branch target by one WHOLE instruction — so every target
+remained a legal instruction start, and every recorded offset still pointed at
+its own instruction — and this file reported "306 objects checked, 306 clean,
+0 violations" with exit 0. Re-measured at the v0.74 cut: still MISSED.
+
+`sc5_postisland_345.py` is blind to the same mutation for the same reason (it
+checks MEMBERSHIP in the instruction-start set, and the moved target is a member).
+What covers the class is
+`scripts/repro/islandpass_1331_execution_differential.py`, which EXECUTES the
+emitted bytes against wasmtime instead of reasoning about their layout — and as
+of v0.74 it does so over three span shapes rather than one.
+
+A second, narrower note: a DECLINE is booked here as a correct outcome, so a
+change that made modules stop compiling would shrink `objects checked` rather
+than red. That is why the declared floor is pinned at the measured population
+(308 at the v0.74 cut, up from 306 because RQ-74-ISLANDREACH added two
+spanning fixtures to this sweep) and not a round number below it.
 
 WHY THIS EXISTS. v0.72's first island guard reasoned only about BRANCH offsets
 (`BOffset`/`BCondOffset`) and missed that the same loop records FOUR other
