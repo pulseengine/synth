@@ -42,13 +42,73 @@ artifacts:
       ones the same review found: `REQUIRED_CONTEXTS = []` passes silently, and
       the rivet step's `| tee` has no `pipefail` inside a REQUIRED context.
 
+      WHAT SHIPPED — all three, each with the demonstration, plus the two
+      smaller ones.
+
+      1. THE CENSUS PIN IS REPLACED, NOT RE-TUNED. `_pop >= 1` cannot fail
+         because `_cut` is `max()` over the same set `_pop` counts, so no regex
+         over that number is worth anything. What CAN be wrong is WHICH release
+         `_cut` names: the release being cut is always ANCHOR_TAG's successor,
+         because the anchor moves in the planning PR and stays until the
+         release ships. The script now refuses otherwise. DEMONSTRATED with a
+         stray `artifacts/release-v0.99/`: the line became "v0.99 over 1
+         artifact(s) — 0 authorised", the OLD pin STILL MATCHED, and the new
+         check refused by name. The CI regex goes back to asserting the line's
+         SHAPE, which is all a regex there can honestly do.
+
+         MY OWN FIRST VERSION WAS THE SAME BUG. It appended to `failures` AFTER
+         the reporting loop, so it counted toward the exit code and was never
+         PRINTED — red with no reason. Caught only by running the
+         demonstration and seeing rc=1 with R3 as the only named failure. The
+         check now runs before the loop.
+
+      2. `FIELD_KEYS` IS DERIVED. `FIELD_KEYS_DERIVED` is an `ast` walk over
+         this module's own `fields.get("...")` calls — the move
+         `claim_check._pin_table` already makes one file over. The old comment
+         claimed listing a new read was "a visible omission rather than a
+         silent one"; nothing enforced it, so it was intent wearing the grammar
+         of a mechanism. An empty derivation raises at import rather than
+         quietly enforcing nothing.
+
+         `carried-from` is handled explicitly, because deriving from READS
+         cannot find a key nothing reads — that is the point of it. It is
+         carried 44 times across 16 artifact files and read by ZERO scripts, so
+         a mis-nesting would change nothing and look right. R13 now covers it.
+         Measured on this tree: no artifact currently mis-nests it.
+
+      3. CHECK1 IS BY NAME. `set(required) == set(REQUIRED_CONTEXTS)`, with the
+         empty contract guarded separately because `set() == set()` and
+         `not []` are both True. DEMONSTRATED offline: nine contexts named
+         `Bogus 0..8`, all SUCCESS, previously returned CHECK1=True and GATEOK.
+         Reverting to the count form fails three of the new cases, `missing`
+         EMPTY in each — a gate refusing or passing while naming nothing.
+
+         This needed a seam: `decide()` is now a pure function of the rollup,
+         split from the fetching `gate()`. v0.72's review injected nine mutants
+         into this logic and FIVE survived `--self-test` because the self-test
+         could not reach it. Eight offline cases now do, which also closes the
+         residual RQ-73-STEP8 recorded and did not claim.
+
+      4. `REQUIRED_CONTEXTS = []` no longer passes — see 3.
+
+      5. THE RIVET STEP: THE ARTIFACT'S FIX IS REFUTED, THE DEFECT IS REAL.
+         `set -o pipefail` is what this artifact proposed and what the sibling
+         "Check coverage" step uses. MEASURED on this tree: `rivet validate`
+         with externals stripped exits 1 (40 errors, 555 warnings) — the
+         cross-repo/AP-001 gaps this step deliberately tolerates and classifies
+         by grep. A bare pipefail would have turned a REQUIRED context red
+         immediately and DEADLOCKED EVERY MERGE. So the step captures
+         `PIPESTATUS[0]` instead and refuses only outside {0,1}: measured, 2 is
+         a bad invocation and 127 is not-installed, both of which previously
+         produced a green required context over a validator that never ran.
+
       WHAT WOULD MAKE THIS WRONG. If pinning the census population non-zero is
       impossible without re-reding every planning PR — the reason the naive
       `[1-9][0-9]*` was rejected in v0.72 — then the honest deliverable is to
       DELETE the numeric pin and keep only the line-presence check, stating that
       the number is unpinnable, rather than shipping a third pin that cannot
       fail.
-    status: proposed
+    status: implemented
     release: v0.73
     tags:
       - process
@@ -61,6 +121,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1319"
+      landed: "#1379"
       verification-track: differential
       done-when: "contains:scripts/status_evidence_check.py:FIELD_KEYS_DERIVED"
       verified-by: >-

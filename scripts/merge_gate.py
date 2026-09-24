@@ -96,18 +96,21 @@ def squash_fidelity(pr_head: str, merged: str, base_at_merge: str):
     return ("SQUASH ALTERED CONTENT", diff_lines, 0)
 
 
-def gate(pr: str, repo: str, required: list[str]):
-    """CHECK1/2/3/3b, with CHECK2 upgraded to the merge-base test."""
-    d = json.loads(sh("gh", "pr", "view", pr, "--repo", repo,
-                      "--json", "statusCheckRollup,baseRefOid,headRefOid"))
-    roll = {(c.get("name") or c.get("context")):
-            (c.get("conclusion") or c.get("state") or "PENDING")
-            for c in d["statusCheckRollup"]}
+def decide(roll: dict, required: list[str], current: bool, behind: int,
+           base_agrees: bool):
+    """The four checks, as a PURE function of the data (#1319).
+
+    Split out from `gate()` so the decision can be driven OFFLINE. Until v0.73
+    the whole thing went through `gh`, so CHECK1/2/3/3b were exercised only
+    against the live API — v0.72's cold review injected nine mutants into this
+    logic and FIVE survived `--self-test`, because the self-test could not reach
+    it. A gate whose decision cannot be tested is a gate nobody has watched
+    fail.
+    """
     missing = [r for r in required if roll.get(r) != "SUCCESS"]
     red = [n for n, s in roll.items()
            if s in ("FAILURE", "ERROR") and not is_advisory(n)]
     pend = [n for n, s in roll.items() if s == "PENDING" and not is_advisory(n)]
-    current, behind = branch_currency(d["headRefOid"])
     return {
         # (v0.72 cold review, F5) The literal `9` was a FOURTH hand-written
         # copy of a contract that already exists in
@@ -117,18 +120,45 @@ def gate(pr: str, repo: str, required: list[str]):
         # is now DERIVED from the pinned contract, which is the repo's own
         # "derive what you check against from the artifact you ship" rule
         # applied to the one place that had four copies of it.
-        "CHECK1": (len(required) == len(REQUIRED_CONTEXTS) and not missing,
-                   missing),
+        # (v0.73 RQ-73-GATETRUTH, #1319) BY NAME, not by count. v0.72 replaced
+        # a hand-written `9` with `len(REQUIRED_CONTEXTS)` and called it
+        # derived — but a COUNT is not a CONTRACT. Demonstrated failure, and it
+        # is the one that matters: a rollup of nine contexts named `Bogus 0..8`,
+        # all SUCCESS and none of them one of the nine REAL required names,
+        # returned CHECK1=True and GATEOK. The gate would have merged on a
+        # green wall of checks that gate nothing.
+        #
+        # The empty case is guarded separately because `set() == set()` is True
+        # and `not missing` is True over an empty list: with the contract empty
+        # this check passed while asserting NOTHING, which is the same shape one
+        # level down.
+        "CHECK1": (bool(REQUIRED_CONTEXTS)
+                   and set(required) == set(REQUIRED_CONTEXTS)
+                   and not missing,
+                   {"missing": missing,
+                    "not_in_contract": sorted(set(required) - set(REQUIRED_CONTEXTS)),
+                    "absent_from_api": sorted(set(REQUIRED_CONTEXTS) - set(required)),
+                    "contract_size": len(REQUIRED_CONTEXTS)}),
         # #1269a: the BRANCH must be current. `baseRefOid` agreement is reported
         # beside it, deliberately NOT as the check — it is what was mistaken for
         # this one.
         "CHECK2": (current, {"behind": behind,
-                             "baseRefOid_agrees":
-                                 d["baseRefOid"].startswith(sh("git", "rev-parse",
-                                                               "origin/main")[:8])}),
+                             "baseRefOid_agrees": base_agrees}),
         "CHECK3": (not red, red),
         "CHECK3b": (not pend, pend),
     }
+
+
+def gate(pr: str, repo: str, required: list[str]):
+    """Fetch the PR's live state and hand it to `decide`."""
+    d = json.loads(sh("gh", "pr", "view", pr, "--repo", repo,
+                      "--json", "statusCheckRollup,baseRefOid,headRefOid"))
+    roll = {(c.get("name") or c.get("context")):
+            (c.get("conclusion") or c.get("state") or "PENDING")
+            for c in d["statusCheckRollup"]}
+    current, behind = branch_currency(d["headRefOid"])
+    base_agrees = d["baseRefOid"].startswith(sh("git", "rev-parse", "origin/main")[:8])
+    return decide(roll, required, current, behind, base_agrees)
 
 
 def self_test() -> int:
@@ -226,6 +256,60 @@ def self_test() -> int:
                   base0 != base1)
         finally:
             os.chdir(cwd)
+
+    # ---- RQ-73-GATETRUTH (#1319): the decision, driven OFFLINE ------------
+    # These are the demonstrations the artifact requires. Each names the exact
+    # scenario v0.72's cold review executed, so the fix is verified in the
+    # direction that FAILS and not only the one that passes.
+    real = list(REQUIRED_CONTEXTS)
+    green = {n: "SUCCESS" for n in real}
+
+    r = decide(green, real, True, 0, True)
+    check("CHECK1: the nine real contexts, all SUCCESS -> pass",
+          r["CHECK1"][0], r["CHECK1"][1])
+
+    # THE ONE THAT MATTERS. Nine contexts, all SUCCESS, none of them real.
+    # Under the v0.72 count-based check this returned True and GATEOK.
+    bogus_names = [f"Bogus {i}" for i in range(len(real))]
+    bogus = {n: "SUCCESS" for n in bogus_names}
+    r = decide(bogus, bogus_names, True, 0, True)
+    check("CHECK1: nine BOGUS contexts, all SUCCESS -> REFUSED (was GATEOK)",
+          not r["CHECK1"][0],
+          f"detail={r['CHECK1'][1]}")
+
+    # One real name swapped out: the count still matches, the contract does not.
+    swapped = real[:-1] + ["Bogus tail"]
+    r = decide({n: "SUCCESS" for n in swapped}, swapped, True, 0, True)
+    check("CHECK1: one real context swapped for a fake -> REFUSED",
+          not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
+
+    # A real context missing from the API side, count short.
+    short = real[:-1]
+    r = decide({n: "SUCCESS" for n in short}, short, True, 0, True)
+    check("CHECK1: a required context absent from the API -> REFUSED",
+          not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
+
+    # THE EMPTY CONTRACT. `set() == set()` and `not []` are both True, so
+    # without the explicit guard this passed while asserting nothing.
+    _saved = list(REQUIRED_CONTEXTS)
+    try:
+        REQUIRED_CONTEXTS.clear()
+        r = decide({}, [], True, 0, True)
+        check("CHECK1: an EMPTY contract -> REFUSED (was a silent pass)",
+              not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
+    finally:
+        REQUIRED_CONTEXTS.extend(_saved)
+    check("fixture shape: the contract was restored after the empty-case test",
+          list(REQUIRED_CONTEXTS) == _saved and len(REQUIRED_CONTEXTS) > 0)
+
+    # CHECK3/3b still discriminate, and advisory names are still excluded.
+    r = decide(dict(green, **{"Some Job": "FAILURE"}), real, True, 0, True)
+    check("CHECK3: a non-advisory FAILURE -> REFUSED", not r["CHECK3"][0])
+    r = decide(dict(green, **{"Rivet Federated Graph (advisory)": "FAILURE"}),
+               real, True, 0, True)
+    check("CHECK3: an ADVISORY failure does NOT refuse", r["CHECK3"][0])
+    r = decide(dict(green, **{"Some Job": "PENDING"}), real, True, 0, True)
+    check("CHECK3b: a non-advisory PENDING -> REFUSED", not r["CHECK3b"][0])
 
     print(f"merge-gate-self-test: {len(fails)} failure(s)")
     return 1 if fails else 0

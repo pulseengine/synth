@@ -339,6 +339,7 @@ become the quiet pass).
 from __future__ import annotations
 
 import argparse
+import ast
 import io
 import os
 import tarfile
@@ -411,13 +412,54 @@ DISPOSITIONS = {"partial", "refuted", "deferred"}
 # `fields.get("disposition")` and nothing else, so declaring that an issue
 # outlives its artifact's delivery cannot trip it — the artifact keeps claiming
 # its own outcome, which is true, and says only that the ISSUE is wider.
-# The keys every consumer reads out of `fields:`. Kept beside the rule that
-# enforces their nesting (R13) so adding a new `fields.get(...)` read without
-# listing it here is a visible omission rather than a silent one.
-FIELD_KEYS = {
-    "disposition", "done-when", "issue", "issue-scope",
-    "landed", "shipped-in", "verified-by",
-}
+def _derive_field_keys() -> set[str]:
+    """Every `fields.get("...")` THIS MODULE performs, read off its own AST.
+
+    RQ-73-GATETRUTH (#1319). The set used to be a hand-written literal whose
+    comment claimed that adding a new read without listing it "is a visible
+    omission rather than a silent one". Nothing enforced that — `grep -rn
+    FIELD_KEYS` found the definition and ONE use — so the claim was a statement
+    of intent wearing the grammar of a mechanism. This is the same move
+    `claim_check._pin_table` already makes one file over: derive what you check
+    against from the artifact you ship, rather than restating it.
+    """
+    keys: set[str] = set()
+    tree = ast.parse(Path(__file__).read_text(errors="ignore"))
+    for n in ast.walk(tree):
+        if (isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "get"
+                and isinstance(n.func.value, ast.Name)
+                and n.func.value.id == "fields"
+                and n.args
+                and isinstance(n.args[0], ast.Constant)
+                and isinstance(n.args[0].value, str)):
+            keys.add(n.args[0].value)
+    return keys
+
+
+FIELD_KEYS_DERIVED = _derive_field_keys()
+
+# Keys artifacts CARRY that no script reads. Deriving from reads cannot find
+# these by construction, and that is exactly why they need listing: a
+# `carried-from` nested one level too high changes nothing, looks right, and no
+# gate notices — the [[an-unread-key-looks-exactly-like-an-absent-one]] class,
+# measured in v0.71 on `issue-scope`. `carried-from` is carried 44 times across
+# 16 artifact files and read by ZERO scripts, and RQ-73-ARCHMODEL's entire
+# chain claim rests on it.
+FIELD_KEYS_UNREAD = {"carried-from"}
+
+# ANTI-VACUITY. An empty derivation would make R13 assert nothing at all while
+# looking identical to a clean run — the failure mode this whole artifact is
+# about. Refuse at import rather than pass silently.
+if not FIELD_KEYS_DERIVED:
+    raise SystemExit(
+        "status_evidence_check: FIELD_KEYS_DERIVED is EMPTY — the ast walk "
+        "found no `fields.get(...)` reads in this module, so R13 would enforce "
+        "nesting for nothing. Refusing to run a gate that cannot fail."
+    )
+
+FIELD_KEYS = FIELD_KEYS_DERIVED | FIELD_KEYS_UNREAD
 
 ISSUE_SCOPES = {"closes", "outlives"}
 
@@ -2011,6 +2053,48 @@ def main() -> int:
     failures = failures + p_failures + s_failures + fp_failures + a_failures
     warnings = warnings + a_warnings
 
+    # RQ-73-GATETRUTH (#1319): the census check runs BEFORE the reporting loop.
+    # Appended after it, a failure counted toward the exit code and the failure
+    # TOTAL but was never PRINTED — a gate that goes red without saying why,
+    # which is the same "looks like it works" family this artifact is about.
+    # Caught by demonstrating it: the stray-directory fixture made rc=1 with
+    # only R3 named.
+    _cut = max((a[1] for a in artifacts), default=None)
+    # RQ-73-GATETRUTH (#1319): the population pin was a TAUTOLOGY, and this
+    # replaces it with something that can actually be wrong.
+    #
+    # `_cut` is `max()` over the SAME set `_pop` counts, so `_pop >= 1` holds
+    # whenever this line prints at all — v0.72 pinned N as `[1-9][0-9]*` and
+    # called it fixed. The reviewer EXECUTED the scenario the comment names: a
+    # newer release directory steals `_cut`, population went 8 -> 1, authorised
+    # 8 -> 0, and the pin STILL MATCHED. A pin that cannot be zero is not a pin.
+    #
+    # What CAN be wrong is WHICH release `_cut` names. The release being cut is
+    # always the successor of the anchored (last shipped) one: the anchor moves
+    # to vX.Y in the planning PR for vX.Y+1 and stays there until that release
+    # ships. So a stray newer directory, a version-key change, or a glob that
+    # reaches into an unrelated tree all show up HERE, as a `_cut` that is not
+    # the successor — which is exactly the class the population count was meant
+    # to catch and could not.
+    _anchor_mm = tuple(int(x) for x in ANCHOR_TAG.lstrip("v").split(".")[:2])
+    _expected_cut = (_anchor_mm[0], _anchor_mm[1] + 1)
+    if _cut is None:
+        failures.append(
+            "CENSUS: no artifacts were loaded at all, so the issue-scope "
+            "derivation ran over an empty set. That is a glob rot, not a clean "
+            "release."
+        )
+    elif _cut != _expected_cut:
+        failures.append(
+            f"CENSUS: the release being cut reads as v{_cut[0]}.{_cut[1]}, but "
+            f"ANCHOR_TAG is {ANCHOR_TAG} so it must be "
+            f"v{_expected_cut[0]}.{_expected_cut[1]}. Either a release "
+            f"directory outside this release is being globbed (which STEALS "
+            f"`_cut` and silently re-points the whole close-set derivation at "
+            f"a release nobody is cutting), or the anchor was not moved in the "
+            f"planning PR. The population count cannot see this: it is "
+            f"`max()` over the same set it counts, so it stays >= 1 either way."
+        )
     for w in warnings:
         print(w)
     for f in failures:
@@ -2018,7 +2102,6 @@ def main() -> int:
     files = len({a[0] for a in artifacts})
     # Scoped to the release being CUT — that is the set the exit-condition
     # step consumes. An all-history set would be 96 issues and read as noise.
-    _cut = max((a[1] for a in artifacts), default=None)
     _auth, _held = authorised_close_set(artifacts, _cut)
     # The POPULATION the close-set was derived over. Printed because the
     # authorised count alone cannot distinguish "nothing is authorised yet"

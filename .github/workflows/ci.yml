@@ -517,7 +517,16 @@ jobs:
           # authorised count keeps `[0-9]+` because zero is a real answer.
           # The held-open count is pinned too — RQ-72-ISLANDS' `outlives` on
           # #1331 riding on it, previously unpinned entirely.
-          grep -qE '^issue-scope: v[0-9]+\.[0-9]+ over [1-9][0-9]* artifact\(s\) — [0-9]+ issue\(s\) authorised for closure by a delivered artifact, [0-9]+ held open' \
+          # RQ-73-GATETRUTH (#1319): the `[1-9][0-9]*` here was a TAUTOLOGY.
+          # `_cut` is `max()` over the SAME set the population counts, so N is
+          # >= 1 whenever this line prints at all. DEMONSTRATED: a stray
+          # `artifacts/release-v0.99/` steals `_cut`, the line becomes
+          # "v0.99 over 1 artifact(s) — 0 authorised", and this pin STILL
+          # MATCHED. The real check now lives in the script, which refuses
+          # unless the release being cut is ANCHOR_TAG's successor — so this
+          # grep goes back to asserting the line's SHAPE, which is all a regex
+          # here can honestly do.
+          grep -qE '^issue-scope: v[0-9]+\.[0-9]+ over [0-9]+ artifact\(s\) — [0-9]+ issue\(s\) authorised for closure by a delivered artifact, [0-9]+ held open' \
             /tmp/status-evidence.log
           # #1133 (RQ-62-ROADMAPGATE): the programme-status scan must have
           # RUN and covered a real population — a checker edit that drops
@@ -952,7 +961,35 @@ jobs:
         # not need this file edited, and our own prefix can never slip back in.
         run: |
           sed -i '/^externals:/,$d' rivet.yaml
+          # RQ-73-GATETRUTH (#1319): capture rivet's OWN status, not tee's.
+          #
+          # `rivet validate | tee` exits with TEE's status, so a rivet that
+          # never ran — wrong subcommand, missing binary, no project — was
+          # invisible here, and the job went on to grep an empty file, find no
+          # "ERROR:" lines, and report a green REQUIRED context over a
+          # validator that produced nothing.
+          #
+          # NOT `set -o pipefail`, which is what the artifact proposed and what
+          # the sibling "Check coverage" step uses. MEASURED on this tree:
+          # `rivet validate` with externals stripped exits 1 (40 errors, 555
+          # warnings) — those are the cross-repo/AP-001 gaps this step
+          # deliberately tolerates and classifies by grep below. A bare
+          # pipefail would therefore have turned a REQUIRED context red
+          # immediately and deadlocked every merge. The artifact's item 5 is
+          # refuted as literally stated; the defect it names is real and this
+          # is the fix that does not break the gate.
+          #
+          # Exit codes, measured: 0/1 = rivet RAN (1 is "validation found
+          # errors", the normal case here); 2 = bad invocation; 127 = not
+          # installed. Anything outside {0,1} means the validator did not do
+          # its job, and the artifact-load floor below is only an indirect
+          # backstop for that.
           rivet validate 2>&1 | tee /tmp/rivet-output.txt
+          RIVET_RC=${PIPESTATUS[0]}
+          if [ "$RIVET_RC" -gt 1 ]; then
+            echo "::error::rivet validate exited $RIVET_RC — the validator did not run (2=bad invocation, 127=not installed). A REQUIRED context must not be green over a check that never happened (#1319)."
+            exit 1
+          fi
           grep -E "ERROR:" /tmp/rivet-output.txt > /tmp/rivet-errors.txt || true
           # Everything that is NOT a foreign-prefix broken link, ...
           grep -vE "targets '[A-Za-z0-9_.-]+:[^']*' which does not exist" /tmp/rivet-errors.txt \
