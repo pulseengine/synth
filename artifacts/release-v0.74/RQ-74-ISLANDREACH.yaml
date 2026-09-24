@@ -1,0 +1,59 @@
+artifacts:
+  - id: RQ-74-ISLANDREACH
+    type: system-req
+    release: v0.74
+    status: proposed
+    title: "A branch mis-targeted onto a VALID instruction boundary is caught by exactly ONE oracle — the two built for that constraint are both blind to it"
+    description: >
+      MEASURED, not feared. v0.73's round-2 gate review mutated the PRODUCER
+      rather than searching for an input: every local branch target advanced by
+      one WHOLE instruction, so every target remains a legal instruction start.
+      The module still compiles.
+
+        island_offset_invariant_345.py        306 checked, 306 clean   MISSED
+        sc5_postisland_345.py                 "lands on an instruction start"  MISSED
+        litpool_islands_345_differential.py   165 identical, 0 MOVED   MISSED
+        cargo test -p synth-backend           16/16 ok                 MISSED
+        islandpass_1331_execution_differential.py  UNICORN FAULT x3    CAUGHT
+        cargo test --workspace                2 golden-byte tests      CAUGHT (incidentally)
+
+      So the constraint v0.73 is built around rests on ONE execution
+      differential over ONE fixture. Both oracles built for it are blind to it —
+      which their own docstrings assert and which is now demonstrated rather
+      than asserted.
+
+      SECOND, PREVIOUSLY UNDISCLOSED BLINDNESS. The A/B byte-identity control
+      runs islands-ON against islands-OFF using the SAME compiler, so any defect
+      in code common to both legs is invisible regardless of population. That is
+      a different mechanism from the v0.72 population problem (which the file
+      does disclose), and nothing stated it.
+
+      DELIVERABLES. (a) A target-set oracle that compares each branch's resolved
+      target against the label's position derived INDEPENDENTLY of
+      `resolve_label_branches` — membership in the instruction-start set is not
+      enough, because the mutation lands on a legal start. (b) Extend the
+      execution differential past one fixture: the class is currently covered by
+      a single module. (c) Disclose the A/B same-compiler blindness in the
+      differential's own docstring.
+
+      WHAT WOULD MAKE THIS WRONG. If (a) can only be built by re-deriving what
+      the compiler already computed — a second implementation of the same
+      arithmetic — it is a mirror, and this project has measured three times
+      that a hand-written mirror of a shipped thing is a defect surface, not a
+      check. Prefer widening (b), and say so rather than shipping the mirror.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1331"
+      carried-from: RQ-73-ISLANDPASS
+      done-when: "contains:scripts/repro/island_offset_invariant_345.py:RQ-74-ISLANDREACH"
+      verified-by: >-
+        The predicate points at something a REFUTATION would not create, so
+        a lane that ends by refuting its own premise cannot satisfy it by
+        writing the refutation down.

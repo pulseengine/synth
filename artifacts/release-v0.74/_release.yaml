@@ -1,0 +1,108 @@
+# v0.74 — "The gate that cannot tell a compiler from a shell script"
+#
+# COMMENTS ONLY. This file carries the planning reasoning; the artifacts carry
+# the claims. It is deliberately free of numbers that live anywhere else.
+#
+# WHY THIS FILE HAS NO STATISTICS IN IT. v0.72's round-2 cold review found that
+# its plan file had become the RESTING PLACE for statements that release
+# corrected elsewhere. v0.73 then reproduced the same failure IN THE PARAGRAPH
+# THAT WARNED ABOUT IT: its plan file still asserted that the reporter's module
+# was "an issue attachment this repository cannot build" after its own lane had
+# refuted that by downloading and compiling the module. A retraction that edits
+# the artifact and not the plan file is how "the sentence came back" reproduces.
+# So: no figures here, and every claim lives in exactly one place.
+#
+# ---------------------------------------------------------------------------
+# THE THEME
+# ---------------------------------------------------------------------------
+#
+# v0.73 asked "is it still broken?" and answered it mechanically, because every
+# divergence is pinned red-first and the pin count IS the still-broken count.
+#
+# v0.74 asks the question one level in: CAN THE GATE TELL? Not "is the code
+# right" but "would this instrument notice if it were not". v0.73's second
+# round of cold review answered that empirically for the first time — it
+# mutated gates instead of reading them, and a large fraction of the mutations
+# it expected to be caught were MISSED. Two of those misses were in the fixes
+# round 1 had shipped days earlier to close the very same class.
+#
+# That is the shape this release is scoped from. Not "add more gates" — this
+# programme has already measured that verification machinery becomes its own
+# defect surface when nothing is ever retired. The scope is: for each gate that
+# a mutation walked through, either make it bite or DISCLOSE what it cannot
+# see, in its own docstring, next to the thing it does check.
+#
+# The honest half matters as much as the fix. RQ-74-ISLANDREACH may well end by
+# concluding that the only real coverage for its class is the execution
+# differential, and that a second membership check would be a hand-written
+# mirror of arithmetic the compiler already does — which this project has
+# measured three times to be a defect surface rather than a check. If that is
+# where it lands, it ships the measurement and deletes nothing.
+#
+# ---------------------------------------------------------------------------
+# ORDERED BY WHO IS BLOCKED
+# ---------------------------------------------------------------------------
+#
+# STUBPROOF first, because an EXTERNAL reporter's issue is held open on the
+# v0.73 tag precisely so that the gate can notice when its declines stop
+# declining — and that gate currently cannot distinguish the compiler from a
+# shell script that prints the right words. Everything else in this release is
+# internal.
+#
+# ISLANDREACH second: it is the correctness constraint v0.73 was built around,
+# and it now rests on one oracle over one fixture. Start the coverage work
+# before touching the pass again.
+#
+# PINDEBT2 third. v0.73 held #1373 open because its first ask was not achieved.
+# This is the lane that moves the number, and it is a MUST for the same reason
+# it was a must last release: a ratchet satisfied by waivers is not a ratchet.
+#
+# STALEMSG fourth — cheap, and it cost real time twice in one release: an
+# external reporter asked whether a closed issue was tracked, and the v0.73
+# coordinator read that issue's body without its state and nearly held a closed
+# issue open. A diagnostic that cites a closed issue is the stale-pin class with
+# a wider audience.
+#
+# Then GATEOFFLINE, APTBLIND and FIELDSHAPE, which are test-coverage gaps over
+# code that is currently CORRECT. They are filed rather than fixed in v0.73 on
+# purpose: six gate changes in the commit before a tag is how v0.72's second
+# silent miscompile arrived, inside the fix for the first.
+#
+# ARCHMODEL last and carried, as it has been for eleven releases before this
+# one. The ordinal is WALKED from the carried-from chain, never incremented
+# from memory — that has been got wrong in two consecutive releases and once in
+# a brief.
+#
+# ---------------------------------------------------------------------------
+# NOT IN SCOPE, RECORDED SO IT IS NOT RE-LITIGATED
+# ---------------------------------------------------------------------------
+#
+# PAGELIB (#1339): gale refuted the planned direction and asked that the effort
+# not be spent relocating the refusal. It returns only with a NEW direction.
+#
+# A general "prose must match the structured status" rule (#1319's original
+# ask): measured in v0.68 and REFUTED — the naive rule fires false positives on
+# records that are correctly narrating their own history. #1319's own text says
+# the honest outcome, if no rule separates them without per-artifact tuning, is
+# to publish the measurement and not ship a gate. RQ-74-FIELDSHAPE takes the
+# part of #1319 that IS mechanisable and leaves that part alone.
+#
+# ---------------------------------------------------------------------------
+# CARRIED FACTS THE NEXT LOOP SHOULD NOT RE-DERIVE
+# ---------------------------------------------------------------------------
+#
+# * The issue-closure window starts at the PREVIOUS tag, so closures performed
+#   AT that tag land inside the next release's window and read as "closed but
+#   not authorised". Seen at the v0.73 tag for two issues that v0.72 had closed
+#   under its own authorisation. Harmless, but it will recur every release
+#   until the window is bounded by the tag's own timestamp.
+#
+# * `--squash-fidelity` is now called from the ritual AFTER a fetch. Before
+#   v0.73 it measured a diff against a commit the local store did not have, and
+#   reported the clean verdict for it.
+#
+# * An artifact's `issue-scope: outlives` requires a CLAIMING status and an
+#   OPEN issue. Holding a closed issue open reds the closure audit.
+#
+# * Read an issue's STATE before reading its body. v0.73 lost time twice to a
+#   closed issue whose body still described open work.

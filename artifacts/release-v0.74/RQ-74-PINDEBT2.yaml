@@ -1,0 +1,61 @@
+artifacts:
+  - id: RQ-74-PINDEBT2
+    type: system-req
+    release: v0.74
+    status: proposed
+    title: "`known_open_pins` is still 85 against a must-FALL ratchet — v0.73 built the attribution and closed no pin"
+    description: >
+      RE-DERIVED AT THIS CUT with the tool, never a hand tally:
+
+        python3 scripts/claim_check.py claims.yaml --metric
+        -> known_open_pins  85  baseline 27  +58  must FALL
+
+      v0.73 held #1373 open with `issue-scope: outlives` precisely because its
+      ask 1 was "drive the count DOWN" and the number ends where it began. What
+      v0.73 shipped was deliverable (c), the stale-pin tripwire, and the
+      attribution that makes the number mean something: 8 issues carrying 68
+      pins plus 17 charged to a declared reason.
+
+      THIS LANE IS THE ONE THAT MOVES THE NUMBER. Every removed pin is a fix or
+      a pin proven obsolete, and either way the oracle must still DISCRIMINATE
+      afterwards — shown by MUTATION, not by the suite staying green. A pin
+      deleted without a fix is the failure mode; the ratchet's own equality pin
+      makes the deletion visible, but only mutation shows the oracle still bites.
+
+      FOLD IN, from v0.73's round-2 gate review: the pin-table population
+      tripwire is scoped BY NAME (`^(?:KNOWN|PINNED)[A-Z0-9_]*`), so a
+      suppression table called `SUPPRESSED_CASES` escapes both the tripwire and
+      the ratchet entirely — demonstrated with a byte-identical table under a
+      non-matching name leaving `claim_check` at 75/75. The existing disclosure
+      covers `dict(...)`, comprehensions and `.update()`, not the NAME.
+
+      ALSO FOLD IN: a case-preserving pin MERGE passes every gate. Merging two
+      per-function pins into one wildcard with the cases SUMMED leaves
+      `known_open_pinned_cases` at its tracked value, so `direction: track` is
+      silent, while `known_open_pins` falls. CLAUDE.md claimed this "cannot read
+      as progress"; v0.73 corrected that sentence to say what the pin actually
+      catches. A mechanism that makes the claim true again belongs here.
+
+      WHAT WOULD MAKE THIS WRONG. v0.73 audited the population and confirmed the
+      entries record observed DIVERGENCES rather than `EXPECTED_DECLINES`, so
+      "the number is not debt" is already refuted. What could still make it
+      wrong is scope: if the cheapest pins to close are the ones whose issues
+      matter least, the count falls while the board does not improve. Pick by
+      ISSUE severity and say which pins were left alone on purpose.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1373"
+      carried-from: RQ-73-PINDEBT
+      done-when: "manual: `claim_check.py claims.yaml --metric` shows known_open_pins BELOW 85 with the ledger baseline moved in the same PR"
+      verified-by: >-
+        Deliberately `manual:` — the deliverable is a re-verification with
+        a DATE, and a `contains:` predicate would go true on this artifact's
+        own prose: a gate passing because the claim is written down rather
+        than because it was checked.

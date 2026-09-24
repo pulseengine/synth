@@ -1,0 +1,48 @@
+artifacts:
+  - id: RQ-74-GATEOFFLINE
+    type: system-req
+    release: v0.74
+    status: proposed
+    title: "`merge_gate` CHECK1 cannot see a NEVER-REPORTED context, and `--squash-fidelity`'s exit mapping has no offline case"
+    description: >
+      TWO MUTATIONS FROM v0.73's ROUND-2 GATE REVIEW, both recorded with their
+      reproductions in `docs/reviews/v0.73-cold-review.md`.
+
+      (1) `missing = [r for r in required if roll.get(r) != "SUCCESS"]` mutated
+      to `roll.get(r, "SUCCESS")` leaves `--self-test` GREEN. Every CHECK1 case
+      either has all nine contexts present or fails the set comparison first, so
+      the absent-context default is never exercised. Under the mutation,
+      `decide({}, list(REQUIRED_CONTEXTS), True, 0, True)` returns CHECK1=True —
+      an EMPTY rollup, which is the never-reporting deadlock
+      `ci_pool_tripwire`'s guard exists to prevent. The code is right; the test
+      is blind.
+
+      (2) `return 0 if verdict == "FAITHFUL" else 1` mutated to `return 0` also
+      leaves `--self-test` green, because `self_test()` never calls `main()` —
+      and `main()`'s exit code is the ONLY thing `merge_ritual.sh` consumes.
+      This is v0.73 round 1's F3 finding one level out: F3 gave the VERDICT a
+      case and left the EXIT MAPPING without one.
+
+      WHY IT IS ONLY A `should`. Both are test-coverage gaps over code that is
+      currently correct, and the ritual gates the dangerous statement inside its
+      `&&` chain. They are filed because "the code is right and the test cannot
+      see it" is exactly how v0.72's CHECK1 cardinality bug survived a release.
+
+      DELIVERABLES. (a) A `decide()` case with a context MISSING from the
+      rollup entirely. (b) A `main()`-level case that drives the exit mapping.
+      (c) Re-run both mutations and show each now fails `--self-test`.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1269"
+      done-when: "contains:scripts/merge_gate.py:RQ-74-GATEOFFLINE"
+      verified-by: >-
+        The predicate points at something a REFUTATION would not create, so
+        a lane that ends by refuting its own premise cannot satisfy it by
+        writing the refutation down.

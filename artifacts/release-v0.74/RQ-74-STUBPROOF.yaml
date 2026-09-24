@@ -1,0 +1,66 @@
+artifacts:
+  - id: RQ-74-STUBPROOF
+    type: system-req
+    release: v0.74
+    status: proposed
+    title: "#1318's gate is INERT to a null stub — a 16-line script that prints the expected warnings satisfies the whole CI step, including the controls"
+    description: >
+      REFUTING COMMAND RUN AT THIS CUT, and it did NOT refute:
+
+        grep -cE 'elftools|e_machine|EM_AARCH64|ELFFile' \
+             scripts/repro/falcon_opt_1318_differential.py
+        -> 0
+
+      The oracle never inspects the object it claims proves a compile.
+
+      DEMONSTRATED in v0.73's round-2 gate review: `target/debug/synth` replaced
+      by a 16-line python stub that prints the six expected `warning: skipping`
+      lines and exits 3 when it declines, and writes a ONE-BYTE file and exits 0
+      when it does not. `oracle_run.py` returned rc=0, "CHECKS=12/12 … RESULT:
+      PASS", and the FULL CI step (`set -euo pipefail` plus both `grep -qE`
+      assertions) also returned 0.
+
+      v0.73's round 1 had already found a weaker form of this and added an
+      exit-status cross-check plus an object existence/non-empty check. Round 2
+      walked straight through both. That is the pattern this programme keeps
+      paying for: the fix closed the instance, not the class.
+
+      STRUCTURAL SUB-FINDING, and it is the worse half. The object check sits
+      inside `if not declines:`. On arm and riscv something ALWAYS declines
+      (three pinned cells each), so for those backends the branch is UNREACHABLE
+      BY CONSTRUCTION — and the `vbr_i32/arm` and `vbr_i32/riscv` cells, two of
+      the three i32 CONTROLS whose whole job is to prove the oracle still
+      discriminates, are inferred purely from the ABSENCE of a warning line with
+      no artifact inspected at all.
+
+      WHY IT IS A MUST. #1318 is an EXTERNAL reporter's issue, held open on the
+      v0.73 tag with `issue-scope: outlives` because its declines still decline.
+      The gate that is supposed to notice if they ever stop declining cannot
+      currently tell a compiler from a shell script.
+
+      DELIVERABLES. (a) Parse the emitted object with pyelftools and assert
+      `e_machine` matches the leg (EM_ARM / EM_RISCV / EM_AARCH64) and that a
+      non-empty `.text` exists. (b) Assert the non-declined export names appear
+      in `.symtab`. (c) Make the object check reachable for arm and riscv — the
+      per-cell COMPILED half must be inspected even when a sibling cell declines.
+      (d) Re-run the round-2 stub verbatim and show it now REFUSED.
+
+      WHAT WOULD MAKE THIS WRONG. If the `compiles >= N` floor already counted
+      successful compilations rather than invocations, (a) would be redundant.
+      It does not: measured=3 under both the real compiler and the stub.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1318"
+      carried-from: RQ-73-FALCONFIXTURE
+      done-when: "contains:scripts/repro/falcon_opt_1318_differential.py:e_machine"
+      verified-by: >-
+        The predicate points at something a REFUTATION would not create, so
+        a lane that ends by refuting its own premise cannot satisfy it by
+        writing the refutation down.
