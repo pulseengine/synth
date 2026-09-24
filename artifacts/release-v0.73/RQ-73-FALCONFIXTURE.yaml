@@ -105,7 +105,7 @@ artifacts:
       req-type: system
       priority: must
       issue: "#1318"
-      landed: "PLACEHOLDER_PR"
+      landed: "#1376"
       verification-track: differential
       done-when: "file:scripts/repro/falcon_opt_1318.wat"
       verified-by: >-
