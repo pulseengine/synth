@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-74-STUBPROOF
     type: system-req
     release: v0.74
-    status: proposed
+    status: implemented
     title: "#1318's gate is INERT to a null stub — a 16-line script that prints the expected warnings satisfies the whole CI step, including the controls"
     description: >
       REFUTING COMMAND RUN AT THIS CUT, and it did NOT refute:
@@ -58,6 +58,7 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1318"
+      landed: "#1383"
       carried-from: RQ-73-FALCONFIXTURE
       done-when: "contains:scripts/repro/falcon_opt_1318_differential.py:e_machine"
       verified-by: >-
