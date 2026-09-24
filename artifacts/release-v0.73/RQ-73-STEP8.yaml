@@ -36,13 +36,47 @@ artifacts:
       exercised only against the live API and five of nine injected mutants
       survived `--self-test`.
 
+      WHAT SHIPPED. `merge_gate.py --squash-fidelity <PR>` gives the function
+      a caller, and `merge_ritual.sh` invokes it after every merge it confirms
+      — so the number exists without a human producing it, which is precisely
+      what ask 2 asked for and what v0.72's eleven hand-made attestations were
+      not.
+
+      THE ARTIFACT'S OPEN QUESTION IS ANSWERED, and the answer is not the
+      obvious one. It asks whether the head refs are "durably fetchable". Via
+      the BRANCH they are not: the ritual merges with `--delete-branch`, so by
+      the time a post-merge diff could run `origin/$HEADREF` is gone. Via
+      `refs/pull/<N>/head` they are — measured on #1374, whose branch
+      `plan/v0.73` has 0 refs on origin while the pull ref still resolves to
+      0ccc8508 and the diff computes. So the deliverable does not have to
+      degrade, but only because it uses the right ref.
+
+      VALIDATED on real history rather than a fixture — every merge of this
+      release, including two whose branches were already deleted:
+
+        #1375  FAITHFUL (0 lines)  87f66957 -> 4d673950
+        #1376  FAITHFUL (0 lines)  d3209dd7 -> 4a76de5e
+        #1377  FAITHFUL (0 lines)  b7f582fa -> ca1e889a
+
+      INDETERMINATE IS NOT A PASS. When the branch was stale the diff contains
+      main's advance and the number proves nothing — the condition that held
+      silently for 45 merges before #1268 — so that verdict returns non-zero.
+      The call is ADVISORY by placement, not by strength: it runs after the
+      merge has already happened, so it REPORTS, and the ritual prints a loud
+      line when the verdict is not FAITHFUL.
+
+      RESIDUAL, carried rather than quietly dropped: `gate()` still has no
+      offline test, so CHECK1/CHECK2/CHECK3b are exercised only against the
+      live API and five of nine injected mutants survived `--self-test`. That
+      is a separate sub-deliverable and this lane does not claim it.
+
       WHAT WOULD MAKE THIS WRONG. If the post-merge diff can only be computed
       from head refs that are not durably fetchable, then recording it
       automatically is not possible and the honest deliverable is to say so in
       the conformance slot rather than to ship a check that silently degrades.
       v0.72 found the refs WERE fetchable for all eleven PRs — check whether
       that holds generally before building on it.
-    status: proposed
+    status: implemented
     release: v0.73
     tags:
       - process
@@ -55,6 +89,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1269"
+      landed: "PLACEHOLDER_PR"
       verification-track: manual
       done-when: "contains:scripts/merge_ritual.sh:squash_fidelity"
       verified-by: >-

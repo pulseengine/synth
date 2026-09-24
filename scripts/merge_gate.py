@@ -236,6 +236,9 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--pr")
+    ap.add_argument("--squash-fidelity", action="store_true",
+                    help="post-merge: record whether the squash altered "
+                         "content (#1269 ask 2). Requires --pr.")
     ap.add_argument("--repo", default="pulseengine/synth")
     args = ap.parse_args()
 
@@ -243,6 +246,26 @@ def main() -> int:
         return self_test()
     if not args.pr:
         ap.error("--pr is required unless --self-test")
+
+    if args.squash_fidelity:
+        d = json.loads(sh("gh", "pr", "view", args.pr, "--repo", args.repo,
+                          "--json", "headRefOid,baseRefOid,mergeCommit,state"))
+        if d["state"] != "MERGED":
+            print(f"squash-fidelity: #{args.pr} is {d['state']}, not MERGED — "
+                  f"nothing to attest")
+            return 1
+        # The branch is deleted by `--delete-branch`; the PULL ref is not.
+        sh("git", "fetch", "-q", "origin", f"refs/pull/{args.pr}/head")
+        head = d["headRefOid"]
+        merged = d["mergeCommit"]["oid"]
+        verdict, lines, behind = squash_fidelity(head, merged, d["baseRefOid"])
+        print(f"squash-fidelity #{args.pr}: {verdict} "
+              f"(diff_lines={lines}, behind={behind}, "
+              f"head={head[:8]}, merged={merged[:8]})")
+        # INDETERMINATE is not a pass. It means the branch was stale, so the
+        # diff contains main's advance and the number proves nothing — the
+        # condition that silently held for 45 merges before #1268.
+        return 0 if verdict == "FAITHFUL" else 1
 
     required = [l.strip() for l in sh(
         "gh", "api",
