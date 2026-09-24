@@ -9,7 +9,7 @@
 #   * `issue_closure_check.py` — every rule proven to fire by mutation, and NO
 #     INVOCATION SITE anywhere. Its done-when pins the TEST's presence in a YAML
 #     file. Measured 2026-09-23: the only repo-wide references are its own
-#     docstring, its unit test, one prose line, and `ci.yml:514` running the
+#     docstring, its unit test, one prose line, and the ci.yml step running the
 #     TEST. The check itself is run by a human, by hand, at the tag.
 #   * R12, the rule that release added to `status_evidence_check.py`, has NO
 #     UNIT COVERAGE — the only rule in that file without any. Measured from the
@@ -24,8 +24,13 @@
 # PRIORITY — ORDERED BY WHO IS BLOCKED.
 #
 #   must  CIPOOL  (#1062 continuation) — FOUR REQUIRED CONTEXTS STALL EVERY
-#         RELEASE. Measured on v0.71's own #1357 round: of 66 jobs, the 8
-#         self-hosted ones ALL finished in ~4 minutes (05:44:43 -> 05:48:47);
+#         RELEASE. Measured on v0.71's own #1357 round: of 66 NON-ADVISORY
+#         jobs (the run carries 67), EIGHT self-hosted jobs had completed at
+#         the sample instant — the run has NINE, and the ninth took 10m32s.
+#         The original "the 8 self-hosted ones ALL finished" reads as the
+#         whole population and RQ-72-CIPOOL corrected the same sentence;
+#         this copy was missed then. Those eight ran 05:44:43 -> 05:48:47,
+#         and 05:44:43 is a START time, not a completion;
 #         then nothing started for 25 minutes with 55 queued, confirmed by two
 #         samples 45s apart (queued=55 running=0 both times, so a sustained
 #         stall and not a point reading — the v0.61 lesson). Five of the nine
@@ -37,7 +42,9 @@
 #         on the pool"). CHECK3b needs ZERO non-advisory pending, so a release
 #         waits on all 66 jobs; v0.71 needed four rounds after rebases and none
 #         completed inside a working session. THE BOTTLENECK IS THE
-#         GITHUB-HOSTED QUOTA, NOT THE FLEET — 86% of jobs target a pool that
+#         GITHUB-HOSTED QUOTA, NOT THE FLEET — 81% of job definitions (55 of
+#         68 at plan time; 86% was the #1062 increment-2 figure, 56/65, which
+#         `ci_pool_tripwire.py` records as historical) target a pool that
 #         stalls while a dozen machines idle. SHAPE: one toolchain per PR, each
 #         proven green on the pool for several consecutive main runs before the
 #         next, exactly as Clippy was moved. Retargeting a REQUIRED context is
@@ -58,7 +65,10 @@
 #         rather than squeezed. ALL FIVE PREMISES RE-DERIVED AND CONFIRMED
 #         2026-09-23: no `deny.toml` at root (kiln/scry/sigil each vendor one
 #         under `.rivet/repos/`, so the template is there); `cargo-cyclonedx`
-#         ALREADY installed and run in release.yml (187-201) with
+#         ALREADY installed and run in release.yml (at the `Install
+#         cargo-cyclonedx` step — the original cited 187-201, which is the
+#         qemu/sysroot install in every era commit, so it was wrong when
+#         written; naming the step instead of a line) with
 #         `synth-<version>.cdx.json` already a signed asset; `Cargo.lock` IS
 #         tracked, so "audit the SHIPPED lockfile" is satisfiable; NO
 #         vex/cargo-audit/RUSTSEC machinery anywhere; varve#179 OPEN. The
@@ -111,7 +121,10 @@
 #   carried ISLANDS (#345) — RE-SCOPED BY v0.71's COLD REVIEW, and the
 #         correction matters for planning. v0.71 deferred it saying "no
 #         post-encode branch-relaxation pass exists". FALSE:
-#         `resolve_label_branches` (arm_backend.rs:2333, called 1468/1590) is
+#         `resolve_label_branches` (arm_backend.rs — line anchors deliberately
+#         omitted: 2333/1468/1590 were the v0.71 numbers, RQ-72-ISLANDS
+#         re-measured them to 2361/1477/1600 at 87fb06d7 in this same
+#         release, and they have moved again since) is
 #         exactly that, with a size fixed point, and it RUNS on the
 #         direct/--relocatable path. What has no post-encode fixup is the
 #         OPTIMIZED path's inline `BOffset`/`BCondOffset`, which carry no label.
