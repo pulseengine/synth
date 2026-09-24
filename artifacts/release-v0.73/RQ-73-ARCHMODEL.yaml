@@ -1,0 +1,59 @@
+artifacts:
+  - id: RQ-73-ARCHMODEL
+    type: system-req
+    title: "spar#445 unchanged since 2026-09-03 — the ELEVENTH consecutive N/A for the architecture-model step, filed so the deferral stays visible to the gate"
+    description: >
+      RE-VERIFIED AT THIS CUT, not recalled:
+
+        gh issue view 445 --repo pulseengine/spar
+        -> [OPEN], last updated 2026-09-03, unchanged since the v0.71 and v0.72
+           cuts
+
+      Feature-loop steps 1 (model the architecture in spar) and 2 (generate WIT
+      from spar) are N/A for an ELEVENTH consecutive release, for the same
+      unchanged upstream reason. This artifact exists so that
+      `loop_conformance_check`'s steps-1-2 slot reports NA-FILED rather than a
+      silent gap.
+
+      THE ORDINAL IS WALKED, NOT CARRIED, and v0.72 is why that sentence is
+      here. RQ-72-ARCHMODEL asserted SIXTH twice and SEVENTH twice — two
+      different wrong values in one file — while the walked chain said TEN. The
+      release brief itself carried "SEVENTH". Walk it:
+
+        RQ-73 -> RQ-72 -> RQ-71 -> RQ-70 -> RQ-69 -> RQ-68 -> RQ-67
+              -> RQ-66 -> RQ-65 -> RQ-64 -> RQ-63        LENGTH 11
+
+      TAGS ARE LOAD-BEARING. `[process, carried, spar, aadl, feature-loop]` —
+      v0.69 lost `feature-loop` and the filing that exists to keep a deferral
+      VISIBLE became invisible to the gate, which matches `feature-loop` AND
+      (`aadl`|`spar`) AND `fields.issue`.
+
+      DO NOT REINTRODUCE "release artifacts only exist from v0.63". It is FALSE
+      — `artifacts/release-v0.56.yaml` onward exist — it was retracted in
+      RQ-69-ARCHMODEL and CAME BACK in RQ-70-ARCHMODEL because that artifact was
+      written from its predecessor's SHAPE rather than its CORRECTIONS. This
+      artifact is written from the corrections.
+    status: proposed
+    release: v0.73
+    tags:
+      - process
+      - carried
+      - spar
+      - aadl
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      disposition: deferred
+      priority: carried
+      issue: "#1136"
+      carried-from: RQ-72-ARCHMODEL
+      verification-track: manual
+      done-when: "manual: spar#445 re-verified 2026-09-24 — OPEN, last updated 2026-09-03, unchanged since the v0.72 cut; steps 1-2 N/A for the ELEVENTH consecutive release on that unchanged upstream reason"
+      verified-by: >-
+        Deliberately `manual:` and not mechanical. The deliverable is a
+        re-verification with a DATE, and a `contains:` predicate would go true
+        on this artifact's own prose — a gate passing because the claim is
+        written down rather than because it was checked.

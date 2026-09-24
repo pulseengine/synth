@@ -1,0 +1,55 @@
+artifacts:
+  - id: RQ-73-SC5
+    type: system-req
+    title: "SC-5 no longer gates the final stream — validate_branch_targets runs BEFORE island insertion"
+    description: >
+      FOUND BY v0.72's ROUND-2 COLD REVIEW. `validate_branch_targets` is called
+      at `arm_backend.rs` immediately after `resolve_label_branches`, and its own
+      docstring says it "hard-gate[s] every branch target onto the
+      instruction-start set of THE FINAL STREAM".
+
+      Since v0.72 the stream it gates is no longer final: inline literal islands
+      are inserted afterwards, inside the encode loop, and nothing re-validates.
+      The #740/#930 belt-and-braces gate was silently weakened to cover a PREFIX
+      of the pipeline.
+
+      WHY THAT MATTERS PARTICULARLY HERE. The island placement guard is now the
+      ONLY protection against a mis-targeted branch, and v0.72 shipped TWO
+      demonstrations that a first attempt at such a guard is incomplete: the
+      branch-span guard missed four offsets recorded from `code.len()` (the `Bl`
+      relocation, `MovwSym`, `MovtSym` and `LdrSym`'s `ldr_offset`), and both
+      resulting miscompiles compiled at rc=0. A defence-in-depth gate that has
+      quietly stopped covering the shipped bytes is the wrong thing to be
+      relying on a single guard instead of.
+
+      SCOPE: re-run the SC-5 boundary check over the FINAL byte stream — or over
+      `arm_instrs` plus the island offsets — after the encode loop, and prove it
+      fires by constructing a target that lands mid-instruction. The v0.72
+      reproduction is the starting point: an 8-byte island left a `br_if`
+      pointing 8 bytes early.
+
+      WHAT WOULD MAKE THIS WRONG. If re-validating the final stream duplicates
+      what `island_offset_invariant_345.py` already proves from the emitted ELF,
+      then the honest deliverable is to say so and DELETE the stale docstring
+      claim rather than add a second checker — SC-5 is a system constraint, and
+      a constraint enforced twice badly is worse than once well.
+    status: proposed
+    release: v0.73
+    tags:
+      - arm-backend
+      - safety
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: system
+      priority: should
+      issue: "#345"
+      verification-track: differential
+      done-when: "file:scripts/repro/sc5_postisland_345.py"
+      verified-by: >-
+        The predicate names a NEW oracle rather than a source string, because
+        the deliverable is a demonstration that the check fires on a
+        post-island mis-target — moving the existing call site without such a
+        demonstration would restore the wording and not the guarantee.

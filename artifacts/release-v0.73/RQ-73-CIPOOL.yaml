@@ -1,0 +1,68 @@
+artifacts:
+  - id: RQ-73-CIPOOL
+    type: system-req
+    title: "#1062 increment 4 — the 40 non-required ubuntu-latest jobs that need python, and the four required ones that can NEVER move"
+    description: >
+      HELD OPEN ON THE v0.72 TAG via `issue-scope: outlives` on RQ-72-CIPOOL.
+
+      RE-MEASURED at the v0.72.0 cut:
+
+        ci-pool: ubuntu-latest share = 52/71 = 73% (ceiling 52)
+        ci-pool: 9 required contexts (pinned), 4 on ubuntu-latest, 5 elsewhere
+
+      WHAT v0.72 SHIPPED: a structural tripwire (CEILING, RATCHET, and a
+      DEADLOCK guard that refuses a required context which is undefined, has no
+      `runs-on`, or carries an `if:`) plus three pure-cargo jobs moved.
+
+      WHY IT STAYS OPEN, measured during v0.72's own three-PR burst:
+
+        queued : ubuntu-latest 201, self-hosted 29, macos 6, ubuntu-24.04-arm 1
+        running: ubuntu-latest 3
+
+      Concurrency of about 3 against 201 queued. The tripwire stops it getting
+      worse; it does not make it better.
+
+      ONE MEASUREMENT THAT SHARPENS THE PLAN AND WAS NOT KNOWN AT v0.72
+      PLANNING. The hold-back on the four required contexts was a heuristic
+      ("they carry an external-toolchain marker"). It is STRUCTURAL:
+
+        sudo: The "no new privileges" flag is set, which prevents sudo from
+              running as root.
+
+      `no_new_privs` is set on the self-hosted pool's containers, so NO job
+      needing `apt-get install` can ever run there, however the plan evolves.
+      That is not a scheduling preference and no later increment can work around
+      it — unlike pip, which works without sudo under the PEP 668 guard v0.72
+      proved. So increment 4 is the 40 python/pip jobs, and the four required
+      contexts are OUT OF SCOPE until the runner administrator changes the
+      container configuration, which is outside this repository.
+
+      That finding came from a red whose label said something else entirely: a
+      step named "Execution — qemu-aarch64" failed with `command not found`,
+      exit 127, so qemu was never invoked. The install step that actually failed
+      had reported SUCCESS, its error swallowed by a `|| echo` fallback.
+
+      WHAT WOULD MAKE THIS WRONG. Retargeting a REQUIRED check DEADLOCKS every
+      merge — a non-running required NAME blocks all of them, with no red to
+      revert. The tripwire's deadlock guard exists for this and must be proven
+      to fire on the proposed move BEFORE the move lands, not after.
+    status: proposed
+    release: v0.73
+    tags:
+      - ci
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1062"
+      verification-track: differential
+      done-when: "contains:scripts/ci_pool_tripwire.py:PEP668_POOL_READY"
+      verified-by: >-
+        The predicate names a new constant the migration needs, not the existing
+        ceiling — the ceiling moves on every increment and a `contains:` on it
+        would go true the moment a number is edited rather than when jobs
+        actually move.

@@ -1,0 +1,93 @@
+# v0.73 — "Is it still broken?"
+#
+# COMMENTS ONLY. This file carries the planning reasoning; the artifacts carry
+# the claims. It is deliberately free of numbers that live anywhere else.
+#
+# WHY THIS FILE HAS NO STATISTICS IN IT. v0.72's round-2 cold review found that
+# `artifacts/release-v0.72/_release.yaml` had become the RESTING PLACE for four
+# statements that release corrected elsewhere — a line anchor RQ-72-ISSUEGATE
+# explicitly REMOVED, an article RQ-72-CIPOOL fixed, a share figure from a
+# different increment, and source anchors RQ-72-ISLANDS re-measured in the SAME
+# release — plus one that was wrong when written. A retraction that edits the
+# artifact and not the plan file is how "the sentence came back" reproduces.
+# So every figure below lives in exactly one artifact and is cited from there,
+# never copied here.
+#
+# ---------------------------------------------------------------------------
+# THE THEME, and where it came from
+# ---------------------------------------------------------------------------
+#
+# The maintainer asked directly, after the v0.72 tag: "we have a lot of issues
+# and I have no clue if we fixed them, they are open or not necessarily".
+#
+# That is not a tidiness complaint. It is a question about whether the board
+# means anything, and the repository can answer it mechanically — the oracles'
+# suppression tables ARE the still-broken set. The answer is recorded in
+# RQ-73-PINDEBT and in #1373, and it is not reassuring: the pin count has risen
+# sharply against a ratchet whose declared direction is DOWN, while every
+# release stayed green, because the ratchet can be satisfied by a waiver.
+#
+# So v0.73's headline is not a feature. It is making "open" mean something.
+#
+# ONE PREMISE WAS REFUTED BY MEASURING IT, and the correction matters: the board
+# is NOT old. Exactly one open issue is older than a month and it is an epic;
+# nothing is older than six months. The problem is neglect, not age — most open
+# issues have not been touched since the day they were filed. Scoping an
+# "old issues" cleanup would have been work against a fact that is not true.
+#
+# ---------------------------------------------------------------------------
+# ORDERING, and what it costs
+# ---------------------------------------------------------------------------
+#
+# Ordered by WHO IS BLOCKED, as always. cpetig is a real external reporter and
+# keeps the two `must` slots that are about their modules (RQ-73-ISLANDPASS,
+# RQ-73-FALCONFIXTURE) even though the headline is the board — an external
+# reporter blocked outranks internal hygiene.
+#
+# RQ-73-FALCONFIXTURE is deliberately NOT "fix opt.wasm". The refuting commands
+# run at the v0.72.0 cut show every committed fixture for that class now passes,
+# and the reporter's module is an issue attachment this repository cannot build.
+# The first deliverable is therefore to ASK, and only then to build a fixture.
+# Scoping a fix against a number last measured two releases ago is the failure
+# this programme has repeated most often.
+#
+# ---------------------------------------------------------------------------
+# THREE LANES ARE v0.72's OWN UNFINISHED BUSINESS, and that is intentional
+# ---------------------------------------------------------------------------
+#
+# RQ-73-STEP8, RQ-73-GATETRUTH and RQ-73-SC5 all fix things v0.72 shipped or
+# claimed. v0.72's two cold-review rounds recorded them rather than carrying
+# them silently, which is the only reason they are scopeable now. A release that
+# records its own residuals and a release that has none look identical from the
+# outside; the difference shows up here, one release later.
+#
+# RQ-73-GATETRUTH in particular fixes three CORRECTIONS that do not hold. Each
+# was written in v0.72 with an explicit "can it fail?" rationale, and each is
+# wrong anyway. That is worth naming: the discipline of asking the question is
+# not the same as answering it, and the second cold-review round is what caught
+# the difference.
+#
+# ---------------------------------------------------------------------------
+# MECHANICAL EVALUABILITY
+# ---------------------------------------------------------------------------
+#
+# 7 of 8 artifacts carry a `contains:` or `file:` done-when; RQ-73-ARCHMODEL is
+# `manual:` because its deliverable is a re-verification with a DATE, and a
+# `contains:` would go true on the artifact's own prose.
+#
+# RQ-73-ISLANDPASS's predicate names a FUNCTION rather than an oracle file on
+# purpose. That lane may legitimately REFUTE — deciding a fixed-point pass is
+# not worth its trusted-base cost this release — and a refutation would still
+# produce an oracle. A `file:` predicate would then go TRUE beside a
+# non-claiming status and fire R3, which is exactly how v0.71 was forced from a
+# planned 6-of-8 to 5-of-8.
+#
+# ---------------------------------------------------------------------------
+# THE ANCHOR
+# ---------------------------------------------------------------------------
+#
+# Moved to v0.72.0 in THIS PR, and DERIVED rather than computed: the
+# placeholders were set to 0, `status_evidence_check.py` was run, and the values
+# were read off its own A1/A2 failures. The v0.72 planning recorded why — an
+# arithmetic guess was wrong there, and A0 fires until the release directory
+# exists, which is structural and not a bug.

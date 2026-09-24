@@ -1,0 +1,73 @@
+artifacts:
+  - id: RQ-73-ISLANDPASS
+    type: system-req
+    title: "cpetig's 4 KB+ functions with spanning control flow still refuse — branch resolution and island placement need ONE fixed point"
+    description: >
+      HELD OPEN ON THE v0.72 TAG via `issue-scope: outlives` on RQ-72-ISLANDS.
+
+      RE-MEASURED at the v0.72.0 cut, on the committed fixture:
+
+        synth compile scripts/repro/litpool_islands_345_branchspan.wat \
+          --target cortex-m7 --relocatable --all-exports --native-pointer-abi
+        -> LdrSym literal pool out of range (#345): imm12=9900 > 4095
+
+      WHAT v0.72 SHIPPED, and what it did not. Inline constant islands place a
+      pool where the 12-bit unsigned `LDR(literal)` offset can reach it, so a
+      function larger than 4 KB compiles — PROVIDED no local branch spans the
+      placement. Branch offsets are byte-resolved BEFORE the encode loop, so an
+      island inserted between a branch and its target moves the target and not
+      the branch. v0.72 REFUSES such placements rather than mis-targeting, which
+      is correct and is why the shape above still declines.
+
+      THE FIX IS A REAL PASS, and saying so is the point: islands change sizes,
+      which change positions, which change which branches need 32-bit encodings,
+      which change sizes again. That is LLVM's `ARMConstantIslandPass` shape and
+      it needs its own execution oracle. v0.72 deliberately did NOT invent it at
+      a release cut, because inventing it at a release cut is how the two silent
+      miscompiles below shipped in the first place.
+
+      TWO MEASURED MISCOMPILES v0.72 CAUGHT, carried here so the successor does
+      not re-learn them. Both compiled at rc=0 on modules v0.71 refused loudly:
+
+        an 8-byte island left a `br_if` pointing 8 bytes EARLY, into the block
+        it was meant to skip;
+
+        R_ARM_THM_CALL@0x1014 -> hw1=0xe002, the island's own `b.n +8` rather
+        than a BL, with the real BL at 0x101c still an unpatched `bl .`;
+
+        LDR.W lit@0x1010 imm12=0 — the imm12 patch landed INSIDE the island, so
+        the load returned code as a pointer.
+
+      The second and third were in the FIX for the first, found by a second cold
+      review run specifically to attack it.
+
+      WHAT WOULD MAKE THIS WRONG. A fixed point that moves emitted bytes without
+      an execution oracle proving the new bytes correct is REFUSED, not
+      explained. `island_offset_invariant_345.py` (304 objects, 304 clean) and
+      the byte-identity differential (165 identical, 0 MOVED) are the floor, not
+      the ceiling: neither can see a branch that is mis-targeted but still lands
+      on an instruction boundary, so the pass owes an EXECUTION differential
+      over modules with control flow spanning a placement.
+    status: proposed
+    release: v0.73
+    tags:
+      - arm-backend
+      - codegen
+      - external-reporter
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: system
+      priority: must
+      issue: "#1331"
+      verification-track: differential
+      done-when: "contains:crates/synth-backend/src/arm_backend.rs:fn place_literal_islands_fixedpoint"
+      verified-by: >-
+        The predicate names a FUNCTION that exists only if the fixed point was
+        built, not a fixture or a comment. A refutation of this lane — deciding
+        the pass is not worth its trusted-base cost this release — leaves the
+        function absent, the predicate FALSE, and the artifact honestly
+        non-claiming, which is why it is expressed this way rather than as a
+        `file:` on an oracle a refutation would also produce.

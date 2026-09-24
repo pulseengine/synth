@@ -1,0 +1,70 @@
+artifacts:
+  - id: RQ-73-GATETRUTH
+    type: system-req
+    title: "three v0.72 corrections do not do what they say — a pin that is a tautology, a key set with no mechanism, and a count where a name is meant"
+    description: >
+      FOUND BY v0.72's OWN ROUND-2 COLD REVIEW, recorded rather than carried,
+      and re-verified at the cut. All three are corrections THIS PROGRAMME MADE
+      that do not hold.
+
+      1. THE CENSUS PIN IS STILL A TAUTOLOGY FOR ITS NUMERIC HALF. v0.72 fixed a
+         pin that matched `0` by adding `over N artifact(s)` and pinning N with
+         `[1-9][0-9]*`. But `_pop = sum(1 for a in artifacts if a[1] == _cut)`
+         with `_cut = max(version)` is >= 1 whenever the line prints at all. The
+         reviewer EXECUTED the scenario the comment names — a newer release
+         directory stealing `_cut` — and population went 8 -> 1, authorised
+         8 -> 0, and the pin STILL MATCHED.
+
+      2. `FIELD_KEYS` HAS NO MECHANISM BINDING IT TO THE READ SET. Its own
+         comment claims that adding a new `fields.get(...)` read without listing
+         it "is a visible omission rather than a silent one". Nothing enforces
+         that: `grep -rn FIELD_KEYS` finds the definition and ONE use. And it is
+         blind to `carried-from` — the field RQ-73-ARCHMODEL's entire chain
+         claim rests on, carried by 14 artifacts and read by zero scripts — so a
+         mis-nested `carried-from` is exactly the R13 class and R13 cannot see
+         it.
+
+      3. `merge_gate` CHECK1 COMPARES THE COUNT, NOT THE NAMES:
+         `len(required) == len(REQUIRED_CONTEXTS) and not missing`. A fixture of
+         nine contexts named `Bogus 0..8`, all SUCCESS and none of the nine real
+         ones, returns `CHECK1=True` and `GATEOK`.
+
+      THE SHAPE THEY SHARE is the one this programme keeps paying for: a
+      correction verified in the direction that passes and not in the direction
+      that fails. Each was written with an explicit "can it fail?" rationale,
+      and each is wrong anyway — which is why the deliverable includes the
+      DEMONSTRATION for each, not only the fix.
+
+      SCOPE: derive `FIELD_KEYS` by an `ast` walk over the consumer's own
+      `fields.get(...)` calls the way `claim_check._pin_table` already does;
+      make CHECK1 `set(required) == set(REQUIRED_CONTEXTS)`; and pin the census
+      line on something that can actually be zero. Also fold in the two smaller
+      ones the same review found: `REQUIRED_CONTEXTS = []` passes silently, and
+      the rivet step's `| tee` has no `pipefail` inside a REQUIRED context.
+
+      WHAT WOULD MAKE THIS WRONG. If pinning the census population non-zero is
+      impossible without re-reding every planning PR — the reason the naive
+      `[1-9][0-9]*` was rejected in v0.72 — then the honest deliverable is to
+      DELETE the numeric pin and keep only the line-presence check, stating that
+      the number is unpinnable, rather than shipping a third pin that cannot
+      fail.
+    status: proposed
+    release: v0.73
+    tags:
+      - process
+      - gates
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1319"
+      verification-track: differential
+      done-when: "contains:scripts/status_evidence_check.py:FIELD_KEYS_DERIVED"
+      verified-by: >-
+        The predicate names the DERIVED binding, because the defect is that the
+        current `FIELD_KEYS` is a hand-written list whose own comment claims a
+        mechanism it does not have. A `contains:` on `FIELD_KEYS` would be true
+        today.

@@ -1,0 +1,61 @@
+artifacts:
+  - id: RQ-73-FALCONFIXTURE
+    type: system-req
+    title: "#1318 cannot be measured in this repository — the reporter's opt.wasm is an issue attachment, so the first deliverable is a fixture, not a fix"
+    description: >
+      REFUTING COMMANDS RUN at the v0.72.0 cut, and they refuted the obvious
+      scoping:
+
+        synth compile scripts/repro/vfp_local_pressure_1069.wat \
+          --target cortex-m7dp --relocatable --all-exports
+        -> COMPILES, 2846-byte object, 0 functions skipped
+
+        gh issue view 1069                      -> CLOSED
+        grep 'spill-slot pool exhausted' crates -> only the I64 pool remains
+
+      So every COMMITTED fixture for this class passes. #1318's residual is
+      `opt.wasm`, which is an ISSUE ATTACHMENT and not in this repository — the
+      exact criticism RQ-70-FALCONCORPUS made of v0.69, recurring one level up:
+      the CLASS has fixtures, the REPORTER'S MODULE does not.
+
+      A lane therefore CANNOT open with "fix opt.wasm". The last measured state
+      is v0.70's "7 of 17 functions skipped, all #1069 pool exhaustion /
+      GI-FPU-002", and scoping a fix against a number last measured two releases
+      ago is how this programme has repeatedly been wrong.
+
+      TWO HONEST SHAPES, in order:
+      (a) ASK cpetig to re-test on v0.72.0 and report the skip count. Cheap, and
+          the answer decides whether there is a lane at all — v0.71 narrowed the
+          VFP allocator twin, so the count may already have moved.
+      (b) If it still fails, build a REDUCED FIXTURE that reproduces the shape
+          (7 of 17 declining) BEFORE scoping any fix, and commit it. That is
+          this artifact's `done-when`.
+
+      WHAT WOULD MAKE THIS WRONG. If the reporter answers that v0.72.0 compiles
+      their module, this lane is DONE at step (a) and the fixture is unnecessary
+      — record that and close, rather than building a fixture to justify the
+      artifact. A fixture for a bug nobody has is the same waste as a gate that
+      cannot fail.
+    status: proposed
+    release: v0.73
+    tags:
+      - arm-backend
+      - corpus
+      - external-reporter
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: system
+      priority: must
+      issue: "#1318"
+      verification-track: differential
+      done-when: "file:scripts/repro/falcon_opt_1318.wat"
+      verified-by: >-
+        The predicate names the COMMITTED fixture, because the deliverable this
+        lane can guarantee is reproducibility in-repo, not a fix to a module the
+        repository cannot build. If the reporter's re-test says the module now
+        compiles, the fixture is not built, the predicate stays FALSE and the
+        artifact stays non-claiming — which is the correct outcome, not a
+        failure.
