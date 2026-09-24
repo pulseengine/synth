@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: compiles >= 3
+# ci-checks: compiles >= 6
 """RQ-73-FALCONFIXTURE (#1318): a value-carrying branch at FLOAT type is a loud
 decline on ARM and RISC-V, and it is 6 of the 7 declines in the reporter's
 `opt.wasm`.
@@ -73,6 +73,8 @@ import subprocess
 import sys
 import tempfile
 
+from elftools.elf.elffile import ELFFile
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 FIXTURE = ROOT / "scripts/repro/falcon_opt_1318.wat"
 SYNTH = ROOT / "target/debug/synth"
@@ -108,6 +110,73 @@ EXPECTED_DECLINES: dict[tuple[str, str], str | None] = {
     ("vbr_f32", "riscv"): "RISC-V selector",
     ("vbr_f64", "riscv"): "RISC-V selector",
 }
+
+
+# (v0.74, RQ-74-STUBPROOF) What each leg must actually EMIT. A stub can print
+# any text and exit any code; it cannot emit an ELF of the right machine whose
+# symbol table names the exports that did not decline.
+EXPECTED_MACHINE = {"arm": "EM_ARM", "riscv": "EM_RISCV", "aarch64": "EM_AARCH64"}
+
+
+def inspect_object(backend: str, obj: str, compiled: list[str]) -> None:
+    """REFUSE unless `obj` is a real ELF for this leg naming every compiled export.
+
+    (v0.74, RQ-74-STUBPROOF) v0.73's round-2 gate review replaced
+    `target/debug/synth` with a 16-line python script that printed the six
+    expected `warning: skipping` lines and exited 3, and wrote a ONE-BYTE file
+    and exited 0 for the aarch64 leg. The oracle returned rc=0, "CHECKS=12/12",
+    "RESULT: PASS", and `measured=3` — verdict-identical to the real compiler,
+    and the full CI step passed too. Reproduced again at the v0.74 cut before
+    this was written.
+
+    v0.73 round 1 had already added an exit-status cross-check and an
+    object-exists/non-empty check; the stub satisfied BOTH. The gap was that
+    nothing ever asked what the file IS.
+    """
+    if not os.path.isfile(obj) or os.path.getsize(obj) == 0:
+        raise SystemExit(
+            f"REFUSE {backend}: no object at {obj} to inspect. With "
+            f"--allow-skipped-exports every leg emits one, so an absent object "
+            f"is the compiler failing, not a decline."
+        )
+    with open(obj, "rb") as fh:
+        head = fh.read(4)
+        if head != b"\x7fELF":
+            raise SystemExit(
+                f"REFUSE {backend}: {obj} is not an ELF (magic {head!r}). "
+                f"'It compiled' was inferred from text on stdout; the artifact "
+                f"says otherwise."
+            )
+        fh.seek(0)
+        elf = ELFFile(fh)
+        machine = elf.header.e_machine
+        want = EXPECTED_MACHINE[backend]
+        if machine != want:
+            raise SystemExit(
+                f"REFUSE {backend}: object reports e_machine={machine}, "
+                f"expected {want}. The leg compiled for the wrong target, or "
+                f"the object is not this leg's."
+            )
+        text = next((s for s in elf.iter_sections() if s.name == ".text"), None)
+        if text is None or text.data_size == 0:
+            raise SystemExit(
+                f"REFUSE {backend}: object has no non-empty .text. An ELF with "
+                f"no code is not a compile."
+            )
+        names = set()
+        for sec in elf.iter_sections():
+            if sec.header["sh_type"] == "SHT_SYMTAB":
+                names |= {sym.name for sym in sec.iter_symbols() if sym.name}
+    missing = [e for e in compiled if e not in names]
+    if missing:
+        raise SystemExit(
+            f"REFUSE {backend}: {missing} did not decline, so each must appear "
+            f"in the object's symbol table, and does not. Observed symbols: "
+            f"{sorted(names)}. This is the CONTROL half — on arm and riscv "
+            f"something always declines, so before v0.74 the compiled cells "
+            f"were inferred purely from the ABSENCE of a warning line and no "
+            f"artifact was inspected at all."
+        )
 
 
 def compile_for(backend: str, obj: str) -> dict[str, str]:
@@ -157,6 +226,32 @@ def compile_for(backend: str, obj: str) -> dict[str, str]:
                 f"REFUSE {backend}: synth exited 0 and skipped nothing, but "
                 f"produced no object at {obj}. Nothing was compiled."
             )
+
+    # (v0.74, RQ-74-STUBPROOF) The object check above is REACHABLE ONLY when
+    # nothing declined — and on arm and riscv something ALWAYS declines (three
+    # pinned cells each), so for those legs it was dead code and the i32
+    # CONTROL cells rested on an absent warning line. #952 makes the plain run
+    # emit no object at all when an export is skipped, which is why the check
+    # was written that way rather than carelessly.
+    #
+    # So compile a SECOND time with --allow-skipped-exports, which #952's own
+    # message advertises: it returns 0 and emits the object for the subset that
+    # DID compile. Measured on this fixture: arm goes rc=1/no object ->
+    # rc=0/447-byte object carrying `.text` and the symbol `vbr_i32`.
+    insp = os.path.join(os.path.dirname(obj), f"{backend}-inspect.o")
+    out2 = subprocess.run(
+        [str(SYNTH), "compile", str(FIXTURE), *BACKENDS[backend],
+         "--all-exports", "--allow-skipped-exports", "-o", insp],
+        capture_output=True, text=True,
+    )
+    if out2.returncode != 0:
+        raise SystemExit(
+            f"REFUSE {backend}: --allow-skipped-exports exited "
+            f"{out2.returncode}. That flag exists precisely so a partial "
+            f"object IS produced, so a non-zero exit here is the compiler "
+            f"failing rather than declining."
+        )
+    inspect_object(backend, insp, [e for e in EXPORTS if e not in declines])
     return declines
 
 
