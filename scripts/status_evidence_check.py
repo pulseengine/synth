@@ -506,10 +506,14 @@ FIELD_KEYS_DERIVED = _derive_field_keys()
 # 23 artifact files (token OCCURRENCES in prose; as a structured FIELD it is on
 # 19 artifacts) and read by ZERO scripts, and RQ-73-ARCHMODEL's entire
 #
-# THE METHOD IS PART OF THE NUMBER, because two releases got it wrong in two
-# different ways. v0.72 wrote 44, measured before the commit that added the
-# 45th. v0.73 "corrected" that to 45 using `git grep -c`, which counts LINES
-# CONTAINING A MATCH, not occurrences — the true figure at that tag was 46. The
+# THE METHOD IS PART OF THE NUMBER. The sentence entered the tree saying 44 in
+# 03d87d05 (a v0.73 lane), NOT in v0.72 — `git show v0.72.0:...` has no such
+# sentence at all, and the per-commit occurrence counts from v0.72.0 onward read
+# 42, 45, 45, 45, 45, 45, 46: never 44. An earlier version of THIS comment
+# asserted "v0.72 wrote 44, measured before the commit that added the 45th" and
+# "two releases got it wrong two different ways"; round 2 refuted both. What is
+# true: 44 and 45 come from the SAME line-counting method (`git grep -c` gives
+# 45 at that tag), and the true OCCURRENCE figure there was 46. The
 # count above is occurrences (`text.count("carried-from")` over
 # `git ls-files artifacts`), and v0.74 moved it again by adding eight artifacts,
 # six of which carry the field. Re-derive it; do not copy it.

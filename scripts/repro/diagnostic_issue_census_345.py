@@ -76,19 +76,23 @@ WHAT WOULD CHANGE THIS VERDICT. If the share inverted — if most citations
 pointed at OPEN issues — then a closed-issue citation would be the exception and
 a tripwire could name it. Re-run this census before assuming that has happened.
 
-DELIBERATELY NOT DONE: re-pointing or rewording the #345 message. Its exact text
-is PINNED, in three places: `litpool_islands_345.py`'s `REFUSAL` regex and
-`litpool_islands_345_differential.py`, both of which match it on the
-islands-OFF leg and so run on every CI round, and
-`islandpass_1331_execution_differential.py`'s `PINNED_REFUSAL`.
+DELIBERATELY NOT DONE: re-pointing or rewording the #345 message. Exactly ONE
+oracle pins the CITATION: `litpool_islands_345.py`'s `REFUSAL` regex, which
+spells out `\(#345\)` and matches on the islands-OFF leg every CI round.
+Mutating `#345` to `#999` in `arm_backend.rs` reds that one and nothing else.
 
-BE PRECISE ABOUT THAT THIRD ONE, because an earlier draft of this paragraph
-named it alone: `PINNED_REFUSAL` is consulted only inside the STATE-1 branch,
-reached when a fixture fails to compile. All three fixtures compile now, so that
-branch does not execute — by the fixed point's own success. The text is pinned
-by the first two. Changing user-facing text an oracle matches is a separate,
-gated change; doing it inside a census lane would break those oracles to improve
-a sentence.
+TWO EARLIER DRAFTS OF THIS PARAGRAPH WERE WRONG, and both are recorded because
+the correction is where the next false statement goes. The first named
+`islandpass_1331_execution_differential.py`'s `PINNED_REFUSAL` alone — but that
+constant sits in the STATE-1 branch, reached only when a fixture fails to
+compile, which the fixed point's own success prevents. The second said "three
+places", counting `litpool_islands_345_differential.py` — whose `REFUSAL` is the
+PREFIX only (`"LdrSym literal pool out of range"`, no number), so it does not
+pin the citation at all.
+
+The conclusion is unchanged and now rests on the one pin that exists: changing
+user-facing text an oracle matches is a separate, gated change, not something to
+do inside a census lane.
 """
 import collections
 import json

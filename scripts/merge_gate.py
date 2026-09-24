@@ -130,7 +130,11 @@ def fidelity_exit(verdict: str) -> int:
     verdict)` to `return 0` in `main()` leaves `--self-test` green. The
     reviewer applied ten such mutations to `gate()` and `main()` — including
     forcing the whole rollup to SUCCESS, and `ok &= True` — and ALL TEN passed.
-    `--self-test` reaches `decide()` and `fidelity_exit()` and nothing else.
+    `--self-test` does not reach `gate()` or `main()` AT ALL — which is the
+    point. (An earlier wording said it "reaches `decide()` and `fidelity_exit()`
+    and nothing else"; round 2 refuted that by walking the AST: it also drives
+    `branch_currency`, `squash_fidelity` and `is_advisory`, whose potency this
+    very docstring records.)
 
     That is the same shape twice: v0.73 extracted `decide()` out of `gate()`,
     v0.74 extracted `fidelity_exit()` out of `main()`, and each moved the

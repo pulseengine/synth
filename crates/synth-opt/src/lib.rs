@@ -3491,7 +3491,62 @@ mod tests {
         // undefined while consumers still read it — the silent wrong answer
         // behind `(x - x) + x` returning 0. The sound outcome is that `dest`
         // STAYS DEFINED, as a Copy from the surviving operand.
+        //
+        // NOTE WHICH ARM THIS IS (v0.74 cold review round 2). It builds
+        // `Add { src1: Reg(1), src2: Reg(0) }` with r0 = 0 — that is `x + 0`,
+        // the `(_, Some(&0))` arm. An earlier version of the comment above
+        // claimed it covered "the silent wrong answer behind `(x - x) + x`
+        // returning 0", which is the COMMUTED `0 + x` arm and is never built
+        // here — proved by reverting that arm and watching this test pass.
+        // `test_algebraic_zero_add` below covers it.
         assert!(!instructions[1].is_dead);
+        assert!(matches!(instructions[1].opcode, Opcode::Copy { src, .. } if src == Reg(1)));
+    }
+
+    #[test]
+    fn test_algebraic_zero_add() {
+        // v0.74 cold review round 2: arm A (`0 + x`) had NO unit test. Round 1
+        // found the MUL commutation gap, wrote `test_algebraic_one_mul`, and
+        // left the identical ADD commutation one arm away — and arm A is the
+        // one #1223 was actually reported against. Reverting it passed
+        // `cargo test --workspace` (168 suites, 3145 passed) in full.
+        let mut builder = CfgBuilder::new();
+        for _ in 0..3 {
+            builder.add_instruction();
+        }
+        let mut cfg = builder.build();
+
+        // r0 = 0, r2 = r0 + r1  (0 + x)
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 0,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Add {
+                    dest: Reg(2),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut simplify = AlgebraicSimplification::new();
+        let result = simplify.run(&mut cfg, &mut instructions);
+
+        assert!(result.changed);
+        assert_eq!(result.modified_count, 1);
+        assert!(!instructions[1].is_dead);
+        // The surviving operand is src2 — asserting the REGISTER is what
+        // catches a Copy from the constant instead of from x.
         assert!(matches!(instructions[1].opcode, Opcode::Copy { src, .. } if src == Reg(1)));
     }
 

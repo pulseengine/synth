@@ -78,14 +78,20 @@ def _pad(n: int) -> list[str]:
                 # MEASURED PER FIXTURE, because the count is not the same for
                 # both and a single number here would be false of one of them:
                 # over the differential's ARGVALS (0, 1, 2, 9, 0x7FFFFFFF),
-                # even factors gave 1 distinct result; odd factors give 5 on
+                # even factors gave 1 distinct result ON BACKSPAN and still 5 on
+                # nested, whose `br_if 1` skips the chain for every non-zero
+                # argument — round 2 caught this sentence generalising a
+                # per-fixture measurement in the paragraph that says not to.
+                # Odd factors give 5 on
                 # `nested` and 4 on `backspan`, where args 0 and 1 collide
                 # because the masked trip count is the same for both. The
                 # ungenerated v0.73 fixture `islandpass_1331_spanning.wat`
-                # distinguishes only 2. So an argument-dropping miscompile that
-                # maps 0 -> 1 is invisible on backspan and on spanning; it is
-                # visible on nested. Round 1 of the v0.74 cold review measured
-                # this.
+                # distinguishes only 2 — but its two values differ BETWEEN 0 and
+                # 1, so a 0 -> 1 miscompile IS visible there. Invisible on
+                # exactly ONE fixture: backspan. Round 1 wrote "invisible on
+                # backspan and on spanning" and round 2 refuted the second half
+                # by evaluating spanning(0) and spanning(1) and finding them
+                # different.
                 f"      i64.const {3 + 2 * (i % 6)}",
                 "      i64.mul",
                 "      local.set 2"]

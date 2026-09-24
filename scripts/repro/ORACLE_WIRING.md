@@ -236,7 +236,7 @@ that wired — prose does not run an oracle.
 
 `SYNTH-ORACLE-WIRING-890`'s ratchet legs are proved the same way: flipping one
 wired script to `manual` fails **both** `count-min 145` (the floor) and
-`count-max 7` (the ceiling).
+`count-max 9` (the ceiling).
 
 ---
 

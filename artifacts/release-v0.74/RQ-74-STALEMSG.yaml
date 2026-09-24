@@ -59,11 +59,17 @@ artifacts:
           with a refusal when the board cannot be read (an unreadable board is
           not an empty one) and when the scan matches nothing.
       (b) REFUTED, with the measurement, and NOT shipped.
-      (c) DELIBERATELY NOT DONE. The #345 message's exact text is PINNED by
-          islandpass_1331_execution_differential.py as PINNED_REFUSAL — it is
-          the gate proving the spanning-island fixed point landed. Rewording it
-          inside a census lane would break that oracle to improve a sentence.
-          What ships instead is the convention, recorded in CLAUDE.md.
+      (c) DELIBERATELY NOT DONE. Exactly ONE oracle pins the CITATION:
+          litpool_islands_345.py's REFUSAL regex, which spells out `(#345)` and
+          matches on the islands-OFF leg every CI round — mutating #345 to #999
+          reds that one and nothing else. Two earlier drafts named the wrong
+          mechanism: islandpass_1331_execution_differential.py's PINNED_REFUSAL
+          sits on a branch the fixed point's own success makes unreachable, and
+          litpool_islands_345_differential.py's REFUSAL is the PREFIX only, with
+          no number in it. Round 1 corrected the first and introduced the
+          second; round 2 caught it. The conclusion is unchanged and now rests
+          on the pin that exists. What ships instead is the convention in
+          CLAUDE.md.
 
       A FIRST PASS OF THE CENSUS WAS WRONG AND IS RECORDED AS SUCH: it counted
       663 sites, because it swept test-module assertions and ARM immediates
