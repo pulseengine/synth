@@ -121,7 +121,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1319"
-      landed: "PLACEHOLDER_PR"
+      landed: "#1379"
       verification-track: differential
       done-when: "contains:scripts/status_evidence_check.py:FIELD_KEYS_DERIVED"
       verified-by: >-
