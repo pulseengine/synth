@@ -28,12 +28,45 @@ artifacts:
       reproduction is the starting point: an 8-byte island left a `br_if`
       pointing 8 bytes early.
 
+      WHAT SHIPPED. Two things, and the first was already done by
+      RQ-73-ISLANDPASS: `validate_branch_targets` now derives positions from
+      `island_walk`, the SAME walk the branch offsets are resolved against, so
+      it measures in post-island coordinates. It also FIRED on exactly this
+      class during that lane, observed rather than argued — with the fixed
+      point half-applied (offsets island-inclusive, gate still island-free) it
+      refused with "branch at byte offset 0x1e targets 0x26c2, which is not an
+      instruction start".
+
+      THE SECOND THING IS THIS ARTIFACT'S OWN `done-when`, because the artifact
+      is explicit that moving the call site without a demonstration "would
+      restore the wording and not the guarantee":
+      `scripts/repro/sc5_postisland_345.py` DECODES the emitted `.text` by
+      Thumb-2 rules and builds the instruction-start set INDEPENDENTLY of
+      anything the compiler recorded, then requires every branch target to be a
+      member. It consults the bytes, not the bookkeeping — the v0.72 lesson
+      that "a checker which consults the same bookkeeping that was wrong will
+      agree with it".
+
+      POTENCY IS FROZEN, NOT ARGUED. It carries the `.text` of the branch-span
+      fixture emitted by a build with `island_walk`'s size arithmetic perturbed
+      by +2, which drives targets two bytes into the SECOND halfword of a
+      32-bit instruction; the oracle must FLAG it, and CI greps for that line.
+      Producing those bytes ALSO required neutering the in-compiler SC-5 gate,
+      which is itself the evidence that gate now covers the post-island stream:
+      nothing else would emit such an object.
+
+      THE REFUTATION THE ARTIFACT ALLOWS WAS CHECKED AND DOES NOT APPLY. This
+      does not duplicate `island_offset_invariant_345.py`: that oracle checks
+      RELOCATION and LITERAL invariants and says nothing about branch targets.
+      The v0.72 miscompile proves the gap in the other direction too — INV1
+      PASSED on an object whose `br_if` pointed 8 bytes early.
+
       WHAT WOULD MAKE THIS WRONG. If re-validating the final stream duplicates
       what `island_offset_invariant_345.py` already proves from the emitted ELF,
       then the honest deliverable is to say so and DELETE the stale docstring
       claim rather than add a second checker — SC-5 is a system constraint, and
       a constraint enforced twice badly is worse than once well.
-    status: proposed
+    status: implemented
     release: v0.73
     tags:
       - arm-backend
@@ -46,6 +79,7 @@ artifacts:
       req-type: system
       priority: should
       issue: "#345"
+      landed: "#1378"
       verification-track: differential
       done-when: "file:scripts/repro/sc5_postisland_345.py"
       verified-by: >-

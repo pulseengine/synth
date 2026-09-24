@@ -6018,6 +6018,22 @@ jobs:
       # instruction boundary (such a target IS in the instruction-start set).
       # Demonstrated, not assumed: with the v0.72 span guard disabled, INV1
       # PASSED on the emitted object while this gate caught the wrong answer.
+      # RQ-73-SC5 (#345): SC-5 on the FINAL bytes. v0.72's cold review found
+      # `validate_branch_targets` running BEFORE island insertion, so the gate
+      # that claims to cover "the instruction-start set of THE FINAL STREAM"
+      # had narrowed to a PREFIX of the pipeline. #1331 fixed the coordinate
+      # system; this is the demonstration, because moving a call site without
+      # one "would restore the wording and not the guarantee". It DECODES the
+      # emitted .text rather than asking the compiler, and carries a FROZEN
+      # mis-targeted stream it must flag — so it is a gate that has been
+      # watched fail.
+      - name: "SC-5 branch targets hold on the post-island stream (#345)"
+        run: |
+          set -euo pipefail
+          SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
+            scripts/repro/sc5_postisland_345.py | tee /tmp/sc5.txt
+          grep -q '^RESULT: PASS' /tmp/sc5.txt
+          grep -q '^  potency: frozen red half flagged' /tmp/sc5.txt
       - name: "spanning module compiles AND executes bit-exact (#1331)"
         run: |
           set -euo pipefail

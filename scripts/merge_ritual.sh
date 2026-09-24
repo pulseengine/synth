@@ -75,6 +75,19 @@ grep -q '^GATEOK$' "$SCR/gate.txt" && [ "$CHECK4" = "0" ] \
 sleep 5
 STATE=$(gh pr view "$PR" --repo "$REPO" --json state --jq .state)
 echo "  #$PR state=$STATE"
+
+# RQ-73-STEP8 (#1269 ask 2): call merge_gate.py's `squash_fidelity` and
+# RECORD the post-merge diff instead of producing
+# it by hand. v0.72 attested all eleven merges manually — evidence, but not
+# the mechanism the issue asks for, and a number a human produces is a number
+# a human can forget. Runs only once the merge is confirmed, because the merge
+# commit does not exist before then. Advisory by design: the merge has already
+# happened, so this REPORTS rather than gates, and a non-FAITHFUL verdict is
+# printed loudly for the operator to act on.
+if [ "$STATE" = "MERGED" ]; then
+  python3 scripts/merge_gate.py --pr "$PR" --repo "$REPO" --squash-fidelity \
+    || echo "  !! squash fidelity NOT confirmed for #$PR — read the verdict above"
+fi
 git worktree remove --force "$SIM" 2>/dev/null
 git branch -D "sim/squash-$PR" >/dev/null 2>&1
 git worktree prune
