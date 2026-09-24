@@ -59,6 +59,125 @@ def run(artifacts, closed, allow_unclosed=False, open_issues=None):
         C.load_release_artifacts = orig
 
 
+# ---------------------------------------------------------------------------
+# RQ-75-CLOSEWINDOW (#1391): drive `closed_since` — the NETWORK path — against
+# a recorded `gh` response.
+#
+# v0.74 found this function truncating its own window to a DAY
+# (`closed:>={date[:10]}`, which GitHub reads as MIDNIGHT), fixed it, and did
+# NOT test it: the evidence was a measurement recorded in the docstring. A
+# regression would have been silent again, and the failure mode is not a missed
+# closure — it is the gate reporting an EXTERNAL reporter's correctly-closed
+# issue as `CLOSED BUT NOT AUTHORISED`, whose prescribed remedy is "Reopen it".
+#
+# The recorded table encodes what the LIVE API actually returned at the v0.74
+# cut, both halves measured on one tree:
+#
+#     closed:>=2026-09-24            -> #1341, #1349, #1269, #1331   (4)
+#     closed:>=2026-09-24T15:02:41Z  ->               #1269, #1331   (2)
+#
+# where 15:02:41Z is v0.73.0's own commit and #1341/#1349 closed at 03:34Z, in
+# v0.72's wave. So the day-granular qualifier is not a hypothetical: it is the
+# contaminated answer, keyed separately, and a `closed_since` that builds it
+# gets it. No assertion inspects the qualifier string — the WINDOW's content is
+# what matters, and asserting on the string would pass a rewrite that formatted
+# it differently while still reading midnight.
+#
+# An unrecorded call RAISES. A recorder that returned empty would let this pass
+# while reaching nothing, which is the vacuity being tested for.
+#
+# PROVEN POTENT, each mutation verified present on disk before measuring:
+#
+#     the pre-v0.74 day-granular truncation `{date[:10]}`      -> RED
+#     a "normalising" rewrite: date.split("T")[0]              -> RED
+#
+# The second one is why no assertion reads the qualifier STRING: a rewrite that
+# spells midnight differently is still midnight, and a string assertion would
+# have passed it. Both mutations fail with the window naming #1341 and #1349 —
+# the two v0.72 closures a midnight window swallows.
+
+CW_REPO = "pulseengine/synth"
+CW_TAG = "v0.73.0"
+CW_STAMP = "2026-09-24T15:02:41Z"
+CW_DAY_SET = [1341, 1349, 1269, 1331]     # midnight window: v0.72's wave too
+CW_EXACT_SET = [1269, 1331]               # the correct window
+
+
+class CwUnrecorded(AssertionError):
+    pass
+
+
+class _CwRecorder:
+    def __init__(self, table):
+        self.table = table
+        self.calls = []
+
+    def __call__(self, args, **kw):
+        key = tuple(args)
+        self.calls.append(key)
+        if key not in self.table:
+            raise CwUnrecorded(f"unrecorded call: {key!r}")
+        rc, out = self.table[key]
+        import subprocess as _sp
+        return _sp.CompletedProcess(args=list(args), returncode=rc,
+                                    stdout=out, stderr="")
+
+
+def _cw_table():
+    import json as _json
+    body = lambda ns: _json.dumps([{"number": n} for n in ns])
+    return {
+        ("gh", "api", f"repos/{CW_REPO}/commits/{CW_TAG}",
+         "--jq", ".commit.committer.date"): (0, CW_STAMP),
+        # the two qualifiers are DIFFERENT keys, and answer differently
+        ("gh", "issue", "list", "--repo", CW_REPO, "--state", "closed",
+         "--limit", "200", "--search", f"closed:>={CW_STAMP[:10]}",
+         "--json", "number"): (0, body(CW_DAY_SET)),
+        ("gh", "issue", "list", "--repo", CW_REPO, "--state", "closed",
+         "--limit", "200", "--search", f"closed:>={CW_STAMP}",
+         "--json", "number"): (0, body(CW_EXACT_SET)),
+    }
+
+
+def _cw_run(table):
+    import types
+    rec = _CwRecorder(table)
+    orig, C.subprocess = C.subprocess, types.SimpleNamespace(run=rec)
+    try:
+        return C.closed_since(CW_TAG, CW_REPO), rec
+    finally:
+        C.subprocess = orig
+
+
+def closed_since_tests() -> None:
+    got, rec = _cw_run(_cw_table())
+    check("closed_since: window excludes the PREVIOUS release's closure wave",
+          got == set(CW_EXACT_SET),
+          f"got {sorted(got)}, want {CW_EXACT_SET} — "
+          f"{sorted(set(CW_DAY_SET) - set(CW_EXACT_SET))} closed before the tag")
+
+    # RED-FIRST, in the direction that matters: if the only recorded answer is
+    # the day-granular one, a correct `closed_since` must MISS and raise rather
+    # than silently accept the contaminated set.
+    day_only = _cw_table()
+    del day_only[("gh", "issue", "list", "--repo", CW_REPO, "--state", "closed",
+                  "--limit", "200", "--search", f"closed:>={CW_STAMP}",
+                  "--json", "number")]
+    try:
+        _cw_run(day_only)
+        check("closed_since: a day-granular-only table is REFUSED", False,
+              "it answered from the midnight window")
+    except CwUnrecorded:
+        check("closed_since: a day-granular-only table is REFUSED", True)
+
+    # and the recorder is loud in general, or every assertion above is vacuous
+    try:
+        _cw_run({})
+        check("closed_since recorder: an unrecorded call raises", False)
+    except CwUnrecorded:
+        check("closed_since recorder: an unrecorded call raises", True)
+
+
 def main() -> int:
     # ---- the authorised set is derived, not declared -----------------------
     delivered = art("RQ-71-A", "implemented", "#100")
@@ -182,6 +301,8 @@ def main() -> int:
     f, _w, _a, _h = C.check(root, "v0.70", V70_CLOSED | {1331})
     check("v0.70 replay: closing #1331 anyway is CAUGHT",
           any("HELD OPEN BUT CLOSED: #1331" in x for x in f), str(f))
+
+    closed_since_tests()
 
     print(f"issue-closure-tests: {FAILS} failure(s)")
     return 1 if FAILS else 0

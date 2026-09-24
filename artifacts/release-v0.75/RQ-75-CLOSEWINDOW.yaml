@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-75-CLOSEWINDOW
     type: system-req
     release: v0.75
-    status: proposed
+    status: implemented
     title: "`closed_since` was fixed at the v0.74 cut and tested by nobody — the network path has no offline driver"
     description: >
       FOUND AT THE v0.74 CUT, by running the closure gate instead of trusting it.
