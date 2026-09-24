@@ -5115,6 +5115,18 @@ jobs:
             scripts/repro/false_reject_1229_differential.py | tee /tmp/1229.txt
           grep -qE '^#1229 CHECKS=12/12 \(file,backend\) cells; TOTAL false-rejects=130$' /tmp/1229.txt
           grep -q '^RESULT: PASS' /tmp/1229.txt
+      # RQ-73-FALCONFIXTURE (#1318): 6 of the 7 declines in the reporter's
+      # opt.wasm are ONE shape — a value-carrying branch at float type — and
+      # the module was obtainable from the issue attachment all along. The i32
+      # cells are the CONTROL and the aarch64 cells prove the capability exists
+      # here; both must stay green or this oracle has stopped discriminating.
+      - name: "#1318 — value-carrying branch at float type (falcon opt.wasm, 6 of 7 declines)"
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py \
+            scripts/repro/falcon_opt_1318_differential.py | tee /tmp/1318.txt
+          grep -qE '^#1318 CHECKS=12/12 \(export,backend\) cells' /tmp/1318.txt
+          grep -q '^RESULT: PASS' /tmp/1318.txt
       - name: "#1230 — VCR-RA-003 refuses its own emitted stream (decline census + frozen-fixture wrongness proof)"
         run: |
           set -euo pipefail

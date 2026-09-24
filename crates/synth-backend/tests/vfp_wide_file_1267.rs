@@ -10,9 +10,31 @@
 //!
 //! So the rung cannot be demonstrated by compiling a corpus module. The honest
 //! alternative is to drive the flag DIRECTLY and assert the emitted stream,
-//! which is what this file does: reached-by-test rather than unreached. The one
-//! known module that defeats both existing rungs is the reporter's flight
-//! tick (#1267), which is not obtainable from any published artifact.
+//! which is what this file does: reached-by-test rather than unreached.
+//!
+//! CORRECTED BY RQ-73-FALCONFIXTURE (v0.73, #1318). The paragraph above used to
+//! end: "The one known module that defeats both existing rungs is the
+//! reporter's flight tick (#1267), which is NOT OBTAINABLE FROM ANY PUBLISHED
+//! ARTIFACT." Both halves of that were false, and it was the stated reason
+//! nobody looked again:
+//!
+//!   * It IS obtainable. #1318's `errors.zip` attachment contains `opt.wasm`
+//!     and `fused.wasm` themselves, not only logs.
+//!   * NOTHING REACHES IT is false for that module. Measured at v0.72.0 with
+//!     `SYNTH_RECOVERY_STATS=1` over its 17 functions (9 compile at base, 1 is
+//!     rescued by a rung, 7 exhaust):
+//!
+//!         rung                          reached  rescued
+//!         vfp-spill                        3        0
+//!         vfp-frame-locals                 3        1
+//!         vfp-frame-locals+pool-grow       1        0
+//!         vfp-wide-file                    2        0
+//!
+//! So this rung is reached TWICE by a real module and rescues neither call.
+//! The file's design is still right — driving the flag directly is the only way
+//! to assert the emitted stream — but its justification must not claim the
+//! module cannot be had. `scripts/repro/falcon_opt_1318.wat` now commits the
+//! reduced shape behind 6 of those 7 declines.
 //!
 //! WHAT IS ASSERTED, and each is a property that fails SILENTLY if wrong:
 //!   1. the save/restore pair is emitted at all;
