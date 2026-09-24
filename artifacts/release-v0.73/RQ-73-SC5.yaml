@@ -79,7 +79,7 @@ artifacts:
       req-type: system
       priority: should
       issue: "#345"
-      landed: "PLACEHOLDER_PR"
+      landed: "#1378"
       verification-track: differential
       done-when: "file:scripts/repro/sc5_postisland_345.py"
       verified-by: >-
