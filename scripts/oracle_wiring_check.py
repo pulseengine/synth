@@ -137,6 +137,9 @@ def collect(root):
     return scripts, workflows
 
 
+_PURE_ECHO = re.compile(r"\s*echo\b")
+
+
 def executable_surface(workflows):
     """Map workflow filename -> the text a runner would actually EXECUTE.
 
@@ -177,8 +180,26 @@ def executable_surface(workflows):
                     # to target a single-line `run:`.
                     for line in st["run"].splitlines():
                         code = line.split("#", 1)[0]
-                        if code.strip():
-                            chunks.append(code)
+                        if not code.strip():
+                            continue
+                        # (v0.73 cold review round 2, finding 13) A bare `echo`
+                        # PRINTS the path; it does not run it. The reviewer
+                        # replaced the falcon step's body with
+                        # `run: echo scripts/repro/falcon_opt_1318_differential.py`
+                        # and this gate stayed GREEN — while its own docstring
+                        # says "a gate satisfiable by prose is the very shape
+                        # this check exists to reject". A mention inside a
+                        # comment was already rejected; a mention inside an echo
+                        # is the same class one layer in.
+                        #
+                        # Narrow on purpose: only a PURE echo is dropped. A line
+                        # that pipes or chains (`echo x | python3 -`,
+                        # `echo a && run b`) still counts, because something
+                        # there does execute.
+                        if (_PURE_ECHO.match(code)
+                                and not any(t in code for t in ("|", "&&", ";", "$("))):
+                            continue
+                        chunks.append(code)
                 for block in ("with", "env"):
                     for v in (st.get(block) or {}).values():
                         chunks.append(str(v))
@@ -248,7 +269,7 @@ def classify(root, scripts, workflows):
                 mentioned = [w for w, t in wf_raw.items() if name in t]
                 where = (
                     f" It IS mentioned in {', '.join(mentioned)}, but only in a "
-                    f"COMMENT — prose does not run an oracle."
+                    f"COMMENT or a bare `echo` — neither runs an oracle."
                     if mentioned
                     else ""
                 )

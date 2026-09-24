@@ -17,12 +17,15 @@ artifacts:
       it): the second line above first read "only the I64 pool remains", and
       that is FALSE. `VFP_FRAME_HOME_SLOT_EXHAUSTION` is live at
       `instruction_selector.rs:3235`, emitted at `:3245` behind the `#1069:`
-      prefix and matched in `arm_backend.rs` (the VFP_FRAME_HOME arm of
-      the pool-grow retry's error match; the LINE number this said was
-      invalidated by RQ-73-ISLANDPASS in this same release, which shifted
-      every site in that file by -22 and re-anchored the machine-readable
-      mutation ledger for exactly that drift while leaving this prose
-      pointing at the old line) to drive the pool-grow
+      prefix and matched in `arm_backend.rs` (the third `msg.contains(...)`
+      disjunct of the `is_some_and` predicate that gates the pool-grow retry —
+      there is no `match` here, which an earlier draft of this correction said;
+      the LINE number the draft before THAT carried was invalidated by
+      RQ-73-ISLANDPASS in this same release, which shifted THE REGION CONTAINING
+      THIS SITE by -22 and re-anchored the machine-readable mutation ledger for
+      exactly that drift. NOT the whole file: `arm_backend.rs` GREW by 70 lines
+      across that commit, and the test module moved +70, so "every site shifted
+      by -22" is false in both directions) to drive the pool-grow
       retry — it is precisely the rung the reporter's `step` export hits. A
       lane that believed the sentence would have scoped around a path that is
       very much still there.
@@ -110,6 +113,7 @@ artifacts:
       req-type: system
       priority: must
       issue: "#1318"
+      issue-scope: outlives
       landed: "#1376"
       verification-track: differential
       done-when: "file:scripts/repro/falcon_opt_1318.wat"

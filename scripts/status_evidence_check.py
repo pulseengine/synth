@@ -444,8 +444,9 @@ FIELD_KEYS_DERIVED = _derive_field_keys()
 # these by construction, and that is exactly why they need listing: a
 # `carried-from` nested one level too high changes nothing, looks right, and no
 # gate notices — the [[an-unread-key-looks-exactly-like-an-absent-one]] class,
-# measured in v0.71 on `issue-scope`. `carried-from` is carried 44 times across
-# 16 artifact files and read by ZERO scripts, and RQ-73-ARCHMODEL's entire
+# measured in v0.71 on `issue-scope`. `carried-from` is carried 45 times across
+# 16 artifact files (token occurrences in prose; as a structured FIELD it is on
+# 13 artifacts) and read by ZERO scripts, and RQ-73-ARCHMODEL's entire
 # chain claim rests on it.
 FIELD_KEYS_UNREAD = {"carried-from"}
 

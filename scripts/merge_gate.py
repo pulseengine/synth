@@ -87,7 +87,19 @@ def squash_fidelity(pr_head: str, merged: str, base_at_merge: str):
     verdicts return 0 for it. An earlier docstring called the third value
     `advance_lines` and the code computed a diff of a commit against itself,
     which is always empty and was never returned. Named for what it is."""
-    diff_lines = len(sh("git", "diff", pr_head, merged).splitlines())
+    # (v0.73 cold review round 2, finding 4) `sh()` DISCARDS the return code,
+    # so a `git diff` that fatals — "bad object", exactly what happens when the
+    # squash commit is not in the local object store — yielded an empty string,
+    # which read as 0 lines, which read as FAITHFUL. Demonstrated:
+    # `git diff <fresh> <nonexistent-sha>` exits 128 and this returned
+    # ("FAITHFUL", 0, 0). RQ-73-STEP8 claims the number exists WITHOUT a human
+    # producing it, so a number produced by a failed command makes that claim
+    # FALSE rather than merely untested.
+    _proc = subprocess.run(["git", "diff", pr_head, merged],
+                           capture_output=True, text=True)
+    if _proc.returncode != 0:
+        return ("DIFF UNAVAILABLE", -1, -1)
+    diff_lines = len(_proc.stdout.strip().splitlines())
     current, behind = branch_currency(pr_head, base_at_merge)
     if not current:
         return ("INDETERMINATE", diff_lines, behind)

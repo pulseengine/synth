@@ -33,6 +33,7 @@ artifacts:
       constant 0" (#1223), "loses its value" (#1241), "refuses its own
       emitted stream" (#1230). The point stands; the sentence carrying it
       did not.
+
       RQ-66-PINDEBT exists to stop exactly this: "a release that ends with more
       pins than it began is red; adding a pin is paid for by closing one, or by
       a `waivers:` entry with a written reason in the same PR". The ratchet has
@@ -40,6 +41,7 @@ artifacts:
       tripled (27 -> 85 is 3.15x; "nearly tripled" understated this
       artifact's own headline in the direction that makes it less alarming)
       while every release stayed green.
+
       AND THE BOARD IS NOT OLD, which is the part that surprised. 40 open
       issues; exactly ONE older than 30 days (#242, an epic) and NOTHING over
       six months. The problem is not age — 28 of 40 have not been touched since
@@ -50,15 +52,33 @@ artifacts:
       (a) Drive `known_open_pins` DOWN. Every removed pin is a fix or a pin
           proven obsolete, and either way the oracle must still DISCRIMINATE
           afterwards — shown by mutation, not by the suite staying green.
-      (b) Re-verify the 33 UNPINNED open issues against the v0.72.0 binary.
-          (CORRECTED: the first draft said 28, which is the
-          untouched-since-filed figure from eight lines above, reused for a
-          different set. The board is 40 and 7 pinned issues were open at
-          plan time — #1229 was closed, so off the 40 — giving 33.)          The pin method says nothing about them, so each needs "still fails,
+      (b) Re-verify the UNPINNED open issues against the v0.72.0 binary.
+          (NO COUNT IS QUOTED HERE, on purpose. Two stood here and neither
+          derives: first 28, which was the untouched-since-filed figure from
+          eight lines above reused for a different set, then 33, whose stated
+          derivation does not reproduce — reconstructed at the plan commit the
+          board is 41 open, so 41 - 7 pinned = 34, and 40 is reachable only by
+          silently excluding #1373, this artifact's own tracking issue. The
+          board size moves under the release's own activity, so the set is
+          "every open issue carrying no pin", derived when you run it.)
+          The pin method says nothing about them, so each needs "still fails,
           repro attached" or "no longer reproduces, closing with the command".
       (c) Make a STALE pin visible: a pin whose issue is already CLOSED is debt
           with no owner and nothing notices today. `scripts/stale_pin_check.py`
           is that tripwire and is this artifact's `done-when`.
+
+      WHAT WAS AND WAS NOT ACHIEVED, because the framing above reads as three
+      things done and one of them was not:
+      (a) NOT ACHIEVED. `known_open_pins` ends this release at 85 — the value
+          it began at, re-derived on the merged tree by `claim_check --metric`.
+          No pin was closed by any lane. What shipped is the attribution that
+          makes the number mean something, not a reduction of it.
+      (b) PARTIAL. The two EXTERNAL-REPORTER issues in that set, #1318 and
+          #1331, were re-verified against a binary built from main this
+          release; the rest were not.
+      (c) DELIVERED, and it is what `verified-by` points at.
+      This is why the artifact carries `issue-scope: outlives`: #1373 asks a
+      wider question than the tripwire answers, so the tag does not close it.
 
       WHAT (c) FOUND, and it is the theme's own answer. The tripwire has
       exactly ONE specimen in the whole pin population, and it is the
@@ -129,6 +149,7 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1373"
+      issue-scope: outlives
       landed: "#1375"
       verification-track: differential
       done-when: "file:scripts/stale_pin_check.py"

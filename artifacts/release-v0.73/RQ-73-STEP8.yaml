@@ -34,7 +34,8 @@ artifacts:
       second residual, recorded by v0.72's cold review rather than carried
       silently: `gate()` has NO offline test, so CHECK1/CHECK2/CHECK3b are
       exercised only against the live API and five of nine injected mutants
-      survived `--self-test`.
+      survived `--self-test`. (AS FILED. CLOSED WITHIN THIS RELEASE by the
+      sibling lane RQ-73-GATETRUTH — see the residual note below.)
 
       WHAT SHIPPED. `merge_gate.py --squash-fidelity <PR>` gives the function
       a caller, and `merge_ritual.sh` invokes it after every merge it confirms
@@ -65,10 +66,15 @@ artifacts:
       merge has already happened, so it REPORTS, and the ritual prints a loud
       line when the verdict is not FAITHFUL.
 
-      RESIDUAL, carried rather than quietly dropped: `gate()` still has no
-      offline test, so CHECK1/CHECK2/CHECK3b are exercised only against the
-      live API and five of nine injected mutants survived `--self-test`. That
-      is a separate sub-deliverable and this lane does not claim it.
+      RESIDUAL AS FILED — AND CLOSED BEFORE THE TAG, by a sibling lane rather
+      than by this one. When this artifact was written `gate()` had no offline
+      test, so CHECK1/CHECK2/CHECK3b were exercised only against the live API
+      and five of nine injected mutants survived `--self-test`. RQ-73-GATETRUTH
+      then split `decide()` out of `gate()` in this same release and drove it
+      from eight offline cases; `merge_gate.py --self-test` now runs 19 checks,
+      re-derived at this cut. This lane did not claim that work and does not
+      claim it now — it is recorded here because a residual that outlives its
+      own fix is a false statement the next release would inherit.
 
       WHAT WOULD MAKE THIS WRONG. If the post-merge diff can only be computed
       from head refs that are not durably fetchable, then recording it

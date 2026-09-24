@@ -20,7 +20,7 @@ artifacts:
          it "is a visible omission rather than a silent one". Nothing enforces
          that: `grep -rn FIELD_KEYS` finds the definition and ONE use. And it is
          blind to `carried-from` — the field RQ-73-ARCHMODEL's entire chain
-         claim rests on, carried by 14 artifacts and read by zero scripts — so a
+         claim rests on, carried by 13 artifacts and read by zero scripts — so a
          mis-nested `carried-from` is exactly the R13 class and R13 cannot see
          it.
 
@@ -72,7 +72,12 @@ artifacts:
 
          `carried-from` is handled explicitly, because deriving from READS
          cannot find a key nothing reads — that is the point of it. It is
-         carried 44 times across 16 artifact files and read by ZERO scripts, so
+         carried 45 times across 16 artifact files and read by ZERO scripts, so
+         (44 was measured BEFORE the commit that wrote this sentence, and that
+         commit added the 45th — the number a sentence quotes about its own file
+         is invalidated by the edit that writes it. Note also that 45 counts
+         TOKEN occurrences in prose; as a structured FIELD it is carried by 13
+         artifacts, and those are different instruments),
          a mis-nesting would change nothing and look right. R13 now covers it.
          Measured on this tree: no artifact currently mis-nests it.
 
@@ -121,6 +126,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1319"
+      issue-scope: outlives
       landed: "#1379"
       verification-track: differential
       done-when: "contains:scripts/status_evidence_check.py:FIELD_KEYS_DERIVED"

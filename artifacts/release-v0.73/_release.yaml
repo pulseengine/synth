@@ -31,9 +31,11 @@
 #
 # ONE PREMISE WAS REFUTED BY MEASURING IT, and the correction matters: the board
 # is NOT old. Exactly one open issue is older than a month and it is an epic;
-# nothing is older than six months. The problem is neglect, not age — most open
-# issues have not been touched since the day they were filed. Scoping an
+# nothing is older than six months. The problem is neglect, not age. Scoping an
 # "old issues" cleanup would have been work against a fact that is not true.
+# (A claim about how many issues are untouched since filing stood here and has
+# been REMOVED rather than corrected: it reads `updatedAt`, which moves under
+# the release's own comments, so restating it anywhere is how it goes stale.)
 #
 # ---------------------------------------------------------------------------
 # ORDERING, and what it costs
@@ -46,8 +48,14 @@
 #
 # RQ-73-FALCONFIXTURE is deliberately NOT "fix opt.wasm". The refuting commands
 # run at the v0.72.0 cut show every committed fixture for that class now passes,
-# and the reporter's module is an issue attachment this repository cannot build.
-# The first deliverable is therefore to ASK, and only then to build a fixture.
+# and the reporter's module was believed to be an issue attachment this
+# repository cannot build. THAT PREMISE WAS REFUTED BY THE LANE ITSELF:
+# `errors.zip` on #1318 carries `opt.wasm` and `fused.wasm` THEMSELVES, and
+# #1331's `input.zip`/`fused.zip` carry its modules too. Measuring them here
+# replaced the ask entirely. This file is corrected rather than left standing,
+# because a retraction that edits the artifact and not the plan file is
+# exactly how 'the sentence came back' reproduces — which this header warns
+# about, and which happened to this very paragraph.
 # Scoping a fix against a number last measured two releases ago is the failure
 # this programme has repeated most often.
 #

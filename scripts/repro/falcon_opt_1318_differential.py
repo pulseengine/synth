@@ -16,7 +16,7 @@ and made step (a) "ask the reporter to re-test". `errors.zip` on #1318 contains
 `opt.wasm` and `fused.wasm` THEMSELVES, so it was measured here instead.
 At v0.72.0, with the reporter's own command line:
 
-    fused.wasm   rc=0, 0 of 26 skipped          (still clean, as at v0.70.0)
+    fused.wasm   rc=0, 0 of 21 skipped          (still clean, as at v0.70.0)
     opt.wasm     rc=1, 7 of 17 skipped
                  -> 1x #1069  (the `controller@0.10.0#step` export)
                  -> 6x GI-FPU-002 (func_4, func_5, func_8, func_10,
