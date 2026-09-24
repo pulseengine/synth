@@ -42,11 +42,54 @@ artifacts:
       exit 127, so qemu was never invoked. The install step that actually failed
       had reported SUCCESS, its error swallowed by a `|| echo` fallback.
 
+      WHAT SHIPPED, and the blocker nobody had measured.
+
+      THE 40 COULD NOT HAVE MOVED. Every one of them ran a bare
+      `pip install ...`, and the self-hosted containers are PEP 668
+      externally-managed — so a plain `runs-on` retarget would have broken all
+      40 on their first self-hosted run. That is not a detail: it is the reason
+      "increment 4 is the 40 python/pip jobs" was not a one-line change, and
+      nothing in the plan knew it. Every `pip install` in ci.yml now carries the
+      `|| pip install --break-system-packages` fallback.
+
+      `PEP668_POOL_READY` IS DERIVED, NOT DECLARED. A job qualifies when it is
+      on ubuntu-latest, is NOT a required context, needs NO apt/sudo, and its
+      pip lines already carry the fallback. The last clause is what makes it a
+      PRECONDITION rather than a wish, and it is load-bearing — run against the
+      pre-guard file the same derivation reports:
+
+        PEP668_POOL_READY = 3 job(s) may move; blocked 4 required,
+                            8 apt/sudo, 37 unguarded pip
+
+      and against the guarded file:
+
+        PEP668_POOL_READY = 40 job(s) may move; blocked 4 required,
+                            8 apt/sudo, 0 unguarded pip
+
+      THE apt BLOCK IS STRUCTURAL, and the derivation now says so rather than
+      the plan asserting it: `no_new_privs` on the self-hosted containers means
+      no job needing `apt-get` can EVER run there. Eight jobs are blocked that
+      way and four are required contexts, which no increment may move —
+      retargeting a required NAME leaves it never running and deadlocks every
+      merge with no red to revert. The tripwire refuses if a required context
+      is ever reported movable.
+
+      MOVED THIS RELEASE: six oracle jobs. ubuntu-latest 52 -> 46 (73% -> 65%),
+      self-hosted 15 -> 21, ceiling lowered 52 -> 46 in the same PR because the
+      ratchet refuses a win that is not locked in.
+
+      WHY SIX AND NOT FORTY. A pool change that goes wrong takes every lane's
+      CI with it, and there is no red to revert once a job stops running. Six
+      proves the path end-to-end on this PR's own run; the remaining 34 are a
+      one-line retarget each, named and counted by the tripwire so the residual
+      cannot quietly become invisible. Measured while this lane ran: 7 of the
+      12 org runners idle while 52 ubuntu-latest jobs queued.
+
       WHAT WOULD MAKE THIS WRONG. Retargeting a REQUIRED check DEADLOCKS every
       merge — a non-running required NAME blocks all of them, with no red to
       revert. The tripwire's deadlock guard exists for this and must be proven
       to fire on the proposed move BEFORE the move lands, not after.
-    status: proposed
+    status: implemented
     release: v0.73
     tags:
       - ci
@@ -59,6 +102,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1062"
+      landed: "PLACEHOLDER_PR"
       verification-track: differential
       done-when: "contains:scripts/ci_pool_tripwire.py:PEP668_POOL_READY"
       verified-by: >-

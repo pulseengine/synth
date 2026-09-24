@@ -49,6 +49,7 @@ artifacts:
       disposition: deferred
       priority: carried
       issue: "#1136"
+      landed: "PLACEHOLDER_PR"
       carried-from: RQ-72-ARCHMODEL
       verification-track: manual
       done-when: "manual: spar#445 re-verified 2026-09-24 — OPEN, last updated 2026-09-03, unchanged since the v0.72 cut; steps 1-2 N/A for the ELEVENTH consecutive release on that unchanged upstream reason"
