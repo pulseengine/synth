@@ -390,29 +390,7 @@ fn emit_literal_pool(
         // distance decides the size (B.N is 2 bytes, B.W is 4). Iterate to the
         // fixed point rather than assuming one — the same shape
         // `resolve_label_branches` already uses for label branches.
-        let mut branch_len = 2usize;
-        let bytes = loop {
-            let pad = (4 - ((code.len() + branch_len) % 4)) % 4;
-            let skip = branch_len + pad + 4 * n;
-            // `BOffset` takes the halfword displacement (target - branch - 4)/2.
-            // `code.len()` is even at any Thumb instruction boundary and
-            // `branch_len` is even, so `pad` is even and `skip` is even.
-            let off = ((skip as i32) - 4) / 2;
-            let e = enc
-                .encode(&ArmOp::BOffset { offset: off })
-                .map_err(|x| format!("island branch encoding failed: {}", x))?;
-            if e.len() == branch_len {
-                break e;
-            }
-            branch_len = e.len();
-            if branch_len > 4 {
-                return Err(format!(
-                    "literal-pool island (#345): branch over {} pooled word(s) \
-                     would need {} bytes, which is not a Thumb-2 B encoding",
-                    n, branch_len
-                ));
-            }
-        };
+        let (bytes, _pad) = island_branch_over(code.len(), n, enc)?;
         code.extend_from_slice(&bytes);
     }
     // 4-byte align the pool start (Thumb-2 word loads require it, and
@@ -1698,21 +1676,35 @@ fn compile_wasm_to_arm(
         ArmEncoder::new_arm32()
     };
 
-    // #202: resolve local label branches (Bcc/B/Bhs/Blo) to byte-accurate
-    // offsets before encoding. `select_with_stack` emits them as label
-    // placeholders and never resolves them — without this they encode as
+    // RQ-72-ISLANDS (#345): the documented opt-out. With islands disabled the
+    // pool is emitted exactly where it always was — one block at the end — so
+    // the two legs of `litpool_islands_345_differential.py` are a real
+    // differential and not two names for the same path. Read HERE, above the
+    // fixed point, because the placement decision is now part of it.
+    let islands_disabled = std::env::var_os("SYNTH_NO_LITPOOL_ISLANDS").is_some();
+
+    // #202 / RQ-73-ISLANDPASS (#1331): resolve local label branches
+    // (Bcc/B/Bhs/Blo) to byte-accurate offsets AND decide literal-island
+    // placements, in ONE fixed point. `select_with_stack` emits branches as
+    // label placeholders and never resolves them — without this they encode as
     // `bne.n #0` and land mid-instruction whenever a 32-bit Thumb-2 instruction
     // sits between the branch and its target (UsageFault on real hardware).
     // Only meaningful for Thumb-2 (the offset units are halfword/PC+4).
-    let arm_instrs = if use_thumb2 {
-        let resolved = resolve_label_branches(arm_instrs, &encoder)?;
+    //
+    // `planned_islands` maps an instruction index to the number of pooled words
+    // to flush immediately BEFORE it. The emit loop obeys it rather than
+    // re-deciding, so the offsets branches were resolved against and the
+    // offsets the stream actually gets are the same numbers by construction.
+    let (arm_instrs, planned_islands) = if use_thumb2 {
+        let (resolved, islands) =
+            place_literal_islands_fixedpoint(arm_instrs, &encoder, !islands_disabled)?;
         // SC-5 (#740/#930): hard-gate every branch target onto the
         // instruction-start set of the final stream — both codegen paths
         // funnel through here. See `validate_branch_targets`.
-        validate_branch_targets(&resolved, &encoder)?;
-        resolved
+        validate_branch_targets(&resolved, &encoder, !islands_disabled)?;
+        (resolved, islands)
     } else {
-        arm_instrs
+        (arm_instrs, std::collections::BTreeMap::new())
     };
 
     // #778: capture the FINAL Thumb-2 instruction stream (post label-resolution,
@@ -1734,24 +1726,13 @@ fn compile_wasm_to_arm(
     // we can append a pooled word (carrying the symbol address via R_ARM_ABS32)
     // and patch the PC-relative offset once the pool position is known.
     let mut pending_literals: Vec<PendingLiteral> = Vec::new();
-    // RQ-72-ISLANDS (#345): the documented opt-out. With islands disabled the
-    // pool is emitted exactly where it always was — one block at the end — so
-    // the two legs of `litpool_islands_345_differential.py` are a real
-    // differential and not two names for the same path.
-    let islands_disabled = std::env::var_os("SYNTH_NO_LITPOOL_ISLANDS").is_some();
-    // Spans of the ALREADY-RESOLVED branches, so an island is never placed
-    // where it would invalidate one. Computed once, in pre-island coordinates.
-    let branch_spans = if use_thumb2 && !islands_disabled {
-        label_branch_spans(&arm_instrs, &encoder)?
-    } else {
-        Vec::new()
-    };
-    // Bytes of island inserted so far, so `code.len()` can be mapped back to
-    // the pre-island coordinates `branch_spans` is expressed in.
-    let mut island_bytes: u32 = 0;
-    // Set when an island was DECLINED for the reason above, so the refusal the
-    // end-of-function pool then raises can say WHY islands did not help.
-    let mut island_declined_for_branch = false;
+    // RQ-73-ISLANDPASS (#1331): the span guard and its decline are GONE, and
+    // their absence is the deliverable. v0.72 computed `branch_spans` in
+    // PRE-ISLAND coordinates and refused any placement that separated a branch
+    // from its target, because the branch offsets had already been baked. The
+    // fixed point above resolves branches against ISLAND-INCLUSIVE positions,
+    // so there is no stale coordinate system left to invalidate — a spanning
+    // placement is now correct rather than refused.
 
     // VCR-DBG-001: per-instruction source map for DWARF `.debug_line`. Captured
     // here because `code.len()` immediately before `encode()` is the final
@@ -1764,7 +1745,7 @@ fn compile_wasm_to_arm(
     // to `line_map`. Cheap, additive, does not touch `code`.
     let mut branch_map: synth_core::backend::BranchMap = Vec::new();
 
-    for instr in &arm_instrs {
+    for (instr_index, instr) in arm_instrs.iter().enumerate() {
         // ORDER IS LOAD-BEARING, and getting it wrong was a SILENT MISCOMPILE.
         //
         // Encoding and the island decision happen FIRST, before anything below
@@ -1813,41 +1794,37 @@ fn compile_wasm_to_arm(
         // equals `code.len()`, so the computed distance is ~0 and this cannot
         // fire before the LDR it serves. That is the ordering that would
         // otherwise place a pool BEFORE its own load.
-        if use_thumb2 && !islands_disabled && !pending_literals.is_empty() {
-            let n = pending_literals.len();
-            // Worst case if we DON'T flush now: this instruction lands, then a
-            // branch (<= 4 B) and alignment (<= 3 B) precede the words.
-            let start = code.len() + encoded.len() + 4;
-            let pad = (4 - (start % 4)) % 4;
-            let last_word = (start + pad + 4 * (n - 1)) as u32;
-            let aligned_pc = (pending_literals[0].ldr_offset + 4) & !3u32;
-            if last_word.saturating_sub(aligned_pc) > 0xFFF {
-                // THE GUARD. `code.len()` counts islands already inserted;
-                // `branch_spans` is in pre-island coordinates, so map back
-                // before comparing. A branch is invalidated exactly when the
-                // insertion point separates it from its target.
-                let pre_p = code.len() as u32 - island_bytes;
-                let spanned = branch_spans
-                    .iter()
-                    .any(|&(lo, hi)| lo < pre_p && pre_p <= hi);
-                if spanned {
-                    // Refuse the island rather than mis-target the branch.
-                    // The pool falls through to the end of the function and
-                    // #345's out-of-range error fires there — loud, which is
-                    // the whole point.
-                    island_declined_for_branch = true;
-                } else {
-                    let before = code.len();
-                    emit_literal_pool(
-                        &mut code,
-                        &mut relocations,
-                        &pending_literals,
-                        Some(&encoder),
-                    )?;
-                    island_bytes += (code.len() - before) as u32;
-                    pending_literals.clear();
-                }
+        // RQ-73-ISLANDPASS (#1331): OBEY the plan, do not re-derive it. The
+        // flush rule now lives in `island_walk`, which is also what the branch
+        // offsets were resolved against. Deciding again here would be a second
+        // source of truth for "where does a pool go", and the two could
+        // disagree by exactly the amount that mis-targets every branch over the
+        // placement — the v0.72 defect, reintroduced one layer up.
+        if let Some(&planned_n) = planned_islands.get(&instr_index) {
+            // DRIFT GUARD, and it is the reason obeying a plan is safe. The
+            // walk predicted this flush would carry `planned_n` words; if the
+            // emit loop has a different number pending, the two walks have
+            // diverged and every offset resolved against the prediction is
+            // wrong. Refuse rather than emit a stream nobody checked.
+            if pending_literals.len() != planned_n {
+                return Err(format!(
+                    "literal-island plan drift (#1331): the fixed point placed an \
+                     island of {} pooled word(s) before instruction {}, but {} \
+                     literal(s) are pending there. Branch offsets were resolved \
+                     against the plan, so emitting this stream would mis-target \
+                     every branch spanning the placement.",
+                    planned_n,
+                    instr_index,
+                    pending_literals.len()
+                ));
             }
+            emit_literal_pool(
+                &mut code,
+                &mut relocations,
+                &pending_literals,
+                Some(&encoder),
+            )?;
+            pending_literals.clear();
         }
 
         // Record a relocation for every BL: the encoder emits `bl #0` and
@@ -1922,24 +1899,31 @@ fn compile_wasm_to_arm(
         if !use_thumb2 {
             return Err("LdrSym literal-pool addressing requires Thumb-2".to_string());
         }
-        emit_literal_pool(&mut code, &mut relocations, &pending_literals, None).map_err(|e| {
-            if island_declined_for_branch {
-                format!(
-                    "{} — an inline literal island WOULD have brought the \
-                         pool in range, but every candidate placement fell \
-                         between a local branch and its target, where \
-                         inserting bytes would silently mis-target the branch \
-                         (branch offsets are byte-resolved before this loop). \
-                         Refusing is deliberate: a wrong branch target is a \
-                         silent miscompile, an out-of-range pool is not. \
-                         Serving this shape needs branch resolution and island \
-                         placement in one fixed point.",
-                    e
-                )
-            } else {
-                e
-            }
-        })?;
+        // RQ-73-ISLANDPASS (#1331): the `island_declined_for_branch` wrapper
+        // that used to sit here is GONE. It explained that a placement had been
+        // refused because it fell between a branch and its target, and ended
+        // "serving this shape needs branch resolution and island placement in
+        // one fixed point". That fixed point now exists, so the refusal it
+        // described is unreachable and an explanation of it would be a false
+        // statement. What remains is the genuine out-of-range case: a pool that
+        // no placement can bring within the 12-bit window.
+        emit_literal_pool(&mut code, &mut relocations, &pending_literals, None)?;
+    }
+
+    // RQ-73-ISLANDPASS (#1331): every planned island must have been emitted.
+    // The plan is what branch offsets were resolved against, so a placement the
+    // emit loop skipped leaves every branch over it pointing past bytes that
+    // were never written. `instr_index` only ever advances, so a key beyond the
+    // last instruction would be silently ignored without this.
+    if let Some((&last, _)) = planned_islands.iter().next_back()
+        && last >= arm_instrs.len()
+    {
+        return Err(format!(
+            "literal-island plan drift (#1331): an island was planned before \
+                 instruction {}, but the stream has only {} instruction(s).",
+            last,
+            arm_instrs.len()
+        ));
     }
 
     Ok((
@@ -2523,78 +2507,135 @@ fn classify_arm_branch(op: &ArmOp) -> synth_core::backend::BranchClass {
     }
 }
 
-/// Resolve local label branches to byte-accurate offsets (#202).
+/// The branch-over for a literal island at `at`, and the alignment padding
+/// after it. SINGLE SOURCE for the island's byte length (#1331).
 ///
-/// `select_with_stack` emits conditional/unconditional branches as label
-/// placeholders (`Bcc`/`B`/`Bhs`/`Blo` + `Label`) and never resolves them; the
-/// encoder then emits a `0xD000`/`0xE000` placeholder with offset 0. Before #197
-/// this path only ran for `--no-optimize`/declined functions, so the latent bug
-/// stayed hidden — routing relocatable code through it surfaced branches that
-/// land mid-instruction (a Cortex-M UsageFault) whenever a 32-bit Thumb-2
-/// instruction sits between the branch and its target.
+/// `emit_literal_pool` needs the BYTES; `island_walk` needs the LENGTH before
+/// any bytes exist. Both call this, so the "how big is an island" question has
+/// exactly one answer. A second copy is what the v0.72 header means by drift.
 ///
-/// This pass encodes each instruction to learn its real byte length (so 16- vs
-/// 32-bit forms and multi-instruction expansions are exact), maps each `Label`
-/// to its byte position, and rewrites every label branch to the displacement
-/// the encoder consumes: `(target - branch - 4) / 2` halfwords. A bounded
-/// fixed-point handles an offset growing a branch from 16- to 32-bit (which
-/// shifts later positions). `BCondOffset`/`BOffset` already produced inline by
-/// the optimized path carry no label and are left untouched.
-/// Byte spans of every already-resolved local branch, in PRE-ISLAND
-/// coordinates: `(min(branch, target), max(branch, target))`.
-///
-/// RQ-72-ISLANDS follow-up. `resolve_label_branches` bakes a byte-accurate
-/// offset into each branch and `validate_branch_targets` gates it onto the
-/// instruction-start set — both BEFORE the encode loop that inserts inline
-/// literal islands. Inserting bytes at a point a branch straddles moves the
-/// target without moving the branch (or the reverse, for a backward branch),
-/// so the baked offset is wrong by exactly the island's size. Measured: an
-/// 8-byte island left a `br_if` pointing 8 bytes short, into the middle of the
-/// block it was supposed to skip.
-///
-/// Returned spans let the island placer REFUSE such a point rather than
-/// silently mis-target the branch. Refusing falls through to the
-/// end-of-function pool, which raises the original #345 out-of-range error —
-/// the loud behaviour v0.71 had.
-fn label_branch_spans(
-    instrs: &[ArmInstruction],
-    encoder: &ArmEncoder,
-) -> Result<Vec<(u32, u32)>, String> {
-    let mut positions = Vec::with_capacity(instrs.len());
-    let mut pos: u32 = 0;
-    for instr in instrs {
-        positions.push(pos);
-        pos += encoder
-            .encode(&instr.op)
-            .map_err(|e| format!("island span probe failed: {}", e))?
-            .len() as u32;
-    }
-    let mut spans = Vec::new();
-    for (i, instr) in instrs.iter().enumerate() {
-        // Only the LOCALLY RESOLVED forms carry a baked byte offset. Label
-        // forms that survive to here are external and are relocated, so an
-        // island does not invalidate them.
-        let off = match &instr.op {
-            ArmOp::BCondOffset { offset, .. } => *offset,
-            ArmOp::BOffset { offset } => *offset,
-            _ => continue,
-        };
-        let src = positions[i];
-        // The encoder consumes the field as (target - branch - 4) / 2.
-        let target = (src as i64) + 4 + 2 * (off as i64);
-        if target < 0 {
-            continue;
+/// The branch's own size decides the distance it must cover, and the distance
+/// decides the size (B.N is 2 bytes, B.W is 4), so this iterates to its own
+/// small fixed point rather than assuming one.
+fn island_branch_over(at: usize, n: usize, enc: &ArmEncoder) -> Result<(Vec<u8>, usize), String> {
+    let mut branch_len = 2usize;
+    loop {
+        let pad = (4 - ((at + branch_len) % 4)) % 4;
+        let skip = branch_len + pad + 4 * n;
+        // `BOffset` takes the halfword displacement (target - branch - 4)/2.
+        // `at` is even at any Thumb instruction boundary and `branch_len` is
+        // even, so `pad` is even and `skip` is even.
+        let off = ((skip as i32) - 4) / 2;
+        let e = enc
+            .encode(&ArmOp::BOffset { offset: off })
+            .map_err(|x| format!("island branch encoding failed: {}", x))?;
+        if e.len() == branch_len {
+            return Ok((e, pad));
         }
-        let t = target as u32;
-        spans.push((src.min(t), src.max(t)));
+        branch_len = e.len();
+        if branch_len > 4 {
+            return Err(format!(
+                "literal-pool island (#345): branch over {} pooled word(s) \
+                 would need {} bytes, which is not a Thumb-2 B encoding",
+                n, branch_len
+            ));
+        }
     }
-    Ok(spans)
 }
 
-fn resolve_label_branches(
+/// One left-to-right walk that decides island placements AND the byte position
+/// of every instruction, in the SAME coordinates (#1331).
+///
+/// An island only moves code that comes AFTER it, so placements can be decided
+/// in a single pass: by the time this reaches instruction `i`, every island
+/// before it is already counted in `pos`. That is why the outer fixed point
+/// below iterates over BRANCH SIZES only — the island decision is not itself
+/// circular, the branch encodings are.
+///
+/// The flush rule is the one the emit loop used to apply inline, moved here
+/// unchanged: if the LAST pooled word would fall outside the 12-bit unsigned
+/// `LDR(literal)` window measured from the FIRST pending LDR, the pool must be
+/// flushed before this instruction.
+///
+/// Returns (position of each instruction, instruction index -> pooled words
+/// flushed immediately before it).
+fn island_walk(
+    instrs: &[ArmInstruction],
+    encoder: &ArmEncoder,
+    enabled: bool,
+) -> Result<(Vec<usize>, std::collections::BTreeMap<usize, usize>), String> {
+    let mut positions = Vec::with_capacity(instrs.len());
+    let mut islands = std::collections::BTreeMap::new();
+    let mut pending: Vec<usize> = Vec::new();
+    let mut pos: usize = 0;
+
+    for (i, instr) in instrs.iter().enumerate() {
+        let size = encoder
+            .encode(&instr.op)
+            .map_err(|e| format!("island-walk size probe failed: {}", e))?
+            .len();
+
+        if enabled && !pending.is_empty() {
+            // Worst case if we DON'T flush now: this instruction lands, then a
+            // branch (<= 4 B) and alignment (<= 3 B) precede the words. Same
+            // arithmetic the emit loop used, in the same coordinates.
+            let start = pos + size + 4;
+            let pad = (4 - (start % 4)) % 4;
+            let last_word = (start + pad + 4 * (pending.len() - 1)) as u32;
+            let aligned_pc = ((pending[0] + 4) & !3usize) as u32;
+            if last_word.saturating_sub(aligned_pc) > 0xFFF {
+                let n = pending.len();
+                let (b, pad2) = island_branch_over(pos, n, encoder)?;
+                islands.insert(i, n);
+                pos += b.len() + pad2 + 4 * n;
+                pending.clear();
+            }
+        }
+
+        positions.push(pos);
+        // The LDR this instruction IS registers only AFTER the decision above,
+        // exactly as the emit loop pushes it below the flush. That ordering is
+        // what makes "a pool can never precede the LDR it serves" structural.
+        if matches!(instr.op, ArmOp::LdrSym { .. }) {
+            pending.push(pos);
+        }
+        pos += size;
+    }
+    Ok((positions, islands))
+}
+
+/// RQ-73-ISLANDPASS (#1331): ONE fixed point over branch offsets AND literal
+/// island placement.
+///
+/// THE DEFECT THIS CLOSES. Branch offsets used to be byte-resolved BEFORE the
+/// encode loop, and islands were then inserted DURING it. An island between a
+/// branch and its target moves the target and not the branch, by exactly the
+/// island's size. v0.72 could only REFUSE such placements (loudly, which was
+/// right) — so a 4 KB+ function with any control flow spanning its pool did not
+/// compile at all. That is cpetig's #1331.
+///
+/// WHY IT NEEDS A FIXED POINT AND NOT AN ADJUSTMENT. Islands change sizes,
+/// which change positions, which change which branches need 32-bit encodings,
+/// which change sizes again. That is LLVM's `ARMConstantIslandPass` shape.
+/// Note what is and is NOT circular here: an island only moves code AFTER it,
+/// so `island_walk` decides every placement in ONE left-to-right pass. The
+/// iteration below exists for the BRANCH ENCODINGS, exactly as it always did —
+/// the loop is unchanged in kind, it just now walks island-inclusive positions.
+///
+/// Returns the resolved stream and `instruction index -> pooled words to flush
+/// immediately before it`. The emit loop CONSUMES that map instead of deciding
+/// anything itself, which is what makes one answer rather than two.
+fn place_literal_islands_fixedpoint(
     arm_instrs: Vec<ArmInstruction>,
     encoder: &ArmEncoder,
-) -> Result<Vec<ArmInstruction>, String> {
+    islands_enabled: bool,
+) -> Result<
+    (
+        Vec<ArmInstruction>,
+        std::collections::BTreeMap<usize, usize>,
+    ),
+    String,
+> {
     use std::collections::HashMap;
     use synth_synthesis::Condition;
 
@@ -2614,22 +2655,27 @@ fn resolve_label_branches(
         }
     }
     if branches.is_empty() {
-        return Ok(arm_instrs);
+        // No label branches, but islands may still be needed — a 4 KB+
+        // straight-line function is exactly the #345 case. Walk once.
+        let (_, islands) = island_walk(&arm_instrs, encoder, islands_enabled)?;
+        return Ok((arm_instrs, islands));
     }
 
     let mut resolved = arm_instrs;
+    let mut islands = std::collections::BTreeMap::new();
     // Sizes only grow (16→32-bit), so this converges quickly; cap for safety.
+    // The cap is now load-bearing in a second way: with islands in the loop a
+    // pathological oscillation is conceivable, and a NON-converging placement
+    // must be a loud error rather than whatever the last iteration happened to
+    // hold. `converged` below is that guard.
+    let mut converged = false;
     for _ in 0..16 {
-        // 1. Byte position of each instruction (Label encodes to 0 bytes).
-        let mut positions = Vec::with_capacity(resolved.len());
-        let mut pos: i64 = 0;
-        for instr in &resolved {
-            positions.push(pos);
-            pos += encoder
-                .encode(&instr.op)
-                .map_err(|e| format!("branch-resolve size probe failed: {}", e))?
-                .len() as i64;
-        }
+        // 1. Byte position of each instruction, ISLAND-INCLUSIVE. This is the
+        //    whole change: the positions branches are resolved against are the
+        //    ones the emitted stream will actually have.
+        let (pos_usize, islands_now) = island_walk(&resolved, encoder, islands_enabled)?;
+        let positions: Vec<i64> = pos_usize.iter().map(|&p| p as i64).collect();
+        islands = islands_now;
         // 2. Label name -> byte position (owned keys so the borrow ends here).
         let mut labels: HashMap<String, i64> = HashMap::new();
         for (i, instr) in resolved.iter().enumerate() {
@@ -2665,10 +2711,29 @@ fn resolve_label_branches(
             }
         }
         if !changed {
+            converged = true;
             break;
         }
     }
-    Ok(resolved)
+    if !converged {
+        return Err(
+            "literal-island placement (#1331) did not reach a fixed point in 16 \
+             iterations — branch sizes and island positions are oscillating. \
+             Refusing to emit a stream whose branch offsets were never stable."
+                .to_string(),
+        );
+    }
+    Ok((resolved, islands))
+}
+
+/// The pre-#1331 entry point, preserved for callers that only want branch
+/// resolution. Delegates with islands OFF so there is ONE implementation of the
+/// branch fixed point rather than two that can drift.
+fn resolve_label_branches(
+    arm_instrs: Vec<ArmInstruction>,
+    encoder: &ArmEncoder,
+) -> Result<Vec<ArmInstruction>, String> {
+    Ok(place_literal_islands_fixedpoint(arm_instrs, encoder, false)?.0)
 }
 
 /// SC-5 branch-target boundary gate (#740, #930): every emitted branch target
@@ -2701,20 +2766,25 @@ fn resolve_label_branches(
 ///
 /// A32 (Cortex-R5) is fixed-width, so the mid-instruction class needs no gate
 /// there (and its branches do not flow through the Thumb-2 resolver).
-fn validate_branch_targets(instrs: &[ArmInstruction], encoder: &ArmEncoder) -> Result<(), String> {
+fn validate_branch_targets(
+    instrs: &[ArmInstruction],
+    encoder: &ArmEncoder,
+    islands_enabled: bool,
+) -> Result<(), String> {
     use std::collections::HashSet;
 
     // Byte position of each element (`Label` encodes to 0 bytes, so a label's
     // position is exactly the start of the instruction that follows it).
-    let mut positions = Vec::with_capacity(instrs.len());
-    let mut pos: i64 = 0;
-    for instr in instrs {
-        positions.push(pos);
-        pos += encoder
-            .encode(&instr.op)
-            .map_err(|e| format!("SC-5 branch-target gate: size probe failed: {}", e))?
-            .len() as i64;
-    }
+    //
+    // RQ-73-ISLANDPASS (#1331): ISLAND-INCLUSIVE, via the same walk the branch
+    // offsets were resolved against. This gate previously sized the stream
+    // itself, island-free, and that is not a coordinate system the emitted
+    // object ever has once a pool is placed inline — it FALSE-REJECTED a
+    // correctly-resolved spanning branch ("targets 0x26c2, which is not an
+    // instruction start"). A gate and the thing it gates must measure in the
+    // same units; sharing `island_walk` is what guarantees they do.
+    let (pos_usize, _) = island_walk(instrs, encoder, islands_enabled)?;
+    let positions: Vec<i64> = pos_usize.iter().map(|&p| p as i64).collect();
     let starts: HashSet<i64> = positions.iter().copied().collect();
 
     for (i, instr) in instrs.iter().enumerate() {
@@ -2825,7 +2895,7 @@ mod tests {
                 op2: Operand2::Reg(Reg::R3),
             }),
         ];
-        assert!(validate_branch_targets(&good, &enc).is_ok());
+        assert!(validate_branch_targets(&good, &enc, false).is_ok());
 
         // 2. The exact #930 shape: `b #0` (offset 0) -> target = pc+4 = 4,
         //    the SECOND halfword of the 4-byte movw spanning 2..6. Hard error.
@@ -2840,7 +2910,7 @@ mod tests {
                 op2: Operand2::Reg(Reg::R3),
             }),
         ];
-        let err = validate_branch_targets(&mid, &enc).unwrap_err();
+        let err = validate_branch_targets(&mid, &enc, false).unwrap_err();
         assert!(err.contains("SC-5"), "boundary violation names SC-5: {err}");
         assert!(err.contains("not an instruction boundary"), "{err}");
 
@@ -2859,7 +2929,7 @@ mod tests {
                 op2: Operand2::Reg(Reg::R3),
             }),
         ];
-        assert!(validate_branch_targets(&mid_cond, &enc).is_err());
+        assert!(validate_branch_targets(&mid_cond, &enc, false).is_err());
 
         // 4. A `.L`-local label branch that was never resolved (the dropped
         //    end label, #930's mechanism) is a hard error even though it
@@ -2873,7 +2943,7 @@ mod tests {
                 imm16: 1,
             }),
         ];
-        let err = validate_branch_targets(&dropped, &enc).unwrap_err();
+        let err = validate_branch_targets(&dropped, &enc, false).unwrap_err();
         assert!(err.contains(".Lblock_end_3"), "{err}");
         assert!(err.contains("dropped label"), "{err}");
 
@@ -2890,7 +2960,7 @@ mod tests {
                 imm16: 1,
             }),
         ];
-        assert!(validate_branch_targets(&external, &enc).is_ok());
+        assert!(validate_branch_targets(&external, &enc, false).is_ok());
 
         // 6. Labels are zero-width: a target on a Label position is the start
         //    of the instruction that follows it — OK.
@@ -2908,7 +2978,7 @@ mod tests {
                 op2: Operand2::Reg(Reg::R3),
             }),
         ];
-        assert!(validate_branch_targets(&labeled, &enc).is_ok());
+        assert!(validate_branch_targets(&labeled, &enc, false).is_ok());
     }
 
     /// SC-5 (#930) end-to-end at the backend seam: the labels.wast `br_if2`

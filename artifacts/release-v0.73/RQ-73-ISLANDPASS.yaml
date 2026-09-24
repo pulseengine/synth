@@ -41,6 +41,67 @@ artifacts:
       The second and third were in the FIX for the first, found by a second cold
       review run specifically to attack it.
 
+      WHAT SHIPPED, and the order it shipped in. The ORACLE LANDED FIRST, per
+      the gating rule, and it is written to ACTIVATE ITSELF: while the shape
+      refused it asserted only the pinned #345 decline, and the moment the
+      module COMPILES it requires bit-exact execution against wasmtime. So the
+      pass could not land and leave its own gate trivially green.
+
+        scripts/repro/islandpass_1331_spanning.wat
+        scripts/repro/islandpass_1331_execution_differential.py
+
+      The fixture closes the gap the v0.72 review named: the one module that
+      execution leg actually RAN "had no calls and one literal", and the two
+      miscompiles were exactly there. This one has a direct CALL inside the
+      spanned region and THREE literals — one before the span, one inside, one
+      after.
+
+      THE PASS. `place_literal_islands_fixedpoint` resolves branch offsets
+      against ISLAND-INCLUSIVE positions. The circularity is smaller than it
+      looks: an island only moves code AFTER it, so `island_walk` decides every
+      placement in ONE left-to-right pass; the iteration that remains is the
+      branch-encoding one that was always there. The emit loop no longer
+      decides anything — it OBEYS the plan, with a drift guard that refuses if
+      the pending-literal count at a planned placement differs from the
+      prediction. `island_branch_over` is the single source for an island's
+      byte length, used by both the walk and the emitter.
+
+      DELETED, because the North Star says the replacement is not done until
+      the thing it replaces is gone: `label_branch_spans` and the
+      `island_declined_for_branch` refusal, whose own message ended "serving
+      this shape needs branch resolution and island placement in one fixed
+      point". Keeping that sentence would have made it a false statement.
+
+      SC-5 CAUGHT THE INCOMPLETE VERSION, and it is worth recording. The first
+      build resolved branches in island-inclusive coordinates while
+      `validate_branch_targets` still sized the stream island-free, so the gate
+      FALSE-REJECTED a correctly-resolved branch ("targets 0x26c2, which is not
+      an instruction start"). A gate and the thing it gates must measure in the
+      same units; it now shares `island_walk`.
+
+      MEASURED after the change:
+
+        litpool_islands_345_branchspan.wat  REFUSED since v0.72 -> COMPILES
+        islandpass_1331_spanning.wat        5/5 args bit-exact vs wasmtime
+        litpool_islands_345_differential    165 byte-identical, 0 MOVED
+        island_offset_invariant_345.py      306 objects, 0 violations
+
+      POTENCY, proven by mutation on the shipped pass rather than asserted:
+      placing an island one instruction late is caught by the non-spanning
+      CONTROL; over-counting an island by 2 bytes leaves the control and the
+      compile intact and is caught by EXECUTION. An earlier mutation — the
+      v0.72 span guard disabled outright — was caught by execution while INV1
+      PASSED on the same object, which is the concrete demonstration that an
+      invariant check cannot see a branch that is mis-targeted but still lands
+      on an instruction boundary.
+
+      ONE DEFECT FOUND IN THE ORACLE ITSELF, recorded because it nearly
+      convicted a correct compiler: the harness resolved only R_ARM_ABS32 and
+      never patched R_ARM_THM_CALL, so the fixture's `bl` branched nowhere and
+      `big(0)` — the only argument whose path reaches the call — came back
+      wrong while the other four were bit-exact. A differential is only as good
+      as its own link step.
+
       WHAT WOULD MAKE THIS WRONG. A fixed point that moves emitted bytes without
       an execution oracle proving the new bytes correct is REFUSED, not
       explained. `island_offset_invariant_345.py` (304 objects, 304 clean) and
@@ -48,7 +109,7 @@ artifacts:
       the ceiling: neither can see a branch that is mis-targeted but still lands
       on an instruction boundary, so the pass owes an EXECUTION differential
       over modules with control flow spanning a placement.
-    status: proposed
+    status: implemented
     release: v0.73
     tags:
       - arm-backend
@@ -62,6 +123,7 @@ artifacts:
       req-type: system
       priority: must
       issue: "#1331"
+      landed: "PLACEHOLDER_PR"
       verification-track: differential
       done-when: "contains:crates/synth-backend/src/arm_backend.rs:fn place_literal_islands_fixedpoint"
       verified-by: >-
