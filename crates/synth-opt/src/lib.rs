@@ -3671,6 +3671,55 @@ mod tests {
     }
 
     #[test]
+    fn test_algebraic_one_mul() {
+        // RQ-74 cold review round 1: `1 * x` (the CONSTANT on the LEFT) was the
+        // one arm of the five with NO coverage anywhere. Reverting it to
+        // `is_dead = true`, AND emitting the Copy with the wrong src, both
+        // survived `cargo test --workspace` (168 suites, 3144 passed) and the
+        // home-alias execution differential. `test_algebraic_mul_one` covers
+        // only `x * 1`; the commutation was never tested, so a silent wrong
+        // answer — a copy of the register holding the constant 1 — was free.
+        let mut builder = CfgBuilder::new();
+        for _ in 0..3 {
+            builder.add_instruction();
+        }
+        let mut cfg = builder.build();
+
+        // r0 = 1, r2 = r0 * r1  (1 * x)
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 1,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Mul {
+                    dest: Reg(2),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut simplify = AlgebraicSimplification::new();
+        let result = simplify.run(&mut cfg, &mut instructions);
+
+        assert!(result.changed);
+        assert_eq!(result.modified_count, 1);
+        assert!(!instructions[1].is_dead);
+        // The surviving operand is src2 here, NOT src1 — asserting the register
+        // is what catches a Copy from the constant instead of from x.
+        assert!(matches!(instructions[1].opcode, Opcode::Copy { src, .. } if src == Reg(1)));
+    }
+
+    #[test]
     fn test_algebraic_multiple() {
         let mut builder = CfgBuilder::new();
         for _ in 0..5 {

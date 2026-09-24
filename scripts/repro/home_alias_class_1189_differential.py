@@ -171,7 +171,8 @@ PINNED_WRONG = {
 # Vectors STILL wrong on the live compiler because their defect is filed and
 # OPEN: the live half requires the recorded wrong value (and a divergence from
 # wasmtime), so the fix that closes the issue must flip this pin in its PR.
-# RQ-74-PINDEBT2: #1223 CLOSED at the v0.74 cut — `(x - x) + x` returned the
+# RQ-74-PINDEBT2: the #1223 PIN is closed at the v0.74 cut — `(x - x) + x`
+# returned the
 # constant 0 because the `x + 0 = x` simplification marked the Add DEAD without
 # defining `dest` (its own comment said "would need copy propagation", and that
 # copy propagation did not exist). It now emits a Copy. The vector that stood

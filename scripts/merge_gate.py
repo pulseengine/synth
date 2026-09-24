@@ -122,6 +122,21 @@ def fidelity_exit(verdict: str) -> int:
     Only FAITHFUL is a pass. INDETERMINATE is not: it means the branch was
     stale, so the diff contains main's advance and the number proves nothing.
     DIFF UNAVAILABLE is not either: it means `git diff` never ran.
+
+    AND THE CALL SITE IS STILL UNTESTED (v0.74 cold review round 1). This
+    function was extracted BECAUSE `merge_ritual.sh` consumes its exit code and
+    nothing offline reached it — and the extraction gave the FUNCTION a case
+    while leaving the CALL SITE without one. Mutating `return fidelity_exit(
+    verdict)` to `return 0` in `main()` leaves `--self-test` green. The
+    reviewer applied ten such mutations to `gate()` and `main()` — including
+    forcing the whole rollup to SUCCESS, and `ok &= True` — and ALL TEN passed.
+    `--self-test` reaches `decide()` and `fidelity_exit()` and nothing else.
+
+    That is the same shape twice: v0.73 extracted `decide()` out of `gate()`,
+    v0.74 extracted `fidelity_exit()` out of `main()`, and each moved the
+    tested boundary one call outward without ever reaching the caller. A real
+    fix drives `main()` itself against a recorded `gh` rollup; that is a v0.75
+    candidate and is NOT claimed here.
     """
     return 0 if verdict == "FAITHFUL" else 1
 

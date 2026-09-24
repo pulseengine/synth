@@ -27,11 +27,30 @@ excluding `tests/` and everything from each file's first `#[cfg(test)]` — a te
 assertion is not a user-facing diagnostic — and excluding `#N` preceded by `,`
 or `[`, which is ARM immediate syntax (`AND R12,#31`, `ldr r0,[ip,#4095]`) and
 not an issue reference at all. Both exclusions were added AFTER a first pass
-reported 663 sites whose "not an issue" bucket turned out to be dominated by
-exactly those two shapes: the denominator was contaminated and the headline was
-computed off it.
+reported 663 sites whose "not an issue" bucket was dominated by those two
+shapes: the denominator was contaminated and the headline was computed off it.
 
-MEASURED at the v0.74 cut (re-run it; these are not pinned anywhere):
+WHICH EXCLUSION ACTUALLY DID THE WORK, measured in round 1 of the v0.74 cold
+review, because the sentence above invites the wrong inference: the
+`#[cfg(test)]` cut removes 264 of the 274 sites (663 -> 653 -> 389). The ARM
+immediate lookbehind removes 10, and ALL TEN fall inside the region the test cut
+already discards — so on the shipped population it excludes ZERO sites and is
+inert. It is kept because it is correct, not because it is load-bearing.
+
+AND THE TEST CUT OVER-EXCLUDES. `txt.find("#[cfg(test)]")` is a marker-to-EOF
+scan: in `crates/synth-synthesis/src/instruction_selector.rs` the FIRST marker is
+at line 308 on a single test-only helper, while `mod tests` is at line 9205, so
+the census discards lines 308-19797 of that file. A brace-balanced cut recovers
++54 sites (389 -> 443), all in that one file. The stated population is therefore
+short by 54 sites and 4 numbers. The CONCLUSION survives every alternative the
+reviewer tried — 93%, 93%, 93%, 94% across {marker cut, brace cut} x {all string
+literals, diagnostic position}, and 90% counted by distinct numbers rather than
+sites — which is why the verdict stands and only the population is corrected.
+
+MEASURED at the v0.74 cut (RE-RUN IT — and note these figures are restated by
+hand in CLAUDE.md, ORACLE_WIRING.md, claims.yaml's manual-ceiling comment and
+RQ-74-STALEMSG, so `claim_check` does not bind them and re-running here does
+not update those copies):
 
     117 numbers, 389 sites
       OPEN issue    9 numbers,  21 sites
@@ -58,11 +77,18 @@ pointed at OPEN issues — then a closed-issue citation would be the exception a
 a tripwire could name it. Re-run this census before assuming that has happened.
 
 DELIBERATELY NOT DONE: re-pointing or rewording the #345 message. Its exact text
-is PINNED by `scripts/repro/islandpass_1331_execution_differential.py`
-(`PINNED_REFUSAL = "LdrSym literal pool out of range (#345)"`), which is the gate
-proving the spanning-island fixed point landed. Changing user-facing text that an
-oracle pins is a separate, gated change; doing it inside a census lane would
-break that oracle to improve a sentence.
+is PINNED, in three places: `litpool_islands_345.py`'s `REFUSAL` regex and
+`litpool_islands_345_differential.py`, both of which match it on the
+islands-OFF leg and so run on every CI round, and
+`islandpass_1331_execution_differential.py`'s `PINNED_REFUSAL`.
+
+BE PRECISE ABOUT THAT THIRD ONE, because an earlier draft of this paragraph
+named it alone: `PINNED_REFUSAL` is consulted only inside the STATE-1 branch,
+reached when a fixture fails to compile. All three fixtures compile now, so that
+branch does not execute — by the fixed point's own success. The text is pinned
+by the first two. Changing user-facing text an oracle matches is a separate,
+gated change; doing it inside a census lane would break those oracles to improve
+a sentence.
 """
 import collections
 import json

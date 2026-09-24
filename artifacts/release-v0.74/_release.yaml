@@ -68,10 +68,12 @@
 # purpose: six gate changes in the commit before a tag is how v0.72's second
 # silent miscompile arrived, inside the fix for the first.
 #
-# ARCHMODEL last and carried, as it has been for eleven releases before this
-# one. The ordinal is WALKED from the carried-from chain, never incremented
-# from memory — that has been got wrong in two consecutive releases and once in
-# a brief.
+# ARCHMODEL last and carried, as it has been for every release in its chain.
+# The ordinal is WALKED from the carried-from chain, never incremented from
+# memory — that has been got wrong in two consecutive releases and once in a
+# brief. The number itself lives in RQ-74-ARCHMODEL and nowhere else: a count
+# stood here and has been REMOVED, because this file's own header says it
+# carries no figures and one had crept in.
 #
 # ---------------------------------------------------------------------------
 # NOT IN SCOPE, RECORDED SO IT IS NOT RE-LITIGATED

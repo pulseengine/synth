@@ -117,6 +117,25 @@ APT_RE = re.compile(r"\bapt(-get)?\b|\bsudo\b")
 # whitespace. The first version of this regex required whitespace and
 # silently matched nothing; the potency test below is what caught it.
 SCRIPT_RE = re.compile(r"(?<![\w/-])(?:bash|sh|source|\.)\s+(scripts/[\w./-]+)")
+# WHAT THIS PAIR STILL MISSES (v0.74 cold review round 1, ENUMERATED so the
+# boundary is a list rather than a feeling). Each was applied with the required
+# context moved to self-hosted AND the ratchet ceiling lowered, so nothing could
+# supply a red for the wrong reason; all returned "0 failure(s)":
+#   `aptitude install`      — `\bapt\b` does not match `aptitude`
+#   `dpkg -i`               — a different installer entirely
+#   two script levels       — A invokes B, apt lives in B
+#   `./scripts/x.sh`        — no `bash `/`sh ` prefix
+#   `bash .github/x.sh`     — outside `scripts/`
+#   `python3 scripts/x.py`  — SCRIPT_RE follows only bash/sh/source/.
+#   `make -f scripts/x.mk`  — same
+#   a `bash <<'EOS'` heredoc
+#   `uses: some/install-action` — the `uses:` surface is unguarded; one such
+#       mutation WAS caught, but only because that action's NAME contains "apt"
+# Widening this piecemeal is whack-a-mole: the real check is whether the job's
+# install step can run under `no_new_privs`, which needs executing it, not
+# grepping it. Recorded as a v0.75 candidate. Note the population is LATENT
+# today — no required context is on the self-hosted pool — so this guard is a
+# tripwire for a future move, not a live gate.
 PIP_RE = re.compile(r"\bpip install\b")
 PEP668_RE = re.compile(r"--break-system-packages")
 

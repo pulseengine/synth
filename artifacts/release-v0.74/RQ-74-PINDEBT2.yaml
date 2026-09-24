@@ -36,6 +36,25 @@ artifacts:
       as progress"; v0.73 corrected that sentence to say what the pin actually
       catches. A mechanism that makes the claim true again belongs here.
 
+      THE SWEEP'S NUMBER IS SCOPED TO ITS SHAPES, and v0.74's round-1 cold
+      review is why that sentence is here. The lane reported "only 2 of the 5
+      arms are observably wrong" from five probe modules that were committed
+      NOWHERE. The reviewer rebuilt the pre-fix compiler independently, ran its
+      OWN five probes, and measured FOUR of five wrong. Two measurements of one
+      quantity disagreed and neither was reproducible.
+
+      The probes now ship as scripts/repro/algebraic_identity_probes_1223.py,
+      wired, executing each shape against wasmtime through the home-alias
+      harness. Re-measured with them on a pre-fix build: 2 of 5
+      (`(x - x) + x` and `x + (x - x)`); post-fix 0 of 5. The reviewer's shapes
+      are not in the tree and their 4-of-5 is NOT reproducible here.
+
+      The correction is not the digit, it is the claim's scope: MASKING IS A
+      PROPERTY OF THE CHOSEN PROBE, not of the arm. `x - 0` and `1 * x` are
+      unsound by the same construction whether or not a given probe catches
+      them, which is why all five were repaired rather than only the two these
+      shapes expose. "2 of 5" is true of THESE FIVE SHAPES and of nothing wider.
+
       WHAT WOULD MAKE THIS WRONG. v0.73 audited the population and confirmed the
       entries record observed DIVERGENCES rather than `EXPECTED_DECLINES`, so
       "the number is not debt" is already refuted. What could still make it

@@ -131,7 +131,7 @@ The gate also writes a table (and the unwired-debt list) to
 `$GITHUB_STEP_SUMMARY`, so the backlog is visible on every run rather than only
 in a log nobody opens.
 
-## The manual eight
+## The manual nine
 
 | script | category | why |
 |---|---|---|
@@ -143,6 +143,7 @@ in a log nobody opens.
 | `spill_baseline_measure.sh` | measurement | VCR-PERF-001 Pass-1 spill-waste census; changes zero codegen bytes, no expected values |
 | `run204_unicorn.py` | scratch | #204 bring-up probe, hardcoded `/tmp/gz.bin` + hand-transcribed stub offsets from one historical disassembly; asserts nothing |
 | `i64_load_store_372_differential.py` | scratch | 25-line print-only probe; superseded as a gate by the wired `i64_large_offset_382` / `load_store_big_offset_382` differentials |
+| `diagnostic_issue_census_345.py` | measurement | RQ-74-STALEMSG's refutation evidence (#345): the lane set out to build a tripwire refusing a diagnostic that cites a CLOSED issue, and this census found 93% of citation sites already do (363 of 389), because a `#N` names where the limitation was ANALYSED and that issue is normally closed. The refusal would have red 363 sites on landing. Prints counts, no verdict about the compiler |
 
 ## Anti-vacuity — the gate must not become the thing it polices
 
