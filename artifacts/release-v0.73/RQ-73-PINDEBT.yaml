@@ -120,6 +120,7 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1373"
+      landed: "#1375"
       verification-track: differential
       done-when: "file:scripts/stale_pin_check.py"
       verified-by: >-
