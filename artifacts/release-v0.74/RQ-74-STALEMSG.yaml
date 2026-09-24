@@ -79,6 +79,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#345"
+      landed: "#1386"
       done-when: "file:scripts/repro/diagnostic_issue_census_345.py"
       verified-by: >-
         The predicate points at something a REFUTATION would not create, so
