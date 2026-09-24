@@ -3788,8 +3788,25 @@ jobs:
           # ("that note added a fixture (+4 functions, +6 homes), which
           # necessarily added instructions"), happening again and caught by the
           # pin that exists for it.
-          grep -Eq '^functions audited: 7253$' haa1189.txt
-          grep -Eq '^homes watched: 8318$' haa1189.txt
+          # RQ-73-FALCONFIXTURE (#1318): 7253 -> 7257, 8318 -> 8326, attributed
+          # 224619 -> 224643. ONE new scripts/repro/*.wat fixture enters the audit
+          # corpus (falcon_opt_1318.wat). It declares FOUR exports but only
+          # `vbr_i32` compiles on these ARM legs — `vbr_i64` declines on #509 and
+          # `vbr_f32`/`vbr_f64` on GI-FPU-002, which is the matrix the fixture
+          # exists to pin — so +1 function x 4 legs = +4, and +8 homes. The
+          # attributed delta is only +24 because these functions are tiny, unlike
+          # litpool_islands_345.wat's dense +2408.
+          #
+          # ISOLATION CONTROL, run because corpus growth and a codegen change look
+          # identical in these three numbers: with this fixture held aside the
+          # audit printed 7253 / 8318 / 224619 on THIS binary — the pinned values,
+          # exactly. So the whole delta is corpus growth. (The first attempt at
+          # that control was WRONG and printed 7259/8320/229513, because an
+          # UNTRACKED next-lane fixture was still sitting in scripts/repro/, which
+          # the corpus globs. A control is only a control when the tree is the
+          # PR's tree.) `hits: 0` unchanged.
+          grep -Eq '^functions audited: 7257$' haa1189.txt
+          grep -Eq '^homes watched: 8326$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -3797,7 +3814,7 @@ jobs:
           # 217081 could not still hold. Nothing caught it because no grep ever
           # read it: exactly the "a ratchet fixes the number and cannot fix the
           # prose" shape this project keeps paying for. Derived here: 217291.
-          grep -Eq '^attributed instructions: 224619 ' haa1189.txt
+          grep -Eq '^attributed instructions: 224643 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
