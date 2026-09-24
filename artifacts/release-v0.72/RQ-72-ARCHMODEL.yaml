@@ -1,13 +1,13 @@
 artifacts:
   - id: RQ-72-ARCHMODEL
     type: system-req
-    title: "spar#445 unchanged since 2026-09-03 — the SIXTH consecutive N/A for the architecture-model step, filed so the deferral stays visible to the gate rather than silent"
+    title: "spar#445 unchanged since 2026-09-03 — the TENTH consecutive N/A for the architecture-model step, filed so the deferral stays visible to the gate rather than silent"
     description: >
       RE-VERIFIED AT THE v0.72 PLANNING, not recalled: `gh issue view 445 --repo
       pulseengine/spar` returns state=OPEN, last updated 2026-09-03 —
       "spar accepts property associations from UNDECLARED property sets". So the
       feature loop's step 1 (model the architecture in spar) and step 2 (generate
-      WIT from spar) are N/A for a SIXTH consecutive release, for the same
+      WIT from spar) are N/A for a TENTH consecutive release, for the same
       unchanged upstream reason.
 
       WHY THIS IS FILED AT ALL. The loop's own rule is that a recurring N/A is a
@@ -50,7 +50,7 @@ artifacts:
 
       Created and last updated on the SAME day, and that day is the one the
       v0.71 cut recorded — so nothing has moved upstream in three weeks. This is
-      the SEVENTH consecutive release in which feature-loop steps 1 (model the
+      the TENTH consecutive release in which feature-loop steps 1 (model the
       architecture in spar) and 2 (generate WIT from spar) are N/A for this
       reason.
 
@@ -96,7 +96,7 @@ artifacts:
       # `landed:` record under a non-claiming status: the increment
       # landed, the DELIVERABLE did not, and both are stated.
       landed: "#1367"
-      done-when: "manual: spar#445 re-verified 2026-09-23 — OPEN, created AND last updated 2026-09-03, unchanged since the v0.71 cut; steps 1-2 N/A for the SEVENTH consecutive release on that unchanged upstream reason"
+      done-when: "manual: spar#445 re-verified 2026-09-23 — OPEN, created AND last updated 2026-09-03, unchanged since the v0.71 cut; steps 1-2 N/A for the TENTH consecutive release on that unchanged upstream reason"
       verified-by: >-
         Deliberately `manual:` and not mechanical. This artifact's deliverable is
         a re-verification with a DATE, and a `contains:` predicate would go true

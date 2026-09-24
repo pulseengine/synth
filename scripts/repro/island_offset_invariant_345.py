@@ -69,7 +69,21 @@ R_ARM_THM_CALL = 10
 BL_MASK, BL_BITS = 0xF800, 0xF000   # T1 BL / BLX first halfword
 LDR_LITERAL_HW1 = 0xF8DF            # LDR.W rd,[pc,#imm12]
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# THREE dirnames: this file lives at <root>/scripts/repro/<name>.py, so two
+# lands on `scripts/` and the default glob becomes `scripts/scripts/repro/*.wat`
+# — which matches nothing. That is exactly how this shipped the first time: the
+# local run passed the glob EXPLICITLY as argv[2] and never exercised the
+# default, while CI invokes the script with NO arguments. The oracle "passed"
+# locally for a different reason than the one CI asks about.
+#
+# It went red rather than green, because both anti-vacuity guards fired:
+#     objects checked: 0
+#     FAIL: zero objects checked — the corpus or the compiler is broken
+#     FAIL ...: VACUOUS — declared floor stdout >= 150, measured 0
+# An oracle that silently checks nothing is the failure this file exists to
+# prevent, so it is fitting that its own first CI run was caught by it.
+ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SYNTH = sys.argv[1] if len(sys.argv) > 1 else os.environ.get(
     "SYNTH_BIN", os.path.join(ROOT, "target", "debug", "synth"))
 PATTERN = sys.argv[2] if len(sys.argv) > 2 else os.path.join(

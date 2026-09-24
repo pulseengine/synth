@@ -92,7 +92,7 @@ artifacts:
 
       A MISCOUNT I MADE AND CORRECTED, recorded because a gate inherits it
       permanently otherwise: a first pass matched the SUBSTRING `ubuntu` and reported
-      56/67. That also caught `ubuntu-24.04-arm`, a DIFFERENT hosted pool with its own
+      56/68. That also caught `ubuntu-24.04-arm`, a DIFFERENT hosted pool with its own
       queue, and inflated the number this lane exists to reduce — in the flattering
       direction. The tripwire matches the runner label EXACTLY.
 

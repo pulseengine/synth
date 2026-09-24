@@ -6239,7 +6239,11 @@ jobs:
 
   musl-portable-asset:
     name: Portable musl asset builds and is static (#1349)
-    # SELF-HOSTED on purpose. 56 of this file's 67 jobs target `ubuntu-latest`,
+    # SELF-HOSTED on purpose. 52 of this file's 71 job definitions target
+    # `ubuntu-latest` (re-derived by `ci_pool_tripwire.py`; this read
+    # "56 of 67", which was the SUBSTRING-inflated count even when written
+    # — `ubuntu` also matches `ubuntu-24.04-arm` — and then went stale twice
+    # more inside v0.72),
     # which RQ-61-CICAP measured as THE bottleneck: runs queue for hours beside
     # idle self-hosted machines, because the constraint is the GitHub-hosted
     # quota and not the fleet. A new job defaulting to ubuntu-latest makes that

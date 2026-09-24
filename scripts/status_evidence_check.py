@@ -2022,8 +2022,8 @@ def main() -> int:
     _auth, _held = authorised_close_set(artifacts, _cut)
     # The POPULATION the close-set was derived over. Printed because the
     # authorised count alone cannot distinguish "nothing is authorised yet"
-    # (the legitimate plan-time state, and v0.72's own history shows the
-    # count climbing 0 -> 5 across the release) from "the derivation ran over
+    # (the legitimate plan-time state: the AUTHORISED count is 0 at v0.72's
+    # planning commit 1e9236d7) from "the derivation ran over
     # an EMPTY set" (a glob rot, a version-key change, or a newer release
     # directory stealing `_cut`). Those two readings are identical in the
     # answer and opposite in meaning, so the population is what CI pins.

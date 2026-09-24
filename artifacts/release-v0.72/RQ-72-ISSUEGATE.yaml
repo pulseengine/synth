@@ -115,7 +115,11 @@ artifacts:
       never PASS — one release earlier.
 
       THE NAIVE REPAIR IS ALSO WRONG, and measuring is what says so.
-      `[1-9][0-9]*` is the shape the 17 sibling pins in that step use, but zero
+      `[1-9][0-9]*` is the shape the sibling pins in that step use (14 of them carry a digit
+      class; the first count said 17 because it included the two prose
+      mentions the comment itself had just added — a count taken from the
+      artefact it lives in, which is this programme's most repeated defect
+      and was committed inside the sentence naming it), but zero
       authorised is the LEGITIMATE plan-time state: across v0.72's own history
       the claiming count went 0 at the planning commit 1e9236d7, then
       1 -> 2 -> 3 -> 4 -> 5. That pin would red every future planning PR.
@@ -130,7 +134,16 @@ artifacts:
       the derivation RAN over a non-empty set, not that its answer was non-zero.
 
       Both directions are now demonstrated, not asserted: the pin matches the
-      live line (`v0.72 over 8 artifact(s) — 4 ... 1 held open`), and it refuses
+      live line — re-derived at THIS cut rather than quoted from the commit that
+      wrote it, because the first version said "1 held open" and that was
+      true only at e06f0c0d, before #1367 gave CIPOOL `outlives` and #1369
+      gave VEX one:
+
+        issue-scope: v0.72 over 8 artifact(s) — 4 issue(s) authorised for
+        closure by a delivered artifact, 3 held open by `issue-scope:
+        outlives` (authorised: #1250 #1269 #1341 #1349)
+
+      and it refuses
       a zero population, the old unpinned shape, and a line whose held-open
       count has been dropped.
 
