@@ -123,7 +123,7 @@ artifacts:
       req-type: system
       priority: must
       issue: "#1331"
-      landed: "PLACEHOLDER_PR"
+      landed: "#1377"
       verification-track: differential
       done-when: "contains:crates/synth-backend/src/arm_backend.rs:fn place_literal_islands_fixedpoint"
       verified-by: >-
