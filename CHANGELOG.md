@@ -5,6 +5,151 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.74.0] - 2026-09-24
+
+### The gate that cannot tell a compiler from a shell script
+
+v0.73 asked "is it still broken?" and answered it mechanically. v0.74 asks the
+question one level in: **can the gate tell?** Not "is the code right" but "would
+this instrument notice if it were not".
+
+The answer, measured by mutation rather than asserted: **often, no.** Round 1
+applied **40 attacks** to this repository's own gates, beside 4 positive
+controls, and 11 bit. Round 2 applied **54 mutations**, and 21 bit. **62 walked
+through.** The two totals are reported separately rather than as one figure,
+because round 1's doc splits its 44 into controls-plus-attacks and round 2's
+states no such split — a single summed denominator would assert of round 2
+something its own record does not say, which is the error this paragraph made in
+its first draft. The headline specimen is the one
+that gives this release its name — the CI step gating cpetig's **#1318** was
+satisfied by a **16-line shell script that printed the expected warning lines and
+compiled nothing at all**, controls included. It could not tell a compiler from a
+shell script.
+
+The scope rule this release worked under, stated because it is the opposite of
+the reflex: **this is not "add more gates"**. This programme has measured that
+verification machinery becomes its own defect surface when nothing is retired.
+So for each gate a mutation walked through, either **make it bite** or
+**disclose what it cannot see, in its own docstring, beside what it does check.**
+Six holes ship as written disclosures with their mutations recorded, not as
+six new gates.
+
+**STUBPROOF (#1318, cpetig — external reporter)** — the null-stub defeat above.
+The gate now asks what the file *is*: ELF magic, the right `e_machine` **per
+leg**, a non-empty `.text`, and a symbol for every export the compiler did not
+decline — plus a second invocation under `--allow-skipped-exports` so a decline
+cannot be mistaken for an absence. Floor 3 → 6.
+
+**Disclosed, not fixed — and measured against the repaired gate:** it still asks
+what the file *is* and never what it *contains*. A **30-line** successor stub
+that copies three pre-recorded ELFs — right machine, right symbols, `.text`
+overwritten with `0xDE` filler — and prints the canned warning lines passes the
+entire repaired step: rc=0, `CHECKS=12/12`, `RESULT: PASS`, both CI greps
+satisfied. A recorded artifact replays forever. The two invocations are also
+never cross-checked (nothing asserts the symbols in the object are disjoint from
+the exports leg 1 just reported as declined), and the floor move bought nothing,
+because `mode=compiles` counts subprocess *invocations* — doubling the
+invocations doubled the floor, and a stub satisfies both. Closing this needs the
+emitted **code** checked, by a decode or an execution differential, not another
+header field.
+
+**ISLANDREACH (#1331)** — the whole class rested on **one fixture**, whose header
+credited a generator that **had never been committed** (`git log --all
+--diff-filter=A` matched nothing, on any ref, ever). The generator now exists and
+`--check` reds on a hand-edit; the class rests on three fixtures. The floor moved
+from `compiles >= 4` to **`emulations >= 15`**, which closes a silent skip: a
+fixture reverting from "executes bit-exact" to "refused" used to score green,
+because a refusing compiler still makes the subprocess call the old floor counted.
+
+**PINDEBT2 (#1373)** — `known_open_pins` **85 → 84**: the first reduction by a
+*fix* since the ratchet was created. v0.73 built the attribution and closed no
+pin. The pin closed is **#1223** — five algebraic-identity arms in `synth-opt`
+marked their result `is_dead` with the comment "would need copy propagation",
+which does not exist, so `(x - x) + x` folded to the constant 0. They now emit
+`Opcode::Copy`.
+
+**STALEMSG (#345)** — the planned tripwire was **refuted by its own census**.
+The claim was that the compiler points users at a closed issue; the measurement
+found **93% of diagnostic issue citations (363 of 389 sites) already cite a
+closed issue**, and always have — closure here means "fixed and pinned red-first",
+so a citation pointing at a closed issue is the normal, correct state. A refusal
+would have red 363 sites the day it landed. What ships is the census, the
+convention written down in CLAUDE.md, and **no gate** — recorded as the shape of
+a finding that survives contact with its own refuting command.
+
+**GATEOFFLINE (#1269)**, **APTBLIND (#1062)**, **FIELDSHAPE (#1319)** — three
+gates made to bite. `merge_gate` grew a `DIFF UNAVAILABLE` verdict (it previously
+mapped a failed `git diff` onto a pass) and its self-test went 19 → 25 checks;
+the CI-pool tripwire's `apt` detector, blind to `apt` without `-get` and to apt
+inside a script file, now sees both, with **nine enumerated walk-arounds** in its
+docstring; and the artifact-field derivation, which saw one syntactic shape of
+one binding in one module, now reads a **declared list** of consumer scripts.
+
+**ARCHMODEL (#1136)** — spar#445 unchanged since 2026-09-03. The **twelfth**
+consecutive N/A for the architecture-model step, filed so the deferral stays
+visible to the conformance gate rather than becoming an exemption by habit.
+
+### Two rounds of cold review, and what the second round did to the first
+
+Round 2 was briefed to **attack round 1's corrections**, and every one of the six
+false statements it found, and both defects, are inside round 1's own corrections
+or the files it edited.
+
+The one that changed a shipped gate: the algebraic-identity probe oracle round 1
+committed was **2/5 potent for its own stated population**. Every shape was
+wrapped in `(i32.add <shape> (local.get 0))`, and the wrapper masks three of the
+five arms the oracle names. That wrapper is also why round 1 got the underlying
+disagreement backwards — it measured "2 of 5 wrong pre-fix", a reviewer measured
+4 of 5, and round 1 **adjudicated in favour of its own weaker probes**. Bare
+shapes reproduce the reviewer's figure exactly; the oracle now reds on **4 of 5**.
+Its harness signature was also inverted, sending every argument down the 64-bit
+pair branch and clobbering the canary that exists to make an undefined-register
+read visible.
+
+And arm A — the arm #1223 was actually *reported* against — **had no unit test**,
+one arm away from the commutation gap round 1 did find and fix. Reverting it
+passed `cargo test --workspace` in full.
+
+### Found at the cut: the closure audit was reading its own window to the day
+
+Not one of the eight planned artifacts — this was found by **running** the
+release's own closure gate instead of trusting it, minutes before the tag.
+
+`issue_closure_check.py` built its search qualifier as `closed:>={date[:10]}`,
+truncating the tag's timestamp to `YYYY-MM-DD`, which GitHub reads as
+**midnight**. The window therefore opened up to 24 hours before the tag and
+swept in the *previous* releases' closure waves. Measured live against the API,
+both halves on one tree:
+
+```
+closed:>=2026-09-24            -> #1341, #1349, #1269, #1331   (4)
+closed:>=2026-09-24T15:02:41Z  ->               #1269, #1331   (2)
+```
+
+`15:02:41Z` is v0.73.0's own commit. #1341 and #1349 closed at 03:34Z — v0.72's
+wave — and the gate reported both as `CLOSED BUT NOT AUTHORISED`, whose
+prescribed remedy is **"Reopen it"**. **#1341 is an external reporter's issue,
+correctly closed by v0.72.** The gate built to prevent v0.69's wrong *closure*
+was one step from causing a wrong *reopening*, for the same root reason it
+exists: a timestamp not read at the precision it was written.
+
+It had been correct for every prior release because releases were more than a
+day apart. The defect did not change; the **cadence** did — v0.72, v0.73 and
+v0.74 all land on 2026-09-24. **Disclosed, not fixed:** `closed_since` takes the
+network path and no offline test reaches it, so the table above is a recorded
+measurement, not a gate. Extracting the qualifier into a tested helper would
+repeat exactly what GATEOFFLINE records one file over, so it is left as a v0.75
+candidate rather than done a third time.
+
+### Falsification statement
+
+If a future change makes any of these gates green on input they should refuse,
+the mutation that proves it is written down: each disclosure in this release
+carries the exact mutation that walks through it. The six recorded-not-fixed
+holes are v0.75 candidates, not closed work — in particular the #1318 replay
+defeat, the islandpass floor's hard-coded `3x5`, and `APT_RE` seeing only an
+installer that is the first token of its `run:` value.
+
 ## [0.73.0] - 2026-09-24
 
 ### "Is it still broken?"
