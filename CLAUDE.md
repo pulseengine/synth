@@ -565,6 +565,35 @@ Note the distinction that matters: `--proven-safe` / fact-spec elisions remove
 the GUARD on an access PROVEN in bounds, fail-closed. That is categorically
 different from eliding the trap of a possibly-OOB access, and it is legitimate.
 
+## What an issue number in a diagnostic MEANS (RQ-74-STALEMSG, #345)
+
+A `#N` inside a user-facing diagnostic names **where the limitation was
+analysed** — the issue carrying the measurement, the repro and the decision. It
+does **not** assert that the issue is open, or that the gap is scheduled. Those
+issues are normally CLOSED, precisely because the analysis finished.
+
+Measured at the v0.74 cut by `scripts/repro/diagnostic_issue_census_345.py`
+(re-run it rather than quoting this): **93% of citation sites point at a closed
+issue** — 363 of 389, across 105 distinct numbers. Citing a closed issue is the
+convention here, not a defect.
+
+**This is written down because not writing it down cost time twice in one
+release.** `LdrSym literal pool out of range (#345)` reuses a number closed in
+June — silicon-verified, its own asks delivered — for an unrelated function-size
+limit. An external reporter asked whether #345 was tracked for large functions,
+and a coordinator read that issue's body without its state and nearly held a
+closed issue open.
+
+**No tripwire enforces this, deliberately.** RQ-74-STALEMSG set out to build one
+and the census refuted it: a rule refusing closed-issue citations would red 363
+sites the day it landed, and a gate people cannot move honestly is a gate they
+route around. What would change the verdict is the share inverting; re-run the
+census before assuming it has.
+
+**When writing a new diagnostic:** cite the issue with the analysis, and prefer
+wording that survives that issue closing. When READING one, check the issue's
+STATE before its BODY — a body is written once and never updated.
+
 ## Conventions
 
 - Rust edition 2024, MSRV 1.88

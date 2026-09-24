@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-74-STALEMSG
     type: system-req
     release: v0.74
-    status: proposed
+    status: implemented
     title: "The compiler points users at a CLOSED issue: `LdrSym literal pool out of range (#345)` cites an issue closed and silicon-verified in June"
     description: >
       REFUTING COMMAND RUN AT THIS CUT, and it did NOT refute:
@@ -40,6 +40,35 @@ artifacts:
       -best-explanation, a refusal is noise and the honest output is the census
       plus a documented convention. Run (a) FIRST and publish the distribution
       before building (b).
+
+      OUTCOME: THAT IS EXACTLY WHAT HAPPENED. The census ran first and REFUTED
+      the tripwire. Measured at the v0.74 cut over non-test code, excluding ARM
+      immediate syntax: 117 numbers, 389 sites — 105 numbers / 363 sites (93%)
+      cite a CLOSED issue, 9 numbers / 21 sites an OPEN one. A refusal would
+      have red 363 sites on the day it landed.
+
+      The reason is not sloppiness: a `#N` in a diagnostic names WHERE THE
+      LIMITATION WAS ANALYSED, and that issue is normally closed precisely
+      because the analysis finished. #345 is a correctly-formed citation a
+      reader reasonably misread as "open and tracked". So the defect was never
+      the citations — it was that nothing said what they mean.
+
+      (a) SHIPPED: scripts/repro/diagnostic_issue_census_345.py, re-runnable,
+          with a refusal when the board cannot be read (an unreadable board is
+          not an empty one) and when the scan matches nothing.
+      (b) REFUTED, with the measurement, and NOT shipped.
+      (c) DELIBERATELY NOT DONE. The #345 message's exact text is PINNED by
+          islandpass_1331_execution_differential.py as PINNED_REFUSAL — it is
+          the gate proving the spanning-island fixed point landed. Rewording it
+          inside a census lane would break that oracle to improve a sentence.
+          What ships instead is the convention, recorded in CLAUDE.md.
+
+      A FIRST PASS OF THE CENSUS WAS WRONG AND IS RECORDED AS SUCH: it counted
+      663 sites, because it swept test-module assertions and ARM immediates
+      (`AND R12,#31`, `ldr r0,[ip,#4095]`) as issue references. The headline was
+      computed off that contaminated denominator before it was checked. Excluding
+      both gives 389 sites — and the 93% held, which is why the conclusion stands
+      rather than the first number.
     tags:
       - process
       - feature-loop
@@ -50,7 +79,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#345"
-      done-when: "contains:crates/synth-backend/src/arm_backend.rs:RQ-74-STALEMSG"
+      done-when: "file:scripts/repro/diagnostic_issue_census_345.py"
       verified-by: >-
         The predicate points at something a REFUTATION would not create, so
         a lane that ends by refuting its own premise cannot satisfy it by
