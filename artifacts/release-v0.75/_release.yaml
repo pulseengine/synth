@@ -1,0 +1,85 @@
+# v0.75 — "The call site that no test has ever reached"
+#
+# COMMENTS ONLY. This file carries the planning reasoning; the artifacts carry
+# the claims. It is deliberately free of numbers that live anywhere else — the
+# rule v0.72 learned, v0.73 broke in the very paragraph warning about it, and
+# v0.74's round 1 had to enforce again by deleting one statistic that had crept
+# back in. A retraction that edits the artifact and not the plan file is how
+# "the sentence came back" reproduces.
+#
+# ---------------------------------------------------------------------------
+# THE THEME
+# ---------------------------------------------------------------------------
+#
+# v0.73 asked "is it still broken?" and answered it mechanically, because every
+# divergence is pinned red-first and the pin count IS the still-broken count.
+#
+# v0.74 asked "CAN THE GATE TELL?" — and answered it by mutation rather than by
+# reading. Most mutations walked through. For each gate that let one through,
+# v0.74 either made it bite or disclosed, in the gate's own docstring, what it
+# cannot see.
+#
+# v0.75 asks the question v0.74's own evidence forced into view, and which no
+# single lane could see because each instance was found by a different one:
+# WHY DO THESE GATES KEEP BEING TESTED ONE CALL SHORT OF WHERE THEY RUN?
+#
+# The shape is identical every time it has appeared. A function is extracted
+# BECAUSE something untested consumes it. The extraction gets a test. The
+# consumer keeps its zero coverage. The tested boundary moves one call outward
+# and the gap moves with it — so the next release extracts another function and
+# reports progress.
+#
+# It has now happened in three consecutive releases, each time in a different
+# file, each time found by someone who did not know about the others:
+#
+#   * v0.73 extracted `decide()` out of `gate()` because the merge ritual
+#     consumes the decision. `decide()` got a test. `gate()` did not.
+#   * v0.74 extracted `fidelity_exit()` out of `main()` for exactly the same
+#     stated reason. `fidelity_exit()` got a test. `main()` did not.
+#   * v0.74's round-1 gate pass then MEASURED the consequence directly: ten
+#     mutations applied to `gate()` and `main()` — including forcing the whole
+#     rollup to SUCCESS — and every one of them passed `--self-test`.
+#   * v0.74's cut found the same shape again in a different file, in
+#     `closed_since()`: it takes the network path, and no offline test reaches
+#     it. That one was already costing something real — a truncated window was
+#     one step from demanding an external reporter's correctly-closed issue be
+#     REOPENED.
+#   * And #1318's gate is the same idea at the artifact level: it checks what
+#     the file IS and never what it CONTAINS, so a recorded ELF replays
+#     forever. Nothing reaches the emitted code.
+#
+# Naming the class is the point. Left unnamed, v0.75 extracts a fourth function
+# and calls it a fix.
+#
+# ---------------------------------------------------------------------------
+# SCOPE — WHAT THIS IS NOT
+# ---------------------------------------------------------------------------
+#
+# SCOPE IS NOT "write more tests", and it is emphatically not "extract more
+# functions so they can be tested". Both are the failure mode wearing the
+# fix's clothes.
+#
+# For each gate in scope: DRIVE ITS REAL ENTRY POINT against recorded input, or
+# DISCLOSE in its own docstring that the entry point is undriven, beside what it
+# does check. A test that reaches one call deeper than last time and stops is
+# the pattern, not the remedy. The acceptance evidence for "driven" is the same
+# as v0.74 used for "bites": the mutation that used to survive must now go red,
+# and the mutation must be shown to have applied.
+#
+# This is also the reason the class is worth a release rather than a lane. The
+# recurrence is not in any one gate; it is in the reflex that produced all of
+# them. A per-gate fix leaves the reflex intact.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS RELEASE MUST NOT DO
+# ---------------------------------------------------------------------------
+#
+# Do not retire a gate because its entry point turns out to be undriven. An
+# undriven gate still encodes a real obligation, and deleting it converts a
+# known-weak check into no check while reading as progress. Disclosure is the
+# floor; retirement needs its own argument.
+#
+# Do not let the disclosure text become the deliverable. v0.74 shipped six
+# honest disclosures and they were the right call there, because the mutations
+# were recorded beside them. A release that discloses everything and drives
+# nothing has answered the question by restating it.

@@ -1,0 +1,45 @@
+artifacts:
+  - id: RQ-75-CALLSITE
+    type: system-req
+    release: v0.75
+    status: proposed
+    title: "Three releases running, a gate was tested one call short of where it runs — `gate()` and `main()` have never been driven"
+    description: >
+      REFUTING COMMANDS TO RUN BEFORE SCOPING THIS, and what they returned at
+      the v0.74 tag (re-run them; a finding that survives its own refutation is the
+      only kind worth scoping):
+
+        python3 scripts/merge_gate.py --self-test 2>&1 | grep -c '^  ok  '
+        -> 25
+
+        grep -rn 'merge_gate' scripts/test_*.py
+        -> (no test module imports it)
+
+      v0.74's round-1 gate pass applied TEN mutations to `gate()` and `main()` —
+      including forcing the whole rollup to SUCCESS, and `ok &= True` — and ALL TEN
+      passed `--self-test`. That is not a gap in coverage; it is the coverage
+      measuring a different function than the one CI runs.
+
+      THE CLASS, not the instance. v0.73 extracted `decide()` out of `gate()` because
+      the merge ritual consumes the decision, tested `decide()`, and left `gate()`
+      untested. v0.74 extracted `fidelity_exit()` out of `main()` for the identical
+      stated reason, tested `fidelity_exit()`, and left `main()` untested. Each
+      release moved the tested boundary one call outward and moved the gap with it.
+
+      DELIVERABLE: drive `main()` itself against a RECORDED `gh` rollup fixture. The
+      ten surviving mutations are the acceptance oracle — each must go red, and each
+      must be shown to have applied. Extracting an eleventh function is explicitly
+      NOT the deliverable.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1269"
+      done-when: "contains:scripts/test_merge_gate_callsite.py:RQ-75-CALLSITE"
+      verified-by: >-
+        The predicate names a test module that does not exist today, so a refutation cannot create it; and the acceptance oracle is the recorded mutation set, not the module's existence.

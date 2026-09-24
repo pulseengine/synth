@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-75-PROBEINPUT
+    type: system-req
+    release: v0.75
+    status: proposed
+    title: "The algebraic-identity probes exercise each shape at exactly ONE input — and #1223's closure waits on this"
+    description: >
+      v0.74 shipped this oracle, then had to repair it in the same release: round 1
+      wrapped every shape in `(i32.add <shape> (local.get 0))`, which masked three of
+      the five arms it names, and round 2 measured it at 2/5 potent for its own
+      stated population. Bare shapes took it to 4/5.
+
+      THE RESIDUAL ROUND 2 RECORDED: each shape is probed at exactly one input. An
+      identity can be coincidentally correct at a single value — `x * 1` and `x + 0`
+      agree with a great many wrong implementations when x is the one value tried —
+      so a 4/5 potency figure is a statement about one point, not about the arm.
+
+      DELIVERABLE: widen to a value set chosen to INCLUDE the operands that make each
+      identity coincidentally correct, and re-measure potency per arm. Arm D is
+      expected to stay masked at this shape; that is covered by
+      `test_algebraic_one_mul` and must be stated, not implied.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1223"
+      done-when: "contains:scripts/repro/algebraic_identity_probes_1223.py:RQ-75-PROBEINPUT"
+      verified-by: >-
+        Per-arm potency re-measured by reverting each arm individually, as v0.74's round 2 did — the measurement, not the value set's size, is the evidence.

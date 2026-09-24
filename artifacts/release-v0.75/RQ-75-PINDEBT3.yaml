@@ -1,0 +1,36 @@
+artifacts:
+  - id: RQ-75-PINDEBT3
+    type: system-req
+    release: v0.75
+    status: proposed
+    title: "Keep the ratchet falling — v0.74 moved `known_open_pins` 85 -> 84 by a fix, the first reduction since the ratchet was created"
+    description: >
+      REFUTING COMMAND, run it before assuming the direction holds:
+
+        python3 scripts/claim_check.py claims.yaml --metric | grep known_open
+
+      v0.73 built the attribution and closed no pin: the count ended at the value it
+      began at, and the release said so. v0.74 closed one, by fixing #1223's five
+      algebraic arms rather than by re-attributing anything.
+
+      THE DEFAULT OUTCOME IS THAT NOTHING MOVES, and that is the thing to argue
+      against rather than discover at the next cut. A pin says "this function returns
+      this wrong answer today, issue #N", exact in both directions; a release that
+      adds one and closes none is red by the ratchet, and a release that closes none
+      and adds none is green while the debt stands.
+
+      AT DELIVERY this artifact must carry `issue-scope: outlives` — #1373 is the
+      standing pin-debt issue. Not set while `proposed` (R12).
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1373"
+      done-when: "contains:claims.yaml:RQ-75-PINDEBT3"
+      verified-by: >-
+        The ratchet itself is the oracle: `known_open_pins` must be strictly below 84 with the closing fix named, or a `waivers:` entry with a written reason.

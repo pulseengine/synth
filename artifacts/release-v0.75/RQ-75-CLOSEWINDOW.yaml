@@ -1,0 +1,40 @@
+artifacts:
+  - id: RQ-75-CLOSEWINDOW
+    type: system-req
+    release: v0.75
+    status: proposed
+    title: "`closed_since` was fixed at the v0.74 cut and tested by nobody — the network path has no offline driver"
+    description: >
+      FOUND AT THE v0.74 CUT, by running the closure gate instead of trusting it.
+      The search qualifier was built as `closed:>={date[:10]}`, truncating the tag's
+      timestamp to YYYY-MM-DD, which GitHub reads as MIDNIGHT. The window opened up to
+      24 hours before the tag and swept in the PREVIOUS releases' closure waves.
+
+      It had been correct for every prior release because releases were more than a
+      day apart. The defect did not change; the CADENCE did — v0.72, v0.73 and v0.74
+      all landed on one day. The gate then reported an EXTERNAL reporter's
+      correctly-closed issue as `CLOSED BUT NOT AUTHORISED`, whose prescribed remedy
+      is "Reopen it". The gate built to prevent v0.69's wrong CLOSURE was one step
+      from causing a wrong REOPENING.
+
+      WHY IT IS HERE AND NOT CLOSED. v0.74 fixed the truncation and did NOT test it,
+      and said so: `closed_since` takes the network path and no offline test reaches
+      it, so its evidence is a recorded measurement rather than a gate. That is the
+      same shape as RQ-75-CALLSITE one file over, which is why both are in this
+      release rather than either being a follow-up.
+
+      DELIVERABLE: drive `closed_since` against a RECORDED `gh` response, with the
+      day-granular qualifier as the red-first case.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1391"
+      done-when: "contains:scripts/test_issue_closure_check.py:RQ-75-CLOSEWINDOW"
+      verified-by: >-
+        Red-first: the test must FAIL against the pre-v0.74 `date[:10]` form, demonstrated by reverting it, before it passes against the fixed form.

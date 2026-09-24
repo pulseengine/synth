@@ -1,0 +1,37 @@
+artifacts:
+  - id: RQ-75-ARCHMODEL
+    type: system-req
+    release: v0.75
+    status: proposed
+    title: "spar#445 still unresolved — the THIRTEENTH consecutive N/A for the architecture-model step, filed so the deferral stays visible to the gate"
+    description: >
+      REFUTING COMMAND — read STATE before BODY:
+
+        gh api repos/pulseengine/spar/issues/445 --jq '.state + " " + .updated_at'
+
+      Feature-loop steps 1-2 (spar AADL -> WIT) have now been N/A for thirteen
+      consecutive releases. The recurring-N/A rule says three running is a backlog
+      item, and this is thirteen.
+
+      IT IS FILED, NOT WAIVED, and the distinction is the whole point: an N/A that
+      stops being recorded becomes an exemption by habit, and the conformance gate
+      then cannot see that a step of the loop has not run in over a year of releases.
+      v0.69 already lost this artifact once — it dropped the `feature-loop` tag, so
+      the filing that exists to keep a deferral VISIBLE was invisible to the gate
+      that consumes it. Carry the tag.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      disposition: deferred
+      issue: "#1136"
+      done-when: "manual: spar#445 re-verified at the v0.75 cut — record the DATE, the state and the last-updated stamp, as v0.74 did"
+      verification-track: manual
+      carried-from: RQ-74-ARCHMODEL
+      verified-by: >-
+        Deliberately `manual:`. The deliverable is a re-verification carrying a DATE; a `contains:` predicate pointing at this artifact's own file goes TRUE the moment the file exists, which reds R3 as status under-reporting — measured when this generator first tried it.
