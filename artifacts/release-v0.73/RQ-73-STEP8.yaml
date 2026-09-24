@@ -1,0 +1,64 @@
+artifacts:
+  - id: RQ-73-STEP8
+    type: system-req
+    title: "#1269's step-8 deliverable is implemented and unreachable — squash_fidelity is called only by its own self-test"
+    description: >
+      AUTHORISED FOR CLOSURE at the v0.72 tag and DELIBERATELY NOT CLOSED,
+      because reading the issue text against what shipped says one of its two
+      asks is not done. Re-measured at the cut:
+
+        grep -n squash_fidelity scripts/*.py scripts/*.sh
+          merge_gate.py:75  def squash_fidelity(...)
+          merge_gate.py:219  <- self_test()
+          merge_gate.py:222  <- self_test()
+
+        grep -cE 'git diff' scripts/merge_ritual.sh   -> 0
+
+      Ask 1 (CHECK2 detects a stale BRANCH, not a stale base pointer) is
+      DELIVERED and WIRED: `branch_currency` is reached from `gate()`, which
+      `merge_ritual.sh` calls, and it ran on all eleven v0.72 merges — refusing
+      #1367, where the artifact was wrong and the gate was right.
+
+      Ask 2 is implemented and has no caller. The ritual computes NO post-merge
+      diff at all, so the recorded number the issue is about is still not
+      recorded by any committed script. v0.72 produced the attestation BY HAND
+      for all eleven PRs (every one 0 files) and wrote it into the cold-review
+      record — which is evidence, and is not the mechanism the issue asks for.
+
+      THIS IS THE RELEASE'S OWN THEME LANDING ON THE LANE MEANT TO FIX IT:
+      something built, and out of reach of the party that needs it. Closing on
+      "the function exists" would be precisely the move #1250 was filed against.
+
+      SCOPE: call `squash_fidelity()` from `merge_ritual.sh` after the merge and
+      record the verdict, so the number exists without a human producing it. A
+      second residual, recorded by v0.72's cold review rather than carried
+      silently: `gate()` has NO offline test, so CHECK1/CHECK2/CHECK3b are
+      exercised only against the live API and five of nine injected mutants
+      survived `--self-test`.
+
+      WHAT WOULD MAKE THIS WRONG. If the post-merge diff can only be computed
+      from head refs that are not durably fetchable, then recording it
+      automatically is not possible and the honest deliverable is to say so in
+      the conformance slot rather than to ship a check that silently degrades.
+      v0.72 found the refs WERE fetchable for all eleven PRs — check whether
+      that holds generally before building on it.
+    status: proposed
+    release: v0.73
+    tags:
+      - process
+      - release-engineering
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1269"
+      verification-track: manual
+      done-when: "contains:scripts/merge_ritual.sh:squash_fidelity"
+      verified-by: >-
+        The predicate names the RITUAL, not `merge_gate.py`, because the defect
+        is precisely that the function exists in the library and the human path
+        does not call it. A grep that passed on `merge_gate.py` would be true
+        today, with nothing delivered.

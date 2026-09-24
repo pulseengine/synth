@@ -1,0 +1,83 @@
+artifacts:
+  - id: RQ-73-PINDEBT
+    type: system-req
+    title: "known_open_pins went 27 -> 85 against a ratchet that says it must FALL — the board cannot answer whether anything is still broken"
+    description: >
+      THE HEADLINE, and it is the question the maintainer asked directly:
+      "we have a lot of issues and I have no clue if we fixed them".
+
+      MEASURED at the v0.72.0 cut, with the tool's own derivation
+      (`claim_check._pin_table`, NOT a hand count — a hand-rolled parser
+      disagreed with it three times while preparing this plan, which is the
+      recurring lesson about measuring this codebase):
+
+        known_open_pins          85 entries   baseline 27   +58   must FALL
+        known_open_pinned_cases 158 cases
+
+        selector_parity_197_differential.py          20 entries /  40 cases
+        invalid_accept_1207_differential.py          39        /  39
+        false_reject_1229_differential.py            12        /  12
+        self_contained_boot_sweep_1189_differential   6        /  59
+        ra003_join_1230_differential.py               4        /   4
+        aarch64_operand_class_1231_differential.py    3        /   3
+        home_alias_class_1189_differential.py         1        /   1
+
+      WHY THE NUMBER IS THE ANSWER. Each pin is a CI-wired oracle that OBSERVES
+      a divergence on the LIVE compiler and passes over it, keyed to an issue
+      with an exact count. So the pin count is the still-broken count; it is not
+      an opinion about the board. Several of the suppressed issues are titled
+      SILENT MISCOMPILE or "accepts an INVALID module".
+
+      RQ-66-PINDEBT exists to stop exactly this: "a release that ends with more
+      pins than it began is red; adding a pin is paid for by closing one, or by
+      a `waivers:` entry with a written reason in the same PR". The ratchet has
+      been satisfied by WAIVERS rather than by fixes, and the number nearly
+      tripled while every release stayed green.
+
+      AND THE BOARD IS NOT OLD, which is the part that surprised. 40 open
+      issues; exactly ONE older than 30 days (#242, an epic) and NOTHING over
+      six months. The problem is not age — 28 of 40 have not been touched since
+      the day they were filed, most from a two-week burst during the v0.65/v0.66
+      oracle work.
+
+      THREE DELIVERABLES.
+      (a) Drive `known_open_pins` DOWN. Every removed pin is a fix or a pin
+          proven obsolete, and either way the oracle must still DISCRIMINATE
+          afterwards — shown by mutation, not by the suite staying green.
+      (b) Re-verify the 28 UNPINNED open issues against the v0.72.0 binary.
+          The pin method says nothing about them, so each needs "still fails,
+          repro attached" or "no longer reproduces, closing with the command".
+      (c) Make a STALE pin visible: a pin whose issue is already CLOSED is debt
+          with no owner and nothing notices today. `scripts/stale_pin_check.py`
+          is that tripwire and is this artifact's `done-when`.
+
+      WHAT WOULD MAKE THIS WRONG TO BUILD. If the pins are mostly CORRECT
+      suppressions of intended declines rather than wrong answers, the number is
+      not debt and driving it down is theatre. AUDIT THAT FIRST: sample the
+      tables and confirm each entry records a DIVERGENCE the oracle observed,
+      not an `EXPECTED_DECLINE`. The population's stated inclusion criterion
+      says divergence — the criterion itself has never been audited against the
+      entries.
+    status: proposed
+    release: v0.73
+    tags:
+      - process
+      - pin-debt
+      - issue-board
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1373"
+      verification-track: differential
+      done-when: "file:scripts/stale_pin_check.py"
+      verified-by: >-
+        The predicate names the TRIPWIRE rather than the pin count, because the
+        count is a ratchet in claims.yaml that already has its own gate, and a
+        `contains:` on a number would go true the moment the number is written
+        rather than when it is earned. Deliverables (a) and (b) are enforced by
+        that existing ratchet and by the issue's own closure audit; (c) is the
+        new mechanism and is the thing that can be pointed at.
