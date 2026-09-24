@@ -5,6 +5,99 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.0] - 2026-09-24
+
+### "Built, and out of reach"
+
+Eight artifacts, ordered by who was blocked. The theme is not decoration: in
+every lane something EXISTED and the party who needed it could not reach it.
+
+**ISLANDS (#345, tail of #1331 — cpetig)** — a Thumb-2 `LDR(literal)` has a
+12-bit UNSIGNED offset, and synth emitted ONE literal pool per function,
+appended at the end. In a 50722-byte function every `LdrSym` more than 4 KB
+from that end was unreachable BY CONSTRUCTION, and the compile refused. The
+refusal was correct and stays; what changed is placement. Inline constant
+islands (the LLVM `ARMConstantIslandPass` shape) now flush the pool before the
+window closes, gated by an execution differential with byte-identity on every
+module whose pool already fit — 165 byte-identical, 0 moved, 6/6 arguments
+bit-exact against wasmtime.
+
+**The lane then twice traded a loud refusal for a silent wrong answer, and both
+were caught before the tag.** Branch offsets are byte-resolved BEFORE the encode
+loop; inserting an island between a branch and its target mis-targeted it by
+exactly the island's size (measured: an 8-byte island, a `br_if` landing 8 bytes
+early, inside the block it was meant to skip). The first fix refused such
+placements — and missed that the same loop records four OTHER offsets from
+`code.len()`: the `Bl` relocation, `MovwSym`, `MovtSym`, and `LdrSym`'s own
+`ldr_offset`. A relocation pointed at the island's branch-over instead of a BL;
+an `imm12` patch landed inside the island and its `LDR` loaded code as a
+pointer. Both compiled at rc=0 on shapes v0.71 refused loudly.
+
+Encoding and island placement now happen ahead of every recording site, and
+`island_offset_invariant_345.py` reads both invariants off the EMITTED ELF —
+a relocation must land on a BL, a literal load must resolve to a relocated word.
+304 objects checked, 304 clean. Neither existing leg could see the class:
+byte-identity compares only modules needing NO island, and those are precisely
+the ones that previously refused.
+
+**#1331 stays open.** The literal-pool half shipped; a function whose branches
+span every candidate placement still refuses, and the native-pointer f32
+static-data half is untouched.
+
+**STACKDOC (#1341 item 3 — cpetig)** — v0.71 emitted a per-export maximum
+native stack depth and the page an embedder actually reads never named it. The
+**Stack** bullet in `docs/embedder-abi-relocatable-arm.md` now names
+`--emit-stack-depth`, says what the number covers, what LOUD-DECLINES rather
+than under-reporting (`call_indirect`, recursion, external calls — so an absent
+number is itself information), and what the embedder must add ON TOP: the
+interrupt and exception frames the RTOS pushes on the SAME stack, which synth
+does not model and cannot see. Sizing the region to synth's number exactly
+would re-introduce #1341's own failure under interrupt load.
+
+**CIPOOL (#1062)** — raised by the maintainer mid-cut and then measured rather
+than assumed. `ci_pool_tripwire.py` pins the `ubuntu-latest` share of ci.yml
+structurally (ceiling, ratchet, and a deadlock guard that refuses a required
+context which is undefined, has no `runs-on`, or carries an `if:`), and three
+pure-cargo jobs moved to the self-hosted pool in the same change. **#1062 stays
+open**: this is increment 3 of a programme, not the answer — under a
+three-PR burst the pool measured 201 `ubuntu-latest` jobs queued against 3
+running.
+
+**ISSUEGATE (#1250)** — the closure gate had no invocation site anywhere; it is
+now run by `tag_release.sh`, R12 has unit coverage, and the gate stopped making
+a false statement about issues closed BEFORE the tag.
+
+**RITUAL (#1269)** — the four-check merge ritual and the tag ritual now live in
+the repository instead of a session scratchpad, with both defects #1269 names
+fixed: branch currency is `git merge-base --is-ancestor` plus a zero
+`rev-list --count`, not `baseRefOid`; and the squash-fidelity question is
+separated from "how far did main move?".
+
+**ARM64MUSL (#1349)** — `aarch64-unknown-linux-musl` joins the release matrix,
+built and EXECUTED natively on an arm64 runner: no emulator, no GNU sysroot.
+Both triples #1349 names now ship.
+
+**VEX (#1359)** — a CycloneDX VEX is published with each release, inside the
+signed sums. Every `not_affected` comes from a human-written `{ id, reason }`
+in `deny.toml`, copied verbatim into `analysis.detail`; NO CycloneDX
+`justification` enum is emitted, because a generated one asserts a mechanism no
+human chose — which the issue calls "a false statement signed into a release".
+The emitter refuses an unreasoned exemption, and refuses to emit at all when
+the advisory check did not actually run. **#1359 stays open**: the re-issue
+obligation is declined, and that decision is disclosed inside every document.
+
+**ARCHMODEL (#1136)** — the tenth consecutive N/A, spar#445 unchanged.
+
+### Fixed
+
+- `docs/embedder-abi-relocatable-arm.md` gains the stack-depth region guidance
+  (#1341 item 3).
+- Literal pools reachable in functions larger than 4 KB, where no local branch
+  spans the placement (#345).
+- The v0.71.0 notes above said the stack number was "recorded in the object".
+  It is not: it is written to a `synth-stack-v1` sidecar BESIDE the object, and
+  the ELF carries no such section. Corrected there rather than left standing.
+
 ## [0.71.0] - 2026-09-23
 
 ### "The number the consumer needs"
