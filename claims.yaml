@@ -2834,9 +2834,25 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 85
+        value: 84
         baseline: 27
         waivers:
+          - to: 84
+            reason: >-
+              RQ-74-PINDEBT2 (#1223): 85 -> 84, the FIRST reduction since this
+              ratchet was created. Not a growth waiver — the number went DOWN
+              because a pin was CLOSED BY A FIX, not by deletion or by merging
+              entries. `(x - x) + x` returned the constant 0 on the optimized
+              path because the `x + 0 = x` simplification marked the Add DEAD
+              without defining `dest`; its own comment said "would need copy
+              propagation", and that copy propagation did not exist. It now
+              emits a Copy. The oracle's KNOWN_OPEN entry is gone and that
+              vector moved into the LIVE population, so the shape is still
+              executed every run and a regression re-diverges. The oracle's ten
+              frozen silent-wrong vectors are untouched, which is the evidence
+              it can still see this class at all. An entry is still required
+              because 84 remains far above the baseline of 27: that gap IS the
+              outstanding debt, and this records one pin of it paid.
           # RQ-66-UNWATCHED (#1207/#1229/#1230/#1231): 27 -> 85. THE PIN DEBT DID NOT
           # GROW -- ITS MEASUREMENT DID. These four findings previously had no
           # oracle at all: not pinned, not asserted in ci.yml, not covered by a
@@ -2943,7 +2959,7 @@ claims:
       - kind: ratchet
         name: known_open_pinned_cases
         direction: track
-        value: 158
+        value: 157
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the six tables in the
       # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in
