@@ -446,6 +446,21 @@ def _derive_field_keys() -> set[str]:
     to something other than `fields`, and any consumer not named in
     FIELD_KEY_CONSUMERS. Those stay review-time obligations. The honest
     boundary is the shape list, not the claim.
+
+    AND NEITHER SET IS PROTECTED AGAINST SHRINKAGE (v0.74 cold review round 1).
+    Deleting an ENTRY from FIELD_KEY_CONSUMERS, or emptying FIELD_KEYS_UNREAD,
+    silently narrows what R13 refuses and nothing reds — the REFUSE above fires
+    only when a named consumer FILE has vanished, and the anti-vacuity guard
+    only tests non-emptiness. That is the very "cannot see population
+    shrinkage" defect RQ-74-FIELDSHAPE names for the census check, one file
+    over and unnoticed in its own fix.
+
+    Measured, so the risk is bounded rather than asserted: today the second
+    consumer contributes ZERO keys the first does not (`{done-when, issue}`,
+    both already present), and a sweep of every script reading `artifacts/`
+    found no artifact-field consumer outside the two listed. So the list is
+    complete NOW and the mechanism is not yet load-bearing — which is exactly
+    when it is cheapest to say so.
     """
     keys: set[str] = set()
     here = Path(__file__).resolve().parent
@@ -487,9 +502,17 @@ FIELD_KEYS_DERIVED = _derive_field_keys()
 # these by construction, and that is exactly why they need listing: a
 # `carried-from` nested one level too high changes nothing, looks right, and no
 # gate notices — the [[an-unread-key-looks-exactly-like-an-absent-one]] class,
-# measured in v0.71 on `issue-scope`. `carried-from` is carried 45 times across
-# 16 artifact files (token occurrences in prose; as a structured FIELD it is on
-# 13 artifacts) and read by ZERO scripts, and RQ-73-ARCHMODEL's entire
+# measured in v0.71 on `issue-scope`. `carried-from` is carried 55 times across
+# 23 artifact files (token OCCURRENCES in prose; as a structured FIELD it is on
+# 19 artifacts) and read by ZERO scripts, and RQ-73-ARCHMODEL's entire
+#
+# THE METHOD IS PART OF THE NUMBER, because two releases got it wrong in two
+# different ways. v0.72 wrote 44, measured before the commit that added the
+# 45th. v0.73 "corrected" that to 45 using `git grep -c`, which counts LINES
+# CONTAINING A MATCH, not occurrences — the true figure at that tag was 46. The
+# count above is occurrences (`text.count("carried-from")` over
+# `git ls-files artifacts`), and v0.74 moved it again by adding eight artifacts,
+# six of which carry the field. Re-derive it; do not copy it.
 # chain claim rests on it.
 FIELD_KEYS_UNREAD = {"carried-from"}
 

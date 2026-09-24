@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: compiles >= 4
+# ci-checks: emulations >= 15
 """RQ-73-ISLANDPASS (#1331): the EXECUTION gate a literal-island fixed point owes.
 
 WHY THIS FILE EXISTS, AND WHY IT IS WRITTEN TO ACTIVATE ITSELF.
@@ -98,7 +98,18 @@ def compile_once(obj):
 
 def island_invariants(obj):
     """INV1: every R_ARM_THM_CALL offset lands on a BL (hw1 & 0xF800 == 0xF000).
-    INV2: every LDR.W literal (hw1 == 0xF8DF) resolves to a relocated word."""
+
+    INV2 IS NOT IMPLEMENTED HERE, and this docstring used to claim it was.
+    (v0.74 cold review round 1.) `reloc_offsets` is built at the top of this
+    function and never read — `grep -n reloc_offsets` returns exactly two lines,
+    the assignment and the `.add`, and no use. A gate's docstring asserting a
+    check it does not perform is this release's own subject pointed inward, so
+    it is corrected rather than quietly deleted.
+
+    What DOES cover the intent, partially: `execute()` refuses unless at least
+    three pool relocations resolved (`nrel < 3`), which is why the gap went
+    unnoticed. A real per-literal INV2 is a v0.75 candidate; it is not claimed
+    here."""
     import struct
 
     from elftools.elf.elffile import ELFFile
@@ -299,6 +310,20 @@ def run_one(td: str, fx: str) -> int:
 
     if r.returncode != 0 or not os.path.isfile(obj):
         # ---- STATE 1: still refused. Pin the refusal, assert nothing else.
+        #
+        # (v0.74 cold review round 1) THIS BRANCH USED TO BE A SILENT PASS. It
+        # returns 0 and prints no `RESULT:` line, so a fixture REVERTING from
+        # "compiles and executes bit-exact" to "refused" scored green, and the
+        # declared floor could not see it either: `compiles >= 4` counts
+        # subprocess INVOCATIONS, which a refusing compiler still makes.
+        # Demonstrated with a SYNTH_BIN wrapper that disabled islands for
+        # `islandpass_1331_nested.wat` only — rc=0, two PASS lines, and the CI
+        # grep `grep -q '^RESULT: PASS'` satisfied.
+        #
+        # The floor is now `emulations >= 15` (3 fixtures x 5 ARGVALS). A
+        # reverted fixture stops emulating, the count falls to 10, and the run
+        # is VACUOUS rather than green. That is why the floor counts the work
+        # done rather than the calls made.
         if PINNED_REFUSAL not in blob:
             print(f"REFUSE {label}: it declines, but NOT with the pinned #345 "
                   f"message. A different refusal is a different defect.")

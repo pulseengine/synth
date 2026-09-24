@@ -6142,6 +6142,13 @@ jobs:
           SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
             scripts/repro/islandpass_1331_execution_differential.py | tee /tmp/1331.txt
           grep -q '^RESULT: PASS' /tmp/1331.txt
+      - name: "#1223 — the five algebraic-identity shapes, EXECUTED (RQ-74-PINDEBT2)"
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py \
+            scripts/repro/algebraic_identity_probes_1223.py | tee /tmp/1223p.txt
+          grep -qE '^algebraic-identity-probes: [0-9]+ shape\(s\) executed$' /tmp/1223p.txt
+          grep -q '^RESULT: PASS' /tmp/1223p.txt
 
   arm64-musl-portable-asset:
     name: "Portable arm64 musl asset cross-builds and is static (#1349)"

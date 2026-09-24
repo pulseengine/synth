@@ -37,6 +37,14 @@ artifacts:
       cross-module reads, starting with the live instance above. (c) A census
       floor that fires on shrinkage at planning time.
 
+      OUTCOME. (a) and (b) ARE delivered. (c) IS NOT, and is declared so rather
+      than left silent: v0.74's round-1 cold review found it neither shipped nor
+      declined while this artifact read `implemented`. It is deferred to v0.75 —
+      and the same review found the identical shrinkage hole in THIS lane's own
+      fix (deleting an entry from FIELD_KEY_CONSUMERS, or emptying
+      FIELD_KEYS_UNREAD, narrows R13 silently and nothing reds), so the two
+      belong in one lane rather than being patched one file at a time.
+
       WHAT WOULD MAKE THIS WRONG. A general "any `.get` on anything named like
       fields" walk will over-match and pin keys that are not artifact fields.
       Measure the false-positive rate over the live tree BEFORE shipping (a).

@@ -44,8 +44,10 @@ artifacts:
       OUTCOME: THAT IS EXACTLY WHAT HAPPENED. The census ran first and REFUTED
       the tripwire. Measured at the v0.74 cut over non-test code, excluding ARM
       immediate syntax: 117 numbers, 389 sites — 105 numbers / 363 sites (93%)
-      cite a CLOSED issue, 9 numbers / 21 sites an OPEN one. A refusal would
-      have red 363 sites on the day it landed.
+      cite a CLOSED issue, 9 numbers / 21 sites an OPEN one, and 3 numbers /
+      5 sites are not an issue at all. The three buckets are stated together
+      because the first draft here omitted the third and did not sum: 105 + 9
+      is not 117. A refusal would have red 363 sites on the day it landed.
 
       The reason is not sloppiness: a `#N` in a diagnostic names WHERE THE
       LIMITATION WAS ANALYSED, and that issue is normally closed precisely

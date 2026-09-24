@@ -132,6 +132,25 @@ def inspect_object(backend: str, obj: str, compiled: list[str]) -> None:
     v0.73 round 1 had already added an exit-status cross-check and an
     object-exists/non-empty check; the stub satisfied BOTH. The gap was that
     nothing ever asked what the file IS.
+
+    WHAT THIS STILL CANNOT SEE (v0.74 cold review round 1, disclosed here
+    rather than left to be rediscovered):
+
+      * IT ASKS WHAT THE FILE IS, NEVER WHAT IT CONTAINS OR WHO PRODUCED IT.
+        A 30-line script that copies three PRE-RECORDED ELFs — right machine,
+        right symbols, `.text` entirely overwritten with 0xDE filler — and
+        prints the canned warning lines passes the whole step: rc=0,
+        CHECKS=12/12, RESULT: PASS, and both CI greps. A recorded artifact
+        replays forever. Closing it needs the emitted CODE checked (a decode,
+        or an execution differential), not another header field.
+      * THE TWO INVOCATIONS ARE NEVER CROSS-CHECKED. `inspect_object` asserts
+        `compiled SUBSET-OF symbols`; it never asserts
+        `declined INTERSECT symbols = {}`. An object whose symtab contains the
+        three exports leg 1 just reported as DECLINED passes.
+      * THE FLOOR MOVE 3 -> 6 BOUGHT NOTHING. `oracle_run`'s `mode=compiles`
+        counts subprocess INVOCATIONS, so doubling the invocations doubled the
+        floor and a stub satisfies both. The floor proves the step ran, not
+        that anything compiled.
     """
     if not os.path.isfile(obj) or os.path.getsize(obj) == 0:
         raise SystemExit(
