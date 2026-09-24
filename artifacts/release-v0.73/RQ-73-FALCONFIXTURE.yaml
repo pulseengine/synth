@@ -11,7 +11,16 @@ artifacts:
         -> COMPILES, 2846-byte object, 0 functions skipped
 
         gh issue view 1069                      -> CLOSED
-        grep 'spill-slot pool exhausted' crates -> only the I64 pool remains
+        grep 'spill-slot pool exhausted' crates -> I64 **and** VFP
+
+      CORRECTION (made when the lane ran the command again rather than quoting
+      it): the second line above first read "only the I64 pool remains", and
+      that is FALSE. `VFP_FRAME_HOME_SLOT_EXHAUSTION` is live at
+      `instruction_selector.rs:3235`, emitted at `:3245` behind the `#1069:`
+      prefix and matched in `arm_backend.rs:1061` to drive the pool-grow
+      retry — it is precisely the rung the reporter's `step` export hits. A
+      lane that believed the sentence would have scoped around a path that is
+      very much still there.
 
       So every COMMITTED fixture for this class passes. #1318's residual is
       `opt.wasm`, which is an ISSUE ATTACHMENT and not in this repository — the
@@ -24,19 +33,65 @@ artifacts:
       ago is how this programme has repeatedly been wrong.
 
       TWO HONEST SHAPES, in order:
-      (a) ASK cpetig to re-test on v0.72.0 and report the skip count. Cheap, and
-          the answer decides whether there is a lane at all — v0.71 narrowed the
-          VFP allocator twin, so the count may already have moved.
+      (a) ASK cpetig to re-test on v0.72.0 and report the skip count.
       (b) If it still fails, build a REDUCED FIXTURE that reproduces the shape
           (7 of 17 declining) BEFORE scoping any fix, and commit it. That is
           this artifact's `done-when`.
+
+      WHAT ACTUALLY HAPPENED: (a) WAS NOT NEEDED, and the premise above is
+      wrong. `errors.zip` on #1318 is not a log bundle — it contains `opt.wasm`
+      and `fused.wasm` THEMSELVES. So the module IS obtainable and was measured
+      here rather than by spending the reporter's time. Nobody had opened the
+      attachment in two releases, and a committed test file had written the
+      same false belief into its design rationale (corrected in this PR).
+
+      MEASURED at v0.72.0 with the reporter's own command line:
+
+        fused.wasm   rc=0, 0 of 26 skipped        (still clean, as at v0.70.0)
+        opt.wasm     rc=1, 7 of 17 skipped
+                     -> 1x #1069 (the `controller@0.10.0#step` export)
+                     -> 6x GI-FPU-002 (func_4/5/8/10/11/12)
+
+      Identical to the v0.70.0 status, which is what the code says should
+      happen: BOTH emit sites are untouched between v0.70.0 and v0.72.0
+      (`git log -L` over the exact ranges, with a positive control on the v0.72
+      island code that correctly reported 2 commits). The artifact's guess that
+      "v0.71 narrowed the VFP allocator twin, so the count may already have
+      moved" is therefore also refuted: v0.71's narrowing carries the #881
+      diagnostic, a different rung from the #1069 one `step` hits.
+
+      THE REDUCTION, which is what (b) delivers. Each of the six GI-FPU-002
+      functions was extracted into its own module and still declines. All six
+      contain a `block` with an f32 result, and an eight-line module carrying
+      only that shape declines identically — a VALUE-CARRYING BRANCH AT FLOAT
+      TYPE, which wasmtime validates and executes. The limit of the claim is
+      stated in the oracle: the minimal case shows the shape is SUFFICIENT, not
+      that it is the trigger in each of the six.
+
+        type  ARM              RISC-V    AArch64
+        i32   compiles         compiles  compiles
+        i64   #509 (named)     declines  compiles
+        f32   GI-FPU-002       declines  compiles
+        f64   GI-FPU-002 ph2   declines  compiles
+
+      The second finding is the DIAGNOSTIC: "an integer operation peeked an f32
+      (VFP) stack value — invalid wasm or an unlowered float op reached the
+      integer path" names the wrong subsystem and reads as though the input may
+      be malformed. It is not. That is why six declines in a real
+      flight-control module were never connected to a known gap, and AArch64
+      compiles all four, so the capability exists in this codebase.
+
+      These pins are `EXPECTED_DECLINES`, not `KNOWN`: the pin population
+      excludes decline pins by design — "a loud refusal is reach, not silent
+      wrongness" — so they correctly do not enter `known_open_pins`, which
+      RQ-73-PINDEBT must drive DOWN.
 
       WHAT WOULD MAKE THIS WRONG. If the reporter answers that v0.72.0 compiles
       their module, this lane is DONE at step (a) and the fixture is unnecessary
       — record that and close, rather than building a fixture to justify the
       artifact. A fixture for a bug nobody has is the same waste as a gate that
       cannot fail.
-    status: proposed
+    status: implemented
     release: v0.73
     tags:
       - arm-backend
@@ -50,6 +105,7 @@ artifacts:
       req-type: system
       priority: must
       issue: "#1318"
+      landed: "#1376"
       verification-track: differential
       done-when: "file:scripts/repro/falcon_opt_1318.wat"
       verified-by: >-

@@ -146,6 +146,18 @@ EXPECTED_DECLINES = {
     # The other 38 (i64 binary/unary/shift/rotate/load/store/select, the #1222
     # get->set->use pair) compile and execute equal to wasmtime on this path.
     "home_alias_class_1189_i64.wat": "i64 compare -> i64.extend_i32_u (10 c_* exports, #952)",
+    # RQ-73-FALCONFIXTURE (#1318). The value-carrying-branch matrix. Three of
+    # its four exports decline on this sweep's ARM target for the reason the
+    # fixture exists to pin: `vbr_i64` hits #509 (an i64 value carried over a
+    # br/br_if/br_table is not supported by the direct selector) and
+    # `vbr_f32`/`vbr_f64` hit GI-FPU-002 — so the module fails via #952.
+    # `vbr_i32` DOES compile, and it is the control: if it ever stops, the
+    # #1318 oracle reds, which is where that is policed. Nothing of this
+    # fixture executes in THIS sweep (a module on EXPECTED_DECLINES never
+    # reaches `objects`, the correction the v0.71 cold review made to the note
+    # above); its execution coverage is
+    # `falcon_opt_1318_differential.py` on cortex-m7dp.
+    "falcon_opt_1318.wat": "value-carrying branch at i64/f32/f64 (#509 / GI-FPU-002, #952)",
     # RQ-71-VFPALIAS (#881/#1069). The redefined-frame-home fixture. Its three
     # f64 legs (`redef_*_d`) decline on this sweep's ARM target for the SAME
     # pre-existing reason as `below_fp` above — scalar f64 needs a
