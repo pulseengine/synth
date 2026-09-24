@@ -412,29 +412,72 @@ DISPOSITIONS = {"partial", "refuted", "deferred"}
 # `fields.get("disposition")` and nothing else, so declaring that an issue
 # outlives its artifact's delivery cannot trip it — the artifact keeps claiming
 # its own outcome, which is true, and says only that the ISSUE is wider.
+FIELD_KEY_CONSUMERS = (
+    "status_evidence_check.py",
+    "loop_conformance_check.py",
+)
+
+
 def _derive_field_keys() -> set[str]:
-    """Every `fields.get("...")` THIS MODULE performs, read off its own AST.
+    """Every artifact-field read the DECLARED consumers perform, off their ASTs.
 
     RQ-73-GATETRUTH (#1319). The set used to be a hand-written literal whose
     comment claimed that adding a new read without listing it "is a visible
-    omission rather than a silent one". Nothing enforced that — `grep -rn
-    FIELD_KEYS` found the definition and ONE use — so the claim was a statement
-    of intent wearing the grammar of a mechanism. This is the same move
+    omission rather than a silent one". Nothing enforced that, so the claim was
+    a statement of intent wearing the grammar of a mechanism. This is the move
     `claim_check._pin_table` already makes one file over: derive what you check
-    against from the artifact you ship, rather than restating it.
+    against from the artifact you ship.
+
+    RQ-74-FIELDSHAPE (#1319), v0.74 — WHAT IT COULD NOT SEE. Until v0.74 it
+    required EXACTLY `Name("fields").get(Constant)` in THIS module, so a read
+    through `(a.get("fields") or {}).get("key")` escaped, and so did a read in
+    any other script. `loop_conformance_check.py` uses precisely that shape for
+    `issue` and `done-when`, which means those two keys were covered only by
+    COINCIDENCE: this module happens to read them in the matching shape.
+
+    MEASURED BEFORE WIDENING, because the artifact's own "what would make this
+    wrong" is over-matching: the second shape finds 2 reads, both in
+    `loop_conformance_check.py`, and ZERO keys the narrow rule did not already
+    have. The widening therefore changes no verdict today — it replaces a
+    coincidence with a mechanism.
+
+    STILL NOT COVERED, disclosed rather than left to be rediscovered: a
+    subscript (`fields["key"]`), a non-literal key, a read through a local bound
+    to something other than `fields`, and any consumer not named in
+    FIELD_KEY_CONSUMERS. Those stay review-time obligations. The honest
+    boundary is the shape list, not the claim.
     """
     keys: set[str] = set()
-    tree = ast.parse(Path(__file__).read_text(errors="ignore"))
-    for n in ast.walk(tree):
-        if (isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Attribute)
-                and n.func.attr == "get"
-                and isinstance(n.func.value, ast.Name)
-                and n.func.value.id == "fields"
-                and n.args
-                and isinstance(n.args[0], ast.Constant)
-                and isinstance(n.args[0].value, str)):
-            keys.add(n.args[0].value)
+    here = Path(__file__).resolve().parent
+    for rel in FIELD_KEY_CONSUMERS:
+        f = here / rel
+        if not f.is_file():
+            raise SystemExit(
+                f"REFUSE: FIELD_KEY_CONSUMERS names {rel!r}, which does not "
+                f"exist. A declared consumer that vanished narrows the key set "
+                f"silently, which is the failure this derivation exists to stop.")
+        tree = ast.parse(f.read_text(errors="ignore"))
+        for n in ast.walk(tree):
+            if not (isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "get"
+                    and n.args
+                    and isinstance(n.args[0], ast.Constant)
+                    and isinstance(n.args[0].value, str)):
+                continue
+            recv = n.func.value
+            if isinstance(recv, ast.Name) and recv.id == "fields":
+                keys.add(n.args[0].value)
+            elif isinstance(recv, ast.BoolOp):
+                for v in recv.values:
+                    if (isinstance(v, ast.Call)
+                            and isinstance(v.func, ast.Attribute)
+                            and v.func.attr == "get"
+                            and v.args
+                            and isinstance(v.args[0], ast.Constant)
+                            and v.args[0].value == "fields"):
+                        keys.add(n.args[0].value)
+                        break
     return keys
 
 

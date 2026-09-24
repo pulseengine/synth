@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-74-APTBLIND
     type: system-req
     release: v0.74
-    status: proposed
+    status: implemented
     title: "The deadlock guard's apt detector is blind to `apt` without `-get` and to apt inside a script file — and such a script already exists in this repo"
     description: >
       REFUTING COMMANDS RUN AT THIS CUT, and they did NOT refute:

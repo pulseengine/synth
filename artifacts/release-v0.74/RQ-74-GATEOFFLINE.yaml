@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-74-GATEOFFLINE
     type: system-req
     release: v0.74
-    status: proposed
+    status: implemented
     title: "`merge_gate` CHECK1 cannot see a NEVER-REPORTED context, and `--squash-fidelity`'s exit mapping has no offline case"
     description: >
       TWO MUTATIONS FROM v0.73's ROUND-2 GATE REVIEW, both recorded with their

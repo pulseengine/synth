@@ -108,6 +108,24 @@ def squash_fidelity(pr_head: str, merged: str, base_at_merge: str):
     return ("SQUASH ALTERED CONTENT", diff_lines, 0)
 
 
+def fidelity_exit(verdict: str) -> int:
+    """verdict -> process exit code. (v0.74, RQ-74-GATEOFFLINE, #1269)
+
+    Extracted from `main()` for the same reason `decide()` was extracted from
+    `gate()`: it was the ONLY thing `merge_ritual.sh` consumes, and nothing
+    could reach it offline. v0.73's round-2 gate review mutated
+    `return 0 if verdict == "FAITHFUL" else 1` to `return 0` — deleting the
+    mapping outright — and `--self-test` stayed GREEN, because `self_test()`
+    never calls `main()`. That is round 1's F3 finding one level out: F3 gave
+    the VERDICT a case and left the code that acts on it without one.
+
+    Only FAITHFUL is a pass. INDETERMINATE is not: it means the branch was
+    stale, so the diff contains main's advance and the number proves nothing.
+    DIFF UNAVAILABLE is not either: it means `git diff` never ran.
+    """
+    return 0 if verdict == "FAITHFUL" else 1
+
+
 def decide(roll: dict, required: list[str], current: bool, behind: int,
            base_agrees: bool):
     """The four checks, as a PURE function of the data (#1319).
@@ -319,6 +337,36 @@ def self_test() -> int:
     check("CHECK1: a required context absent from the API -> REFUSED",
           not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
 
+    # A context that NEVER REPORTED. (v0.74, RQ-74-GATEOFFLINE, #1269)
+    #
+    # Distinct from the case above, and nothing reached it. There, `required`
+    # is short too, so the contract set-comparison fails and CHECK1 reds before
+    # `missing` is ever consulted. Here the contract is INTACT and the ROLLUP is
+    # empty — the shape where a required check was retargeted or renamed and now
+    # never runs, which is the deadlock `ci_pool_tripwire`'s guard exists to
+    # prevent and which no merge can ever clear.
+    #
+    # Demonstrated: mutating `roll.get(r)` to `roll.get(r, "SUCCESS")` — so an
+    # ABSENT context reads as passing — left `--self-test` green and made
+    # `decide({}, list(REQUIRED_CONTEXTS), True, 0, True)` return CHECK1=True on
+    # an EMPTY rollup. The code was right; the test could not see it.
+    r = decide({}, real, True, 0, True)
+    check("CHECK1: the full contract with an EMPTY rollup -> REFUSED",
+          not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
+
+    r = decide({n: "SUCCESS" for n in real[:-1]}, real, True, 0, True)
+    check("CHECK1: one required context never reported -> REFUSED",
+          not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
+
+    # THE EXIT MAPPING. (v0.74, RQ-74-GATEOFFLINE, #1269) `merge_ritual.sh`
+    # consumes the exit code and nothing else, and until v0.74 no offline case
+    # reached it — `return 0` passed the whole suite.
+    check("fidelity exit: FAITHFUL -> 0",
+          fidelity_exit("FAITHFUL") == 0, f"got {fidelity_exit('FAITHFUL')}")
+    for bad in ("SQUASH ALTERED CONTENT", "INDETERMINATE", "DIFF UNAVAILABLE"):
+        check(f"fidelity exit: {bad} -> non-zero",
+              fidelity_exit(bad) != 0, f"got {fidelity_exit(bad)}")
+
     # THE EMPTY CONTRACT. `set() == set()` and `not []` are both True, so
     # without the explicit guard this passed while asserting nothing.
     _saved = list(REQUIRED_CONTEXTS)
@@ -379,7 +427,7 @@ def main() -> int:
         # INDETERMINATE is not a pass. It means the branch was stale, so the
         # diff contains main's advance and the number proves nothing — the
         # condition that silently held for 45 merges before #1268.
-        return 0 if verdict == "FAITHFUL" else 1
+        return fidelity_exit(verdict)
 
     required = [l.strip() for l in sh(
         "gh", "api",

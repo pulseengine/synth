@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-74-FIELDSHAPE
     type: system-req
     release: v0.74
-    status: proposed
+    status: implemented
     title: "`FIELD_KEYS_DERIVED` sees ONE syntactic shape of ONE binding in ONE module, and the census check cannot see population SHRINKAGE"
     description: >
       TWO FINDINGS AGAINST v0.73's OWN CORRECTIONS, from round 2.
