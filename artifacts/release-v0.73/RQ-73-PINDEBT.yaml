@@ -51,6 +51,54 @@ artifacts:
           with no owner and nothing notices today. `scripts/stale_pin_check.py`
           is that tripwire and is this artifact's `done-when`.
 
+      WHAT (c) FOUND, and it is the theme's own answer. The tripwire has
+      exactly ONE specimen in the whole pin population, and it is the
+      sharpest possible form of "is it still broken?":
+
+        #1229 was CLOSED, stateReason COMPLETED, on 2026-09-10T02:37:12Z —
+        while `false_reject_1229_differential.py` pinned, and still pins,
+        130 false rejections of VALID spec functions across 12 (file,
+        backend) cells. RE-RUN on a binary built from main at 6d167f0f with
+        CI's own `cargo build -p synth-cli`: 12/12 cells, TOTAL=130, every
+        cell equal to its pin. The pins are exact in BOTH directions, so the
+        oracle being green IS the statement that nothing moved.
+
+      HOW IT CLOSED, which is the mechanism worth keeping. PR #1246 —
+      "four v0.65 findings WATCHED" — shipped that oracle and says in its own
+      body "filed as watched, not fixed". Its explicit reference line is
+      correct (`Refs #1207 #1229 #1230 #1231`). But two lines above, a
+      sentence describing what a HYPOTHETICAL future fix would achieve
+      contains a closing keyword immediately followed by this issue's number.
+      GitHub's parser does not read tense, intent, or the sentence around it.
+      The merge landed at 02:37:11Z; the close event is 02:37:12Z, one second
+      later, with no comment. The other three issues in the SAME PR are all
+      still open — only this one contained the substring. `stateReason:
+      COMPLETED` here is GitHub's default for a keyword-close, not a human
+      judgement: nobody ever asserted this was done.
+
+      This is the repo's own documented failure mode (a PR body once
+      auto-closed a live external blocker from inside a DENIAL), recurring
+      two weeks after the oracle that could see it was already running.
+      ACTION TAKEN: the evidence was posted to #1229 and the issue REOPENED,
+      which is what moved this gate red -> green. The red half is therefore a
+      REAL state change, not a planted fixture.
+
+      TWO DERIVATION DEFECTS CAUGHT BY REFUTING COMMANDS, both recorded
+      because each would have shipped a false number:
+        - A first pass reported #539 as a second stale pin. The parity table
+          holds `('#539-grow-fails', 1)` in the SAME tuple position a real
+          issue reference occupies, and its own comment reads "Recorded with
+          this reason, NO ISSUE: the divergence is a capability boundary, not
+          a miscompile". #539 IS closed, so an unanchored `#(\d+)` reports 14
+          deliberate, documented envelope pins as debt. The match is now
+          anchored at both ends.
+        - A first pass printed "105 pins" against a `known_open_pins` ratchet
+          of 85, because a table serving two issues was counted at full size
+          against each. The checker now ASSERTS 68 issue-charged + 17
+          reason-charged == 85, reconciling against the independent ratchet —
+          and that assertion immediately caught it silently dropping 3
+          entries whose value referenced a named constant, not a literal.
+
       WHAT WOULD MAKE THIS WRONG TO BUILD. If the pins are mostly CORRECT
       suppressions of intended declines rather than wrong answers, the number is
       not debt and driving it down is theatre. AUDIT THAT FIRST: sample the
@@ -58,7 +106,7 @@ artifacts:
       not an `EXPECTED_DECLINE`. The population's stated inclusion criterion
       says divergence — the criterion itself has never been audited against the
       entries.
-    status: proposed
+    status: implemented
     release: v0.73
     tags:
       - process
@@ -72,6 +120,7 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1373"
+      landed: "#1375"
       verification-track: differential
       done-when: "file:scripts/stale_pin_check.py"
       verified-by: >-
