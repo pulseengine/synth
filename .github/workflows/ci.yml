@@ -6132,6 +6132,98 @@ jobs:
             *) echo "FAIL: --version printed '$OUT', which is not '<binary-name> <semver>'"; exit 1 ;;
           esac
 
+  advisories-and-vex:
+    name: "Advisories are checked, and every not_affected is human-asserted (#1359)"
+    # SELF-HOSTED, per the RQ-72-CIPOOL ceiling.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: advisories-vex
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny || cargo deny --version
+      # THE ADVISORY SOURCE. This repo had no `deny.toml` and no cargo-deny in
+      # any workflow — #1359 said so and it was re-measured at the v0.72 cut.
+      # A VEX asserting `not_affected` needs something that can say `affected`;
+      # without this the document would be a statement about nothing.
+      - name: Advisories
+        run: cargo deny check advisories
+      # THE RULE THAT MAKES THE DOCUMENT WORTH TRUSTING: a `not_affected` may
+      # come only from a human-written `{ id, reason }` in deny.toml. The
+      # emitter REFUSES an ignore entry with no reason, because that is a
+      # `not_affected` nobody can check — which is the machine-guess trap
+      # #1359 names.
+      - name: Emit the VEX, and prove it refuses an unreasoned exemption
+        run: |
+          set -euo pipefail
+          python3 scripts/emit_vex.py --version 0.0.0-ci -o /tmp/vex.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("/tmp/vex.json"))
+          assert d["bomFormat"] == "CycloneDX", d["bomFormat"]
+          props = {p["name"] for p in d["metadata"]["properties"]}
+          assert "synth:vex:point-in-time" in props, props
+          assert "synth:vex:not-affected-source" in props, props
+          # #1359 ask 3, "Name what made it true". Pinned here because the
+          # emitter ALWAYS writes these two — the DB-commit value degrades to
+          # an explicit `unavailable: <reason>` rather than vanishing, so an
+          # absent property means the emitter changed, never that the lookup
+          # failed. An omitted property and an unchecked one are
+          # indistinguishable, and a VEX is the document where that difference
+          # is the entire point.
+          assert "advisory-db.commit" in props, props
+          assert "asserted-at" in props, props
+          dbc = next(p["value"] for p in d["metadata"]["properties"]
+                     if p["name"] == "advisory-db.commit")
+          print(f"  advisory-db.commit: {dbc[:60]}")
+          for v in d["vulnerabilities"]:
+              a = v["analysis"]
+              if a["state"] == "not_affected":
+                  assert a.get("detail"), f"{v['id']} not_affected with no detail"
+                  # ROUND-2 COLD REVIEW: the emitter used to hardcode
+                  # `"justification": "code_not_reachable"` for every exemption
+                  # while four places claimed it composed none — including the
+                  # sentence emitted INTO the signed document. #1359 ask 5 calls
+                  # a generated justification "a false statement signed into a
+                  # release". The enum is optional in CycloneDX; the human's
+                  # reason lives in `detail`. Pinned so it cannot come back.
+                  assert "justification" not in a, (
+                      f"{v['id']}: a `justification` enum was emitted; it must "
+                      f"come from a human or not at all")
+          # A FLOOR, not just a shape. An empty `vulnerabilities` array and a
+          # check that never ran produce the same document, and `test -s` (the
+          # only post-check release.yml has) passes on both. deny.toml carries
+          # at least one human exemption, so every advisory it names must
+          # APPEAR here — that is derived from the shipped artifact rather than
+          # a number chosen by hand.
+          import re as _re, pathlib as _pl
+          _ids = set(_re.findall(r'RUSTSEC-\d{4}-\d{4}',
+                                 _pl.Path("deny.toml").read_text()))
+          _got = {v["id"] for v in d["vulnerabilities"]}
+          assert _ids and _ids <= _got, f"deny.toml exempts {_ids}, VEX has {_got}"
+          print(f"  vex OK: {len(d['vulnerabilities'])} advisory/ies, "
+                f"{len(_ids)} human exemption(s) all present")
+          PY
+          # POTENCY: strip the reason and the emitter must REFUSE. Without this
+          # leg the assertions above would pass on an emitter that accepted
+          # anything.
+          python3 - <<'PY'
+          import re, pathlib
+          p = pathlib.Path("deny.toml"); orig = p.read_text()
+          p.write_text(re.sub(r"^ignore\s*=\s*\[.*?^\]",
+                              'ignore = [\n  "RUSTSEC-0000-0000",\n]',
+                              orig, flags=re.S | re.M))
+          PY
+          if python3 scripts/emit_vex.py --version 0.0.0-ci -o /tmp/vex2.json; then
+            echo "FAIL(potency): an ignore entry with NO reason was ACCEPTED"
+            git checkout -- deny.toml
+            exit 1
+          fi
+          git checkout -- deny.toml
+          echo "  potency OK: an unreasoned exemption is refused"
+
   musl-portable-asset:
     name: Portable musl asset builds and is static (#1349)
     # SELF-HOSTED on purpose. 56 of this file's 67 jobs target `ubuntu-latest`,

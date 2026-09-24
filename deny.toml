@@ -1,0 +1,89 @@
+# RQ-72-VEX (#1359): the advisory source a VEX document needs.
+#
+# This repo had NO `deny.toml` and no cargo-deny in any workflow — measured at
+# the v0.72 cut, and stated by #1359 itself ("the advisory check itself comes
+# with this change"). A VEX asserting `not_affected` needs something that can
+# say `affected` in the first place; without an advisory source the document
+# would be a statement about nothing.
+#
+# SCOPE IS ADVISORIES ONLY, deliberately. cargo-deny also checks licences, bans
+# and sources. Those are real, and turning them all on at once would make this
+# lane about dependency policy rather than about #1359's question — which is
+# whether a consumer pinned to a varve layer can learn that an advisory does
+# not reach what they are running. Licence/ban/source policy is a separate
+# decision with a separate owner; it is NOT silently adopted here.
+
+[advisories]
+# `deny` is the point: an unhandled advisory must be a red, not a note.
+# `unmaintained = "workspace"` limits the unmaintained-crate signal to crates
+# this workspace actually chose, rather than every transitive dependency's
+# abandonware, which is noise nobody acts on.
+version = 2
+yanked = "deny"
+unmaintained = "workspace"
+
+# HUMAN-ASSERTED EXEMPTIONS ONLY.
+#
+# Every entry here becomes a `not_affected` in the emitted VEX, and that is the
+# ONLY way a `not_affected` can be produced — see scripts/emit_vex.py. An
+# auto-derived `not_affected` would be a machine guess wearing a human
+# assertion's clothes, and the justification field is exactly where a plausible
+# false claim would sit and propagate (the defect class v0.62 measured, where
+# one such claim reached three files).
+#
+# An entry needs a REASON someone can check, naming why the vulnerable path is
+# not reachable in THIS source tree. "Looks fine" is not a reason. If you
+# cannot write one, leave the advisory un-ignored: `affected` with no
+# justification is an honest answer and a far better one than a fabricated
+# `vulnerable_code_not_in_execute_path`.
+ignore = [
+  # RUSTSEC-2026-0204 — crossbeam-epoch 0.9.18. "Invalid pointer dereference in
+  # `fmt::Pointer` impl for `Atomic` and `Shared` when the underlying pointer is
+  # invalid"; the affected code is the `fmt::Display` impl, which dereferences.
+  #
+  # NOT REACHABLE IN THE SHIPPED ARTIFACT, and this is the assertion varve
+  # cannot make from outside — it is a fact about THIS source tree:
+  #
+  #   cargo tree -p synth-cli --edges normal -i crossbeam-epoch
+  #     -> error: package ID specification `crossbeam-epoch` did not match
+  #        any packages
+  #
+  # It enters the repository only as
+  #   criterion (DEV-dependency) -> rayon -> rayon-core -> crossbeam-deque
+  #     -> crossbeam-epoch
+  # i.e. through the benchmark harness, which is absent from the released
+  # binary. synth's own sources corroborate: 0 files mention `crossbeam`, 0
+  # Cargo.toml declares it, and 0 files use `{:p}` pointer formatting anywhere
+  # under crates/.
+  #
+  # The `--edges normal` query is the load-bearing one BECAUSE IT CAN FAIL: had
+  # crossbeam-epoch been in the shipped graph it would have matched and printed
+  # the path. A `not_affected` that no command could have refuted would be the
+  # machine guess #1359 warns about.
+  #
+  # RE-CHECK THIS AT EVERY RELEASE. It is a claim about a dependency graph, and
+  # graphs move: if `rayon` ever becomes a normal dependency the justification
+  # silently stops being true while this line goes on asserting it.
+  { id = "RUSTSEC-2026-0204", reason = "Not in the shipped binary's dependency graph: `cargo tree -p synth-cli --edges normal -i crossbeam-epoch` matches no packages. It enters only via criterion, a DEV-dependency benchmark harness (criterion -> rayon -> rayon-core -> crossbeam-deque -> crossbeam-epoch). synth's own sources mention crossbeam 0 times and use `{:p}` 0 times." },
+]
+
+[licenses]
+version = 2
+# Not this lane's decision — see the scope note above.
+#
+# CORRECTED by the v0.72 round-2 cold review: an earlier comment here said
+# "everything is allowed", which is BACKWARDS. For cargo-deny an empty `allow`
+# list permits NOTHING — `cargo deny check licenses` exits 4 with 145 errors on
+# this workspace, measured. That is inert only because nothing in this repo runs
+# `check licenses`: both `ci.yml` and `release.yml` run `check advisories`
+# alone. If a plain `cargo deny check` is ever wired up it will red on every
+# crate, and the fix then is a real licence policy, not a wider `allow`.
+allow = []
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "allow"
