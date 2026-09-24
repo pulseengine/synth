@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-74-ISLANDREACH
     type: system-req
     release: v0.74
-    status: proposed
+    status: implemented
     title: "A branch mis-targeted onto a VALID instruction boundary is caught by exactly ONE oracle — the two built for that constraint are both blind to it"
     description: >
       MEASURED, not feared. v0.73's round-2 gate review mutated the PRODUCER
@@ -51,6 +51,7 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1331"
+      landed: "#1384"
       carried-from: RQ-73-ISLANDPASS
       done-when: "contains:scripts/repro/island_offset_invariant_345.py:RQ-74-ISLANDREACH"
       verified-by: >-
