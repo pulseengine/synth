@@ -88,8 +88,17 @@ argued **down** over time and cannot grow silently:
 
 - **145 wired** — a floor (`count-min`). The surface cannot be emptied by
   deleting oracles instead of fixing them.
-- **8 manual** — a ceiling (`count-max`). A ninth needs a conversation, not a
+- **9 manual** — a ceiling (`count-max`). A tenth needs a conversation, not a
   commit.
+
+  The ninth is `diagnostic_issue_census_345.py` (RQ-74-STALEMSG, #345, v0.74),
+  and it is the second script here whose own conclusion is that CI must not
+  run it. The lane set out to build a tripwire refusing a diagnostic that
+  cites a CLOSED issue; the census found that **93% of citation sites already
+  do** (363 of 389), because a `#N` in a diagnostic names where the
+  limitation was ANALYSED and that issue is normally closed. The refusal
+  would have red 363 sites on landing. It has no verdict about the compiler,
+  so wiring it would add a step that can only pass.
 
   The eighth is `prose_status_claim_1319.py` (RQ-69-PROSEGATE, #1319, v0.69),
   and it is the only script here whose **own conclusion is that CI must not run

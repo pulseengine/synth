@@ -3620,9 +3620,27 @@ claims:
         # that would enable that (a structured status-history field; a
         # designated current-status sentence), so the exit condition is written
         # down rather than left to whoever next reads this number.
+        # 8 -> 9 (RQ-74-STALEMSG #345, v0.74). The NINTH is
+        # diagnostic_issue_census_345.py, and it is raised for the same
+        # reason the eighth was: the lane set out to build a TRIPWIRE and the
+        # census REFUTED it — 93% of issue citations in user-facing
+        # diagnostics (363 of 389 sites) point at a CLOSED issue, so the
+        # refusal would red 363 sites the day it landed. A refutation's
+        # evidence has to SHIP to be re-runnable, and the honest place for it
+        # is this measurement surface. Putting the file outside
+        # scripts/repro/ so the glob misses it is routing around the gate.
+        #
+        # ORACLE_WIRING.md says a ninth 'needs a conversation, not a commit'.
+        # This is that conversation, written where the number lives: the
+        # script has NO verdict about the compiler, so wiring it would add a
+        # CI step that can only ever pass.
+        #
+        # What would make this the WRONG call: if the closed-share inverted,
+        # a closed-issue citation becomes the exception, this script grows a
+        # verdict and must be WIRED, and the ceiling falls back to 8.
         pattern: '^# ci-status: manual'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        max: 8
+        max: 9
       - kind: count-max                      # known debt: zero, and it stays zero
         pattern: '^# ci-status: unwired'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
@@ -3631,7 +3649,7 @@ claims:
         # 7 -> 8 (RQ-69-PROSEGATE #1319): moved in the same PR that raised the
         # count-max above, which is the point of pinning the sentence as well
         # as the number — the prose cannot lag the budget it describes.
-        text: "**8 manual**"
+        text: "**9 manual**"
       - kind: verbatim
         text: "**0 unwired**"
 
