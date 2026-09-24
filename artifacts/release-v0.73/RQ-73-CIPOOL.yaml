@@ -102,7 +102,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1062"
-      landed: "PLACEHOLDER_PR"
+      landed: "#1380"
       verification-track: differential
       done-when: "contains:scripts/ci_pool_tripwire.py:PEP668_POOL_READY"
       verified-by: >-
