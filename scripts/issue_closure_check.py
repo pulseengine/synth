@@ -80,13 +80,47 @@ def closed_since(tag: str, repo: str) -> set[int]:
 
     MEASURED against the shipped v0.70.0 tag: `git/refs/tags/v0.70.0` gives
     `object.type=tag`, and `commits/v0.70.0` returns 2026-09-22T21:33:30Z.
+
+    AND THE WINDOW USED TO BE TRUNCATED TO A DAY (v0.74, found at the cut by
+    running this gate rather than trusting it). The search qualifier was built
+    as `closed:>={date[:10]}` — the tag's timestamp cut to `YYYY-MM-DD`, which
+    GitHub reads as MIDNIGHT. So the window began up to 24 hours before the tag
+    and swept in the PREVIOUS releases' closure waves.
+
+    It was invisible while releases were more than a day apart, and v0.72,
+    v0.73 and v0.74 all landed on 2026-09-24. MEASURED at the v0.74 cut against
+    the live API, both halves on one tree:
+
+        closed:>=2026-09-24            -> #1341, #1349, #1269, #1331   (4)
+        closed:>=2026-09-24T15:02:41Z  ->               #1269, #1331   (2)
+
+    where 15:02:41Z is v0.73.0's own commit. #1341 and #1349 closed at
+    03:34Z — v0.72's wave — and the gate reported both as
+    `CLOSED BUT NOT AUTHORISED: no delivered v0.74 artifact names it`, whose
+    prescribed remedy is "reopen it". #1341 is an EXTERNAL reporter's issue,
+    correctly closed by v0.72. The gate built to prevent the v0.69 wrong-closure
+    shape was one step from causing a wrong REOPENING, for the same root reason
+    it exists: a timestamp that was not read at the precision it was written.
+
+    WHAT IS STILL NOT TESTED, disclosed rather than left to be rediscovered:
+    this function takes the network path and no offline test reaches it, so the
+    evidence above is a MEASUREMENT recorded here, not a gate. Extracting the
+    qualifier into a tested helper would repeat what RQ-74-GATEOFFLINE records
+    one file over — v0.73 extracted `decide()` out of `gate()` and v0.74
+    extracted `fidelity_exit()` out of `main()`, each moving the tested boundary
+    one call outward without ever reaching the caller. Driving `closed_since`
+    itself against a recorded `gh` response is the real fix and a v0.75
+    candidate; it is NOT claimed here.
     """
     date = subprocess.run(
         ["gh", "api", f"repos/{repo}/commits/{tag}", "--jq", ".commit.committer.date"],
         capture_output=True, text=True, check=True).stdout.strip()
+    # FULL ISO8601, never `date[:10]`: GitHub's search qualifiers accept a
+    # second-granular timestamp, and a release cut on the same day as its
+    # predecessor depends on it.
     out = subprocess.run(
         ["gh", "issue", "list", "--repo", repo, "--state", "closed",
-         "--limit", "200", "--search", f"closed:>={date[:10]}",
+         "--limit", "200", "--search", f"closed:>={date}",
          "--json", "number"],
         capture_output=True, text=True, check=True).stdout
     return {int(r["number"]) for r in json.loads(out)}
