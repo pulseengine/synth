@@ -6145,7 +6145,17 @@ jobs:
       - name: "#1223 — the five algebraic-identity shapes, EXECUTED (RQ-74-PINDEBT2)"
         run: |
           set -euo pipefail
-          python scripts/oracle_run.py \
+          # `python3` for consistency with all nine sibling steps in this job,
+          # and SYNTH_BIN set the same way they set it.
+          #
+          # NOT a repair: round 2 reported this step "cannot run under its own
+          # interpreter (rc=127)", and that is REFUTED. Bare `python` is absent
+          # LOCALLY, not on the self-hosted runners — this exact step ran on
+          # PR #1388 and printed "algebraic-identity-probes: 5 shape(s)
+          # executed / silent wrong answers: 0 of 5". 18 self-hosted steps use
+          # bare `python` today and their jobs are green. The finding was a
+          # local-environment artifact; the change is tidiness.
+          SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
             scripts/repro/algebraic_identity_probes_1223.py | tee /tmp/1223p.txt
           grep -qE '^algebraic-identity-probes: [0-9]+ shape\(s\) executed$' /tmp/1223p.txt
           grep -q '^RESULT: PASS' /tmp/1223p.txt

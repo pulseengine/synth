@@ -42,17 +42,28 @@ SYNTH = os.environ.get("SYNTH_BIN", str(ROOT / "target/debug/synth"))
 FLAGS = ["--target", "cortex-m4", "--all-exports"]
 
 # name -> (wat body, the shape in source terms)
+# THE SHAPES ARE BARE, and round 2 of the v0.74 cold review is why. They were
+# each wrapped in `(i32.add <shape> (local.get 0))`, and THAT WRAPPER MASKED
+# THREE OF THE FIVE ARMS: with `x - 0` reverted to the defect, the wrapped shape
+# returns wasmtime's 14 and the bare shape returns 0 against wasmtime's 7. So
+# the oracle was 2/5 potent for its own stated population — it named five arms
+# and could only red on two.
+#
+# This also settles a disagreement round 1 got backwards. Round 1 measured
+# "2 of 5 wrong pre-fix" with the wrapped shapes, a reviewer measured 4 of 5
+# with bare ones, and round 1 adjudicated in favour of ITS OWN WEAKER PROBES and
+# recorded the other figure as unreproducible. Bare shapes reproduce it exactly.
 SHAPES = {
     "addzero_r": ("(i32.add (i32.sub (local.get 0) (local.get 0)) (local.get 0))",
                   "(x - x) + x   -> exercises `0 + x`"),
     "addzero_l": ("(i32.add (local.get 0) (i32.sub (local.get 0) (local.get 0)))",
                   "x + (x - x)   -> exercises `x + 0`"),
-    "subzero":   ("(i32.add (i32.sub (local.get 0) (i32.const 0)) (local.get 0))",
-                  "(x - 0) + x   -> exercises `x - 0`"),
-    "mul1_l":    ("(i32.add (i32.mul (i32.const 1) (local.get 0)) (local.get 0))",
-                  "(1 * x) + x   -> exercises `1 * x`"),
-    "mul1_r":    ("(i32.add (i32.mul (local.get 0) (i32.const 1)) (local.get 0))",
-                  "(x * 1) + x   -> exercises `x * 1`"),
+    "subzero":   ("(i32.sub (local.get 0) (i32.const 0))",
+                  "x - 0         -> exercises `x - 0`"),
+    "mul1_l":    ("(i32.mul (i32.const 1) (local.get 0))",
+                  "1 * x         -> exercises `1 * x`"),
+    "mul1_r":    ("(i32.mul (local.get 0) (i32.const 1))",
+                  "x * 1         -> exercises `x * 1`"),
 }
 
 
@@ -98,7 +109,12 @@ def main() -> int:
             inst = wasmtime.Instance(st, mod, [])
             exp = inst.exports(st)["f"](st, 7) & 0xFFFFFFFF
             loaded = ha.load_object(open(obj, "rb").read(), "arm-self")
-            got = ha.run_leg("arm-self", loaded, "f", ("i32", ["i32"]), (7,))
+            # SIGNATURE: (param widths, return width) — round 2 found this was
+            # ("i32", ["i32"]), which is the convention inverted. `_pack_args32`
+            # compares each width to 32, so every argument took the 64-bit PAIR
+            # branch and clobbered R1's canary: the seed that exists to make an
+            # undefined-register read visible was destroyed on every probe.
+            got = ha.run_leg("arm-self", loaded, "f", ([32], 32), (7,))
             if isinstance(got, tuple):
                 got = got[0]
             got = got & 0xFFFFFFFF if isinstance(got, int) else got
