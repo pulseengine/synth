@@ -97,7 +97,26 @@ EXACT_LABEL = "ubuntu-latest"
 # precondition rather than a wish: measured at this release, all 40 candidate
 # jobs lacked the fallback, so a bare `runs-on` retarget would have broken
 # every one of them on the first self-hosted run.
-APT_RE = re.compile(r"\bapt-get\b|\bsudo\b")
+# (v0.74, RQ-74-APTBLIND #1062) `apt-get` is not the only spelling. v0.73's
+# round-2 gate review moved a REQUIRED context to the self-hosted pool with its
+# install step written as `apt update` / `apt install -y` — no `-get`, no
+# `sudo` — and this guard returned rc=0, "0 failure(s)", on the exact deadlock
+# it exists to prevent. `apt` alone is now matched.
+APT_RE = re.compile(r"\bapt(-get)?\b|\bsudo\b")
+# A `run:` body that invokes a repo script hides everything that script does.
+# Round 2's other walk-around moved the apt lines into
+# `run: bash scripts/install-llvm-dwarfdump.sh` and the guard went quiet. Not
+# hypothetical: scripts/install-qemu.sh already contains apt-get today (no
+# required context invokes it, which is why this is a latent hole and not a live
+# deadlock). Followed ONE level, for REQUIRED self-hosted contexts only — the
+# only population where the deadlock exists — because a repo-wide "any job that
+# mentions an installer" rule is the nuisance that gets a guard routed around.
+# NOTE the lookbehind, and why it is not `(?:^|[\\s;&|])`: the job body this
+# runs against is `str(job)`, a dict REPR, so the command appears as
+# {'run': 'bash scripts/install-qemu.sh'} — preceded by a QUOTE, not by
+# whitespace. The first version of this regex required whitespace and
+# silently matched nothing; the potency test below is what caught it.
+SCRIPT_RE = re.compile(r"(?<![\w/-])(?:bash|sh|source|\.)\s+(scripts/[\w./-]+)")
 PIP_RE = re.compile(r"\bpip install\b")
 PEP668_RE = re.compile(r"--break-system-packages")
 
@@ -298,11 +317,20 @@ def main():
             continue
         if pool_of(j.get("runs-on")) != "self-hosted":
             continue
-        if APT_RE.search(str(j)):
+        body = str(j)
+        via = ""
+        if not APT_RE.search(body):
+            # Follow a repo script the job invokes (one level). See SCRIPT_RE.
+            for rel in SCRIPT_RE.findall(body):
+                p = ROOT / rel
+                if p.is_file() and APT_RE.search(p.read_text(errors="ignore")):
+                    via = f" (via {rel}, which the job invokes)"
+                    break
+        if APT_RE.search(body) or via:
             failures.append(
                 f"ci-pool: REQUIRED context {name!r} is on the self-hosted pool "
-                f"AND needs apt/sudo. `no_new_privs` makes that impossible, so "
-                f"the context would never conclude — every merge blocks on a "
+                f"AND needs apt/sudo{via}. `no_new_privs` makes that impossible, "
+                f"so the context would never conclude — every merge blocks on a "
                 f"name that never runs, with no red to revert.")
 
     # ---- and the API as a CROSS-CHECK, never as the source -----------------

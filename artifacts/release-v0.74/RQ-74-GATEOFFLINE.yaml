@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-74-GATEOFFLINE
     type: system-req
     release: v0.74
-    status: proposed
+    status: implemented
     title: "`merge_gate` CHECK1 cannot see a NEVER-REPORTED context, and `--squash-fidelity`'s exit mapping has no offline case"
     description: >
       TWO MUTATIONS FROM v0.73's ROUND-2 GATE REVIEW, both recorded with their
@@ -41,6 +41,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1269"
+      landed: "#1387"
       done-when: "contains:scripts/merge_gate.py:RQ-74-GATEOFFLINE"
       verified-by: >-
         The predicate points at something a REFUTATION would not create, so
