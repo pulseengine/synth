@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-74-PINDEBT2
     type: system-req
     release: v0.74
-    status: proposed
+    status: implemented
     title: "`known_open_pins` is still 85 against a must-FALL ratchet — v0.73 built the attribution and closed no pin"
     description: >
       RE-DERIVED AT THIS CUT with the tool, never a hand tally:
@@ -52,6 +52,8 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1373"
+      landed: "#1385"
+      issue-scope: outlives
       carried-from: RQ-73-PINDEBT
       done-when: "manual: `claim_check.py claims.yaml --metric` shows known_open_pins BELOW 85 with the ledger baseline moved in the same PR"
       verified-by: >-
