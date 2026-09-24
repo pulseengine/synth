@@ -1765,59 +1765,31 @@ fn compile_wasm_to_arm(
     let mut branch_map: synth_core::backend::BranchMap = Vec::new();
 
     for instr in &arm_instrs {
-        // Record a relocation for every BL: the encoder emits `bl #0` and
-        // relies on a relocation to patch the target. This covers BOTH import
-        // dispatch stubs (`__meld_*`, undefined externals) AND internal calls
-        // (`func_N`, defined in this object). Previously only `__meld_*` was
-        // recorded, so internal `BL func_N` calls were left as unpatched
-        // `bl #0` placeholders branching to a garbage address (#167).
-        if let ArmOp::Bl { label } = &instr.op {
-            // #1040: the relocation type is ISA-STATE-dependent and this is the
-            // only site that knows the state. An A32 (Cortex-R) `bl` is
-            // R_ARM_CALL (28); a Thumb `bl` is R_ARM_THM_CALL (10). Emitting
-            // the Thumb type for an A32 word made any consumer that trusts the
-            // declared type patch Thumb halfwords into an ARM-state
-            // instruction. Decided here rather than in the ELF emitter, where
-            // `config.target` is no longer in scope and the ISA would have to
-            // be re-derived — the shape that produced the bug.
-            let kind = if config.target.isa == synth_core::target::IsaVariant::Arm32 {
-                synth_core::backend::RelocKind::ArmCall
-            } else {
-                synth_core::backend::RelocKind::ThmCall
-            };
-            relocations.push(CodeRelocation {
-                offset: code.len() as u32,
-                symbol: label.clone(),
-                kind,
-            });
-        }
-        // #237: symbol-relative MOVW/MOVT (the `--native-pointer-abi` static-data
-        // addressing). The encoder writes the addend in place; record the matching
-        // R_ARM_MOVW_ABS_NC / R_ARM_MOVT_ABS so the linker adds the symbol address.
-        if let ArmOp::MovwSym { symbol, .. } = &instr.op {
-            relocations.push(CodeRelocation {
-                offset: code.len() as u32,
-                symbol: symbol.clone(),
-                kind: synth_core::backend::RelocKind::MovwAbs,
-            });
-        }
-        if let ArmOp::MovtSym { symbol, .. } = &instr.op {
-            relocations.push(CodeRelocation {
-                offset: code.len() as u32,
-                symbol: symbol.clone(),
-                kind: synth_core::backend::RelocKind::MovtAbs,
-            });
-        }
-        // #345: defer the literal-pool word + reloc + offset patch to the
-        // post-loop pass (the pool address is not yet known).
-        if let ArmOp::LdrSym { symbol, addend, .. } = &instr.op {
-            pending_literals.push(PendingLiteral {
-                ldr_offset: code.len() as u32,
-                symbol: symbol.clone(),
-                addend: *addend,
-            });
-        }
-
+        // ORDER IS LOAD-BEARING, and getting it wrong was a SILENT MISCOMPILE.
+        //
+        // Encoding and the island decision happen FIRST, before anything below
+        // records a `code.len()`. The v0.72 round-2 cold review found the
+        // previous order — record, then encode, then maybe insert an island —
+        // shifting the instruction forward by the island's size while its
+        // ALREADY-RECORDED offset stayed put. Measured, both rc=0, on objects
+        // v0.71 had refused loudly:
+        //
+        //   an `R_ARM_THM_CALL` recorded at 0x1014, which after the flush holds
+        //   the island's own `b.n +8`; the real BL sits at 0x101c. The linker
+        //   writes a BL over the branch-over and execution falls into a pooled
+        //   address word as instructions.
+        //
+        //   an `LdrSym` whose `ldr_offset` pointed INTO the island, so the
+        //   imm12 patch landed there and the real LDR kept imm12=0 — loading
+        //   CODE as a pointer.
+        //
+        // Four sites record an offset (`Bl`, `MovwSym`, `MovtSym`, `LdrSym`)
+        // and all four were wrong the same way. Hoisting the flush above them
+        // makes `code.len()` FINAL for this instruction at every one.
+        //
+        // "A pool can never precede the LDR it serves" is PRESERVED, and is now
+        // structural rather than arithmetic: this instruction's own `LdrSym` is
+        // pushed BELOW, so `pending_literals` cannot contain it here.
         // Encode BEFORE deciding whether to flush, so the island trigger below
         // works from this instruction's EXACT size rather than an upper bound.
         // An over-estimate here would flush early (merely wasteful); an
@@ -1876,6 +1848,59 @@ fn compile_wasm_to_arm(
                     pending_literals.clear();
                 }
             }
+        }
+
+        // Record a relocation for every BL: the encoder emits `bl #0` and
+        // relies on a relocation to patch the target. This covers BOTH import
+        // dispatch stubs (`__meld_*`, undefined externals) AND internal calls
+        // (`func_N`, defined in this object). Previously only `__meld_*` was
+        // recorded, so internal `BL func_N` calls were left as unpatched
+        // `bl #0` placeholders branching to a garbage address (#167).
+        if let ArmOp::Bl { label } = &instr.op {
+            // #1040: the relocation type is ISA-STATE-dependent and this is the
+            // only site that knows the state. An A32 (Cortex-R) `bl` is
+            // R_ARM_CALL (28); a Thumb `bl` is R_ARM_THM_CALL (10). Emitting
+            // the Thumb type for an A32 word made any consumer that trusts the
+            // declared type patch Thumb halfwords into an ARM-state
+            // instruction. Decided here rather than in the ELF emitter, where
+            // `config.target` is no longer in scope and the ISA would have to
+            // be re-derived — the shape that produced the bug.
+            let kind = if config.target.isa == synth_core::target::IsaVariant::Arm32 {
+                synth_core::backend::RelocKind::ArmCall
+            } else {
+                synth_core::backend::RelocKind::ThmCall
+            };
+            relocations.push(CodeRelocation {
+                offset: code.len() as u32,
+                symbol: label.clone(),
+                kind,
+            });
+        }
+        // #237: symbol-relative MOVW/MOVT (the `--native-pointer-abi` static-data
+        // addressing). The encoder writes the addend in place; record the matching
+        // R_ARM_MOVW_ABS_NC / R_ARM_MOVT_ABS so the linker adds the symbol address.
+        if let ArmOp::MovwSym { symbol, .. } = &instr.op {
+            relocations.push(CodeRelocation {
+                offset: code.len() as u32,
+                symbol: symbol.clone(),
+                kind: synth_core::backend::RelocKind::MovwAbs,
+            });
+        }
+        if let ArmOp::MovtSym { symbol, .. } = &instr.op {
+            relocations.push(CodeRelocation {
+                offset: code.len() as u32,
+                symbol: symbol.clone(),
+                kind: synth_core::backend::RelocKind::MovtAbs,
+            });
+        }
+        // #345: defer the literal-pool word + reloc + offset patch to the
+        // post-loop pass (the pool address is not yet known).
+        if let ArmOp::LdrSym { symbol, addend, .. } = &instr.op {
+            pending_literals.push(PendingLiteral {
+                ldr_offset: code.len() as u32,
+                symbol: symbol.clone(),
+                addend: *addend,
+            });
         }
 
         // The machine offset of this instruction is the current code length,

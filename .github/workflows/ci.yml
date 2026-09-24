@@ -5928,6 +5928,19 @@ jobs:
       # islanded code is CORRECT and not merely accepted.
       - name: "Islands differential — accept, byte-identity, execution"
         run: SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py scripts/repro/litpool_islands_345_differential.py
+      # THE ORACLE THE FIRST ISLAND FIX OWED. The guard above reasons about
+      # BRANCH offsets; the encode loop also records FOUR others from
+      # `code.len()` (`Bl`, `MovwSym`, `MovtSym`, `LdrSym`), and an island
+      # inserted between the record and the emission left every one of them
+      # pointing INTO the island. Two reproductions compiled at rc=0 on shapes
+      # v0.71 refused loudly. Neither existing leg could see it: byte-identity
+      # compares only modules that need NO island, and the executed module has
+      # no calls and one literal. This reads the invariants off the emitted
+      # ELF — a relocation must land on a BL, a literal load must resolve to a
+      # relocated word — so it checks the bytes against the relocations rather
+      # than consulting the bookkeeping that was wrong.
+      - name: island offsets still point at their own instruction (#345 follow-up)
+        run: SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py scripts/repro/island_offset_invariant_345.py
 
   arm64-musl-portable-asset:
     name: "Portable arm64 musl asset cross-builds and is static (#1349)"
