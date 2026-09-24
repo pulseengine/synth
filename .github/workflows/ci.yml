@@ -5233,6 +5233,12 @@ jobs:
             scripts/repro/falcon_opt_1318_differential.py | tee /tmp/1318.txt
           grep -qE '^#1318 CHECKS=12/12 \(export,backend\) cells' /tmp/1318.txt
           grep -q '^RESULT: PASS' /tmp/1318.txt
+      - name: "#1331 — the islandpass fixtures match their generator (RQ-74-ISLANDREACH)"
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py \
+            scripts/repro/gen_islandpass_1331.py --check | tee /tmp/genisl.txt
+          grep -qE '^gen-islandpass: [0-9]+ fixture\(s\) match the generator$' /tmp/genisl.txt
       - name: "#1230 — VCR-RA-003 refuses its own emitted stream (decline census + frozen-fixture wrongness proof)"
         run: |
           set -euo pipefail

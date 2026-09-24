@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: compiles >= 2
+# ci-checks: compiles >= 4
 """RQ-73-ISLANDPASS (#1331): the EXECUTION gate a literal-island fixed point owes.
 
 WHY THIS FILE EXISTS, AND WHY IT IS WRITTEN TO ACTIVATE ITSELF.
@@ -58,7 +58,27 @@ import tempfile
 
 SYNTH = os.environ.get("SYNTH_BIN", "./target/debug/synth")
 REPRO = os.path.dirname(os.path.abspath(__file__))
-FIXTURE = os.path.join(REPRO, "islandpass_1331_spanning.wat")
+# (v0.74, RQ-74-ISLANDREACH) v0.73 ran ONE fixture, and v0.73's round-2 gate
+# review showed why that matters: mutating every local branch target forward by
+# one WHOLE instruction — so each target stays a legal instruction start — was
+# MISSED by `island_offset_invariant_345.py`, by `sc5_postisland_345.py` and by
+# `litpool_islands_345_differential.py`, and CAUGHT only here. Re-measured at the
+# v0.74 cut: 3 MISSED, this one CAUGHT (1/5 args bit-exact).
+#
+# So the whole class rests on this file, and it rested on a single span shape:
+# a forward `br_if` out of one block. These two are NEW and vary the shape —
+# a BACKWARD branch (loop latch), where the island lands between the target and
+# the branch rather than after it, and a branch out of a NESTED block, where the
+# island is placed at a different block depth. Both are generated, with
+# provenance, by scripts/repro/gen_islandpass_1331.py.
+FIXTURES = (
+    os.path.join(REPRO, "islandpass_1331_spanning.wat"),
+    os.path.join(REPRO, "islandpass_1331_backspan.wat"),
+    os.path.join(REPRO, "islandpass_1331_nested.wat"),
+)
+# compile_once() and execute() read this module global; main() rebinds it per
+# fixture rather than threading it through, so the two helpers stay unchanged.
+FIXTURE = FIXTURES[0]
 ARGS = ["--target", "cortex-m7", "--relocatable", "--all-exports",
         "--native-pointer-abi"]
 
@@ -259,37 +279,48 @@ def main() -> int:
             return 1
         print("  control: non-spanning island module still compiles")
 
-        obj = os.path.join(td, "ip.o")
-        r = compile_once(obj)
-        blob = r.stdout + r.stderr
+        rc = 0
+        for _fx in FIXTURES:
+            rc |= run_one(td, _fx)
+        return rc
 
-        if r.returncode != 0 or not os.path.isfile(obj):
-            # ---- STATE 1: still refused. Pin the refusal, assert nothing else.
-            if PINNED_REFUSAL not in blob:
-                print(f"REFUSE: the fixture declines, but NOT with the pinned "
-                      f"#345 message. A different refusal is a different defect.")
-                print(f"  got: {blob.strip().splitlines()[-1][:160]}")
-                return 1
-            print(f"  state: REFUSED with the pinned message ({PINNED_REFUSAL})")
-            print("#1331 ISLANDPASS: pinned-decline; the fixed point has NOT landed")
-            print("RESULT: PASS — red-first state held; execution half is ARMED and "
-                  "fires the moment this module compiles")
-            return 0
 
-        # ---- STATE 2: it compiles. The strong half is now MANDATORY.
-        print("  state: COMPILES — the fixed point appears to have landed, so the "
-              "execution gate is now in force")
-        problems, ncall = island_invariants(obj)
-        problems += execute(obj)
-        print(f"#1331 ISLANDPASS: compiled; {ncall} R_ARM_THM_CALL checked, "
-              f"{len(ARGVALS)} args executed")
-        if problems:
-            for p in problems:
-                print(f"REFUSE: {p}")
-            print("RESULT: FAIL — the module compiles but the bytes are not correct")
+def run_one(td: str, fx: str) -> int:
+    """One spanning fixture, through both states. (v0.74, RQ-74-ISLANDREACH)"""
+    global FIXTURE
+    FIXTURE = fx
+    label = os.path.basename(fx)
+    if not os.path.isfile(fx):
+        print(f"FAIL: fixture {fx} missing")
+        return 1
+    obj = os.path.join(td, os.path.basename(fx) + ".o")
+    r = compile_once(obj)
+    blob = r.stdout + r.stderr
+
+    if r.returncode != 0 or not os.path.isfile(obj):
+        # ---- STATE 1: still refused. Pin the refusal, assert nothing else.
+        if PINNED_REFUSAL not in blob:
+            print(f"REFUSE {label}: it declines, but NOT with the pinned #345 "
+                  f"message. A different refusal is a different defect.")
+            print(f"  got: {blob.strip().splitlines()[-1][:160]}")
             return 1
-        print("RESULT: PASS — spanning module compiles AND executes bit-exact")
+        print(f"  {label}: REFUSED with the pinned message ({PINNED_REFUSAL})")
+        print(f"#1331 ISLANDPASS {label}: pinned-decline; the fixed point has "
+              f"NOT landed")
         return 0
+
+    # ---- STATE 2: it compiles. The strong half is now MANDATORY.
+    problems, ncall = island_invariants(obj)
+    problems += execute(obj)
+    print(f"#1331 ISLANDPASS {label}: compiled; {ncall} R_ARM_THM_CALL checked, "
+          f"{len(ARGVALS)} args executed")
+    if problems:
+        for p in problems:
+            print(f"REFUSE {label}: {p}")
+        print(f"RESULT: FAIL — {label} compiles but the bytes are not correct")
+        return 1
+    print(f"RESULT: PASS — {label} compiles AND executes bit-exact")
+    return 0
 
 
 if __name__ == "__main__":

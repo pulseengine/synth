@@ -3,6 +3,24 @@
 # ci-checks: stdout /^  corpus: (\d+) byte-identical/ >= 160
 """RQ-72-ISLANDS (#345, cpetig via #1331): constant islands for the literal pool.
 
+    DISCLOSURE (v0.74, RQ-74-ISLANDREACH): THIS CONTROL IS BLIND IN TWO WAYS.
+
+    1. POPULATION (disclosed since v0.72): the byte-identity leg compares only
+       modules that need NO island, because the affected modules previously
+       REFUSED and so have no baseline in it.
+
+    2. SHARED SUBSTRATE (new, and previously undisclosed): both legs run the
+       SAME compiler binary, islands-ON against islands-OFF. Any defect in code
+       COMMON to both legs is invisible regardless of population. Demonstrated
+       in v0.73's round-2 gate review and re-measured at the v0.74 cut: with
+       every local branch target advanced by one whole instruction, this file
+       reported "165 byte-identical, 0 MOVED" and exit 0 — a clean bill of
+       health under a mutation that moves branch targets in both legs equally.
+
+    Neither is a defect in this file; both are limits of an A/B differential.
+    The class is covered by scripts/repro/islandpass_1331_execution_differential.py,
+    which executes the emitted bytes instead of comparing two of them.
+
 
 WHY THIS IS A DIFFERENTIAL AND NOT A PINNED-HASH BASELINE
 ---------------------------------------------------------
