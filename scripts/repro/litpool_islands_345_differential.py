@@ -85,6 +85,20 @@ INTENDED_ACCEPTANCES = {
     # see. Its own execution gate is falcon-style bit-exactness against
     # wasmtime in islandpass_1331_execution_differential.py.
     "islandpass_1331_spanning.wat",
+    # RQ-74-ISLANDREACH (#1331): the same property at two more SPAN SHAPES.
+    # v0.73 covered only a forward `br_if` out of one block; these are a
+    # backward loop latch (the island lands between target and branch) and a
+    # `br 1` out of a nested block (a different block depth). Both are
+    # generated with provenance by scripts/repro/gen_islandpass_1331.py.
+    #
+    # They belong here for the same reason the two above do, and CI is what
+    # said so: GATE2 refused them with "islands changed the ACCEPT/DECLINE
+    # outcome (on rc=0, off rc=1)", which is precisely the directional property
+    # that makes them worth having. Naming them keeps the assertion in BOTH
+    # directions — islands ON must ACCEPT, islands OFF must DECLINE — so a
+    # regression to refusing spanning placements still reds.
+    "islandpass_1331_backspan.wat",
+    "islandpass_1331_nested.wat",
 }
 
 
