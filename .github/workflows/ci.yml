@@ -3894,8 +3894,20 @@ jobs:
           # pinned values, EXACTLY. The fixed point therefore moves nothing in
           # this census, which the islands differential says independently:
           # 165 byte-identical, 0 MOVED. `hits: 0` unchanged.
-          grep -Eq '^functions audited: 7263$' haa1189.txt
-          grep -Eq '^homes watched: 8328$' haa1189.txt
+          # RQ-74-ISLANDREACH (#1331): 7263 -> 7275, 8328 -> 8332, attributed
+          # 229537 -> 235249. TWO new scripts/repro/*.wat fixtures enter the
+          # audit corpus (islandpass_1331_backspan.wat, _nested.wat), each a
+          # 4 KB+ spanning-branch module with a helper. MEASURED in CI, not
+          # predicted. The attribution needs no pre-fix re-run this time: the
+          # lane changes NO compiler source at all (`git diff --stat
+          # origin/main...HEAD -- crates/` is empty), so the binary is
+          # identical to main's and the delta can only be corpus growth. The
+          # attributed jump is large because these fixtures are deliberately
+          # huge — a 170-deep i64 chain each, to push past the 4095 imm12
+          # reach so an island is required. `hits: 0` UNCHANGED, so no new
+          # home-alias defect.
+          grep -Eq '^functions audited: 7275$' haa1189.txt
+          grep -Eq '^homes watched: 8332$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -3903,7 +3915,7 @@ jobs:
           # 217081 could not still hold. Nothing caught it because no grep ever
           # read it: exactly the "a ratchet fixes the number and cannot fix the
           # prose" shape this project keeps paying for. Derived here: 217291.
-          grep -Eq '^attributed instructions: 229537 ' haa1189.txt
+          grep -Eq '^attributed instructions: 235249 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
