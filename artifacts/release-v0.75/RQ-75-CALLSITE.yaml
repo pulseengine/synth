@@ -40,6 +40,7 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1269"
+      landed: "#1393"
       done-when: "contains:scripts/test_merge_gate_callsite.py:RQ-75-CALLSITE"
       verified-by: >-
         The predicate names a test module that does not exist today, so a refutation cannot create it; and the acceptance oracle is the recorded mutation set, not the module's existence.
