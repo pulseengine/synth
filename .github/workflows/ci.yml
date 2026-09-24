@@ -589,7 +589,13 @@ jobs:
           python3 scripts/stale_pin_check.py --self-test
           python3 scripts/stale_pin_check.py | tee /tmp/stalepin.txt
           grep -qE '^RESULT: PASS' /tmp/stalepin.txt
-          grep -qE 'total 85 = known_open_pins\)$' /tmp/stalepin.txt
+          # NOT a pinned 85: deliverable (a) of RQ-73-PINDEBT is to drive
+          # `known_open_pins` DOWN, so pinning the literal here would make
+          # this lane red its own gate the first time it succeeds. The
+          # reconciliation that matters is already a hard error inside the
+          # script (`attributed + reasoned != declared_total` raises), so
+          # this only asserts the line was printed at all.
+          grep -qE 'total [0-9]+ = known_open_pins\)$' /tmp/stalepin.txt
 
       # RQ-62-LOOPCONFORM (#1136): the standing release authorization is
       # conditional on the release running the feature loop, and
