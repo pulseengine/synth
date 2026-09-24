@@ -1,0 +1,57 @@
+artifacts:
+  - id: RQ-74-STALEMSG
+    type: system-req
+    release: v0.74
+    status: proposed
+    title: "The compiler points users at a CLOSED issue: `LdrSym literal pool out of range (#345)` cites an issue closed and silicon-verified in June"
+    description: >
+      REFUTING COMMAND RUN AT THIS CUT, and it did NOT refute:
+
+        grep -rn 'literal pool out of range (#345)' crates/ --include='*.rs'
+        -> crates/synth-backend/src/arm_backend.rs:424
+
+        gh issue view 345 --repo pulseengine/synth
+        -> CLOSED 2026-06-14, stateReason COMPLETED
+
+      #345's own asks were a bounded `.data` and no absolute MOVW relocs, and
+      they were VERIFIED ON SILICON: `MOVW_ABS` relocs 22 -> 0, `.data` 65548 ->
+      4 on a NUCLEO-G474RE, in v0.11.43. The issue is correctly closed. The
+      decline message REUSES its number for an unrelated function-size limit.
+
+      THIS COST REAL TIME IN v0.73, twice. An external reporter asked "is #345
+      already tracked for large functions, or should this be filed separately?"
+      — a question that only arises because the message points at a closed
+      issue. And the v0.73 coordinator read #345's body, concluded its asks were
+      untouched, and marked it to be HELD OPEN; only `issue_closure_check`
+      caught that the issue was not open at all.
+
+      THIS IS THE STALE-PIN CLASS ONE LEVEL OUT. v0.73 shipped
+      `stale_pin_check.py` for a PIN whose issue is closed. A user-facing
+      DIAGNOSTIC whose issue is closed is the same debt with a wider audience,
+      and nothing looks at it.
+
+      DELIVERABLES. (a) A census of every `#N` in a user-facing diagnostic
+      string across `crates/`, with each one's live issue state. (b) A tripwire
+      that refuses a diagnostic citing a CLOSED issue — the same shape as the
+      pin tripwire, over a different population. (c) Re-point or drop the
+      stale citations found by (a).
+
+      WHAT WOULD MAKE THIS WRONG. If most cited issues are closed-but-still-the
+      -best-explanation, a refusal is noise and the honest output is the census
+      plus a documented convention. Run (a) FIRST and publish the distribution
+      before building (b).
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#345"
+      done-when: "contains:crates/synth-backend/src/arm_backend.rs:RQ-74-STALEMSG"
+      verified-by: >-
+        The predicate points at something a REFUTATION would not create, so
+        a lane that ends by refuting its own premise cannot satisfy it by
+        writing the refutation down.

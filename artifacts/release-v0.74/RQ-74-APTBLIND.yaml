@@ -1,0 +1,59 @@
+artifacts:
+  - id: RQ-74-APTBLIND
+    type: system-req
+    release: v0.74
+    status: proposed
+    title: "The deadlock guard's apt detector is blind to `apt` without `-get` and to apt inside a script file — and such a script already exists in this repo"
+    description: >
+      REFUTING COMMANDS RUN AT THIS CUT, and they did NOT refute:
+
+        grep -n 'APT_RE' scripts/ci_pool_tripwire.py
+        -> APT_RE = re.compile(r"\bapt-get\b|\bsudo\b")
+
+        grep -rln 'apt-get|apt install' scripts/*.sh
+        -> scripts/install-qemu.sh, scripts/create_project_board.sh
+
+      v0.73 shipped the pool-suitability check and it IS potent for the inline
+      case: moving a required context to self-hosted with inline apt exits 1,
+      demonstrated. Round 2 then walked around it two ways, both leaving rc=0
+      and "0 failure(s)":
+
+        VARIANT B  the apt lines moved into `run: bash scripts/install-*.sh`
+        VARIANT C  `apt update` / `apt install` written without `-get`
+
+      The exact deadlock the guard exists to prevent — a REQUIRED context on a
+      pool where `no_new_privs` makes its install step impossible, leaving a NAME
+      that never concludes and blocks every merge with no red to revert — is
+      invisible in both forms. The script-file vector is NOT hypothetical:
+      `scripts/install-qemu.sh` already contains `apt-get`, though no required
+      context invokes it today.
+
+      MEASURED AND NOT A CONCERN: no `uses: ./` step exists in `ci.yml`, so the
+      composite-action vector is latent rather than live. Recorded so a future
+      lane does not re-derive it.
+
+      DELIVERABLES. (a) Widen the detector to `apt` as well as `apt-get`.
+      (b) Follow a `run:` that invokes a repo script INTO that script. (c) Both
+      variants re-run and shown REFUSED.
+
+      WHAT WOULD MAKE THIS WRONG. If following script invocations produces false
+      positives on jobs that merely MENTION an installer without being required,
+      the guard becomes a nuisance and gets routed around. Scope (b) to REQUIRED
+      contexts on the self-hosted pool, which is the only population where the
+      deadlock exists.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1062"
+      carried-from: RQ-73-CIPOOL
+      done-when: "contains:scripts/ci_pool_tripwire.py:RQ-74-APTBLIND"
+      verified-by: >-
+        The predicate points at something a REFUTATION would not create, so
+        a lane that ends by refuting its own premise cannot satisfy it by
+        writing the refutation down.

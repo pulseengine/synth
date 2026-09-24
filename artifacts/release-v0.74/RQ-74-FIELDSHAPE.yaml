@@ -1,0 +1,58 @@
+artifacts:
+  - id: RQ-74-FIELDSHAPE
+    type: system-req
+    release: v0.74
+    status: proposed
+    title: "`FIELD_KEYS_DERIVED` sees ONE syntactic shape of ONE binding in ONE module, and the census check cannot see population SHRINKAGE"
+    description: >
+      TWO FINDINGS AGAINST v0.73's OWN CORRECTIONS, from round 2.
+
+      (1) The AST walk requires exactly `Call(func=Attribute(value=Name('fields'),
+      attr='get'), args=[Constant(str)])`. A subscript, a non-literal key, a
+      differently-named local, or a read in ANOTHER script all escape.
+      DEMONSTRATED: a real new consumer `def _owner_of(art): f = art.get("fields")
+      or {}; return f.get("owner", "")` plus `owner:` at an artifact's top level
+      leaves `status_evidence_check` at rc=0 with `'owner' in FIELD_KEYS` False.
+      LIVE INSTANCE, not synthetic: `loop_conformance_check.py` reads
+      `(a.get("fields") or {}).get("issue")` and `.get("done-when")` — a shape
+      this walk cannot see. Those two keys are covered today only by COINCIDENCE,
+      because `status_evidence_check.py` happens to read them in the matching
+      shape.
+
+      `FIELD_KEYS_UNREAD = {"carried-from"}` is honest and bounded and is NOT the
+      problem — it names exactly the by-construction gap and why. The
+      undisclosed part is the SHAPE narrowness.
+
+      (2) The census check GATETRUTH shipped correctly replaced a tautology, but
+      it cannot see the population SHRINKING. Moving 7 of 8 v0.73 artifacts aside
+      leaves `_cut` correct and the census silent; the red comes entirely from
+      R10, and only because those artifacts already have delivery commits. At
+      PLANNING time — no delivery commits yet — the same shrink fires nothing.
+      GATETRUTH's fix is right about the failure mode it covers and does not
+      replace what the old vacuous pin claimed to cover.
+
+      DELIVERABLES. (a) Either widen the derivation to the shapes that occur, or
+      DISCLOSE the shape constraint the way `FIELD_KEYS_UNREAD` discloses its
+      own — the second is honest and cheap, the first is better. (b) Cover the
+      cross-module reads, starting with the live instance above. (c) A census
+      floor that fires on shrinkage at planning time.
+
+      WHAT WOULD MAKE THIS WRONG. A general "any `.get` on anything named like
+      fields" walk will over-match and pin keys that are not artifact fields.
+      Measure the false-positive rate over the live tree BEFORE shipping (a).
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1319"
+      carried-from: RQ-73-GATETRUTH
+      done-when: "contains:scripts/status_evidence_check.py:RQ-74-FIELDSHAPE"
+      verified-by: >-
+        The predicate points at something a REFUTATION would not create, so
+        a lane that ends by refuting its own premise cannot satisfy it by
+        writing the refutation down.

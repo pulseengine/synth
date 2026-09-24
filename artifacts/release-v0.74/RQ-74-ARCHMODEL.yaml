@@ -1,0 +1,54 @@
+artifacts:
+  - id: RQ-74-ARCHMODEL
+    type: system-req
+    release: v0.74
+    status: proposed
+    title: "spar#445 unchanged since 2026-09-03 — the TWELFTH consecutive N/A for the architecture-model step, filed so the deferral stays visible to the gate"
+    description: >
+      RE-VERIFIED AT THIS CUT, not recalled:
+
+        gh issue view 445 --repo pulseengine/spar
+        -> OPEN, last updated 2026-09-03, unchanged since the v0.71, v0.72 and
+           v0.73 cuts
+
+      Feature-loop steps 1 (model the architecture in spar) and 2 (generate WIT
+      from spar) are N/A for a TWELFTH consecutive release, for the same
+      unchanged upstream reason. This artifact exists so that
+      `loop_conformance_check`'s steps-1-2 slot reports NA-FILED rather than a
+      silent gap.
+
+      THE ORDINAL IS WALKED, NOT CARRIED. RQ-74 -> RQ-73 -> ... -> RQ-63 is a
+      chain of twelve. v0.72 asserted SIXTH twice and SEVENTH twice against a
+      walked length of ten, and the v0.73 BRIEF itself carried "SEVENTH" — so
+      the number is derived from the `carried-from` chain every time, never
+      incremented from memory.
+
+      TAGS ARE LOAD-BEARING: `[process, carried, spar, aadl, feature-loop]`.
+      v0.69 lost `feature-loop` and the filing that exists to keep a deferral
+      VISIBLE became invisible to the conformance gate.
+
+      DO NOT REINTRODUCE "release artifacts only exist from v0.63". It is FALSE
+      — `artifacts/release-v0.56.yaml` onward exist — and it has come back once
+      already.
+    tags:
+      - process
+      - carried
+      - spar
+      - aadl
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      disposition: deferred
+      priority: carried
+      issue: "#1136"
+      carried-from: RQ-73-ARCHMODEL
+      verification-track: manual
+      done-when: "manual: spar#445 re-verified 2026-09-24 — OPEN, last updated 2026-09-03, unchanged since the v0.73 cut; steps 1-2 N/A for the TWELFTH consecutive release on that unchanged upstream reason"
+      verified-by: >-
+        Deliberately `manual:` — the deliverable is a re-verification with
+        a DATE, and a `contains:` predicate would go true on this artifact's
+        own prose: a gate passing because the claim is written down rather
+        than because it was checked.
