@@ -51,6 +51,8 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1062"
+      landed: "#1387"
+      issue-scope: outlives
       carried-from: RQ-73-CIPOOL
       done-when: "contains:scripts/ci_pool_tripwire.py:RQ-74-APTBLIND"
       verified-by: >-

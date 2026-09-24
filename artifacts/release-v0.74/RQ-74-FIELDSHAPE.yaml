@@ -50,6 +50,8 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1319"
+      landed: "#1387"
+      issue-scope: outlives
       carried-from: RQ-73-GATETRUTH
       done-when: "contains:scripts/status_evidence_check.py:RQ-74-FIELDSHAPE"
       verified-by: >-
