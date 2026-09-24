@@ -34,9 +34,11 @@ artifacts:
       it measures in post-island coordinates. It also FIRED on exactly this
       class during that lane, observed rather than argued — with the fixed
       point half-applied (offsets island-inclusive, gate still island-free) it
-      refused with "branch at byte offset 0x1e targets 0x26c2, which is not an
-      instruction start".
-
+      refused on exactly that class. NOTE the wording: the in-compiler gate
+      says "not an instruction BOUNDARY". An earlier draft quoted it as
+      "not an instruction start", which is this file's own oracle's phrasing
+      and something the compiler has never emitted
+      (`git log -S "not an instruction start"` -> no commit).
       THE SECOND THING IS THIS ARTIFACT'S OWN `done-when`, because the artifact
       is explicit that moving the call site without a demonstration "would
       restore the wording and not the guarantee":

@@ -75,8 +75,12 @@ artifacts:
       SC-5 CAUGHT THE INCOMPLETE VERSION, and it is worth recording. The first
       build resolved branches in island-inclusive coordinates while
       `validate_branch_targets` still sized the stream island-free, so the gate
-      FALSE-REJECTED a correctly-resolved branch ("targets 0x26c2, which is not
-      an instruction start"). A gate and the thing it gates must measure in the
+      FALSE-REJECTED a correctly-resolved branch. MISQUOTE CORRECTED: this
+      said the gate reported "not an instruction start". It says "not an
+      instruction BOUNDARY" — `git log -S "not an instruction start" --
+      crates/synth-backend/src/arm_backend.rs` returns NO commit, ever. The
+      phrasing quoted was this release's own new oracle's, attributed to the
+      compiler as if observed. A gate and the thing it gates must measure in the
       same units; it now shares `island_walk`.
 
       MEASURED after the change:
@@ -104,7 +108,10 @@ artifacts:
 
       WHAT WOULD MAKE THIS WRONG. A fixed point that moves emitted bytes without
       an execution oracle proving the new bytes correct is REFUSED, not
-      explained. `island_offset_invariant_345.py` (304 objects, 304 clean) and
+      explained. `island_offset_invariant_345.py` (306 objects, 306 clean —
+      RE-DERIVED at this cut; the 304 written at plan time was never
+      re-measured when the lane landed, and sat in the same clause as
+      165/0 MOVED, which IS the post-lane number: two eras in one sentence) and
       the byte-identity differential (165 identical, 0 MOVED) are the floor, not
       the ceiling: neither can see a branch that is mis-targeted but still lands
       on an instruction boundary, so the pass owes an EXECUTION differential

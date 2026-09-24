@@ -67,9 +67,11 @@ compile must move this table in the same PR that lands it.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 FIXTURE = ROOT / "scripts/repro/falcon_opt_1318.wat"
@@ -108,11 +110,23 @@ EXPECTED_DECLINES: dict[tuple[str, str], str | None] = {
 }
 
 
-def compile_for(backend: str) -> dict[str, str]:
-    """export -> decline text ('' when it compiled)."""
+def compile_for(backend: str, obj: str) -> dict[str, str]:
+    """export -> decline text ('' when it compiled).
+
+    v0.73 cold review, gate finding F2: this used to infer "compiles" from the
+    ABSENCE of a `warning: skipping` line, never read the return code, and
+    wrote the object to /dev/null so there was nothing to inspect. A 14-line
+    shell stub that printed the six expected warnings and exited 3 passed the
+    whole CI step — floor included, because the `compiles >= 3` floor counts
+    INVOCATIONS, not successful compilations.
+
+    Both halves are now checked against the compiler's own behaviour: the exit
+    status must agree with whether anything was skipped, and when nothing was
+    skipped an object must actually exist.
+    """
     out = subprocess.run(
         [str(SYNTH), "compile", str(FIXTURE), *BACKENDS[backend],
-         "--all-exports", "-o", "/dev/null"],
+         "--all-exports", "-o", obj],
         capture_output=True, text=True,
     )
     blob = out.stdout + out.stderr
@@ -122,6 +136,27 @@ def compile_for(backend: str) -> dict[str, str]:
             continue
         name = line.split("'")[1] if "'" in line else "?"
         declines[name.rsplit("#", 1)[-1]] = line
+
+    # The compiler's OWN verdict must agree with what we read off its output.
+    if declines and out.returncode == 0:
+        raise SystemExit(
+            f"REFUSE {backend}: {len(declines)} function(s) were skipped but "
+            f"synth exited 0. The decline text and the exit status disagree, "
+            f"so one of them is not the compiler's real behaviour."
+        )
+    if not declines:
+        if out.returncode != 0:
+            raise SystemExit(
+                f"REFUSE {backend}: synth exited {out.returncode} while "
+                f"reporting NO skipped function. 'Compiles' inferred from an "
+                f"absent warning line is exactly the reading a broken or "
+                f"stubbed compiler satisfies."
+            )
+        if not os.path.isfile(obj) or os.path.getsize(obj) == 0:
+            raise SystemExit(
+                f"REFUSE {backend}: synth exited 0 and skipped nothing, but "
+                f"produced no object at {obj}. Nothing was compiled."
+            )
     return declines
 
 
@@ -136,8 +171,9 @@ def main() -> int:
     checked = 0
     bad: list[str] = []
     print(f"{'export':<10}{'backend':<10}{'observed':<12}pin")
+    td = tempfile.mkdtemp(prefix="falcon1318-")
     for backend in BACKENDS:
-        declines = compile_for(backend)
+        declines = compile_for(backend, os.path.join(td, f"{backend}.o"))
         for export in EXPORTS:
             pin = EXPECTED_DECLINES[(export, backend)]
             got = declines.get(export)

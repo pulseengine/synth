@@ -252,6 +252,24 @@ def self_test() -> int:
             verdict2, d2, _ = squash_fidelity(fresh, fresh, base1)
             check("fidelity: current branch with a 0-line diff is FAITHFUL",
                   verdict2 == "FAITHFUL" and d2 == 0, f"verdict={verdict2} diff={d2}")
+
+            # (v0.73 cold review, gate finding F3) The verdict that DETECTS the
+            # defect #1269 ask 2 is about had no case at all: both calls above
+            # pass `(x, x, base)`, so `diff_lines` is always 0 and the
+            # SQUASH-ALTERED branch is unreachable from the fixture. Replacing
+            # `if diff_lines == 0:` with `if True:` — deleting the detection
+            # outright — left `--self-test` green. `merge_ritual.sh` calls this
+            # after every merge, so the untested branch is the live one.
+            g("checkout", "-q", "-b", "altered", base1)
+            with open(os.path.join(td, "altered.txt"), "w") as fh:
+                fh.write("content the squash did not preserve\n")
+            g("add", "altered.txt")
+            g("commit", "-q", "-m", "altered")
+            altered = g("rev-parse", "HEAD")
+            verdict3, d3, _ = squash_fidelity(fresh, altered, base1)
+            check("fidelity: current branch with a NONZERO diff is SQUASH ALTERED",
+                  verdict3 == "SQUASH ALTERED CONTENT" and d3 > 0,
+                  f"verdict={verdict3} diff={d3}")
             check("fixture shape: base0 != base1 (the fixture really advanced)",
                   base0 != base1)
         finally:

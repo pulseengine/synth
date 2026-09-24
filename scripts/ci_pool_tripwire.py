@@ -36,6 +36,7 @@ rename or a deletion before it can deadlock the branch, rather than after.
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 from collections import Counter
@@ -62,9 +63,62 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 #   readings were 56/65 (86.2%, #1062 increment 2) and 55/68 (81%) here — the
 #   share is falling because v0.71's musl job and v0.72's litpool-islands job
 #   were placed on the self-hosted pool rather than defaulting.
-UBUNTU_LATEST_CEILING = 52
+# RQ-73-CIPOOL (#1062 increment 4): 52 -> 46. Six oracle jobs moved to
+# self-hosted now that every `pip install` in this file carries the PEP 668
+# fallback — measured before the guard, 37 of the 40 candidates were blocked on
+# exactly that, so the guard is what made the move possible rather than an
+# incidental tidy-up. 34 remain PEP668_POOL_READY and are a one-line retarget
+# each; they are left for a measured follow-up rather than moved in one burst,
+# because a pool change that goes wrong takes every lane's CI with it.
+UBUNTU_LATEST_CEILING = 46
 
 EXACT_LABEL = "ubuntu-latest"
+
+
+# RQ-73-CIPOOL (#1062 increment 4): WHICH ubuntu-latest jobs can move, derived
+# rather than asserted.
+#
+# v0.72 held four required contexts back on a HEURISTIC ("they carry an
+# external-toolchain marker"). The real reason is STRUCTURAL and was measured
+# during that release:
+#
+#   sudo: The "no new privileges" flag is set, which prevents sudo from
+#         running as root.
+#
+# `no_new_privs` on the self-hosted containers means NO job needing `apt-get`
+# can ever run there, however the plan evolves — not a scheduling preference
+# and not something a later increment can work around. pip is different: it
+# needs no sudo, and works under the PEP 668 `--break-system-packages` fallback
+# v0.72 proved.
+#
+# So a job is PEP668_POOL_READY when it is on ubuntu-latest, is NOT a required
+# context, needs NO apt/sudo, and every `pip install` it runs already carries
+# the PEP 668 fallback. That last clause is the one that makes this a
+# precondition rather than a wish: measured at this release, all 40 candidate
+# jobs lacked the fallback, so a bare `runs-on` retarget would have broken
+# every one of them on the first self-hosted run.
+APT_RE = re.compile(r"\bapt-get\b|\bsudo\b")
+PIP_RE = re.compile(r"\bpip install\b")
+PEP668_RE = re.compile(r"--break-system-packages")
+
+
+def pep668_pool_ready(jobs, required):
+    """(ready, blocked) — blocked maps job name -> why it cannot move."""
+    ready, blocked = [], {}
+    for jid, j in jobs.items():
+        if pool_of(j.get("runs-on")) != EXACT_LABEL:
+            continue
+        name = j.get("name") or jid
+        body = str(j)
+        if name in required:
+            blocked[name] = "required context (moving one DEADLOCKS every merge)"
+        elif APT_RE.search(body):
+            blocked[name] = "needs apt/sudo — impossible under no_new_privs"
+        elif PIP_RE.search(body) and not PEP668_RE.search(body):
+            blocked[name] = "pip install without the PEP 668 fallback"
+        else:
+            ready.append(name)
+    return ready, blocked
 
 
 def pool_of(runs_on):
@@ -203,6 +257,53 @@ def main():
     print(f"ci-pool: {len(REQUIRED_CONTEXTS)} required contexts (pinned), "
           f"{on_hosted} on {EXACT_LABEL}, "
           f"{len(REQUIRED_CONTEXTS) - on_hosted} elsewhere")
+
+    # RQ-73-CIPOOL (#1062 increment 4): the migration-ready set, DERIVED.
+    ready, blocked = pep668_pool_ready(jobs, set(REQUIRED_CONTEXTS))
+    n_req = sum(1 for v in blocked.values() if v.startswith("required"))
+    n_apt = sum(1 for v in blocked.values() if "apt/sudo" in v)
+    n_pip = sum(1 for v in blocked.values() if "PEP 668" in v)
+    print(f"ci-pool: PEP668_POOL_READY = {len(ready)} job(s) may move; "
+          f"blocked {n_req} required, {n_apt} apt/sudo, {n_pip} unguarded pip")
+    # A required context must NEVER be reported movable: retargeting one leaves
+    # a NAME that never runs, which blocks every merge with no red to revert.
+    for name in ready:
+        if name in set(REQUIRED_CONTEXTS):
+            failures.append(
+                f"ci-pool: {name!r} is a REQUIRED context and was reported "
+                f"PEP668_POOL_READY. Moving it deadlocks every merge.")
+
+    # (v0.73 cold review, gate finding F8) POOL SUITABILITY, which the deadlock
+    # guard never checked. Its scope is "defined / has `runs-on` / no `if:`" —
+    # all properties of the job's DECLARATION, none of the pool it declares.
+    # DEMONSTRATED by the reviewer: moving a required context to self-hosted
+    # produced ZERO deadlock failures; it red only on the RATCHET, and lowering
+    # the ceiling exactly as the ratchet instructs gave "0 failure(s)".
+    #
+    # The hazard is specific and derivable: `no_new_privs` on the self-hosted
+    # containers makes `apt-get` impossible there, so a required context that
+    # needs apt would never run — a NAME permanently pending, which is the
+    # deadlock with no red to revert.
+    #
+    # NOTE what this does NOT claim, because the artifact overstated it and the
+    # refuting command caught that: of the four required contexts on
+    # ubuntu-latest, only TWO need apt (`Test`, `Z3 Verification`). `Kani
+    # Verification` and `Bazel Build & Proofs` do not, and five required
+    # contexts already run self-hosted today. "Required contexts can never move"
+    # is false as a general statement; "a required context that needs apt can
+    # never run self-hosted" is the true one, and is what this checks.
+    for jid, j in jobs.items():
+        name = j.get("name") or jid
+        if name not in set(REQUIRED_CONTEXTS):
+            continue
+        if pool_of(j.get("runs-on")) != "self-hosted":
+            continue
+        if APT_RE.search(str(j)):
+            failures.append(
+                f"ci-pool: REQUIRED context {name!r} is on the self-hosted pool "
+                f"AND needs apt/sudo. `no_new_privs` makes that impossible, so "
+                f"the context would never conclude — every merge blocks on a "
+                f"name that never runs, with no red to revert.")
 
     # ---- and the API as a CROSS-CHECK, never as the source -----------------
     if not args.offline:

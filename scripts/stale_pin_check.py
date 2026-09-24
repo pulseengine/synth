@@ -87,6 +87,30 @@ REPO = "pulseengine/synth"
 # the same tuple position as a real issue reference.
 ISSUE_RE = re.compile(r"^#(\d+)$")
 
+# Anything carrying a `#<digits>` that is NOT an exact issue reference.
+_HASH_NUM = re.compile(r"#\d+")
+
+# The ONLY strings allowed to sit in the issue slot while carrying a `#N`
+# without being an issue reference. Declared, not inferred (v0.73 cold review,
+# gate finding F1).
+#
+# The "reason" bucket used to be a silent catch-all: any value with no exact
+# match was booked as reason-charged, the `attributed + reasoned == total`
+# accounting still balanced, and the issue was never checked for closure. So a
+# TYPO was indistinguishable from a deliberate suppression reason.
+# DEMONSTRATED: `('#1206', 2)` -> `('issue #1206', 2)` silently dropped #1206
+# from the checked set and the gate still printed PASS.
+#
+# Enumerated from the live tables rather than imagined: exactly two strings
+# qualify today, and both are deliberate.
+REASON_STRINGS = frozenset({
+    # the parity table's capability-boundary envelope, whose own comment reads
+    # "Recorded with this reason, NO ISSUE"
+    "#539-grow-fails",
+    # the boot sweep's GROW_ENVELOPE constant
+    "memory.grow on a fixed-memory image fails (-1): spec-legal, the #539 envelope",
+})
+
 
 class StalePinError(Exception):
     """A shape assumption failed. Never downgraded to a warning."""
@@ -168,10 +192,24 @@ def entry_issues(path: pathlib.Path, name: str) -> collections.Counter:
         hit = False
         for part in parts:
             if isinstance(part, str):
-                m = ISSUE_RE.match(part.strip())
+                t = part.strip()
+                m = ISSUE_RE.match(t)
                 if m:
                     found[int(m.group(1))] += 1
                     hit = True
+                elif _HASH_NUM.search(t) and t not in REASON_STRINGS:
+                    # AMBIGUOUS: carries a `#N` but is not an issue reference
+                    # and is not a declared reason. Silently booking this as
+                    # "reason-charged" is how a typo'd issue reference stops
+                    # being checked while every count still balances.
+                    raise StalePinError(
+                        f"{path.name}::{name}: value {part!r} carries a `#N` "
+                        f"but is neither an exact issue reference nor one of "
+                        f"the declared REASON_STRINGS. If it is a suppression "
+                        f"reason, declare it; if it is meant to name an issue, "
+                        f"write it as `#1234` exactly. Left alone it would be "
+                        f"counted as a reason and the issue never checked."
+                    )
         if not hit:
             found.reasoned += 1
     return found

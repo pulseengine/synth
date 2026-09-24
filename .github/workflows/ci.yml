@@ -1468,7 +1468,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Execute the wast assertions (#928)
         run: |
           set -euo pipefail
@@ -1534,7 +1534,7 @@ jobs:
         # parses it and found five more shared-wrong shapes. A floating
         # `pip install wasmtime` would move the pinned population on the
         # next release — pin it, and move the pin deliberately.
-        run: pip install wasmtime==48.0.0 unicorn==2.1.4 pyelftools
+        run: pip install wasmtime==48.0.0 unicorn==2.1.4 pyelftools || pip install --break-system-packages wasmtime==48.0.0 unicorn==2.1.4 pyelftools
       - name: Selector parity over the spec corpus (#197)
         run: |
           set -euo pipefail
@@ -1559,7 +1559,13 @@ jobs:
     # real fixture provides (the two-move arm is reachable but runtime-dead on real
     # code). Isolated job: unicorn/wasmtime are pip-installed here ONLY, so the main
     # `cargo test --workspace` gate is NOT taxed with a C-library build graph.
-    runs-on: ubuntu-latest
+    # RQ-73-CIPOOL (#1062 increment 4): moved off ubuntu-latest. This job
+    # needs python + pip only, and its `pip install` now carries the PEP
+    # 668 fallback, so it runs where `no_new_privs` forbids apt but pip
+    # is fine. NOT a required context — retargeting one of those leaves a
+    # NAME that never runs and deadlocks every merge, with no red to
+    # revert.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -1579,7 +1585,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run two-move execution oracle
         run: python scripts/oracle_run.py scripts/repro/cmp_select_two_move_differential.py
       # RQ-68-REPRO (#1291): the determinism gate synth never had. relay built
@@ -1701,7 +1707,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Install host linker + qemu-user (RQ-64-ARM64LINUX host-link oracle)
         # A REAL linker for arm64-linux (ld.lld), clang for the freestanding C
         # harness (`-target aarch64-unknown-linux-gnu`, no sysroot needed),
@@ -2041,7 +2047,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install wasmtime python bindings
-        run: pip install wasmtime
+        run: pip install wasmtime || pip install --break-system-packages wasmtime
       - name: Run #851 direct-call execution differential
         # The matrix above is single-function (loads one function's .text) so it
         # cannot exercise CALLS. This harness compiles MULTI-function modules,
@@ -2101,7 +2107,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install oracle deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Assert this runner IS arm64 Linux (the leg the claim is about)
         run: |
           set -euo pipefail
@@ -2162,7 +2168,7 @@ jobs:
           python-version: "3.x"
       - name: Install emulation deps
         # capstone: the #846 gpio-thin oracle's mask census disassembles .text
-        run: pip install wasmtime unicorn pyelftools capstone
+        run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
       - name: Install arm-none-eabi-ld (#881 VFP spill oracle)
         # binutils only (NOT the full gcc-arm-none-eabi): the #881 oracle links
         # its ET_REL object with a REAL ld so the internal `bl` reloc is proven
@@ -2751,7 +2757,13 @@ jobs:
     # to a per-site certificate — byte gates, 1024-case sweep, retained-trap,
     # decline and RED legs (steps below). Isolated job: emulation deps
     # pip-installed here ONLY.
-    runs-on: ubuntu-latest
+    # RQ-73-CIPOOL (#1062 increment 4): moved off ubuntu-latest. This job
+    # needs python + pip only, and its `pip install` now carries the PEP
+    # 668 fallback, so it runs where `no_new_privs` forbids apt but pip
+    # is fine. NOT a required context — retargeting one of those leaves a
+    # NAME that never runs and deadlocks every merge, with no red to
+    # revert.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -2811,7 +2823,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run in-bounds differential (proven bound)
         run: python scripts/oracle_run.py scripts/repro/fact_spec_clamp_494_differential.py
       - name: Run wrong-bound loud-decline path
@@ -2910,7 +2922,13 @@ jobs:
     # validate, so deleting the hash comparison turns it RED with a real
     # UC_ERR_READ_UNMAPPED (verified by mutation when #901 landed).
     # Isolated job: emulation deps pip-installed here ONLY.
-    runs-on: ubuntu-latest
+    # RQ-73-CIPOOL (#1062 increment 4): moved off ubuntu-latest. This job
+    # needs python + pip only, and its `pip install` now carries the PEP
+    # 668 fallback, so it runs where `no_new_privs` forbids apt but pip
+    # is fine. NOT a required context — retargeting one of those leaves a
+    # NAME that never runs and deadlocks every merge, with no red to
+    # revert.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -2942,7 +2960,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run --proven-safe execution differential (#901)
         env:
           SYNTH: ./target/debug/synth
@@ -2966,7 +2984,13 @@ jobs:
     # (slli/srli/srai folds incl. the &31 mask on >=32 and negative amounts, and
     # the variable-shift non-fold) against regression — the RV32 analogue of the
     # cmp-select oracle above. Isolated job: emulation deps pip-installed here ONLY.
-    runs-on: ubuntu-latest
+    # RQ-73-CIPOOL (#1062 increment 4): moved off ubuntu-latest. This job
+    # needs python + pip only, and its `pip install` now carries the PEP
+    # 668 fallback, so it runs where `no_new_privs` forbids apt but pip
+    # is fine. NOT a required context — retargeting one of those leaves a
+    # NAME that never runs and deadlocks every merge, with no red to
+    # revert.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -2986,7 +3010,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run RV32 shift-fold execution oracle
         env:
           SYNTH: ./target/debug/synth
@@ -3011,7 +3035,13 @@ jobs:
     # on-silicon flip, so this continuously validates the flag-on path (folding a
     # constant address into the access immediate off s11) against regression.
     # Isolated job: emulation deps pip-installed here ONLY.
-    runs-on: ubuntu-latest
+    # RQ-73-CIPOOL (#1062 increment 4): moved off ubuntu-latest. This job
+    # needs python + pip only, and its `pip install` now carries the PEP
+    # 668 fallback, so it runs where `no_new_privs` forbids apt but pip
+    # is fine. NOT a required context — retargeting one of those leaves a
+    # NAME that never runs and deadlocks every merge, with no red to
+    # revert.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -3031,7 +3061,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run RV32 const-address-fold execution oracle
         env:
           SYNTH: ./target/debug/synth
@@ -3060,7 +3090,13 @@ jobs:
     # a wrong default or a signed chain compare is loud). A missing export
     # (the pre-fix decline) fails the vacuity guard, so this can never pass
     # vacuously. Isolated job: emulation deps pip-installed here ONLY.
-    runs-on: ubuntu-latest
+    # RQ-73-CIPOOL (#1062 increment 4): moved off ubuntu-latest. This job
+    # needs python + pip only, and its `pip install` now carries the PEP
+    # 668 fallback, so it runs where `no_new_privs` forbids apt but pip
+    # is fine. NOT a required context — retargeting one of those leaves a
+    # NAME that never runs and deadlocks every merge, with no red to
+    # revert.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -3080,7 +3116,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run RV32 br_table execution oracle
         env:
           SYNTH: ./target/debug/synth
@@ -3129,7 +3165,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Install lld + clang (real-link stage)
         run: sudo apt-get update && sudo apt-get install -y lld clang
       - name: Run RV32 external-call relocation oracle
@@ -3184,7 +3220,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Install lld + clang (real-link stage)
         run: sudo apt-get update && sudo apt-get install -y lld clang
       - name: Run RV32 label/return dead-code oracle
@@ -3231,7 +3267,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run RV32 memory.size / memory.grow execution oracle
         env:
           SYNTH: ./target/debug/synth
@@ -3279,7 +3315,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run callee-saved preservation oracle
         env:
           SYNTH: ./target/debug/synth
@@ -3329,7 +3365,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run call_indirect bounds-guard oracle
         env:
           SYNTH: ./target/debug/synth
@@ -3380,7 +3416,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run multi-table call_indirect oracle
         env:
           SYNTH: ./target/debug/synth
@@ -3436,7 +3472,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run null-funcref-slot call_indirect oracle
         env:
           SYNTH: ./target/debug/synth
@@ -3492,7 +3528,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: "Run #970 conditional-param-write execution oracle (ARM Thumb-2)"
         env:
           SYNTH: ./target/debug/synth
@@ -3548,7 +3584,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: "Run #990 br_if-local zero-init execution oracle (ARM Thumb-2)"
         env:
           SYNTH: ./target/debug/synth
@@ -3602,7 +3638,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: "Run #1097 param-block silent-miscompile oracle (fixture red half + live decline half)"
         # `set -euo pipefail` per #890. The `ci-checks: emulations >= 19`
         # floor counts the 11 fixture + 8 guard unicorn entries; it CANNOT
@@ -3668,7 +3704,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: "Run #1189 join-alias oracle (fixture red half + live four-leg half)"
         # `set -euo pipefail` per #890. The `ci-checks: emulations >= 223`
         # floor counts 74 fixture + 149 live unicorn entries; it CANNOT see
@@ -3946,7 +3982,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools capstone pyyaml
+        run: pip install wasmtime unicorn pyelftools capstone pyyaml || pip install --break-system-packages wasmtime unicorn pyelftools capstone pyyaml
       - name: "The checker's own tests — the reach-wide decision from both sides (RQ-66-DELETE)"
         run: python3 scripts/test_mutation_survey.py
         # RQ-71-MUTANTDRIFT (#1189) — REFUTED, and the record is here because a
@@ -4038,7 +4074,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: "cmn residual compare — the direct selector's negative-immediate table, executed (R3-direct)"
         run: |
           set -euo pipefail
@@ -4106,7 +4142,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: "Run the RQ-65-ALIASCLASS four-leg oracle (fixture red half + live half)"
         # `ci-checks: emulations >= 1629` counts fixture + live unicorn
         # entries; it cannot see the wrong/match partition, the known-open
@@ -4169,7 +4205,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run heterogeneous-table call_indirect oracle
         env:
           SYNTH: ./target/debug/synth
@@ -4225,7 +4261,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run self-contained call_indirect EXECUTION differential
         env:
           SYNTH: ./target/debug/synth
@@ -4278,7 +4314,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run block/br_if lowering oracle
         env:
           SYNTH: ./target/debug/synth
@@ -4327,7 +4363,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run spill-frame teardown oracle
         env:
           SYNTH: ./target/debug/synth
@@ -4378,7 +4414,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run register-exhaustion oracle
         env:
           SYNTH: ./target/debug/synth
@@ -4427,7 +4463,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools capstone
+        run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
       - name: Run flight-seam oracle (inlined #212 + flat #215)
         run: |
           # RQ-59-GLOBALINIT (#1052): the flight_seam modules carry a nonzero
@@ -4490,7 +4526,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run control-step oracle
         run: |
           # RQ-59-DATASEG (#1041): control_step.wasm carries an active data
@@ -4548,7 +4584,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools capstone
+        run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
       - name: Run AAPCS stack-argument oracle
         env:
           SYNTH: ./target/debug/synth
@@ -4599,7 +4635,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run i64 stack-param oracle (#503-i64)
         env:
           SYNTH: ./target/debug/synth
@@ -4660,7 +4696,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run i64 rot/div/rem expansion oracle (#610)
         run: python scripts/oracle_run.py scripts/repro/i64_rot_div_610_differential.py target/debug/synth
       # #910: close the job with what it EXECUTED. Asserts every oracle
@@ -4708,7 +4744,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run br_table oracle
         env:
           SYNTH: ./target/debug/synth
@@ -4757,7 +4793,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run const-CSE flag-on oracle
         env:
           SYNTH: ./target/debug/synth
@@ -4806,7 +4842,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run frame-slot DCE flag-on oracle
         env:
           SYNTH: ./target/debug/synth
@@ -4857,7 +4893,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run stack-layout red/green/transparent oracle
         env:
           SYNTH: ./target/debug/synth
@@ -4909,7 +4945,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: Run the #418 arena-bind execution differential
         env:
           SYNTH: ./target/debug/synth
@@ -5170,7 +5206,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
       - name: "#1207 — synth compile accepts invalid WASM (13 fixtures x 3 backends)"
         run: |
           set -euo pipefail
@@ -5252,7 +5288,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools capstone
+        run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
       - name: Install wabt (wat2wasm — required by the newly-wired oracles)
         # #890: these oracles were never CI-run, so their host deps were never
         # discovered. wat2wasm is absent on the runner and several fixtures
@@ -5435,7 +5471,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools capstone
+        run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
       - name: Install wabt (wat2wasm — required by the newly-wired oracles)
         # #890: these oracles were never CI-run, so their host deps were never
         # discovered. wat2wasm is absent on the runner and several fixtures
@@ -5531,7 +5567,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools capstone
+        run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
       - name: Install wabt (wat2wasm — required by the newly-wired oracles)
         # #890: these oracles were never CI-run, so their host deps were never
         # discovered. wat2wasm is absent on the runner and several fixtures
@@ -5650,7 +5686,7 @@ jobs:
       # wabt build. That host-dependency class (#850/#881) is the one thing a
       # never-before-run job discovers the hard way.
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools capstone
+        run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
       - name: "#973 i64-cmp select execution differential (both ARM legs)"
         run: python scripts/oracle_run.py scripts/repro/select_i64cmp_973_arm_differential.py
       - name: "#989 local.set/tee WAR-aliasing execution differential (both ARM legs)"
@@ -5700,7 +5736,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools capstone
+        run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
       - name: Install wabt (wat2wasm — required by the newly-wired oracles)
         # #890: these oracles were never CI-run, so their host deps were never
         # discovered. wat2wasm is absent on the runner and several fixtures
@@ -5911,7 +5947,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install oracle deps
-        run: pip install wasmtime pyelftools
+        run: pip install wasmtime pyelftools || pip install --break-system-packages wasmtime pyelftools
       - name: Install lld (ld.lld for the reverse-refusal control)
         # `lld`, NOT `llvm`: brew's llvm formula does not ship `ld.lld`, and
         # `brew --prefix llvm` prints a path whether or not the formula is even
