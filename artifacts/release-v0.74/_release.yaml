@@ -106,3 +106,12 @@
 #
 # * Read an issue's STATE before reading its body. v0.73 lost time twice to a
 #   closed issue whose body still described open work.
+#
+# * DO NOT PUT A BOARD COUNT IN THE RELEASE NOTES. v0.73's own round 2 flagged
+#   restated `updatedAt`-derived claims TWICE, and the coordinator then wrote a
+#   live open-issue count into the shipped CHANGELOG anyway. It does not
+#   reconcile: the count taken before the closures, minus the two issues the
+#   tag closed, is one short of the count taken after, and an issue open since
+#   June appears in the later set but not the earlier one. Which reading was
+#   wrong is undetermined. The lesson is not 'count more carefully' — it is
+#   that a board count is a moving field and belongs in no durable document.
