@@ -191,7 +191,9 @@ artifacts:
       # RQ-71-ISSUESCOPE (#1250): the artifact's scope shipped; the ISSUE is
       # wider — #1341 asks for THREE things and this lane deliberately delivered
       # items 1 and 2 (the per-export number at compile time, and that number
-      # recorded in the object). Item 3, a stack line in
+      # written to a sidecar BESIDE the object — the v0.72 cold review
+      # found "recorded in the object" here and in CHANGELOG.md, and the
+      # ELF carries no such section or note). Item 3, a stack line in
       # docs/embedder-abi-relocatable-arm.md under "Region requirements", is NOT
       # delivered: that file is untouched by v0.71 and still offers the embedder
       # no number and no pointer to --emit-stack-depth. cpetig wrote that even

@@ -16,8 +16,12 @@ has to have and synth would not tell them.
 reserve and nothing about NATIVE STACK. Guessing low does not fail loudly: the
 reporter's export returned the bit-exact correct answer every time and then
 overwrote an RTOS pointer. `synth compile --emit-stack-depth` now emits a
-per-export maximum native stack depth in a `synth-stack-v1` sidecar, and records
-it in the object.
+per-export maximum native stack depth into a `synth-stack-v1` sidecar written
+BESIDE the object, at `<output>.stack.json`. (This section originally said the
+number was also "recorded in the object". It is not — the ELF is untouched, and
+`git grep 'synth_stack' -- crates/` matches no section or note. Corrected during
+the v0.72 cold review, because sending an embedder to look in the ELF is
+precisely #1341's own failure mode, and these notes are what a consumer reads.)
 
 The reporter proposed reusing `--emit-wcet`'s call-graph walk. **The traversal
 was right and the arithmetic was not**, which is what shaped the lane:
