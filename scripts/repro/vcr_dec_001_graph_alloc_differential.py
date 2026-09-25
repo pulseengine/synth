@@ -54,46 +54,115 @@ Exit 0 = all three properties hold; nonzero = a violation.
 import hashlib
 import os
 import subprocess
+import re
 import sys
 import tempfile
 from pathlib import Path
 
 REPRO = Path(__file__).resolve().parent
 
-# Canonical frozen fixtures (fixture, golden .text sha256, golden len) — the exact
-# pins from crates/synth-cli/tests/frozen_codegen_bytes.rs oracle_001.
+# RQ-76-CAPTURE (#1255): the anchors are DERIVED from the Rust golden, not
+# mirrored from it.
 #
-# THIS LIST IS A HAND-MAINTAINED MIRROR AND THAT IS THE DEFECT, not the stale
-# value it produced. v0.66: RQ-66-BOTHWRONG re-froze flight_seam in the Rust
-# golden with a written cause and an executing differential, did not know this
-# copy existed, and main went red for five consecutive merges. CLAUDE.md's
-# first invariant names exactly this shape: derive what you check against from
-# the artifact you ship, never mirror it.
+# WHAT WAS WRONG. This list used to be a hand-copied duplicate of the pins in
+# `crates/synth-cli/tests/frozen_codegen_bytes.rs`. RQ-66-BOTHWRONG re-froze
+# `flight_seam` 706 -> 718 in the golden, did not know this copy existed, and
+# main went red for five consecutive merges. Exactly ONE of the four anchors was
+# stale, so three kept agreeing and nothing looked systemically wrong.
 #
-# Until this reads the goldens directly, the cheap check is:
-#     grep -o '"[0-9a-f]\{64\}"' crates/synth-cli/tests/frozen_codegen_bytes.rs
-# and confirm every hash below appears in that output. A hash here that is NOT
-# there is a stale mirror, not a compiler regression. Filed as #1254.
-FROZEN = [
-    # Synced to frozen_codegen_bytes.rs oracle_001 default block after the #846
-    # shift-mask elision went default-on (v0.50.1): the shift-carrying anchors
-    # SHRANK — control_step 308→288 (−20), flight_seam 870→706 (−164),
-    # flight_seam_flat 1010→842 (−168). signed_div_const is inert (no shift).
-    ("control_step.wasm",
-     "8b3f1f6fe3a40994dacca91614cc19590f330eb49e8dcc8eb5b0ffc78338a1d9", 288),
-    # RQ-66-BOTHWRONG (#1210) moved this anchor 706 -> 718 in
-    # frozen_codegen_bytes.rs and this MIRROR was not updated with it, which
-    # reddened main for five merges. `flight_algo` calls the VOID function
-    # `filter_step`; before that fix `call` pushed a phantom operand-stack
-    # result for every callee regardless of arity, and the phantom's later
-    # removal happened to shrink code elsewhere.
-    ("flight_seam.wasm",
-     "e47705fd59f682ab8894bb6fbf941472c32a3c5725b001a6fd8138ff7bc768d4", 718),
-    ("flight_seam_flat.wasm",
-     "5a5d675772544662fefdee6f267d07be98da1560af0626b0671e7d79b1644f37", 842),
-    ("signed_div_const.wasm",
-     "b277453b7829a5b2c64527131298d89fa63f5641231b1d4c7336675e8cdab9b0", 34),
-]
+# WHY THE OLD HEADER'S OWN REMEDY DID NOT WORK, measured rather than assumed.
+# It said: run `grep -o '"[0-9a-f]\{64\}"' frozen_codegen_bytes.rs` and confirm
+# every hash below appears. That file holds TEN `#[test]` blocks and FIFTEEN
+# distinct hashes; this list holds four. The grep is satisfied by a hash from
+# ANY block — including `28642bd9...`, the escape-hatch block's PRE-flip golden
+# for this very fixture. Presence-in-FILE is not presence-in-`oracle_001`, so
+# the check passes on precisely the stale value it was written to catch. That is
+# demonstrated by `check_derivation_is_not_substring_matching()` below.
+#
+# (The old header also said "Filed as #1254". #1254 is a DIFFERENT, open issue
+# about RV32 immediate folding. The mirror's issue is #1255 — a wrong number,
+# not the sanctioned closed-issue citation convention in CLAUDE.md.)
+GOLDEN = (
+    Path(__file__).resolve().parents[2]
+    / "crates/synth-cli/tests/frozen_codegen_bytes.rs"
+)
+
+# The test function whose `cases` array IS the default-path contract. Named, not
+# pattern-matched across the file: nine sibling blocks pin other regimes.
+GOLDEN_FN = "frozen_fixtures_text_is_bit_identical_oracle_001"
+
+
+def _strip_line_comments(text: str) -> str:
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def frozen_from_golden() -> list[tuple[str, str, int]]:
+    """The (fixture, sha256, len) anchors, READ FROM the shipped golden.
+
+    Refuses loudly on every shape that could make the derivation silently
+    empty — a renamed function, a restructured array, a zero-entry parse. A
+    derivation that returns `[]` and lets the caller compare nothing is the
+    "checker reports success about work it never did" class, and it is the
+    reason this returns or exits rather than yielding.
+    """
+    if not GOLDEN.exists():
+        sys.exit(f"REFUSE: the golden {GOLDEN} does not exist — cannot derive")
+    src = GOLDEN.read_text()
+    fn = re.search(
+        rf"fn {re.escape(GOLDEN_FN)}\(\)\s*\{{(.*?)\n\}}", src, re.S
+    )
+    if not fn:
+        sys.exit(
+            f"REFUSE: {GOLDEN_FN} not found in {GOLDEN.name}. If it was renamed, "
+            f"update GOLDEN_FN in the same commit — deriving from whatever "
+            f"happens to match instead is how the mirror came back."
+        )
+    arr = re.search(r"let cases = \[(.*?)\n    \];", fn.group(1), re.S)
+    if not arr:
+        sys.exit(f"REFUSE: no `let cases = [...]` inside {GOLDEN_FN}")
+    body = _strip_line_comments(arr.group(1))
+    out = re.findall(
+        r'"([A-Za-z0-9_]+\.wasm)"\s*,\s*"([0-9a-f]{64})"\s*,\s*(\d+)', body
+    )
+    if not out:
+        sys.exit(
+            f"REFUSE: {GOLDEN_FN}'s `cases` parsed to ZERO anchors. The array "
+            f"shape changed; an empty derivation would make every comparison "
+            f"below vacuous."
+        )
+    return [(n, h, int(ln)) for n, h, ln in out]
+
+
+def check_derivation_is_not_substring_matching() -> None:
+    """The issue's own proposed remedy, shown VACUOUS on this tree.
+
+    #1255 suggested confirming each mirrored hash appears anywhere in the
+    golden. This asserts that a hash from a DIFFERENT block satisfies that
+    grep while NOT being an `oracle_001` anchor — so the remedy cannot
+    distinguish a correct anchor from a stale one, and the named-function
+    derivation above is not a more elaborate way of doing the same thing.
+    """
+    src = GOLDEN.read_text()
+    anywhere = set(re.findall(r'"([0-9a-f]{64})"', src))
+    derived = {h for _, h, _ in frozen_from_golden()}
+    intruders = anywhere - derived
+    if not intruders:
+        sys.exit(
+            "REFUSE: every sha256 in the golden is an oracle_001 anchor, so "
+            "this demonstration is vacuous. It asserts the file still has "
+            "sibling blocks; if they were removed, delete this check with a "
+            "note rather than leaving it passing for the wrong reason."
+        )
+    print(
+        f"  derivation: {len(derived)} anchor(s) from {GOLDEN_FN}; "
+        f"{len(anywhere)} sha256(s) exist in {GOLDEN.name}, so "
+        f"{len(intruders)} would satisfy the issue's grep remedy WITHOUT "
+        f"being an anchor (e.g. {sorted(intruders)[0][:12]}...) — "
+        f"presence-in-file is not presence-in-oracle_001"
+    )
+
+
+FROZEN = frozen_from_golden()
 
 # Full corpus for the flag-on ≡ flag-off + RA-003 checks.
 CORPUS = [
@@ -181,6 +250,12 @@ def main():
         return 2
     synth = sys.argv[1]
     fails = 0
+
+    # ---- Property 0: the anchors are DERIVED, and the derivation is real -----
+    # RQ-76-CAPTURE (#1255). Runs FIRST so a broken derivation cannot be
+    # mistaken for a compiler result further down.
+    print("== (0) anchors derived from the shipped golden ==")
+    check_derivation_is_not_substring_matching()
 
     # ---- Property 1: FLAG-OFF ≡ frozen goldens -------------------------------
     print("== (1) flag-off ≡ frozen goldens ==")

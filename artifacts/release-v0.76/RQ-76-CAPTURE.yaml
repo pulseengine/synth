@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-76-CAPTURE
     type: system-req
     release: v0.76
-    status: proposed
+    status: implemented
     title: "The graph-alloc differential hand-mirrors four shipped digests — and the remedy the issue itself proposes passes on the exact stale value it exists to catch"
     description: >
       `scripts/repro/vcr_dec_001_graph_alloc_differential.py` pins four anchors as
@@ -41,7 +41,8 @@ artifacts:
     fields:
       req-type: process
       priority: must
+      landed: "#1407"
       issue: "#1255"
       done-when: "contains:scripts/repro/vcr_dec_001_graph_alloc_differential.py:RQ-76-CAPTURE"
       verified-by: >-
-        Red-first: staling ONE anchor in the Rust golden must red the Python differential, shown by applying the mutation and verifying it applied. The issue's own grep remedy must be demonstrated vacuous against the escape-hatch hash before the real derivation replaces it.
+        DELIVERED. `FROZEN` is now `frozen_from_golden()`, which parses the NAMED test function `frozen_fixtures_text_is_bit_identical_oracle_001` in `crates/synth-cli/tests/frozen_codegen_bytes.rs` and reproduces all four anchors exactly. Red-first, both mutations applied and verified applied by diff: (a) staling ONE anchor's length in the Rust golden, 718 -> 719, reds the Python differential with `flight_seam.wasm ... MISMATCH` — under the hand-copied mirror that same edit was INVISIBLE, which is the v0.66 incident where main went red for five consecutive merges; (b) renaming the golden function makes the derivation REFUSE loudly rather than returning an empty list, because a derivation that silently yields nothing makes every comparison below it vacuous. The issue's own proposed remedy is demonstrated VACUOUS in the file and quantified at run time: the golden holds 15 distinct sha256 values of which 4 are `oracle_001` anchors, so 11 satisfy `grep -o '\"[0-9a-f]\{64\}\"'` WITHOUT being an anchor — including the escape-hatch block's PRE-flip golden for this very fixture. Presence-in-file is not presence-in-oracle_001. Also corrected: the header cited "#1254", which is a different open issue about RV32 immediate folding.
