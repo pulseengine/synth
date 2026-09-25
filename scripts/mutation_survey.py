@@ -1471,11 +1471,99 @@ def cmd_attribute(args):
     log(f"re-attributed {n} structural kills")
 
 
+# RQ-76-MUTRETIRE (#1257): the survey now KNOWS about its own retired list.
+#
+# A site whose anchoring text no longer exists because a FIX deleted the code
+# it mutated is a successful outcome, not a bookkeeping problem. Before this,
+# the tool offered only two wrong answers: DELETE the entry, which silently
+# shrinks the sample denominator so every derived rate moves with no record; or
+# LEAVE it, and `reanchor` exits 1 forever.
+#
+# A `retired` list existed in the JSON and was maintained BY HAND — four entries
+# across v0.66 and v0.68 — while this file contained not one reference to it.
+# A hand-maintained list beside a tool that cannot see it is the same mirror
+# defect the rest of this release is about, so the tool reads it now.
+#
+# The DENOMINATOR IS THE POINT. `survey_sampled` counted only live sites, so the
+# survey reported a sample of 34 when 38 had been drawn. Retiring a site must
+# never change what was DRAWN; it moves a site between two columns that are both
+# reported.
+RETIRED_REQUIRED = ("id", "classification_when_drawn", "retired_at", "reason")
+
+
+def validate_retired(ledger):
+    """Every retired entry is complete, and no id is in two places at once."""
+    problems = []
+    live_ids = {m["id"] for m in ledger.get("mutants", [])}
+    seen = set()
+    for r in ledger.get("retired", []):
+        rid = r.get("id", "<no id>")
+        missing = [k for k in RETIRED_REQUIRED if not r.get(k)]
+        if missing:
+            problems.append(f"retired {rid}: missing {missing}")
+        if rid in live_ids:
+            problems.append(
+                f"retired {rid}: ALSO present in `mutants` — a site cannot be "
+                f"both live and retired; that double-counts the drawn sample")
+        if rid in seen:
+            problems.append(f"retired {rid}: listed twice")
+        seen.add(rid)
+    return problems
+
+
+def drawn_counts(ledger):
+    """(drawn, live, retired) — drawn is what the sample RATE divides by."""
+    live = len(ledger.get("mutants", []))
+    ret = len(ledger.get("retired", []))
+    return live + ret, live, ret
+
+
+def cmd_retire(args):
+    """Move a site the tree no longer contains into `retired`, with a reason.
+
+    Refuses on a site whose text is STILL PRESENT: retiring a live site would
+    shrink the sample for no reason, which is the failure mode this exists to
+    prevent. The reason is mandatory and free text — the point of the record is
+    that a reader can tell a fix from a deletion.
+    """
+    ledger = load_ledger(args.ledger)
+    hit = next((m for m in ledger["mutants"] if m["id"] == args.id), None)
+    if hit is None:
+        sys.exit(f"REFUSE: {args.id} is not a live site in {args.ledger}")
+    lines = (ROOT / hit["file"]).read_text().split("\n")
+    want = hit["before"].split("\n")
+    n = len(want)
+    if any(lines[i:i + n] == want for i in range(len(lines) - n + 1)):
+        sys.exit(
+            f"REFUSE: {args.id}'s anchoring text is STILL PRESENT in "
+            f"{hit['file']}. Retiring a live site shrinks the sample for no "
+            f"reason. If the site moved, run `reanchor`.")
+    ledger["mutants"] = [m for m in ledger["mutants"] if m["id"] != args.id]
+    ledger.setdefault("retired", []).append({
+        "id": hit["id"],
+        "classification_when_drawn": hit.get("classification", "UNKNOWN"),
+        "retired_at": args.at,
+        "reason": args.reason,
+    })
+    problems = validate_retired(ledger)
+    if problems:
+        sys.exit("REFUSE: " + "; ".join(problems))
+    save_ledger(args.ledger, ledger)
+    drawn, live, ret = drawn_counts(ledger)
+    log(f"retired {args.id} at {args.at}: {drawn} drawn, {ret} retired, {live} live")
+
+
 def cmd_reanchor(args):
     """After the tree moves (a rebase), re-locate every recorded site by its
     `before` text — the id embeds the line number, so a shifted site must be
     re-resolved rather than trusted. Ambiguous or missing text is reported
-    and left untouched (the CI replay then fails loudly on that entry)."""
+    and left untouched (the CI replay then fails loudly on that entry).
+
+    RQ-76-MUTRETIRE (#1257): a NOT FOUND site now carries a REMEDY. It still
+    exits non-zero — a vanished site is a real event that must be dispositioned
+    by a human — but the message names `retire` instead of leaving delete-or-
+    stay-red as the only options.
+    """
     ledger = load_ledger(args.ledger)
     renamed = {}
     moved = ambiguous = 0
@@ -1489,6 +1577,10 @@ def cmd_reanchor(args):
             if not hits:
                 ambiguous += 1
                 log(f"  NOT FOUND: {m['id']}")
+                log(f"    REMEDY (#1257): if a FIX deleted the code this site "
+                    f"mutated, record that rather than deleting the entry:")
+                log(f"      python3 scripts/mutation_survey.py retire "
+                    f"--id '{m['id']}' --at vX.Y --reason '...'")
                 continue
             hits.sort(key=lambda i: abs(i + 1 - m["start"]))
         new_start = hits[0] + 1
@@ -1502,9 +1594,16 @@ def cmd_reanchor(args):
     for e in ledger.get("ci_subset", []):
         if e["id"] in renamed:
             e["id"] = renamed[e["id"]]
+    problems = validate_retired(ledger)
+    if problems:
+        sys.exit("REFUSE: the retired list is malformed: " + "; ".join(problems))
     ledger["meta"]["reanchored_at"] = head_commit()
     save_ledger(args.ledger, ledger)
+    drawn, live, ret = drawn_counts(ledger)
+    # The DECOMPOSITION, not just the live count: a reader can see that the
+    # drawn sample is stable even when sites move between the two columns.
     log(f"reanchor: {moved} sites moved, {ambiguous} not found, tree {head_commit()}")
+    log(f"sample: {drawn} drawn = {live} live + {ret} retired")
     if ambiguous:
         sys.exit(1)
 
@@ -1968,6 +2067,13 @@ def main():
     sub.add_parser("l2")
     sub.add_parser("attribute")
     sub.add_parser("reanchor")
+    # RQ-76-MUTRETIRE (#1257): the disposition the tool could not express.
+    p = sub.add_parser("retire", help="move a site the tree no longer contains into `retired`")
+    p.add_argument("--id", required=True, help="the site id, as `reanchor` printed it")
+    p.add_argument("--at", required=True, help="the release that retired it, e.g. v0.76")
+    p.add_argument("--reason", required=True,
+                   help="why the site vanished — a fix that deleted the mutated code, "
+                        "not merely that it is gone")
     p = sub.add_parser("reach", help="RQ-66-DELETE: probe DEAD sites under REACH_CFGS and name the reaching modules")
     p.add_argument("--only", help="comma-separated site ids (default: every DEAD mutant in the ledger)")
     p.add_argument("--write", action="store_true", help="record reach_wide on the ledger records")
@@ -1982,7 +2088,7 @@ def main():
     sub.add_parser("report")
     args = ap.parse_args()
     {"sites": cmd_sites, "sample": cmd_sample, "baseline": cmd_baseline, "run": cmd_run,
-     "controls": cmd_controls, "l2": cmd_l2, "attribute": cmd_attribute, "reanchor": cmd_reanchor,
+     "controls": cmd_controls, "l2": cmd_l2, "attribute": cmd_attribute, "reanchor": cmd_reanchor, "retire": cmd_retire,
      "pin-subset": cmd_pin_subset, "ci": cmd_ci, "report": cmd_report, "reach": cmd_reach}[args.cmd](args)
 
 
