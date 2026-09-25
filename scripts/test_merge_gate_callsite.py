@@ -376,6 +376,33 @@ def main() -> int:
           res["CHECK2"][0] is False and res["CHECK2"][1]["behind"] == 2,
           f"CHECK2={res['CHECK2']}")
 
+    # ---- R2g: the squash-fidelity path FETCHES the pull ref ---------------
+    # Round 2 deleted `sh("git","fetch","-q","origin","refs/pull/N/head")` and BOTH
+    # this driver and `--self-test` stayed green. Measured consequence: without the
+    # fetch, `git diff HEAD <absent-sha>` exits 128, `squash_fidelity`'s own guard
+    # turns that into DIFF UNAVAILABLE, and every post-merge attestation breaks
+    # invisibly. `unmade()`'s needles covered the gate path only; the
+    # squash-fidelity path had none.
+    rc, out, rec = run_main(["--pr", PR, "--squash-fidelity"], fidelity_table())
+    check("main --squash-fidelity FETCHES the pull ref before diffing",
+          not unmade(rec, f"refs/pull/{PR}/head"), f"calls made: {rec.calls}")
+
+    # ---- R2h: a legacy StatusContext rollup entry keyed by `context` -------
+    # `roll` keys on `c.get("name") or c.get("context")`. Dropping the fallback
+    # keys such an entry as None, so `is_advisory(None)` misses it and an ADVISORY
+    # red BLOCKS a correct merge — a false failure, which this programme treats as
+    # equal in cost to a false pass. Every recorded fixture used `name` only, so
+    # nothing exercised the fallback.
+    legacy_ok = rollup() + [{"context": "codecov/patch", "state": "FAILURE"}]
+    res = run_gate(gate_table(legacy_ok))
+    check("gate: a legacy `context`-keyed ADVISORY red still passes",
+          all(p for p, _ in res.values()),
+          f"an advisory red keyed by `context` blocked the merge: {res}")
+    legacy_bad = rollup() + [{"context": "Some Legacy Job", "state": "FAILURE"}]
+    res = run_gate(gate_table(legacy_bad))
+    check("gate: a legacy `context`-keyed NON-advisory red refuses via CHECK3",
+          res["CHECK3"][0] is False, f"CHECK3={res['CHECK3']}")
+
     # ---- the recorder itself must be loud, or every test above is vacuous --
     try:
         short = gate_table(rollup())

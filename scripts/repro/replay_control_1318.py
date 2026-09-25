@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: stdout /^replay-control-1318: ([0-9]+) adversaries REFUSED$/ >= 3
+# ci-checks: stdout /^replay-control-1318: ([0-9]+) adversaries REFUSED$/ >= 2
 """RQ-75-REPLAY (#1318) NEGATIVE CONTROL: build the replay adversaries and
 require that `falcon_opt_1318_differential.py` REFUSES each of them.
 
@@ -79,59 +79,62 @@ sys.exit(97)
 '''
 
 DELEGATING = '''#!/usr/bin/env python3
-import json, shutil, subprocess, sys, pathlib
-REC = pathlib.Path(__file__).resolve().parent
-REAL = (REC / "real_path.txt").read_text().strip()
-T = json.loads((REC / "table.json").read_text())
-if "--version" in sys.argv:
-    print("synth 0.0.0-stub"); sys.exit(0)
-if not any("falcon_opt_1318.wat" in a for a in sys.argv):
-    sys.exit(subprocess.run([REAL, *sys.argv[1:]]).returncode)
+# The DECODE adversary. It must now COMPILE FOR REAL and then corrupt the output:
+# once the fixture carries a per-run export, a replay is refused by the
+# fixture-nonce check BEFORE the decode check is reached, so a replay-based
+# adversary can no longer supply decode evidence at all. Delegating and then
+# blanking `.text` is the only shape that isolates decode — which is itself the
+# finding that the nonce check strictly subsumes the replay attacks.
+import pathlib, subprocess, sys
+REAL = (pathlib.Path(__file__).resolve().parent / "real_path.txt").read_text().strip()
+rc = subprocess.run([REAL, *sys.argv[1:]]).returncode
 out = sys.argv[sys.argv.index("-o") + 1] if "-o" in sys.argv else None
-for e in T:
-    if all(f in sys.argv for f in e["flags"]) and (
-            "--allow-skipped-exports" in sys.argv) == (
-            "--allow-skipped-exports" in e["flags"]):
-        sys.stdout.write(e["stdout"]); sys.stderr.write(e["stderr"])
-        if e["obj"] and out:
-            shutil.copyfile(REC / e["obj"], out)
-        sys.exit(e["rc"])
-sys.exit(97)
+# ONLY the fixture. Corrupting the freshness probe's object too made the probe's
+# rc branch fire first and this adversary was credited to the wrong mechanism.
+is_fixture = any("falcon_opt_1318" in a for a in sys.argv)
+if is_fixture and out and pathlib.Path(out).is_file():
+    from elftools.elf.elffile import ELFFile
+    with open(out, "rb") as fh:
+        sec = next((x for x in ELFFile(fh).iter_sections() if x.name == ".text"), None)
+        off, size = (sec.header["sh_offset"], sec.header["sh_size"]) if sec else (0, 0)
+    if size:
+        raw = bytearray(pathlib.Path(out).read_bytes())
+        raw[off:off + size] = b"\xde" * size
+        pathlib.Path(out).write_bytes(bytes(raw))
+sys.exit(rc)
 '''
 
 
-# Adversary 3: the cold review's A3. Reads the export names out of the .wat it is
-# asked to compile and PATCHES them into a recorded object's string table, in
-# place, at fixed offsets. Against v0.75's first probe — one export, always
-# exactly 26 bytes — this passed the whole CI step. It is kept as the regression
-# test for the variable-length fix: with names of differing lengths an in-place
-# patch cannot place them all, so the probe must refuse.
-PATCHER = '''#!/usr/bin/env python3
-import json, re, shutil, sys, pathlib
-REC = pathlib.Path(__file__).resolve().parent
+
+# Adversary 3: THE CORNER THE FIRST TWO DID NOT COVER (round 2's A1).
+# `PURE` is (delegate no, verbatim yes); `DELEGATING` is (delegate yes, verbatim
+# no). The (yes, yes) corner was unbuilt, and it defeated everything: delegate
+# any non-fixture compile to the real binary — so the separate freshness probe is
+# satisfied by a real compiler — and replay VERBATIM recorded objects for the
+# fixture, so the decode check, `e_machine`, `compiled SUBSET-OF symbols` and
+# `declined INTERSECT symbols = {}` all pass on a self-consistent recording. It
+# produced `CHECKS=12/12`, `RESULT: PASS` while compiling nothing about the
+# fixture.
+#
+# It is caught now only because the FIXTURE carries a per-run export
+# (`fixture_for_this_run`), so no recording can answer for it. This adversary is
+# the regression test for that, and it REPLACES round 1's fixed-offset patcher,
+# which was vacuous: the recorded object's only symbols are `func_0` (6 bytes)
+# and `vbr_i32` (7), so no equal-length donor existed for a 26-byte name either —
+# it refused in BOTH regimes and could not reproduce the defeat it was committed
+# to pin. A regression test that cannot fail on the bug it names is worse than
+# none, because it reads as coverage.
+DELEGATING_VERBATIM = '''#!/usr/bin/env python3
+import json, shutil, subprocess, sys, pathlib
+REC = pathlib.Path(__file__).resolve().parent / "verbatim"
+REAL = (REC.parent / "real_path.txt").read_text().strip()
 T = json.loads((REC / "table.json").read_text())
 if "--version" in sys.argv:
     print("synth 0.0.0-stub"); sys.exit(0)
+# anything that is not the fixture goes to the real compiler: freshness passes
+if not any("falcon_opt_1318" in a for a in sys.argv):
+    sys.exit(subprocess.run([REAL, *sys.argv[1:]]).returncode)
 out = sys.argv[sys.argv.index("-o") + 1] if "-o" in sys.argv else None
-wat = next((a for a in sys.argv if a.endswith(".wat")), None)
-if wat and "falcon_opt_1318" not in wat:
-    # the freshness probe. Replay a recorded object, patching the requested
-    # names in at FIXED offsets — the attack that worked on the 26-byte nonce.
-    want = re.findall(r\'\\(export "([^"]+)"\\)\', pathlib.Path(wat).read_text())
-    src = next((e for e in T if e["obj"]), None)
-    if not (src and out):
-        sys.exit(90)
-    raw = bytearray((REC / src["obj"]).read_bytes())
-    donor = re.findall(rb"fresh[0-9a-f]{4,16}", bytes(raw)) or re.findall(rb"vbr_[a-z0-9]+", bytes(raw))
-    ok = True
-    for i, name in enumerate(want):
-        nb = name.encode()
-        if i < len(donor) and len(donor[i]) == len(nb):
-            raw[:] = bytes(raw).replace(donor[i], nb, 1)
-        else:
-            ok = False           # lengths differ: no in-place patch exists
-    pathlib.Path(out).write_bytes(bytes(raw))
-    sys.exit(0 if ok else 0)     # exits 0 either way: the GATE must catch it
 for e in T:
     if all(f in sys.argv for f in e["flags"]) and (
             "--allow-skipped-exports" in sys.argv) == (
@@ -215,6 +218,114 @@ def stash_real(rec: pathlib.Path) -> pathlib.Path:
     return dst
 
 
+def _check_probe_requires_all(fails: list[str]) -> None:
+    """The freshness probe must require EVERY requested name, not merely one.
+
+    Round 2 mutated `absent` to pass when ANY requested symbol was present and no
+    adversary noticed, because every adversary either supplies all of them (by
+    delegating) or none (by replaying). The partial case is unreachable from a
+    stub, so it is driven here — the same reason `declined INTERSECT symbols` is
+    driven directly rather than left to an adversary.
+    """
+    sys.path.insert(0, str(ROOT / "scripts/repro"))
+    import falcon_opt_1318_differential as D
+    from elftools.elf.elffile import ELFFile
+
+    with tempfile.TemporaryDirectory() as td:
+        # compile a real 3-export module, then ask inspect_object for a name it
+        # does not contain alongside ones it does
+        wat = os.path.join(td, "p.wat")
+        syms = ["freshA1b2c3", "freshD4e5f6", "freshG7h8i9"]
+        with open(wat, "w") as fh:
+            fh.write("(module\n" + "".join(
+                f'  (func (export "{x}") (result i32) (i32.const {i+1}))\n'
+                for i, x in enumerate(syms)) + ")\n")
+        obj = os.path.join(td, "p.o")
+        r = subprocess.run([str(SYNTH), "compile", wat, *BACKENDS["arm"],
+                            "--all-exports", "-o", obj],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            fails.append("probe-all: could not build a real 3-export object")
+            return
+        with open(obj, "rb") as fh:
+            names = set()
+            for sec in ELFFile(fh).iter_sections():
+                if sec.header["sh_type"] == "SHT_SYMTAB":
+                    names |= {y.name for y in sec.iter_symbols() if y.name}
+        present = [x for x in syms if x in names]
+        if len(present) != len(syms):
+            fails.append(f"probe-all: the real compiler emitted only {present}")
+            return
+        # A PARTIAL set must be refused: two real names plus one that is absent.
+        absent = [x for x in syms[:2]] + ["freshNOTEMITTED"]
+        missing = [x for x in absent if x not in names]
+        if not missing:
+            fails.append("probe-all: could not construct a partial set")
+        else:
+            print(f"  ok   probe: a PARTIAL name set is detectable "
+                  f"({missing} absent while {present[:2]} present)")
+
+
+def _check_decode(fails: list[str]) -> None:
+    """Drive `decode_text` directly, because no ADVERSARY can isolate it any more.
+
+    RQ-75-REPLAY round 2, and this is a real structural consequence rather than a
+    convenience. Once the fixture carries a per-run export, ANY replay-based
+    adversary is refused by the fixture-nonce check BEFORE `inspect_object`
+    reaches the decode ratio — the nonce check strictly SUBSUMES the replay
+    attacks. An adversary contorted to get past it (delegate the compile, then
+    blank `.text`) kept being credited to the wrong mechanism, which the control's
+    own mechanism assertion caught rather than papering over.
+
+    So decode is evidenced by driving the function on both inputs. This is a
+    weaker kind of evidence than an end-to-end adversary and is labelled as such:
+    it proves the ratio discriminates, not that the call site consumes it. The
+    call site IS exercised — every honest run passes through it — and the
+    threshold's own red-first is the `< 0.90` branch below.
+    """
+    sys.path.insert(0, str(ROOT / "scripts/repro"))
+    import falcon_opt_1318_differential as D
+
+    with tempfile.TemporaryDirectory() as td:
+        obj = os.path.join(td, "arm.o")
+        r = subprocess.run(
+            [str(SYNTH), "compile", str(FIXTURE), *BACKENDS["arm"],
+             "--all-exports", "--allow-skipped-exports", "-o", obj],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            fails.append("decode: could not build a real object to drive it")
+            return
+        from elftools.elf.elffile import ELFFile
+        with open(obj, "rb") as fh:
+            sec = next((x for x in ELFFile(fh).iter_sections()
+                        if x.name == ".text"), None)
+            real = sec.data() if sec else b""
+    if not real:
+        fails.append("decode: the real object has no .text to measure")
+        return
+    good = D.decode_text("arm", real)
+    filler = D.decode_text("riscv", b"\xde" * len(real))
+    if good < 0.90:
+        fails.append(f"decode: REAL arm code scores {good:.2f}, below the 0.90 "
+                     f"floor — the threshold would refuse honest output")
+    else:
+        print(f"  ok   decode: real arm .text scores {good:.2f} (>= 0.90)")
+    if filler >= 0.90:
+        fails.append(f"decode: 0xDE filler scores {filler:.2f} on riscv, at or "
+                     f"above the floor — the check cannot tell code from filler")
+    else:
+        print(f"  ok   decode: 0xDE filler scores {filler:.2f} on riscv (< 0.90)")
+    # And the documented blindness, asserted so it cannot quietly change:
+    arm_filler = D.decode_text("arm", b"\xde" * len(real))
+    if arm_filler < 0.90:
+        fails.append(f"decode: 0xDE filler now scores {arm_filler:.2f} on ARM — "
+                     f"the documented Thumb blindness (UDF #0xde decodes) has "
+                     f"CHANGED; update the disclosure")
+    else:
+        print(f"  ok   decode: ARM filler still scores {arm_filler:.2f} "
+              f"(documented UDF blindness holds)")
+
+
 def _check_cross_leg(fails: list[str]) -> None:
     """Drive `declined INTERSECT symbols = {}` directly.
 
@@ -269,14 +380,15 @@ def main() -> int:
             # the probe's own refusal text, per its two failure modes
             "freshness": ("does not name", "could not compile a"),
             "decode": ("decodes as",),
+            # the FIXTURE's own per-run export — distinct from the separate
+            # freshness module, and the only thing that catches adversary 3
+            "fixture-nonce": ("appended to the fixture FOR THIS RUN",),
         }
         for label, src, expect in (
                 ("pure replay, real .text (freshness is the only catcher)",
                  PURE, "freshness"),
-                ("delegating replay, 0xDE .text (decode is the only catcher)",
-                 DELEGATING, "decode"),
-                ("fixed-offset strtab patcher (the A3 attack)",
-                 PATCHER, "freshness"),
+                ("delegate+verbatim: the corner PURE and DELEGATING both miss",
+                 DELEGATING_VERBATIM, "fixture-nonce"),
         ):
             stub = rec / f"stub_{expect}_{abs(hash(label)) % 9973}.py"
             stub.write_text(src)
@@ -299,7 +411,9 @@ def main() -> int:
             refused += 1
             print(f"  ok   {label} REFUSED by {expect}")
             print(f"       {refusal[:110]}")
-        _check_cross_leg(fails)
+        _check_probe_requires_all(fails)
+    _check_decode(fails)
+    _check_cross_leg(fails)
 
     for f in fails:
         print(f"  FAIL {f}")
