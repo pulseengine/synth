@@ -43,6 +43,7 @@ artifacts:
     fields:
       req-type: process
       priority: must
+      landed: "#1409"
       issue: "#1403"
       # The issue names a CLASS: a census found 15 CI-wired drivers whose
       # recordings stand in for a live tool. This release addresses TWO of them
