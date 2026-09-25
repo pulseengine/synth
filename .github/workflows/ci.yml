@@ -6175,6 +6175,28 @@ jobs:
           SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
             scripts/repro/islandpass_1331_execution_differential.py | tee /tmp/1331.txt
           grep -q '^RESULT: PASS' /tmp/1331.txt
+      # RQ-76-FALCON (#1318): a value-carrying branch at f32 — the shape behind
+      # SIX of the seven functions the external reporter's `opt.wasm` declined.
+      # The direct selector landed carried values in a CORE register, so a
+      # carried f32 fell through to the INTEGER peek and refused with "invalid
+      # wasm or an unlowered float op reached the integer path". The module is
+      # valid wasm; the diagnostic blamed the reporter for a gap in this
+      # selector, and the i64 sibling arm had been declining honestly since #509.
+      #
+      # EXECUTED, not merely compiled. The fix makes the branch edges and the
+      # fall-through rendezvous in a frame slot; a rendezvous that reloads
+      # BEFORE the join label, or stores to a different slot than it reloads,
+      # still COMPILES and returns a plausible float. Both mutations were
+      # applied and both turn this step RED (25 of 60 emulations wrong).
+      # -0.0 is in the argument set because the cheap no-new-instruction copy
+      # is an arithmetic identity, and -0.0 + 0.0 is +0.0 — a `==` comparison
+      # cannot see that, so the comparison is bit-exact.
+      - name: "a value-carrying branch at f32 EXECUTES bit-exact (#1318)"
+        run: |
+          set -euo pipefail
+          SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
+            scripts/repro/carried_float_branch_1318_differential.py | tee /tmp/1318cfb.txt
+          grep -q '^RESULT: PASS' /tmp/1318cfb.txt
       - name: "#1223 — the five algebraic-identity shapes, EXECUTED (RQ-74-PINDEBT2)"
         run: |
           set -euo pipefail
