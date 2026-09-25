@@ -118,15 +118,76 @@ class _Recorder:
                                            stdout=out, stderr="")
 
 
+# =====================================================================
+# RQ-76-GHSHAPE (#1403): the rollup fixture's SHAPE comes from a real response.
+#
+# This file used to disclose, correctly, that "the recorded strings are
+# hand-written, so they assert what THIS file believes `gh` and `git` emit".
+# Measured against a live call on 2026-09-25: a real `statusCheckRollup` entry
+# carries EIGHT keys — `__typename`, `completedAt`, `conclusion`, `detailsUrl`,
+# `name`, `startedAt`, `status`, `workflowName`. The hand-written fixture
+# carried TWO. Same author wrote the gate's model of `gh` and the test's model
+# of `gh`, so both agreed and the suite was green.
+#
+# THE FIX IS NOT A RICHER HAND-WRITTEN FIXTURE. Eight hand-typed keys is still
+# authored; it moves the fiction one field further out. `rollup()` now builds
+# each entry from a REAL captured entry and overrides only what a test varies,
+# so the shape is DERIVED. Refreshing the capture propagates a new field to
+# every fixture without anyone typing it.
+#
+# WHAT THE CAPTURE DOES NOT COVER, measured rather than waved at: all 76
+# captured entries are `__typename: CheckRun`. `merge_gate` reads
+# `.conclusion // .state`, which serves a `StatusContext` — and this repository
+# produced ZERO of those across the PRs sampled at capture time. So the
+# StatusContext branch is driven only by the hand-written legacy rows below,
+# and that remains authored. Stated here because the general caveat is not the
+# disclosure; the specific measured divergence is.
+# =====================================================================
+
+CAPTURE = (
+    pathlib.Path(__file__).resolve().parent
+    / "fixtures/gh_pr_view_rollup.captured.json"
+)
+
+
+def _capture() -> dict:
+    if not CAPTURE.exists():
+        raise AssertionError(
+            f"REFUSE: {CAPTURE} is missing. The fixture SHAPE is derived from a "
+            f"real captured response; without it these tests would silently "
+            f"fall back to an authored shape, which is the defect."
+        )
+    return json.loads(CAPTURE.read_text())
+
+
+def captured_entry() -> dict:
+    """One REAL rollup entry, used as the shape every fixture entry inherits."""
+    entries = _capture()["response"]["statusCheckRollup"]
+    if not entries:
+        raise AssertionError("REFUSE: the capture holds zero rollup entries")
+    return dict(entries[0])
+
+
+def captured_keys() -> set[str]:
+    e = _capture()["response"]["statusCheckRollup"]
+    return {k for entry in e for k in entry}
+
+
 def rollup(**overrides) -> list[dict]:
-    """A status rollup with every required context SUCCESS, then overrides."""
-    checks = [{"name": n, "conclusion": "SUCCESS"} for n in REQUIRED]
+    """A status rollup with every required context SUCCESS, then overrides.
+
+    Each entry inherits the SHAPE of a real captured response entry; only
+    `name` and `conclusion` are set per test. That is the difference between
+    asserting what `gh` emits and asserting what this file believes it emits.
+    """
+    shape = captured_entry()
+    checks = [dict(shape, name=n, conclusion="SUCCESS") for n in REQUIRED]
     for c in checks:
         if c["name"] in overrides:
             c["conclusion"] = overrides[c["name"]]
     for name, concl in overrides.items():
         if name not in REQUIRED:
-            checks.append({"name": name, "conclusion": concl})
+            checks.append(dict(shape, name=name, conclusion=concl))
     return checks
 
 
@@ -226,6 +287,33 @@ def main() -> int:
         else:
             print(f"  FAIL {name} {detail}")
             fails.append(name)
+
+    # ---- RQ-76-GHSHAPE: is the fixture shaped like a real response? -----
+    # Reds if any fixture entry lacks a key the CAPTURE carries. That is what
+    # makes the derivation load-bearing: reverting `rollup()` to a hand-written
+    # literal fails here, naming the keys it dropped.
+    live = captured_keys()
+    built = {k for e in rollup() for k in e}
+    missing = sorted(live - built)
+    check("rollup fixture carries every key the captured response carries",
+          not missing,
+          f"- fixture entries lack {missing}; the shape was authored, not derived")
+    prov = _capture()["_provenance"]
+    print(f"  ...capture: {len(live)} key(s) {sorted(live)} "
+          f"from {prov['captured_at']}")
+    # AGE IS DISCLOSED, NOT GATED, and the reason is deliberate: a capture that
+    # reds on a calendar fires for something unrelated to whether the gate is
+    # correct, and a gate people cannot move honestly is a gate they route
+    # around. What IS gated is the shape. Refresh with
+    # `_provenance.command` and commit the result.
+    try:
+        import datetime as _dt
+        age = (_dt.datetime.now(_dt.UTC)
+               - _dt.datetime.fromisoformat(
+                   prov["captured_at"].replace("Z", "+00:00"))).days
+        print(f"  ...capture age: {age} day(s) — disclosed, not gated")
+    except Exception as ex:  # pragma: no cover - a bad stamp must not pass silently
+        check("capture carries a parseable captured_at", False, f"- {ex}")
 
     # ---- gate(): the decision, driven end to end --------------------------
     res = run_gate(gate_table(rollup()))

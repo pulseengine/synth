@@ -1,0 +1,775 @@
+{
+ "_provenance": {
+  "captured_at": "2026-09-25T09:24:52Z",
+  "command": "gh pr view 1406 --repo pulseengine/synth --json statusCheckRollup,baseRefOid,headRefOid",
+  "note": "A REAL response, captured from a live call. Refresh with the command above and commit the result; the driver derives its fixture SHAPE from this file, so a refreshed capture propagates new fields without anyone hand-writing them.",
+  "pr": 1406,
+  "repo": "pulseengine/synth"
+ },
+ "response": {
+  "baseRefOid": "b369aeea434ed24f28b065ec9c3d1e8714f05c11",
+  "headRefOid": "e35b52739060d3919af1d6f74cf63cff104c23dc",
+  "statusCheckRollup": [
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945029",
+    "name": "Test",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250120/job/108010942521",
+    "name": "spec-suite compile census (#1095)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "Spec Suite"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:02:52Z",
+    "conclusion": "SKIPPED",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116246136/job/108010931828",
+    "name": "auto-merge",
+    "startedAt": "2026-09-25T09:02:53Z",
+    "status": "COMPLETED",
+    "workflowName": "Dependabot Auto-Merge"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:15:29Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250090/job/108011044628",
+    "name": "wasm_ops_lower_or_error (60s)",
+    "startedAt": "2026-09-25T09:13:33Z",
+    "status": "COMPLETED",
+    "workflowName": "Fuzz Smoke"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:18:01Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250090/job/108011044617",
+    "name": "wasm_to_ir_roundtrip_op_coverage (60s)",
+    "startedAt": "2026-09-25T09:14:15Z",
+    "status": "COMPLETED",
+    "workflowName": "Fuzz Smoke"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:15:59Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250090/job/108011044355",
+    "name": "i64_lowering_doesnt_clobber_params (60s)",
+    "startedAt": "2026-09-25T09:12:40Z",
+    "status": "COMPLETED",
+    "workflowName": "Fuzz Smoke"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:17:26Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250090/job/108011044620",
+    "name": "encoder_no_panic (60s)",
+    "startedAt": "2026-09-25T09:13:56Z",
+    "status": "COMPLETED",
+    "workflowName": "Fuzz Smoke"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:05:03Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010944843",
+    "name": "Clippy",
+    "startedAt": "2026-09-25T09:03:15Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:05:08Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945070",
+    "name": "Format",
+    "startedAt": "2026-09-25T09:04:04Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:05:22Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945745",
+    "name": "Version Pin Sweep",
+    "startedAt": "2026-09-25T09:05:11Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:04:02Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010944772",
+    "name": "Claim Check",
+    "startedAt": "2026-09-25T09:02:58Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010944937",
+    "name": "Z3 Verification",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945008",
+    "name": "Kani Verification",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:03:35Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945101",
+    "name": "Rivet Validation",
+    "startedAt": "2026-09-25T09:03:17Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:05:28Z",
+    "conclusion": "FAILURE",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945293",
+    "name": "Rivet Federated Graph (advisory)",
+    "startedAt": "2026-09-25T09:05:11Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945084",
+    "name": "Bazel Build & Proofs",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945153",
+    "name": "WAST conformance \u2014 the assertions are EXECUTED (#928)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945295",
+    "name": "selector parity \u2014 optimized vs direct vs wasmtime over the spec corpus (#197)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:07:18Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945243",
+    "name": "cmp-select two-move execution oracle",
+    "startedAt": "2026-09-25T09:05:34Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:08:39Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945383",
+    "name": "synth-provenance-v1 reconciliation gate (#396)",
+    "startedAt": "2026-09-25T09:07:21Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945528",
+    "name": "aarch64 backend execution + decline oracle (#538 m2\u2013m4)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945529",
+    "name": "aarch64 native execution matrix (gale",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:13:32Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945270",
+    "name": "arm64-Linux host-link oracle, NATIVE (RQ-64-ARM64LINUX)",
+    "startedAt": "2026-09-25T09:12:24Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945271",
+    "name": "trap-semantics oracle (#665 unreachable +",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945453",
+    "name": "VCR-VER-004 instrument independence (#242, v0.53's mutation re-run)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:11:16Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945057",
+    "name": "fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)",
+    "startedAt": "2026-09-25T09:03:17Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:13:09Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945584",
+    "name": "proven-safe bounds-elision oracle (VCR-MEM-004,",
+    "startedAt": "2026-09-25T09:10:58Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:09:22Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945329",
+    "name": "rv32 immediate-shift-fold execution oracle",
+    "startedAt": "2026-09-25T09:08:10Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:06:40Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945090",
+    "name": "rv32 const-address-fold execution oracle",
+    "startedAt": "2026-09-25T09:05:32Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:09:45Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945244",
+    "name": "rv32 br_table execution oracle (#882)",
+    "startedAt": "2026-09-25T09:08:40Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945074",
+    "name": "rv32 external-call relocation oracle (#871)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945296",
+    "name": "rv32 label/return dead-code oracle (#882)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945068",
+    "name": "rv32 memory.size / memory.grow execution oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945239",
+    "name": "optimized-path callee-saved preservation oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945167",
+    "name": "call_indirect bounds-guard oracle (Thumb-2 + A32)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945286",
+    "name": "multi-table call_indirect oracle (Thumb-2 + A32)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945209",
+    "name": "null-funcref-slot call_indirect oracle (Thumb-2 + A32)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945868",
+    "name": "conditional-param-write oracle (#970, Thumb-2 + RV32)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945220",
+    "name": "br_if-local zero-init oracle (#990, Thumb-2 + RV32)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945840",
+    "name": "param-block silent-miscompile oracle (#1097, pre-#1096 bytes + decline)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945646",
+    "name": "if/else join-register / local-home alias oracle (#1189, main's bytes + live)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945736",
+    "name": "home-register write audit over the corpus (RQ-65-ALIASCLASS, #1189)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945688",
+    "name": "mutation survey \u2014 the instrument still discriminates (RQ-65-MUTANTS, #1189)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945564",
+    "name": "the survey's four UNTESTED mutants, watched (RQ-66-WATCHED, #1189)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945779",
+    "name": "home-register alias class, per consumer family, four legs (RQ-65-ALIASCLASS)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945730",
+    "name": "heterogeneous-table call_indirect oracle (Thumb-2 + A32)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945793",
+    "name": "self-contained call_indirect oracle (execution + residual declines)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945735",
+    "name": "optimized-path block/br_if lowering oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945613",
+    "name": "optimized-path spill-frame teardown oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945783",
+    "name": "optimized-path register-exhaustion oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945515",
+    "name": "flight-seam relocatable-path execution oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945764",
+    "name": "control-step relocatable-path execution oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945744",
+    "name": "AAPCS stack-argument path oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010946011",
+    "name": "i64 stack-param + spill-pool-grow oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945850",
+    "name": "i64 rotl/rotr/div/rem expansion oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945769",
+    "name": "optimized-path br_table oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945619",
+    "name": "const-CSE flag-on execution oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945580",
+    "name": "frame-slot DCE default+optout execution oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945860",
+    "name": "stack-layout=low overflow BusFault oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945947",
+    "name": "#418 arena-bind self-contained execution oracle",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:12:37Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945789",
+    "name": "VCR-RA-003 register-allocation validator (red-first + frozen)",
+    "startedAt": "2026-09-25T09:10:56Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:10:55Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945554",
+    "name": "VCR-RA-003 RV32 register-allocation validator (red-first + frozen)",
+    "startedAt": "2026-09-25T09:09:25Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:12:19Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945684",
+    "name": "VCR-SEL-005 cross-backend op-parity (universe-complete + red-first)",
+    "startedAt": "2026-09-25T09:11:19Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945670",
+    "name": "RQ-66-UNWATCHED (#1207/#1229/#1230/#1231) \u2014 four v0.65 findings watched",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945620",
+    "name": "repro sweep \u2014 selector / control-flow / call / i64 differentials",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945846",
+    "name": "repro sweep \u2014 linear memory / static data / native-pointer differentials",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945501",
+    "name": "repro sweep \u2014 RISC-V RV32 execution differentials",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945881",
+    "name": "repro sweep \u2014 ARM corpus (#973: CI never compiled these for ARM)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945928",
+    "name": "repro sweep \u2014 WCET bound soundness cross-checks (phases 2-6)",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010945480",
+    "name": "MC/DC structural coverage over synth's decision logic (RQ-57-MCDC,",
+    "startedAt": "2026-09-25T09:02:55Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010948397",
+    "name": "Mach-O host-link oracle, NATIVE arm64-macOS (RQ-64-MACHO)",
+    "startedAt": "2026-09-25T09:02:56Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:13:29Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010948539",
+    "name": "Constant islands place a reachable literal pool (#345, RQ-72-ISLANDS)",
+    "startedAt": "2026-09-25T09:12:22Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:17:53Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010948475",
+    "name": "Portable arm64 musl asset cross-builds and is static (#1349)",
+    "startedAt": "2026-09-25T09:12:15Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "conclusion": "",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010948653",
+    "name": "Portable arm64 musl asset RUNS, natively (#1349)",
+    "startedAt": "2026-09-25T09:02:56Z",
+    "status": "QUEUED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:12:12Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010948517",
+    "name": "Advisories are checked, and every not_affected is human-asserted (#1359)",
+    "startedAt": "2026-09-25T09:11:47Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-09-25T09:17:51Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/pulseengine/synth/actions/runs/36116250167/job/108010948500",
+    "name": "Portable musl asset builds and is static (#1349)",
+    "startedAt": "2026-09-25T09:12:28Z",
+    "status": "COMPLETED",
+    "workflowName": "CI"
+   }
+  ]
+ }
+}

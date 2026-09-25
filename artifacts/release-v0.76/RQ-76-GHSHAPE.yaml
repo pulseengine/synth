@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-76-GHSHAPE
     type: system-req
     release: v0.76
-    status: proposed
+    status: implemented
     title: "The merge-gate driver asserts what this repo BELIEVES `gh` and `git` emit — the gate and its test share one authored model, so a schema change leaves both agreeing and blind"
     description: >
       v0.75's RQ-75-CALLSITE drove `merge_gate.gate()` and `main()` — the two functions
@@ -43,7 +43,14 @@ artifacts:
     fields:
       req-type: process
       priority: must
+      landed: "#1409"
       issue: "#1403"
+      # The issue names a CLASS: a census found 15 CI-wired drivers whose
+      # recordings stand in for a live tool. This release addresses TWO of them
+      # — the merge-gate driver here, and the pool tripwire under
+      # RQ-76-RECORDSHAPE. Thirteen remain authored. So the issue outlives the
+      # artifact and is held open at the tag.
+      issue-scope: outlives
       done-when: "contains:scripts/test_merge_gate_callsite.py:RQ-76-GHSHAPE"
       verified-by: >-
-        Red-first: adding a field to the live-shape reference must red the shape check while every existing assertion stays green — proving the check reads the shape and not the values.
+        DELIVERED, and the plan's stated mutation was WRONG FOR THE DESIGN THAT SHIPPED — corrected rather than restated. The plan said "adding a field to the live-shape reference must red the shape check". That only holds if the fixture is hand-written; the fixture is now DERIVED from the capture, so a refreshed capture PROPAGATES a new field to every entry and correctly reds nothing. Building a richer hand-written fixture was refused by name: it is still authored, and moves the fiction one field further out. The mutation that actually proves the derivation is load-bearing is the reverse one, and it was applied and verified applied: reverting `rollup()` to the old two-key literal reds with "fixture entries lack ['__typename', 'completedAt', 'detailsUrl', 'startedAt', 'status', 'workflowName']". A second mutation — deleting the capture — makes the driver REFUSE loudly rather than fall back to an authored shape. MEASURED DIVERGENCE, captured 2026-09-25 from a live `gh pr view` on this repository: a real `statusCheckRollup` entry carries EIGHT keys; the hand-written fixture carried TWO. DISCLOSED RESIDUAL, specific rather than general: all 76 captured entries are `__typename: CheckRun`, and this repository produced ZERO `StatusContext` entries across the PRs sampled, so `merge_gate`'s `.conclusion // .state` fallback is still driven only by hand-written legacy rows. Capture AGE is printed and deliberately NOT gated — a check that reds on a calendar fires for something unrelated to correctness, and a gate people cannot move honestly is one they route around.
