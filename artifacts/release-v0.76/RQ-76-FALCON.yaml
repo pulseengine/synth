@@ -45,6 +45,7 @@ artifacts:
     fields:
       req-type: process
       priority: must
+      landed: "#1406"
       issue: "#1318"
       # The issue asks for the reporter's module to COMPILE. This release moved
       # six of its seven declines; `controller@0.10.0#step` still refuses on
