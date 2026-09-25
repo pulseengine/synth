@@ -94,7 +94,12 @@ ARGVALS = (0, 1, 2, 7, 0x7FFFFFFF, 0xFFFFFFFF)
 # CHANGES the emitted bytes (`.text` sha 31f013a6 -> 426b248f on `mul1_l`), so
 # the arm fires. The program still returns wasmtime's answer at all six inputs
 # because the value survives in the register the result is read from — the
-# masking is in REGISTER ALLOCATION, not in the input. Two higher-pressure
+# masking is in REGISTER ALLOCATION, not in the input. CONFIRMED at the byte
+# level by the v0.75 cold review, which is why this is stated as cause rather
+# than correlation: baseline emits `movs r4,#1 / mov r5,r0 / mov r0,r5`, the
+# reverted arm emits only `movs r4,#1`, and the result register R0 already holds
+# the parameter. A higher-arity shape (`1 * local 1`) stays masked the same way
+# (`mov r5,r1; mov r0,r5` -> `mov r0,r1`). Two higher-pressure
 # shapes were tried to break that incidental placement (a deferred local read,
 # and a second live value across the use) and BOTH still returned correct
 # answers at all six inputs.

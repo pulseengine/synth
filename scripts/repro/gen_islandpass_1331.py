@@ -24,8 +24,9 @@ lines of its padding (1257 -> 357), dropping `.text` to 2,988 bytes — BELOW th
 execution differential still reported "compiles AND executes bit-exact", rc=0,
 with `--check` green at "2 fixture(s) match the generator". The gate whose whole
 subject is islands passed on a module with no island. A `.text >= 4096`
-assertion per spanning fixture would close it; that is a v0.75 candidate and is
-not claimed here.
+assertion per spanning fixture would close it. v0.75 DELIVERED that (see
+`islandpass_1331_execution_differential.py`'s REACH check), so this paragraph
+now records a closed hole rather than an open candidate.
 
 WHAT THIS DOES NOT CLAIM. It does not reproduce the v0.73 fixture byte for byte.
 That fixture's real generator is gone, so `islandpass_1331_spanning.wat` stays

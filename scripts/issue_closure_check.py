@@ -102,15 +102,19 @@ def closed_since(tag: str, repo: str) -> set[int]:
     shape was one step from causing a wrong REOPENING, for the same root reason
     it exists: a timestamp that was not read at the precision it was written.
 
-    WHAT IS STILL NOT TESTED, disclosed rather than left to be rediscovered:
-    this function takes the network path and no offline test reaches it, so the
-    evidence above is a MEASUREMENT recorded here, not a gate. Extracting the
-    qualifier into a tested helper would repeat what RQ-74-GATEOFFLINE records
-    one file over — v0.73 extracted `decide()` out of `gate()` and v0.74
-    extracted `fidelity_exit()` out of `main()`, each moving the tested boundary
-    one call outward without ever reaching the caller. Driving `closed_since`
-    itself against a recorded `gh` response is the real fix and a v0.75
-    candidate; it is NOT claimed here.
+    THIS IS NOW DRIVEN (v0.75, RQ-75-CLOSEWINDOW). The paragraph that stood here
+    said "no offline test reaches it … a v0.75 candidate; it is NOT claimed
+    here", and v0.75 delivered exactly that: `scripts/test_issue_closure_check.py`
+    calls `closed_since` against a RECORDED `gh` response, with the pre-fix
+    `date[:10]` truncation as the red-first case, and is CI-wired. A disclosure
+    the release invalidated and left standing is as false as an overclaim, which
+    is why this is corrected rather than deleted.
+
+    STILL NOT DRIVEN, and this is the honest residual: `main()` itself (its exit
+    code is what a caller consumes) and `open_issues_now()` (on an unreadable API
+    it returns None and the caller falls back to the window — if that ever became
+    an empty set instead, every issue would read as closed). Both are v0.76
+    candidates and neither is claimed here.
     """
     date = subprocess.run(
         ["gh", "api", f"repos/{repo}/commits/{tag}", "--jq", ".commit.committer.date"],

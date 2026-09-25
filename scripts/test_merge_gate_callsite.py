@@ -145,12 +145,18 @@ def gate_table(checks, base_oid=BASE, behind="0", ancestor_rc=0,
     }
 
 
-def main_table(checks, **kw) -> dict:
-    """gate()'s calls plus the required-contexts fetch `main()` performs."""
+def main_table(checks, contract=None, **kw) -> dict:
+    """gate()'s calls plus the required-contexts fetch `main()` performs.
+
+    `contract` lets a test answer the API with something OTHER than the pin,
+    which is the only way to prove the fetched value REACHES the decision.
+    Asserting merely that the call happened is not enough: the cold review's
+    M11 kept the call and bound its result to an unused name.
+    """
     t = gate_table(checks, **kw)
     t[("gh", "api",
        f"repos/{REPO}/branches/main/protection/required_status_checks/contexts",
-       "--jq", ".[]")] = (0, "\n".join(REQUIRED))
+       "--jq", ".[]")] = (0, "\n".join(REQUIRED if contract is None else contract))
     return t
 
 
@@ -171,6 +177,21 @@ def fidelity_table(state="MERGED", diff_rc=0, diff_out="", behind="0",
 # --------------------------------------------------------------------------
 
 
+def unmade(rec: _Recorder, *needles: str) -> list[str]:
+    """Recorded calls that were never MADE, matched by a distinctive token.
+
+    RQ-75-CALLSITE round 1 (the cold review's M11): `_Recorder` raised on an
+    UNRECORDED call and was SILENT about the opposite — a call the fixture
+    recorded that the code under test stopped making. That is the direction a
+    real regression takes: replace `main()`'s `gh api .../required_status_checks
+    /contexts` fetch with `required = list(REQUIRED_CONTEXTS)` and CHECK1's
+    contract comparison becomes `set(X) == set(X)`, `absent_from_api` can never
+    be non-empty again, and this driver reported 0 failures.
+    """
+    made = " ".join(" ".join(c) for c in rec.calls)
+    return [n for n in needles if n not in made]
+
+
 def run_gate(table) -> dict:
     rec = _Recorder(table)
     orig, merge_gate.subprocess = merge_gate.subprocess, types.SimpleNamespace(run=rec)
@@ -180,7 +201,7 @@ def run_gate(table) -> dict:
         merge_gate.subprocess = orig
 
 
-def run_main(argv: list[str], table) -> tuple[int, str]:
+def run_main(argv: list[str], table) -> tuple[int, str, _Recorder]:
     rec = _Recorder(table)
     orig_sub, merge_gate.subprocess = merge_gate.subprocess, types.SimpleNamespace(run=rec)
     orig_argv, sys.argv = sys.argv, ["merge_gate.py", *argv]
@@ -190,7 +211,7 @@ def run_main(argv: list[str], table) -> tuple[int, str]:
     try:
         with contextlib.redirect_stdout(buf):
             rc = merge_gate.main()
-        return rc, buf.getvalue()
+        return rc, buf.getvalue(), rec
     finally:
         merge_gate.subprocess = orig_sub
         sys.argv = orig_argv
@@ -211,13 +232,31 @@ def main() -> int:
     check("gate: all-green PR passes every check",
           all(p for p, _ in res.values()), res)
 
+    # RQ-75-CALLSITE round 1 (the cold review's M1/M2): these two assertions
+    # were MISLABELLED. `Clippy` and `Test` are in REQUIRED, so a red on either
+    # makes `missing` non-empty and CHECK1 alone refuses — the assertion passed
+    # without CHECK3/CHECK3b ever being exercised. Proven: with
+    # `"CHECK3": (True, red)` hard-coded, this driver reported 0 failures while
+    # `--self-test` caught it. So: assert the NAMED check, and drive a
+    # NON-REQUIRED, non-advisory red, which is the only input that isolates
+    # CHECK3 from CHECK1.
     res = run_gate(gate_table(rollup(Clippy="FAILURE")))
-    check("gate: a REQUIRED red refuses",
-          not all(p for p, _ in res.values()))
+    check("gate: a REQUIRED red refuses via CHECK1 AND CHECK3",
+          res["CHECK1"][0] is False and res["CHECK3"][0] is False, res)
+
+    res = run_gate(gate_table(rollup(**{"Some Extra Job": "FAILURE"})))
+    check("gate: a NON-REQUIRED, non-advisory red refuses via CHECK3 ALONE",
+          res["CHECK3"][0] is False and res["CHECK1"][0] is True,
+          f"CHECK1={res['CHECK1']} CHECK3={res['CHECK3']}")
 
     res = run_gate(gate_table(rollup(Test="PENDING")))
-    check("gate: a REQUIRED pending refuses (CHECK3b)",
-          not all(p for p, _ in res.values()))
+    check("gate: a REQUIRED pending refuses via CHECK1 AND CHECK3b",
+          res["CHECK1"][0] is False and res["CHECK3b"][0] is False, res)
+
+    res = run_gate(gate_table(rollup(**{"Some Extra Job": "PENDING"})))
+    check("gate: a NON-REQUIRED pending refuses via CHECK3b ALONE",
+          res["CHECK3b"][0] is False and res["CHECK1"][0] is True,
+          f"CHECK1={res['CHECK1']} CHECK3b={res['CHECK3b']}")
 
     # A required context absent from the rollup is the deadlock shape: it is
     # not red, it simply never reports.
@@ -256,42 +295,86 @@ def main() -> int:
           all(p for p, _ in res.values()), res)
 
     # ---- main(): the EXIT CODE the merge ritual consumes ------------------
-    rc, out = run_main(["--pr", PR], main_table(rollup()))
+    rc, out, rec = run_main(["--pr", PR], main_table(rollup()))
     check("main: green PR -> rc 0 and GATEOK", rc == 0 and "GATEOK" in out,
           f"rc={rc} out={out!r}")
+    # The contract must be FETCHED, not assumed. Without this, replacing the
+    # fetch with `required = list(REQUIRED_CONTEXTS)` makes CHECK1 compare the
+    # pin with itself — `absent_from_api` can never be non-empty again — and
+    # every assertion above still passes.
+    check("main: the required-context contract is FETCHED from the API",
+          not unmade(rec, "required_status_checks/contexts"),
+          f"calls made: {rec.calls}")
+    check("main: the PR rollup is FETCHED",
+          not unmade(rec, "statusCheckRollup"), f"calls made: {rec.calls}")
 
-    rc, out = run_main(["--pr", PR], main_table(rollup(Clippy="FAILURE")))
+    rc, out, rec = run_main(["--pr", PR], main_table(rollup(Clippy="FAILURE")))
     check("main: required red -> rc 1 and GATEFAIL",
           rc == 1 and "GATEFAIL" in out, f"rc={rc} out={out!r}")
 
-    rc, out = run_main(["--pr", PR], main_table(rollup(Test="PENDING")))
+    rc, out, rec = run_main(["--pr", PR], main_table(rollup(Test="PENDING")))
     check("main: required pending -> rc 1", rc == 1, f"rc={rc}")
 
     # ---- main --squash-fidelity: the other exit code ----------------------
-    rc, out = run_main(["--pr", PR, "--squash-fidelity"], fidelity_table())
+    rc, out, rec = run_main(["--pr", PR, "--squash-fidelity"], fidelity_table())
     check("main: FAITHFUL squash -> rc 0",
           rc == 0 and "FAITHFUL" in out, f"rc={rc} out={out!r}")
 
-    rc, out = run_main(["--pr", PR, "--squash-fidelity"],
+    rc, out, rec = run_main(["--pr", PR, "--squash-fidelity"],
                        fidelity_table(diff_out="+ a\n- b"))
     check("main: SQUASH ALTERED CONTENT -> non-zero",
           rc != 0 and "ALTERED" in out, f"rc={rc} out={out!r}")
 
     # INDETERMINATE is not a pass — the v0.74 disclosure's whole point.
-    rc, out = run_main(["--pr", PR, "--squash-fidelity"],
+    rc, out, rec = run_main(["--pr", PR, "--squash-fidelity"],
                        fidelity_table(behind="4", ancestor_rc=1))
     check("main: INDETERMINATE -> non-zero",
           rc != 0 and "INDETERMINATE" in out, f"rc={rc} out={out!r}")
 
-    rc, out = run_main(["--pr", PR, "--squash-fidelity"],
+    rc, out, rec = run_main(["--pr", PR, "--squash-fidelity"],
                        fidelity_table(diff_rc=128))
     check("main: DIFF UNAVAILABLE -> non-zero",
           rc != 0 and "DIFF UNAVAILABLE" in out, f"rc={rc} out={out!r}")
 
-    rc, out = run_main(["--pr", PR, "--squash-fidelity"],
+    rc, out, rec = run_main(["--pr", PR, "--squash-fidelity"],
                        fidelity_table(state="OPEN"))
     check("main: squash-fidelity on a non-MERGED PR -> rc 1",
           rc == 1, f"rc={rc} out={out!r}")
+
+    # ---- the FETCHED contract must reach the decision (M11) ---------------
+    # Answer the API with a contract that DIFFERS from the pin. If `main()`
+    # ignores the fetch and uses REQUIRED_CONTEXTS directly, CHECK1 compares the
+    # pin with itself and `absent_from_api` is empty — so this is the assertion
+    # that "the call was made" could not make.
+    short = [c for c in REQUIRED if c != "Kani Verification"]
+    rc, out, rec = run_main(["--pr", PR], main_table(rollup(), contract=short))
+    check("main: an API contract missing a pinned context is CAUGHT by CHECK1",
+          rc != 0 and "Kani Verification" in out,
+          f"rc={rc} out={out[:200]!r}")
+
+    rc, out, rec = run_main(["--pr", PR],
+                            main_table(rollup(), contract=REQUIRED + ["Invented Context"]))
+    check("main: an API contract with an EXTRA context is CAUGHT by CHECK1",
+          rc != 0 and "Invented Context" in out,
+          f"rc={rc} out={out[:200]!r}")
+
+    # ---- the rollup DEFAULT for a check reporting neither field (M4) ------
+    # Every table above sets `conclusion`, so `or "PENDING"` was never reached.
+    # A check-run that has started and reported nothing is exactly the shape a
+    # gate must treat as PENDING, not as success.
+    neither = rollup() + [{"name": "Not Yet Reported"}]
+    res = run_gate(gate_table(neither))
+    check("gate: a rollup entry with NEITHER conclusion nor state is PENDING",
+          res["CHECK3b"][0] is False, f"CHECK3b={res['CHECK3b']}")
+
+    # ---- behind>0 while the base IS an ancestor (M3) ----------------------
+    # `branch_currency` returns `(is_ancestor AND behind == 0)`. Dropping the
+    # second clause was MISSED because no fixture built the case it guards: a
+    # branch whose base is an ancestor but which still lags.
+    res = run_gate(gate_table(rollup(), behind="2", ancestor_rc=0))
+    check("gate: base IS an ancestor but branch lags -> CHECK2 refuses",
+          res["CHECK2"][0] is False and res["CHECK2"][1]["behind"] == 2,
+          f"CHECK2={res['CHECK2']}")
 
     # ---- the recorder itself must be loud, or every test above is vacuous --
     try:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: stdout /^replay-control-1318: ([0-9]+) adversaries REFUSED$/ >= 2
+# ci-checks: stdout /^replay-control-1318: ([0-9]+) adversaries REFUSED$/ >= 3
 """RQ-75-REPLAY (#1318) NEGATIVE CONTROL: build the replay adversaries and
 require that `falcon_opt_1318_differential.py` REFUSES each of them.
 
@@ -60,7 +60,9 @@ BACKENDS = {
 
 PURE = '''#!/usr/bin/env python3
 import json, shutil, sys, pathlib
-REC = pathlib.Path(__file__).resolve().parent
+# the VERBATIM recording: real `.text`, so the decode check passes and only the
+# freshness probe can catch this.
+REC = pathlib.Path(__file__).resolve().parent / "verbatim"
 T = json.loads((REC / "table.json").read_text())
 if "--version" in sys.argv:
     print("synth 0.0.0-stub"); sys.exit(0)
@@ -98,6 +100,49 @@ sys.exit(97)
 '''
 
 
+# Adversary 3: the cold review's A3. Reads the export names out of the .wat it is
+# asked to compile and PATCHES them into a recorded object's string table, in
+# place, at fixed offsets. Against v0.75's first probe — one export, always
+# exactly 26 bytes — this passed the whole CI step. It is kept as the regression
+# test for the variable-length fix: with names of differing lengths an in-place
+# patch cannot place them all, so the probe must refuse.
+PATCHER = '''#!/usr/bin/env python3
+import json, re, shutil, sys, pathlib
+REC = pathlib.Path(__file__).resolve().parent
+T = json.loads((REC / "table.json").read_text())
+if "--version" in sys.argv:
+    print("synth 0.0.0-stub"); sys.exit(0)
+out = sys.argv[sys.argv.index("-o") + 1] if "-o" in sys.argv else None
+wat = next((a for a in sys.argv if a.endswith(".wat")), None)
+if wat and "falcon_opt_1318" not in wat:
+    # the freshness probe. Replay a recorded object, patching the requested
+    # names in at FIXED offsets — the attack that worked on the 26-byte nonce.
+    want = re.findall(r\'\\(export "([^"]+)"\\)\', pathlib.Path(wat).read_text())
+    src = next((e for e in T if e["obj"]), None)
+    if not (src and out):
+        sys.exit(90)
+    raw = bytearray((REC / src["obj"]).read_bytes())
+    donor = re.findall(rb"fresh[0-9a-f]{4,16}", bytes(raw)) or re.findall(rb"vbr_[a-z0-9]+", bytes(raw))
+    ok = True
+    for i, name in enumerate(want):
+        nb = name.encode()
+        if i < len(donor) and len(donor[i]) == len(nb):
+            raw[:] = bytes(raw).replace(donor[i], nb, 1)
+        else:
+            ok = False           # lengths differ: no in-place patch exists
+    pathlib.Path(out).write_bytes(bytes(raw))
+    sys.exit(0 if ok else 0)     # exits 0 either way: the GATE must catch it
+for e in T:
+    if all(f in sys.argv for f in e["flags"]) and (
+            "--allow-skipped-exports" in sys.argv) == (
+            "--allow-skipped-exports" in e["flags"]):
+        sys.stdout.write(e["stdout"]); sys.stderr.write(e["stderr"])
+        if e["obj"] and out:
+            shutil.copyfile(REC / e["obj"], out)
+        sys.exit(e["rc"])
+sys.exit(97)
+'''
+
 def record(rec: pathlib.Path) -> None:
     """Capture the real compiler's output, then blank every .text with 0xDE."""
     from elftools.elf.elffile import ELFFile
@@ -116,6 +161,15 @@ def record(rec: pathlib.Path) -> None:
                           "rc": r.returncode,
                           "obj": obj.name if obj.is_file() else None})
     (rec / "table.json").write_text(json.dumps(table))
+    # Keep an UNFILLED copy: adversary 1 replays real `.text`, so the decode
+    # check passes and FRESHNESS is the only mechanism that can catch it. Without
+    # this, both adversaries were decode-caught and adversary 1 supplied ZERO
+    # evidence about the probe — the cold review's M12.
+    verbatim = rec / "verbatim"
+    verbatim.mkdir(exist_ok=True)
+    for p in sorted(rec.glob("*.o")):
+        shutil.copy2(p, verbatim / p.name)
+    shutil.copy2(rec / "table.json", verbatim / "table.json")
     for p in sorted(rec.glob("*.o")):
         with open(p, "rb") as fh:
             sec = next((s for s in ELFFile(fh).iter_sections()
@@ -205,11 +259,26 @@ def main() -> int:
         rec = pathlib.Path(td)
         record(rec)
         (rec / "real_path.txt").write_text(str(stash_real(rec)))
+        # RQ-75-REPLAY round 1 (the cold review's M12): each adversary names the
+        # MECHANISM that must catch it, and the refusal is matched against that
+        # mechanism. The first version asserted only THAT a refusal happened, so
+        # commenting out `freshness_probe()` entirely left this green — both
+        # adversaries were decode-caught on the riscv leg, and adversary 1
+        # supplied ZERO evidence about the probe it existed to prove.
+        MECHANISM_NEEDLE = {
+            # the probe's own refusal text, per its two failure modes
+            "freshness": ("does not name", "could not compile a"),
+            "decode": ("decodes as",),
+        }
         for label, src, expect in (
-                ("pure replay (compiles nothing)", PURE, "freshness"),
-                ("delegating replay (passes freshness)", DELEGATING, "decode"),
+                ("pure replay, real .text (freshness is the only catcher)",
+                 PURE, "freshness"),
+                ("delegating replay, 0xDE .text (decode is the only catcher)",
+                 DELEGATING, "decode"),
+                ("fixed-offset strtab patcher (the A3 attack)",
+                 PATCHER, "freshness"),
         ):
-            stub = rec / f"stub_{expect}.py"
+            stub = rec / f"stub_{expect}_{abs(hash(label)) % 9973}.py"
             stub.write_text(src)
             stub.chmod(0o755)
             rc, out = run_diff_against(stub)
@@ -218,10 +287,18 @@ def main() -> int:
             if rc == 0:
                 fails.append(f"{label}: the differential PASSED a replay "
                              f"(rc=0) — the gate is inert again")
-            else:
-                refused += 1
-                print(f"  ok   {label} REFUSED")
-                print(f"       {refusal[:110]}")
+                continue
+            needles = MECHANISM_NEEDLE[expect]
+            if not any(n in refusal for n in needles):
+                fails.append(
+                    f"{label}: refused, but by the WRONG MECHANISM. Expected "
+                    f"{expect} (one of {needles}); got {refusal[:140]!r}. A "
+                    f"refusal from another check is not evidence about the one "
+                    f"this adversary exists to prove")
+                continue
+            refused += 1
+            print(f"  ok   {label} REFUSED by {expect}")
+            print(f"       {refusal[:110]}")
         _check_cross_leg(fails)
 
     for f in fails:

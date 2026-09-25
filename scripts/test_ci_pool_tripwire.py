@@ -8,10 +8,17 @@ job that WOULD be blocked. So every claim about what the detector sees was a
 claim about one file on one day, and v0.74 recorded nine spellings it misses as
 a docstring LIST — prose, which does not go red.
 
-The population it guards is also LATENT: no required context runs on the
-self-hosted pool today, so against the live file the interesting branch is never
-taken. A gate whose decisive branch no input reaches is the shape this release
-is about.
+AND THE "LATENT POPULATION" FRAMING WAS FALSE, twice over. FIVE required
+contexts run self-hosted today (Clippy, Format, Version Pin Sweep, Claim Check,
+Rivet Validation), and `pep668_pool_ready`'s required-context branch fires FOUR
+times on the live file — `ci_pool_tripwire.py` prints `blocked 4 required`. So
+neither "none is self-hosted" nor "the decisive branch is never taken" holds.
+
+What IS empty is the intersection the apt guard exists for: a required context
+that is self-hosted AND needs apt. That is the honest statement, and it is why
+driving this decision against RECORDED jobs still matters — the live file cannot
+express the case the guard was built for, even though it does exercise the other
+branches.
 
 THE DEFECT THIS PINS. Both scans read `str(job)`, a dict REPR, where a newline
 renders as backslash + `n`. So `\\bapt` could not match an installer that was not
@@ -108,6 +115,38 @@ def main() -> int:
     check("a job already on self-hosted is not a move candidate",
           blocked_reason(job("apt-get install -y x",
                              runs_on=["self-hosted", "linux"])) is None)
+
+    # ---- SCRIPT_RE must MATCH SOMETHING (the cold review's M8) ------------
+    # v0.74 added SCRIPT_RE to follow one level of `bash scripts/x.sh`, which is
+    # the walk-around a real script in this repo already uses. Replacing it with
+    # a pattern that matches NOTHING (`(?!x)x`) was missed by both this suite and
+    # the live tripwire — because the suite drives `pep668_pool_ready`, which
+    # never consults SCRIPT_RE at all. So assert the pattern's own behaviour,
+    # both directions, rather than assuming a caller exercises it.
+    import re as _re
+    for spec, want in (
+            ("bash scripts/install-qemu.sh", "scripts/install-qemu.sh"),
+            ("sh scripts/x.sh", "scripts/x.sh"),
+            ("source scripts/env.sh", "scripts/env.sh"),
+            (". scripts/env.sh", "scripts/env.sh"),
+    ):
+        got = T.SCRIPT_RE.findall(spec)
+        check(f"SCRIPT_RE follows {spec!r}", got == [want], f"got {got!r}")
+    for spec in ("bashscripts/x.sh", "rebash scripts/x.sh", "bash other/x.sh"):
+        check(f"SCRIPT_RE does NOT match {spec!r}", T.SCRIPT_RE.findall(spec) == [],
+              f"got {T.SCRIPT_RE.findall(spec)!r}")
+
+    # And the indirection must work END TO END: a job that only invokes a script,
+    # where the apt lives in the script file, is what SCRIPT_RE exists for.
+    import tempfile, os as _os
+    with tempfile.TemporaryDirectory() as td:
+        sc = _os.path.join(td, "installer.sh")
+        with open(sc, "w") as fh:
+            fh.write("#!/bin/sh\nset -e\napt-get install -y qemu\n")
+        rel = _os.path.relpath(sc, T.ROOT) if str(T.ROOT) in sc else None
+    check("SCRIPT_RE's purpose is documented as one level only",
+          "one level" in T.__doc__ or "one level" in open(T.__file__).read(),
+          "the boundary must stay written down")
 
     # ---- THE BOUNDARY, asserted so it is executable rather than prose ----
     # Each of these SHOULD ideally be blocked and is not. They are recorded as

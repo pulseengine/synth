@@ -134,8 +134,8 @@ def freshness_probe(backend: str, tmpdir: str) -> None:
     It disclosed that this still never asks what the file CONTAINS, and that a
     stub replaying PRE-RECORDED ELFs therefore passes forever.
 
-    That was not a hypothesis. Built and measured at this lane's cut: a
-    SEVENTEEN-LINE script that compiles nothing, replays the recorded objects
+    That was not a hypothesis. Built and measured at this lane's cut: a short
+    script that compiles NOTHING, replays the recorded objects
     with `.text` entirely overwritten by 0xDE filler, and echoes the recorded
     warning lines, produced rc=0, `CHECKS=12/12` and
     `RESULT: PASS — the value-carrying-branch matrix is exactly as pinned`.
@@ -149,8 +149,11 @@ def freshness_probe(backend: str, tmpdir: str) -> None:
         riscv       1.00        0.00
         aarch64     1.00        0.00
 
-    `0xDEDE` is a valid Thumb halfword, so the ARM leg — the one this issue was
-    reported against — decodes filler happily. A decode check shipped as "the
+    `0xDEDE` decodes as `UDF #0xde` — a PERMANENTLY UNDEFINED Thumb encoding
+    that capstone nevertheless decodes and counts, which is exactly why a
+    decode-COVERAGE metric is blind to it. "Valid" was the wrong word: the point
+    is that an undefined encoding still decodes. So the ARM leg — the one this
+    issue was reported against — scores filler at 1.00. A decode check shipped as "the
     fix" would have closed two legs and left the reported one open while reading
     as complete.
 
@@ -164,12 +167,41 @@ def freshness_probe(backend: str, tmpdir: str) -> None:
     import secrets
     from elftools.elf.elffile import ELFFile
 
-    nonce = secrets.token_hex(8)
-    sym = f"freshness_{nonce}"
-    wat = os.path.join(tmpdir, f"{backend}-{nonce}.wat")
+    # RQ-75-REPLAY round 1 (v0.75) — THE FIRST VERSION OF THIS PROBE WAS
+    # DEFEATED, and the sentence it shipped was FALSE. It exported ONE symbol
+    # named `freshness_` + `token_hex(8)`, and asserted "a nonce chosen for THIS
+    # run cannot appear in a recording". It can: that name is ALWAYS EXACTLY 26
+    # bytes, so the nonce is a FIXED-LENGTH byte patch into a recorded
+    # `.strtab` — no offsets move, no ELF library needed, no compiler needed.
+    # The cold review built it: a VERBATIM replay (real `.text`, so the decode
+    # check reads 1.00 on every leg) plus a 16-hex byte patch passed the entire
+    # CI step, `CHECKS=12/12`, `RESULT: PASS`.
+    #
+    # So freshness now varies in ways a byte patch cannot follow:
+    #   * the symbol names are VARIABLE LENGTH (4..16 hex chars), so patching
+    #     one in place would move every following offset in the string table;
+    #   * the NUMBER of exports varies (2..5), so a recording of one module
+    #     cannot supply the symbol set another run demands;
+    #   * every name must be present, so a patch must land all of them.
+    #
+    # This does not claim to be unforgeable — an adversary that correctly
+    # REBUILDS a string table and its offsets defeats it, and that is stated
+    # rather than left implied. It claims that satisfying it requires
+    # constructing an ELF rather than patching bytes at fixed positions.
+    n_syms = 2 + secrets.randbelow(4)
+    syms = []
+    for _ in range(n_syms):
+        width = 4 + secrets.randbelow(13)          # 4..16 hex chars
+        syms.append(f"fresh{secrets.token_hex(8)[:width]}")
+    syms = sorted(set(syms))
+    tag = secrets.token_hex(4)
+    body = "".join(
+        f'  (func (export "{sy}") (result i32) (i32.const {i + 1}))\n'
+        for i, sy in enumerate(syms))
+    wat = os.path.join(tmpdir, f"{backend}-{tag}.wat")
     with open(wat, "w", encoding="utf-8") as fh:
-        fh.write(f'(module (func (export "{sym}") (result i32) (i32.const 1)))\n')
-    obj = os.path.join(tmpdir, f"{backend}-{nonce}.o")
+        fh.write(f"(module\n{body})\n")
+    obj = os.path.join(tmpdir, f"{backend}-{tag}.o")
     r = subprocess.run(
         [str(SYNTH), "compile", wat, *BACKENDS[backend], "--all-exports",
          "-o", obj],
@@ -178,9 +210,10 @@ def freshness_probe(backend: str, tmpdir: str) -> None:
     if r.returncode != 0 or not os.path.isfile(obj):
         raise SystemExit(
             f"REFUSE {backend}: the binary under test could not compile a "
-            f"one-function module generated for this run (rc={r.returncode}). "
-            f"It is not a working compiler for this leg, whatever it printed "
-            f"about the fixture. {(r.stderr or r.stdout)[:200]}"
+            f"{len(syms)}-function module generated for this run "
+            f"(rc={r.returncode}). It is not a working compiler for this leg, "
+            f"whatever it printed about the fixture. "
+            f"{(r.stderr or r.stdout)[:200]}"
         )
     with open(obj, "rb") as fh:
         elf = ELFFile(fh)
@@ -188,11 +221,13 @@ def freshness_probe(backend: str, tmpdir: str) -> None:
         for sec in elf.iter_sections():
             if sec.header["sh_type"] == "SHT_SYMTAB":
                 names |= {s.name for s in sec.iter_symbols() if s.name}
-    if sym not in names:
+    absent = [sy for sy in syms if sy not in names]
+    if absent:
         raise SystemExit(
-            f"REFUSE {backend}: compiled a module exporting {sym!r} and the "
-            f"emitted object does not name it. Observed: {sorted(names)}. A "
-            f"nonce chosen for THIS run cannot appear in a recording, so this "
+            f"REFUSE {backend}: compiled a module exporting {syms} and the "
+            f"emitted object does not name {absent}. Observed: "
+            f"{sorted(names)}. The names and their COUNT are chosen for this "
+            f"run, at lengths a fixed-offset byte patch cannot follow, so this "
             f"is what a replay fails (RQ-75-REPLAY)."
         )
 

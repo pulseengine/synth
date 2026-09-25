@@ -36,9 +36,11 @@
 #     consumes the decision. `decide()` got a test. `gate()` did not.
 #   * v0.74 extracted `fidelity_exit()` out of `main()` for exactly the same
 #     stated reason. `fidelity_exit()` got a test. `main()` did not.
-#   * v0.74's round-1 gate pass then MEASURED the consequence directly: ten
-#     mutations applied to `gate()` and `main()` — including forcing the whole
-#     rollup to SUCCESS — and every one of them passed `--self-test`.
+#   * v0.74's round-1 gate pass then MEASURED the consequence directly: every
+#     mutation it applied to `gate()` and `main()` — including forcing the whole
+#     rollup to SUCCESS — passed `--self-test`. The COUNT lives in
+#     RQ-75-CALLSITE and nowhere else; this file's own header forbids a figure
+#     that lives elsewhere, and two had crept in.
 #   * v0.74's cut found the same shape again in a different file, in
 #     `closed_since()`: it takes the network path, and no offline test reaches
 #     it. That one was already costing something real — a truncated window was
@@ -79,7 +81,8 @@
 # known-weak check into no check while reading as progress. Disclosure is the
 # floor; retirement needs its own argument.
 #
-# Do not let the disclosure text become the deliverable. v0.74 shipped six
-# honest disclosures and they were the right call there, because the mutations
-# were recorded beside them. A release that discloses everything and drives
+# Do not let the disclosure text become the deliverable. v0.74's disclosures
+# were the right call there, because the mutations were recorded beside them.
+# (A count stood here and is REMOVED — it belongs in v0.74's own record, and an
+# unverified figure in the file that forbids figures is the worst of both.) A release that discloses everything and drives
 # nothing has answered the question by restating it.

@@ -33,6 +33,7 @@ artifacts:
         target: BR-001
     fields:
       req-type: process
+      landed: "#1394"
       priority: must
       issue: "#1391"
       done-when: "contains:scripts/test_issue_closure_check.py:RQ-75-CLOSEWINDOW"

@@ -133,9 +133,15 @@ SCRIPT_RE = re.compile(r"(?<![\w/-])(?:bash|sh|source|\.)\s+(scripts/[\w./-]+)")
 #       mutation WAS caught, but only because that action's NAME contains "apt"
 # Widening this piecemeal is whack-a-mole: the real check is whether the job's
 # install step can run under `no_new_privs`, which needs executing it, not
-# grepping it. Recorded as a v0.75 candidate. Note the population is LATENT
-# today — no required context is on the self-hosted pool — so this guard is a
-# tripwire for a future move, not a live gate.
+# grepping it. Recorded as a v0.76 candidate.
+#
+# WHAT IS LATENT HERE, stated precisely because the loose version was FALSE and
+# this very file refuted it 240 lines down. FIVE required contexts DO run
+# self-hosted today — Clippy, Format, Version Pin Sweep, Claim Check and Rivet
+# Validation — so "no required context is on the self-hosted pool" is wrong. What
+# is empty is the INTERSECTION this guard exists for: a required context that is
+# self-hosted AND needs apt. Re-derive with `python3 scripts/ci_pool_tripwire.py`,
+# which prints the pools, rather than trusting this sentence.
 PIP_RE = re.compile(r"\bpip install\b")
 PEP668_RE = re.compile(r"--break-system-packages")
 

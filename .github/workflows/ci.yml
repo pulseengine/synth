@@ -476,10 +476,13 @@ jobs:
         run: python3 scripts/ci_pool_tripwire.py
       # RQ-75-APTSHAPE (#1062): the step ABOVE runs the tripwire against the LIVE
       # ci.yml — one input, which changes under you, and which cannot express a
-      # job that WOULD be blocked. The population is also latent: no required
-      # context is self-hosted today, so the decisive branch is never taken. This
-      # drives `pep668_pool_ready` against recorded job dicts instead, including
-      # the negative controls and the boundary that stays unmatched.
+      # job that WOULD be blocked. (An earlier version of this comment said
+      # "no required context is self-hosted today, so the decisive branch is
+      # never taken" — FALSE on both counts: five required contexts run
+      # self-hosted, and the required-context branch fires four times on the live
+      # file. What is empty is the intersection the apt guard exists for.) This
+      # drives `pep668_pool_ready` against recorded job dicts, including the
+      # negative controls and the boundary that stays unmatched.
       - name: "CI-pool tripwire DECISION driven against recorded jobs (RQ-75-APTSHAPE, #1062)"
         run: python3 scripts/test_ci_pool_tripwire.py
       - name: Status-evidence gate — a release status must agree with the evidence on main (1064)
