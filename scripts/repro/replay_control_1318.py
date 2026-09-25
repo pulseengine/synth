@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -128,8 +129,17 @@ def record(rec: pathlib.Path) -> None:
 
 
 def run_diff_against(stub: pathlib.Path) -> tuple[int, str]:
-    """Run the differential with SYNTH pointed at `stub`, restoring after."""
-    real = SYNTH.resolve() if SYNTH.is_symlink() else None
+    """Run the differential with SYNTH pointed at `stub`, restoring after.
+
+    THE REAL BINARY IS COPIED ASIDE BY `stash_real`, not referenced through
+    `target/debug/synth`. An earlier version had the delegating stub read
+    `SYNTH.resolve()`, which worked locally ONLY because that path was a SYMLINK
+    to a build outside the tree, so `resolve()` escaped the rename below. In CI
+    it is the real file: it gets renamed, and the stub ends up invoking ITSELF.
+    The step failed there and passed locally — the same "a local oracle run is
+    not a CI run" shape this release keeps meeting, this time in the control
+    built to catch such things.
+    """
     backup = SYNTH.with_suffix(".control-backup")
     SYNTH.rename(backup)
     try:
@@ -141,7 +151,14 @@ def run_diff_against(stub: pathlib.Path) -> tuple[int, str]:
         if SYNTH.is_symlink() or SYNTH.exists():
             SYNTH.unlink()
         backup.rename(SYNTH)
-        _ = real
+
+
+def stash_real(rec: pathlib.Path) -> pathlib.Path:
+    """A copy of the compiler under test, at a path the swap cannot disturb."""
+    dst = rec / "real_synth"
+    shutil.copy2(SYNTH.resolve(), dst)
+    dst.chmod(0o755)
+    return dst
 
 
 def _check_cross_leg(fails: list[str]) -> None:
@@ -187,7 +204,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="replay1318-") as td:
         rec = pathlib.Path(td)
         record(rec)
-        (rec / "real_path.txt").write_text(str(SYNTH.resolve()))
+        (rec / "real_path.txt").write_text(str(stash_real(rec)))
         for label, src, expect in (
                 ("pure replay (compiles nothing)", PURE, "freshness"),
                 ("delegating replay (passes freshness)", DELEGATING, "decode"),
