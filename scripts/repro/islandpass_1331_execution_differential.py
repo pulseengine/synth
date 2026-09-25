@@ -139,11 +139,73 @@ def _declared_floor():
 # island-placement shape; adding a fourth is a visible edit here, which is the
 # same "declared list, never a glob" rule FIELD_KEY_CONSUMERS uses one file over.
 REQUIRED_SHAPES = ("spanning", "backspan", "nested")
+# The structural needle that makes each shape THAT shape, so a file merely NAMED
+# for a shape cannot stand in for it. Round 2 defeated the basename-only check
+# with three renamed copies of one fixture.
+SHAPE_NEEDLE = {
+    "backspan": "loop",      # the backward branch is a loop latch
+    "nested":   "br_if 1",   # a branch out of a NESTED block
+}
 
 
 def check_corpus_adequacy():
-    """REFUSE a corpus that counts right and covers wrong."""
+    """REFUSE a corpus that counts right and covers wrong.
+
+    ROUND 2 DEFEATED THE FIRST VERSION OF THIS CHECK, which compared BASENAMES:
+    three byte-identical copies of `spanning.wat`, named `*_spanning_r2`,
+    `*_backspan_r2` and `*_nested_r2`, satisfied both the duplicate test and the
+    REQUIRED_SHAPES test while the corpus covered ONE shape. All five gates ran
+    green. A check on filenames is a check on filenames.
+
+    So CONTENT is what is compared now. The three shapes are distinguishable in
+    the WAT itself — a forward `br_if` that spans the island point, a backward
+    branch (loop latch), and a branch out of a nested block — so distinct content
+    hashes are necessary, and each shape's own structural needle is required to
+    appear in the file that claims it.
+    """
+    import hashlib
+
     base = [os.path.basename(f) for f in FIXTURES]
+    digests = {}
+    for f in FIXTURES:
+        if not os.path.isfile(f):
+            raise SystemExit(f"REFUSE: fixture {f} is missing")
+        digests[os.path.basename(f)] = hashlib.sha256(
+            open(f, "rb").read()).hexdigest()[:12]
+    if len(set(digests.values())) != len(FIXTURES):
+        dupes = {}
+        for n, d in digests.items():
+            dupes.setdefault(d, []).append(n)
+        same = {d: ns for d, ns in dupes.items() if len(ns) > 1}
+        raise SystemExit(
+            f"REFUSE: fixtures with IDENTICAL CONTENT under different names: "
+            f"{same}. Renaming a copy satisfies a basename check while the "
+            f"corpus covers one shape — measured in v0.75's round 2 "
+            f"(RQ-75-FLOORBIND).")
+    # Each shape must be claimed by EXACTLY ONE fixture. Substring matching over
+    # basenames is unsound on its own: round 2 pointed out that a single file
+    # named `spanning_backspan_nested.wat` satisfies a "does some name contain
+    # each shape" test with a corpus of one.
+    for kind in REQUIRED_SHAPES:
+        owners = [n for n in base if kind in n]
+        if len(owners) != 1:
+            raise SystemExit(
+                f"REFUSE: the {kind!r} shape is claimed by {len(owners)} "
+                f"fixture(s) {owners} — exactly one must claim it, or one file "
+                f"named for several shapes satisfies the corpus "
+                f"(RQ-75-FLOORBIND).")
+    # And each claimed shape must carry its own structural needle.
+    for kind, needle in SHAPE_NEEDLE.items():
+        owner = [n for n in base if kind in n]
+        if not owner:
+            continue
+        for n in owner:
+            path = next(f for f in FIXTURES if os.path.basename(f) == n)
+            if needle not in open(path, encoding="utf-8").read():
+                raise SystemExit(
+                    f"REFUSE: {n} is NAMED for the {kind!r} shape but its content "
+                    f"does not contain {needle!r}. The name is not the shape "
+                    f"(RQ-75-FLOORBIND).")
     if len(set(base)) != len(base):
         raise SystemExit(
             f"REFUSE: FIXTURES carries duplicates {sorted(base)} — the floor "

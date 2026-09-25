@@ -15,12 +15,31 @@ artifacts:
 
       IT IS FILED, NOT WAIVED, and the distinction is the whole point: an N/A that
       stops being recorded becomes an exemption by habit, and the conformance gate
-      then cannot see that a step of the loop has not run in over a year of releases.
+      then cannot see that a step of the loop has not run for THIRTEEN CONSECUTIVE
+      RELEASES. (An earlier draft said "over a year"; v0.63.0 was tagged
+      2026-09-06, so the true span is under three weeks — this programme's cadence
+      makes thirteen releases a short time, and the release COUNT is the honest
+      unit here, not the calendar.)
       v0.69 already lost this artifact once — it dropped the `feature-loop` tag, so
       the filing that exists to keep a deferral VISIBLE was invisible to the gate
       that consumes it. Carry the tag.
     tags:
+      # ROUND 2 FOUND THIS ARTIFACT INVISIBLE TO THE GATE IT WAS FILED FOR, and
+      # it is the THIRD time this has happened (v0.65, v0.69, v0.75). The
+      # step 1-2 matcher requires `"feature-loop" in tags AND tags & {aadl,spar}`
+      # — v0.75's generator emitted only [process, feature-loop], so the
+      # conformance gate reported "the only filed steps-1-2 decision is
+      # RQ-63-ARCHMODEL, scoped to v0.63 — NOT v0.75" and DERIVED-FAILed.
+      #
+      # This artifact's own body says "v0.69 already lost this artifact once — it
+      # dropped the `feature-loop` tag … Carry the tag." It carried that one and
+      # lost the other two. A filing whose purpose is to keep a deferral VISIBLE
+      # is worth nothing if the gate cannot see it, and the tag set — not the
+      # prose — is what the gate reads. v0.70 through v0.74 all carry these five.
       - process
+      - carried
+      - spar
+      - aadl
       - feature-loop
     links:
       - type: derives-from

@@ -258,8 +258,55 @@ def decode_text(backend: str, data: bytes) -> float:
     return covered / len(data) if data else 0.0
 
 
+def fixture_for_this_run(tmpdir: str) -> tuple[str, str]:
+    """A copy of the #1318 fixture carrying ONE extra export named for THIS run.
+
+    RQ-75-REPLAY round 2 — WHY THE FRESHNESS PROBE WAS NOT ENOUGH, and this is
+    the structural fix rather than a third spelling.
+
+    Round 1 proved freshness on a SEPARATE module. Round 2 built the corner the
+    control never did: a stub that DELEGATES the probe module to the real
+    compiler and REPLAYS verbatim recorded objects for the fixture. It passes
+    freshness (a real compiler answered the probe), passes the decode check
+    (real `.text`), passes `e_machine`, `compiled SUBSET-OF symbols` and
+    `declined INTERSECT symbols = {}` — the recording is self-consistent — and
+    produced `CHECKS=12/12`, `RESULT: PASS` through the real CI step while
+    compiling NOTHING about the fixture. Reproduced independently before this fix.
+    Freshness proven on another module says nothing about this one.
+
+    So the FIXTURE is what carries the nonce now. A recording made before this
+    run cannot contain the symbol, so a replay must DELEGATE the fixture
+    compile — and delegating it means actually compiling it, which is the
+    property the gate wanted all along. "Replay forever" is closed by making the
+    input unrepeatable, not by adding another check on the output.
+
+    Measured before relying on it: appending a trivial nonce export leaves the
+    decline matrix IDENTICAL on all three legs (arm/riscv decline
+    vbr_f32/vbr_f64/vbr_i64, aarch64 declines none), so the pinned 6/6 matrix is
+    unaffected.
+    """
+    import secrets
+
+    nonce = "n" + secrets.token_hex(6)
+    src = FIXTURE.read_text()
+    cut = src.rstrip().rfind(")")
+    if cut < 0:
+        raise SystemExit(
+            f"REFUSE: cannot find the closing paren of {FIXTURE} to append a "
+            f"per-run export; the fixture's shape changed and this gate would "
+            f"silently stop being fresh.")
+    mutated = (src[:cut]
+               + f'  (func (export "{nonce}") (result i32) (i32.const 7))\n'
+               + src[cut:])
+    path = os.path.join(tmpdir, f"falcon_opt_1318-{nonce}.wat")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(mutated)
+    return path, nonce
+
+
 def inspect_object(backend: str, obj: str, compiled: list[str],
-                   declined: list[str] | None = None) -> None:
+                   declined: list[str] | None = None,
+                   run_nonce: str | None = None) -> None:
     """REFUSE unless `obj` is a real ELF for this leg naming every compiled export.
 
     (v0.74, RQ-74-STUBPROOF) v0.73's round-2 gate review replaced
@@ -357,6 +404,16 @@ def inspect_object(backend: str, obj: str, compiled: list[str],
             f"{backend} instructions. An ELF whose code section is not code is "
             f"not a compile (RQ-75-REPLAY)."
         )
+    # RQ-75-REPLAY round 2: the object must carry THIS RUN's fixture nonce.
+    # Without this, a stub that delegates the separate freshness module to the
+    # real compiler and replays a recorded fixture object passes everything.
+    if run_nonce is not None and run_nonce not in names:
+        raise SystemExit(
+            f"REFUSE {backend}: the object does not name {run_nonce!r}, the "
+            f"export appended to the fixture FOR THIS RUN. Observed: "
+            f"{sorted(names)}. A recording made before this run cannot contain "
+            f"it, so this is what a replay of the FIXTURE fails "
+            f"(RQ-75-REPLAY).")
     missing = [e for e in compiled if e not in names]
     if missing:
         raise SystemExit(
@@ -369,7 +426,8 @@ def inspect_object(backend: str, obj: str, compiled: list[str],
         )
 
 
-def compile_for(backend: str, obj: str) -> dict[str, str]:
+def compile_for(backend: str, obj: str, fixture: str | None = None,
+                run_nonce: str | None = None) -> dict[str, str]:
     """export -> decline text ('' when it compiled).
 
     v0.73 cold review, gate finding F2: this used to infer "compiles" from the
@@ -384,7 +442,7 @@ def compile_for(backend: str, obj: str) -> dict[str, str]:
     skipped an object must actually exist.
     """
     out = subprocess.run(
-        [str(SYNTH), "compile", str(FIXTURE), *BACKENDS[backend],
+        [str(SYNTH), "compile", str(fixture or FIXTURE), *BACKENDS[backend],
          "--all-exports", "-o", obj],
         capture_output=True, text=True,
     )
@@ -430,7 +488,7 @@ def compile_for(backend: str, obj: str) -> dict[str, str]:
     # rc=0/447-byte object carrying `.text` and the symbol `vbr_i32`.
     insp = os.path.join(os.path.dirname(obj), f"{backend}-inspect.o")
     out2 = subprocess.run(
-        [str(SYNTH), "compile", str(FIXTURE), *BACKENDS[backend],
+        [str(SYNTH), "compile", str(fixture or FIXTURE), *BACKENDS[backend],
          "--all-exports", "--allow-skipped-exports", "-o", insp],
         capture_output=True, text=True,
     )
@@ -442,7 +500,7 @@ def compile_for(backend: str, obj: str) -> dict[str, str]:
             f"failing rather than declining."
         )
     inspect_object(backend, insp, [e for e in EXPORTS if e not in declines],
-                   declined=list(declines))
+                   declined=list(declines), run_nonce=run_nonce)
     return declines
 
 
@@ -458,11 +516,15 @@ def main() -> int:
     bad: list[str] = []
     print(f"{'export':<10}{'backend':<10}{'observed':<12}pin")
     td = tempfile.mkdtemp(prefix="falcon1318-")
+    # RQ-75-REPLAY round 2: the FIXTURE itself carries a per-run export, so a
+    # recording cannot answer for it and a replay must delegate the compile.
+    run_fixture, run_nonce = fixture_for_this_run(td)
     for backend in BACKENDS:
-        # RQ-75-REPLAY: prove the binary under test compiles something it has
-        # never seen BEFORE trusting anything it says about the fixture.
+        # The separate probe stays: it proves the binary compiles a module it has
+        # never seen. It is NOT sufficient on its own — see fixture_for_this_run.
         freshness_probe(backend, td)
-        declines = compile_for(backend, os.path.join(td, f"{backend}.o"))
+        declines = compile_for(backend, os.path.join(td, f"{backend}.o"),
+                               fixture=run_fixture, run_nonce=run_nonce)
         for export in EXPORTS:
             pin = EXPECTED_DECLINES[(export, backend)]
             got = declines.get(export)

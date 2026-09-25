@@ -376,6 +376,65 @@ def main() -> int:
           res["CHECK2"][0] is False and res["CHECK2"][1]["behind"] == 2,
           f"CHECK2={res['CHECK2']}")
 
+    # ---- R2g: the squash-fidelity path FETCHES the pull ref ---------------
+    # Round 2 deleted `sh("git","fetch","-q","origin","refs/pull/N/head")` and BOTH
+    # this driver and `--self-test` stayed green. Measured consequence: without the
+    # fetch, `git diff HEAD <absent-sha>` exits 128, `squash_fidelity`'s own guard
+    # turns that into DIFF UNAVAILABLE, and every post-merge attestation breaks
+    # invisibly. `unmade()`'s needles covered the gate path only; the
+    # squash-fidelity path had none.
+    rc, out, rec = run_main(["--pr", PR, "--squash-fidelity"], fidelity_table())
+    check("main --squash-fidelity FETCHES the pull ref before diffing",
+          not unmade(rec, f"refs/pull/{PR}/head"), f"calls made: {rec.calls}")
+
+    # ---- R2h: a legacy StatusContext rollup entry keyed by `context` -------
+    # `roll` keys on `c.get("name") or c.get("context")`. Dropping the fallback
+    # keys such an entry as None, so `is_advisory(None)` misses it and an ADVISORY
+    # red BLOCKS a correct merge — a false failure, which this programme treats as
+    # equal in cost to a false pass. Every recorded fixture used `name` only, so
+    # nothing exercised the fallback.
+    legacy_ok = rollup() + [{"context": "codecov/patch", "state": "FAILURE"}]
+    res = run_gate(gate_table(legacy_ok))
+    check("gate: a legacy `context`-keyed ADVISORY red still passes",
+          all(p for p, _ in res.values()),
+          f"an advisory red keyed by `context` blocked the merge: {res}")
+    legacy_bad = rollup() + [{"context": "Some Legacy Job", "state": "FAILURE"}]
+    res = run_gate(gate_table(legacy_bad))
+    check("gate: a legacy `context`-keyed NON-advisory red refuses via CHECK3",
+          res["CHECK3"][0] is False, f"CHECK3={res['CHECK3']}")
+
+    # ---- MUT-A / MUT-C: two holes v0.74 recorded as v0.75 candidates and
+    # ---- v0.75's own lane then shipped without closing (round 2 measured it).
+    #
+    # MUT-A: `red` matches `s in ("FAILURE", "ERROR")`. Narrowing it to
+    # `== "FAILURE"` left every check here green — no fixture ever produced an
+    # ERROR conclusion. Live consequence: a non-required job concluding ERROR
+    # gives `CHECK3 = (True, [])` with CHECK1 True, i.e. GATEOK ON A RED JOB.
+    res = run_gate(gate_table(rollup(**{"Some Extra Job": "ERROR"})))
+    check("gate: a non-required ERROR conclusion refuses via CHECK3",
+          res["CHECK3"][0] is False and "Some Extra Job" in res["CHECK3"][1],
+          f"CHECK3={res['CHECK3']}")
+    res = run_gate(gate_table(rollup(Clippy="ERROR")))
+    check("gate: a REQUIRED ERROR conclusion refuses too",
+          res["CHECK3"][0] is False, f"CHECK3={res['CHECK3']}")
+    # and an ADVISORY error must still NOT block
+    res = run_gate(gate_table(rollup(**{"codecov/project": "ERROR"})))
+    check("gate: an ADVISORY ERROR does not block",
+          all(p for p, _ in res.values()), f"{res}")
+
+    # MUT-C: `pend` filters advisories. Dropping that filter left every check
+    # green because no fixture ever made an ADVISORY context PENDING. Live
+    # consequence: `CHECK3b = (False, ['codecov/...'])` — a DEADLOCK on a context
+    # that by definition never gates. A false failure, which this programme costs
+    # the same as a false pass.
+    res = run_gate(gate_table(rollup(**{"codecov/patch": "PENDING"})))
+    check("gate: an ADVISORY still-PENDING context does NOT block CHECK3b",
+          res["CHECK3b"][0] is True,
+          f"an advisory pending deadlocked the merge: CHECK3b={res['CHECK3b']}")
+    res = run_gate(gate_table(rollup(**{"Rivet Federated Graph (advisory)": "PENDING"})))
+    check("gate: the advisory federated-graph still-PENDING does NOT block",
+          res["CHECK3b"][0] is True, f"CHECK3b={res['CHECK3b']}")
+
     # ---- the recorder itself must be loud, or every test above is vacuous --
     try:
         short = gate_table(rollup())

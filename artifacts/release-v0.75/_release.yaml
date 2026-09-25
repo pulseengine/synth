@@ -39,7 +39,10 @@
 #   * v0.74's round-1 gate pass then MEASURED the consequence directly: every
 #     mutation it applied to `gate()` and `main()` — including forcing the whole
 #     rollup to SUCCESS — passed `--self-test`. The COUNT lives in
-#     RQ-75-CALLSITE and nowhere else; this file's own header forbids a figure
+#     RQ-75-CALLSITE, which is where a reader should look; it also appears in the
+#     driver's own docstring and in v0.74's review record, so "nowhere else" —
+#     which an earlier draft of this line claimed — was itself false. This file's
+#     own header forbids a figure
 #     that lives elsewhere, and two had crept in.
 #   * v0.74's cut found the same shape again in a different file, in
 #     `closed_since()`: it takes the network path, and no offline test reaches

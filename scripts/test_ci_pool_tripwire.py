@@ -116,37 +116,49 @@ def main() -> int:
           blocked_reason(job("apt-get install -y x",
                              runs_on=["self-hosted", "linux"])) is None)
 
-    # ---- SCRIPT_RE must MATCH SOMETHING (the cold review's M8) ------------
-    # v0.74 added SCRIPT_RE to follow one level of `bash scripts/x.sh`, which is
-    # the walk-around a real script in this repo already uses. Replacing it with
-    # a pattern that matches NOTHING (`(?!x)x`) was missed by both this suite and
-    # the live tripwire — because the suite drives `pep668_pool_ready`, which
-    # never consults SCRIPT_RE at all. So assert the pattern's own behaviour,
-    # both directions, rather than assuming a caller exercises it.
-    import re as _re
+    # ---- SCRIPT_RE, driven on REAL input shapes (round 1's M8 fix, fixed) ---
+    # Round 1 asserted SCRIPT_RE's behaviour on bare specs like
+    # "bash scripts/install-qemu.sh" — every one starting at OFFSET 0. Round 2
+    # prepended `^` to the pattern and ALL EIGHT assertions stayed green while the
+    # real indirection died, because the live input is `job_text(j)`, which starts
+    # with the job's NAME. That is the same position blindness RQ-75-APTSHAPE
+    # fixed in APT_RE, reappearing in the sibling pattern one function away.
+    #
+    # So the specs are now embedded the way the real text embeds them: inside a
+    # multi-line job body, never at offset 0.
     for spec, want in (
-            ("bash scripts/install-qemu.sh", "scripts/install-qemu.sh"),
-            ("sh scripts/x.sh", "scripts/x.sh"),
-            ("source scripts/env.sh", "scripts/env.sh"),
-            (". scripts/env.sh", "scripts/env.sh"),
+            ("Some Job\nsteps\nbash scripts/install-qemu.sh\n", "scripts/install-qemu.sh"),
+            ("name\nrun\nset -e\nsh scripts/x.sh\n", "scripts/x.sh"),
+            ("prep\n  source scripts/env.sh\n", "scripts/env.sh"),
+            ("prep\n  . scripts/env.sh\n", "scripts/env.sh"),
     ):
         got = T.SCRIPT_RE.findall(spec)
-        check(f"SCRIPT_RE follows {spec!r}", got == [want], f"got {got!r}")
-    for spec in ("bashscripts/x.sh", "rebash scripts/x.sh", "bash other/x.sh"):
-        check(f"SCRIPT_RE does NOT match {spec!r}", T.SCRIPT_RE.findall(spec) == [],
-              f"got {T.SCRIPT_RE.findall(spec)!r}")
+        check(f"SCRIPT_RE follows a script invocation MID-TEXT ({want})",
+              got == [want], f"got {got!r} from {spec!r}")
+    for spec in ("job\nbashscripts/x.sh\n", "job\nrebash scripts/x.sh\n",
+                 "job\nbash other/x.sh\n"):
+        check(f"SCRIPT_RE does NOT match {spec.strip()!r}",
+              T.SCRIPT_RE.findall(spec) == [], f"got {T.SCRIPT_RE.findall(spec)!r}")
 
-    # And the indirection must work END TO END: a job that only invokes a script,
-    # where the apt lives in the script file, is what SCRIPT_RE exists for.
-    import tempfile, os as _os
-    with tempfile.TemporaryDirectory() as td:
-        sc = _os.path.join(td, "installer.sh")
-        with open(sc, "w") as fh:
-            fh.write("#!/bin/sh\nset -e\napt-get install -y qemu\n")
-        rel = _os.path.relpath(sc, T.ROOT) if str(T.ROOT) in sc else None
-    check("SCRIPT_RE's purpose is documented as one level only",
-          "one level" in T.__doc__ or "one level" in open(T.__file__).read(),
-          "the boundary must stay written down")
+    # END TO END through job_text, which is the only input that matters.
+    # Round 1 wrote a block here that created an installer.sh, computed a `rel`
+    # it never read, left an unused import, and whose only assertion was a
+    # source-text search for the string "one level" — which passed on a comment.
+    # It was unwireable as written and asserted nothing; this replaces it.
+    j = job("set -euo pipefail\nbash scripts/install-qemu.sh", name="Indirect Job")
+    body = T.job_text(j)
+    check("job_text output does NOT start with the run: command (offset != 0)",
+          not body.startswith("set -euo pipefail"), f"body starts {body[:30]!r}")
+    check("SCRIPT_RE finds the invocation in real job_text output",
+          "scripts/install-qemu.sh" in T.SCRIPT_RE.findall(body),
+          f"findall={T.SCRIPT_RE.findall(body)!r} over {body[:70]!r}")
+    # and the followed script really does contain an installer today, which is
+    # what makes the indirection a live hole rather than a hypothetical
+    inst = T.ROOT / "scripts/install-qemu.sh"
+    if inst.is_file():
+        check("the followed script really contains an installer",
+              bool(T.APT_RE.search(inst.read_text(errors="ignore"))),
+              "scripts/install-qemu.sh no longer carries apt — update the note")
 
     # ---- THE BOUNDARY, asserted so it is executable rather than prose ----
     # Each of these SHOULD ideally be blocked and is not. They are recorded as
