@@ -2839,7 +2839,8 @@ claims:
         waivers:
           - to: 84
             reason: >-
-              RQ-74-PINDEBT2 (#1223): 85 -> 84, the FIRST reduction since this
+              RQ-74-PINDEBT2 (#1223): 85 -> 84, the first movement in SEVEN
+              RELEASES (not the first ever — see the correction below) since this
               ratchet was created. Not a growth waiver — the number went DOWN
               because a pin was CLOSED BY A FIX, not by deletion or by merging
               entries. `(x - x) + x` returned the constant 0 on the optimized

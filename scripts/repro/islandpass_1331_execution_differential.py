@@ -182,7 +182,19 @@ def check_corpus_adequacy():
             f"{same}. Renaming a copy satisfies a basename check while the "
             f"corpus covers one shape — measured in v0.75's round 2 "
             f"(RQ-75-FLOORBIND).")
-    # Each claimed shape must carry its own structural needle.
+    # Each shape must be claimed by EXACTLY ONE fixture. Substring matching over
+    # basenames is unsound on its own: round 2 pointed out that a single file
+    # named `spanning_backspan_nested.wat` satisfies a "does some name contain
+    # each shape" test with a corpus of one.
+    for kind in REQUIRED_SHAPES:
+        owners = [n for n in base if kind in n]
+        if len(owners) != 1:
+            raise SystemExit(
+                f"REFUSE: the {kind!r} shape is claimed by {len(owners)} "
+                f"fixture(s) {owners} — exactly one must claim it, or one file "
+                f"named for several shapes satisfies the corpus "
+                f"(RQ-75-FLOORBIND).")
+    # And each claimed shape must carry its own structural needle.
     for kind, needle in SHAPE_NEEDLE.items():
         owner = [n for n in base if kind in n]
         if not owner:

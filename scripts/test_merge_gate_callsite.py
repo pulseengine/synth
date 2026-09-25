@@ -403,6 +403,38 @@ def main() -> int:
     check("gate: a legacy `context`-keyed NON-advisory red refuses via CHECK3",
           res["CHECK3"][0] is False, f"CHECK3={res['CHECK3']}")
 
+    # ---- MUT-A / MUT-C: two holes v0.74 recorded as v0.75 candidates and
+    # ---- v0.75's own lane then shipped without closing (round 2 measured it).
+    #
+    # MUT-A: `red` matches `s in ("FAILURE", "ERROR")`. Narrowing it to
+    # `== "FAILURE"` left every check here green — no fixture ever produced an
+    # ERROR conclusion. Live consequence: a non-required job concluding ERROR
+    # gives `CHECK3 = (True, [])` with CHECK1 True, i.e. GATEOK ON A RED JOB.
+    res = run_gate(gate_table(rollup(**{"Some Extra Job": "ERROR"})))
+    check("gate: a non-required ERROR conclusion refuses via CHECK3",
+          res["CHECK3"][0] is False and "Some Extra Job" in res["CHECK3"][1],
+          f"CHECK3={res['CHECK3']}")
+    res = run_gate(gate_table(rollup(Clippy="ERROR")))
+    check("gate: a REQUIRED ERROR conclusion refuses too",
+          res["CHECK3"][0] is False, f"CHECK3={res['CHECK3']}")
+    # and an ADVISORY error must still NOT block
+    res = run_gate(gate_table(rollup(**{"codecov/project": "ERROR"})))
+    check("gate: an ADVISORY ERROR does not block",
+          all(p for p, _ in res.values()), f"{res}")
+
+    # MUT-C: `pend` filters advisories. Dropping that filter left every check
+    # green because no fixture ever made an ADVISORY context PENDING. Live
+    # consequence: `CHECK3b = (False, ['codecov/...'])` — a DEADLOCK on a context
+    # that by definition never gates. A false failure, which this programme costs
+    # the same as a false pass.
+    res = run_gate(gate_table(rollup(**{"codecov/patch": "PENDING"})))
+    check("gate: an ADVISORY still-PENDING context does NOT block CHECK3b",
+          res["CHECK3b"][0] is True,
+          f"an advisory pending deadlocked the merge: CHECK3b={res['CHECK3b']}")
+    res = run_gate(gate_table(rollup(**{"Rivet Federated Graph (advisory)": "PENDING"})))
+    check("gate: the advisory federated-graph still-PENDING does NOT block",
+          res["CHECK3b"][0] is True, f"CHECK3b={res['CHECK3b']}")
+
     # ---- the recorder itself must be loud, or every test above is vacuous --
     try:
         short = gate_table(rollup())

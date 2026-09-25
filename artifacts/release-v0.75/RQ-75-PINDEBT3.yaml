@@ -3,7 +3,7 @@ artifacts:
     type: system-req
     release: v0.75
     status: proposed
-    title: "Keep the ratchet falling — v0.74 moved `known_open_pins` 85 -> 84 by a fix, the first reduction since the ratchet was created"
+    title: "Keep the ratchet falling — v0.74 moved `known_open_pins` 85 -> 84 by a fix, the first movement in seven releases"
     description: >
       REFUTING COMMAND, run it before assuming the direction holds:
 
@@ -25,14 +25,26 @@ artifacts:
       pins / 26 cases", each DELETED rather than re-pinned to 0. So the
       charitable reading — "the first reduction BY A FIX" — is false as well.
 
-      WHAT IS NOT CLAIMED HERE: the full per-tag series. The cold review reported
-      127 -> 89 -> 85, and this lane reproduced only the v0.67.0 value (85) and
-      the waiver text; the 127 and 89 figures are UNVERIFIED by me and are not
-      asserted. The correction does not need them — one earlier reduction by a
-      fix refutes "first". Re-derive from `git show <tag>:claims.yaml`, and note
-      that greedy `re.S` patterns and short `grep -A` windows both give wrong
-      answers on this file: the ratchet's `value:` sits inside a long
-      `tables:` block far from the key it belongs to.
+      THE SERIES, READ DIRECTLY AT EACH TAG (round 2 called the earlier hedge
+      evasive, and it was — 127 is v0.66.0's own `value:`, two `git show`s away):
+
+        v0.66.0  value: 127   (the ratchet is created here)
+        v0.67.0  value:  85   (a fall of 42, by fixes — that release's waivers
+                               say "closed 38 pins / 321 cases" and "closed 4
+                               pins / 26 cases", each DELETED not re-pinned)
+        v0.73.0  value:  85
+        v0.74.0  value:  84
+
+      So v0.74's was at least the THIRD movement, and the charitable reading
+      "the first BY A FIX" is false as well. Command:
+      `git show <tag>:claims.yaml | grep -B3 -A10 'name: known_open_pins'`.
+
+      A PREVIOUS VERSION OF THIS PARAGRAPH WARNED that the ratchet's `value:`
+      sits far from its key inside a long `tables:` block. That is FALSE for this
+      pin: `value:` is two lines below `name:`. The long `tables:` block belongs
+      to a DIFFERENT node — `known_open_pins` under `kind: pin-table`, which has
+      no `value:` at all — and confusing the two is what produced four wrong
+      readings, not the file's shape.
 
       v0.74's reduction was the first in SEVEN RELEASES, which is the true and
       still-notable statement.

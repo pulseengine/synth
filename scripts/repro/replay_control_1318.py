@@ -16,7 +16,11 @@ Nothing recorded is committed. The objects are produced by the binary under test
 at run time and thrown away, which is also why this cannot rot: there is no
 fixture to go stale.
 
-TWO ADVERSARIES, because one would leave two of the three mechanisms unproven:
+THE ADVERSARY SET, and why it is the size it is. Round 1 shipped two, round 2
+found the corner neither covered, and closing that corner made a THIRD mechanism
+(decode) unreachable from any adversary at all — so the count is not a target and
+this header no longer states one. What matters is that every mechanism has its
+own evidence, by adversary where reachable and by direct drive where not:
 
   1. PURE REPLAY — copies the recorded objects with `.text` overwritten by 0xDE
      filler and echoes the recorded warning lines. Compiles nothing at all.
@@ -29,7 +33,10 @@ TWO ADVERSARIES, because one would leave two of the three mechanisms unproven:
 
      This one exists because adversary 1 alone proves only the probe. Measured:
      adversary 2 is refused on the `riscv` leg at 0% decode — and NOT on `arm`,
-     because `0xDEDE` is a valid Thumb halfword. That asymmetry is disclosed in
+     because `0xDEDE` decodes as `UDF #0xde` — permanently UNDEFINED, yet
+     decoded and counted, which is why a decode-COVERAGE metric is blind to it.
+     ("Valid" was the wrong word and survived round 1's fix in two more places.)
+     That asymmetry is disclosed in
      `freshness_probe`'s docstring and is the reason freshness, not decoding, is
      the primary mechanism.
 
@@ -376,17 +383,24 @@ def main() -> int:
         # commenting out `freshness_probe()` entirely left this green — both
         # adversaries were decode-caught on the riscv leg, and adversary 1
         # supplied ZERO evidence about the probe it existed to prove.
+        # ROUND 2: the single "freshness" bucket CONFLATED the probe's two failure
+        # modes, and adversary 1 only ever reaches the first. The recorded arm
+        # plain-run entry is rc=1, so a replay reproduces that exit code and the
+        # probe dies at its rc check — earning "freshness" credit for replaying a
+        # non-zero exit, never exercising the variable-length/variable-count name
+        # machinery. Split, so credit names what actually fired; the NAME branch is
+        # driven directly by _check_probe_requires_all, because no replay reaches it.
         MECHANISM_NEEDLE = {
-            # the probe's own refusal text, per its two failure modes
-            "freshness": ("does not name", "could not compile a"),
+            "freshness-rc": ("could not compile a",),
+            "freshness-symbol": ("does not name",),
             "decode": ("decodes as",),
             # the FIXTURE's own per-run export — distinct from the separate
             # freshness module, and the only thing that catches adversary 3
             "fixture-nonce": ("appended to the fixture FOR THIS RUN",),
         }
         for label, src, expect in (
-                ("pure replay, real .text (freshness is the only catcher)",
-                 PURE, "freshness"),
+                ("pure replay, real .text (the probe's rc branch is the only catcher)",
+                 PURE, "freshness-rc"),
                 ("delegate+verbatim: the corner PURE and DELEGATING both miss",
                  DELEGATING_VERBATIM, "fixture-nonce"),
         ):
@@ -421,6 +435,12 @@ def main() -> int:
     # that quietly stopped building adversaries is VACUOUS rather than green —
     # the same anti-vacuity shape the rest of this family uses, and the reason
     # this script does NOT declare `# ci-checks: none`.
+    # DERIVED, not asserted in prose: a line count quoted in another file has
+    # been wrong twice in two commits. Printing it here puts the number where
+    # it can be checked against the thing it describes.
+    for _nm, _src in (("PURE", PURE), ("DELEGATING_VERBATIM", DELEGATING_VERBATIM)):
+        print(f"replay-control-1318: adversary {_nm} is "
+              f"{len(_src.strip().splitlines())} lines")
     print(f"replay-control-1318: {refused} adversaries REFUSED")
     print(f"replay-control-1318: {len(fails)} failure(s)")
     return 1 if fails else 0

@@ -56,13 +56,20 @@ header field.
 **ISLANDREACH (#1331)** — the whole class rested on **one fixture**, whose header
 credited a generator that **had never been committed** (`git log --all
 --diff-filter=A` matched nothing, on any ref, ever). The generator now exists and
-`--check` reds on a hand-edit; the class rests on three fixtures. The floor moved
+`--check` reds on a hand-edit for the TWO fixtures it generates — the spanning one
+is not regenerated, which is precisely the gap round 2 exploited (see below). The
+class rests on three fixtures. The floor moved
 from `compiles >= 4` to **`emulations >= 15`**, which closes a silent skip: a
 fixture reverting from "executes bit-exact" to "refused" used to score green,
 because a refusing compiler still makes the subprocess call the old floor counted.
 
-**PINDEBT2 (#1373)** — `known_open_pins` **85 → 84**: the first reduction by a
-*fix* since the ratchet was created. v0.73 built the attribution and closed no
+**PINDEBT2 (#1373)** — `known_open_pins` **85 → 84**: the first movement in seven
+releases. (v0.74 called this "the first reduction since the ratchet was created"
+and v0.75's round 2 refuted it: read directly from the ledger at each tag, the
+value is **127** at v0.66.0 where the ratchet was created, **85** at v0.67.0 —
+a fall of 42, by fixes, per that release's own waiver reasons — 85 through
+v0.73.0, then 84. v0.74's was at least the third movement, and the charitable
+reading "first by a fix" is false too.) v0.73 built the attribution and closed no
 pin. The pin closed is **#1223** — five algebraic-identity arms in `synth-opt`
 marked their result `is_dead` with the comment "would need copy propagation",
 which does not exist, so `(x - x) + x` folded to the constant 0. They now emit

@@ -112,7 +112,10 @@ APT_RE = re.compile(r"\bapt(-get)?\b|\bsudo\b")
 # only population where the deadlock exists — because a repo-wide "any job that
 # mentions an installer" rule is the nuisance that gets a guard routed around.
 # NOTE the lookbehind, and why it is not `(?:^|[\\s;&|])`: the job body this
-# runs against is `str(job)`, a dict REPR, so the command appears as
+# ran against was `str(job)`, a dict REPR (v0.75 replaced it with `job_text(j)`,
+# which is why the position blindness below is closed; this paragraph describes
+# the OLD input and is kept because the walk-arounds it lists still hold). In a
+# repr the command appears as
 # {'run': 'bash scripts/install-qemu.sh'} — preceded by a QUOTE, not by
 # whitespace. The first version of this regex required whitespace and
 # silently matched nothing; the potency test below is what caught it.
