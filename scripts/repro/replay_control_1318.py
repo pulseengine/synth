@@ -59,11 +59,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 SYNTH = ROOT / "target/debug/synth"
 DIFF = ROOT / "scripts/repro/falcon_opt_1318_differential.py"
 FIXTURE = ROOT / "scripts/repro/falcon_opt_1318.wat"
-BACKENDS = {
-    "arm": ["--target", "cortex-m7dp", "--relocatable"],
-    "riscv": ["-b", "riscv"],
-    "aarch64": ["-b", "aarch64"],
-}
+# RQ-76-FALCON (#1318): DERIVED from the differential, not duplicated.
+#
+# This file used to carry its own copy of the backend flags AND its own
+# hand-written list of which exports decline on arm. Moving the f32 pin in the
+# differential — the fix this release shipped — left that copy stale and this
+# control red, which is the same mirror defect RQ-76-CAPTURE fixed one file
+# over. The copy is the defect, not the stale value it produced.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import falcon_opt_1318_differential as _D  # noqa: E402
+
+BACKENDS = _D.BACKENDS
 
 PURE = '''#!/usr/bin/env python3
 import json, shutil, sys, pathlib
@@ -354,13 +360,25 @@ def _check_cross_leg(fails: list[str]) -> None:
             fails.append("cross-leg: could not build a real arm object to drive it")
             return
         try:
-            D.inspect_object("arm", obj, ["vbr_i32"],
-                             declined=["vbr_i64", "vbr_f32", "vbr_f64"])
+            # DERIVED from the pin table: an export with a needle declines,
+            # one pinned None compiles. A pin move in the differential now
+            # propagates here instead of stranding a copy.
+            declined = [e for e in D.EXPORTS
+                        if D.EXPECTED_DECLINES.get((e, "arm")) is not None]
+            present = [e for e in D.EXPORTS
+                       if D.EXPECTED_DECLINES.get((e, "arm")) is None]
+            if not declined or not present:
+                fails.append(
+                    "cross-leg: the arm pin column is all-one-way, so this "
+                    "check cannot discriminate — it needs both a declining "
+                    "and a compiling export")
+                return
+            D.inspect_object("arm", obj, present, declined=declined)
             print("  ok   cross-leg: the honest arrangement passes")
         except SystemExit as e:
             fails.append(f"cross-leg: honest arrangement REFUSED — {str(e)[:120]}")
         try:
-            D.inspect_object("arm", obj, [], declined=["vbr_i32"])
+            D.inspect_object("arm", obj, [], declined=[present[0]])
             fails.append("cross-leg: a declined export present in the symtab was "
                          "NOT caught")
         except SystemExit:
