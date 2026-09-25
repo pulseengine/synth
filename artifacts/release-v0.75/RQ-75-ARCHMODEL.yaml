@@ -29,6 +29,7 @@ artifacts:
       req-type: process
       priority: should
       disposition: deferred
+      landed: "#1399"
       issue: "#1136"
       done-when: "manual: spar#445 re-verified 2026-09-25 — OPEN, last updated 2026-09-03, unchanged since the v0.73 cut; feature-loop steps 1-2 N/A for the THIRTEENTH consecutive release on that same unchanged upstream reason"
       verification-track: manual
