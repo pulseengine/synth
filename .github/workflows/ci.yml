@@ -462,6 +462,14 @@ jobs:
       # head-vs-merge diff means nothing on a stale one.
       - name: "Merge-ritual gate self-test (#1269, RQ-72-RITUAL)"
         run: python3 scripts/merge_gate.py --self-test
+      # RQ-75-CALLSITE (#1269): the step ABOVE exercises the arithmetic and
+      # never reaches `gate()` or `main()` — the two functions the merge ritual
+      # actually runs. Ten mutations to those two leave it green; all ten turn
+      # this step red. Offline by construction: every `subprocess.run` is
+      # answered from a recorded table, and an unrecorded call raises rather
+      # than defaulting, so the step cannot pass by reaching nothing.
+      - name: "Merge-gate CALL SITE driven against recorded input (RQ-75-CALLSITE, #1269)"
+        run: python3 scripts/test_merge_gate_callsite.py
       - name: "CI pool tripwire — ubuntu-latest share + required-context deadlock guard (#1062)"
         env:
           GH_TOKEN: ${{ github.token }}

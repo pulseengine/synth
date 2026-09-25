@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-75-CALLSITE
     type: system-req
     release: v0.75
-    status: proposed
+    status: implemented
     title: "Three releases running, a gate was tested one call short of where it runs — `gate()` and `main()` have never been driven"
     description: >
       REFUTING COMMANDS TO RUN BEFORE SCOPING THIS, and what they returned at
@@ -40,6 +40,7 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1269"
+      landed: "#1393"
       done-when: "contains:scripts/test_merge_gate_callsite.py:RQ-75-CALLSITE"
       verified-by: >-
         The predicate names a test module that does not exist today, so a refutation cannot create it; and the acceptance oracle is the recorded mutation set, not the module's existence.
