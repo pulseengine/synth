@@ -37,9 +37,10 @@ artifacts:
       req-type: process
       priority: should
       disposition: deferred
+      landed: "#1411"
       issue: "#1136"
       carried-from: RQ-75-ARCHMODEL
-      done-when: "manual: spar#445 re-verified at the v0.76 cut — record the DATE, the state and the last-updated stamp, and the consecutive N/A count, as v0.75 did"
+      done-when: "manual: spar#445 re-verified 2026-09-25 — OPEN, created AND last updated 2026-09-03T10:57:37Z, so unchanged since it was filed; feature-loop steps 1-2 N/A for the FOURTEENTH consecutive release on that same unchanged upstream reason"
       verification-track: manual
       verified-by: >-
-        Deliberately `manual:`. The deliverable is a re-verification carrying a DATE; a `contains:` predicate pointing at this artifact's own file goes TRUE the moment the file exists, which reds R3 as status under-reporting.
+        Deliberately `manual:`. The deliverable is a re-verification carrying a DATE; a `contains:` predicate pointing at this artifact's own file goes TRUE the moment the file exists, which reds R3 as status under-reporting. RE-VERIFIED 2026-09-25 (`date -u`, the only timestamp source): spar#445 is OPEN, and its `updatedAt` EQUALS its `createdAt` at 2026-09-03T10:57:37Z — it has not been touched since it was filed, so this is not merely "still open" but "untouched". THE CONSECUTIVE COUNT IS DERIVED, not incremented from v0.75's prose: `ls artifacts/release-v*/RQ-*-ARCHMODEL.yaml` returns 14 filings, v0.63 through v0.76, this being the fourteenth. And the shared cause was CHECKED rather than assumed — all 14 cite spar#445, so "the same unchanged upstream reason" holds across the whole run rather than only the recent part. The five tags [process, carried, spar, aadl, feature-loop] are intact; this artifact has gone invisible to its own gate three times (v0.65, v0.69, v0.75) by losing them.
