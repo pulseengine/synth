@@ -34,6 +34,7 @@ artifacts:
         target: BR-001
     fields:
       req-type: process
+      landed: "#1395"
       priority: must
       issue: "#1331"
       done-when: "contains:scripts/repro/islandpass_1331_execution_differential.py:RQ-75-FLOORBIND"

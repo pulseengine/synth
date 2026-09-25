@@ -127,7 +127,42 @@ def _declared_floor():
     return int(m.group(1)) if m else None
 
 
+# RQ-75-FLOORBIND round 1 (v0.75): the shapes the corpus must actually contain.
+# `len(FIXTURES) * len(ARGVALS)` checks CONSISTENCY, not ADEQUACY — the cold
+# review replaced FIXTURES with three copies of the SAME fixture and every
+# number stayed identical: the oracle, `check_floor_binding`, the CI
+# emulation-floor equality, `claim_check` at 75/75, and the generator's own
+# `--check` all ran green while two thirds of the corpus stopped being tested.
+# And the two lost shapes were exactly v0.74's additions.
+#
+# So the POPULATION is declared, not merely counted. Each entry names a distinct
+# island-placement shape; adding a fourth is a visible edit here, which is the
+# same "declared list, never a glob" rule FIELD_KEY_CONSUMERS uses one file over.
+REQUIRED_SHAPES = ("spanning", "backspan", "nested")
+
+
+def check_corpus_adequacy():
+    """REFUSE a corpus that counts right and covers wrong."""
+    base = [os.path.basename(f) for f in FIXTURES]
+    if len(set(base)) != len(base):
+        raise SystemExit(
+            f"REFUSE: FIXTURES carries duplicates {sorted(base)} — the floor "
+            f"`len(FIXTURES) * len(ARGVALS)` is satisfied by repeating one "
+            f"shape, which is how two thirds of this corpus can stop being "
+            f"tested with every number unchanged (RQ-75-FLOORBIND).")
+    missing = [k for k in REQUIRED_SHAPES
+               if not any(k in b for b in base)]
+    if missing:
+        raise SystemExit(
+            f"REFUSE: the corpus no longer covers {missing}. These are distinct "
+            f"island-placement shapes — a forward span, a backward branch (loop "
+            f"latch) and a branch out of a nested block — and a count cannot "
+            f"tell that one has been swapped for a copy of another "
+            f"(RQ-75-FLOORBIND).")
+
+
 def check_floor_binding():
+    check_corpus_adequacy()
     got = _declared_floor()
     if got is None:
         raise SystemExit(
@@ -159,7 +194,8 @@ def island_invariants(obj):
 
     What DOES cover the intent, partially: `execute()` refuses unless at least
     three pool relocations resolved (`nrel < 3`), which is why the gap went
-    unnoticed. A real per-literal INV2 is a v0.75 candidate; it is not claimed
+    unnoticed. A real per-literal INV2 is a v0.76 candidate (it said v0.75, and v0.75 did NOT
+    deliver it); it is not claimed
     here."""
     import struct
 

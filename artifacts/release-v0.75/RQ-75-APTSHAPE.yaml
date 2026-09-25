@@ -20,14 +20,27 @@ artifacts:
             set -euo pipefail               apt-get install -y x
           -> CAUGHT                       -> MISSED
 
-      That subsumes the heredoc case and most of the nine spellings, which is why
-      widening the alternation further is the wrong shape: the real check is whether
-      the job's install step can RUN under `no_new_privs`, which needs executing it,
-      not grepping it.
+      MEASURED AGAINST v0.74's NINE SPELLINGS, because "subsumes most of them" was
+      the first draft here and is FALSE: `job_text()` changes the verdict on
+      exactly ONE of the nine — the heredoc. aptitude, dpkg, two script levels,
+      `./scripts/x.sh`, `bash .github/x.sh`, a python wrapper, a make wrapper and
+      the `uses:` surface are all still unmatched, which `job_text`'s own
+      disclosure and six assertions in the test module already say. The position
+      defect and the spelling list are DIFFERENT holes; this lane closes the
+      first and leaves the second measured.
 
-      NOTE THE POPULATION IS LATENT: no required context is on the self-hosted pool
-      today, so this is a tripwire for a future move, not a live gate. That is a
-      reason to keep it honest, not a reason to defer it.
+      Widening the alternation is still the wrong shape: the real check is whether
+      the job's install step can RUN under `no_new_privs`, which needs executing
+      it, not grepping it.
+
+      WHAT IS LATENT, CORRECTED: an earlier draft of this artifact said "no
+      required context is on the self-hosted pool today". That is FALSE — FIVE
+      are (Clippy, Format, Version Pin Sweep, Claim Check, Rivet Validation) —
+      and `ci_pool_tripwire.py` itself refutes it 240 lines below the sentence
+      the claim was copied from. The empty set is the INTERSECTION this guard
+      exists for: a required context that is self-hosted AND needs apt. The
+      `should` priority rests on that intersection being empty, which is true;
+      it does not rest on the pool being empty, which is not.
 
       AT DELIVERY this artifact must carry `issue-scope: outlives` — #1062 is a
       standing capacity issue that no single lane closes. Not set while `proposed`
@@ -40,6 +53,7 @@ artifacts:
         target: BR-001
     fields:
       req-type: process
+      landed: "#1397"
       priority: should
       issue-scope: outlives
       issue: "#1062"

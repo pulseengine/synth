@@ -27,6 +27,7 @@ artifacts:
         target: BR-001
     fields:
       req-type: process
+      landed: "#1398"
       priority: should
       issue: "#1223"
       done-when: "contains:scripts/repro/algebraic_identity_probes_1223.py:RQ-75-PROBEINPUT"

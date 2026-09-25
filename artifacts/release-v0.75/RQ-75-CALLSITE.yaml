@@ -43,4 +43,4 @@ artifacts:
       landed: "#1393"
       done-when: "contains:scripts/test_merge_gate_callsite.py:RQ-75-CALLSITE"
       verified-by: >-
-        The predicate names a test module that does not exist today, so a refutation cannot create it; and the acceptance oracle is the recorded mutation set, not the module's existence.
+        The predicate named a test module that did not exist when this was planned, and it ships now, which is the delivery; and the acceptance oracle is the recorded mutation set, not the module's existence.

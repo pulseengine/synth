@@ -13,6 +13,30 @@ artifacts:
       began at, and the release said so. v0.74 closed one, by fixing #1223's five
       algebraic arms rather than by re-attributing anything.
 
+      AND v0.74's CLAIM THAT THIS WAS "THE FIRST REDUCTION SINCE THE RATCHET WAS
+      CREATED" IS FALSE. Verified directly at this cut:
+
+        git show v0.67.0:claims.yaml | grep -B2 -A4 'name: known_open_pins'
+          -> value: 85          (v0.74.0 and HEAD read 84)
+
+      and v0.67's own waiver reasons in that same block say the fall was BY
+      FIXES, not by re-measuring or merging entries: RQ-67-CALLEESAVE "closed 38
+      pins / 321 cases across THREE oracle tables" and RQ-67-HIGHWORD "closed 4
+      pins / 26 cases", each DELETED rather than re-pinned to 0. So the
+      charitable reading — "the first reduction BY A FIX" — is false as well.
+
+      WHAT IS NOT CLAIMED HERE: the full per-tag series. The cold review reported
+      127 -> 89 -> 85, and this lane reproduced only the v0.67.0 value (85) and
+      the waiver text; the 127 and 89 figures are UNVERIFIED by me and are not
+      asserted. The correction does not need them — one earlier reduction by a
+      fix refutes "first". Re-derive from `git show <tag>:claims.yaml`, and note
+      that greedy `re.S` patterns and short `grep -A` windows both give wrong
+      answers on this file: the ratchet's `value:` sits inside a long
+      `tables:` block far from the key it belongs to.
+
+      v0.74's reduction was the first in SEVEN RELEASES, which is the true and
+      still-notable statement.
+
       THE DEFAULT OUTCOME IS THAT NOTHING MOVES, and that is the thing to argue
       against rather than discover at the next cut. A pin says "this function returns
       this wrong answer today, issue #N", exact in both directions; a release that

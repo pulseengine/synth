@@ -40,9 +40,10 @@ artifacts:
         target: BR-001
     fields:
       req-type: process
+      landed: "#1396"
       priority: must
       issue-scope: outlives
       issue: "#1318"
       done-when: "contains:scripts/repro/falcon_opt_1318_differential.py:RQ-75-REPLAY"
       verified-by: >-
-        Acceptance is the 30-line replay stub going RED, demonstrated with the stub committed as a negative control — not the presence of the needle.
+        Acceptance is the replay adversaries going RED, each rebuilt from the binary under test by the committed negative control (the committed stubs are 16 and 19 lines; 30 was v0.74's figure for a different stub and does not describe these) — not the presence of the needle.
