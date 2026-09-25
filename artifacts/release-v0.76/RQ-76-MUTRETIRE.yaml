@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-76-MUTRETIRE
     type: system-req
     release: v0.76
-    status: proposed
+    status: implemented
     title: "The mutation survey has no RETIRED state, so a site legitimately eliminated by a fix can only be recorded as something it is not"
     description: >
       The survey's outcome vocabulary cannot express "this mutation site no longer
@@ -30,7 +30,8 @@ artifacts:
     fields:
       req-type: process
       priority: should
+      landed: "#1412"
       issue: "#1257"
       done-when: "contains:scripts/mutation_survey.py:RQ-76-MUTRETIRE"
       verified-by: >-
-        A count of currently mis-stated sites, DERIVED from the survey rather than asserted, published whichever way the decision goes.
+        DELIVERED, with the count derived rather than asserted. MEASURED on the shipped ledger: 34 live mutants and 4 retired entries, so 38 sites were DRAWN — while `survey_sampled` reads 34. Four sites were mis-stated, and the deeper finding is that `scripts/mutation_survey.py` contained ZERO references to the `retired` list it was supposed to maintain: a hand-kept list beside a tool that could not see it, which is the same mirror defect as RQ-76-CAPTURE one directory over. The tool now reads it. A new `retire` subcommand records the disposition the tool could not express (id, classification WHEN DRAWN, retiring release, and a mandatory written reason), `reanchor` prints the decomposition `38 drawn = 34 live + 4 retired` so a reader can see the drawn sample is stable when a site moves between columns, and a NOT FOUND site now names `retire` as its remedy instead of leaving delete-or-stay-red as the only options. FOUR refusals were demonstrated red-first, none of which the tool could make before: a retired id ALSO present in `mutants` (double-counts the drawn sample), a retired entry missing a required field, the same id listed twice, and retiring a site whose anchoring text is STILL PRESENT — that last one refused on a real live id and left the ledger byte-unchanged. The control, the real ledger, validates clean. NO DATA CHANGED: this lane edits the tool only, so no derived rate moves in it.
