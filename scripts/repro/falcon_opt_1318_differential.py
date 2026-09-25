@@ -199,8 +199,22 @@ def freshness_probe(backend: str, tmpdir: str) -> None:
 
 def decode_text(backend: str, data: bytes) -> float:
     """Fraction of `.text` capstone can decode. See freshness_probe for why
-    this is a SECONDARY check: the ARM leg decodes 0xDE filler at 1.00."""
-    import capstone
+    this is a SECONDARY check: the ARM leg decodes 0xDE filler at 1.00.
+
+    A MISSING capstone is LOUD, not a skip. Swallowing the ImportError and
+    returning 1.0 would make this check disappear in exactly the environment
+    where nobody notices — and it already bit once: the `rq66-unwatched-oracle`
+    job runs this oracle and its `pip install` did not list capstone, so the
+    first push red there and NOT in the jobs that do. A dependency a gate needs
+    belongs in the job that runs it, not behind a try/except."""
+    try:
+        import capstone
+    except ImportError as ex:  # pragma: no cover - environment, not logic
+        raise SystemExit(
+            f"REFUSE {backend}: capstone is not importable ({ex}), so the "
+            f".text decode check cannot run. Add capstone to this job's "
+            f"`pip install` rather than letting the check vanish silently."
+        ) from ex
 
     arch, mode = DECODE_MODE[backend]
     md = capstone.Cs(getattr(capstone, arch), getattr(capstone, mode))

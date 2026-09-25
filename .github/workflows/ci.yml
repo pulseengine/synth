@@ -5237,7 +5237,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
       - name: "#1207 — synth compile accepts invalid WASM (13 fixtures x 3 backends)"
         run: |
           set -euo pipefail
