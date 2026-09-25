@@ -261,6 +261,41 @@ def main() -> int:
 
     failures, warnings, authorised, held_open = check(
         args.root, args.release, closed, args.allow_unclosed, open_issues)
+
+    # RQ-76-CLOSUREMAIN (#1404): an EMPTY live-open set is not evidence.
+    #
+    # `open_issues_now` returns None on every failure it ANTICIPATES — OSError,
+    # a non-zero rc, a parse failure — and the caller above falls back for
+    # those. The unanticipated one is `gh` SUCCEEDING and returning `[]`: a
+    # silent auth downgrade, a pagination change, a repo rename. That is not
+    # None, so no fallback fires, and the two state-dependent directions then
+    # behave differently and both wrongly:
+    #
+    #   * AUTHORISED goes vacuous and SILENT — `n in open_issues` is false for
+    #     every n, so no "authorised but still open" is ever raised. The gate
+    #     passes while checking nothing.
+    #   * HELD-OPEN goes RED for the WRONG REASON — every held-open issue trips
+    #     "HELD OPEN BUT ALREADY CLOSED", whose text asserts of a LIVE issue
+    #     that it "is not open". A false statement about an external reporter's
+    #     issue is worse than a missing check.
+    #
+    # So refuse rather than report either. Exit 2, not 1: this is "the gate
+    # could not run", which a caller must be able to tell from "the gate ran
+    # and found failures". Applied to `--open` too — the hazard is in the DATA,
+    # not in where it came from.
+    if open_issues is not None and not open_issues and (authorised or held_open):
+        print(
+            f"REFUSED: the live OPEN set is EMPTY while this release's "
+            f"artifacts reference {len(authorised) + len(held_open)} issue(s) "
+            f"({len(authorised)} authorised, {len(held_open)} held open). "
+            f"Either every referenced issue really is closed — in which case "
+            f"pass --no-state and judge on the window — or the state read is "
+            f"broken. Reporting the authorised direction would be vacuous and "
+            f"the held-open direction would assert that a live issue is not "
+            f"open. Neither is evidence."
+        )
+        return 2
+
     for w in warnings:
         print(f"WARN {w}")
     for f in failures:
