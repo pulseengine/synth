@@ -1,6 +1,20 @@
 #!/usr/bin/env python3
 # ci-status: wired
 # ci-checks: emulations >= 15
+# RQ-75-FLOORBIND (#1331), v0.75 — PROVEN POTENT by four mutations, each verified
+# present on disk before measuring, and each checked to red FOR ITS OWN REASON
+# rather than merely to red:
+#
+#   a FOURTH fixture added, floor left at 15   -> REFUSE (declared floor 15 != 20)
+#   compare the compiler WITH ITSELF           -> VACUITY (wasmtime consulted 0x)
+#   ARGVALS set to all zeros                   -> VACUITY (duplicate arguments)
+#   spanning padding deleted, module VALID     -> REACH (.text 364 < 4096)
+#
+# 4 CAUGHT for the right reason, 0 for the wrong one, 0 survived, 0 inert. The
+# distinction is load-bearing: the shrink mutation's FIRST form cut a line range,
+# broke the WAT, and red on the pinned-refusal check instead — proving nothing
+# about reach. A red-first that fires for the wrong reason is a hypothesis about
+# the plant, not evidence about the gate.
 """RQ-73-ISLANDPASS (#1331): the EXECUTION gate a literal-island fixed point owes.
 
 WHY THIS FILE EXISTS, AND WHY IT IS WRITTEN TO ACTIVATE ITSELF.
@@ -90,6 +104,43 @@ PINNED_REFUSAL = "LdrSym literal pool out of range (#345)"
 # (so the call and the second literal execute); non-zero DOES take it.
 ARGVALS = (0, 1, 2, 9, 0x7FFFFFFF)
 
+# RQ-75-FLOORBIND (#1331), v0.75 — THE DECLARED FLOOR IS CHECKED AGAINST THE
+# DERIVATION. v0.74 moved this oracle's floor from `compiles >= 4` to
+# `emulations >= 15`, closing a real silent skip. But 15 was `3 fixtures x 5
+# ARGVALS` WRITTEN OUT, so a fourth fixture would leave a floor of 15
+# satisfiable by three — restoring the very skip v0.74 closed, quietly, in the
+# commit that grows the corpus.
+#
+# The `# ci-checks:` header must STAY a literal: `oracle_wiring_check.py` reads
+# it statically, without importing this module, which is what lets it audit
+# every oracle without running any of them. So the literal stays and this module
+# REFUSES TO RUN when it disagrees with the derivation. The number is still
+# declared once; it can no longer be declared WRONG.
+EXPECTED_EMULATIONS = len(FIXTURES) * len(ARGVALS)
+
+
+def _declared_floor():
+    """The `emulations >= N` this file's own header declares, read off source."""
+    import re
+    src = open(__file__, encoding="utf-8").read()
+    m = re.search(r"^# ci-checks:\s*emulations\s*>=\s*(\d+)\s*$", src, re.M)
+    return int(m.group(1)) if m else None
+
+
+def check_floor_binding():
+    got = _declared_floor()
+    if got is None:
+        raise SystemExit(
+            "REFUSE: no `# ci-checks: emulations >= N` header in this file. "
+            "The floor is what stops a reverted fixture scoring green (#1331).")
+    if got != EXPECTED_EMULATIONS:
+        raise SystemExit(
+            f"REFUSE: the declared floor is `emulations >= {got}` but "
+            f"{len(FIXTURES)} fixture(s) x {len(ARGVALS)} arg(s) = "
+            f"{EXPECTED_EMULATIONS}. A floor BELOW the derivation is satisfiable "
+            f"while a fixture silently stops emulating (#1331); a floor above it "
+            f"can never be met. Update the header.")
+
 
 def compile_once(obj):
     return subprocess.run([SYNTH, "compile", FIXTURE, *ARGS, "-o", obj],
@@ -117,6 +168,27 @@ def island_invariants(obj):
     problems = []
     e = ELFFile(open(obj, "rb"))
     text = e.get_section_by_name(".text").data()
+    # RQ-75-FLOORBIND (#1331): THE FIXTURE MUST STILL NEED AN ISLAND.
+    # A Thumb-2 `LDR(literal)` reaches 4,095 bytes forward (12-bit unsigned
+    # offset), so a module whose `.text` fits inside that range needs no literal
+    # island at all — and islands are this oracle's entire subject. v0.74's
+    # round 1 demonstrated the defeat: deleting 900 lines of padding from the
+    # spanning fixture dropped `.text` to 2,988 bytes and this differential
+    # still reported "compiles AND executes bit-exact", rc=0, with the
+    # generator's own `--check` green. The gate passed on a module with no
+    # island in it.
+    #
+    # Measured at this lane's cut so the threshold is not vacuous:
+    # spanning 11,544 / backspan 6,656 / nested 6,636 bytes. The mutation that
+    # proves it must keep the module VALID — deleting whole 4-line padding units
+    # gives `.text` 364 bytes and still compiles; a crude line-range truncation
+    # breaks the WAT and reds for the WRONG reason, which is how this assertion
+    # was first measured as passing when it had never run.
+    if len(text) < 4096:
+        problems.append(
+            f"REACH: .text is {len(text)} bytes, below the 4,095-byte "
+            f"LDR(literal) span — this fixture needs no literal island, so it "
+            f"cannot be evidence about islands (RQ-75-FLOORBIND)")
     rel = e.get_section_by_name(".rel.text")
     THM_CALL, ABS32 = 10, 2
     reloc_offsets = set()
@@ -222,9 +294,20 @@ def execute(obj):
     engine = wasmtime.Engine()
     mod = wasmtime.Module(engine, open(FIXTURE).read())
 
+    # RQ-75-FLOORBIND: THE COUNTER LIVES HERE, not at the call site. Round 2
+    # defeated this oracle by making it compare the compiler WITH ITSELF —
+    # replace `truth(arg)` with `run(arg)` and every argument agrees, the
+    # emulation count RISES, and it prints "5/5 args bit-exact vs wasmtime".
+    # An earlier draft of this lane incremented the counter beside
+    # `exp = truth(arg)`, where that exact mutation still incremented it: an
+    # instrument placed where the mutation cannot move it measures nothing.
+    wasmtime_calls = 0
+
     def truth(arg):
+        nonlocal wasmtime_calls
         store = wasmtime.Store(engine)
         inst = wasmtime.Instance(store, mod, [])
+        wasmtime_calls += 1
         return inst.exports(store)["big"](store, arg) & 0xFFFFFFFF
 
     def run(arg):
@@ -238,9 +321,11 @@ def execute(obj):
         mu.emu_start(entry | 1, RETPAD, timeout=30_000_000)
         return mu.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
 
+    expected_vals = []
     ran = 0
     for arg in ARGVALS:
         exp = truth(arg)
+        expected_vals.append(exp)
         try:
             got = run(arg)
         except UcError as ex:
@@ -251,6 +336,28 @@ def execute(obj):
         if got != exp:
             problems.append(f"big({arg}) = {got}, wasmtime says {exp} "
                             f"— the islanded code MISCOMPILES")
+    # An oracle that never asked the reference is not a differential, whatever
+    # it prints.
+    if wasmtime_calls != len(ARGVALS):
+        problems.append(
+            f"VACUITY: wasmtime was consulted {wasmtime_calls} time(s) for "
+            f"{len(ARGVALS)} argument(s) — without the reference this compares "
+            f"the compiler with itself (RQ-75-FLOORBIND)")
+    # And an argument set that cannot distinguish two outcomes cannot see an
+    # argument-dropping miscompile, however many times it runs: ARGVALS can be
+    # set to all zeros with byte-identical output. The threshold is 2, not
+    # len(ARGVALS), because v0.74 measured PER FIXTURE that `spanning`
+    # legitimately distinguishes exactly 2 and `backspan` 4 — demanding 5 would
+    # red on correct fixtures.
+    if len(set(ARGVALS)) != len(ARGVALS):
+        problems.append(
+            f"VACUITY: ARGVALS carries duplicates {ARGVALS!r} — the repeated "
+            f"arguments add executions without adding discrimination")
+    if len(set(expected_vals)) < 2:
+        problems.append(
+            f"VACUITY: all {len(ARGVALS)} arguments have the SAME expected "
+            f"result {expected_vals[:1]!r}, so a miscompile that ignores its "
+            f"argument is invisible here (RQ-75-FLOORBIND)")
     if ran == 0:
         problems.append("VACUITY: zero executions completed")
     else:
@@ -260,6 +367,10 @@ def execute(obj):
 
 
 def main() -> int:
+    # RQ-75-FLOORBIND: the declared floor must agree with the derivation BEFORE
+    # anything is measured. A wrong floor is not a wrong number; it is a gate
+    # that cannot see a fixture stop emulating.
+    check_floor_binding()
     if not os.path.isfile(SYNTH):
         print(f"FAIL: {SYNTH} not built")
         return 1

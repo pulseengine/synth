@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-75-FLOORBIND
     type: system-req
     release: v0.75
-    status: proposed
+    status: implemented
     title: "The islandpass floor is bound to the literal 3x5, so a fourth fixture silently restores the skip v0.74 closed"
     description: >
       v0.74 moved this oracle's floor from `compiles >= 4` to `emulations >= 15`,
