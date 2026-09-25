@@ -5,6 +5,198 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.75.0] - 2026-09-25
+
+### The call site that no test has ever reached
+
+v0.73 asked *is it still broken?* v0.74 asked *can the gate tell?* and answered by
+mutation — most mutations walked through. v0.75 asks the question that evidence
+forced, and which no single lane could see because **each instance was found by a
+different one**: why do these gates keep being tested one call short of where they
+run?
+
+The shape is identical every time. A function is extracted **because** something
+untested consumes it. The extraction gets a test. The consumer keeps its zero
+coverage. The tested boundary moves one call outward and the gap moves with it —
+so the next release extracts another function and reports progress.
+
+| release | extracted | tested | never reached |
+|---|---|---|---|
+| v0.73 | `decide()` out of `gate()` | `decide()` | `gate()` |
+| v0.74 | `fidelity_exit()` out of `main()` | `fidelity_exit()` | `main()` |
+| v0.74 round 1 | — | — | **10 of 10 mutations to `gate()`/`main()` passed `--self-test`** |
+| v0.74 at the cut | — | — | `closed_since()` — network path, no offline driver |
+| v0.74 (#1318) | — | header checks | the emitted **code** — a recorded ELF replays forever |
+
+**The scope rule, stated because it is the opposite of the reflex:** this is not
+"write more tests", and emphatically not "extract more functions so they can be
+tested". Both are the failure mode wearing the fix's clothes. For each gate:
+drive its **real entry point** against recorded input, or **disclose** that the
+entry point is undriven. Acceptance is the mutation that used to survive going
+red, shown to have applied.
+
+**Mutation tallies are reported per lane and never summed.** They count different
+things against different denominators — arms of a fold, adversarial stubs,
+assertions in a suite — and one combined figure would assert a coverage claim no
+lane made. v0.74 made that mistake in its own release notes and corrected it
+before shipping.
+
+**CALLSITE (#1269)** — `merge_gate.py --self-test` builds a real git repository
+and exercises the arithmetic across 25 checks. It never calls `gate()` or
+`main()`, which are the two functions the merge ritual actually runs. All **10**
+of v0.74's surviving mutations — including forcing the whole status rollup to
+SUCCESS and returning 0 instead of `fidelity_exit(verdict)` — now go **red**, and
+all ten still leave `--self-test` green, which is the measurement that justifies a
+driver rather than an eleventh extraction. The seam is `subprocess.run`, not `sh`:
+two calls bypass `sh` entirely, so patching it would have produced a driver that
+looked thorough and missed a third of the surface. An unrecorded call **raises**,
+and one of the checks asserts that it does. The driver ends the release at **34**
+checks, having grown twice under review — 18 at the lane, 26 after round 1, 34
+after round 2 closed two holes v0.74 had already recorded.
+
+**CLOSEWINDOW (#1391)** — v0.74 fixed `closed_since`'s day-granular window and
+did not test it, and said so. Now driven against a recorded `gh` response, with
+the pre-fix truncation as the red-first case. **No assertion reads the qualifier
+string** — proven necessary, because a `date.split("T")[0]` rewrite spells
+midnight differently and is still midnight. Both mutations red, naming #1341 and
+#1349 exactly: the two v0.72 closures a midnight window swallows.
+
+**FLOORBIND (#1331)** — the floor `emulations >= 15` was `3 fixtures × 5 ARGVALS`
+written out, so a fourth fixture would restore the skip v0.74 closed. The header
+stays a literal, because `oracle_wiring_check.py` reads it statically without
+importing the module, and the module now **refuses to run** when the literal
+disagrees with the derivation. Three further defeats closed: comparing the
+compiler with itself, an all-zero argument set, and a spanning fixture shrunk
+below the 4,095-byte `LDR(literal)` reach. **4 mutations, 4 red for their own
+reasons** — and the distinction is load-bearing, because the shrink mutation's
+first form broke the WAT so the module failed to *compile* and red on the
+pinned-refusal check, proving nothing about reach.
+
+**REPLAY (#1318, cpetig — external reporter)** — v0.74 disclosed in prose that a
+stub replaying pre-recorded ELFs would pass forever. Prose does not go red. Built,
+and it was true: a short script compiling nothing produced `CHECKS=12/12,
+RESULT: PASS`. **A decode alone does not close it**, and measuring that shaped the
+lane: `0xDE` filler decodes at 1.00 on the ARM leg — the leg this issue was
+reported against — and 0.00 on riscv and aarch64, because `0xDEDE` decodes as
+`UDF #0xde`, a *permanently undefined* encoding that is nonetheless decoded and
+counted. A decode shipped as "the fix" would have closed two legs and left the
+reported one open while reading as complete.
+
+Freshness then took two further attempts, both recorded under the cold review
+below: a nonce on a *separate* module proved nothing about the fixture, so **the
+fixture itself now carries a per-run export**. The two invocations are also
+cross-checked (`declined ∩ symbols = {}`), the adversaries are **rebuilt from the
+binary under test on every CI run**, each is credited only to the mechanism that
+actually refused it, and the ARM decode blindness is a **pinned assertion** so it
+cannot quietly change.
+
+**APTSHAPE (#1062)** — the detector was blind to a **position, not a word**. Both
+scans read `str(job)`, a dict repr, where a newline renders as `\` + `n`, so
+`\bapt` could not match an installer that was not the first token of its `run:`
+value: the `n` of the escaped newline sits directly before `apt` and both are word
+characters. **Widening the alternation would not have touched this** — the pattern
+was already correct and was being handed text that could not match it, which is
+why v0.74's nine enumerated spellings are not what this fixes. Its decision had
+also never been driven: the tripwire only ever ran against the live `ci.yml` —
+one input, which changes underneath you and cannot express a job that *would* be
+blocked. (An earlier draft said "no required context is self-hosted today". That
+is false: **five are**, and `ci_pool_tripwire.py` refutes it 240 lines below the
+sentence the claim was copied from. What is empty is the *intersection* the apt
+guard exists for — self-hosted **and** needs apt.)
+
+**PROBEINPUT (#1223)** — probed each shape at one value (`x=7`), and for these
+identities the coincidence is the value the buggy fold returns. Now six inputs,
+**deliberately including the hiding values 0 and 1**, with the anti-vacuity
+assertion derived from wasmtime's own answers rather than declared. **And per-arm
+potency did not improve: still 4 of 5.** Reverting arm D changes the emitted
+`.text`, so the arm fires — the value survives in the register the result is read
+from, so the masking is in **register allocation**, not the input. Two
+higher-pressure shapes failed to break it. Arm D's coverage therefore rests on a
+unit test, not on this oracle, and the docstring now says so instead of leaving it
+inferable from a clean "0 of 5" line.
+
+### Two artifacts report non-delivery, deliberately
+
+**PINDEBT3 (#1373)** — `known_open_pins` is **84**, the value v0.74 left it at. No
+pin closed and none added, so the ratchet is **green while the debt stands** —
+precisely the comfortable state it was created to expose. Every one of those pins
+is an oracle observing a live wrong answer, so each is closed by a compiler fix
+and nothing else. The cheapest by pin count is #1206, one pin, which the parity
+oracle's own note calls a class without a statable predicate; attempting a
+loop-lowering change in the release about instruments that cannot see their own
+blind spots is how the miscompiles this programme prevents get introduced.
+
+**ARCHMODEL (#1136)** — spar#445 open, unchanged since 2026-09-03. The
+**thirteenth** consecutive N/A for the architecture-model step. Filed, not waived:
+an N/A that stops being recorded becomes an exemption by habit.
+
+### Two rounds of cold review, and what the second did to the first
+
+Round 2 was briefed to **attack round 1's corrections**, with the measured reason:
+across v0.72, v0.73 and v0.74, the second round kept finding its false statements
+inside the first round's fixes. It held again — **eleven of round 2's eighteen
+prose findings sat inside round 1's corrections**, and two blocked the release.
+
+**The replay defence took three attempts.** v0.74 checked what the emitted file
+*is* and disclosed that a recorded ELF replays forever. v0.75's lane added a nonce
+probe — and round 1 found the nonce was **always exactly 26 bytes**, so it was a
+fixed-offset byte patch into a recorded string table. Round 1 made the names
+variable-length — and round 2 built the corner neither adversary covered:
+**delegate the probe module to the real compiler and replay the fixture
+verbatim.** Everything passes; `CHECKS=12/12`; nothing about the fixture is
+compiled.
+
+What finally closed it was not a fourth check on the output. **The fixture itself
+now carries a per-run export**, so no recording can answer for it and a replay
+must *delegate* the fixture compile — and delegating it means compiling it.
+*Replay forever* is closed by making the **input** unrepeatable.
+
+**And the regression test for round 1's fix could not fail on the bug it named.**
+It refused in both regimes, because the recorded object's only symbols are 6 and
+7 bytes and no equal-length donor existed for a 26-byte name either. A regression
+test that cannot fail on its own bug is worse than none: it reads as coverage.
+
+**A gate can be invisible to the gate that consumes it.** `RQ-75-ARCHMODEL`
+carried `[process, feature-loop]`; the conformance matcher requires
+`tags & {aadl, spar}` as well, so the filing whose whole purpose is keeping a
+deferral visible was **not seen at all**. Third occurrence of that class
+(v0.65, v0.69, v0.75) — and the artifact's own body says *"v0.69 already lost
+this artifact once … Carry the tag."* It carried that one and lost the other two.
+**The tag set, not the prose, is what the gate reads.**
+
+**Three of round 1's new checks tested the wrong surface**: the corpus check
+compared basenames (three renamed copies passed), every `SCRIPT_RE` assertion
+started at offset 0 (anchoring the pattern at `^` passed all eight while killing
+the real indirection), and one "end to end" block was *unwireable* — it computed a
+path it never read and asserted only that a source file contains a string. The
+`SCRIPT_RE` case is the same position blindness APTSHAPE fixed in `APT_RE`, one
+function away.
+
+**Two holes v0.74 explicitly recorded as "v0.75 candidates" shipped through
+v0.75's own lane.** Narrowing `red` to exclude `ERROR` left all 26 driver checks
+green while giving `GATEOK` on a red job; dropping the advisory filter from
+`CHECK3b` left them green while deadlocking on an advisory. Recording a candidate
+is not scheduling it. Both closed; the driver is at 34 checks.
+
+**And a false statement survived inside a green ledger.** "The first reduction
+since the ratchet was created" was corrected in the artifact's body and left
+standing in that file's *title*, in `claims.yaml`'s waiver reason — inside a
+75/75-passing `claim_check` — and in the previous release's own notes. Read
+directly at each tag the value is 127 at v0.66.0, 85 at v0.67.0, 85 through
+v0.73.0, then 84: at least the **third** movement. The first hedge about it was
+evasive, and the grep-hazard warning added alongside was itself false.
+
+### Falsification statement
+
+Every gate this release touched carries the mutation that used to survive it, in
+its own docstring, with what fired. Where a mechanism could not be reached from
+the adversary — #1318's leg cross-check — it is driven directly rather than left
+as dead code, which is what happened to v0.74's own INV2 for a whole release. The
+disclosed residuals are v0.76 candidates, not closed work: the #1318 recordings
+are hand-written rather than captured from a live call, arm D is unmasked by
+neither input nor pressure, and the `apt` spelling question is settled only by
+executing the install step under `no_new_privs`.
+
 ## [0.74.0] - 2026-09-24
 
 ### The gate that cannot tell a compiler from a shell script
