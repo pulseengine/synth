@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-76-RECORDSHAPE
+    type: system-req
+    release: v0.76
+    status: proposed
+    title: "The pool tripwire's driver can only build a job shape the real workflow never has — 262 `uses:`, 133 `with:` and 54 `if:` steps are untested, not unreachable"
+    description: >
+      v0.75's RQ-75-APTSHAPE fixed a POSITION blindness in the tripwire and drove its
+      decision against recorded job dicts for the first time. The recording is the
+      residual.
+
+      MEASURED on the shipped tree. The only job factory in
+      `scripts/test_ci_pool_tripwire.py` produces `{name, runs-on, steps}` with steps
+      of `{name, run}`. `yaml.safe_load` of the live `.github/workflows/ci.yml` gives
+      71 jobs and 750 steps carrying, by count: `uses` 262, `with` 133, `if` 54,
+      step-level `env` 41, job-level `env` 7, `needs` 1, `timeout-minutes` 7+2,
+      `id` 1, `continue-on-error` 1.
+
+      STATED AS COUNTS DELIBERATELY. An earlier draft of this measurement reported the
+      key UNIONS as though every job carried them; re-derived, ZERO of 71 jobs carry
+      all six job keys and ZERO of 750 steps carry all nine. Quoting a union as if it
+      described an instance is the v0.70 class and is corrected here rather than
+      shipped.
+
+      AND THE DEFECT IS NOT WHERE IT FIRST APPEARED TO BE. `job_text()` is a fully
+      general recursion and WOULD collect a string sitting in a step's `with:` or a
+      job-level `env:` — confirmed by execution: a synthetic job carrying
+      `steps[0].with.run = "sudo apt-get install -y z"` IS flagged, as is one carrying
+      it in a job-level `env:`. So those paths are UNTESTED, NOT UNREACHABLE, and the
+      recording is the only thing between the gate and its own coverage.
+
+      DELIVERABLE: drive the decision against job shapes the real file actually
+      contains, including a `uses:`+`with:` installer and a job-level `env:`. Carries
+      the remaining disclosure too — the `apt` spelling question is settled only by
+      EXECUTING the install step under `no_new_privs`, which is a separate ask and is
+      to be disclosed if not delivered.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1062"
+      done-when: "contains:scripts/test_ci_pool_tripwire.py:RQ-76-RECORDSHAPE"
+      verified-by: >-
+        Red-first: a mutation that narrows `job_text` to the `steps[].run` surface must go RED under the new shapes and stay GREEN under the v0.75 recordings — which is the measurement that justifies the shapes rather than more assertions.

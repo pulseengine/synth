@@ -1,0 +1,36 @@
+artifacts:
+  - id: RQ-76-MUTRETIRE
+    type: system-req
+    release: v0.76
+    status: proposed
+    title: "The mutation survey has no RETIRED state, so a site legitimately eliminated by a fix can only be recorded as something it is not"
+    description: >
+      The survey's outcome vocabulary cannot express "this mutation site no longer
+      exists because the code it mutated was correctly deleted". A site removed by a
+      fix must therefore be recorded under a state that misdescribes it, and the
+      `mutants_untested` ratchet reads that record.
+
+      WHY IT BELONGS TO THIS THEME. The survey's frames and oracle outcomes are
+      hand-authored tables driven by a hand-authored driver — one of the fifteen
+      CI-wired recording drivers the census names. A vocabulary that cannot express a
+      real outcome is the same defect as a recording that cannot express a real input:
+      the instrument constrains what the measurement is allowed to say, and the
+      constraint is invisible in the result.
+
+      DELIVERABLE: either add the state and re-derive the ratchet against it, or
+      publish the measurement showing how many sites are currently mis-stated and why
+      no state change is warranted. Both are acceptable outcomes; asserting the
+      vocabulary is adequate without measuring is not.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1257"
+      done-when: "contains:scripts/mutation_survey.py:RQ-76-MUTRETIRE"
+      verified-by: >-
+        A count of currently mis-stated sites, DERIVED from the survey rather than asserted, published whichever way the decision goes.

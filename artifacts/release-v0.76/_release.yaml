@@ -1,0 +1,103 @@
+# v0.76 — "The input no live call ever produced"
+#
+# COMMENTS ONLY. This file carries the planning reasoning; the artifacts carry
+# the claims. It is deliberately free of numbers that live anywhere else. That
+# rule was learned in v0.72, broken in v0.73 in the very paragraph warning about
+# it, enforced again by v0.74's round 1, and v0.75's round 1 still had to delete
+# two statistics that had crept back in. A retraction that edits the artifact and
+# not the plan file is how "the sentence came back" reproduces.
+#
+# ---------------------------------------------------------------------------
+# THE THEME
+# ---------------------------------------------------------------------------
+#
+# v0.73 asked "is it still broken?" and answered it mechanically.
+#
+# v0.74 asked "CAN THE GATE TELL?" and answered by mutation rather than by
+# reading. Most mutations walked through.
+#
+# v0.75 asked why the answer kept being "no, in the same way", and named the
+# reflex: a function is extracted BECAUSE something untested consumes it, the
+# extraction gets a test, and the consumer keeps its zero coverage. It fixed that
+# by DRIVING REAL ENTRY POINTS against recorded input.
+#
+# v0.76 asks the question v0.75's own deliverables force:
+# IS THE INPUT REAL?
+#
+# Every driver v0.75 built runs the real entry point against a recording the
+# SAME AUTHOR HAND-WROTE. So the driver asserts the author's MODEL of the input,
+# not the input. When that model is wrong, the gate and its test agree, the
+# suite is green, and the failure is invisible BY CONSTRUCTION — which is the
+# one property a gate must not have.
+#
+# This is not speculation about a future schema change. It is already written
+# down in the tree, by the release that shipped it: the merge-gate driver says
+# in its own docstring that its recorded strings assert what that file BELIEVES
+# `gh` and `git` emit, and that closing it needs a recording captured from a
+# live call. The lanes below are that sentence, plus the same shape found
+# independently in three other places.
+#
+# A hand-mirrored EXPECTED value is the same defect seen from the other side. A
+# table of digests copied from a shipped artifact encodes the author's model of
+# what the artifact contains; when the artifact moves, the copy does not, and
+# the check keeps agreeing with itself. This repo already calls the general form
+# of that its North Star invariant 1 — derive what you check against from the
+# artifact you ship — and has invented it locally more than once. v0.76 applies
+# it to the release machinery rather than to the compiler.
+#
+# ---------------------------------------------------------------------------
+# WHY THE FOUR "MUST" LANES ARE ONE RELEASE AND NOT FOUR FOLLOW-UPS
+# ---------------------------------------------------------------------------
+#
+# Each was found by a different lane, in a different file, for a different
+# stated reason — a recorded tool response, a recorded workflow job, a mirrored
+# digest table, and a measurement of an external reporter's module that cannot
+# be refreshed because the module lives only in an attachment. None of the
+# finders knew about the others. That is the same signature v0.75 had, and it
+# is what distinguishes a class from a coincidence.
+#
+# A per-file fix leaves the reflex intact, and the reflex is the thing that
+# produced four instances in one release.
+#
+# ---------------------------------------------------------------------------
+# SCOPE — WHAT THIS IS NOT
+# ---------------------------------------------------------------------------
+#
+# SCOPE IS NOT "write richer recordings". A hand-written recording with more
+# fields in it is still authored; it moves the fiction one field further out and
+# reads as progress. That is this theme's version of v0.75's "extract another
+# function", and it is to be refused in review by name.
+#
+# For each recording in scope: CAPTURE IT FROM A LIVE CALL — committed,
+# re-runnable, carrying a shape check that reds when the live shape gains a
+# field the recording lacks — or DISCLOSE the SPECIFIC measured divergence,
+# beside what the driver does check. The general caveat is not the disclosure;
+# the measured divergence is.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS RELEASE MUST NOT DO
+# ---------------------------------------------------------------------------
+#
+# Do not treat a capture as permanent. A captured recording goes stale, and a
+# stale capture is a fiction with a better provenance story — it is harder to
+# doubt, which makes it worse. The acceptance case is therefore the SHAPE CHECK
+# GOING RED, never the capture existing. A lane that lands a capture and no
+# check has shipped the next release's defect.
+#
+# Do not delete a driver because its recording turns out to be authored. An
+# authored recording still exercises real code; removing it converts a
+# known-narrow test into no test while reading as cleanup. Disclosure is the
+# floor.
+#
+# Do not let the external-reporter lane become an oracle lane again. Three
+# releases have hardened the machinery around that issue while the reported
+# defect stood. Either the decline moves, or the diagnostic stops misnaming the
+# cause, or the lane reports plainly that neither happened. Hardening the oracle
+# a fourth time is not delivery, and v0.75 already held the issue open rather
+# than letting the tag close it.
+#
+# Do not restate a measurement this repository cannot re-derive. Where the
+# evidence lives only in an attachment, the honest options are to re-measure it
+# against that attachment and publish the date, or to mark the figure
+# UNVERIFIED. Restating it unchanged for a fourth release is the theme's own
+# failure mode committed by the release that named it.

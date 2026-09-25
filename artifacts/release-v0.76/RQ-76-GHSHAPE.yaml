@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-76-GHSHAPE
+    type: system-req
+    release: v0.76
+    status: proposed
+    title: "The merge-gate driver asserts what this repo BELIEVES `gh` and `git` emit — the gate and its test share one authored model, so a schema change leaves both agreeing and blind"
+    description: >
+      v0.75's RQ-75-CALLSITE drove `merge_gate.gate()` and `main()` — the two functions
+      the merge ritual actually runs — and ended at 34 checks. It names its own
+      residual: "the recorded strings are hand-written, so they assert what THIS file
+      believes `gh` and `git` emit, not what they actually emit. A `gh` schema change
+      would leave every test here green and the real gate broken."
+
+      WHY THAT IS LOAD-BEARING. `merge_gate.py` decides whether a release may merge,
+      and its entire input surface is `subprocess.run` results from `gh api` and `git`.
+      The driver replaces that seam with a `_Recorder` mapping argv to hand-written
+      stdout. The same author wrote the gate's model of `gh` and the test's model of
+      `gh`, so if that shared model is wrong both halves agree and the suite is green
+      while the gate is blind. The failure is invisible BY CONSTRUCTION, which is the
+      one property a gate must not have.
+
+      IT IS A CLASS, NOT A FILE. A census of `scripts/**/*.py` — 263 files enumerated
+      with `pathlib.Path.glob`, detection by an `ast` walk over module-level
+      `Assign`/`AnnAssign` whose value is a Dict/List/Tuple/Set of constants, matched
+      on SHAPE not name — finds 353 module-level literal tables across 173 files, of
+      which 15 are CI-wired drivers whose recordings stand in for a live tool.
+
+      DELIVERABLE: capture the recordings from a live call — committed, re-runnable,
+      carrying a shape check that REDS when the live response gains a field the
+      recording lacks — or disclose the SPECIFIC measured divergence rather than the
+      general caveat. A captured recording goes stale, and a stale capture is a
+      fiction with a better provenance story, so the acceptance case is the shape check
+      going red, not the capture existing.
+
+      NOT THE FIX: writing richer recordings by hand. That moves the fiction one field
+      further out.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1403"
+      done-when: "contains:scripts/test_merge_gate_callsite.py:RQ-76-GHSHAPE"
+      verified-by: >-
+        Red-first: adding a field to the live-shape reference must red the shape check while every existing assertion stays green — proving the check reads the shape and not the values.

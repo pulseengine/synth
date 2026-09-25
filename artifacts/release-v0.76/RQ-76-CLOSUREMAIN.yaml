@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-76-CLOSUREMAIN
+    type: system-req
+    release: v0.76
+    status: proposed
+    title: "`issue_closure_check.main()` and `open_issues_now()` are the undriven callers — an EMPTY `gh` read makes one direction vacuous and the other state a falsehood"
+    description: >
+      v0.75 drove `closed_since` against a recorded `gh` response and closed that gap.
+      Two callers stayed undriven, and the function's own docstring says so: `main()`,
+      whose EXIT CODE is what every caller consumes, and `open_issues_now()`, the live
+      state source the authorised and held-open directions are judged against.
+
+      THE DOCSTRING STATES THE FAILURE MODE MORE LOOSELY THAN THE CODE SUPPORTS, and
+      the correction is the interesting part. `open_issues_now` returns None on every
+      failure it anticipates — OSError, non-zero rc, parse failure — and `main()`
+      guards `is None` and falls back. The unhandled case is `gh` SUCCEEDING and
+      returning an empty array: a silent auth downgrade, a pagination change, a repo
+      rename. Then it returns `set()`, which is not None, so no fallback fires.
+
+      The docstring predicts "every issue would read as closed". Measured against
+      `check()` it SPLITS: the authorised direction goes VACUOUS AND SILENT, because
+      `n in open_issues` is false for every n so no warning is ever raised; and the
+      held-open direction goes RED FOR THE WRONG REASON, asserting of a live issue that
+      it "is not open". One half checks nothing and the other half states a falsehood
+      about an external reporter's issue. That is worse than disclosed.
+
+      DELIVERABLE: drive `main()` against a recorded response and assert its EXIT CODE
+      in both directions, and make `open_issues_now` distinguish EMPTY from UNREADABLE
+      — or make the gate refuse to judge the state-dependent directions on an empty
+      read.
+
+      NOT THE FIX: extracting the empty-check into a tested helper. v0.73 extracted
+      `decide()`, v0.74 extracted `fidelity_exit()`, and v0.75 was a whole release
+      about that reflex.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1404"
+      done-when: "contains:scripts/test_issue_closure_check.py:RQ-76-CLOSUREMAIN"
+      verified-by: >-
+        Red-first: a recorded `gh` response returning `[]` must make the gate REFUSE, where today it returns a vacuous pass on one direction and a false sentence on the other.

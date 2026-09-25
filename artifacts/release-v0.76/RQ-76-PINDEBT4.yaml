@@ -1,0 +1,45 @@
+artifacts:
+  - id: RQ-76-PINDEBT4
+    type: system-req
+    release: v0.76
+    status: proposed
+    title: "The pin debt stood still through v0.75 — the ratchet was green all release while the debt it measures did not move"
+    description: >
+      `known_open_pins` is a `direction: down` ratchet over the suppression tables the
+      CI-wired oracles consult on the LIVE compiler. v0.75 closed no pin and added
+      none, so the ratchet was GREEN for the whole release while the debt stood — which
+      is precisely the comfortable state it was built to expose, and the fourth release
+      running that this lane has had to say so.
+
+      The live value is NOT restated here. Read it from `claims.yaml` on the tree being
+      planned, with `claim_check.py claims.yaml --metric`; a second copy of a pinned
+      number in prose is how the "first reduction" falsehood survived v0.74 in four
+      places at once, including inside a 75/75-passing ledger.
+
+      WHAT MAKES THIS HARD, recorded so it is not re-litigated: every remaining entry
+      is an oracle observing a live wrong answer on the shipped compiler, so each is
+      closed by a COMPILER FIX and by nothing else. Re-attribution does not move it,
+      and a case-preserving pin merge leaves the total unchanged while dropping the
+      count — which the ratchet cannot catch and which is a REVIEW-TIME obligation.
+
+      DELIVERABLE, and it may legitimately be a refutation: either close a pin with a
+      compiler fix, or publish the measured reason no pin in the current population is
+      closable within a release, naming the cheapest candidate and what its predicate
+      would have to be. Saying so with evidence is the deliverable; a silent green
+      ratchet is not.
+    tags:
+      - process
+      - carried
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1373"
+      carried-from: RQ-75-PINDEBT3
+      done-when: "manual: at the v0.76 cut, re-derive known_open_pins with claim_check --metric and record the value, the delta against the v0.75.0 tag, and for each unclosed pin the compiler fix that would close it"
+      verification-track: manual
+      verified-by: >-
+        Deliberately `manual:`. The deliverable is a DERIVED value with a dated delta; a `contains:` predicate pointing at this artifact's own file goes TRUE the moment the file exists and reds R3.

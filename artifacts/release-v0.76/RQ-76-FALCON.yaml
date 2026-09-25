@@ -1,0 +1,51 @@
+artifacts:
+  - id: RQ-76-FALCON
+    type: system-req
+    release: v0.76
+    status: proposed
+    title: "cpetig's reported module still declines: six functions carry a value-carrying branch at f32, which AArch64 lowers and ARM misreports as an integer-path error"
+    description: >
+      EXTERNAL REPORTER (cpetig). Three releases have hardened the ORACLE around this
+      issue; the REPORTED defect is still open, and v0.75's own measurement says the
+      decline matrix is IDENTICAL on all three legs after its fixture-nonce work. v0.75
+      held the issue open rather than letting the tag close it, which is correct and is
+      not delivery.
+
+      CURRENT REMAINING FAILURE, as last measured: `opt.wasm` compiles 10 of 17
+      functions. One decline is #1069 (VFP spill-slot pool); the other SIX are
+      GI-FPU-002 on functions that each contain a `block` with an f32 RESULT — a
+      value-carrying branch at float type. ARM handles this at i32, names it at i64
+      (#509), and MISREPORTS it at f32/f64 as an integer-path error. AArch64 handles
+      all four. A minimal eight-line repro compiles and runs under wasmtime and synth
+      refuses it.
+
+      THE PROVENANCE PROBLEM IS THIS RELEASE'S OWN THEME. The 10-of-17 figure was
+      measured at v0.72 and RESTATED unchanged since, and it is NOT re-derivable in
+      this repository: the modules live only in the reporter's `errors.zip`, which
+      RQ-70-FALCONCORPUS named exactly. The committed proxy is a hand-written `.wat`
+      plus a twelve-cell decline matrix that is itself hand-authored. So the repo's
+      evidence about an external reporter's module is a recording nobody can refresh —
+      which is why this lane belongs to this theme and not merely to the backlog.
+
+      DELIVERABLE, in priority order: (a) re-derive the figure against the reporter's
+      attached modules and publish the date and commit, or state plainly that it is
+      UNVERIFIED and stop restating it; (b) move the f32/f64 value-carrying-branch
+      decline, or correct the DIAGNOSTIC so it names the real cause instead of an
+      integer-path error.
+
+      The reporter has said this no longer blocks them and that the target axis is
+      irrelevant — m7, m7dp and m4f behave identically. It is scoped on correctness
+      merit, not urgency.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1318"
+      done-when: "contains:scripts/repro/falcon_opt_1318_differential.py:RQ-76-FALCON"
+      verified-by: >-
+        Execution, not acceptance: a value-carrying `block (result f32)` must EXECUTE to the wasmtime answer under emulation, or the decline must carry a diagnostic naming the float cause and be pinned red-first. A compile that merely stops refusing is not evidence.
