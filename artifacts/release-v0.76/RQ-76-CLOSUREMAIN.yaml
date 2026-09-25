@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-76-CLOSUREMAIN
     type: system-req
     release: v0.76
-    status: proposed
+    status: implemented
     title: "`issue_closure_check.main()` and `open_issues_now()` are the undriven callers — an EMPTY `gh` read makes one direction vacuous and the other state a falsehood"
     description: >
       v0.75 drove `closed_since` against a recorded `gh` response and closed that gap.
@@ -44,4 +44,4 @@ artifacts:
       issue: "#1404"
       done-when: "contains:scripts/test_issue_closure_check.py:RQ-76-CLOSUREMAIN"
       verified-by: >-
-        Red-first: a recorded `gh` response returning `[]` must make the gate REFUSE, where today it returns a vacuous pass on one direction and a false sentence on the other.
+        DELIVERED, and the harm is more concrete than the plan stated. `main()` is now driven and its EXIT CODE asserted in three directions: 0 for a clean judgement, 1 for a real failure (naming the issue), and a NEW exit 2 for a refusal — distinguished on purpose, because a caller must be able to tell "the gate ran and found nothing" from "the gate could not run". Red-first, applied and verified applied by diff: disabling the refusal turns three assertions RED, and the gate then prints, verbatim, `FAIL HELD OPEN BUT ALREADY CLOSED: #1318 — RQ-75-REPLAY declares issue-scope: outlives, but the issue is not open.` #1318 IS OPEN and belongs to an external reporter, so the pre-fix behaviour asserts a falsehood about a live issue of someone outside this project — worse than the vacuous pass on the other direction, and worse than the docstring predicted. The refusal covers the `--open` path too, because the hazard is in the DATA, not in where it came from.
