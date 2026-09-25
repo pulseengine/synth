@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-76-RECORDSHAPE
     type: system-req
     release: v0.76
-    status: proposed
+    status: implemented
     title: "The pool tripwire's driver can only build a job shape the real workflow never has — 262 `uses:`, 133 `with:` and 54 `if:` steps are untested, not unreachable"
     description: >
       v0.75's RQ-75-APTSHAPE fixed a POSITION blindness in the tripwire and drove its
@@ -43,7 +43,19 @@ artifacts:
     fields:
       req-type: process
       priority: must
+      landed: "#1408"
       issue: "#1062"
+      # THE PLAN SAID THIS LANE "CARRIES #1062's CLOSURE". READING THE ISSUE
+      # REFUTES THAT, and the correction belongs here rather than in a later
+      # audit. #1062 asks for CAPACITY RELIEF — move the non-required oracle
+      # sweep to `rust-cpu`, stagger lane pushes, or retarget required checks —
+      # and names option 1 as the right first move. `ci_pool_tripwire.py` is the
+      # SAFEGUARD built around that decision, not the relief itself: it pins the
+      # ubuntu-latest share and guards the required-context deadlock. Improving
+      # the tripwire's own test, which is what this lane did, moves no job off
+      # ubuntu-latest. So the issue outlives the artifact and the tag must not
+      # close it. v0.75 held it open for the same reason.
+      issue-scope: outlives
       done-when: "contains:scripts/test_ci_pool_tripwire.py:RQ-76-RECORDSHAPE"
       verified-by: >-
-        Red-first: a mutation that narrows `job_text` to the `steps[].run` surface must go RED under the new shapes and stay GREEN under the v0.75 recordings — which is the measurement that justifies the shapes rather than more assertions.
+        DELIVERED, and the plan's own prediction was HALF WRONG — corrected here rather than restated. Prediction: narrowing `job_text` to the `steps[].run` surface "must go RED under the new shapes and stay GREEN under the v0.75 recordings". Measured: the narrowing produces FOUR failures, THREE from the new real shapes (`uses-with`, `job-env`, `step-env`, each naming the surface `job_text` stopped reading) and ONE from a v0.75 assertion about match offset. So the v0.75 recordings were NOT blind to this narrowing; they caught it once, without naming which surface broke. The `guarded` shape correctly does NOT fail, because its command sits in `steps[].run`, which the narrowing still reads. THE ACCEPTANCE MUTATION IS THE OTHER ONE, and it is the one the theme actually demands: adding a job-level `strategy:` to the live `ci.yml` — a key no recorded shape can produce — turns the coverage check RED with `uncovered ['strategy'] (live counts {'strategy': 1})`. That is a shape check that reds when the LIVE file gains a field the recording lacks, rather than an assertion that the recording has more fields. Both mutations were applied and verified applied by diff, and the tree restored. Derived at run time from `ci.yml`: 71 jobs carrying 6 distinct job keys, 750 steps carrying 9 distinct step keys — quoted as POPULATIONS, because 0 of 71 jobs carry all six and 0 of 750 steps carry all nine.

@@ -69,12 +69,161 @@ def job(run: str, name: str = "Some Job", runs_on=None) -> dict:
             "steps": [{"name": "do it", "run": run}]}
 
 
+# =====================================================================
+# RQ-76-RECORDSHAPE (#1062): the recording, measured against the real file.
+#
+# v0.75 drove this decision against recorded jobs for the first time. The
+# recording was the residual: `job()` above builds a job of exactly three keys
+# whose single step has exactly two. The live `ci.yml` is not shaped like that,
+# and `job_text()` is a fully general recursion that collects strings from
+# ANYWHERE in the job — so an installer sitting in a `uses:`+`with:` step or a
+# job-level `env:` IS collected and IS matched, and was never tested. Those
+# paths were UNTESTED, NOT UNREACHABLE, which is a different and worse thing:
+# the gate had coverage nobody had exercised.
+#
+# The guard below is NOT "assert the recording has more fields". A hand-written
+# recording with more fields is still authored; it moves the fiction one field
+# further out. It DERIVES the live key population from `ci.yml` and REDS when
+# the real file carries a key no recorded shape can produce. That is what makes
+# it survive the next workflow edit rather than this one.
+# =====================================================================
+
+CI_YML = pathlib.Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
+
+
+def live_shape() -> tuple[dict, dict]:
+    """The key populations of the REAL workflow, derived at run time."""
+    import collections
+
+    import yaml
+
+    if not CI_YML.exists():
+        sys.exit(f"REFUSE: {CI_YML} not found — cannot derive the live shape")
+    jobs = (yaml.safe_load(CI_YML.read_text()) or {}).get("jobs") or {}
+    if not jobs:
+        sys.exit("REFUSE: ci.yml parsed to ZERO jobs; the comparison would be vacuous")
+    job_keys = collections.Counter(k for j in jobs.values() for k in j)
+    step_keys = collections.Counter(
+        k
+        for j in jobs.values()
+        for st in (j.get("steps") or [])
+        if isinstance(st, dict)
+        for k in st
+    )
+    return dict(job_keys), dict(step_keys)
+
+
+def shaped_jobs(run: str) -> dict[str, dict]:
+    """Recorded jobs that between them carry every key the live file uses.
+
+    Each shape puts `run` somewhere a real workflow actually puts a command, so
+    a narrowing of `job_text` to one surface is caught by whichever shape it
+    stopped reading.
+    """
+    return {
+        # `uses:` + `with:` — 262 and 133 live steps. An action input is a
+        # place a command genuinely lives (`with: {run: ...}`, script inputs).
+        "uses-with": {
+            "name": "uses-with",
+            "runs-on": T.EXACT_LABEL,
+            "steps": [{"name": "act", "uses": "some/action@v1", "with": {"run": run}}],
+        },
+        # job-level `env:` — 7 live jobs.
+        "job-env": {
+            "name": "job-env",
+            "runs-on": T.EXACT_LABEL,
+            "env": {"PREP": run},
+            "steps": [{"name": "noop", "run": "true"}],
+        },
+        # step-level `env:` — 41 live steps.
+        "step-env": {
+            "name": "step-env",
+            "runs-on": T.EXACT_LABEL,
+            "steps": [{"name": "noop", "run": "true", "env": {"PREP": run}}],
+        },
+        # `if:` + `id:` + `continue-on-error:` + `timeout-minutes:` + `needs:`
+        # — the remaining live keys, carried together so the coverage check
+        # below has a producer for each without inventing five more jobs.
+        "guarded": {
+            "name": "guarded",
+            "runs-on": T.EXACT_LABEL,
+            "needs": ["other"],
+            "timeout-minutes": 5,
+            "steps": [
+                {
+                    "name": "maybe",
+                    "id": "maybe",
+                    "if": "always()",
+                    "continue-on-error": True,
+                    "timeout-minutes": 5,
+                    "run": run,
+                }
+            ],
+        },
+    }
+
+
+def _keys_of(jobs: dict) -> tuple[set, set]:
+    jk = {k for j in jobs.values() for k in j}
+    sk = {
+        k
+        for j in jobs.values()
+        for st in (j.get("steps") or [])
+        if isinstance(st, dict)
+        for k in st
+    }
+    return jk, sk
+
+
+def check_recording_covers_live_shape() -> None:
+    """RED when the live workflow carries a key no recorded shape produces."""
+    live_jk, live_sk = live_shape()
+    rec_jk, rec_sk = _keys_of(shaped_jobs("x"))
+    rec_jk |= set(job("x"))  # the v0.75 factory is part of the recording too
+    rec_sk |= {"name", "run"}
+    missing_j = sorted(set(live_jk) - rec_jk)
+    missing_s = sorted(set(live_sk) - rec_sk)
+    check(
+        "recording covers every JOB key the live ci.yml uses",
+        not missing_j,
+        f"- uncovered {missing_j} (live counts "
+        f"{ {k: live_jk[k] for k in missing_j} })",
+    )
+    check(
+        "recording covers every STEP key the live ci.yml uses",
+        not missing_s,
+        f"- uncovered {missing_s} (live counts "
+        f"{ {k: live_sk[k] for k in missing_s} })",
+    )
+    print(
+        f"  ...derived from ci.yml: job keys {sorted(live_jk)}; "
+        f"step keys {sorted(live_sk)}"
+    )
+
+
 def blocked_reason(j: dict, required=()) -> str | None:
     ready, blocked = T.pep668_pool_ready({"j": j}, set(required))
     return blocked.get(j["name"])
 
 
 def main() -> int:
+    # ---- RQ-76-RECORDSHAPE: is the recording shaped like the real file? --
+    check_recording_covers_live_shape()
+
+    # Every shape must reach the SAME verdict: `job_text` collects strings
+    # from anywhere in the job, so an installer hidden in any of them blocks
+    # the job just as one in `steps[].run` does. A narrowing of `job_text` to
+    # one surface fails whichever shape it stopped reading — which is the
+    # measurement, not the count of assertions.
+    for shape, j in shaped_jobs("sudo apt-get install -y cowsay").items():
+        check(f"apt inside a real shape is blocked: {shape}",
+              blocked_reason(j) is not None,
+              "- job_text did not reach this surface")
+    for shape, j in shaped_jobs("echo hello").items():
+        check(f"a benign command in the same shape is NOT blocked: {shape}",
+              blocked_reason(j) is None,
+              "- false positive")
+
     # ---- the position defect, in both directions -------------------------
     check("apt as the FIRST token is blocked",
           blocked_reason(job("apt-get install -y x\nset -euo pipefail")) is not None)
