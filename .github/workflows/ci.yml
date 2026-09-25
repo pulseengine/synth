@@ -5237,7 +5237,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools || pip install --break-system-packages wasmtime unicorn pyelftools
+        run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
       - name: "#1207 — synth compile accepts invalid WASM (13 fixtures x 3 backends)"
         run: |
           set -euo pipefail
@@ -5264,6 +5264,20 @@ jobs:
             scripts/repro/falcon_opt_1318_differential.py | tee /tmp/1318.txt
           grep -qE '^#1318 CHECKS=12/12 \(export,backend\) cells' /tmp/1318.txt
           grep -q '^RESULT: PASS' /tmp/1318.txt
+      # RQ-75-REPLAY (#1318): the step ABOVE is satisfied by a script that
+      # compiles NOTHING if the differential ever stops asking what it was
+      # handed — v0.73 proved that with a 16-line stub and v0.74 disclosed that
+      # a replay of pre-recorded ELFs would still pass. This rebuilds both
+      # adversaries from the binary under test and REQUIRES the differential to
+      # refuse each, so "a replay is refused" is re-earned every run rather
+      # than remembered from a docstring. Nothing recorded is committed.
+      - name: "#1318 replay adversaries are REFUSED (RQ-75-REPLAY negative control)"
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_run.py \
+            scripts/repro/replay_control_1318.py | tee /tmp/1318ctl.txt
+          grep -qE '^replay-control-1318: [0-9]+ adversaries REFUSED$' /tmp/1318ctl.txt
+          grep -q '^replay-control-1318: 0 failure(s)$' /tmp/1318ctl.txt
       - name: "#1331 — the islandpass fixtures match their generator (RQ-74-ISLANDREACH)"
         run: |
           set -euo pipefail

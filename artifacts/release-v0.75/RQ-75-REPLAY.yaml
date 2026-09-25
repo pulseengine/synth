@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-75-REPLAY
     type: system-req
     release: v0.75
-    status: proposed
+    status: implemented
     title: "#1318's repaired gate still asks what the file IS and never what it CONTAINS — a recorded ELF replays forever"
     description: >
       EXTERNAL REPORTER (cpetig). v0.74 repaired the null-stub defeat: the gate now
@@ -41,6 +41,7 @@ artifacts:
     fields:
       req-type: process
       priority: must
+      issue-scope: outlives
       issue: "#1318"
       done-when: "contains:scripts/repro/falcon_opt_1318_differential.py:RQ-75-REPLAY"
       verified-by: >-
