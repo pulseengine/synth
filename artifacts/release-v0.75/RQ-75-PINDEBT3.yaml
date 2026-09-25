@@ -31,6 +31,10 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1373"
-      done-when: "contains:claims.yaml:RQ-75-PINDEBT3"
+      disposition: deferred
+      landed: "#1399"
+      verification-track: manual
+      done-when: "manual: re-measured 2026-09-25 — known_open_pins is 84, the value v0.74 left it at; NO pin closed and none added, so the ratchet is green and the debt stands. The seven issues carrying live pins are #1206(1) #1207(39) #1215(5) #1229(12) #1230(4) #1231(3) #1241(3), all OPEN, plus 17 charged to a documented reason. Closing any of them is a compiler fix, not an artifact edit."
+      carried-from: RQ-74-PINDEBT2
       verified-by: >-
         The ratchet itself is the oracle: `known_open_pins` must be strictly below 84 with the closing fix named, or a `waivers:` entry with a written reason.
