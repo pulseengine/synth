@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-76-CAPTURE
+    type: system-req
+    release: v0.76
+    status: proposed
+    title: "The graph-alloc differential hand-mirrors four shipped digests — and the remedy the issue itself proposes passes on the exact stale value it exists to catch"
+    description: >
+      `scripts/repro/vcr_dec_001_graph_alloc_differential.py` pins four anchors as
+      hand-copied `(fixture, sha256, .text length)` triples, duplicating
+      `crates/synth-cli/tests/frozen_codegen_bytes.rs`. RQ-66-BOTHWRONG re-froze
+      `flight_seam` 706 -> 718 in the Rust golden; this second copy was not updated and
+      main went red for five merges. Exactly ONE of the four was stale, so three kept
+      agreeing and nothing looked systemically wrong.
+
+      THE FILE'S OWN HEADER SAYS THE MIRROR IS THE DEFECT, and proposes an interim
+      check: confirm every mirrored hash appears in
+      `grep -o '"[0-9a-f]\{64\}"' frozen_codegen_bytes.rs`. MEASURED, THAT REMEDY IS
+      VACUOUS. The Rust file holds TEN `#[test]` blocks and FIFTEEN distinct hashes;
+      the mirror holds four. The grep is satisfied by a hash from ANY block — including
+      the escape-hatch block's PRE-flip golden. Presence-in-FILE is not presence-in-
+      `oracle_001`, so the check passes on precisely the stale value it was written to
+      catch.
+
+      SPLIT STATE, so the lane is not mis-scoped: the ACTUALS are already derived —
+      `_extract_text` parses the emitted ELF, and the non-vacuity leg derives entirely
+      from three live compiler runs. Only the EXPECTEDS are hand-copied; nothing in the
+      file reads the Rust golden.
+
+      DELIVERABLE: derive the expecteds from the shipped artifact — parse the NAMED
+      test function's cases, or have the Rust side EMIT the pins to a generated file
+      both read, the `VcrSelRulesGenerated.v` pattern (#667) this repo already calls
+      North Star invariant 1. Also correct the header's issue citation: it says "Filed
+      as #1254", and #1254 is a DIFFERENT, OPEN issue about RV32 immediate folding.
+      That is a wrong number, not the sanctioned closed-issue convention.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1255"
+      done-when: "contains:scripts/repro/vcr_dec_001_graph_alloc_differential.py:RQ-76-CAPTURE"
+      verified-by: >-
+        Red-first: staling ONE anchor in the Rust golden must red the Python differential, shown by applying the mutation and verifying it applied. The issue's own grep remedy must be demonstrated vacuous against the escape-hatch hash before the real derivation replaces it.

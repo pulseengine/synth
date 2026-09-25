@@ -1,0 +1,45 @@
+artifacts:
+  - id: RQ-76-ARCHMODEL
+    type: system-req
+    release: v0.76
+    status: proposed
+    title: "Recurring N/A: feature-loop steps 1-2 (spar AADL -> WIT) deferred again on spar#445 — filed, not waived"
+    description: >
+      Feature-loop steps 1-2 generate WIT from an AADL model in spar. They have been
+      N/A every release since the dependency was recorded, blocked upstream on
+      spar#445. This artifact exists so the deferral stays VISIBLE to the conformance
+      gate rather than becoming an exemption by habit.
+
+      DELIVERABLE: re-verify spar#445 at the v0.76 cut and record the DATE, the state
+      and the last-updated stamp. If it is still open and unchanged, the N/A is filed
+      again with its consecutive count; if it has moved, steps 1-2 come back into
+      scope and this artifact says so.
+    tags:
+      # THE TAG SET, NOT THE PROSE, IS WHAT THE GATE READS. The step 1-2 matcher in
+      # loop_conformance_check.py requires `"feature-loop" in tags AND tags & {aadl,
+      # spar}` AND a non-empty `issue:`. An artifact missing `spar`/`aadl` is
+      # INVISIBLE to the very gate it is filed for, and the release then reports no
+      # filed steps-1-2 decision at all.
+      #
+      # This has now happened THREE times — v0.65, v0.69 and v0.75 — each time to
+      # this same artifact, and v0.75's own body already carried the warning from
+      # v0.69 while losing the tag a third time. Carrying the warning is not what
+      # prevents it; carrying these five tags is.
+      - process
+      - carried
+      - spar
+      - aadl
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      disposition: deferred
+      issue: "#1136"
+      carried-from: RQ-75-ARCHMODEL
+      done-when: "manual: spar#445 re-verified at the v0.76 cut — record the DATE, the state and the last-updated stamp, and the consecutive N/A count, as v0.75 did"
+      verification-track: manual
+      verified-by: >-
+        Deliberately `manual:`. The deliverable is a re-verification carrying a DATE; a `contains:` predicate pointing at this artifact's own file goes TRUE the moment the file exists, which reds R3 as status under-reporting.
