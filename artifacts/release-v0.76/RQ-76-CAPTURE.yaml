@@ -41,6 +41,7 @@ artifacts:
     fields:
       req-type: process
       priority: must
+      landed: "#1407"
       issue: "#1255"
       done-when: "contains:scripts/repro/vcr_dec_001_graph_alloc_differential.py:RQ-76-CAPTURE"
       verified-by: >-
