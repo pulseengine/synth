@@ -37,9 +37,16 @@ artifacts:
     fields:
       req-type: process
       priority: should
+      # The REPORT shipped; the pin closure did not, so the artifact does
+      # not claim the outcome. R11 requires this beside a `landed:` on a
+      # non-claiming status: `landed:` alone cannot tell an increment from
+      # full delivery left unflipped. v0.75's PINDEBT3 carried the same
+      # shape for the same reason.
+      disposition: deferred
+      landed: "#1411"
       issue: "#1373"
       carried-from: RQ-75-PINDEBT3
-      done-when: "manual: at the v0.76 cut, re-derive known_open_pins with claim_check --metric and record the value, the delta against the v0.75.0 tag, and for each unclosed pin the compiler fix that would close it"
+      done-when: "manual: re-derived 2026-09-25 with claim_check's own _pin_table — known_open_pins is 84, the same value `git show v0.75.0:claims.yaml` carries, so the delta across v0.76 is ZERO; the per-table decomposition and the measured reason no pin closed are recorded in verified-by"
       verification-track: manual
       verified-by: >-
-        Deliberately `manual:`. The deliverable is a DERIVED value with a dated delta; a `contains:` predicate pointing at this artifact's own file goes TRUE the moment the file exists and reds R3.
+        Deliberately `manual:`. The deliverable is a DERIVED value with a dated delta; a `contains:` predicate pointing at this artifact's own file goes TRUE the moment the file exists and reds R3. THIS IS A REPORT OF NON-DELIVERY, which is the deliverable when it is true. Re-derived 2026-09-25 by calling `claim_check._pin_table` — the tool's OWN derivation, after a hand-rolled AST walk of mine returned 0 for all ten tables and was simply wrong, which is the repo's standing rule about not hand-rolling a parser to measure the codebase. known_open_pins is 84; `git show v0.75.0:claims.yaml` carries 84; the delta across this release is ZERO, and it has now stood since v0.74.0 — three releases. DECOMPOSITION (six non-empty tables of ten): 39 invalid-accept #1207, 20 selector-parity #197, 12 false-reject #1229, 6 self-contained boot sweep, 4 RA-003 join #1230, 3 aarch64 operand-class #1231. WHY NO PIN CLOSED, MEASURED NOT ASSUMED: this release's only compiler change is RQ-76-FALCON, and it was a plausible candidate — #1229 pins FALSE REJECTIONS of valid modules, which is the class a reach fix removes. It is REFUTED on two independent grounds. (a) #1229's needle is `stack underflow: malformed WASM or compiler bug` on the `--cortex-m` self-contained path, a different defect class from the `GI-FPU-002` carried-value path FALCON touched. (b) Empirically: the `RQ-66-UNWATCHED (#1207/#1229/#1230/#1231)` CI job reports SUCCESS on FALCON's PR with every pin unchanged, and that job's steps had been SKIPPED on an earlier run — so this is the first run where the verdict exists rather than being absent. The smallest non-empty table is the three-entry #1231 aarch64 operand-class set; it is named as the smallest by COUNT, not asserted to be the easiest to fix, because each entry is an oracle observing a live wrong answer and is closed by a compiler fix and nothing else.
