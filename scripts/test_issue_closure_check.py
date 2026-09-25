@@ -13,6 +13,7 @@ repo's current artifacts goes vacuous the moment the release moves on.
 
 from __future__ import annotations
 
+import pathlib
 import sys
 import tempfile
 from pathlib import Path
@@ -178,7 +179,65 @@ def closed_since_tests() -> None:
         check("closed_since recorder: an unrecorded call raises", True)
 
 
+def main_exit_code_tests() -> None:
+    """RQ-76-CLOSUREMAIN (#1404): drive `main()` and assert its EXIT CODE.
+
+    v0.75 drove `closed_since` and left its two callers undriven, and said so.
+    `main()`'s exit code is what every caller consumes — the merge ritual, the
+    tag script, a human reading `$?` — so an assertion about `check()` is an
+    assertion about something no caller reads.
+
+    The three codes are distinguished on purpose. 0 and 1 are "the gate ran";
+    2 is "the gate REFUSED to run", which a caller must be able to tell apart
+    from "ran and found nothing wrong". A refusal collapsed into 0 is the
+    vacuous pass this lane exists to remove.
+    """
+    import contextlib
+    import io
+
+    def run_main(argv: list[str]) -> tuple[int, str]:
+        buf = io.StringIO()
+        orig = sys.argv
+        sys.argv = ["issue_closure_check.py", *argv]
+        try:
+            with contextlib.redirect_stdout(buf):
+                rc = C.main()
+        except SystemExit as ex:          # argparse errors must not read as 0
+            rc = ex.code if isinstance(ex.code, int) else 1
+        finally:
+            sys.argv = orig
+        return rc, buf.getvalue()
+
+    root = str(pathlib.Path(__file__).resolve().parents[1])
+
+    # (a) a clean judgement exits 0
+    rc, out = run_main(["--release", "v0.75.0", "--root", root,
+                        "--closed", "1223,1391", "--open", "1062,1318",
+                        "--allow-unclosed"])
+    check("main(): a clean judgement exits 0", rc == 0, f"- rc={rc}")
+
+    # (b) a real failure exits 1 — an issue closed that nothing authorises
+    rc, out = run_main(["--release", "v0.75.0", "--root", root,
+                        "--closed", "999999", "--open", "1062,1318"])
+    check("main(): an unauthorised closure exits 1", rc == 1, f"- rc={rc}")
+    check("main(): ...and says which issue", "999999" in out, f"- {out[:120]}")
+
+    # (c) an EMPTY live-open read REFUSES with 2 rather than judging
+    rc, out = run_main(["--release", "v0.75.0", "--root", root,
+                        "--closed", "", "--open", ""])
+    check("main(): an EMPTY open set REFUSES with exit 2", rc == 2, f"- rc={rc}")
+    check("main(): ...and the refusal names the count it will not judge",
+          "REFUSED" in out and "authorised" in out, f"- {out[:120]}")
+    # The two wrong behaviours it replaces, asserted as ABSENT rather than
+    # described: no vacuous pass, and no sentence claiming a live issue is
+    # not open.
+    check("main(): the refusal emits NO held-open-already-closed sentence",
+          "HELD OPEN BUT ALREADY CLOSED" not in out)
+
+
 def main() -> int:
+    main_exit_code_tests()
+
     # ---- the authorised set is derived, not declared -----------------------
     delivered = art("RQ-71-A", "implemented", "#100")
     undelivered = art("RQ-71-B", "proposed", "#200")
