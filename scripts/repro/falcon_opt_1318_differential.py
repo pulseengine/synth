@@ -117,8 +117,100 @@ EXPECTED_DECLINES: dict[tuple[str, str], str | None] = {
 # symbol table names the exports that did not decline.
 EXPECTED_MACHINE = {"arm": "EM_ARM", "riscv": "EM_RISCV", "aarch64": "EM_AARCH64"}
 
+# Capstone modes per leg, for the decode check below.
+DECODE_MODE = {
+    "arm": ("CS_ARCH_ARM", "CS_MODE_THUMB"),
+    "riscv": ("CS_ARCH_RISCV", "CS_MODE_RISCV32"),
+    "aarch64": ("CS_ARCH_ARM64", "CS_MODE_ARM"),
+}
 
-def inspect_object(backend: str, obj: str, compiled: list[str]) -> None:
+
+def freshness_probe(backend: str, tmpdir: str) -> None:
+    """REFUSE unless the binary under test compiles a module it has NEVER SEEN.
+
+    RQ-75-REPLAY (#1318), v0.75 — THE DEFEAT THIS CLOSES. v0.74 repaired the
+    null-stub hole by asking what the emitted file IS: ELF magic, the right
+    `e_machine` per leg, a non-empty `.text`, a symbol per non-declined export.
+    It disclosed that this still never asks what the file CONTAINS, and that a
+    stub replaying PRE-RECORDED ELFs therefore passes forever.
+
+    That was not a hypothesis. Built and measured at this lane's cut: a
+    SEVENTEEN-LINE script that compiles nothing, replays the recorded objects
+    with `.text` entirely overwritten by 0xDE filler, and echoes the recorded
+    warning lines, produced rc=0, `CHECKS=12/12` and
+    `RESULT: PASS — the value-carrying-branch matrix is exactly as pinned`.
+
+    A DECODE ALONE DOES NOT CLOSE IT, and the measurement is why this probe
+    exists instead. Disassembling `.text` and requiring it to decode catches the
+    filler on two legs and NOT on the third:
+
+        leg        real code   0xDE filler
+        arm         1.00        1.00        <- blind
+        riscv       1.00        0.00
+        aarch64     1.00        0.00
+
+    `0xDEDE` is a valid Thumb halfword, so the ARM leg — the one this issue was
+    reported against — decodes filler happily. A decode check shipped as "the
+    fix" would have closed two legs and left the reported one open while reading
+    as complete.
+
+    So the primary mechanism is FRESHNESS, which is arch- and
+    encoding-independent: compile a module generated NOW, exporting a symbol
+    whose name carries a random nonce, and require that symbol in the emitted
+    object. A recording made before the nonce existed cannot contain it, so no
+    replay passes however faithful its bytes. Verified present on all three legs
+    with the real compiler.
+    """
+    import secrets
+    from elftools.elf.elffile import ELFFile
+
+    nonce = secrets.token_hex(8)
+    sym = f"freshness_{nonce}"
+    wat = os.path.join(tmpdir, f"{backend}-{nonce}.wat")
+    with open(wat, "w", encoding="utf-8") as fh:
+        fh.write(f'(module (func (export "{sym}") (result i32) (i32.const 1)))\n')
+    obj = os.path.join(tmpdir, f"{backend}-{nonce}.o")
+    r = subprocess.run(
+        [str(SYNTH), "compile", wat, *BACKENDS[backend], "--all-exports",
+         "-o", obj],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0 or not os.path.isfile(obj):
+        raise SystemExit(
+            f"REFUSE {backend}: the binary under test could not compile a "
+            f"one-function module generated for this run (rc={r.returncode}). "
+            f"It is not a working compiler for this leg, whatever it printed "
+            f"about the fixture. {(r.stderr or r.stdout)[:200]}"
+        )
+    with open(obj, "rb") as fh:
+        elf = ELFFile(fh)
+        names = set()
+        for sec in elf.iter_sections():
+            if sec.header["sh_type"] == "SHT_SYMTAB":
+                names |= {s.name for s in sec.iter_symbols() if s.name}
+    if sym not in names:
+        raise SystemExit(
+            f"REFUSE {backend}: compiled a module exporting {sym!r} and the "
+            f"emitted object does not name it. Observed: {sorted(names)}. A "
+            f"nonce chosen for THIS run cannot appear in a recording, so this "
+            f"is what a replay fails (RQ-75-REPLAY)."
+        )
+
+
+def decode_text(backend: str, data: bytes) -> float:
+    """Fraction of `.text` capstone can decode. See freshness_probe for why
+    this is a SECONDARY check: the ARM leg decodes 0xDE filler at 1.00."""
+    import capstone
+
+    arch, mode = DECODE_MODE[backend]
+    md = capstone.Cs(getattr(capstone, arch), getattr(capstone, mode))
+    md.detail = False
+    covered = sum(i.size for i in md.disasm(data, 0x1000))
+    return covered / len(data) if data else 0.0
+
+
+def inspect_object(backend: str, obj: str, compiled: list[str],
+                   declined: list[str] | None = None) -> None:
     """REFUSE unless `obj` is a real ELF for this leg naming every compiled export.
 
     (v0.74, RQ-74-STUBPROOF) v0.73's round-2 gate review replaced
@@ -177,6 +269,11 @@ def inspect_object(backend: str, obj: str, compiled: list[str]) -> None:
                 f"the object is not this leg's."
             )
         text = next((s for s in elf.iter_sections() if s.name == ".text"), None)
+        # RQ-75-REPLAY: capture the bytes while the file is still OPEN.
+        # pyelftools reads section data lazily, so `.data()` after the `with`
+        # block raises KeyError from its own lazy container — which is how the
+        # decode check first appeared to break the real compiler.
+        text_bytes = text.data() if text is not None else b""
         if text is None or text.data_size == 0:
             raise SystemExit(
                 f"REFUSE {backend}: object has no non-empty .text. An ELF with "
@@ -186,6 +283,31 @@ def inspect_object(backend: str, obj: str, compiled: list[str]) -> None:
         for sec in elf.iter_sections():
             if sec.header["sh_type"] == "SHT_SYMTAB":
                 names |= {sym.name for sym in sec.iter_symbols() if sym.name}
+    # RQ-75-REPLAY (#1318): CROSS-CHECK THE TWO INVOCATIONS. v0.74 asserted
+    # `compiled SUBSET-OF symbols` and never `declined INTERSECT symbols = {}`,
+    # so an object whose symtab carried the very exports leg 1 had just reported
+    # as DECLINED passed. The two legs were never compared with each other.
+    if declined:
+        contradiction = sorted(set(declined) & names)
+        if contradiction:
+            raise SystemExit(
+                f"REFUSE {backend}: {contradiction} were reported DECLINED on "
+                f"the plain run, and the --allow-skipped-exports object names "
+                f"them anyway. The two invocations contradict each other, so "
+                f"one of them is not this compiler's behaviour "
+                f"(RQ-75-REPLAY)."
+            )
+    # And the code itself must decode. SECONDARY, deliberately: measured at this
+    # lane's cut, 0xDE filler decodes at 1.00 on the ARM leg (0xDEDE is a valid
+    # Thumb halfword) and 0.00 on riscv/aarch64. So this closes two legs and the
+    # freshness probe is what closes the class.
+    ratio = decode_text(backend, text_bytes)
+    if ratio < 0.90:
+        raise SystemExit(
+            f"REFUSE {backend}: only {ratio:.0%} of .text decodes as "
+            f"{backend} instructions. An ELF whose code section is not code is "
+            f"not a compile (RQ-75-REPLAY)."
+        )
     missing = [e for e in compiled if e not in names]
     if missing:
         raise SystemExit(
@@ -270,7 +392,8 @@ def compile_for(backend: str, obj: str) -> dict[str, str]:
             f"object IS produced, so a non-zero exit here is the compiler "
             f"failing rather than declining."
         )
-    inspect_object(backend, insp, [e for e in EXPORTS if e not in declines])
+    inspect_object(backend, insp, [e for e in EXPORTS if e not in declines],
+                   declined=list(declines))
     return declines
 
 
@@ -287,6 +410,9 @@ def main() -> int:
     print(f"{'export':<10}{'backend':<10}{'observed':<12}pin")
     td = tempfile.mkdtemp(prefix="falcon1318-")
     for backend in BACKENDS:
+        # RQ-75-REPLAY: prove the binary under test compiles something it has
+        # never seen BEFORE trusting anything it says about the fixture.
+        freshness_probe(backend, td)
         declines = compile_for(backend, os.path.join(td, f"{backend}.o"))
         for export in EXPORTS:
             pin = EXPECTED_DECLINES[(export, backend)]
