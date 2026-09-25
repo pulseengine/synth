@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-75-PROBEINPUT
     type: system-req
     release: v0.75
-    status: proposed
+    status: implemented
     title: "The algebraic-identity probes exercise each shape at exactly ONE input — and #1223's closure waits on this"
     description: >
       v0.74 shipped this oracle, then had to repair it in the same release: round 1

@@ -6188,6 +6188,9 @@ jobs:
           SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
             scripts/repro/algebraic_identity_probes_1223.py | tee /tmp/1223p.txt
           grep -qE '^algebraic-identity-probes: [0-9]+ shape\(s\) executed$' /tmp/1223p.txt
+          # RQ-75-PROBEINPUT: assert the PROBE count too. The shape count alone
+          # is satisfied by probing each shape once, which is what v0.74 did.
+          grep -qE '^algebraic-identity-probes: [0-9]+ \(shape,input\) probe\(s\) executed$' /tmp/1223p.txt
           grep -q '^RESULT: PASS' /tmp/1223p.txt
 
   arm64-musl-portable-asset:

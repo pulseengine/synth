@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: stdout /^algebraic-identity-probes: ([0-9]+) shape\(s\) executed$/ >= 5
+# ci-checks: stdout /^algebraic-identity-probes: ([0-9]+) \(shape,input\) probe\(s\) executed$/ >= 30
 """RQ-74-PINDEBT2 (#1223): the five algebraic-identity shapes, EXECUTED.
 
 WHY THIS EXISTS, and why it is committed rather than kept in a scratchpad.
@@ -53,6 +53,58 @@ FLAGS = ["--target", "cortex-m4", "--all-exports"]
 # "2 of 5 wrong pre-fix" with the wrapped shapes, a reviewer measured 4 of 5
 # with bare ones, and round 1 adjudicated in favour of ITS OWN WEAKER PROBES and
 # recorded the other figure as unreproducible. Bare shapes reproduce it exactly.
+# RQ-75-PROBEINPUT (#1223), v0.75 — EACH SHAPE IS PROBED AT SEVERAL INPUTS.
+# v0.74 probed every shape at exactly ONE value (7). An identity can be
+# coincidentally correct at a single input, and for THESE identities the
+# coincidence is not exotic — it is the value the buggy fold returns:
+#
+#   (x - x) + x  folded to the constant 0  agrees with the truth at x = 0
+#   x + 0 / 0 + x  same
+#   x - 0          same
+#   1 * x / x * 1  folded to the constant 1 agrees with the truth at x = 1
+#
+# So "0 of 5 wrong" measured at x=7 was a true statement about one point, and
+# the set below deliberately CONTAINS the hiding values (0 and 1) alongside
+# values that expose — because a probe set that quietly omitted them would look
+# stronger while proving less about the arms it names.
+#
+# The anti-vacuity assertion is not "6 values": it is that wasmtime's OWN
+# answers vary across the set for every shape. If the reference is constant over
+# the probed inputs, a compiler returning a constant cannot be caught, however
+# many inputs are tried. Derived per shape, never declared.
+ARGVALS = (0, 1, 2, 7, 0x7FFFFFFF, 0xFFFFFFFF)
+
+# PER-ARM POTENCY RE-MEASURED WITH THE WIDER SET, and the answer is the one this
+# lane did not want: STILL 4 OF 5. Each of the five algebraic arms in
+# `synth-opt` was reverted to `inst.is_dead = true` INDIVIDUALLY, the compiler
+# rebuilt, and the probes re-run:
+#
+#     arm          verdict
+#     A  0 + x     CAUGHT   (1 of 5 shapes wrong)
+#     B  x + 0     CAUGHT
+#     C  x - 0     CAUGHT
+#     D  1 * x     MISSED   <- unchanged from v0.74's one-input measurement
+#     E  x * 1     CAUGHT
+#
+# So widening the inputs strengthens this oracle against a VALUE coincidence and
+# does NOT unmask arm D. Saying "6 inputs instead of 1" as if it were an
+# improvement in coverage would have been false.
+#
+# WHY, established rather than assumed. Arm D is NOT unreachable: reverting it
+# CHANGES the emitted bytes (`.text` sha 31f013a6 -> 426b248f on `mul1_l`), so
+# the arm fires. The program still returns wasmtime's answer at all six inputs
+# because the value survives in the register the result is read from — the
+# masking is in REGISTER ALLOCATION, not in the input. Two higher-pressure
+# shapes were tried to break that incidental placement (a deferred local read,
+# and a second live value across the use) and BOTH still returned correct
+# answers at all six inputs.
+#
+# So arm D's coverage rests on the unit test `test_algebraic_one_mul`, NOT on
+# this oracle, and that is stated here rather than left to be inferred from a
+# "0 of 5" line. Unmasking it needs a byte-level invariant or a shape that
+# forces `dest` to be read from a register the allocator cannot coincidentally
+# satisfy; that is a v0.76 candidate and is NOT claimed.
+
 SHAPES = {
     "addzero_r": ("(i32.add (i32.sub (local.get 0) (local.get 0)) (local.get 0))",
                   "(x - x) + x   -> exercises `0 + x`"),
@@ -87,8 +139,8 @@ def main() -> int:
         print("FAIL: wasmtime is required — it is the oracle, not a convenience")
         return 1
     ha = _harness()
-    ran, wrong = 0, []
-    print(f"{'shape':11s}{'wasmtime':>10s}{'synth':>10s}   verdict")
+    ran, probes, wrong = 0, 0, []
+    print(f"{'shape':11s}{'inputs':>10s}{'verdict':>10s}   discrimination")
     with tempfile.TemporaryDirectory() as td:
         for name, (body, desc) in SHAPES.items():
             wat = os.path.join(td, f"{name}.wat")
@@ -105,26 +157,44 @@ def main() -> int:
                 continue
             eng = wasmtime.Engine()
             mod = wasmtime.Module(eng, open(wat).read())
-            st = wasmtime.Store(eng)
-            inst = wasmtime.Instance(st, mod, [])
-            exp = inst.exports(st)["f"](st, 7) & 0xFFFFFFFF
+            expected = {}
+            for a in ARGVALS:
+                st = wasmtime.Store(eng)
+                inst = wasmtime.Instance(st, mod, [])
+                expected[a] = inst.exports(st)["f"](st, a) & 0xFFFFFFFF
+            # The reference must DISCRIMINATE, or nothing below can catch a
+            # constant-returning fold. Derived from wasmtime's own answers.
+            if len(set(expected.values())) < 2:
+                wrong.append(
+                    f"{name}: VACUITY — wasmtime returns the same value "
+                    f"{sorted(set(expected.values()))} for all {len(ARGVALS)} "
+                    f"probed inputs, so a fold to a constant is invisible here")
+                continue
             loaded = ha.load_object(open(obj, "rb").read(), "arm-self")
             # SIGNATURE: (param widths, return width) — round 2 found this was
             # ("i32", ["i32"]), which is the convention inverted. `_pack_args32`
             # compares each width to 32, so every argument took the 64-bit PAIR
             # branch and clobbered R1's canary: the seed that exists to make an
             # undefined-register read visible was destroyed on every probe.
-            got = ha.run_leg("arm-self", loaded, "f", ([32], 32), (7,))
-            if isinstance(got, tuple):
-                got = got[0]
-            got = got & 0xFFFFFFFF if isinstance(got, int) else got
+            bad_here = []
+            for a in ARGVALS:
+                exp = expected[a]
+                got = ha.run_leg("arm-self", loaded, "f", ([32], 32), (a,))
+                if isinstance(got, tuple):
+                    got = got[0]
+                got = got & 0xFFFFFFFF if isinstance(got, int) else got
+                probes += 1
+                if got != exp:
+                    bad_here.append(f"f({a}) = {got}, wasmtime {exp}")
             ran += 1
-            ok = got == exp
-            if not ok:
-                wrong.append(f"{name} ({desc}): got {got}, wasmtime {exp}")
-            print(f"  {name:11s}{exp:>10d}{str(got):>10}   {'ok' if ok else 'WRONG'}")
+            if bad_here:
+                wrong.append(f"{name} ({desc}): " + "; ".join(bad_here))
+            print(f"  {name:11s}{len(ARGVALS):>10d}"
+                  f"{('ok' if not bad_here else 'WRONG'):>10}   "
+                  f"{len(set(expected.values()))} distinct reference answer(s)")
     print()
     print(f"algebraic-identity-probes: {ran} shape(s) executed")
+    print(f"algebraic-identity-probes: {probes} (shape,input) probe(s) executed")
     print(f"silent wrong answers: {len(wrong)} of {ran}")
     for w in wrong:
         print(f"  REFUSE: {w}")
@@ -134,7 +204,8 @@ def main() -> int:
     if wrong:
         print("RESULT: FAIL — an algebraic identity dropped its surviving use")
         return 1
-    print("RESULT: PASS — all five identity shapes return wasmtime's answer")
+    print(f"RESULT: PASS — all {ran} identity shapes return wasmtime's answer "
+          f"at every one of {len(ARGVALS)} inputs")
     return 0
 
 
