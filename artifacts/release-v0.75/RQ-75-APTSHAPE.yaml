@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-75-APTSHAPE
     type: system-req
     release: v0.75
-    status: proposed
+    status: implemented
     title: "`APT_RE` only ever sees an installer that is the FIRST TOKEN of its `run:` value, because `str(job)` is a dict repr"
     description: >
       v0.74 widened this detector from `apt-get` to `apt(-get)?` and added a
@@ -41,6 +41,7 @@ artifacts:
     fields:
       req-type: process
       priority: should
+      issue-scope: outlives
       issue: "#1062"
       done-when: "contains:scripts/ci_pool_tripwire.py:RQ-75-APTSHAPE"
       verified-by: >-

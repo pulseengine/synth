@@ -474,6 +474,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/ci_pool_tripwire.py
+      # RQ-75-APTSHAPE (#1062): the step ABOVE runs the tripwire against the LIVE
+      # ci.yml — one input, which changes under you, and which cannot express a
+      # job that WOULD be blocked. The population is also latent: no required
+      # context is self-hosted today, so the decisive branch is never taken. This
+      # drives `pep668_pool_ready` against recorded job dicts instead, including
+      # the negative controls and the boundary that stays unmatched.
+      - name: "CI-pool tripwire DECISION driven against recorded jobs (RQ-75-APTSHAPE, #1062)"
+        run: python3 scripts/test_ci_pool_tripwire.py
       - name: Status-evidence gate — a release status must agree with the evidence on main (1064)
         run: |
           set -euo pipefail

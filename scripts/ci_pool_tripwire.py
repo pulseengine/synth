@@ -140,6 +140,54 @@ PIP_RE = re.compile(r"\bpip install\b")
 PEP668_RE = re.compile(r"--break-system-packages")
 
 
+def job_text(job) -> str:
+    """Every string a job carries, joined by REAL newlines.
+
+    RQ-75-APTSHAPE (#1062), v0.75 — THE ROOT CAUSE, not another spelling.
+    Both scans below used to read `str(job)`, a dict REPR. In a repr a newline
+    renders as the two characters backslash and `n`, so a `run:` block like
+
+        run: |
+          set -euo pipefail
+          apt-get install -y x
+
+    became `...pipefail\\napt-get install...` — and `\\bapt` CANNOT match there,
+    because the `n` of the escaped newline sits directly before `apt` and both
+    are word characters. So the detector only ever saw an installer that was the
+    FIRST TOKEN of its `run:` value. Swapping two lines flipped CAUGHT to
+    MISSED, measured in v0.74's round 2 and re-measured at this lane's cut.
+
+    Widening the alternation would not have touched this: the pattern was
+    already correct and was being handed text that could not match it. That is
+    why v0.74's nine enumerated spellings are NOT the thing this lane fixes —
+    the detector was blind to a position, not to a word.
+
+    STILL A LIST, disclosed rather than implied: `aptitude`, `dpkg -i`, a second
+    script level, `./scripts/x.sh`, `.github/x.sh`, a python or make wrapper and
+    the `uses:` surface remain unmatched, and no amount of pattern widening
+    settles it. The real check is whether the job's install step can RUN under
+    `no_new_privs`, which needs executing it. That is a v0.76 candidate and is
+    NOT claimed here.
+    """
+    out = []
+
+    def walk(v):
+        if isinstance(v, str):
+            out.append(v)
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                out.append(str(k))
+                walk(x)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                walk(x)
+        elif v is not None:
+            out.append(str(v))
+
+    walk(job)
+    return "\n".join(out)
+
+
 def pep668_pool_ready(jobs, required):
     """(ready, blocked) — blocked maps job name -> why it cannot move."""
     ready, blocked = [], {}
@@ -147,7 +195,7 @@ def pep668_pool_ready(jobs, required):
         if pool_of(j.get("runs-on")) != EXACT_LABEL:
             continue
         name = j.get("name") or jid
-        body = str(j)
+        body = job_text(j)
         if name in required:
             blocked[name] = "required context (moving one DEADLOCKS every merge)"
         elif APT_RE.search(body):
@@ -336,7 +384,7 @@ def main():
             continue
         if pool_of(j.get("runs-on")) != "self-hosted":
             continue
-        body = str(j)
+        body = job_text(j)
         via = ""
         if not APT_RE.search(body):
             # Follow a repo script the job invokes (one level). See SCRIPT_RE.
