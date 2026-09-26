@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-76-FALCON
     type: system-req
     release: v0.76
-    status: proposed
+    status: implemented
     title: "cpetig's reported module still declines: six functions carry a value-carrying branch at f32, which AArch64 lowers and ARM misreports as an integer-path error"
     description: >
       EXTERNAL REPORTER (cpetig). Three releases have hardened the ORACLE around this
@@ -45,7 +45,14 @@ artifacts:
     fields:
       req-type: process
       priority: must
+      landed: "#1406"
       issue: "#1318"
+      # The issue asks for the reporter's module to COMPILE. This release moved
+      # six of its seven declines; `controller@0.10.0#step` still refuses on
+      # #1069 (VFP spill-slot pool), a different defect. So the issue outlives
+      # the artifact and the TAG MUST NOT CLOSE IT. Set here, at delivery,
+      # because R12 refuses `outlives` beside `status: proposed`.
+      issue-scope: outlives
       done-when: "contains:scripts/repro/falcon_opt_1318_differential.py:RQ-76-FALCON"
       verified-by: >-
-        Execution, not acceptance: a value-carrying `block (result f32)` must EXECUTE to the wasmtime answer under emulation, or the decline must carry a diagnostic naming the float cause and be pinned red-first. A compile that merely stops refusing is not evidence.
+        DELIVERED, and measured rather than asserted. On the reporter's own `opt.wasm` (sha256 7065f112..., from `errors.zip` on the issue), with his exact command line, re-measured 2026-09-25 at commit b369aeea: 7 of 17 functions skipped BEFORE, 1 of 17 AFTER. The six that moved were all `GI-FPU-002`; the one that remains is `#1069` on `controller@0.10.0#step` and is a different defect, which is why `issue-scope: outlives` is set. Execution, not acceptance: `carried_float_branch_1318_differential.py` runs six shapes over 60 emulations under unicorn on Cortex-M4F and compares BIT-EXACT against wasmtime (`wasmtime_calls=60`, so it cannot be comparing the compiler with itself), with -0.0 in the argument set because the cheap no-new-instruction copy is an arithmetic identity and -0.0 + 0.0 is +0.0. Potency: reloading BEFORE the join label, and storing to a slot other than the one reloaded, were each APPLIED and each turned the oracle RED at 25 of 60. Confinement: `fused.wasm` is 24 of 24 functions byte-identical against the pre-fix binary; `opt.wasm` has NO pre-fix baseline, because the old compiler refused to emit any object for it under #1102, so byte-identity there is blind BY CONSTRUCTION and is not claimed.

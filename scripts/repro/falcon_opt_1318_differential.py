@@ -101,10 +101,20 @@ EXPECTED_DECLINES: dict[tuple[str, str], str | None] = {
     ("vbr_i64", "aarch64"): None,
     ("vbr_f32", "aarch64"): None,
     ("vbr_f64", "aarch64"): None,
-    # ARM: named and accurate at i64; integer-path message at float.
+    # ARM: named and accurate at i64 and now at BOTH floats.
     ("vbr_i64", "arm"): "#509",
-    ("vbr_f32", "arm"): "GI-FPU-002",
-    ("vbr_f64", "arm"): "GI-FPU-002",
+    # RQ-76-FALCON (#1318): f32 now COMPILES. This cell was `"GI-FPU-002"` and
+    # the pin moves here, in the PR that moved the behaviour — the carried
+    # value and the fall-through rendezvous in a frame slot, and
+    # `carried_float_branch_1318_differential.py` EXECUTES the shape bit-exact
+    # against wasmtime across 60 emulations rather than resting on this compile.
+    ("vbr_f32", "arm"): None,
+    # f64 still declines, but no longer through the INTEGER peek. The old
+    # needle was "GI-FPU-002 ... invalid wasm or an unlowered float op reached
+    # the integer path", which blamed the module for a gap in this selector.
+    # It now names the real limitation, so the needle moves with the message.
+    # D-register slot sizing is a separate increment, not a hidden refusal.
+    ("vbr_f64", "arm"): "an f64 value carried over a br/br_if/br_table",
     # RISC-V: the sibling gap, different wording.
     ("vbr_i64", "riscv"): "RISC-V selector",
     ("vbr_f32", "riscv"): "RISC-V selector",

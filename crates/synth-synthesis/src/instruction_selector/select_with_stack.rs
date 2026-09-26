@@ -3800,7 +3800,8 @@ impl InstructionSelector {
                         is_if: false,
                         params,
                         results,
-                        result_reg: None, // allocated lazily at the first br edge
+                        result_reg: None,  // allocated lazily at the first br edge
+                        result_slot: None, // ditto, for an f32-carrying block (#1318)
                         param_regs: Vec::new(),
                     });
                     // No ARM code emitted at block entry (label at end)
@@ -3885,6 +3886,7 @@ impl InstructionSelector {
                         params,
                         results,
                         result_reg: None,
+                        result_slot: None, // #1318
                         param_regs,
                     });
                     // Emit loop start label
@@ -3924,6 +3926,7 @@ impl InstructionSelector {
                         params,
                         results,
                         result_reg: None,
+                        result_slot: None, // #1318
                         param_regs: Vec::new(),
                     });
                     // #313: checkpoint the operand-stack depth (the condition is
@@ -4241,6 +4244,40 @@ impl InstructionSelector {
                         // `result_reg` is only ever Some for a branched-to
                         // arity-1 block, so plain/void blocks keep the legacy
                         // label-only epilogue byte-identically.
+                        // RQ-76-FALCON (#1318): the f32 rendezvous. Every
+                        // edge has stored its carried value to `result_slot`;
+                        // the fall-through stores its own, then ONE reload
+                        // publishes the block's result. The reload must happen
+                        // after the end label is not yet emitted — it sits
+                        // BEFORE it, like the integer move, because the branch
+                        // edges jump TO the label and must not re-run the
+                        // fall-through's store.
+                        if let Some(slot) = bl.result_slot
+                            && let Some(top) = stack.last().copied()
+                        {
+                            // `let ... else`, not a match with a `_` arm: the
+                            // subtraction ratchet counts wildcards and this
+                            // lane should add none.
+                            let StackVal::Float { sreg } = top else {
+                                return Err(synth_core::Error::synthesis(
+                                    "#1318: a non-f32 value falls through into an \
+                                     f32-carrying block join — width/class mismatch \
+                                     (invalid wasm or an unsupported shape); \
+                                     declined rather than miscompiled"
+                                        .to_string(),
+                                ));
+                            };
+                            stack.pop();
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::F32Store {
+                                    sd: sreg,
+                                    addr: MemAddr::imm(Reg::SP, slot),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            free_vfp_temp(&mut vfp_used, &vfp_home, sreg);
+                        }
                         if let Some(r_res) = bl.result_reg {
                             if let Some(top) = stack.last().copied() {
                                 if top.is_i64() {
@@ -4283,11 +4320,29 @@ impl InstructionSelector {
                             stack.push(StackVal::i32(r_res));
                         } else {
                             // Block end: emit end label
+                            let slot = bl.result_slot;
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Label { name: bl.label },
                                 source_line: Some(idx),
                             });
                             cf.add_instruction();
+                            // RQ-76-FALCON (#1318): ONE reload, AFTER the label,
+                            // so the fall-through and every branch edge alike
+                            // publish the block's result from the same place.
+                            // Putting it before the label would leave every
+                            // branched-in path reading an unwritten register.
+                            if let Some(slot) = slot {
+                                let sd = alloc_vfp_temp(&mut vfp_used)?;
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::F32Load {
+                                        sd,
+                                        addr: MemAddr::imm(Reg::SP, slot),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                cf.add_instruction();
+                                stack.push(StackVal::Float { sreg: sd });
+                            }
                         }
                         // Loop end: no label at end (label is at start)
                     }
