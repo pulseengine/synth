@@ -1851,9 +1851,74 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 19604
+        value: 19738
         baseline: 17897
         waivers:
+          - to: 19738
+            reason: >-
+              RQ-76-FALCON (#1318): 19604 -> 19738, a RISE of 134, and it DOES
+              add a lowering decision — the one this ratchet exists to make
+              visible. It is declared rather than hidden.
+
+              WHAT IT BUYS, measured on the external reporter's own module
+              (`opt.wasm`, sha256 7065f112..., attached to #1318), with his
+              exact command line, at commit b369aeea on 2026-09-25: 7 of 17
+              functions skipped BEFORE, 1 of 17 AFTER. The six that moved all
+              declined `GI-FPU-002`; the one that remains declines `#1069` and
+              is an unrelated defect. Three releases had hardened the oracle
+              around this issue while the reported declines stood.
+
+              WHAT WAS WRONG. `edge_value_move` lands a branch's carried value
+              in the target block's designated result register. That register is
+              a CORE register, so a carried f32 fell through to `peek_operand` —
+              the INTEGER peek — whose refusal reads "invalid wasm or an
+              unlowered float op reached the integer path". The module was valid
+              wasm and the ops were lowered; only the carried-value path was
+              missing. The i64 sibling arm three lines above had declined
+              honestly since #509. The float arm was simply never written, so
+              the diagnostic blamed the reporter for a gap in this function.
+
+              NOTHING WAS DELETED because nothing was replaced: this is a
+              missing arm, not a second implementation of an existing one. The
+              i32 twin of every new fixture shape compiled before this change
+              and still does.
+
+              Re-derived per file over the non-test region, added and removed
+              lines classified by kind: `instruction_selector.rs` +79 = 31
+              comment + 48 code; `select_with_stack.rs` +56 = 16 comment + 40
+              code, and -1 code (a nested `if` collapsed under clippy's
+              `collapsible_if`). 135 - 1 = 134, and 19604 + 134 = 19738.
+
+              The 88 added code lines are: the `result_slot` field and its three
+              initializers, the f32 edge (slot allocation + one `F32Store`), two
+              guarded loud declines for a spilled f32 and for f64, the join's
+              fall-through store, and the single post-label `F32Load` that
+              publishes the result. NO new `_ =>` wildcard: the two match arms
+              first written were rewritten as guarded `if`s and a `let ... else`
+              precisely so `selector_wildcard_arms_code` stays at its ceiling,
+              which it does.
+
+              WHY A FRAME SLOT AND NOT A REGISTER. There is no standalone S-to-S
+              move in `ArmOp`; the only `VMOV Sd, Sn` in the tree is inside the
+              A32 min/max expansion. Adding an instruction would touch both
+              encoders, the estimator, WCET pricing, the #615 no-wildcard
+              tripwire and the parity tables. The edges and the fall-through
+              rendezvous in a frame slot instead, using ops that already exist.
+              It costs memory traffic a register move would not, and that is
+              deliberate: the path only runs where the compile previously
+              REFUSED, so no existing output moves a byte — `fused.wasm` is 24
+              of 24 functions byte-identical against the pre-fix binary.
+
+              GATED BY EXECUTION, not by acceptance:
+              `carried_float_branch_1318_differential.py` runs six shapes over
+              60 emulations under unicorn and compares BIT-EXACT against
+              wasmtime (`wasmtime_calls=60`, so it cannot be comparing the
+              compiler with itself). -0.0 is in the argument set because the
+              cheap no-new-instruction copy is an arithmetic identity and
+              -0.0 + 0.0 is +0.0, which `==` cannot see. Two mutations —
+              reloading BEFORE the join label, and storing to a slot other than
+              the one reloaded — were each applied and each turned it RED at 25
+              of 60.
           - to: 19604
             reason: >-
               RQ-71-VFPALIAS (#881/#1069): 19538 -> 19604, a RISE of 66, and it
@@ -2592,7 +2657,7 @@ claims:
         # `selector_lines_code` — all of it outside the test module — so the
         # whole-file count moves by exactly the region-scoped amount again.
         # `direction: track` owes no waiver; the reason is on the directed pin.
-        value: 30197
+        value: 30331
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -3836,7 +3901,7 @@ claims:
     #   is EXACT (RQ-63-FLOOREQ), so this bump is not optional bookkeeping —
     #   CI reddened on `Claim Check` until ci.yml AND this line moved together,
     #   which is the pair working as designed.
-    text: "--exact-emulation-floor 367861"
+    text: "--exact-emulation-floor 367921"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

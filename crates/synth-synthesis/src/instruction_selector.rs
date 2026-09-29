@@ -454,6 +454,21 @@ struct BlockLabel {
     /// are declined loudly (the direct selector does not do multi-value).
     results: u8,
     result_reg: Option<Reg>,
+    /// RQ-76-FALCON (#1318): the designated FRAME SLOT for a block whose
+    /// carried result is an f32. The integer path lands carried values in a
+    /// designated core register; the float path cannot, because there is no
+    /// standalone S-to-S move in `ArmOp` (the only `VMOV Sd, Sn` in the tree is
+    /// buried inside the A32 min/max expansion). Rather than add an instruction
+    /// to every encoder, estimator and parity table to serve this shape, the
+    /// edges and the fall-through RENDEZVOUS IN THE FRAME: each edge `VSTR`s
+    /// its carried value here, and the join `VLDR`s it into a fresh temp.
+    ///
+    /// Costs memory traffic a register move would not. That is deliberate: this
+    /// path only ever runs where the compile previously REFUSED, so no existing
+    /// output moves a byte, and correctness-first beats a multi-crate
+    /// instruction addition for a shape LLVM emits from `select`-like source.
+    /// A register-resident lowering is a later increment, not a correction.
+    result_slot: Option<i32>,
     /// RQ-64-MVLOWER (#1093) increment 3: a parameter-taking LOOP's designated
     /// HEADER registers, one per loop parameter (bottom→top), fixed at `Loop`
     /// and reserved for the loop's extent (the per-op `live_params`
@@ -592,6 +607,70 @@ fn edge_value_move(
             "#509: an i64 value carried over a br/br_if/br_table is not yet \
              supported by the direct selector (declined rather than dropping \
              the carried value)"
+                .to_string(),
+        ));
+    }
+    // RQ-76-FALCON (#1318): a carried f32. This arm exists because its ABSENCE
+    // was the defect: the float fell through to `peek_operand` — the INTEGER
+    // peek — whose refusal reads "invalid wasm or an unlowered float op reached
+    // the integer path". The module was valid wasm and the op was lowered; only
+    // the CARRIED-VALUE path was missing, so the diagnostic blamed the reporter
+    // for a limitation of this function. The i64 arm three lines above had said
+    // so honestly since #509; the float arm was simply never written.
+    //
+    // The value is PEEKED, not popped (`br_if : [t*] i32 -> [t*]` keeps it live
+    // on the fall-through), so the store reads the S-register in place.
+    if let Some(StackVal::Float { sreg }) = stack.last().copied() {
+        if block_labels[target_idx].result_reg.is_some() {
+            return Err(synth_core::Error::synthesis(
+                "#1318: a block receives both an integer-carrying and an \
+                     f32-carrying branch — declined rather than reconciling \
+                     two residences (invalid wasm, or a shape this selector \
+                     does not lower)"
+                    .to_string(),
+            ));
+        }
+        let slot = match block_labels[target_idx].result_slot {
+            Some(s) => s,
+            None => {
+                let s = alloc_vfp_local_frame_slot(spill, false)?;
+                block_labels[target_idx].result_slot = Some(s);
+                s
+            }
+        };
+        instructions.push(ArmInstruction {
+            op: ArmOp::F32Store {
+                sd: sreg,
+                addr: MemAddr::imm(Reg::SP, slot),
+            },
+            source_line: Some(line),
+        });
+        return Ok(());
+    }
+    // A SPILLED carried f32 would need a reload before the store, and the
+    // pressure guard has no site for it here. Loud, never silent (#881).
+    if matches!(stack.last(), Some(StackVal::FloatSpilled { .. })) {
+        return Err(synth_core::Error::synthesis(
+            "#881/#1318: a SPILLED f32 carried over a br/br_if/br_table — \
+                 the VFP pressure guard has no reload site at this edge; \
+                 declining loudly rather than storing a stale register"
+                .to_string(),
+        ));
+    }
+    // f64 reaches here only on a double-precision target (elsewhere it declines
+    // earlier for the FPU profile). Named honestly rather than left to the
+    // integer peek. Written as a guarded `if` rather than a match arm so this
+    // lane adds no `_ =>` wildcard — the subtraction ratchet counts those, and
+    // a wildcard here would swallow any StackVal added later in silence.
+    if matches!(
+        stack.last(),
+        Some(StackVal::Double { .. } | StackVal::DoubleSpilled { .. })
+    ) {
+        return Err(synth_core::Error::synthesis(
+            "#1318: an f64 value carried over a br/br_if/br_table is not \
+             yet lowered by the direct selector (declined rather than \
+             dropping the carried value) — the f32 rendezvous generalises, \
+             but D-register slot sizing is a separate increment"
                 .to_string(),
         ));
     }
