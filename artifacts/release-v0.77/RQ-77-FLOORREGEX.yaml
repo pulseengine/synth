@@ -1,0 +1,41 @@
+artifacts:
+  - id: RQ-77-FLOORREGEX
+    type: system-req
+    release: v0.77
+    status: proposed
+    title: "`[4-9][0-9]*` means 'first digit 4-9', not 'at least 4' — a CI floor whose subject is a digit rather than a magnitude"
+    description: >
+      The mutation-survey CI gate asserts its floors with character-class regexes.
+      `[4-9][0-9]*` was written to mean "at least 4"; it means "first digit is 4
+      through 9", so it accepts 4-9, 40-99 and 400-999 and REJECTS 10 through 39. The
+      same shape sits in the `controls=` and `non-killed=` floors, which reject 10-19.
+
+      WHY IT BELONGS TO THIS THEME. The regex matches a real string and reports
+      truthfully about it — the subject is the FIRST DIGIT, not the magnitude the
+      author meant. It has already reddened a healthy result once, when a pinned
+      subset grew from 7 to 10.
+
+      DELIVERABLE: the floors compare NUMBERS. A floor that reds on a healthy growth
+      is the shape this programme calls a gate people route around, and a floor that
+      silently accepts 400 when it meant 4 is the shape it calls a false pass.
+
+      REFUTING COMMAND: the claim is that 10 through 39 are rejected. Run the live
+      regex against `subset=10` and `subset=39` and confirm both fail while
+      `subset=400` passes; if any of the three disagrees, re-derive before scoping.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1243"
+      # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
+      # artifact's own file goes TRUE the moment the file exists and reds R3;
+      # and a `contains:` naming a COMMENT is satisfied by a comment, which
+      # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
+      # lane replaces this with a `contains:` naming EXECUTED code in a TEST
+      # file when it flips the status.
+      done-when: "manual:2026-09-29 the mutation-survey CI floors compare numerically, shown RED on a value below the floor and GREEN on subset=10 through 39 which the regex rejected"

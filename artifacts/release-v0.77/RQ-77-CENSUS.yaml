@@ -1,0 +1,45 @@
+artifacts:
+  - id: RQ-77-CENSUS
+    type: system-req
+    release: v0.77
+    status: proposed
+    title: "The literal-table census is prose, not a script — v0.76 marked it UNVERIFIED and an independent reconstruction disagreed"
+    description: >
+      v0.76 asserted a census of module-level literal tables across `scripts/**/*.py`
+      and marked the figures UNVERIFIED, because no census script is committed: the
+      predicate exists only as prose. A cold reviewer re-implemented that stated
+      predicate at the same commit and got a DIFFERENT answer, close enough to show
+      the shape is right and far enough to show the prose does not pin it (module-level
+      is ambiguous about class bodies and `if TYPE_CHECKING`; "of constants" is
+      ambiguous about nested containers). Looser readings gave two further answers.
+      The file-count half moved between two commits in the same release.
+
+      WHY IT BELONGS TO THIS THEME. A hand-asserted count of hand-written tables is
+      itself a hand-written table, and the number's subject is whatever the reader's
+      reconstruction of the predicate happens to be.
+
+      DELIVERABLE: commit the census so the number derives from the tree it describes,
+      and let it replace the UNVERIFIED marking. The "N CI-wired drivers" split stays
+      a JUDGEMENT unless the lane can derive it too — saying so is acceptable, quietly
+      promoting it is not.
+
+      REFUTING COMMAND: run the committed census at the v0.76 tag and at HEAD. If it
+      cannot reproduce a figure this release publishes, the census is wrong or the
+      published figure was; establish which BEFORE citing either.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1403"
+      # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
+      # artifact's own file goes TRUE the moment the file exists and reds R3;
+      # and a `contains:` naming a COMMENT is satisfied by a comment, which
+      # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
+      # lane replaces this with a `contains:` naming EXECUTED code in a TEST
+      # file when it flips the status.
+      done-when: "manual:2026-09-29 a committed census script derives the literal-table population, re-runnable at any commit, and the artifact quotes ITS output rather than prose"

@@ -1,0 +1,45 @@
+artifacts:
+  - id: RQ-77-FALCON2
+    type: system-req
+    release: v0.77
+    status: proposed
+    title: "The falcon residual is a DIFFERENT defect from the one v0.76 moved, and its diagnostic cites an issue titled about the opposite thing"
+    description: >
+      v0.76 moved six of the seven declines on the external reporter's module. The
+      survivor declines on the VFP spill-slot pool, which is a different defect from
+      the value-carrying-branch-at-f32 gap that was fixed. Separately, that
+      diagnostic cites an issue which is CLOSED and titled about the class v0.76 just
+      fixed, and whose thread never mentions the pool at all. The lineage is real —
+      the frame-homing mechanism was adopted as that issue's fix, and the selector
+      names the constant after it — and citing a closed issue is this repo's
+      documented convention. The defect is that a reporter clicking through lands on
+      a closed issue about the opposite thing.
+
+      RULE 4 BINDS, BY NAME. For an externally reported defect that is STILL OPEN, a
+      release whose only work on it was hardening the oracle around it does not count
+      as progress. Either the residual decline MOVES, or the diagnostic stops pointing
+      at an issue titled about the opposite thing, or this lane reports plainly that
+      neither happened. A fifth hardening is NOT delivery.
+
+      REFUTING COMMAND: before scoping, re-measure the residual on the reporter's
+      ATTACHED module with the LITERAL command line from his report, and read the
+      cited issue's STATE before its BODY. v0.76 established that a related issue's
+      GI-FPU-002 is register-file exhaustion rather than the fixed class — do not
+      assume any remaining GI-FPU-002 is the same defect.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1318"
+      # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
+      # artifact's own file goes TRUE the moment the file exists and reds R3;
+      # and a `contains:` naming a COMMENT is satisfied by a comment, which
+      # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
+      # lane replaces this with a `contains:` naming EXECUTED code in a TEST
+      # file when it flips the status.
+      done-when: "manual:2026-09-29 the residual decline MOVED on the reporter's attached module, or the diagnostic no longer cites an issue titled about the fixed class, or this lane states plainly that neither happened"

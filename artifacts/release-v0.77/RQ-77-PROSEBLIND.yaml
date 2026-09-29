@@ -1,0 +1,45 @@
+artifacts:
+  - id: RQ-77-PROSEBLIND
+    type: system-req
+    release: v0.77
+    status: proposed
+    title: "status_evidence R11 reads the structured fields, so a false status claim in an artifact's own PROSE is invisible to it"
+    description: >
+      R11 requires an artifact whose delivery commit is on main to carry a claiming
+      status or an explicit disposition, and it is not vacuous. It still cannot see a
+      false statement about the status in the artifact's own prose: v0.68 shipped an
+      artifact whose text said "Status stays `proposed` with `disposition: partial`"
+      while the artifact was `status: implemented` with no disposition.
+
+      WHY IT BELONGS TO THIS THEME. R11's subject is the FIELDS. The contradicting
+      sentence is real text in the same file, and the rule is silent about it — a true
+      verdict about the wrong half of the artifact. The issue also records that the
+      NAIVE rule fires two false positives out of three, so the fix is not "grep the
+      prose".
+
+      DELIVERABLE: either a rule that catches a prose/field contradiction without the
+      false-positive rate that makes it unusable, or a measured finding that no such
+      rule is available and why — v0.74's RQ-74-STALEMSG is the precedent for a lane
+      that set out to build a tripwire and shipped the census that refuted it.
+
+      REFUTING COMMAND: the issue claims the naive rule fires 2 false positives of 3.
+      Implement it and count on the live artifact set BEFORE scoping a fix; if the
+      rate is lower than claimed, the cheap rule may be shippable and the scope
+      changes.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1319"
+      # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
+      # artifact's own file goes TRUE the moment the file exists and reds R3;
+      # and a `contains:` naming a COMMENT is satisfied by a comment, which
+      # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
+      # lane replaces this with a `contains:` naming EXECUTED code in a TEST
+      # file when it flips the status.
+      done-when: "manual:2026-09-29 a prose/field status contradiction is either CAUGHT with its false-positive rate measured on the live artifact set, or refuted with that census published"
