@@ -9,7 +9,8 @@ artifacts:
       decision against recorded job dicts for the first time. The recording is the
       residual.
 
-      MEASURED on the shipped tree. The only job factory in
+      MEASURED AT THE PLANNING COMMIT, and the tense matters: at that point the only
+      job factory in
       `scripts/test_ci_pool_tripwire.py` produces `{name, runs-on, steps}` with steps
       of `{name, run}`. `yaml.safe_load` of the live `.github/workflows/ci.yml` gives
       71 jobs and 751 steps carrying, by count: `uses` 262, `with` 133, `if` 54,

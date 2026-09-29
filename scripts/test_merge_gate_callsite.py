@@ -318,12 +318,24 @@ def main() -> int:
     # refreshed capture may exceed this and must never fall below it. If a real
     # future response genuinely carries fewer, move this number in the same PR
     # with the live output quoted — do not delete the floor.
+    # ROUND 2 CORRECTED THIS PREDICATE. The first version was
+    # `len(captured_keys()) >= 8`, and `captured_keys()` is a UNION over every
+    # entry — so it printed "per entry" while asserting something weaker. Round 2
+    # degraded 75 of the 76 entries to two keys, left entries[0] intact, and the
+    # check stayed green: the union was still 8. `rollup()` inherits its shape
+    # from `captured_entry()` = entries[0] alone, so entries[1:] can rot
+    # unnoticed. Now every entry must carry the floor, which is what the message
+    # always said.
     CAPTURED_KEY_FLOOR = 8
-    check(f"the CAPTURE itself carries at least {CAPTURED_KEY_FLOOR} keys per entry",
-          len(live) >= CAPTURED_KEY_FLOOR,
-          f"- capture carries {len(live)}: {sorted(live)}. A degraded capture "
-          f"makes the derivation below vacuous, because the fixture can then "
-          f"lack nothing. Re-capture with `_provenance.command`")
+    entries = _capture()["response"]["statusCheckRollup"]
+    thin = [i for i, e in enumerate(entries) if len(e) < CAPTURED_KEY_FLOOR]
+    check(f"EVERY captured entry carries at least {CAPTURED_KEY_FLOOR} keys",
+          not thin and bool(entries),
+          f"- {len(thin)} of {len(entries)} entries fall below the floor "
+          f"(first at index {thin[0] if thin else '-'} with "
+          f"{len(entries[thin[0]]) if thin else '-'} keys); union is {len(live)}. "
+          f"A degraded capture makes the derivation below vacuous, because the "
+          f"fixture can then lack nothing. Re-capture with `_provenance.command`")
 
     built = {k for e in rollup() for k in e}
     missing = sorted(live - built)

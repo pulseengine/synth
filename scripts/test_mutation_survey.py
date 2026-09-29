@@ -385,14 +385,26 @@ class RetiredLedgerValidation(unittest.TestCase):
         self.assertEqual(ms.validate_retired(led), [])
         self.assertEqual(ms.drawn_counts(led), (2, 1, 1))
 
-    def test_a_missing_required_field_is_reported(self):
-        # Pass B's first corruption: drop `reason`.
-        led = self._ledger(retired=[{
-            "id": "R2/BOUND/b.rs:9:9", "classification_when_drawn": "EQUIVALENT",
-            "retired_at": "v0.76"}])
-        problems = ms.validate_retired(led)
-        self.assertTrue(any("missing" in x and "reason" in x for x in problems),
-                        problems)
+    def test_EVERY_required_field_is_reported_when_missing(self):
+        """ROUND 2 WIDENED THIS. The first version dropped only `reason`, so all
+        seven tests passed on a validator wrong in general: round 2 removed
+        `classification_when_drawn`, `retired_at` and `id` from
+        `RETIRED_REQUIRED` one at a time and the whole suite stayed green. The
+        loop below is derived from the tuple itself, so a field DELETED from
+        `RETIRED_REQUIRED` now reds here instead of silently losing coverage.
+        """
+        complete = {"id": "R2/BOUND/b.rs:9:9",
+                    "classification_when_drawn": "EQUIVALENT",
+                    "retired_at": "v0.76", "reason": "the construct was deleted"}
+        self.assertEqual(sorted(ms.RETIRED_REQUIRED),
+                         sorted(complete), "the fixture must cover the tuple exactly")
+        for field in ms.RETIRED_REQUIRED:
+            with self.subTest(missing=field):
+                entry = {k: v for k, v in complete.items() if k != field}
+                problems = ms.validate_retired(self._ledger(retired=[entry]))
+                self.assertTrue(
+                    any("missing" in x and field in x for x in problems),
+                    f"dropping {field!r} was not reported: {problems}")
 
     def test_an_id_both_live_and_retired_is_reported(self):
         # Pass B's second corruption, and the one that corrupts the DENOMINATOR:
