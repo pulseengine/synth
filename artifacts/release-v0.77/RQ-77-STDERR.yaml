@@ -1,0 +1,40 @@
+artifacts:
+  - id: RQ-77-STDERR
+    type: system-req
+    release: v0.77
+    status: proposed
+    title: "oracle_run.py discards stderr, so a refusal's REASON is lost and CI sees VACUOUS with no cause"
+    description: >
+      `sys.exit("REFUSE: ...")` writes to stderr and returns 1. `oracle_run.py`
+      captures only stdout, so the reason is dropped: run directly, an oracle prints
+      "REFUSE: parsed to ZERO anchors"; run under the wrapper, the log says only
+      "VACUOUS ... measured 0". The exit code still propagates, so this is NOT a false
+      pass — the cost is that "why" was computed and then thrown away.
+
+      WHY IT BELONGS TO THIS THEME. The wrapper reads a real stream and reports
+      truthfully about it. The wrong one.
+
+      DELIVERABLE: a non-zero exit surfaces stderr in the log the operator reads.
+      Affects every script in the repo that refuses via `sys.exit(str)`, not only the
+      one measured, so the count of affected scripts is part of the deliverable.
+
+      REFUTING COMMAND: run the named oracle directly and under the wrapper, and
+      count REFUSE lines in each. If the wrapper's count is non-zero this artifact is
+      wrong and should be withdrawn rather than worked.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1419"
+      # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
+      # artifact's own file goes TRUE the moment the file exists and reds R3;
+      # and a `contains:` naming a COMMENT is satisfied by a comment, which
+      # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
+      # lane replaces this with a `contains:` naming EXECUTED code in a TEST
+      # file when it flips the status.
+      done-when: "manual:2026-09-29 a REFUSE reason emitted on stderr reaches the oracle_run log, demonstrated on the vcr_dec_001 zero-anchors refusal, with the affected-script count derived"

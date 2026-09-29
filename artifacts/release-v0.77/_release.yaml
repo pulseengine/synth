@@ -1,0 +1,113 @@
+# v0.77 — "What is this green ABOUT?"
+#
+# COMMENTS ONLY. This file carries the planning reasoning; the artifacts carry the
+# claims. It is deliberately free of numbers that live anywhere else. That rule was
+# learned in v0.72, broken in v0.73 in the very paragraph warning about it, enforced
+# again by v0.74's round 1, and v0.75's round 1 still had to delete two statistics
+# that had crept back in. v0.76 held it. A retraction that edits the artifact and not
+# the plan file is how "the sentence came back" reproduces.
+#
+# ---------------------------------------------------------------------------
+# THE THEME
+# ---------------------------------------------------------------------------
+#
+# v0.73 asked "is it still broken?" and answered it mechanically.
+# v0.74 asked "CAN THE GATE TELL?" and answered by mutation. Most walked through.
+# v0.75 asked why the answer kept being "no, in the same way", and fixed it by
+#       DRIVING REAL ENTRY POINTS against recorded input.
+# v0.76 asked "IS THE INPUT REAL?" — because every recording v0.75 built was
+#       hand-written by the same author as the gate.
+#
+# v0.77 asks the question v0.76 kept running into by accident:
+# WHAT IS THIS GREEN ABOUT?
+#
+# Not "is the input real" but "is the SUBJECT right". A check can consume real
+# input, execute real code, and return a real pass — about something other than the
+# thing you meant. The pass is not a lie about its own subject; it is a true
+# statement about the wrong one. That is invisible to mutation testing, because
+# mutating the intended subject does not touch what the check actually reads.
+#
+# THIS IS NOT SPECULATION. v0.76 hit it FIVE times in its own release machinery,
+# each found by accident rather than by a gate, and each a green that was about
+# something else:
+#
+#   * A CI waiter returned TERMINAL/green for the PREVIOUS head after a force-push.
+#     Its vacuity guard rejected an EMPTY rollup — but the real not-yet-registered
+#     shape is the old head's COMPLETE GREEN SET, which sails through. The verdict
+#     was true, about the wrong commit.
+#   * `cargo test --workspace | tail -30` reported exit 0. That was TAIL's exit
+#     code. The captured window showed a handful of suites; the real run had
+#     orders of magnitude more. The number was true, about the wrong command.
+#   * A capture floor printed "at least N keys per entry" while asserting a UNION
+#     over all entries. Degrading all but the first entry left it green. The
+#     predicate was true, about the wrong population.
+#   * A cancelled-job scan iterated over run ids from a query that returned EMPTY
+#     for a commit that had dozens of checks, and printed "none found". True,
+#     about the empty set.
+#   * A crates.io probe read HTTP 403 (missing User-Agent) as "not published".
+#     False, and for the same reason: the response was about the request, not the
+#     crate.
+#
+# Four of those five live in the RELEASE MACHINERY, which is the surface this
+# programme has been correcting for six releases. The fifth is in a gate.
+#
+# ---------------------------------------------------------------------------
+# WHAT MAKES THIS A CLASS AND NOT FIVE MISTAKES
+# ---------------------------------------------------------------------------
+#
+# Each instance has the same shape: a check derives its subject from something
+# incidental — a query's result set, a pipeline's last stage, a union, a default
+# header — and then asserts truthfully about THAT. Mutation testing cannot find
+# them, because the mutation is applied to the subject the author INTENDED, which
+# the check never reads. Red-first cannot find them either: the check does go red
+# when you break what it actually looks at.
+#
+# What DOES find them is asking, of each green: name the subject. Which commit.
+# Which command's status. Which entries. How many rows did the query return, and
+# what does the check do when that number is zero.
+#
+# ---------------------------------------------------------------------------
+# SCOPE — WHAT THIS IS NOT
+# ---------------------------------------------------------------------------
+#
+# SCOPE IS NOT "add more assertions". An additional assertion about the wrong
+# subject is another true statement about the wrong thing, and it reads as
+# hardening. That is this theme's version of v0.75's "extract another function"
+# and v0.76's "write a richer recording", and it must be refused in review BY NAME.
+#
+# SCOPE IS NOT "audit every check in the repo". The population is large and a sweep
+# would produce a list nobody acts on. Each lane takes a NAMED instance measured in
+# v0.76, fixes it, and where possible leaves behind a mechanism that makes the same
+# mistake loud rather than a note asking people to remember.
+#
+# THE ACCEPTANCE CASE IS A SUBJECT MISMATCH BEING REFUSED, not a subject being
+# documented. A check that prints its subject and carries on has moved the problem
+# into prose. A check that REFUSES when its subject is empty, or is not the one it
+# was asked about, cannot be silently pointed at the wrong thing.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS RELEASE MUST NOT DO
+# ---------------------------------------------------------------------------
+#
+# Do not gate on freshness where the project has already decided not to. The
+# mutation ledger's anchors are stale by design: only `ci_subset` ids are
+# re-pointed, because `.mutants[]` is the survey's HISTORY and a full reanchor
+# would overwrite preserved measurement. v0.76's round 2 established that the
+# staleness is inert — no shipped number depends on fresh anchors. A lane that
+# "fixes" it would destroy evidence to satisfy a tidiness instinct.
+#
+# Do not convert a DISCLOSED judgement into a derived number by asserting it
+# harder. Where v0.76 marked a figure UNVERIFIED, the fix is a committed script
+# that derives it, or the marking stands. Re-stating it with more confidence is the
+# failure this programme exists to stop.
+#
+# Do not let the external-reporter lane become an oracle lane. The residual on that
+# issue is a DIFFERENT defect from the one v0.76 moved, and the diagnostic naming
+# problem is separate again. Either the residual moves, or the diagnostic stops
+# pointing at an issue titled about the opposite thing, or the lane says plainly
+# that neither happened. The four conduct rules bind.
+#
+# Do not treat the varve transient as diagnosed. v0.76 established only that the
+# PIN is innocent — identical across a pass, a failure and a pass. "The failure is
+# transient" was a hypothesis stated as fact and was withdrawn. A lane here either
+# determines the cause or reports that it could not.

@@ -1,0 +1,39 @@
+artifacts:
+  - id: RQ-77-PINDEBT5
+    type: system-req
+    release: v0.77
+    status: proposed
+    title: "Pin debt, fifth consecutive measurement — and whether any v0.77 candidate can actually close a pin rather than move one"
+    description: >
+      The known-open pin count is a ratchet that must fall. It has not moved since
+      v0.74.0, and v0.76 reported that plainly rather than waving it off. This lane
+      measures it again and either closes a pin or reports the refusal with the
+      candidate it rejected and why.
+
+      WHY IT IS FILED RATHER THAN ASSUMED: a release that ends with more pins than it
+      began is red, and adding a pin is paid for by closing one or by a written
+      waiver. Filing the measurement keeps the debt VISIBLE to the conformance gate
+      instead of becoming an exemption by habit.
+
+      REFUTING COMMAND: derive the pin count from the oracle sources at the v0.77 cut
+      rather than reading the previous release's figure. A count quoted from the last
+      release is the "number invalidated by the edit that writes it" class, which
+      v0.76 hit when a LATER lane in the same release moved a shared file's count.
+    tags:
+      - process
+      - carried
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1373"
+      # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
+      # artifact's own file goes TRUE the moment the file exists and reds R3;
+      # and a `contains:` naming a COMMENT is satisfied by a comment, which
+      # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
+      # lane replaces this with a `contains:` naming EXECUTED code in a TEST
+      # file when it flips the status.
+      done-when: "manual:2026-09-29 the pin count is re-derived at the v0.77 cut from the oracle sources, and either a pin CLOSES or the refusal names the rejected candidate and the ground for rejecting it"

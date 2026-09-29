@@ -1,0 +1,40 @@
+artifacts:
+  - id: RQ-77-ARCHMODEL
+    type: system-req
+    release: v0.77
+    status: proposed
+    title: "Recurring N/A: feature-loop steps 1-2 (spar AADL -> WIT) deferred again on spar#445 — filed, not waived"
+    description: >
+      Feature-loop steps 1-2 generate WIT from an AADL model in spar. They have been
+      N/A every release since the dependency was recorded, blocked upstream. This
+      artifact exists so the deferral stays VISIBLE to the conformance gate rather
+      than becoming an exemption by habit.
+
+      DELIVERABLE: re-verify the upstream issue at the v0.77 cut and record the DATE,
+      the state and the last-updated stamp. If it is still open and unchanged, the N/A
+      is filed again with its consecutive count; if it has moved, steps 1-2 come back
+      into scope and this artifact says so.
+
+      REFUTING COMMAND: read the upstream issue's STATE before its BODY, and compare
+      `updatedAt` against `createdAt` rather than trusting the previous release's
+      claim that it is untouched.
+    tags:
+      - process
+      - carried
+      - spar
+      - aadl
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1136"
+      # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
+      # artifact's own file goes TRUE the moment the file exists and reds R3;
+      # and a `contains:` naming a COMMENT is satisfied by a comment, which
+      # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
+      # lane replaces this with a `contains:` naming EXECUTED code in a TEST
+      # file when it flips the status.
+      done-when: "manual:2026-09-29 spar#445 re-verified at the v0.77 cut with its state and updatedAt recorded, and the consecutive N/A count DERIVED from the filed artifacts rather than incremented by hand"

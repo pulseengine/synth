@@ -1,0 +1,46 @@
+artifacts:
+  - id: RQ-77-SUBJECT
+    type: system-req
+    release: v0.77
+    status: proposed
+    title: "A green can be TRUE ABOUT THE WRONG SUBJECT — the release machinery's five instances, and a refusal that makes the class loud"
+    description: >
+      v0.76 hit this five times in its own release machinery, each found by accident
+      rather than by a gate: a CI waiter that returned green for the PREVIOUS head
+      after a force-push (its vacuity guard rejected an EMPTY rollup, but the real
+      not-yet-registered shape is the old head's COMPLETE green set); a pipeline whose
+      reported exit code was `tail`'s; a capture floor that printed "per entry" while
+      asserting a UNION; a cancelled-job scan that iterated zero runs and printed
+      "none found"; and an HTTP 403 read as "not published".
+
+      WHY IT IS A CLASS. Each derives its subject from something INCIDENTAL — a
+      query's result set, a pipeline's last stage, a union, a default header — then
+      asserts truthfully about that. Mutation testing cannot find it: the mutation
+      is applied to the subject the author INTENDED, which the check never reads.
+
+      DELIVERABLE: the release machinery's checks REFUSE on a subject mismatch rather
+      than reporting on the wrong one. A derived population of zero is a refusal, not
+      a pass; a verdict about a commit is pinned to that commit's SHA. Acceptance is a
+      subject mismatch being REFUSED, not a subject being printed — a check that
+      prints its subject and carries on has moved the problem into prose.
+
+      REFUTING COMMAND: if the existing guards already catch this, the class is not
+      real. Construct a rollup with a full-but-wrong-subject population and confirm
+      the emptiness guard passes it; if it refuses, this artifact is wrong.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1418"
+      # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
+      # artifact's own file goes TRUE the moment the file exists and reds R3;
+      # and a `contains:` naming a COMMENT is satisfied by a comment, which
+      # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
+      # lane replaces this with a `contains:` naming EXECUTED code in a TEST
+      # file when it flips the status.
+      done-when: "manual:2026-09-29 the waiter and the run-conclusion scan REFUSE on a subject mismatch, demonstrated by a full-but-wrong-SHA rollup and by a zero-row query"
