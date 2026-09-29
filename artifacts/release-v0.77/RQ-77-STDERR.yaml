@@ -30,6 +30,7 @@ artifacts:
     fields:
       req-type: process
       priority: should
+      landed: "#1421"
       issue: "#1419"
       verified-by: >-
         DELIVERED, and THE ISSUE'S OWN MECHANISM WAS WRONG — corrected before any code was written,
