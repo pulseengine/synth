@@ -318,6 +318,27 @@ def run_oracle(script, argv):
         runpy.run_path(script, run_name="__main__")
     except SystemExit as exc:  # the normal exit path of every repro harness
         c = exc.code
+        # RQ-77-STDERR (#1419): PRINT a non-int exit code before coercing it.
+        #
+        # `sys.exit("REFUSE: ...")` puts the STRING in `exc.code`, and the line
+        # below turns it into 1. Run under a plain interpreter, CPython prints a
+        # non-int SystemExit code itself — but this driver catches SystemExit
+        # first, so the interpreter never gets the chance and the reason is
+        # dropped on the floor. The exit code still propagates, so the gate reds
+        # correctly; what was lost is WHY, which the oracle had already computed.
+        # CI then showed only "VACUOUS ... measured 0" with no cause.
+        #
+        # THE SUBJECT, stated because the issue first named the wrong one: this
+        # is NOT a stderr-capture bug. Oracles run IN-PROCESS via `runpy`; there
+        # is no subprocess and no stderr redirection anywhere in this file.
+        # "Capture stderr" would have shipped as a fix and changed nothing.
+        #
+        # Printed while `sys.stdout` is still the tee, so it reaches BOTH the
+        # live log and `tee.buf` — hence the JSON record and `evaluate`'s view of
+        # the output, not just the terminal. DERIVED at the v0.77 cut: 170 of the
+        # 188 oracles this driver runs refuse via `sys.exit(<non-int>)`.
+        if c is not None and not isinstance(c, int):
+            print(f"ORACLE-REFUSED {os.path.basename(script)}: {c}")
         code = 0 if c is None else (c if isinstance(c, int) else 1)
     finally:
         sys.stdout = real_out
