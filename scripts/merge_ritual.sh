@@ -41,15 +41,43 @@ HEADREF=$(gh pr view "$PR" --repo "$REPO" --json headRefName --jq .headRefName)
 TITLE=$(gh pr view "$PR" --repo "$REPO" --json title --jq .title)
 git fetch -q origin "$HEADREF"
 
+# THE SUBJECT OF THE WAIT (RQ-77-SUBJECT, #1418). The branch ref is what was
+# PUSHED; the PR object is what GitHub currently serves, and the two can
+# disagree. Measured on #1410 at the v0.76 cut: `git ls-remote` showed
+# c84de062 while the PR still reported head 272e78b1 WITH 72 GREEN CONTEXTS and
+# zero check-runs registered for the pushed SHA. So the expectation is derived
+# from the ref, and `merge_gate.py --expect-head` REFUSES (exit 2, never
+# GATEOK) if the verdict would be about the other commit.
+EXPECT=$(git rev-parse "origin/$HEADREF")
+echo "  subject: origin/$HEADREF = ${EXPECT:0:8}"
+
 # Wait for every NON-ADVISORY check to reach a conclusion (CHECK3b).
+#
+# WITH A POPULATION FLOOR, because "nothing is pending" is also true of a PR
+# whose checks have not registered yet. The old form broke immediately on an
+# EMPTY rollup — `P` counts checks with an empty conclusion, and an empty
+# rollup has none of those. Observed on #1407 at the v0.75 cut
+# ("TERMINAL: 0 non-adv"). CHECK1 did catch it downstream by reporting all nine
+# required contexts missing, so nothing was ever merged wrongly; but a wait that
+# does not wait, rescued by a later check, is precisely this release's theme —
+# and "9 missing" reads as a verdict about the PR when it means "CI has not
+# started". The floor is the count of REQUIRED contexts, derived from branch
+# protection rather than hardcoded, so it tracks the contract instead of a
+# number someone has to remember to update.
+FLOOR=$(gh api "repos/$REPO/branches/main/protection/required_status_checks/contexts" --jq 'length')
+[ -n "$FLOOR" ] && [ "$FLOOR" -gt 0 ] || { echo "REFUSE: could not derive the required-context count; the wait would be unbounded"; exit 2; }
+echo "  wait floor: $FLOOR required contexts must be present before a verdict"
 while :; do
-  P=$(gh pr view "$PR" --repo "$REPO" --json statusCheckRollup --jq '
-    [.statusCheckRollup[] | select(((.name // .context // "")|test("codecov|advisory";"i")) | not)
-     | select(((.conclusion // .state // "") == ""))] | length')
-  [ "$P" = "0" ] && break
+  read -r N P <<EOF
+$(gh pr view "$PR" --repo "$REPO" --json statusCheckRollup --jq '
+  [.statusCheckRollup[] | select(((.name // .context // "")|test("codecov|advisory";"i")) | not)] as $n
+  | [$n | length, ([$n[] | select(((.conclusion // .state // "") == ""))] | length)]
+  | @tsv')
+EOF
+  if [ "${N:-0}" -ge "$FLOOR" ] && [ "${P:-1}" = "0" ]; then break; fi
   sleep 60
 done
-echo "  settled at $(date -u '+%H:%MZ')"
+echo "  settled at $(date -u '+%H:%MZ') with $N non-advisory checks present"
 
 # CHECK4 — the squash simulation, under the subject the merge will pin.
 git worktree remove --force "$SIM" 2>/dev/null
@@ -65,7 +93,8 @@ fi
 echo "  CHECK4 (squash simulation) rc=$CHECK4"
 [ "$CHECK4" != "0" ] && grep -E '^FAIL' "$SCR/c4.log" | head -4
 
-python3 scripts/merge_gate.py --pr "$PR" --repo "$REPO" | tee "$SCR/gate.txt"
+python3 scripts/merge_gate.py --pr "$PR" --repo "$REPO" \
+  --expect-head "$EXPECT" | tee "$SCR/gate.txt"
 
 # THE MERGE IS THE LAST LINK OF THE CHAIN, never a line of its own.
 grep -q '^GATEOK$' "$SCR/gate.txt" && [ "$CHECK4" = "0" ] \

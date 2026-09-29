@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-77-SUBJECT
     type: system-req
     release: v0.77
-    status: proposed
+    status: implemented
     title: "A green can be TRUE ABOUT THE WRONG SUBJECT — the release machinery's five instances, and a refusal that makes the class loud"
     description: >
       v0.76 hit this five times in its own release machinery, each found by accident
@@ -37,10 +37,50 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1418"
+      landed: "#PENDING"
+      verified-by: >-
+        DELIVERED IN THE COMMITTED RITUAL, which is the part that matters: the five instances this
+        artifact names were found in SCRATCHPAD tooling, and the first thing this lane did was ask
+        whether the same defects live in the code every merge actually goes through. TWO DO. (a)
+        `merge_ritual.sh`'s wait loop counted checks with an EMPTY conclusion and broke when that
+        count reached zero — which is ALSO true of a PR whose checks have not registered, so the wait
+        did not wait. Observed live on #1407 at the v0.75 cut ("TERMINAL: 0 non-adv"). (b) Neither
+        the wait nor `merge_gate.py` compared the rollup's head against the commit the operator
+        pushed, so a verdict could be true about the PREVIOUS head. Measured on #1410 in v0.76:
+        `git ls-remote` showed c84de062 while the PR object still served head 272e78b1 WITH 72 GREEN
+        CONTEXTS and zero check-runs for the pushed SHA. SEVERITY STATED HONESTLY RATHER THAN
+        OVERSOLD, because the existing gates are stronger than the scratchpad waiter was: CHECK1
+        already caught the empty case downstream by reporting all nine required contexts missing, so
+        nothing was ever merged wrongly, and CHECK2 already catches a stale PRE-REBASE head because
+        it LACKS main's advance (`behind > 0`). What neither catches is an amend-shaped force-push
+        where old and new heads share a merge-base: both are `behind == 0`, every check passes on the
+        old head's CI, and `gh pr merge` merges the new content. That narrow path is what closes here.
+        FIX, and the acceptance case is a REFUSAL rather than a printed subject: `subject_refusal()`
+        is a PURE predicate, so the hermetic self-test covers it with no network, and `merge_gate.py`
+        raises `GateRefusal` -> exit 2 and NEVER prints GATEOK (which `merge_ritual.sh` greps for as
+        a literal, so a refusal cannot merge even by accident). Exit 2 is deliberate and matches
+        v0.76's RQ-76-CLOSUREMAIN: a caller must distinguish "the gate ran and the answer is no" from
+        "the gate could not tell what it was being asked about". `merge_ritual.sh` now DERIVES the
+        expectation from `git rev-parse origin/$HEADREF` — the branch ref is what was pushed, the PR
+        object is what GitHub currently serves, and #1410 is exactly the two disagreeing — so no
+        operator input is required. Its wait floor is DERIVED from branch protection
+        (`required_status_checks/contexts | length` = 9 at this cut), not hardcoded, so it tracks the
+        contract instead of a number someone must remember. PROVEN, and the mutation evidence is
+        stated precisely: six subject assertions were added to the hermetic self-test, and disabling
+        `subject_refusal` takes it from 0 failures to 3, naming the three POSITIVE assertions while
+        the three negative controls correctly still pass; restored to 0. The `git diff --numstat`
+        habit could NOT isolate that mutation here, because the feature itself was uncommitted in the
+        same file, so the baseline was wrong — the decisive evidence is the 0 -> 3 -> 0 transition
+        with the failing assertions named, which is stronger than a file-changed count anyway.
+        EXERCISED LIVE, not only in unit form: against PR #1416 the correct head judges normally
+        (GATEFAIL, a real dependabot failure) while `--expect-head deadbeefcafe` gives
+        "GATEREFUSED ... a verdict here would be true about the wrong commit", rc=2, with ZERO
+        occurrences of the GATEOK literal. The wait floor was exercised the same way: N=72/P=0
+        settles, and N=0 keeps waiting where the old form broke immediately.
       # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
       # artifact's own file goes TRUE the moment the file exists and reds R3;
       # and a `contains:` naming a COMMENT is satisfied by a comment, which
       # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
       # lane replaces this with a `contains:` naming EXECUTED code in a TEST
       # file when it flips the status.
-      done-when: "manual:2026-09-29 the waiter and the run-conclusion scan REFUSE on a subject mismatch, demonstrated by a full-but-wrong-SHA rollup and by a zero-row query"
+      done-when: "contains:scripts/merge_gate.py:RQ-77-SUBJECT"
