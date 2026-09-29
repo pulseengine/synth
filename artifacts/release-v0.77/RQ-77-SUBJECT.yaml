@@ -37,7 +37,7 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1418"
-      landed: "#PENDING"
+      landed: "#1423"
       verified-by: >-
         DELIVERED IN THE COMMITTED RITUAL, which is the part that matters: the five instances this
         artifact names were found in SCRATCHPAD tooling, and the first thing this lane did was ask
