@@ -457,8 +457,18 @@ struct BlockLabel {
     /// RQ-76-FALCON (#1318): the designated FRAME SLOT for a block whose
     /// carried result is an f32. The integer path lands carried values in a
     /// designated core register; the float path cannot, because there is no
-    /// standalone S-to-S move in `ArmOp` (the only `VMOV Sd, Sn` in the tree is
-    /// buried inside the A32 min/max expansion). Rather than add an instruction
+    /// standalone S-to-S move in `ArmOp`. Stated precisely, because the looser
+    /// version of this sentence was false: the gap is in the IR's OP SET, not
+    /// in the encoders. BOTH encoders already emit the instruction, inside
+    /// their min/max expansions — `arm_encoder.rs:2413` in
+    /// `encode_arm_f32_minmax` (A32) and `arm_encoder.rs:7254` in
+    /// `encode_thumb_f32_minmax` (Thumb-2, which is this fix's own target) —
+    /// so an `ArmOp` variant would be encodable on both. What it would cost is
+    /// the variant plus its two encoder arms, its estimator size, its WCET
+    /// price and its parity-table entries. This comment previously said the
+    /// only such `VMOV` was "buried inside the A32 min/max expansion", which
+    /// omitted the Thumb-2 site and so overstated the case against adding one.
+    /// Rather than add an instruction
     /// to every encoder, estimator and parity table to serve this shape, the
     /// edges and the fall-through RENDEZVOUS IN THE FRAME: each edge `VSTR`s
     /// its carried value here, and the join `VLDR`s it into a fresh temp.

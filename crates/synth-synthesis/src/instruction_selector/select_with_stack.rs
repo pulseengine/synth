@@ -4247,11 +4247,26 @@ impl InstructionSelector {
                         // RQ-76-FALCON (#1318): the f32 rendezvous. Every
                         // edge has stored its carried value to `result_slot`;
                         // the fall-through stores its own, then ONE reload
-                        // publishes the block's result. The reload must happen
-                        // after the end label is not yet emitted — it sits
-                        // BEFORE it, like the integer move, because the branch
-                        // edges jump TO the label and must not re-run the
-                        // fall-through's store.
+                        // publishes the block's result.
+                        //
+                        // ORDERING, and it is the opposite of the integer
+                        // path: the reload is emitted AFTER the end label,
+                        // whereas the integer move publishes into R_res
+                        // BEFORE it. The reason is where each path's value
+                        // lives. The integer edges load R_res themselves, so
+                        // the register is already correct on every branched-in
+                        // path and the fall-through's move may precede the
+                        // label. The f32 edges instead store to `result_slot`,
+                        // so the value is in MEMORY on entry to the label and
+                        // something after the label must load it — putting
+                        // that load before the label would leave every
+                        // branched-in path reading an unwritten S-register.
+                        // That is not a stylistic choice: it is the mutation
+                        // `carried_float_branch_1318_differential.py` exists
+                        // to catch, and applying it turns the oracle RED at 25
+                        // of 60. This comment previously asserted the reverse
+                        // ("it sits BEFORE it, like the integer move"), which
+                        // described the one arrangement that miscompiles.
                         if let Some(slot) = bl.result_slot
                             && let Some(top) = stack.last().copied()
                         {
