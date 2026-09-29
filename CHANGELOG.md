@@ -5,6 +5,104 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.76.0] - 2026-09-29
+
+### The input no live call ever produced
+
+v0.73 asked *is it still broken?* v0.74 asked *can the gate tell?* and answered by
+mutation. v0.75 asked why the answer kept being "no in the same way" — gates were
+tested one call short of where they run — and fixed it by **driving real entry
+points against recorded input**.
+
+v0.76 asks the question those deliverables force. **Every recording v0.75 built
+was hand-written by the same author as the gate.** So the driver asserts the
+author's *model* of the input, not the input; when the model is wrong the gate
+and its test agree, the suite is green, and the failure is invisible **by
+construction** — the one property a gate must not have.
+
+This was not a prediction. The release that shipped those drivers wrote it down,
+in `test_merge_gate_callsite.py`, and named a captured recording as the v0.76
+candidate. Three more instances were then found independently, in different
+files, by different lanes.
+
+**The scope rule, stated because it is the reflex:** this is not "write richer
+recordings". A hand-written recording with more fields is still authored; it
+moves the fiction one field further out and reads as progress. That is this
+theme's version of v0.75's "extract another function", and it was refused in
+review by name.
+
+### The external reporter came first, and his build moved
+
+**FALCON (#1318, cpetig — external reporter).** Four releases had sent him
+detailed status about gates, oracles and replay stubs while his module still did
+not compile. Measured on his own `opt.wasm` (sha256 `7065f112…`, from the `errors.zip` on the
+issue) with the literal command line from his report — `--target cortex-m7
+--relocatable --all-exports --embedder-data-init --embedder-global-init` — across
+the two adjacent commits whose only `crates/` delta is this fix:
+**7 of 17 functions skipped before, 1 of 17 after.** `fused.wasm` is rc=0 at 21 of
+21 exports on both, so nothing that compiled stopped compiling.
+
+The cause was an absence, not a bug. `edge_value_move` lands a branch's carried
+value in a **core** register, so a carried f32 fell through to the *integer*
+peek and refused with *"invalid wasm or an unlowered float op reached the
+integer path"*. The module is valid and the ops were lowered — only the
+carried-value path was missing, so the diagnostic **blamed the reporter for a
+gap in this function**. Three lines above it, the i64 sibling had been declining
+honestly since #509.
+
+There is no standalone S-to-S move in `ArmOp`, so rather than add an instruction
+to both encoders, the estimator, WCET pricing and the parity tables, the branch
+edges and the fall-through **rendezvous in a frame slot**. The path only runs
+where the compile previously refused, so no existing output moves a byte.
+
+Executed, not merely compiled: 60 emulations under unicorn, bit-exact against
+wasmtime, with **-0.0 in the argument set** because the cheap no-new-instruction
+copy is an arithmetic identity and `-0.0 + 0.0` is `+0.0`, which `==` cannot
+see. Two mutations — reloading before the join label, and a slot mismatch —
+each turn it red.
+
+**An apology was posted** on #1318 for correspondence that was harsh, and four
+conduct rules now bind this loop. The skill-level cause is filed upstream: the
+methodology models an issue comment as an audit trail and never as a message to
+a person.
+
+### Four recordings stopped being fiction
+
+- **GHSHAPE (#1403)** — a real `statusCheckRollup` entry carries **8** keys; the
+  fixture carried **2**. The fixture now inherits a **real captured entry**, so
+  refreshing the capture propagates new fields without anyone typing them.
+  Capture age is printed and deliberately **not** gated: a check that reds on a
+  calendar fires for something unrelated to correctness.
+- **RECORDSHAPE (#1062)** — the job factory could only build a 3-key job with a
+  2-key step. The guard now **derives the live key population from `ci.yml`** and
+  reds when the real file carries a key no recorded shape can produce.
+- **CAPTURE (#1255)** — the anchor table is read from the golden instead of
+  copied. **The issue's own proposed remedy was vacuous**, and this is measured:
+  the golden holds 15 sha256 values across 10 test blocks, 4 are anchors, so 11
+  satisfy its grep without being one.
+- **MUTRETIRE (#1257)** — the survey had **zero** references to the `retired`
+  list it was supposed to maintain; that list was hand-kept across two releases.
+  The tool reads it now, and reports **drawn = live + retired** so retiring a
+  site moves it between two visible columns instead of shrinking the denominator.
+
+**CLOSUREMAIN (#1404)** drove `main()`'s exit code and added a refusal: an empty
+live-state read made one direction vacuous and the other assert *of a live issue*
+that it is not open.
+
+### Two artifacts report non-delivery, deliberately
+
+**PINDEBT4 (#1373)** — the pin debt has not moved since v0.74.0. FALCON was a
+genuine candidate and is **refuted on two grounds**, not waved off. **ARCHMODEL
+(#1136)** — spar#445 is open and untouched since it was filed; the fourteenth
+consecutive N/A, with the count derived and the shared cause checked across all
+fourteen.
+
+### Numbers
+
+Every figure here is re-derived on the shipping tree at the cut. Mutation
+tallies are reported per lane and never summed — they count different things
+against different denominators.
+
 ## [0.75.0] - 2026-09-25
 
 ### The call site that no test has ever reached
