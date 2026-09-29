@@ -156,6 +156,58 @@ def open_issues_now(repo: str) -> set[int] | None:
         return None
 
 
+def prior_attribution(artifacts, version: tuple[int, int]):
+    """Issues that an EARLIER release's artifacts account for, and how.
+
+    RQ-76-CLOSUREMAIN, found by RUNNING this gate at the v0.76 cut rather than
+    trusting it. The release ritual closes issues AFTER the tag, because the tag
+    is the evidence the closure comment cites. `closed_since` opens its window at
+    the tag. So every release's own closure wave lands INSIDE THE NEXT RELEASE'S
+    WINDOW, where `authorised_close_set(artifacts, version)` — scoped strictly to
+    `version != only_version` — cannot see the artifact that authorised it.
+
+    MEASURED at the v0.76 cut: v0.75.0's commit is 2026-09-25T06:52:31Z, and
+    #1223 and #1391 closed at 07:27:31Z and 07:27:33Z — 35 minutes later, by
+    v0.75's own ritual, named by RQ-75-PINDEBT3 / RQ-75-CLOSEWINDOW /
+    RQ-75-PROBEINPUT. The gate reported both as `CLOSED BUT NOT AUTHORISED`,
+    whose prescribed remedy is "Reopen it". That is the SECOND time this file
+    was one step from causing a wrong REOPENING — the first was the v0.74
+    day-truncated window, documented in `closed_since`. Both have the same
+    shape: a timestamp compared against a model of when closures happen that no
+    real release has ever matched.
+
+    It did not fire before because it needs a preceding release that actually
+    closed issues post-tag: v0.75's own window held exactly #1223 and #1391,
+    which v0.75 itself authorised.
+
+    LAUNDERING IS REFUSED, and this is the half that could make the gate WEAKER.
+    A prior release that declared `issue-scope: outlives` said, explicitly, do
+    not close this. Attribution must not convert that refusal into a permission,
+    so held-open in a prior release is reported separately and stays a FAILURE.
+
+    Scans every release STRICTLY BELOW `version`, not only the immediate
+    predecessor: the window's lower bound is the tag passed on the command line,
+    which the operator chooses, so "only the previous release can appear" is a
+    property of one invocation and not of the function. Returns
+    {issue: (release_tuple, "authorised" | "held-open", artifact_id)},
+    keeping the HIGHEST such release when several name the same issue.
+    """
+    found: dict[int, tuple[tuple[int, int], str, str]] = {}
+    versions = {v for _p, v, _i, _s, _f, _l, _r in artifacts
+                if v is not None and v < version}
+    for v in sorted(versions):
+        auth, held = authorised_close_set(artifacts, v)
+        for n, art in held.items():
+            found[n] = (v, "held-open", art)
+        for n, art in auth.items():
+            found[n] = (v, "authorised", art)
+    return found
+
+
+def fmt_release(v: tuple[int, int]) -> str:
+    return f"v{v[0]}.{v[1]}"
+
+
 def check(root: Path, release: str, closed: set[int],
           allow_unclosed: bool = False, open_issues: set[int] | None = None):
     """Returns (failures, warnings, authorised, held_open).
@@ -167,6 +219,7 @@ def check(root: Path, release: str, closed: set[int],
     version = parse_version(release)
     artifacts, _bad = load_release_artifacts(root, RELEASE_GLOB)
     authorised, held_open = authorised_close_set(artifacts, version)
+    prior = prior_attribution(artifacts, version)
     if not artifacts:
         return (["VACUOUS: zero release artifacts loaded"], [], {}, {})
     if not authorised and not held_open:
@@ -181,13 +234,27 @@ def check(root: Path, release: str, closed: set[int],
                 f"HELD OPEN BUT CLOSED: #{n} — {held_open[n]} declares "
                 f"`issue-scope: outlives`, so its issue asks a wider question "
                 f"than the artifact delivered. Reopen it")
+        elif n not in authorised and n in prior:
+            pv, how, art = prior[n]
+            if how == "held-open":
+                failures.append(
+                    f"HELD OPEN BY {fmt_release(pv)} BUT CLOSED: #{n} — "
+                    f"{art} declares `issue-scope: outlives`, so "
+                    f"{fmt_release(pv)} deliberately did NOT close it. A "
+                    f"closure in this window is that refusal being overridden, "
+                    f"not {fmt_release(pv)}'s own ritual. Reopen it")
+            else:
+                warnings.append(
+                    f"ATTRIBUTED TO {fmt_release(pv)}: #{n} — closed after the "
+                    f"{fmt_release(pv)} tag by that release's own ritual, and "
+                    f"{art} names it. Not a {release} closure")
         elif n not in authorised:
             failures.append(
                 f"CLOSED BUT NOT AUTHORISED: #{n} — no delivered {release} "
-                f"artifact names it. This is the v0.69 shape (a `close #N` "
-                f"inside a PR body closed an external reporter's live "
-                f"blocker). Reopen it, or name it in the artifact that "
-                f"delivered it")
+                f"artifact names it, and no earlier release accounts for it "
+                f"either. This is the v0.69 shape (a `close #N` inside a PR "
+                f"body closed an external reporter's live blocker). Reopen it, "
+                f"or name it in the artifact that delivered it")
     for n in sorted(authorised):
         if open_issues is not None:
             # STATE, not window. An authorised issue that is closed — whenever

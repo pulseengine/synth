@@ -308,6 +308,50 @@ def main() -> int:
     f, _w, _a, _h = run([delivered, undelivered, outlives], closed=[100])
     check("GREEN when closures equal the authorised set", not f, str(f))
 
+    # ---- RQ-76-CLOSUREMAIN: the PREVIOUS release's own closure wave -------
+    #
+    # Found by RUNNING the gate at the v0.76 cut, not by reading it. The ritual
+    # closes issues AFTER the tag (the tag is the evidence the comment cites)
+    # and `closed_since` opens its window AT the tag, so a release's own
+    # closures land inside the NEXT release's window, where
+    # `authorised_close_set(artifacts, version)` cannot see the artifact that
+    # authorised them. MEASURED: v0.75.0's commit is 2026-09-25T06:52:31Z and
+    # #1223/#1391 closed at 07:27:31Z/07:27:33Z, named by RQ-75-PINDEBT3 /
+    # RQ-75-CLOSEWINDOW / RQ-75-PROBEINPUT. The gate said
+    # `CLOSED BUT NOT AUTHORISED`, whose prescribed remedy is "Reopen it" —
+    # the second time this file was one step from a wrong REOPENING.
+    prev_ok = art("RQ-70-PREV", "implemented", "#700", version=(0, 70))
+    f, w, _a, _h = run([delivered, prev_ok], closed=[100, 700])
+    check("prior release's post-tag closure is ATTRIBUTED, not a failure",
+          not f, str(f))
+    check("...and the attribution names the release and the artifact",
+          any("ATTRIBUTED TO v0.70: #700" in x and "RQ-70-PREV" in x
+              for x in w), str(w))
+
+    # LAUNDERING IS REFUSED. This is the half that could make the gate WEAKER:
+    # a prior release that declared `issue-scope: outlives` said explicitly DO
+    # NOT close this, and attribution must not convert that refusal into a
+    # permission.
+    prev_held = art("RQ-70-HELD", "implemented", "#701", version=(0, 70),
+                    scope="outlives")
+    f, _w, _a, _h = run([delivered, prev_held], closed=[100, 701])
+    check("a PRIOR release's held-open issue closed in this window still FAILS",
+          any("HELD OPEN BY v0.70 BUT CLOSED: #701" in x for x in f), str(f))
+    check("...and the laundering path is NOT reported as attribution",
+          not any("ATTRIBUTED" in x for x in f), str(f))
+
+    # An issue NO release accounts for is still the v0.69 shape.
+    f, _w, _a, _h = run([delivered, prev_ok], closed=[100, 999])
+    check("an issue no release accounts for is still CLOSED BUT NOT AUTHORISED",
+          any("CLOSED BUT NOT AUTHORISED: #999" in x for x in f), str(f))
+
+    # Only releases STRICTLY BELOW the target attribute. A LATER release's
+    # artifact must not retro-authorise a closure in this window.
+    later = art("RQ-72-LATER", "implemented", "#702", version=(0, 72))
+    f, _w, _a, _h = run([delivered, later], closed=[100, 702])
+    check("a LATER release's artifact does not attribute",
+          any("CLOSED BUT NOT AUTHORISED: #702" in x for x in f), str(f))
+
     # ---- ANTI-VACUITY: the check must refuse to pass on an empty basis -----
     f, _w, _a, _h = run([], closed=[100])
     check("VACUOUS on zero artifacts", any("VACUOUS" in x for x in f), str(f))
