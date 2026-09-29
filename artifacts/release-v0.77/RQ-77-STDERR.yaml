@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-77-STDERR
     type: system-req
     release: v0.77
-    status: proposed
+    status: implemented
     title: "oracle_run.py discards stderr, so a refusal's REASON is lost and CI sees VACUOUS with no cause"
     description: >
       `sys.exit("REFUSE: ...")` writes to stderr and returns 1. `oracle_run.py`
@@ -31,10 +31,38 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1419"
+      verified-by: >-
+        DELIVERED, and THE ISSUE'S OWN MECHANISM WAS WRONG — corrected before any code was written,
+        because fixing what it described would have changed nothing. The issue said `oracle_run.py`
+        "discards stderr". It does not: oracles run IN-PROCESS via `runpy.run_path`, and there is no
+        subprocess and no stderr redirection anywhere in the file. The reason was lost one line
+        further on — `sys.exit(str)` puts the STRING in `SystemExit.code`, and the handler coerced a
+        non-int to 1 without printing it. Under a plain interpreter CPython prints a non-int exit
+        code itself; this driver catches SystemExit first, so it never got the chance. MEASURED on a
+        minimal case: run directly, "REFUSE: ..." prints and rc=1; under the same coercion,
+        `exc.code` is a `str`, becomes 1, and the text is dropped. The exit code always propagated,
+        so this was NEVER a false pass — what CI lost was the WHY the oracle had already computed,
+        showing only "VACUOUS ... measured 0". THE POPULATION, and the first count of it was the
+        WRONG SUBJECT: an `ast` walk over `scripts/**/*.py` finds 225 of 264 files and 496 call
+        sites refusing via `sys.exit(<non-int>)`, which is a true count of scripts that mostly never
+        run under this driver. Scoped to what it ACTUALLY executes — the `scripts/repro/*.py` paths
+        appearing after `oracle_run.py` in `ci.yml` — the figure is 170 of 188 oracles. That
+        correction is this release's theme applied to its own measurement. FIX: print `exc.code` when
+        it is not an int, emitted while `sys.stdout` is still the tee so it reaches BOTH the live log
+        and `tee.buf` — hence the JSON record and `evaluate`'s view of the output, not merely a
+        terminal. TESTED, where there was NO test suite and NO CI wiring for a driver that runs 188
+        oracles: `scripts/test_oracle_run.py` adds 7 tests and is now wired in `ci.yml`. Red-first,
+        mutation CONFIRMED APPLIED by `git diff --numstat` (19/0) before the run: removing the print
+        takes the suite from 7 passing to `FAILED (failures=3)`, and the tree was restored to rc=0
+        after. The negative controls are deliberate — an int code, a bare `sys.exit()`, a clean exit
+        and falling off the end must all print NOTHING extra, so the fix cannot pass by printing
+        unconditionally. The done-when marker sits INSIDE a test body's assertion message rather
+        than in the module docstring, because v0.76 proved a `contains:` naming a comment or
+        docstring survives deleting every test body.
       # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
       # artifact's own file goes TRUE the moment the file exists and reds R3;
       # and a `contains:` naming a COMMENT is satisfied by a comment, which
       # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
       # lane replaces this with a `contains:` naming EXECUTED code in a TEST
       # file when it flips the status.
-      done-when: "manual:2026-09-29 a REFUSE reason emitted on stderr reaches the oracle_run log, demonstrated on the vcr_dec_001 zero-anchors refusal, with the affected-script count derived"
+      done-when: "contains:scripts/test_oracle_run.py:RQ-77-STDERR"

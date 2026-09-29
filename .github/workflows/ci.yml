@@ -601,6 +601,17 @@ jobs:
       - name: Issue-closure gate tests (#1250)
         run: python3 scripts/test_issue_closure_check.py
 
+      # RQ-77-STDERR (#1419): `oracle_run.py` drives 188 oracles in CI and had
+      # NO tests and NO wiring. The defect it shipped with: an oracle refusing
+      # via `sys.exit("REFUSE: ...")` had its REASON discarded, because a
+      # non-int `SystemExit.code` was coerced to 1 without being printed. Under
+      # a plain interpreter CPython prints it; this driver catches SystemExit
+      # first, so it never did. The exit code always propagated — so never a
+      # false pass — but CI showed only "VACUOUS ... measured 0" with no cause.
+      # 170 of the 188 oracles this driver runs refuse that way.
+      - name: Oracle driver tests — a refusal's REASON reaches the log (RQ-77-STDERR, #1419)
+        run: python3 scripts/test_oracle_run.py
+
       # RQ-73-PINDEBT (#1373): a red-first pin keeps CI green without hiding the
       # bug, and `known_open_pins` makes the COUNT a ratchet — but nothing made a
       # pin's ISSUE mean anything. #1229 was CLOSED on 2026-09-10 by the very PR
