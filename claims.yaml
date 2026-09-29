@@ -1851,9 +1851,45 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 19738
+        value: 19763
         baseline: 17897
         waivers:
+          - to: 19763
+            reason: >-
+              v0.76 COLD REVIEW, round 1 Pass A: 19738 -> 19763, a RISE of 25,
+              and every one of the 25 is a COMMENT. No lowering decision is
+              added, no arm, no match site; `cargo fmt` clean and the emitted
+              bytes are untouched.
+
+              WHY IT IS PAID FOR RATHER THAN GOLFED AWAY. Pass A found TWO FALSE
+              comments in the only compiler change this release makes, and both
+              needed more words to state correctly than to state wrongly.
+
+              (a) `select_with_stack.rs` asserted that the f32 reload "sits
+              BEFORE" the join label, "like the integer move". It sits AFTER,
+              and it is deliberately UNLIKE the integer move: integer edges load
+              R_res themselves so the register is already correct on every
+              branched-in path, whereas f32 edges store to `result_slot`, so the
+              value is in MEMORY at the label and something after the label must
+              load it. The sentence therefore described the one arrangement that
+              MISCOMPILES — it is `carried_float_branch_1318_differential.py`'s
+              own potency mutation, RED at 25 of 60, confirmed applied by round
+              1 Pass B.
+
+              (b) `instruction_selector.rs` said the only `VMOV Sd, Sn` in the
+              tree was "buried inside the A32 min/max expansion". There are TWO,
+              and the omitted one is `encode_thumb_f32_minmax` — the Thumb-2
+              encoder, i.e. this fix's own target — so the case against adding an
+              `ArmOp` variant was overstated. The corrected text names both sites
+              and relocates the real gap to the IR's op set.
+
+              Compacting these to hold a line ceiling would have traded an
+              accurate description of a miscompile-adjacent invariant for 25
+              lines. This ratchet counts hand-maintained DECISIONS, and
+              CLAUDE.md says a gate people cannot move honestly is one they
+              route around; so the growth is declared here with its reason, as
+              designed. Permission is per-growth: a further rise needs a further
+              waiver.
           - to: 19738
             reason: >-
               RQ-76-FALCON (#1318): 19604 -> 19738, a RISE of 134, and it DOES
@@ -1861,9 +1897,15 @@ claims:
               visible. It is declared rather than hidden.
 
               WHAT IT BUYS, measured on the external reporter's own module
-              (`opt.wasm`, sha256 7065f112..., attached to #1318), with his
-              exact command line, at commit b369aeea on 2026-09-25: 7 of 17
-              functions skipped BEFORE, 1 of 17 AFTER. The six that moved all
+              (`opt.wasm`, sha256 7065f112..., attached to #1318), with the
+              LITERAL command line from his report -- `--target cortex-m7
+              --relocatable --all-exports --embedder-data-init
+              --embedder-global-init` -- re-measured 2026-09-29 across the two
+              adjacent commits 2f185e3e and ffcddbcd, whose only `crates/` delta
+              is this fix: 7 of 17 functions skipped BEFORE, 1 of 17 AFTER. (This
+              reason said "his exact command line" against a b369aeea measurement;
+              the flag string appeared nowhere in the repo, so the claim was sound
+              but not auditable.) The six that moved all
               declined `GI-FPU-002`; the one that remains declines `#1069` and
               is an unrelated defect. Three releases had hardened the oracle
               around this issue while the reported declines stood.
@@ -2657,7 +2699,11 @@ claims:
         # `selector_lines_code` — all of it outside the test module — so the
         # whole-file count moves by exactly the region-scoped amount again.
         # `direction: track` owes no waiver; the reason is on the directed pin.
-        value: 30331
+        # v0.76 COLD REVIEW: 30331 -> 30356. The same +25 as
+        # `selector_lines_code` — all of it comments correcting two FALSE
+        # statements Pass A found in the release's only compiler change — so
+        # the test module did not move. Tracked, not directed: no waiver.
+        value: 30356
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

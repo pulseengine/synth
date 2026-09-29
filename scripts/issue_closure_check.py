@@ -110,11 +110,34 @@ def closed_since(tag: str, repo: str) -> set[int]:
     the release invalidated and left standing is as false as an overclaim, which
     is why this is corrected rather than deleted.
 
-    STILL NOT DRIVEN, and this is the honest residual: `main()` itself (its exit
-    code is what a caller consumes) and `open_issues_now()` (on an unreadable API
-    it returns None and the caller falls back to the window — if that ever became
-    an empty set instead, every issue would read as closed). Both are v0.76
-    candidates and neither is claimed here.
+    ALSO NOW DRIVEN (v0.76, RQ-76-CLOSUREMAIN, #1404). The paragraph that stood
+    here named `main()` and `open_issues_now()` as "STILL NOT DRIVEN … v0.76
+    candidates", and v0.76 delivered both, so leaving it would break the rule
+    stated just above. `main()`'s exit code is now asserted in three directions —
+    0 for a clean judgement, 1 for a real failure, and 2 for a REFUSAL,
+    distinguished on purpose so a caller can tell "ran and found nothing" from
+    "could not run" — and an EMPTY live-open set is refused rather than believed.
+
+    That paragraph also stated the failure mode more loosely than the code
+    supports, which is the other half of what #1404 asked for. It said an empty
+    set would make "every issue read as closed". Measured against `check()`, it
+    SPLITS, and the split is worse than the uniform version:
+
+      - the AUTHORISED direction goes VACUOUS AND SILENT — `if n in open_issues`
+        is false for every n, so no `AUTHORISED BUT STILL OPEN` can fire, and the
+        gate passes having checked nothing;
+      - the HELD-OPEN direction goes RED FOR THE WRONG REASON, printing
+        `HELD OPEN BUT ALREADY CLOSED`, whose text asserts the issue "is not
+        open" — a falsehood about a live issue, and for #1318 a falsehood about
+        an EXTERNAL reporter's open issue.
+
+    THE REMAINING RESIDUAL, stated narrowly: the tests drive how `check()`
+    CONSUMES live state (`open_issues` is passed as None, empty, and populated),
+    but nothing calls `open_issues_now()` itself, so its three `return None`
+    branches — OSError/SubprocessError, a non-zero return code, and a JSON parse
+    failure — are untested. The hazard those branches guard is handled at the
+    consumer; the branches themselves are not exercised, and that is not claimed
+    here.
     """
     date = subprocess.run(
         ["gh", "api", f"repos/{repo}/commits/{tag}", "--jq", ".commit.committer.date"],

@@ -138,7 +138,9 @@ class _Recorder:
 # WHAT THE CAPTURE DOES NOT COVER, measured rather than waved at: all 76
 # captured entries are `__typename: CheckRun`. `merge_gate` reads
 # `.conclusion // .state`, which serves a `StatusContext` — and this repository
-# produced ZERO of those across the PRs sampled at capture time. So the
+# produced ZERO of those in the sample at capture time — and the sample is
+# ONE pull request, #1406, per the capture's own `_provenance.command`. (This
+# line said "across the PRs sampled"; the plural overstated it.) So the
 # StatusContext branch is driven only by the hand-written legacy rows below,
 # and that remains authored. Stated here because the general caveat is not the
 # disclosure; the specific measured divergence is.
@@ -293,6 +295,36 @@ def main() -> int:
     # makes the derivation load-bearing: reverting `rollup()` to a hand-written
     # literal fails here, naming the keys it dropped.
     live = captured_keys()
+
+    # RQ-76-GHSHAPE, round 1 Pass B (gate potency): A FLOOR ON THE CAPTURE
+    # ITSELF, because without one this lane could be undone without any gate
+    # noticing — and the check below is a step of the `Claim Check` job, a
+    # REQUIRED context, so it went green on exactly the state v0.76 removed.
+    #
+    # The hole, as demonstrated: the check below compares the FIXTURE against
+    # the CAPTURE, so it reds when `rollup()` is reverted to a hand-written
+    # literal — but it is silent when the capture is ALSO degraded, because then
+    # there is nothing for the fixture to be missing. Reducing the capture's
+    # entries to the same TWO keys the pre-v0.76 fixture carried, and reverting
+    # `rollup()`, passed with 0 failures while printing "capture: 2 key(s)".
+    # Two coordinated edits, and the class this release is named for.
+    #
+    # The floor is a PINNED NUMBER, deliberately, and cannot be derived from the
+    # capture: a floor read out of the capture is satisfied by any capture,
+    # which is the vacuity this whole release is about. 8 is what a live
+    # `gh pr view --json statusCheckRollup` entry carried on 2026-09-25
+    # (__typename, completedAt, conclusion, detailsUrl, name, startedAt, status,
+    # workflowName). GitHub ADDS response fields and does not remove them, so a
+    # refreshed capture may exceed this and must never fall below it. If a real
+    # future response genuinely carries fewer, move this number in the same PR
+    # with the live output quoted — do not delete the floor.
+    CAPTURED_KEY_FLOOR = 8
+    check(f"the CAPTURE itself carries at least {CAPTURED_KEY_FLOOR} keys per entry",
+          len(live) >= CAPTURED_KEY_FLOOR,
+          f"- capture carries {len(live)}: {sorted(live)}. A degraded capture "
+          f"makes the derivation below vacuous, because the fixture can then "
+          f"lack nothing. Re-capture with `_provenance.command`")
+
     built = {k for e in rollup() for k in e}
     missing = sorted(live - built)
     check("rollup fixture carries every key the captured response carries",

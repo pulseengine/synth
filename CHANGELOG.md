@@ -81,7 +81,9 @@ a person.
   the golden holds 15 sha256 values across 10 test blocks, 4 are anchors, so 11
   satisfy its grep without being one.
 - **MUTRETIRE (#1257)** — the survey had **zero** references to the `retired`
-  list it was supposed to maintain; that list was hand-kept across two releases.
+  list it was supposed to maintain; its four entries were added across v0.66 and
+  v0.68, and it was then hand-kept with zero tool references for **ten tags**,
+  v0.66.0 through v0.75.0.
   The tool reads it now, and reports **drawn = live + retired** so retiring a
   site moves it between two visible columns instead of shrinking the denominator.
 

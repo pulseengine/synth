@@ -19,11 +19,32 @@ artifacts:
       while the gate is blind. The failure is invisible BY CONSTRUCTION, which is the
       one property a gate must not have.
 
-      IT IS A CLASS, NOT A FILE. A census of `scripts/**/*.py` — 263 files enumerated
-      with `pathlib.Path.glob`, detection by an `ast` walk over module-level
+      IT IS A CLASS, NOT A FILE. A census of `scripts/**/*.py` — files enumerated with
+      `pathlib.Path.glob`, detection by an `ast` walk over module-level
       `Assign`/`AnnAssign` whose value is a Dict/List/Tuple/Set of constants, matched
-      on SHAPE not name — finds 353 module-level literal tables across 173 files, of
-      which 15 are CI-wired drivers whose recordings stand in for a live tool.
+      on SHAPE not name — found 353 module-level literal tables across 173 files at
+      the planning commit b369aeea, of which 15 were judged CI-wired drivers whose
+      recordings stand in for a live tool.
+
+      THOSE THREE FIGURES ARE **UNVERIFIED**, and the divergence is disclosed
+      specifically rather than as a caveat, because a general caveat is not a
+      disclosure. NO CENSUS SCRIPT IS COMMITTED, so the predicate above is prose and
+      cannot be re-run. A cold reviewer implemented that stated predicate at the same
+      commit b369aeea and got **362 tables across 190 files**, not 353 across 173 —
+      close enough to show the shape of the claim is right, far enough to show the
+      prose does not pin the predicate (module-level is ambiguous about class bodies
+      and `if TYPE_CHECKING` blocks; "of constants" is ambiguous about nested
+      containers). The file-count half is checkable and MOVED: `scripts/**/*.py` is
+      263 at b369aeea and **264** on the shipping tree, so even that number was only
+      true at the commit it was measured on — the same later-lane staleness
+      RQ-76-RECORDSHAPE records for its step count. The "15 CI-wired drivers /
+      thirteen remain authored" split is a JUDGEMENT about which recordings stand in
+      for a live tool, not a derivation, and is not claimed as one.
+
+      This is the artifact's own theme turned on the artifact: a hand-asserted count
+      of hand-written tables is itself a hand-written table. v0.77 should commit the
+      census as a script so the number derives from the tree it describes, and that
+      follow-up is named here rather than left implicit.
 
       DELIVERABLE: capture the recordings from a live call — committed, re-runnable,
       carrying a shape check that REDS when the live response gains a field the
@@ -53,4 +74,4 @@ artifacts:
       issue-scope: outlives
       done-when: "contains:scripts/test_merge_gate_callsite.py:RQ-76-GHSHAPE"
       verified-by: >-
-        DELIVERED, and the plan's stated mutation was WRONG FOR THE DESIGN THAT SHIPPED — corrected rather than restated. The plan said "adding a field to the live-shape reference must red the shape check". That only holds if the fixture is hand-written; the fixture is now DERIVED from the capture, so a refreshed capture PROPAGATES a new field to every entry and correctly reds nothing. Building a richer hand-written fixture was refused by name: it is still authored, and moves the fiction one field further out. The mutation that actually proves the derivation is load-bearing is the reverse one, and it was applied and verified applied: reverting `rollup()` to the old two-key literal reds with "fixture entries lack ['__typename', 'completedAt', 'detailsUrl', 'startedAt', 'status', 'workflowName']". A second mutation — deleting the capture — makes the driver REFUSE loudly rather than fall back to an authored shape. MEASURED DIVERGENCE, captured 2026-09-25 from a live `gh pr view` on this repository: a real `statusCheckRollup` entry carries EIGHT keys; the hand-written fixture carried TWO. DISCLOSED RESIDUAL, specific rather than general: all 76 captured entries are `__typename: CheckRun`, and this repository produced ZERO `StatusContext` entries across the PRs sampled, so `merge_gate`'s `.conclusion // .state` fallback is still driven only by hand-written legacy rows. Capture AGE is printed and deliberately NOT gated — a check that reds on a calendar fires for something unrelated to correctness, and a gate people cannot move honestly is one they route around.
+        DELIVERED, and the plan's stated mutation was WRONG FOR THE DESIGN THAT SHIPPED — corrected rather than restated. The plan said "adding a field to the live-shape reference must red the shape check". That only holds if the fixture is hand-written; the fixture is now DERIVED from the capture, so a refreshed capture PROPAGATES a new field to every entry and correctly reds nothing. Building a richer hand-written fixture was refused by name: it is still authored, and moves the fiction one field further out. The mutation that actually proves the derivation is load-bearing is the reverse one, and it was applied and verified applied: reverting `rollup()` to the old two-key literal reds with "fixture entries lack ['__typename', 'completedAt', 'detailsUrl', 'startedAt', 'status', 'workflowName']". A second mutation — deleting the capture — makes the driver REFUSE loudly rather than fall back to an authored shape. MEASURED DIVERGENCE, captured 2026-09-25 from a live `gh pr view` on this repository: a real `statusCheckRollup` entry carries EIGHT keys; the hand-written fixture carried TWO. DISCLOSED RESIDUAL, specific rather than general: all 76 captured entries are `__typename: CheckRun`, and this repository produced ZERO `StatusContext` entries in the sample — which is ONE pull request, #1406, as the capture's own `_provenance.command` records (`gh pr view 1406 --repo pulseengine/synth --json statusCheckRollup,baseRefOid,headRefOid`). This sentence previously said "across the PRs sampled"; the plural overstated the sample in the very clause whose job is to disclose its limit. One PR is enough to establish that the EIGHT-key shape is real and the two-key fixture was not, and it is NOT enough to establish that this repository never emits `StatusContext`. So `merge_gate`'s `.conclusion // .state` fallback is still driven only by hand-written legacy rows. Capture AGE is printed and deliberately NOT gated — a check that reds on a calendar fires for something unrelated to correctness, and a gate people cannot move honestly is one they route around. ROUND 1 PASS B FOUND THE CAPTURE'S RICHNESS UNPINNED, and it is fixed here. The check above compares the FIXTURE against the CAPTURE, so reverting `rollup()` alone reds naming the six dropped keys — but degrading the CAPTURE too is silent, because then the fixture can lack nothing. Pass B reduced the capture's entries to the same TWO keys the pre-v0.76 fixture carried AND reverted `rollup()`: 0 failures, printing "capture: 2 key(s)". Nothing pinned the captured key count, and `test_merge_gate_callsite.py` is a step of the `Claim Check` job, a REQUIRED context — so a required check went green on exactly the state this lane removed. FIXED with a FLOOR of 8 keys per captured entry, deliberately a PINNED NUMBER: a floor read out of the capture is satisfied by any capture, which is the vacuity this release is about. GitHub adds response fields and does not remove them, so a refresh may exceed 8 and must never fall below it; a genuine future response carrying fewer moves the number in the same PR with the live output quoted, and never deletes the floor. Red-first verified by re-applying Pass B's own mutation — 8 keys -> 2 across all 76 entries, mutation confirmed applied by `git diff --numstat` (318/774) BEFORE trusting the run, gate rc=1 naming the degradation, capture restored and rc=0 after. The first attempt at that mutation silently did not apply (it guessed the capture's top-level key) and the gate passed; only the numstat check distinguished "gate is potent" from "mutation never happened".

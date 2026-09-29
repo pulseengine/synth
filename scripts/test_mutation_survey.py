@@ -358,5 +358,116 @@ class L2IsCurrent(unittest.TestCase):
         self.assertFalse(ms.l2_is_current(ledger, current_commit="ad52535a"))
 
 
+class RetiredLedgerValidation(unittest.TestCase):
+    """RQ-76-MUTRETIRE (#1257), added by v0.76 round 1 Pass B (gate potency).
+
+    WHY THIS EXISTS. `validate_retired` shipped with NOTHING executing it. Pass B
+    corrupted the real ledger three ways at once and both CI-wired steps stayed
+    green — this file (34 tests, zero references to `retired`) and
+    `claim_check.py` at 75/75. It then gutted the validator to `return []` and
+    `loop_conformance_check.py` still reported "8/8 done-when DECLARED", because
+    the lane's done-when was `contains:scripts/mutation_survey.py:RQ-76-MUTRETIRE`
+    and all three matches of that literal are COMMENTS. A gate whose subject is a
+    comment cannot fail; that is the v0.69 ARCHMODEL class one directory over.
+
+    So the validator is driven from both sides here, and the done-when now points
+    at THIS file, where the string lands on executed code.
+    """
+
+    def _ledger(self, mutants=None, retired=None):
+        return {"mutants": mutants or [{"id": "R1/REG/a.rs:1:1"}],
+                "retired": retired or []}
+
+    def test_a_complete_entry_on_a_clean_ledger_validates(self):
+        led = self._ledger(retired=[{
+            "id": "R2/BOUND/b.rs:9:9", "classification_when_drawn": "EQUIVALENT",
+            "retired_at": "v0.76", "reason": "the mutated construct was deleted"}])
+        self.assertEqual(ms.validate_retired(led), [])
+        self.assertEqual(ms.drawn_counts(led), (2, 1, 1))
+
+    def test_a_missing_required_field_is_reported(self):
+        # Pass B's first corruption: drop `reason`.
+        led = self._ledger(retired=[{
+            "id": "R2/BOUND/b.rs:9:9", "classification_when_drawn": "EQUIVALENT",
+            "retired_at": "v0.76"}])
+        problems = ms.validate_retired(led)
+        self.assertTrue(any("missing" in x and "reason" in x for x in problems),
+                        problems)
+
+    def test_an_id_both_live_and_retired_is_reported(self):
+        # Pass B's second corruption, and the one that corrupts the DENOMINATOR:
+        # the same id counted in both columns double-counts the drawn sample.
+        led = self._ledger(
+            mutants=[{"id": "R2/BOUND/b.rs:9:9"}],
+            retired=[{"id": "R2/BOUND/b.rs:9:9",
+                      "classification_when_drawn": "EQUIVALENT",
+                      "retired_at": "v0.76", "reason": "x"}])
+        problems = ms.validate_retired(led)
+        self.assertTrue(any("ALSO present in `mutants`" in x for x in problems),
+                        problems)
+
+    def test_the_same_id_listed_twice_is_reported(self):
+        # Pass B's third corruption.
+        e = {"id": "R2/BOUND/b.rs:9:9", "classification_when_drawn": "EQUIVALENT",
+             "retired_at": "v0.76", "reason": "x"}
+        problems = ms.validate_retired(self._ledger(retired=[dict(e), dict(e)]))
+        self.assertTrue(any("listed twice" in x for x in problems), problems)
+
+    def test_all_three_corruptions_at_once_are_each_reported(self):
+        # Pass B applied them TOGETHER; one report must not mask the others.
+        led = {
+            "mutants": [{"id": "R3/REG/c.rs:3:3"}],
+            "retired": [
+                {"id": "R1/BOUND/a.rs:1:1",
+                 "classification_when_drawn": "EQUIVALENT",
+                 "retired_at": "v0.76"},                      # missing reason
+                {"id": "R2/BOUND/b.rs:2:2",
+                 "classification_when_drawn": "EQUIVALENT",
+                 "retired_at": "v0.76", "reason": "x"},
+                {"id": "R2/BOUND/b.rs:2:2",
+                 "classification_when_drawn": "EQUIVALENT",
+                 "retired_at": "v0.76", "reason": "x"},        # listed twice
+                {"id": "R3/REG/c.rs:3:3",
+                 "classification_when_drawn": "EQUIVALENT",
+                 "retired_at": "v0.76", "reason": "x"},        # also live
+            ]}
+        problems = ms.validate_retired(led)
+        self.assertTrue(any("missing" in x for x in problems), problems)
+        self.assertTrue(any("listed twice" in x for x in problems), problems)
+        self.assertTrue(any("ALSO present" in x for x in problems), problems)
+
+    def test_the_REAL_shipped_ledger_validates_clean(self):
+        # The control. If this ever reds, the ledger is malformed, not the test.
+        led = ms.load_ledger(ROOT / "docs/status/mutation_survey.json")
+        self.assertEqual(ms.validate_retired(led), [])
+        drawn, live, ret = ms.drawn_counts(led)
+        self.assertEqual(drawn, live + ret)
+
+    def test_a_FICTIONAL_but_complete_entry_is_NOT_caught_and_that_is_recorded(self):
+        """ACCEPTED LIMITATION, pinned so it is a known gap and not a surprise.
+
+        Pass B's fourth case: an entry that is structurally perfect but refers to
+        a site that never existed validates clean and silently RAISES `drawn`.
+        `validate_retired` cannot catch it, and the reason is structural rather
+        than an oversight: a retired id carries only a BASENAME (`a.rs:1:1`, not
+        a path), and a site legitimately retired because a fix DELETED its file
+        would have no file to resolve against — so "the file must exist" would
+        red on exactly the case this list is for. Establishing that a retired
+        site genuinely vanished needs the tree AS OF the retiring release, which
+        the ledger does not record.
+
+        This test asserts the CURRENT behaviour deliberately. If a later release
+        teaches the validator to resolve retired ids, this test should FAIL and
+        be replaced — that failure is the signal, not a regression. Named as a
+        v0.77 follow-up rather than left implicit.
+        """
+        led = self._ledger(retired=[{
+            "id": "R9-fictional/NOPE/does_not_exist.rs:1:1",
+            "classification_when_drawn": "EQUIVALENT",
+            "retired_at": "v99.99", "reason": "because I said so"}])
+        self.assertEqual(ms.validate_retired(led), [])
+        self.assertEqual(ms.drawn_counts(led), (2, 1, 1))
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])
