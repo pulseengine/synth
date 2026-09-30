@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-77-FALCON2
     type: system-req
     release: v0.77
-    status: proposed
+    status: implemented
     title: "The falcon residual is a DIFFERENT defect from the one v0.76 moved, and its diagnostic cites an issue titled about the opposite thing"
     description: >
       v0.76 moved six of the seven declines on the external reporter's module. The
@@ -36,10 +36,61 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1318"
+      landed: "#PENDING"
+      issue-scope: outlives
+      verified-by: >-
+        RULE 4, SECOND BRANCH DELIVERED, and the first branch reported plainly rather than attempted
+        badly. BRANCH 1 — DID THE RESIDUAL MOVE? NO, and this is measured, not assumed. Re-downloaded
+        the reporter's `errors.zip` from #1318 (the scratchpad copy had been purged during v0.76's
+        disk recovery) and confirmed `opt.wasm` hashes to sha256 7065f112fdaae127..., the same module
+        v0.76 measured. With the LITERAL command line from his report (`--target cortex-m7
+        --relocatable --all-exports --embedder-data-init --embedder-global-init`) on main at
+        96f84e20: 17 exported functions found, 1 of 17 skipped,
+        `pulseengine:falcon-cascade/controller@0.10.0#step`, primary code #1069. So v0.76's delivery
+        HOLDS and the residual is unchanged. WHY IT WAS NOT ATTEMPTED: the recovery ladder is already
+        fully spent — `vfp-spill + vfp-frame-locals+pool-grow(218)` reaches GI-FPU-002 "VFP register
+        file exhausted (S0..S15 all live)", and `vfp-frame-locals + vfp-wide-file` reaches the pool
+        exhaustion. That is not a missing rung; it is the rungs being insufficient for this function's
+        float-local pressure, which is allocator work in exactly the area this project guards against
+        miscompiles. Filed as #1426 with the measurement and a refuting command rather than half-done.
+        BRANCH 2 — THE DIAGNOSTIC NO LONGER CITES AN ISSUE TITLED ABOUT THE FIXED CLASS. The residual
+        message cited #1069, which is CLOSED (2026-08-27) and titled "GI-FPU-002: three named cascade
+        entry points are the entire remaining gap to a complete falcon M7 image" — titled about the
+        very class v0.76 fixed — and whose thread never mentions the spill-slot pool: a grep for
+        "spill.slot pool|pool exhaust|slot pool" over its body plus every comment returns ZERO. STATED
+        PRECISELY, because the obvious reading is wrong: citing a CLOSED issue is this repo's
+        documented convention and is NOT the defect — RQ-74-STALEMSG measured 93% of citation sites
+        pointing at closed issues, and a rule against it would red 363 of them. The defect is that a
+        reporter following THIS citation lands on an issue whose title says the gap is elsewhere and,
+        by implication, already closed. Every specific alternative is also closed AND mis-titled: #881
+        is the spill rung, #1321 is slot ALIASING in the frame-home rung, #1354 is a refused legal
+        redefinition, #587 is the i64 pool rather than the VFP one. So a correctly-titled OPEN home was
+        filed (#1426) and the citation moved there.
+        THE CONTROL-FLOW SUBSTRING IS UNTOUCHED, which is the part that could have broken the
+        compiler. `arm_backend.rs:1039` matches `VFP_FRAME_HOME_SLOT_EXHAUSTION` as a STRING to rerun
+        the VFP frame stage with a grown pool — the message IS control flow. Only the `#NNNN:` prefix,
+        which sits outside that interpolated const, changed; `instruction_selector.rs:3325` is
+        byte-identical, and `live24_slot_exhaustion_message_still_triggers_the_pool_grow` passes.
+        TESTED IN BOTH DIRECTIONS, because asserting only the new citation would stay green if someone
+        cited both: a new test asserts #1426 present, `#1069:` ABSENT, and the grow-retry substring
+        still present. Red-first PROVEN with the mutation verified against a BACKUP rather than HEAD —
+        HEAD was the wrong baseline because the feature itself was uncommitted in the same file, a
+        mistake made once earlier in this release. Reverting the citation changes exactly 2 lines and
+        takes the suite from 9 passing to FAILED at `vfp_local_pressure_1069.rs:263` (cargo rc=101,
+        not 1); restored to 9 passing.
+        A NEAR-MISS WORTH THE RECORD, and the worst of this release: the first re-measurement returned
+        rc=1 with ZERO skip lines, because the reporter's module had been purged from the scratchpad.
+        "No skip lines" is indistinguishable from "nothing skips any more", and reported carelessly it
+        would have told an external reporter his blocker was fixed on a measurement whose subject was
+        a missing file. What caught it was that zero skip lines matched NO expected shape, so the log
+        was read instead of the grep. #1426's refuting command now says to assert the input exists
+        before reading the output.
+        ISSUE-SCOPE: OUTLIVES — #1318 stays OPEN. The reporter's original ask is a module that
+        compiles, and one function still declines. The tag must not close it.
       # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
       # artifact's own file goes TRUE the moment the file exists and reds R3;
       # and a `contains:` naming a COMMENT is satisfied by a comment, which
       # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
       # lane replaces this with a `contains:` naming EXECUTED code in a TEST
       # file when it flips the status.
-      done-when: "manual:2026-09-29 the residual decline MOVED on the reporter's attached module, or the diagnostic no longer cites an issue titled about the fixed class, or this lane states plainly that neither happened"
+      done-when: "contains:crates/synth-backend/tests/vfp_local_pressure_1069.rs:RQ-77-FALCON2"

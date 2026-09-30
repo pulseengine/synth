@@ -229,6 +229,52 @@ fn live24_slot_exhaustion_message_still_triggers_the_pool_grow() {
         .expect("live24 must compile via the grown pool inside the VFP rung");
 }
 
+/// RQ-77-FALCON2 (#1318): the exhaustion diagnostic must cite the OPEN issue
+/// about the pool, not the CLOSED one titled about the class v0.76 fixed.
+///
+/// The residual decline on the external reporter's `controller@0.10.0#step` is
+/// this pool exhaustion. It used to cite #1069 — which is CLOSED and titled
+/// "GI-FPU-002: three named cascade entry points are the entire remaining
+/// gap…", i.e. titled about the `GI-FPU-002` class v0.76 FIXED, and whose thread
+/// never mentions the spill-slot pool at all. Citing a closed issue is this
+/// repo's documented convention and is NOT the defect (RQ-74-STALEMSG measured
+/// 93% of citation sites pointing at closed issues). The defect is that a
+/// reporter following THIS citation lands on an issue whose title says the gap
+/// is elsewhere and, by implication, already closed.
+///
+/// WHY A TEST RATHER THAN A COMMENT: the citation is prose inside a format
+/// string, so nothing would notice it drifting back. This asserts BOTH
+/// directions — the new citation present, the misleading one absent — because
+/// asserting only the first would stay green if someone cited both.
+///
+/// The grow-retry substring is asserted by `live24_...` above and is deliberately
+/// untouched by this: `arm_backend.rs` matches it as CONTROL FLOW, and only the
+/// `#NNNN:` prefix outside that substring moved.
+#[test]
+fn the_pool_exhaustion_diagnostic_cites_the_open_pool_issue_not_the_closed_class_one() {
+    let ops = live_f32_ops(24);
+    let mut rung_only = m7dp_selector(false);
+    rung_only.set_vfp_spill_on_exhaustion(true);
+    rung_only.set_vfp_frame_home_locals(true);
+    let msg = rung_only
+        .select_with_stack(&ops, 1)
+        .expect_err("24 frame-homed locals must exhaust the default 8-slot pool")
+        .to_string();
+    assert!(
+        msg.contains("#1426"),
+        "RQ-77-FALCON2: the exhaustion diagnostic must cite #1426, the OPEN issue about the          VFP frame-home spill-slot pool: {msg}"
+    );
+    assert!(
+        !msg.contains("#1069:"),
+        "the diagnostic must NOT lead with #1069 — that issue is CLOSED and          titled about the GI-FPU-002 class v0.76 fixed, so a reporter following          it is sent to the wrong defect: {msg}"
+    );
+    // The grow-retry trigger must survive the reword, or the ladder breaks.
+    assert!(
+        msg.contains(VFP_FRAME_HOME_SLOT_EXHAUSTION),
+        "the control-flow substring must be untouched by the citation change: {msg}"
+    );
+}
+
 #[test]
 fn live8d_f64_locals_red_on_base_green_via_rung() {
     let ops = live_f64_ops(8);
