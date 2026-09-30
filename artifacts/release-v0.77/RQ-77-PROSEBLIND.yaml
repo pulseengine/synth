@@ -36,7 +36,7 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1319"
-      landed: "#PENDING"
+      landed: "#1424"
       verified-by: >-
         REFUTED, AND THE REFUTATION ALREADY SHIPPED IN v0.69 — which this lane did not know when it
         was scoped, and that is the finding. `scripts/repro/prose_status_claim_1319.py` has existed
