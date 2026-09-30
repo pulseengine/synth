@@ -69,14 +69,22 @@ artifacts:
         TWO FALSE CLAIMS WERE CAUGHT IN THIS RECORD BEFORE IT SHIPPED, by running the consistency
         check it asserted instead of assuming it. A draft said the suppression tables are "a subset of
         the 41 strict-dict hits" — they are not: exactly ONE of the 41 is a `KNOWN*`/`PINNED*` table.
-        They appear under `nested-any` (7 of them) and not before, which is a real structural fact the
+        Seven appear under `nested-any`; TWO of those seven (`release_notes_from_rivet.py::PINNED_RIVET` and `aarch64_operand_class_1231_differential.py::KNOWN`) already appear under `strict-any`, so "and not before" — which this record asserted until round 1 of the cold review — is false, which is a real structural fact the
         census surfaces rather than a quirk: those tables hold CONTAINERS of constants, not constants,
         so any "of constants" reading that forbids nesting cannot see them at all. The same draft
         credited `ci_pool_tripwire` with walking them; that script counts ci.yml JOB POOLS (71 job
         definitions — 46 ubuntu-latest, 21 self-hosted, 2 macos-latest) and has nothing to do with pin
         tables. Recorded because it is the lane's own class: two true-sounding sentences about the
-        wrong subject, in the artifact whose subject is exactly that. Same disposition and same recorded reason as
-        `partial_census_1017.py` and `diagnostic_issue_census_345.py`, so the manual-oracle ceiling
+        wrong subject, in the artifact whose subject is exactly that. AND A THIRD, found by round 1 of the
+        cold review: this record said the correction had been applied, and it had reached `claims.yaml`
+        but NOT the census script's own header, which still credited `ci_pool_tripwire` with walking the
+        pin tables. An artifact claiming a fix it did not apply to the shipped file is the same class a
+        third time, so the header is corrected too. Same KIND (`measurement`) and same recorded reason
+        as `diagnostic_issue_census_345.py` — but NOT the same DISPOSITION as `partial_census_1017.py`,
+        which this record also claimed: that file is `# ci-status: wired`, and has been since
+        RQ-64-HISTOGRAM gave it a `--self-test` in the required `claim-check` job. Its census MODES are
+        still a local measurement, which is the real resemblance; citing it as a manual-oracle
+        precedent read the resemblance instead of the declaration. So the manual-oracle ceiling
         moves by one with this entry rather than silently.
         NON-VACUITY, proven rather than asserted: the census REFUSES if its glob matches no files
         ("every count below would be about the empty set") and REFUSES if every reading finds zero

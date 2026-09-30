@@ -123,11 +123,17 @@ def fidelity_exit(verdict: str) -> int:
     stale, so the diff contains main's advance and the number proves nothing.
     DIFF UNAVAILABLE is not either: it means `git diff` never ran.
 
-    AND THE CALL SITE IS STILL UNTESTED (v0.74 cold review round 1). This
-    function was extracted BECAUSE `merge_ritual.sh` consumes its exit code and
-    nothing offline reached it — and the extraction gave the FUNCTION a case
-    while leaving the CALL SITE without one. Mutating `return fidelity_exit(
-    verdict)` to `return 0` in `main()` leaves `--self-test` green. The
+    THE CALL SITE IS NOW TESTED, and this paragraph used to deny it — a false
+    statement about this tree, found by v0.77's round-1 gate review. What was
+    true when it was written: this function was extracted BECAUSE
+    `merge_ritual.sh` consumes its exit code and nothing offline reached it, and
+    the extraction gave the FUNCTION a case while leaving the CALL SITE without
+    one. Mutating `return fidelity_exit(verdict)` to `return 0` in `main()`
+    still leaves `--self-test` green — that clause remains accurate. What is NO
+    LONGER true is the conclusion drawn from it: v0.75 delivered
+    `scripts/test_merge_gate_callsite.py`, it is CI-wired at `ci.yml:472` in the
+    required `Claim Check` job, and it REDS on exactly that mutation with three
+    failures. Read the state of a gap before describing it. The
     reviewer applied ten such mutations to `gate()` and `main()` — including
     forcing the whole rollup to SUCCESS, and `ok &= True` — and ALL TEN passed.
     `--self-test` does not reach `gate()` or `main()` AT ALL — which is the
@@ -138,9 +144,15 @@ def fidelity_exit(verdict: str) -> int:
 
     That is the same shape twice: v0.73 extracted `decide()` out of `gate()`,
     v0.74 extracted `fidelity_exit()` out of `main()`, and each moved the
-    tested boundary one call outward without ever reaching the caller. A real
-    fix drives `main()` itself against a recorded `gh` rollup; that is a v0.75
-    candidate and is NOT claimed here.
+    tested boundary one call outward without ever reaching the caller. The real
+    fix — driving `main()` itself against a recorded `gh` rollup — SHIPPED in
+    v0.75 and is what closed this.
+
+    THE SHAPE RECURRED ANYWAY, one level in: v0.77 added the `GateRefusal`
+    branch to the already-covered `main()` and did not extend that driver, so
+    the new branch shipped uncovered while every instrument stayed green. Round
+    1 caught it and the driver now carries four refusal cases. Adding a branch
+    to a tested function is not inheriting its coverage.
     """
     return 0 if verdict == "FAITHFUL" else 1
 
@@ -246,6 +258,25 @@ def subject_refusal(n_non_advisory: int, head: str, expect_head: str | None):
         return ("the rollup holds ZERO non-advisory checks. That is not a green "
                 "PR, it is a PR whose checks have not registered — every count "
                 "below would be about the empty set. Re-run once CI appears")
+    # AN EXPECTATION THAT DERIVED TO NOTHING IS A REFUSAL, NOT A SKIPPED CHECK.
+    # Added by v0.77's round-1 gate review. `expect_head is None` means the
+    # caller did not ask — that stays a no-op, and a self-test assertion pins it.
+    # But an EMPTY STRING means the caller DID ask and its derivation produced
+    # nothing: `merge_ritual.sh` computes it with `EXPECT=$(git rev-parse
+    # "origin/$HEADREF")` under `set -uo pipefail` WITHOUT `-e`, so a git that
+    # fails at the repo level (the Xcode-license shape this environment has hit)
+    # leaves EXPECT="" and execution continues. The old `if expect_head` then
+    # silently disabled the subject check and printed GATEOK with no diagnostic
+    # — a green about a subject nobody verified, which is this gate's own
+    # subject. Whitespace is stripped because " " is the same empty derivation
+    # wearing a character.
+    if expect_head is not None and not expect_head.strip():
+        return ("this gate was asked about a head, but the expectation derived "
+                "to the EMPTY STRING — so the subject check would be silently "
+                "skipped and the verdict would be about an unverified head. "
+                "That is a refusal, not a no-op: check how --expect-head was "
+                "computed (a failed `git rev-parse` still exits into an empty "
+                "capture)")
     if expect_head and not (head.startswith(expect_head)
                             or expect_head.startswith(head)):
         return (f"the PR's head is {head[:12]} but this gate was asked about "
@@ -497,6 +528,12 @@ def self_test() -> int:
     # The dangerous shape is a FULL GREEN rollup belonging to the previous head.
     # Emptiness guards cannot see it, which is why the head check is separate
     # from the population check rather than folded into one predicate.
+    check("SUBJECT: an EMPTY expectation REFUSES rather than skipping the check",
+          subject_refusal(72, "a" * 40, "") is not None)
+    check("SUBJECT: a WHITESPACE expectation REFUSES too",
+          subject_refusal(72, "a" * 40, "   ") is not None)
+    check("SUBJECT: expect_head=None is still a NO-OP (the caller did not ask)",
+          subject_refusal(72, "a" * 40, None) is None)
     check("RQ-77-SUBJECT: a COMPLETE green rollup on the wrong head still REFUSES",
           subject_refusal(72, "oldoldold", "newnewnew") is not None,
           "a full population must not excuse a wrong subject")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for scripts/oracle_run.py.
 
-RQ-77-STDERR (#1419). This driver runs **188 oracles** in CI and had NO tests at
+RQ-77-STDERR (#1419). This driver runs **206 oracles** in CI and had NO tests at
 all, and was not wired into `ci.yml`. The specific defect it shipped with: an
 oracle that refuses via `sys.exit("REFUSE: ...")` had its REASON discarded.
 
@@ -18,13 +18,23 @@ The exit code always propagated, so this was never a false pass. What CI lost wa
 "why", which the oracle had already computed — the log showed only
 "VACUOUS ... measured 0".
 
-DERIVED, not asserted: 170 of the 188 oracles this driver runs refuse via
+DERIVED, not asserted: 188 of the 206 oracles this driver runs refuse via
 `sys.exit(<non-int>)`. The count is reproducible with an `ast` walk over the
-`scripts/repro/*.py` paths that appear after `oracle_run.py` in `ci.yml`; a plain
-grep for `sys.exit(` over `scripts/**` gives 225 files / 496 sites, which is a
-true count of the WRONG population — most of those scripts never run under this
-driver. That distinction is the v0.77 theme, and it is why the number here is
-scoped to what the driver actually executes.
+`scripts/*.py` paths that appear after `oracle_run.py` in `ci.yml`, JOINING
+`\`-continuation lines first — 18 invocations use them, and reading only same-line
+paths gives a narrower 170 of 188, which is what this file published until v0.77's
+round-1 cold review caught it. A plain grep for `sys.exit(` over `scripts/**/*.py`
+gives 244 files / 660 sites, a true count of the WRONG population — most of those
+scripts never run under this driver. Both distinctions are the v0.77 theme applied
+to this file's own numbers.
+
+WHAT THESE SEVEN TESTS DO AND DO NOT PROVE, stated because the docstring used to
+present them all as the red-first case. FOUR of them — the int exit code, the
+clean exit, `sys.exit()` with no argument, and falling off the end — assert
+`assertNotIn("ORACLE-REFUSED", out)`, which is trivially satisfied when the
+feature is ABSENT: run against the parent commit they PASS. They are legitimate
+no-false-positive guards, and they are not evidence of the fix. THREE discriminate:
+the two that assert the reason reaches the captured buffer, and the cwd/argv one.
 
 Run: python3 scripts/test_oracle_run.py
 """

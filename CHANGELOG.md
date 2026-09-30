@@ -55,23 +55,36 @@ rather than a hardcoded number, and refuses if that returns zero.
 
 ### A refusal's reason now reaches the log
 
-**STDERR (#1419).** `oracle_run.py` drives **188 oracles** in CI and had no tests
+**STDERR (#1419).** `oracle_run.py` drives **206 oracles** in CI and had no tests
 at all. An oracle refusing via `sys.exit("REFUSE: …")` had its reason **discarded**
 — the log showed only `VACUOUS … measured 0`.
 
 **The issue named the wrong mechanism, and fixing what it said would have changed
 nothing.** It reported that the driver "discards stderr". The driver runs oracles
-**in-process** via `runpy`; there is no subprocess and no stderr redirection
-anywhere in the file. What actually happens is that `sys.exit(str)` puts the
+**in-process** via `runpy`, and there is no stderr redirection anywhere in the
+file. (It *does* import `subprocess`, to monkeypatch `Popen.__init__` and count
+compilations — so the precise statement is that no oracle is run in a subprocess
+and no stream is redirected, not that the module never mentions one.) What actually happens is that `sys.exit(str)` puts the
 string in `SystemExit.code` and the handler coerced a non-int to `1` without
 printing it. CPython prints a non-int exit code itself — but the driver catches
 `SystemExit` first, so it never gets the chance. The exit code always propagated,
 so this was never a false pass; what CI lost was *why*.
 
-**170 of the 188** oracles refuse via `sys.exit(<non-int>)`, derived by walking
+**188 of the 206** oracles refuse via `sys.exit(<non-int>)`, derived by walking
 the paths that appear after `oracle_run.py` in `ci.yml`. A plain grep for
-`sys.exit(` over `scripts/**` gives 225 files and 496 sites — a true count of the
-**wrong population**, which is this release's theme in one line.
+`sys.exit(` over `scripts/**/*.py` gives **244 files and 660 sites** — a true
+count of the **wrong population**, which is this release's theme in one line.
+
+**And the first published version of this very figure was an instance of it**,
+caught by round 1 of the cold review. It said "170 of 188", derived by reading
+only the paths on the *same line* as each `oracle_run.py` invocation. Eighteen
+invocations continue onto a `\`-continuation line, so the driver's real
+population is **206**, of which **188** refuse — and the collision is what made it
+hard to see, because the true refusing count equals the previously claimed
+denominator. The eighteen in the blind spot were not incidental: they include
+**five of the six pin tables** RQ-77-PINDEBT5 audits and `falcon_opt_1318_dif‑
+ferential.py`, the external reporter's own oracle. Corrected in all six places
+that carried it.
 
 ### Two premises were already dead when the release was planned
 
@@ -164,7 +177,7 @@ theme nobody is using:
   external reporter his blocker was fixed, on a measurement whose subject was a
   missing file.
 - A classifier splitting the selector ratchet's delta cut the region at the
-  **first** `#[cfg(test)]` — line 308 of a 30k-line file, one of four — and
+  **first** `#[cfg(test)]` — line 308 of a 19,905-line file, one of five — and
   measured one file where the population is a family of three. It reported "0
   added, 0 removed": true, about a 307-line prefix, and it would have justified a
   waiver with fabricated composition.
@@ -172,14 +185,57 @@ theme nobody is using:
   is **15**, because v0.65's filing predates the five-tag vocabulary the census
   keyed on. The undercount would have been reported from a green derivation, by
   the artifact whose entire purpose is keeping a deferral visible.
-- A walk counting benign pins matched only `ast.Assign`, located **none** of the
-  ten declared tables, and reported "0". Zero benign pins and zero tables
+- A walk counting benign pins matched only `ast.Assign` and located just **one**
+  of the ten declared tables — nine are `AnnAssign` — and that one is empty, so it
+  reported "0" having inspected no entries. Zero benign pins and zero tables
   inspected are the same output with opposite meanings.
 
 Each was caught the same way: by refusing to accept a figure until it was tied to
 something independently derived — the gate's own numbers, the checker's own region
 function, an expected shape. **A derived population of zero is a refusal, not a
 pass.**
+
+### Artifacts, derived from rivet rather than remembered
+
+<!-- DERIVED by scripts/release_notes_from_rivet.py from `rivet diff` -->
+<!-- base v0.76.0 · rivet 0.37.0 · do not hand-edit the lists -->
+
+**8 added, 0 removed, 0 modified, 641 unchanged.**
+
+- **RQ-77-SUBJECT** — a green can be true about the WRONG SUBJECT; a refusal that makes the class loud
+- **RQ-77-STDERR** — a refusal's REASON reaches the log (and the issue named the wrong mechanism)
+- **RQ-77-FLOORREGEX** — `[4-9][0-9]*` means "first digit 4–9", not "at least 4" — refuted, fixed in v0.66.0
+- **RQ-77-PROSEBLIND** — R11 reads structured fields, so a false claim in an artifact's PROSE is invisible
+- **RQ-77-CENSUS** — the literal-table census was prose; no single number existed
+- **RQ-77-FALCON2** — the falcon residual is a DIFFERENT defect, and its diagnostic cited the wrong issue
+- **RQ-77-PINDEBT5** — pin debt, fifth measurement; no pin closed, and stale pins ARE detectable
+- **RQ-77-ARCHMODEL** — recurring N/A on spar#445, fifteenth consecutive
+
+This list is derived because it was once remembered and got it wrong: v0.66 filed
+two of its own artifacts under `[Unreleased]` (#1337).
+
+### Trace-graph delta — reported, not silently shipped
+
+**errors +0 / −0; warnings +24 / −0.**
+
+A release that cannot say whether it improved or degraded the trace graph is not
+reporting on itself — v0.69 shipped 22 unseen warnings and v0.70's own planning PR
+added 21 more. So: the 24 are **three per artifact across the eight**, in exactly
+three classes, and all three are pre-existing convention mismatches rather than new
+defects:
+
+1. `RQ-77-*` ids are not commit-trailer shaped (rivet wants an all-digit suffix).
+2. `req-type: process` is outside the loaded schema's allowed set — used by **97**
+   artifacts repo-wide.
+3. Each system requirement wants an incoming `verifies` link from a verification
+   artifact.
+
+**Measured as structural, not as a regression:** v0.76's eight artifacts carry
+exactly the same 24. Every release in this programme adds this constant, and the
+honest statement is that v0.77 neither improved nor worsened the graph while adding
+its share of a known, unaddressed debt. Naming the three classes is the first step
+to retiring them; none is fixed here, and pretending the delta is zero would be the
+misreport this section exists to prevent.
 
 ### Numbers
 

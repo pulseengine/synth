@@ -1865,7 +1865,7 @@ claims:
               DERIVED, not eyeballed, and the first attempt was WRONG in the way
               this release is about. A hand-rolled classifier cut the region at
               the FIRST `#[cfg(test)]` in instruction_selector.rs — line 308 of
-              a 30k-line file, one of FOUR such attributes — and measured one
+              a 19,905-line file, one of FIVE such attributes — and measured one
               file where this field's population is a family of three. It
               reported "0 added, 0 removed": a true statement about a 307-line
               prefix. The figures above come from calling this checker's own

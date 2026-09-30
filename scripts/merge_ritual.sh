@@ -93,8 +93,21 @@ fi
 echo "  CHECK4 (squash simulation) rc=$CHECK4"
 [ "$CHECK4" != "0" ] && grep -E '^FAIL' "$SCR/c4.log" | head -4
 
+# READ THE EXIT CODE, not only the string. RQ-77-SUBJECT built exit 2 so a
+# caller could tell "the gate ran and the answer is no" (1) from "the gate could
+# not judge" (2) — and v0.77's round-1 review found that this, the ONLY caller,
+# discarded it: `| tee` makes $? tail's, so GATEREFUSED and GATEFAIL were
+# indistinguishable here and the artifact's claim was false about its own
+# consumer. Redirect, capture rc, then read the file.
 python3 scripts/merge_gate.py --pr "$PR" --repo "$REPO" \
-  --expect-head "$EXPECT" | tee "$SCR/gate.txt"
+  --expect-head "$EXPECT" > "$SCR/gate.txt" 2>&1
+GATERC=$?
+cat "$SCR/gate.txt"
+if [ "$GATERC" = "2" ]; then
+  echo "  REFUSED: the gate could not JUDGE (exit 2) — this is not a red verdict,"
+  echo "  it is an unusable one. Not merging."
+  exit 2
+fi
 
 # THE MERGE IS THE LAST LINK OF THE CHAIN, never a line of its own.
 grep -q '^GATEOK$' "$SCR/gate.txt" && [ "$CHECK4" = "0" ] \

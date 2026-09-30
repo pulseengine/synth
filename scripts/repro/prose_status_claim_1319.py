@@ -149,15 +149,46 @@ def verify():
             rows.append((f"negative {aid}", v, False))
     print("\nseparation experiment (RAW text, incl. YAML comments) — the control "
           "must RED, negatives must stay green")
+    separating = []
     for stage in ("naive", "real-status", "not-quoted"):
         ok = all(v[stage] == must for _l, v, must in rows)
+        if ok:
+            separating.append(stage)
         detail = " ".join(f"{l.split()[-1]}={'RED' if v[stage] else 'green'}"
                           for l, v, _m in rows)
         print(f"  {stage:14s} {'SEPARATES' if ok else 'fails    '}  {detail}")
-    print("  VERDICT: no stage separates. The control reds under all three, and so "
-          "do\n  records that correctly narrate their own history — which is why "
-          "this script\n  must not be wired, and why RQ-77-PROSEBLIND records a "
-          "refutation rather than a gate.")
+
+    # THE VERDICT IS DERIVED, NOT PRINTED. v0.77's round-1 gate review found this
+    # sentence hardcoded: repointing CONTROL at bd81bc8c — the commit where v0.68
+    # CORRECTED the false claim, so the control is green under every stage and
+    # demonstrates nothing — still printed "The control reds under all three".
+    # A conclusion that cannot be wrong about its own experiment is the defect
+    # RQ-77-PROSEBLIND exists to record, one level up.
+    ctrl = next((v for _l, v, must in rows if must), None)
+    if ctrl is None:
+        sys.exit("REFUSE: the row set contains no POSITIVE CONTROL, so no verdict "
+                 "about separation is possible — every line above describes "
+                 "negatives only")
+    ctrl_red = [s for s in ("naive", "real-status", "not-quoted") if ctrl[s]]
+    if not ctrl_red:
+        sys.exit(f"REFUSE: the positive control is GREEN under all three stages, so "
+                 f"this experiment is UNINFORMATIVE — it cannot distinguish 'no "
+                 f"rule separates' from 'no rule fires at all'. Check that CONTROL "
+                 f"still names a commit whose artifact carries the false claim; "
+                 f"{CONTROL[0]} was chosen because the claim is live there.")
+    if separating:
+        print(f"  VERDICT: {len(separating)} stage(s) SEPARATE — "
+              f"{', '.join(separating)}. That CONTRADICTS RQ-69-PROSEGATE's and "
+              f"RQ-77-PROSEBLIND's recorded refutation, which say none does. "
+              f"Re-measure before believing either: a rule that separates is a "
+              f"gate this repo could wire, and #1319 would be wrong to hold as "
+              f"refuted.")
+    else:
+        print(f"  VERDICT: no stage separates. The control reds under "
+              f"{len(ctrl_red)} of 3 ({', '.join(ctrl_red)}), and so do records "
+              f"that correctly narrate their own history — which is why this "
+              f"script must not be wired, and why RQ-77-PROSEBLIND records a "
+              f"refutation rather than a gate.")
 
 
 def main():

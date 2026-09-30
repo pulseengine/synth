@@ -335,8 +335,10 @@ def run_oracle(script, argv):
         #
         # Printed while `sys.stdout` is still the tee, so it reaches BOTH the
         # live log and `tee.buf` — hence the JSON record and `evaluate`'s view of
-        # the output, not just the terminal. DERIVED at the v0.77 cut: 170 of the
-        # 188 oracles this driver runs refuse via `sys.exit(<non-int>)`.
+        # the output, not just the terminal. DERIVED at the v0.77 cut: 188 of the
+        # 206 oracles this driver runs refuse via `sys.exit(<non-int>)` — counted
+        # continuation-aware, because 18 `ci.yml` invocations continue onto a `\`
+        # line and a same-line-only read gives a narrower 170 of 188.
         if c is not None and not isinstance(c, int):
             print(f"ORACLE-REFUSED {os.path.basename(script)}: {c}")
         code = 0 if c is None else (c if isinstance(c, int) else 1)

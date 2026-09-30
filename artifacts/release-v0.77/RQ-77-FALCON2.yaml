@@ -9,7 +9,7 @@ artifacts:
       survivor declines on the VFP spill-slot pool, which is a different defect from
       the value-carrying-branch-at-f32 gap that was fixed. Separately, that
       diagnostic cites an issue which is CLOSED and titled about the class v0.76 just
-      fixed, and whose thread never mentions the pool at all. The lineage is real —
+      fixed, and whose thread discusses the pool only to rule it out. The lineage is real —
       the frame-homing mechanism was adopted as that issue's fix, and the selector
       names the constant after it — and citing a closed issue is this repo's
       documented convention. The defect is that a reporter clicking through lands on
@@ -56,8 +56,19 @@ artifacts:
         BRANCH 2 — THE DIAGNOSTIC NO LONGER CITES AN ISSUE TITLED ABOUT THE FIXED CLASS. The residual
         message cited #1069, which is CLOSED (2026-08-27) and titled "GI-FPU-002: three named cascade
         entry points are the entire remaining gap to a complete falcon M7 image" — titled about the
-        very class v0.76 fixed — and whose thread never mentions the spill-slot pool: a grep for
-        "spill.slot pool|pool exhaust|slot pool" over its body plus every comment returns ZERO. STATED
+        very class v0.76 fixed. A FALSE SENTENCE STOOD HERE AND IN FOUR OTHER PLACES, caught by round 1 of
+        the cold review, and it is this release's own theme in the sentence justifying this release's
+        own fix. It said the thread "never mentions the spill-slot pool at all (grep over body plus
+        every comment: ZERO)". The grep did return zero and the pattern was live — it matches the
+        diagnostic string — but the population was wrong: the thread holds "pool" eight times,
+        "exhaust" twenty-eight and "spill" seventeen, because it writes "pool-grow" and "*slot*
+        exhaustion" rather than "pool exhaust" or "slot pool". A true zero about the wrong vocabulary,
+        reproduced into an issue an external reporter is sent to by a shipped diagnostic. WHAT THE
+        THREAD ACTUALLY SAYS IS STRONGER FOR THIS CHANGE, which is why the conclusion survives: "the
+        pool-grow rung (#587) cannot fire for this shape, and correctly so: its condition matches
+        *slot* exhaustion, and it grows frame slots rather than the register file." So a reporter
+        sent to #1069 by a POOL-EXHAUSTION decline reads a passage arguing the pool mechanism is not
+        their problem, while their function declines on precisely it. STATED
         PRECISELY, because the obvious reading is wrong: citing a CLOSED issue is this repo's
         documented convention and is NOT the defect — RQ-74-STALEMSG measured 93% of citation sites
         pointing at closed issues, and a rule against it would red 363 of them. The defect is that a

@@ -235,12 +235,22 @@ fn live24_slot_exhaustion_message_still_triggers_the_pool_grow() {
 /// The residual decline on the external reporter's `controller@0.10.0#step` is
 /// this pool exhaustion. It used to cite #1069 — which is CLOSED and titled
 /// "GI-FPU-002: three named cascade entry points are the entire remaining
-/// gap…", i.e. titled about the `GI-FPU-002` class v0.76 FIXED, and whose thread
-/// never mentions the spill-slot pool at all. Citing a closed issue is this
-/// repo's documented convention and is NOT the defect (RQ-74-STALEMSG measured
-/// 93% of citation sites pointing at closed issues). The defect is that a
-/// reporter following THIS citation lands on an issue whose title says the gap
-/// is elsewhere and, by implication, already closed.
+/// gap…", i.e. titled about the `GI-FPU-002` class v0.76 FIXED.
+///
+/// ITS THREAD DOES DISCUSS THE POOL, and the first version of this comment said
+/// it did not — a false statement produced by a narrow regex
+/// (`spill.slot pool|pool exhaust|slot pool`) returning a true zero, because the
+/// thread writes "pool-grow" and "*slot* exhaustion". Caught by v0.77's round-1
+/// cold review. What it actually says is stronger for this change: "the pool-grow
+/// rung (#587) cannot fire for this shape". So a reporter sent there reads an
+/// argument that the pool mechanism is NOT their problem, while their function
+/// declines on precisely that mechanism.
+///
+/// Citing a closed issue is this repo's documented convention and is NOT the
+/// defect (RQ-74-STALEMSG measured 93% of citation sites pointing at closed
+/// issues). The defect is that a reporter following THIS citation lands on an
+/// issue whose title says the gap is elsewhere and, by implication, already
+/// closed.
 ///
 /// WHY A TEST RATHER THAN A COMMENT: the citation is prose inside a format
 /// string, so nothing would notice it drifting back. This asserts BOTH

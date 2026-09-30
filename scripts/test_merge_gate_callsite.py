@@ -444,6 +444,47 @@ def main() -> int:
     check("main: required red -> rc 1 and GATEFAIL",
           rc == 1 and "GATEFAIL" in out, f"rc={rc} out={out!r}")
 
+    # ---- main(): THE REFUSAL PATH (RQ-77-SUBJECT, #1418) -------------------
+    #
+    # ADDED BY v0.77's ROUND-1 GATE REVIEW, which found this branch shipped
+    # with NO committed coverage at all. The uncovered half is the LOAD-BEARING
+    # one: `merge_ritual.sh` gates the merge SOLELY on `grep -q '^GATEOK$'` and
+    # discards this function's exit code, so changing the one string
+    # `GATEREFUSED` to `GATEOK` — leaving `return 2` intact — made a zero-check
+    # or wrong-head rollup MERGE, while both `--self-test` and every assertion
+    # in this file stayed green. The string is not cosmetic; it is the protocol.
+    #
+    # So these assert on the STRING and the CODE separately. Asserting only
+    # `rc == 2` would not have caught the mutation that matters.
+    rc, out, rec = run_main(["--pr", PR], main_table([]))
+    check("main: a ZERO-CHECK rollup REFUSES -> rc 2, GATEREFUSED, never GATEOK",
+          rc == 2 and "GATEREFUSED" in out and "GATEOK" not in out,
+          f"rc={rc} out={out!r}")
+
+    rc, out, rec = run_main(["--pr", PR, "--expect-head", "dead" * 10],
+                            main_table(rollup()))
+    check("main: a COMPLETE GREEN rollup on the WRONG head REFUSES -> rc 2, "
+          "GATEREFUSED, never GATEOK",
+          rc == 2 and "GATEREFUSED" in out and "GATEOK" not in out,
+          f"rc={rc} out={out!r}")
+
+    # The head it WAS asked about must still pass, or the check above would be
+    # satisfied by a gate that refuses everything.
+    rc, out, rec = run_main(["--pr", PR, "--expect-head", HEAD],
+                            main_table(rollup()))
+    check("main: the head the caller ASKED about still passes -> rc 0, GATEOK",
+          rc == 0 and "GATEOK" in out, f"rc={rc} out={out!r}")
+
+    # An EXPECTATION THAT DERIVED TO NOTHING is a refusal, not a skipped check
+    # — this release's own rule, applied to the gate's own input. Round 1 found
+    # `--expect-head ""` silently disabling the subject check and printing
+    # GATEOK with no diagnostic.
+    rc, out, rec = run_main(["--pr", PR, "--expect-head", ""],
+                            main_table(rollup()))
+    check("main: an EMPTY --expect-head REFUSES rather than skipping the check",
+          rc == 2 and "GATEREFUSED" in out and "GATEOK" not in out,
+          f"rc={rc} out={out!r}")
+
     rc, out, rec = run_main(["--pr", PR], main_table(rollup(Test="PENDING")))
     check("main: required pending -> rc 1", rc == 1, f"rc={rc}")
 

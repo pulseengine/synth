@@ -4,9 +4,16 @@
 # its figures UNVERIFIED after an independent reconstruction of the stated
 # predicate disagreed. This derives the population from the tree instead. It has
 # no expected values and nothing for CI to fail on; the numbers are judged by a
-# reader, and the shapes it counts are gated elsewhere (ci_pool_tripwire for the
-# KNOWN*/PINNED* suppression tables, claim_check's pin-table kind for the ones
-# the ledger names). Wiring it would mean inventing an assertion the artifact was
+# reader. The shapes it counts are gated only where `claims.yaml` NAMES them:
+# `claim_check`'s `pin-table` kind reads the ten suppression tables the ledger
+# lists, and a change to one of those moves `known_open_pins`. A suppression
+# table in a file the ledger does NOT list is caught by nothing, which CLAUDE.md
+# records as a review-time obligation. (An earlier version of this header
+# credited `ci_pool_tripwire` with walking the KNOWN*/PINNED* tables; it does
+# not — it checks `ci.yml` job pools, and grepping it for KNOWN|PINNED returns a
+# single unrelated comment. The corrected wording reached `claims.yaml` in the
+# same lane and not this file, so the artifact claimed a fix it had not applied;
+# round 1 of v0.77's cold review caught that.) Wiring it would mean inventing an assertion the artifact was
 # scoped not to make — the same call recorded for partial_census_1017.py.
 """RQ-77-CENSUS (#1403) — derive the module-level literal-table population.
 

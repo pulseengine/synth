@@ -3,7 +3,7 @@ artifacts:
     type: system-req
     release: v0.77
     status: implemented
-    title: "oracle_run.py discards stderr, so a refusal's REASON is lost and CI sees VACUOUS with no cause"
+    title: "A refusal's REASON never reached the log — and #1419's stated mechanism (discarded stderr) was not the cause"
     description: >
       `sys.exit("REFUSE: ...")` writes to stderr and returns 1. `oracle_run.py`
       captures only stdout, so the reason is dropped: run directly, an oracle prints
@@ -44,11 +44,21 @@ artifacts:
         `exc.code` is a `str`, becomes 1, and the text is dropped. The exit code always propagated,
         so this was NEVER a false pass — what CI lost was the WHY the oracle had already computed,
         showing only "VACUOUS ... measured 0". THE POPULATION, and the first count of it was the
-        WRONG SUBJECT: an `ast` walk over `scripts/**/*.py` finds 225 of 264 files and 496 call
-        sites refusing via `sys.exit(<non-int>)`, which is a true count of scripts that mostly never
-        run under this driver. Scoped to what it ACTUALLY executes — the `scripts/repro/*.py` paths
-        appearing after `oracle_run.py` in `ci.yml` — the figure is 170 of 188 oracles. That
-        correction is this release's theme applied to its own measurement. FIX: print `exc.code` when
+        WRONG SUBJECT TWICE, the second time in the correction itself. (a) An `ast` walk over
+        `scripts/**/*.py` finds 226 of 266 files and 502 call sites refusing via
+        `sys.exit(<non-int>)` — a true count of scripts that mostly never run under this driver.
+        (The figures first published here, 225 of 264 and 496, were that same predicate measured at
+        `v0.76.0`, and were additionally mis-described as "a plain grep"; a plain grep for
+        `sys.exit(` on the shipping tree gives 244 files and 660 sites.) (b) Scoped to what the
+        driver ACTUALLY executes, the first derivation read only the paths on the SAME LINE as each
+        `oracle_run.py` invocation and reported 170 of 188. EIGHTEEN invocations continue onto a
+        `\`-continuation line. The real population is 206 oracles, of which 188 refuse that way —
+        and the numeral COLLISION is why it survived review once: the true refusing count equals the
+        previously published denominator. The eighteen invisible ones include FIVE of the six pin
+        tables RQ-77-PINDEBT5 audits and `falcon_opt_1318_differential.py`, the external reporter's
+        own oracle, so the blind spot covered exactly the oracles this release reasons about most.
+        Both corrections are this release's theme applied to its own measurement, the second found by
+        round 1 of the cold review rather than by the lane. FIX: print `exc.code` when
         it is not an int, emitted while `sys.stdout` is still the tee so it reaches BOTH the live log
         and `tee.buf` — hence the JSON record and `evaluate`'s view of the output, not merely a
         terminal. TESTED, where there was NO test suite and NO CI wiring for a driver that runs 188
