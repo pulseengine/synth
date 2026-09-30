@@ -1,0 +1,59 @@
+artifacts:
+  - id: RQ-78-VARVE
+    type: system-req
+    release: v0.78
+    status: proposed
+    title: "The varve high-water refusal is a RECORDED NON-ACTION — the check is not authoritative anywhere, and the open question is upstream"
+    description: >
+      CI infra measured the `2026.09` high-water mark across all twelve self-hosted
+      runners and found FOUR different answers on one fleet: 4 runners with NO file (the
+      check is already vacuous there, because `HighWaterMarks::load` treats a missing
+      file as first contact and accepts anything), 4 at hwm 3 (pass), 3 at hwm 4 (fail),
+      1 at hwm 13. Across 29 runs, hwm=4 fails 100% and hwm=3 passes 100%. NOTHING
+      FLICKERS — the earlier "2 of 5" was a sampling artifact of which runners those
+      five landed on.
+
+      THE INVERSION, which is why this is a non-action: if the line's true high-water is
+      4, runners 6/10/11 are the CORRECT ones and the fifteen passes are VACUOUS, because
+      a runner that has never observed counter 4 has no basis on which to detect the
+      rollback. If it is 3, those reds are false positives. Nobody can tell from the
+      runner side, and EITHER WAY THE CHECK IS NOT AUTHORITATIVE ANYWHERE, because it
+      answers from local disk.
+
+      DECIDED BY THE MAINTAINER 2026-09-30, after an earlier "do both" decision was
+      WITHDRAWN on this evidence. Do NOT set `VARVE_ROOT`: a per-job store makes every
+      run first contact, which is functionally the cache-clearing infra flagged as
+      "silencing the alarm by blinding the detector". Do NOT bump the pin: counter 17
+      would clear every observed mark but OUTRUNS them rather than making any
+      authoritative, and breaks again when a history passes 17. Do NOT clear any runner
+      cache. Do NOT ask infra to route around the failing runners — that picks which
+      local history to trust with no basis for choosing, and if hwm=4 is correct it
+      routes deliberately onto the runners whose passes are vacuous.
+
+      THE OPEN QUESTION IS NOT SYNTH'S: what is the `2026.09` line's authoritative
+      counter? Until that exists somewhere other than twelve local files, no verdict on
+      this fleet is a statement about the line. pulseengine/varve#204 is its diagnostic
+      half — the refusal names a high-water mark and never says where it came from,
+      which is why this took five runs and three wrong mechanisms to pin down. Runner 8
+      at hwm 13 is worth a separate look: either real history this fleet should know
+      about, or a mark that arrived without a corresponding install.
+
+      DELIVERABLE: a recorded non-action with the upstream question attached, which is a
+      legitimate deliverable when it is true. If varve or infra answers the counter
+      question, this lane becomes a real decision instead.
+
+      REFUTING COMMAND: `cat varve.toml | grep -A3 '\[toolchain\]'` and
+      `grep -rn VARVE_ROOT .github/workflows/`. If the pin has moved or VARVE_ROOT is
+      set, someone acted and this artifact is describing a tree that no longer exists.
+    tags:
+      - process
+      - carried
+      - toolchain
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1422"
+      done-when: "manual:2026-09-30 the non-action is recorded with the fleet evidence and the inversion stated, varve.toml and the workflows are confirmed UNCHANGED, and the authoritative-counter question is carried upstream rather than answered locally"

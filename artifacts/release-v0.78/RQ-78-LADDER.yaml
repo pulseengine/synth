@@ -1,0 +1,57 @@
+artifacts:
+  - id: RQ-78-LADDER
+    type: system-req
+    release: v0.78
+    status: proposed
+    title: "Re-measure the acceptance ladder — reach has had no live number for fourteen releases"
+    description: >
+      `docs/status/ACCEPTANCE_LADDER.md` as shipped at v0.77.0 is headed "Acceptance
+      ladder — v0.63", measured 2026-09-06 at `e3a09ac2`. FOURTEEN releases have shipped
+      since (v0.64.0 through v0.77.0, derived by listing tags after v0.63.0), including
+      RV32 globals, AArch64 bounds-checked linear memory, and v0.76's f32 carried-value
+      fix that moved six of seven declining functions in a real customer module.
+
+      CLAUDE.md's own rule: "If the ladder predates the build being compared, re-measure
+      before publishing." So every statement about synth's reach made today is a
+      statement about a tree from 2026-09-06.
+
+      THIS GOES FIRST because the ladder is the DENOMINATOR. The compliance envelope
+      requires publishing the acceptance rate beside any performance comparison, per
+      rung, with its date and commit; a stale denominator makes everything derived from
+      it stale. It is also the scoping input for reach work — the last measured picture
+      says 141 of 243 modules NEVER compile on ARM, and whether that still holds is
+      unknown.
+
+      DELIVERABLE: a ladder re-measured on the shipping tree by the COMMITTED tool
+      (`scripts/repro/partial_census_1017.py --ladder`), carrying its own date and
+      commit — not a hand-edited table. Plus the reach FLOOR pinned in claims.yaml as a
+      `direction: up` ratchet, so a release that reduces reach is red.
+
+      AND ONE HONESTY REQUIREMENT the current file already meets and must keep meeting:
+      a rung that CANNOT move is labelled structurally inert, never reported as a
+      measured `+0`. The `+no-optimize` rung is in that state — every ladder invocation
+      passes `--relocatable`, which forces the direct selector, so it can only ever
+      report +0. A rung that cannot move reported as zero is the gate-that-cannot-fail
+      class inside a measurement harness.
+
+      REFUTING COMMAND: `head -6 docs/status/ACCEPTANCE_LADDER.md` and
+      `git tag --list 'v0.*' --sort=creatordate | awk 'f;/v0.63.0/{f=1}' | wc -l`.
+      If the header names a recent release and the count is small, this premise is dead
+      — check BEFORE building on it, the way v0.77 found two of its own `must` premises
+      already delivered.
+    tags:
+      - process
+      - reach
+      - measurement
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1432"
+      # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this artifact's
+      # own file goes TRUE the moment the file exists and reds R3; and v0.76 proved a
+      # `contains:` naming a COMMENT cannot fail. The delivering lane replaces this
+      # with a `contains:` naming EXECUTED code in a test file when it flips status.
+      done-when: "manual:2026-09-30 the ladder is re-measured on the shipping tree by partial_census_1017.py --ladder, carries its own commit and date, and the reach floor is pinned in claims.yaml as a direction: up ratchet whose value equals the live derivation"

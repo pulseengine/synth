@@ -1,0 +1,54 @@
+artifacts:
+  - id: RQ-78-COSTMODEL
+    type: system-req
+    release: v0.78
+    status: proposed
+    title: "Reproduce the cost-metric mispricing as an executable differential — a 2-byte copy and a 4-byte reload are priced identically"
+    description: >
+      RQ-59-MEASURE traced the allocator's regression tail not to the search but to the
+      COST METRIC, which CLAUDE.md records as pricing "a 2-byte register copy and a
+      4-byte frame reload identically". Two operations with a 2x byte-size difference
+      are priced the same, so the allocator cannot prefer the cheaper one. Nothing has
+      worked on the metric since it was measured.
+
+      SCOPE IS NOT A BETTER SEARCH, and this must be refused in review BY NAME. LLVM
+      moved to greedy in 2011; WebKit replaced Air's IRC graph colouring with a greedy
+      allocator at similar quality and much higher speed; both converged on cost model,
+      coalescing/hints and splitting. RQ-59-MEASURE found the same independently.
+      RULED OUT with reasons already recorded — do NOT re-litigate: regalloc2's
+      backtracking engine (its wins are pressure-at-scale wins), ILP/SMT in the compile
+      path (trusted-base cost), SSA-chordal (optimizes the non-binding constraint; synth
+      is not SSA), ML-guided eviction (non-deterministic quality, antithetical to a
+      proof-carrying compiler).
+
+      DELIVERABLE: an EXECUTABLE differential that reproduces the mispricing — two
+      shapes whose emitted byte costs differ and whose priced costs do not — with a
+      red-first demonstration. That repro is the deliverable EVEN IF NO FIX LANDS; a
+      measured mispricing with a failing test is worth more than an unmeasured
+      improvement. Plus the emitted-code cost pinned in claims.yaml as a
+      `direction: down` CEILING, paired with RQ-78-LADDER's reach FLOOR so neither can
+      be bought with the other.
+
+      THE CONSTRAINT A FIX MUST NOT BREAK: any cost change alters emitted code and must
+      not regress the WCET bounds. Those bounds are priced from the REAL ENCODER's own
+      byte lengths (`straightline_expansion_real`), not from the estimator, and synth is
+      the only system in its comparison space emitting a sound per-function cycle bound.
+      A change that made estimator and encoder disagree would break the soundness
+      argument, not merely a quality number. Every subtraction stays gated on
+      byte-identity or an execution differential.
+
+      REFUTING COMMAND: `grep -A 1 'prices a 2-byte register copy' CLAUDE.md`. If that
+      text is gone the mispricing was addressed and this premise is dead — v0.77 scoped
+      TWO `must` artifacts on premises that had already shipped, so check first.
+    tags:
+      - process
+      - quality
+      - measurement
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1433"
+      done-when: "manual:2026-09-30 an executable differential reproduces the 2-byte-copy vs 4-byte-reload mispricing with a red-first demonstration, and the emitted-code cost ceiling is pinned in claims.yaml as a direction: down ratchet paired with the reach floor"

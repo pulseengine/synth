@@ -1,0 +1,53 @@
+artifacts:
+  - id: RQ-78-FLOORREGEX2
+    type: system-req
+    release: v0.78
+    status: implemented
+    title: "A SECOND live instance of the digit-class floor — it rejected 200-999 and failed a REQUIRED context because the population grew"
+    description: >
+      `ci.yml`'s artifact-citation non-vacuity floor asserted `in 1[0-9]{2,} artifact
+      files`, and its own comment said that "pins the artifact-FILE count above 100".
+      `1[0-9]{2,}` means THE FIRST DIGIT IS 1: it accepts 100-199 and 1000-1999 and
+      REJECTS 200-999.
+
+      IT FIRED FOR REAL, which is how it was found rather than by a sweep. The v0.78
+      planning PR added six artifacts plus a `_release.yaml`, taking artifact files from
+      199 to 206, and `Claim Check` — one of the NINE REQUIRED contexts — went red while
+      the gate it guards reported a healthy result: 33 cited, 32 resolving, ZERO false
+      claims. THE GATE REDDENED BECAUSE THE THING IT GUARDS GOT BIGGER.
+
+      WHY THE CLASS SURVIVED A CLOSED ISSUE. v0.66.0 fixed the MUTATION-SURVEY floors
+      and #1243 was closed on that evidence; `ci_mutants_gate.py`'s docstring already
+      states the principle — "a floor is arithmetic; a character class over digits is not
+      a floor" — and also that `grep -q` fails silently. The class was never swept, so
+      this instance sat in a different step of the same workflow with the same defect.
+      v0.77 re-scoped #1243, checked the instance it knew about, found it delivered and
+      recorded a refutation. That was correct about that instance and is exactly how a
+      class-wide defect hides behind a correctly-closed issue.
+
+      DELIVERED: `scripts/ci_citation_floor.py` parses the summary's fields as INTEGERS
+      and compares them with `>=`, PRINTS the offending field with its value and floor,
+      treats `0 false claim(s)` as an EXACTNESS assertion rather than a floor, and
+      REFUSES when the summary line is ABSENT — because a floor matching nothing and a
+      floor being satisfied are otherwise the same exit code, which is what #1333 already
+      caused here once when the summary's wording moved.
+
+      REFUTING COMMAND: `for n in 99 199 206 999 1000; do echo "in $n artifact files" |
+      grep -qE 'in 1[0-9]{2,} artifact files' && echo "$n ACCEPT" || echo "$n REJECT";
+      done`. If 206 ACCEPTs, the old floor was not the defect and this artifact is wrong.
+    tags:
+      - process
+      - gate
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1435"
+      landed: "#1434"
+      verification-track: automated
+      # A `contains:` naming EXECUTED code, not a comment: the marker is inside an
+      # assertion NAME passed to `ok()` and printed at runtime, so a gutted self_test
+      # stops producing it. v0.76 proved a `contains:` naming a comment cannot fail.
+      done-when: "contains:scripts/ci_citation_floor.py:RQ-78-FLOORREGEX2"
