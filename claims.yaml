@@ -1851,9 +1851,46 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 19763
+        value: 19782
         baseline: 17897
         waivers:
+          - to: 19782
+            reason: >-
+              RQ-77-FALCON2 (#1318/#1426): 19763 -> 19782, a RISE of 19 that
+              adds NO lowering decision — 17 comment lines and 2 code lines,
+              and the 2 are the pool-exhaustion DIAGNOSTIC's own message string
+              spilling onto further continuation lines. No arm, no match site,
+              no new op is handled.
+
+              DERIVED, not eyeballed, and the first attempt was WRONG in the way
+              this release is about. A hand-rolled classifier cut the region at
+              the FIRST `#[cfg(test)]` in instruction_selector.rs — line 308 of
+              a 30k-line file, one of FOUR such attributes — and measured one
+              file where this field's population is a family of three. It
+              reported "0 added, 0 removed": a true statement about a 307-line
+              prefix. The figures above come from calling this checker's own
+              `_region` with this field's own marker, and the reproduction was
+              REFUSED unless its HEAD and worktree totals equalled 19763 and
+              19782, the numbers the gate itself derives. Tying a measurement to
+              the gate's own output is what distinguishes it from a measurement
+              of something else that happens to be green.
+
+              WHAT THE 19 LINES BUY. The diagnostic cited #1069, which is CLOSED
+              and titled about the `GI-FPU-002` class v0.76 FIXED, while the
+              defect it actually names — spill-slot pool exhaustion while
+              frame-homing a VFP local — appears nowhere in that issue's body or
+              any of its comments. A reporter following the citation is sent to
+              a thread saying the gap is elsewhere. It now cites #1426, filed
+              for this residual and correctly titled, and the added comment
+              explains why the substring itself could not be touched:
+              `arm_backend.rs` matches VFP_FRAME_HOME_SLOT_EXHAUSTION as a
+              STRING to rerun the VFP frame stage with a grown pool, so that
+              text is control flow, not prose.
+
+              Compacting the explanation to hold the ceiling would delete the
+              reason the next person must not "simplify" a message that a match
+              arm depends on. Paid for here as designed; permission is
+              per-growth, and a further rise needs a further waiver.
           - to: 19763
             reason: >-
               v0.76 COLD REVIEW, round 1 Pass A: 19738 -> 19763, a RISE of 25,
@@ -2703,7 +2740,11 @@ claims:
         # `selector_lines_code` — all of it comments correcting two FALSE
         # statements Pass A found in the release's only compiler change — so
         # the test module did not move. Tracked, not directed: no waiver.
-        value: 30356
+        # RQ-77-FALCON2 (#1318/#1426): 30356 -> 30375. The same +19 as
+        # selector_lines_code (17 comment + 2 diagnostic-string lines);
+        # the new both-directions test lives in synth-backend, outside
+        # this population. `direction: track` — no waiver, by design.
+        value: 30375
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
