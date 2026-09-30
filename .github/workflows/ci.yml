@@ -417,6 +417,15 @@ jobs:
       - name: Shipped-feature census self-test — feature polarity is not boolean polarity (RQ-78-FEATURESET)
         run: python3 scripts/shipped_feature_census.py --self-test
 
+      # RQ-78-RITUAL (#1440): the script EVERY merge goes through had no test, no
+      # CI reference and an UNBOUNDED wait loop whose failure mode was a hang.
+      # Three releases have had to repair it. The timeout half is an EXECUTION
+      # test — it extracts the shipped loop text and runs it against a stub `gh`,
+      # so the lines under test are the lines that ship; the rest are structural
+      # and each is proven non-vacuous by a mutation. Hermetic: no PR, no network.
+      - name: Merge-ritual test — the wait loop is bounded, and the merge stays inside its && chain (RQ-78-RITUAL)
+        run: python3 scripts/test_merge_ritual.py
+
       - name: Artifact citation gate — no artifact claims a test that does not exist (911)
         run: |
           set -euo pipefail

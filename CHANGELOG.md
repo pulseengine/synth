@@ -174,6 +174,36 @@ Replaced by `scripts/ci_citation_floor.py`, arithmetic rather than a character
 class, with 15 self-test assertions including a negative control that pins the OLD
 regex rejecting the live line.
 
+### The script every merge goes through had no test
+
+**RITUAL (#1440).** `scripts/merge_ritual.sh` runs four checks and performs the
+merge inside its own `&&` chain. It had no test, no CI reference and no shellcheck
+anywhere in the tree, and its CHECK3b wait loop was `while :; do … sleep 60; done`
+with **no bound at all** — so its failure mode was a *hang* rather than a signal.
+Three releases have already had to repair it.
+
+The loop is now bounded (`MAX_WAIT_MIN`, default 180, overridable because runner
+capacity is a fleet property and not a property of this script). On exhaustion it
+prints `TIMEOUT` and exits **2 — a refusal**, never a fall-through to a verdict,
+because timing out tells you nothing about whether the PR is mergeable.
+
+`scripts/test_merge_ritual.py` is the first test for it — 11 assertions in the
+required `claim-check` job — and it does two different things without conflating
+them. **Execution:** the timeout is tested by *extracting the shipped loop text*
+and running it against a stub `gh`, so the lines under test are the lines that
+ship; with nothing pending the same loop exits normally, and that positive control
+is load-bearing because otherwise "it exits 2" would be equally consistent with a
+loop that can never succeed. **Structure:** the rest are static and each is proven
+non-vacuous by a mutation — the merge sits inside an `&&` chain, `merge_gate`'s
+exit code is read from the process and not through a pipe, the wait floor is
+derived from branch protection.
+
+**The test found two defects in itself**, both this release's own class: the
+merge-chain assertion matched a *comment* containing `gh pr merge` and reported the
+shipped merge as unchained, and two mutations used `replace(…, 1)` so the mutant
+was rejected by nothing. Both surfaced only because each assertion is required to
+reject its mutant.
+
 ### Carried, and each measured rather than waved off
 
 - **PINDEBT6 (#1373).** `known_open_pins` is **84** and
@@ -204,13 +234,16 @@ regex rejecting the live line.
 
 ### Trace-graph delta — reported, and this time verified rather than repeated
 
-**errors +0 / −0; warnings +27 / −0.**
+**errors +0 / −0; warnings +30 / −0.**
 
 Previous releases called this "structural, not a regression". That was checked here
-rather than copied: the 27 new warnings are **9 artifacts × exactly 3 classes** —
+rather than copied: the 30 new warnings are **10 artifacts × exactly 3 classes** —
 `RQ-*` ids are not commit-trailer shaped, `req-type: process` sits outside the
 loaded schema, and each system requirement wants an incoming `verifies` link — the
-same three classes at the same per-artifact rate as v0.77's +24 over 8 artifacts,
+same three classes at the same per-artifact rate as v0.77's +24 over 8 artifacts
+(9 each at 9 artifacts, then 10 each at 10 — re-derived after this release's last
+artifact landed, because a figure taken from files the release edits is true only
+at a named commit),
 produced by the same rivet 0.37.0. A peer session was working on rivet
 schema-validation warnings; it has not landed, and `req-type: process` is still
 outside the loaded schema.
@@ -218,7 +251,7 @@ outside the loaded schema.
 <!-- DERIVED by scripts/release_notes_from_rivet.py from `rivet diff` -->
 <!-- base v0.77.0 · rivet 0.37.0 · do not hand-edit the lists -->
 
-### Artifacts (9 added, 0 removed, 0 modified, 649 unchanged)
+### Artifacts (10 added, 0 removed, 0 modified, 649 unchanged)
 
 - **RQ-78-ARCHMODEL** — Recurring N/A: feature-loop steps 1-2 (spar AADL -> WIT) deferred again on spar#445 — filed, not waived
 - **RQ-78-BLOCKERCLASS** — Census the ARM NEVER set by PRIMARY blocker and name the top class — scope the reach fix, do not start it blind
@@ -227,15 +260,16 @@ outside the loaded schema.
 - **RQ-78-FLOORREGEX2** — A SECOND live instance of the digit-class floor — it rejected 200-999 and failed a REQUIRED context because the population grew
 - **RQ-78-LADDER** — Re-measure the acceptance ladder — reach has had no live number for fourteen releases
 - **RQ-78-PINDEBT6** — Pin debt, sixth consecutive measurement — and this time the count itself is known to include five non-debt entries
+- **RQ-78-RITUAL** — The script every merge goes through had no test and an unbounded wait loop that failed by hanging
 - **RQ-78-VARVE** — The varve high-water refusal is a RECORDED NON-ACTION — the check is not authoritative anywhere, and the open question is upstream
 - **RQ-78-WIDEFILE** — The reach fix that would have shipped a silent miscompile — the ladder's last rung has no pool-grow retry and no execution oracle
 
 ### Trace-graph delta
 
 - errors: **+0 / -0**
-- warnings: **+27 / -0**
+- warnings: **+30 / -0**
 
-> 27 new warning(s), 0 new errors. Listed so the release says whether it improved the trace graph or degraded it — v0.69 shipped 22 unseen (#1337).
+> 30 new warning(s), 0 new errors. Listed so the release says whether it improved the trace graph or degraded it — v0.69 shipped 22 unseen (#1337).
 
 ## [0.77.0] - 2026-09-30
 
