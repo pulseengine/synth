@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-77-PROSEBLIND
     type: system-req
     release: v0.77
-    status: proposed
+    status: implemented
     title: "status_evidence R11 reads the structured fields, so a false status claim in an artifact's own PROSE is invisible to it"
     description: >
       R11 requires an artifact whose delivery commit is on main to carry a claiming
@@ -36,10 +36,56 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1319"
+      landed: "#1424"
+      verified-by: >-
+        REFUTED, AND THE REFUTATION ALREADY SHIPPED IN v0.69 — which this lane did not know when it
+        was scoped, and that is the finding. `scripts/repro/prose_status_claim_1319.py` has existed
+        since 2026-09-18 as RQ-69-PROSEGATE's evidence for the SAME issue (#1319), reaching the SAME
+        conclusion, and its `# ci-status:` header already says it is "the one script in this tree
+        whose own conclusion is that it must not be wired". `claims.yaml` even records the
+        conversation that raised the manual-oracle ceiling 7 -> 8 to let that refutation ship, and
+        names the exit condition: "if anyone finds a rule that separates the classes without being
+        tuned to this sample, this script grows a verdict and must be WIRED, and the ceiling falls
+        back to 7". So #1319 has carried its own answer for eight releases while staying OPEN. This
+        is the SECOND such lane in v0.77 after RQ-77-FLOORREGEX, which makes it a pattern about the
+        BOARD rather than an incident: two of three `must` lanes were scoped on issues whose work had
+        already shipped, and in both cases the evidence was one command away.
+        HOW IT WAS FOUND, recorded because the route matters: not by a refuting command, but because
+        `claim_check` RED on a trusted-base ceiling I had tripped by adding a tenth manual oracle. I
+        read `claims.yaml` only because a gate forced me to, and the v0.69 conversation was sitting
+        there. A first version of this lane wrote a PARALLEL census
+        (`prose_status_census_1319.py`); it is DELETED rather than shipped, because two censuses
+        answering one question is the duplication this programme exists to stop, and the ceiling
+        returns to 9.
+        WHAT THIS LANE ACTUALLY CONTRIBUTES, folded into the EXISTING script rather than beside it.
+        (1) A POSITIVE CONTROL, which v0.69's census lacked entirely (`grep -c` for git-show or
+        CLAIMSDRIFT: 0). Every stage there measured only FALSE positives on the live tree, so
+        "no rule separates the classes" was indistinguishable from "no rule fires at all" — and those
+        have opposite consequences. The control is the historical defect itself: at 3e6a520b
+        RQ-68-CLAIMSDRIFT read "Status stays `proposed`" while structurally `implemented`, and the
+        v0.68.0 release commit bd81bc8c corrected it. `control_text()` REFUSES rather than returning
+        nothing if that object cannot be read. (2) THE RAW-TEXT POPULATION. v0.69's `prose_of()` reads
+        the PARSED object, so YAML COMMENTS are invisible — and a false claim in a comment is still a
+        false claim in the artifact. The two populations do not agree on the hit count.
+        THE RESULT, with the control in place: NO STAGE SEPARATES. `naive` reds on the control and on
+        all six live records. `real-status` reds on the control and on three narratives.
+        `not-quoted` — v0.69's best — reds on the control, correctly, AND on RQ-62-EMBEDDER and
+        RQ-75-REPLAY, which are records narrating their own correction. So v0.69's verdict is
+        CONFIRMED and is now falsifiable rather than merely asserted. RQ-75-REPLAY is newer than
+        v0.69's measurement and is a subordinate clause explaining why R12 refuses `issue-scope`
+        beside a proposed status — a narrative the rule cannot distinguish.
+        NOT WIRED, deliberately and consistently with RQ-74-STALEMSG's census (checked: 0 references
+        in ci.yml): a census in CI that always exits 0 is a green asserting nothing, which is exactly
+        what v0.77 is about. `oracle_wiring_check` does not demand wiring — it demands a DECLARATION
+        ("An oracle nothing runs must SAY so"), and the header carries one.
+        A PROCESS FAILURE OF MY OWN, recorded because it is the same class: the gate battery for this
+        lane ran with its results ECHOED rather than gated, so `claim_check` RED and the commit and
+        push happened anyway. The standing rule is to put the dangerous statement inside the `&&`
+        chain, and an `rc=` line that a human reads is not a gate. Corrected before this landed.
       # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
       # artifact's own file goes TRUE the moment the file exists and reds R3;
       # and a `contains:` naming a COMMENT is satisfied by a comment, which
       # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
       # lane replaces this with a `contains:` naming EXECUTED code in a TEST
       # file when it flips the status.
-      done-when: "manual:2026-09-29 a prose/field status contradiction is either CAUGHT with its false-positive rate measured on the live artifact set, or refuted with that census published"
+      done-when: "contains:scripts/repro/prose_status_claim_1319.py:RQ-77-PROSEBLIND"

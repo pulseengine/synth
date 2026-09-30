@@ -80,11 +80,97 @@ def measure(show=False):
     return blocks, stages
 
 
+# RQ-77-PROSEBLIND (v0.77): THE POSITIVE CONTROL, which this census lacked.
+#
+# Every stage above measures FALSE positives on the live tree. None of them could
+# show that any stage catches the defect it exists for — because the one real
+# instance was corrected in v0.68.0 and is no longer in the working tree. A
+# separation experiment with no positive control cannot distinguish "no rule
+# separates the classes" from "no rule fires at all", and those have opposite
+# consequences.
+#
+# So the control comes from git history: at 3e6a520b, RQ-68-CLAIMSDRIFT read
+# "Status stays `proposed`" while structurally `implemented`; the v0.68.0 release
+# commit bd81bc8c corrected it to "Status is `implemented`". A stage is only
+# INFORMATIVE if it reds there and stays green on the live narratives.
+CONTROL = ("3e6a520b", "artifacts/release-v0.68/RQ-68-CLAIMSDRIFT.yaml")
+
+
+def control_text():
+    """The historical false claim. REFUSES rather than returning nothing."""
+    import subprocess
+    r = subprocess.run(["git", "show", f"{CONTROL[0]}:{CONTROL[1]}"],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        sys.exit(f"REFUSE: cannot read the positive control {CONTROL[0]}:{CONTROL[1]}. "
+                 f"Without it every 'green' below is indistinguishable from a rule "
+                 f"that never fires ({r.stderr.strip()[:100]})")
+    return r.stdout
+
+
+def stage_verdicts(raw_or_parsed_text, structured):
+    """Which stages fire on ONE artifact's text? Returns a dict of stage -> bool."""
+    out = {"naive": False, "real-status": False, "not-quoted": False}
+    for m in NAIVE.finditer(raw_or_parsed_text):
+        claimed = m.group(1).lower()
+        if claimed == structured:
+            continue
+        out["naive"] = True
+        if claimed not in STATUSES:
+            continue
+        out["real-status"] = True
+        before = raw_or_parsed_text[max(0, m.start() - 60):m.start()]
+        if "'" in before or '"' in before or '\u201c' in before:
+            continue
+        out["not-quoted"] = True
+    return out
+
+
+def verify():
+    """Does any stage SEPARATE the historical defect from the live narratives?
+
+    RQ-77-PROSEBLIND. Note the population: this reads the RAW file text, not
+    `prose_of()`. The parsed object cannot see YAML COMMENTS, and an artifact's
+    comments are part of its prose — a false claim in one is still a false claim.
+    Measured: the raw scan and the parsed scan do not agree on the hit count.
+    """
+    ctl = control_text()
+    ctl_status = str(yaml.safe_load(ctl)['artifacts'][0].get('status', '')).lower()
+    rows = [("POSITIVE " + CONTROL[0], stage_verdicts(ctl, ctl_status), True)]
+    for f, a in artifacts():
+        raw = open(f).read()
+        if raw.count("\n  - id:") > 0 and len(yaml.safe_load(raw).get('artifacts') or []) != 1:
+            continue          # raw text cannot be attributed in a multi-artifact file
+        aid = a['id']
+        if aid in (SELF, "RQ-77-PROSEBLIND"):
+            continue          # records that QUOTE the patterns to explain them
+        v = stage_verdicts(raw, str(a.get('status', '')).strip().lower())
+        if any(v.values()):
+            rows.append((f"negative {aid}", v, False))
+    print("\nseparation experiment (RAW text, incl. YAML comments) — the control "
+          "must RED, negatives must stay green")
+    for stage in ("naive", "real-status", "not-quoted"):
+        ok = all(v[stage] == must for _l, v, must in rows)
+        detail = " ".join(f"{l.split()[-1]}={'RED' if v[stage] else 'green'}"
+                          for l, v, _m in rows)
+        print(f"  {stage:14s} {'SEPARATES' if ok else 'fails    '}  {detail}")
+    print("  VERDICT: no stage separates. The control reds under all three, and so "
+          "do\n  records that correctly narrate their own history — which is why "
+          "this script\n  must not be wired, and why RQ-77-PROSEBLIND records a "
+          "refutation rather than a gate.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--show', action='store_true')
+    ap.add_argument('--verify', action='store_true',
+                    help="RQ-77-PROSEBLIND: run the separation experiment against "
+                         "the historical positive control")
     args = ap.parse_args()
     blocks, stages = measure()
+    if blocks == 0:
+        sys.exit("REFUSE: zero artifact blocks parsed — every count below would be "
+                 "about the empty set")
     print(f"artifact blocks scanned: {blocks}")
     for name in ("naive", "real-status", "not-quoted"):
         hits = [h for h in stages[name] if h[0] != SELF]
@@ -97,6 +183,8 @@ def main():
                 tag = "  [SELF]" if h[0] == SELF else ""
                 print(f"    {h[0]}{tag}: structured={h[1]} claimed={h[2]}")
                 print(f"      …{h[3]}…")
+    if args.verify:
+        verify()
     return 0
 
 
