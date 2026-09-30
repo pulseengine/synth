@@ -6,19 +6,48 @@ artifacts:
     title: "Recurring N/A: feature-loop steps 1-2 (spar AADL -> WIT) deferred again on spar#445 — filed, not waived"
     description: >
       Feature-loop steps 1-2 generate WIT from an AADL model in spar. They have been
-      N/A every release since the dependency was recorded, blocked upstream. This
-      artifact exists so the deferral stays VISIBLE to the conformance gate rather
-      than becoming an exemption by habit.
+      N/A every release since the dependency was recorded, blocked upstream on
+      spar#445. This artifact exists so the deferral stays VISIBLE to the conformance
+      gate rather than becoming an exemption by habit.
 
-      DELIVERABLE: re-verify the upstream issue at the v0.77 cut and record the DATE,
-      the state and the last-updated stamp. If it is still open and unchanged, the N/A
-      is filed again with its consecutive count; if it has moved, steps 1-2 come back
-      into scope and this artifact says so.
+      DELIVERABLE: re-verify spar#445 at the v0.77 cut and record the DATE, the state
+      and the last-updated stamp. If it is still open and unchanged, the N/A is filed
+      again with its consecutive count; if it has moved, steps 1-2 come back into
+      scope and this artifact says so.
 
       REFUTING COMMAND: read the upstream issue's STATE before its BODY, and compare
       `updatedAt` against `createdAt` rather than trusting the previous release's
       claim that it is untouched.
     tags:
+      # THE TAG SET, NOT THE PROSE, IS WHAT THE GATE READS. The step 1-2 matcher in
+      # loop_conformance_check.py requires `"feature-loop" in tags AND tags & {aadl,
+      # spar}` AND a non-empty `issue:`. An artifact missing `spar`/`aadl` is
+      # INVISIBLE to the very gate it is filed for, and the release then reports no
+      # filed steps-1-2 decision at all.
+      #
+      # This has happened THREE times — v0.65, v0.69 and v0.75 — each time to this
+      # same artifact, and v0.75's own body already carried the warning from v0.69
+      # while losing the tag a third time. Carrying the warning is not what prevents
+      # it; carrying these five tags is.
+      #
+      # v0.77 CHECKED THAT INHERITED SENTENCE INSTEAD OF COPYING IT, and it holds
+      # with one correction worth keeping. The three incidents are real and each is
+      # a COMMITTED version that the matcher above cannot see: f33002d1 (v0.65) and
+      # 15f2f887 (v0.69) had lost `feature-loop`; d51ce79f and a030db47 (v0.75) kept
+      # `feature-loop` and lost BOTH `spar` and `aadl`. So it is not one fragile tag
+      # — EITHER HALF of the conjunction has been dropped in practice, which is why
+      # all five are listed and none is treated as the load-bearing one. THE
+      # CORRECTION: every incident was caught BEFORE its tag. Tested at each of the
+      # fourteen shipped tags, all fourteen artifacts satisfy the matcher, so no
+      # release ever SHIPPED an invisible filing. "It has happened three times" is
+      # true of the working tree; "three releases shipped blind" would have been
+      # false, and the difference is exactly what this artifact is for.
+      #
+      # A SECOND REASON TO PIN THE VOCABULARY, found while deriving the count below:
+      # because v0.65's filing predates this five-tag set, ANY census keyed on
+      # today's tags silently excludes it. The tag set is not only what the gate
+      # reads — it is what a later measurement of this run reads, and it changed
+      # mid-run. See `verified-by`.
       - process
       - carried
       - spar
@@ -30,11 +59,15 @@ artifacts:
     fields:
       req-type: process
       priority: should
+      # The re-verification shipped; steps 1-2 did not, because the upstream
+      # blocker has not moved. R11 requires this beside a `landed:` on a
+      # non-claiming status: `landed:` alone cannot tell an increment from
+      # full delivery left unflipped.
+      disposition: deferred
+      landed: "#PENDING"
       issue: "#1136"
-      # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
-      # artifact's own file goes TRUE the moment the file exists and reds R3;
-      # and a `contains:` naming a COMMENT is satisfied by a comment, which
-      # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
-      # lane replaces this with a `contains:` naming EXECUTED code in a TEST
-      # file when it flips the status.
-      done-when: "manual:2026-09-29 spar#445 re-verified at the v0.77 cut with its state and updatedAt recorded, and the consecutive N/A count DERIVED from the filed artifacts rather than incremented by hand"
+      carried-from: RQ-76-ARCHMODEL
+      done-when: "manual: spar#445 re-verified 2026-09-30 — OPEN, created AND last updated 2026-09-03T10:57:37Z with ZERO comments, so untouched for 27 days; feature-loop steps 1-2 N/A for the FIFTEENTH consecutive release on that same unchanged upstream reason"
+      verification-track: manual
+      verified-by: >-
+        Deliberately `manual:`. The deliverable is a re-verification carrying a DATE; a `contains:` predicate pointing at this artifact's own file goes TRUE the moment the file exists, which reds R3 as status under-reporting. RE-VERIFIED 2026-09-30 (`date -u`, the only timestamp source), STATE BEFORE BODY as the refuting command requires: spar#445 is OPEN, its `updatedAt` EQUALS its `createdAt` at 2026-09-03T10:57:37Z, and it carries ZERO comments — so this is not merely "still open" but untouched for 27 days. THE CONSECUTIVE COUNT IS DERIVED, and the FIRST DERIVATION WAS WRONG in exactly the way this release is about. A tag-keyed census — "artifacts carrying {spar, aadl, feature-loop}" — returned FOURTEEN filings and named v0.77 the fourteenth. The correct figure is FIFTEEN, v0.63 through v0.77 with no gap, one filing per release and no duplicates, verified by walking the release directories and matching on artifact IDENTITY. The tag census was a true count of a DIFFERENT population: v0.65's filing predates this five-tag vocabulary and carries `{external-blocker, recurring-na, spar, feature-loop}` with no `aadl`, so a census keyed on today's tags cannot see it. Six of the fifteen (v0.63-v0.68) lack `carried`/`process` for the same reason. This is the v0.77 theme landing on the artifact whose entire purpose is keeping a deferral visible: the under-count would have been reported as progress-by-arithmetic, one filing short, from a green derivation. The shared cause was CHECKED rather than assumed on THIS tree — all fifteen filings cite spar#445, so "the same unchanged upstream reason" holds across the whole run and not merely its recent part. The five tags [process, carried, spar, aadl, feature-loop] are intact, and that is asserted with the GATE'S OWN COMMITTED FUNCTION rather than a hand-written tag comparison: calling `loop_conformance_check.find_filed_steps12_decision(docs, "v0.77")` returns THIS artifact, not stale. The same call was run for every release from v0.63 to v0.77 and returns that release's own filing in all fifteen cases, which is what establishes the run is unbroken by the predicate that matters rather than by a filename pattern.
