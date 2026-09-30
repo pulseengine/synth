@@ -78,17 +78,29 @@ def extract_wait_loop(text: str) -> str:
     return loop
 
 
-def run_loop(loop: str, max_wait: str, pending: str) -> tuple[int, str]:
+def run_loop(loop: str, max_wait: str, pending: str,
+             present: str = "9") -> tuple[int, str]:
     """Execute the SHIPPED loop with a stub `gh`.
 
-    `pending` is the second field the loop's own jq produces (the count of checks
-    with an empty conclusion), so a non-zero value means "still waiting".
+    `present` is the first field the loop's own jq produces (how many non-advisory
+    checks EXIST) and `pending` the second (how many have no conclusion yet), so
+    the stub can drive both halves of the loop's break condition independently.
+
+    `present` exists because without it the population FLOOR could not be tested
+    at all: v0.78's round-2 review found the floor assertion passing under every
+    mutation of the property it named, since the harness could only ever produce
+    two outcomes and the predicate accepted both. A parameter that cannot vary
+    cannot discriminate.
     """
     with tempfile.TemporaryDirectory() as d:
         bindir = pathlib.Path(d) / "bin"
         bindir.mkdir()
         gh = bindir / "gh"
-        gh.write_text(f'#!/bin/bash\necho "9\t{pending}"\n')
+        # A REAL TAB between the fields: the loop reads them with `read -r N P`, and
+        # a literal backslash-t would make `[ "$N" -ge "$FLOOR" ]` error with
+        # "integer expression expected" and never settle — the loop would then
+        # "time out" for a reason that has nothing to do with the property tested.
+        gh.write_text(f'#!/bin/bash\necho "{present}\t{pending}"\n')
         gh.chmod(0o755)
         script = pathlib.Path(d) / "loop.sh"
         script.write_text(
@@ -131,11 +143,32 @@ def main() -> int:
     ok("POSITIVE CONTROL: the same shipped loop exits NORMALLY when the "
        "population is met and nothing is pending",
        rc_ok == 0 and "LOOP-EXITED-NORMALLY" in out_ok)
-    # And the floor must still bind: population BELOW the floor is not "settled".
-    rc_lo, out_lo = run_loop(loop.replace("FLOOR", "FLOOR"), max_wait="1", pending="0")
-    ok("the loop honours its POPULATION FLOOR — 9 present vs floor 9 settles, "
-       "which is what the positive control above just showed",
-       rc_lo == 0 or "TIMEOUT" in out_lo)
+    # THE POPULATION FLOOR, tested by varying the POPULATION. Nothing pending, but
+    # only 3 of the 9 required checks present: "nothing is pending" is also true of
+    # a PR whose checks have not registered, which is the #1407 defect the floor
+    # exists to catch. It must NOT settle.
+    #
+    # This assertion replaces one that was VACUOUS and was caught by v0.78's round-2
+    # review: it passed `loop.replace("FLOOR", "FLOOR")` — a no-op — and its
+    # predicate `rc == 0 or "TIMEOUT" in out` accepted BOTH outcomes the harness can
+    # produce, so it held under a break condition replaced by `false`, under the
+    # floor removed entirely, and under an unsatisfiable floor. Its own name
+    # conceded it ("which is what the positive control above just showed"). A
+    # predicate that accepts every outcome is not an assertion.
+    # THE FLOOR ASSERTION AND THE POSITIVE CONTROL ARE A PAIR, and neither alone
+    # discriminates every mutation — measured, not assumed:
+    #   floor removed (`-ge 0`)        -> THIS assertion fails, positive control passes
+    #   break condition -> `false`     -> this passes, POSITIVE CONTROL fails
+    #   floor unsatisfiable (`-ge 999`)-> this passes, POSITIVE CONTROL fails
+    #   timeout removed                -> the loop HANGS; the harness's own
+    #                                     subprocess timeout raises after 120s
+    # So the set is potent where no single member is. Claiming this assertion
+    # catches all four would be the over-claim round 2 caught in its predecessor.
+    rc_lo, out_lo = run_loop(loop, max_wait="1", pending="0", present="3")
+    ok("RQ-78-RITUAL: population BELOW the floor does NOT settle even with nothing "
+       "pending — 'no checks pending' is also true before CI registers (#1407)",
+       rc_lo == 2 and "TIMEOUT" in out_lo
+       and "LOOP-EXITED-NORMALLY" not in out_lo)
 
     # ---------------------------------------------------------- PART 2: STRUCTURE
     # Each assertion below is paired with a MUTATION proving it is not vacuous.

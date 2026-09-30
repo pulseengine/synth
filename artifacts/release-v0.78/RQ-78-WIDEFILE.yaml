@@ -12,7 +12,7 @@ artifacts:
       which only an execution oracle could show, and that rung had none.
 
       WHY IT BELONGS TO THIS THEME, on both halves: it is a measured reach increment
-      (the wall for a synthetic family moves 60 -> 72) and a measured cost result
+      (the wall for a synthetic family moves 60 -> 66, six locals) and a measured cost result
       (the wide register file makes the frame SMALLER — 1956 bytes at 60 locals
       against 2040 at 59). And it is the release's own gating rule doing its job:
       every reach increment ships with the oracle that makes newly-accepted input
@@ -56,10 +56,19 @@ artifacts:
         check kept the old signature; stage 3 was added after stages 1 and 2 had their retries.
         ADDING THE RETRY EXTENDS REACH, measured rather than argued, on a synthetic family of n f32
         locals consumed by a RIGHT-leaning product nest so all n stay live at once (the shipped fixtures
-        fold LEFT, two live at a time, which is why none of them ever reached stage 3): before, the last
-        compiling n was 58 and n=60 declined with every rung spent; after, n=60 and n=64 compile and the
-        new wall sits at n=72 — and that wall is the GENUINE `[sp,#imm]` 1020-byte VSTR/VLDR ceiling,
-        declined loudly, not a missing rung. The cost half moved the right way too: n=60 emitted 1956
+        fold LEFT, two live at a time, which is why none of them ever reached stage 3): on the SHIPPED tree
+        n=59 compiles at 2040 bytes and n=60 declines with every rung spent; with the retry applied in a
+        probe, n=60..65 compile (1956, 1992, 2028, 2064, 2100, 2136 bytes) and n=66 declines on the
+        GENUINE `[sp,#imm]` 1020-byte VSTR/VLDR ceiling, loudly, not on a missing rung. So the wide file
+        buys SIX locals. TWO CORRECTIONS FROM ROUND 2 SIT IN THIS SENTENCE. It said "the last compiling
+        n was 58", which contradicted this record's own "n=59's 2040 bytes" one clause later — and round
+        1 corrected that in the description while LEAVING IT HERE, in the evidence field, so the
+        statement round 1 declared false survived in the field that carries the evidence. And round 1's
+        replacement wall of 72 was itself NEVER MEASURED: it came from the test docstring, and promoting
+        an untested docstring figure into the headline replaced a mislabelled-but-real 64 with an
+        invented 72. Round 2 measured the wall at 66 and showed the grow formula is not the variable —
+        identical at the stage-2 size, at the `I64_SPILL_SLOTS_MAX` cap of 120, and with the cap lifted
+        to 400 — because at n=66 the rung already asks for offset 1024 against a 1020 ceiling. The cost half moved the right way too: n=60 emitted 1956
         bytes against n=59's 2040, because 32 allocatable S-registers instead of 16 means fewer values
         need a frame slot at all.
         AND THE NEWLY-ACCEPTED CODE IS WRONG. Driven through the #1069 execution differential (unicorn

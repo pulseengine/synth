@@ -89,7 +89,7 @@ artifacts:
         the NEVER set is built and not shipped — and it is REFUTED, on a ground specific enough to
         check. THE TWO "REGISTER EXHAUSTIONS" ARE DIFFERENT SITES. The 70-module decline is raised by
         `free_callee_saved` at `crates/synth-synthesis/src/instruction_selector.rs:9238`, searching the
-        five-register `CALLEE_SAVED_POOL` on the SELECTOR path. `SYNTH_SPILL_ON_EXHAUST` is consulted at
+        five-register `CALLEE_SAVED_POOL` on the SELECTOR path. `SYNTH_SPILL_ON_EXHAUST` is READ at
         `crates/synth-synthesis/src/optimizer_bridge.rs:784` and CONSULTED at `:3719`, gating the OPTIMIZED path's VCR-RA-001
         allocator spill (#496), whose own comment says "otherwise the #496 decline stands for the whole
         function". Two decline sites in two files on two code paths, sharing a NAME. Whether clearing

@@ -220,8 +220,15 @@ fn rung_frame_homes_locals_and_pins_no_home_above_s7() {
 ///
 /// WHY THE OBVIOUS FIX IS NOT IN THE TREE. Adding the retry (about 20 lines,
 /// the same shape as stage 2's) DOES extend reach: this shape compiles, and the
-/// wall for the family moves from 60 to 72 locals, the new wall being the genuine `[sp,#imm]`
-/// 1020-byte VSTR/VLDR ceiling. But the newly-accepted code is WRONG. Driven
+/// wall for the family moves from 60 to 66 locals — SIX locals, measured by applying
+/// the retry in a probe: 60..65 compile (1956, 1992, 2028, 2064, 2100, 2136 bytes)
+/// and 66 declines. An earlier version of this comment said 72, which was never
+/// measured; v0.78's round-2 review derived 66 and found that the grow formula is
+/// not the variable (identical outcome at the stage-2 size, at the `I64_SPILL_SLOTS_MAX`
+/// cap of 120, and with the cap lifted to 400). The new wall is the genuine
+/// `[sp,#imm]` 1020-byte VSTR/VLDR ceiling: at n=66 the rung already asks for offset
+/// 1024, so ~128 8-byte slots are the addressable maximum and this family consumes
+/// about two per local. But the newly-accepted code is WRONG. Driven
 /// through the `#1069` execution differential against wasmtime, every NEGATIVE
 /// input returns a result differing from wasmtime in EXACTLY the sign bit
 /// (`got ^ want == 0x8000_0000` for -0.0, -1.0, -0.25, -3.14159265, -1e30, -inf;

@@ -86,9 +86,12 @@ and 2 already had their retries.
 
 **Adding the retry extends reach**, measured on a synthetic family whose locals are
 consumed by a right-leaning nest so all stay live at once: the last compiling case
-moved from **60 to 72** locals — 59 compiles today at 2040 bytes, and with the
-rung 60 and 64 compile — the new wall being the genuine `[sp,#imm]`
-1020-byte VSTR/VLDR ceiling, declined loudly. The cost half moved the right way too
+moved from **60 to 66** locals — six of them. On the shipped tree 59 compiles at
+2040 bytes and 60 declines; with the retry applied in a probe, 60–65 compile
+(1956 … 2136 bytes) and 66 declines on the genuine `[sp,#imm]` 1020-byte VSTR/VLDR
+ceiling, loudly. **An earlier draft said 72, which was never measured** — round 2
+derived 66 and also showed the grow formula is not the variable (identical at the
+stage-2 size, at the 120-slot cap, and with the cap lifted to 400). The cost half moved the right way too
 — 1956 bytes at 60 locals against 2040 at 59, because 32 allocatable S-registers
 instead of 16 means fewer values need a frame slot at all.
 
