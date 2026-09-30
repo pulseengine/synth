@@ -36,7 +36,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1318"
-      landed: "#PENDING"
+      landed: "#1427"
       issue-scope: outlives
       verified-by: >-
         RULE 4, SECOND BRANCH DELIVERED, and the first branch reported plainly rather than attempted
