@@ -51,4 +51,57 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1433"
-      done-when: "manual:2026-09-30 an executable differential reproduces the 2-byte-copy vs 4-byte-reload mispricing with a red-first demonstration, and the emitted-code cost ceiling is pinned in claims.yaml as a direction: down ratchet paired with the reach floor"
+      # PARTIAL. The premise survives its refuting command but the DELIVERABLE is
+      # reframed, because locating the three cost sites showed the lane was scoped
+      # to build something that already exists and does not ship. R11 requires a
+      # disposition beside `landed:` on a non-claiming status.
+      disposition: partial
+      landed: "#1438"
+      verification-track: manual
+      done-when: "manual:2026-09-30 the three cost notions on the ARM path are LOCATED by file and line, the shipped spill decision is shown to consult no byte size at all, the real-encoder metric is shown to exist and to ship flag-off (derived, not asserted), and the lone cost CEILING is explicitly NOT pinned with the reason stated"
+      verified-by: >-
+        PARTIAL, and REFRAMED — the premise holds, the deliverable was wrong. THE REFUTING COMMAND WAS
+        RUN, not assumed: `grep -A1 'prices a 2-byte register copy' CLAUDE.md` still hits at line 168,
+        so nothing has addressed the metric and the premise is live. But scoping the differential
+        required locating the metric, and locating it showed this lane was about to BUILD A COST MODEL
+        THAT ALREADY EXISTS AND DOES NOT SHIP.
+        THREE COST NOTIONS ON THE ARM PATH, located by file and line rather than described. (1) THE
+        SHIPPED SPILL DECISION PRICES NO BYTES AT ALL. The victim is chosen by Belady next-use
+        DISTANCE — `spill_evict_farthest` / `spill_evict_pair_farthest` in
+        `crates/synth-synthesis/src/optimizer_bridge.rs:7522` and `:7611`, "farthest next use wins",
+        "the cost of an eviction is dominated by the value needed soonest, so maximize that minimum".
+        Belady is not WRONG; it is optimal for reload COUNT under a known future. It simply optimizes a
+        different objective than emitted size, so on the byte axis every candidate is priced
+        identically — which is a STRONGER statement than CLAUDE.md's "a 2-byte register copy and a
+        4-byte frame reload identically", and it is the honest one. (2) A BYTE-SIZE FUNCTION DOES EXIST
+        on the shipped path — `estimate_arm_byte_size`, `optimizer_bridge.rs:371` — but it serves
+        BRANCH DISPLACEMENT, not allocation, and its own doc comment calls it "a *hand-maintained
+        mirror* of the encoder", which is the #498 structural cause and precisely the pattern the North
+        Star forbids; it exists because `synth-synthesis` cannot depend on `synth-backend`, and the
+        `estimator_encoder_agreement` oracle pins it against the real encoder. (3) THE REAL-ENCODER
+        COST MODEL EXISTS AND DOES NOT SHIP: `crates/synth-synthesis/src/graph_alloc.rs:583` prices each
+        web as `enc(&instrs[*i].op) * weight` — the REAL encoder's own byte length times the loop
+        weight — normalized `W / (span * degree)` (`:607`, the Bernstein-area refinement of Chaitin's
+        cost/degree). It is behind `SYNTH_GRAPH_ALLOC`, default OFF.
+        SO THE FINDING IS THE NORTH STAR'S OWN RULE ONE LAYER DOWN. "Derive what you check against from
+        the artifact you ship": of the three cost notions, the one that DERIVES from the shipped encoder
+        is the one that is NOT SHIPPED, and the one on the shipped path is a hand mirror serving a
+        different purpose. The allocator that would consume the derived metric is the same flag-off
+        capability RQ-78-FEATURESET derived, so this is not a coincidence of two lanes — it is one fact
+        seen from two directions. AND THAT THE FLAG SHIPS OFF IS NOW DERIVED RATHER THAN ASSERTED, by a
+        committed census whose self-test runs in the required `Claim Check` job; the previous claim of
+        this shape rested on prose.
+        WHAT THIS LANE DOES NOT CLAIM, held back deliberately because the adjacent overclaim is the one
+        this release keeps catching: it does NOT claim that flipping `SYNTH_GRAPH_ALLOC` improves
+        emitted code, and it does not claim the Belady metric is the cause of any specific regression.
+        RQ-59-MEASURE's verdict is cited as the ground for the premise, not re-derived here, and the
+        measurement that would settle it needs the corpus RQ-78-LADDER is blocked on. A differential
+        over shapes I can construct locally would measure the shapes I chose, which is the wrong-subject
+        class this release is named after.
+        THE COST CEILING IS DELIBERATELY NOT PINNED, and the reason is the theme rather than
+        convenience. The done-when as written required the ceiling "paired with RQ-78-LADDER's reach
+        floor so neither can be bought with the other". That floor cannot be pinned this release — its
+        corpus is unmounted — and pinning the CEILING ALONE is exactly the alternating the theme
+        forbids: a release could then buy cost wins with reach losses and stay green. Shipping the half
+        that happened to be reachable would have inverted the pin's whole purpose, so neither half is
+        pinned and both artifacts say which and why.
