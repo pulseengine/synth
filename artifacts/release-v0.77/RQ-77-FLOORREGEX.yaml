@@ -33,6 +33,33 @@ artifacts:
       priority: must
       issue: "#1243"
       disposition: refuted
+      # WHY THERE IS NO `landed:` AND NO CLAIMING STATUS, and why the close-set
+      # gate consequently REDS on #1243 — recorded rather than worked around.
+      # v0.77 delivered a REFUTATION: the defect was fixed in v0.66.0
+      # (`1bfade3d`), eleven releases before this one scoped it as a `must`.
+      # #1243 is CLOSED, correctly, citing that release.
+      #
+      # TWO COMMITTED GATES DISAGREE ABOUT THIS ONE ISSUE, and neither is wrong
+      # on its own terms. `issue_closure_check` says #1243 is "CLOSED BUT NOT
+      # AUTHORISED" and prescribes "reopen it, or name it in the artifact that
+      # delivered it". Flipping this artifact to `implemented` to satisfy that
+      # makes `status_evidence` R11 refuse: "status `implemented` claims the
+      # outcome holds but `disposition: refuted` says it does not — pick one".
+      # R11 is right. So the gate that wants a claiming status and the gate that
+      # forbids one cannot both be satisfied here.
+      #
+      # THE REAL GAP, FILED AS #1430: the closure gate has a category for an
+      # issue a PREVIOUS release closed post-tag (RQ-76-CLOSUREMAIN added it),
+      # but none for an issue closed on the evidence that an EARLIER release
+      # delivered it where NO artifact could name it — because #1243 was FILED
+      # AFTER v0.66.0 shipped the fix. Attribution scans every release below
+      # this one, so the window is not the problem; the absence of any artifact
+      # is, and that absence is a fact about when the issue was reported.
+      #
+      # REOPENING IS REFUSED. The issue is fixed, and leaving it open is exactly
+      # what let v0.77 scope a dead premise as a `must`. The gate is ADVISORY at
+      # the tag by its own design (tag_release.sh GATE5), so this reds visibly
+      # and is acted on rather than silenced.
       verified-by: >-
         REFUTED — THE PREMISE WAS ELEVEN RELEASES DEAD, and the refuting command this artifact
         carries is what found it, on the first tick of the release. `.github/workflows/ci.yml` no

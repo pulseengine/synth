@@ -36,6 +36,16 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1403"
+      # HELD OPEN, MEASURED: #1403 frames itself as "a class, not one file" and
+      # names FIFTEEN CI-wired drivers. Of the five it names, only TWO are
+      # addressed — `test_merge_gate_callsite.py` (reads
+      # `scripts/fixtures/gh_pr_view_rollup.captured.json`, refuses if absent)
+      # and `test_ci_pool_tripwire.py` (RQ-76-RECORDSHAPE derives the live key
+      # population from `ci.yml`). Exactly ONE captured fixture exists in the
+      # tree. The other three are UNDETERMINED, and a grep for live-derivation
+      # words is not a predicate. This lane derived the POPULATION #1403's prose
+      # could not pin; it did not convert the class.
+      issue-scope: outlives
       landed: "#1425"
       verified-by: >-
         DELIVERED — the population is now DERIVED, and the derivation's own finding is that no single
