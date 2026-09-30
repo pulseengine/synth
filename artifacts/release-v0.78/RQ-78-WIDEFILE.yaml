@@ -1,0 +1,105 @@
+artifacts:
+  - id: RQ-78-WIDEFILE
+    type: system-req
+    release: v0.78
+    status: implemented
+    title: "The reach fix that would have shipped a silent miscompile — the ladder's last rung has no pool-grow retry and no execution oracle"
+    description: >
+      The theme asks what synth compiles. The recovery ladder is where that question
+      is decided for VFP-pressured functions, and its LAST rung turns out to be the
+      only one with no pool-grow retry — while failing on exactly the wall a grown
+      pool relieves. Adding the retry does extend reach. It also emits WRONG CODE,
+      which only an execution oracle could show, and that rung had none.
+
+      WHY IT BELONGS TO THIS THEME, on both halves: it is a measured reach increment
+      (the wall for a synthetic family moves 58 -> 64) and a measured cost result
+      (the wide register file makes the frame SMALLER — 1956 bytes at 60 locals
+      against 2040 at 59). And it is the release's own gating rule doing its job:
+      every reach increment ships with the oracle that makes newly-accepted input
+      safe, and THE ORACLE LANDS FIRST. Here the oracle landed first and REFUSED the
+      increment.
+
+      REFUTING COMMAND: `cargo test -p synth-backend --test vfp_local_pressure_1069
+      wide60`. It passes today. If it fails with "stage 3 must have NO grow retry
+      today", the rung landed and every number in this record must be re-measured
+      before anyone trusts the reach gain.
+    tags:
+      - process
+      - reach
+      - quality
+      - measurement
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1439"
+      # HELD OPEN, MEASURED: #1439 carries three asks and this lane delivers NONE
+      # of them — it is the issue this lane FILED for the residual work. What
+      # landed is the finding and a potent red-first test; the root-cause, the
+      # missing execution differential for #1267, and the rung itself are all
+      # ahead. Authorising closure on "we found it" would be the v0.71/v0.73
+      # umbrella shape.
+      issue-scope: outlives
+      done-when: "contains:crates/synth-backend/tests/vfp_local_pressure_1069.rs:wide60_declines_and_the_ladder_dies_on_the_wide_file_rung_1426"
+      verified-by: >-
+        DELIVERED as a measurement and a refusal, at commit `078cd88a` plus this lane's own commit.
+        THE ASYMMETRY. In `crates/synth-backend/src/arm_backend.rs` stages 1 and 2 of the VFP recovery
+        ladder each retry with a GROWN slot pool when their failure is slot exhaustion. Stage 3
+        (`vfp-wide-file`, #1267) calls `full_sequence(None, true, true, true)` and runs with the DEFAULT
+        8-slot pool while asking the selector to frame-home locals, with no retry at all. The two halves
+        each fix exactly what the other hits: `vfp-frame-locals+pool-grow(N)` dies on VFP REGISTER FILE
+        exhaustion, which the wide S16..S31 file relieves; `vfp-wide-file` dies on SLOT POOL exhaustion,
+        which a grown pool relieves. The combination had never been tried. This is the "twin does not
+        inherit the fix" shape already recorded here from v0.71, where a VFP twin of a narrowed integer
+        check kept the old signature; stage 3 was added after stages 1 and 2 had their retries.
+        ADDING THE RETRY EXTENDS REACH, measured rather than argued, on a synthetic family of n f32
+        locals consumed by a RIGHT-leaning product nest so all n stay live at once (the shipped fixtures
+        fold LEFT, two live at a time, which is why none of them ever reached stage 3): before, the last
+        compiling n was 58 and n=60 declined with every rung spent; after, n=60 and n=64 compile and the
+        new wall sits at n=72 — and that wall is the GENUINE `[sp,#imm]` 1020-byte VSTR/VLDR ceiling,
+        declined loudly, not a missing rung. The cost half moved the right way too: n=60 emitted 1956
+        bytes against n=59's 2040, because 32 allocatable S-registers instead of 16 means fewer values
+        need a frame slot at all.
+        AND THE NEWLY-ACCEPTED CODE IS WRONG. Driven through the #1069 execution differential (unicorn
+        vs wasmtime, bit-exact) every NEGATIVE input disagreed with wasmtime and every non-negative one
+        agreed: `got ^ want == 0x8000_0000` on EVERY failing row — precisely the sign bit — for -0.0,
+        -1.0, -0.25, -3.14159265, -1e30 and -inf. All 60 factors share the param's sign, so 60 of them
+        multiply to a POSITIVE result; an odd number of sign contributions means one factor is not the
+        value it should be. Magnitudes agree because this family saturates to ±inf or 0, so the fixture
+        DETECTS the defect and cannot localise it further — stated because a reader would otherwise
+        expect a magnitude signal.
+        THE DEFECT IS IN THE WIDE-FILE PATH, NOT IN POOL GROWTH, and that is derived rather than
+        assumed: `live24` in the same differential exercises `vfp-frame-locals+pool-grow` and is
+        bit-exact, so the delta between a passing case and a failing one is the wide file.
+        WHY IT SURVIVED: #1267 is THE ONLY RUNG WITH NO EXECUTION ORACLE. `vfp_wide_file_1267.rs`
+        asserts the VPUSH/VPOP pair, its position relative to the frame `sub sp`, and the #1273
+        stack-param refusal — encoding properties, all real — and nothing in `scripts/repro/` covers
+        #1267 at all. So the ordering hypothesis is already excluded by that file's own assertions and
+        the cause is elsewhere; it is filed as #1439 with the repro rather than guessed at here.
+        LATENT, NOT ACTIVE, and the distinction is load-bearing: `vfp_wide_file_1267.rs` records that
+        nothing on this tree reaches the rung, and that on the external reporter's module it is
+        "reached TWICE and rescues neither call". Because it rescues nothing, NO SHIPPED BINARY
+        MISCOMPILES THROUGH THIS PATH TODAY. What makes it urgent is that the obvious reach fix would
+        make it live — and would convert two loud declines in a real customer module into
+        possibly-wrong code, which is "accept more and check less" by name.
+        SO THE RUNG IS NOT IN THE TREE. What is committed is the honest state: a test that pins the
+        decline, asserts the ladder REACHES the wide-file rung and dies there on slot exhaustion,
+        asserts stage 2's grow retry IS present so "stage 3 lacks one" is a real contrast, and asserts
+        stage 3's is ABSENT. That last assertion is a TRIPWIRE — it fails the moment the rung lands,
+        forcing whoever adds it to add the execution coverage in the same change. PROVEN POTENT by
+        applying the ~20-line rung and watching the test go red, with the mutation verified by
+        `git diff --numstat` against a BACKUP COPY (10 lines added) and `arm_backend.rs` afterwards
+        confirmed restored byte-identical by an empty numstat.
+        THE FIXTURE IS DELIBERATELY NOT IN THE COMMITTED `.wat`. A declining export makes `synth
+        compile` exit non-zero under #952, so the differential would need `--allow-skipped-exports` to
+        proceed — and that flag's own diagnostic says a build gating on `$?` would otherwise accept an
+        object with a silently-missing public entry point. Weakening that gate to host a fixture would
+        trade a real safeguard for test convenience, so the shape lives in the Rust test where it needs
+        no such exemption.
+        WHAT THIS DOES NOT CLAIM, and conduct rule 4 is the reason it is stated: THE EXTERNALLY
+        REPORTED RESIDUAL DID NOT MOVE. `controller@0.10.0#step` still declines, and this release does
+        not change that. This lane is not progress on his defect — it is the measurement of WHY the
+        obvious extension of the ladder cannot be taken yet, and it is recorded here and in the release
+        notes rather than posted to his threads.
