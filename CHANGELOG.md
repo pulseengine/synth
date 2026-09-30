@@ -200,19 +200,23 @@ pass.**
 <!-- DERIVED by scripts/release_notes_from_rivet.py from `rivet diff` -->
 <!-- base v0.76.0 · rivet 0.37.0 · do not hand-edit the lists -->
 
-**8 added, 0 removed, 0 modified, 641 unchanged.**
+**8 added, 0 removed, 0 modified, 641 unchanged** — the list below is the tool's own output, pasted unedited.
 
-- **RQ-77-SUBJECT** — a green can be true about the WRONG SUBJECT; a refusal that makes the class loud
-- **RQ-77-STDERR** — a refusal's REASON reaches the log (and the issue named the wrong mechanism)
-- **RQ-77-FLOORREGEX** — `[4-9][0-9]*` means "first digit 4–9", not "at least 4" — refuted, fixed in v0.66.0
-- **RQ-77-PROSEBLIND** — R11 reads structured fields, so a false claim in an artifact's PROSE is invisible
-- **RQ-77-CENSUS** — the literal-table census was prose; no single number existed
-- **RQ-77-FALCON2** — the falcon residual is a DIFFERENT defect, and its diagnostic cited the wrong issue
-- **RQ-77-PINDEBT5** — pin debt, fifth measurement; no pin closed, and stale pins ARE detectable
-- **RQ-77-ARCHMODEL** — recurring N/A on spar#445, fifteenth consecutive
+- **RQ-77-ARCHMODEL** — Recurring N/A: feature-loop steps 1-2 (spar AADL -> WIT) deferred again on spar#445 — filed, not waived
+- **RQ-77-CENSUS** — The literal-table census is prose, not a script — v0.76 marked it UNVERIFIED and an independent reconstruction disagreed
+- **RQ-77-FALCON2** — The falcon residual is a DIFFERENT defect from the one v0.76 moved, and its diagnostic cites an issue titled about the opposite thing
+- **RQ-77-FLOORREGEX** — `[4-9][0-9]*` means 'first digit 4-9', not 'at least 4' — a CI floor whose subject is a digit rather than a magnitude
+- **RQ-77-PINDEBT5** — Pin debt, fifth consecutive measurement — no pin closed, and an audit of whether a CLOSED pin would even be noticed
+- **RQ-77-PROSEBLIND** — status_evidence R11 reads the structured fields, so a false status claim in an artifact's own PROSE is invisible to it
+- **RQ-77-STDERR** — A refusal's REASON never reached the log — and #1419's stated mechanism (discarded stderr) was not the cause
+- **RQ-77-SUBJECT** — A green can be TRUE ABOUT THE WRONG SUBJECT — the release machinery's five instances, and a refusal that makes the class loud
 
 This list is derived because it was once remembered and got it wrong: v0.66 filed
-two of its own artifacts under `[Unreleased]` (#1337).
+two of its own artifacts under `[Unreleased]` (#1337). It is also pasted **unedited**
+— round 2 of the cold review found the first version reordered and paraphrased every
+title while carrying the tool's own "do not hand-edit the lists" comment, which made
+the provenance claim false even though all eight ids were present and the counts
+byte-matched.
 
 ### Trace-graph delta — reported, not silently shipped
 
@@ -225,8 +229,11 @@ three classes, and all three are pre-existing convention mismatches rather than 
 defects:
 
 1. `RQ-77-*` ids are not commit-trailer shaped (rivet wants an all-digit suffix).
-2. `req-type: process` is outside the loaded schema's allowed set — used by **97**
-   artifacts repo-wide.
+2. `req-type: process` is outside the loaded schema's allowed set — **107**
+   occurrences across **100** artifact files, and `rivet validate` reports exactly
+   107 warnings of that class, so the two agree. (Round 2 of the cold review
+   corrected this from 97, a figure no predicate I could construct reproduces;
+   `v0.76.0` carries 99.)
 3. Each system requirement wants an incoming `verifies` link from a verification
    artifact.
 

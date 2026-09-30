@@ -258,8 +258,14 @@ fn live24_slot_exhaustion_message_still_triggers_the_pool_grow() {
 /// asserting only the first would stay green if someone cited both.
 ///
 /// The grow-retry substring is asserted by `live24_...` above and is deliberately
-/// untouched by this: `arm_backend.rs` matches it as CONTROL FLOW, and only the
-/// `#NNNN:` prefix outside that substring moved.
+/// untouched by this: `arm_backend.rs` matches it as CONTROL FLOW. The MATCHED
+/// CONST is byte-identical to v0.76.0; what changed sits outside it — the `#NNNN:`
+/// prefix AND a new explanatory sentence naming #1318 and #1069. An earlier version
+/// of this comment said "only the `#NNNN:` prefix … moved", which is false: round 1
+/// of the cold review corrected that sentence in `instruction_selector.rs` and round
+/// 2 found it still standing HERE, in the twin edited by the same commit. Fixing one
+/// of two identical claims is the shape v0.71 recorded as "a twin check does not
+/// inherit the fix".
 #[test]
 fn the_pool_exhaustion_diagnostic_cites_the_open_pool_issue_not_the_closed_class_one() {
     let ops = live_f32_ops(24);

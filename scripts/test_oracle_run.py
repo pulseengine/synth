@@ -20,7 +20,7 @@ The exit code always propagated, so this was never a false pass. What CI lost wa
 
 DERIVED, not asserted: 188 of the 206 oracles this driver runs refuse via
 `sys.exit(<non-int>)`. The count is reproducible with an `ast` walk over the
-`scripts/*.py` paths that appear after `oracle_run.py` in `ci.yml`, JOINING
+`scripts/repro/*.py` paths that appear after `oracle_run.py` in `ci.yml`, JOINING
 `\`-continuation lines first — 18 invocations use them, and reading only same-line
 paths gives a narrower 170 of 188, which is what this file published until v0.77's
 round-1 cold review caught it. A plain grep for `sys.exit(` over `scripts/**/*.py`

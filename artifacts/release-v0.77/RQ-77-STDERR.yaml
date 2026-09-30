@@ -46,10 +46,14 @@ artifacts:
         showing only "VACUOUS ... measured 0". THE POPULATION, and the first count of it was the
         WRONG SUBJECT TWICE, the second time in the correction itself. (a) An `ast` walk over
         `scripts/**/*.py` finds 226 of 266 files and 502 call sites refusing via
-        `sys.exit(<non-int>)` — a true count of scripts that mostly never run under this driver.
-        (The figures first published here, 225 of 264 and 496, were that same predicate measured at
-        `v0.76.0`, and were additionally mis-described as "a plain grep"; a plain grep for
-        `sys.exit(` on the shipping tree gives 244 files and 660 sites.) (b) Scoped to what the
+        `sys.exit(<non-int>)` AS MEASURED AT `16893b2b`, the commit being tagged — and the commit is named
+        because this figure has now drifted twice under its own lane's edits. A true count of scripts
+        that mostly never run under this driver. (The figures first published here, 225 of 264 and 496,
+        were that same predicate measured at `v0.76.0` and mis-described as "a plain grep". Round 1
+        replaced them with 226/266/502 and 244/660 measured at `265a1256`; round 2 found round 1's own
+        corrections had ADDED three `sys.exit(` sites to `prose_status_claim_1319.py`, so at
+        `16893b2b` the plain grep is 244 files / 663 sites and the AST walk 226 / 504. A figure derived
+        from files the release edits is only true at a named commit, so the commit is named.) (b) Scoped to what the
         driver ACTUALLY executes, the first derivation read only the paths on the SAME LINE as each
         `oracle_run.py` invocation and reported 170 of 188. EIGHTEEN invocations continue onto a
         `\`-continuation line. The real population is 206 oracles, of which 188 refuse that way —
@@ -61,7 +65,7 @@ artifacts:
         round 1 of the cold review rather than by the lane. FIX: print `exc.code` when
         it is not an int, emitted while `sys.stdout` is still the tee so it reaches BOTH the live log
         and `tee.buf` — hence the JSON record and `evaluate`'s view of the output, not merely a
-        terminal. TESTED, where there was NO test suite and NO CI wiring for a driver that runs 188
+        terminal. TESTED, where there was NO test suite and NO CI wiring for a driver that runs 206
         oracles: `scripts/test_oracle_run.py` adds 7 tests and is now wired in `ci.yml`. Red-first,
         mutation CONFIRMED APPLIED by `git diff --numstat` (19/0) before the run: removing the print
         takes the suite from 7 passing to `FAILED (failures=3)`, and the tree was restored to rc=0

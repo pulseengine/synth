@@ -270,6 +270,17 @@ def subject_refusal(n_non_advisory: int, head: str, expect_head: str | None):
     # — a green about a subject nobody verified, which is this gate's own
     # subject. Whitespace is stripped because " " is the same empty derivation
     # wearing a character.
+    # AND THE SAME RULE FOR THE OTHER INPUT. Round 2 found this guard asymmetric:
+    # `expect_head.startswith(head)` is True for ANY empty `head`, so an empty
+    # `headRefOid` still disabled the subject check silently. Lower risk than the
+    # expectation side (it comes from the API, not a local `$( )` capture) but the
+    # same class, and "a derived population of zero is a refusal" does not hold for
+    # one of two inputs only.
+    if not (head or "").strip():
+        return ("the PR's head came back EMPTY, so there is no subject to judge "
+                "against. That is a refusal, not a check to skip: every comparison "
+                "below would be against the empty string, which any expectation "
+                "prefix-matches")
     if expect_head is not None and not expect_head.strip():
         return ("this gate was asked about a head, but the expectation derived "
                 "to the EMPTY STRING — so the subject check would be silently "
@@ -528,6 +539,10 @@ def self_test() -> int:
     # The dangerous shape is a FULL GREEN rollup belonging to the previous head.
     # Emptiness guards cannot see it, which is why the head check is separate
     # from the population check rather than folded into one predicate.
+    check("SUBJECT: an EMPTY head REFUSES too (round 2: the guard was asymmetric)",
+          subject_refusal(72, "", "abcdef1234") is not None)
+    check("SUBJECT: a WHITESPACE head REFUSES",
+          subject_refusal(72, "   ", "abcdef1234") is not None)
     check("SUBJECT: an EMPTY expectation REFUSES rather than skipping the check",
           subject_refusal(72, "a" * 40, "") is not None)
     check("SUBJECT: a WHITESPACE expectation REFUSES too",
