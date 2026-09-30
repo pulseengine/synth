@@ -5,6 +5,278 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.78.0] - 2026-09-30
+
+### What does it compile, and what does that code cost?
+
+Five releases asked epistemic questions about the machinery — *is it still broken*
+(v0.73), *can the gate tell* (v0.74), *why is it tested one call short of where it
+runs* (v0.75), *is the input real* (v0.76), *is the subject right* (v0.77). That arc
+paid for itself and is not finished. This release asks something else: **two numbers
+about the product rather than about the tools.** Reach is a floor that must rise;
+emitted-code cost is a ceiling that must fall. They are one lever measured twice, so
+pinning them slack-free together is what makes the trade impossible to take
+silently.
+
+**Neither is pinned this release, and that is a finding rather than an omission.**
+The reach floor cannot be pinned because the 243-module corpus the acceptance ladder
+is measured over lives on an unmounted external volume, so the live figures are
+still v0.63's. And pinning the cost ceiling ALONE is exactly the alternating this
+theme forbids: it would let a release buy cost wins with reach losses and stay
+green. So neither half moved, both artifacts say which and why, and the release
+reports it here instead of shipping the reachable half.
+
+### The delivered binary is not the full feature set
+
+**FEATURESET (#1437).** The maintainer asked whether the binary we deliver is our
+full feature set, or whether capability hides behind flags. Answering it meant
+reading 128 source files, and three hand censuses in one sitting gave three
+different answers: 15, then 9, then 5. `scripts/shipped_feature_census.py` now
+derives it, with its `--self-test` (39 assertions) wired into the required **Claim
+Check** job.
+
+Measured at the cut, on two axes because the word "features" names two mechanisms:
+
+- **Runtime flags.** 38 distinct `SYNTH_*` flags in shipped code, read at 61
+  sites. **Four** are capabilities
+  the binary does not execute with no environment set — `SYNTH_GRAPH_ALLOC`,
+  `SYNTH_FACT_SPEC`, `SYNTH_SPILL_ON_EXHAUST`, `SYNTH_RV_ADDR_FOLD` — plus 2
+  modifiers of those, 1 measure-only, 15 opt-outs that ship on, 2 solver budgets,
+  14 instrumentation. Zero undetermined.
+- **Cargo features.** Two different binaries are delivered and they are not the same
+  set: `release.yml` builds `-p synth-cli --features verify`, while `cargo install
+  synth-cli` takes `default = ["riscv"]` only — so **`synth verify` is not compiled
+  into the crates.io binary.** It loud-declines, which is correct behaviour, but
+  that the two published artifacts answer differently was recorded nowhere.
+  `awsm` and `wasker` are in neither.
+
+**Why the hand counts disagreed, and it is one mechanism: the polarity of the
+boolean is not the polarity of the feature.** Two live sites in `arm_backend.rs`
+settle it, because their booleans are *opposite* when unset and both capabilities
+ship **on** — `let promote = var("SYNTH_NO_LOCAL_PROMOTE").is_err()` (true) and
+`let islands_disabled = var_os("SYNTH_NO_LITPOOL_ISLANDS").is_some()` (false). What
+closes the gap is the *binding name*, so the rule is one line with no special
+cases: `ON ⟺ (boolean when unset) XOR (binding name is negative)`. A first draft
+special-cased the `SYNTH_NO_` prefix and **its own self-test rejected it** — the
+prefix rule gets every `is_err` site backwards, and it was a hand-written mirror of
+a naming convention rather than a reading of the code.
+
+**The count was five until this release's own number was checked against source, and
+that error ran the opposite way from every other one here: it OVER-reported.**
+`SYNTH_SHADOW_ALLOC` is measure-only — its own source calls it "the measure-only
+bridge … side-effect-free either way" and groups it with the diagnostics — and it
+was filed as a capability because it is *named* like one, with no DEBUG/STATS/DUMP
+suffix for the name rule to catch. A derived discriminator was tried and rejected
+with its measurement: scoring each guarded block by prints-versus-mutations finds it
+but also flags `SYNTH_GRAPH_ALLOC`, whose read sits in a tiny `fn enabled()` whose
+block is the boolean rather than the effect — two false positives in three hits, and
+a gate that noisy gets routed around. So the census **prints its own limit** on
+every run: it derives polarity mechanically, and decides whether a flag changes
+emitted bytes **by name for 17 of 38 flags**.
+
+### The reach fix that would have shipped a silent miscompile
+
+**WIDEFILE (#1439).** The recovery ladder's last rung (`vfp-wide-file`) is the only
+one with **no pool-grow retry**, and the two halves each fix exactly what the other
+hits: the grown pool dies on VFP register-file exhaustion, which the wide S16–S31
+file relieves, and the wide file dies on slot-pool exhaustion, which a grown pool
+relieves. The combination had never been tried. This is the "twin does not inherit
+the fix" shape already recorded here from v0.71 — stage 3 was added after stages 1
+and 2 already had their retries.
+
+**Adding the retry extends reach**, measured on a synthetic family whose locals are
+consumed by a right-leaning nest so all stay live at once: the last compiling case
+moved from **60 to 66** locals — six of them. On the shipped tree 59 compiles at
+2040 bytes and 60 declines; with the retry applied in a probe, 60–65 compile
+(1956 … 2136 bytes) and 66 declines on the genuine `[sp,#imm]` 1020-byte VSTR/VLDR
+ceiling, loudly. **An earlier draft said 72, which was never measured** — round 2
+derived 66 and also showed the grow formula is not the variable (identical at the
+stage-2 size, at the 120-slot cap, and with the cap lifted to 400). The cost half moved the right way too
+— 1956 bytes at 60 locals against 2040 at 59, because 32 allocatable S-registers
+instead of 16 means fewer values need a frame slot at all.
+
+**And the newly-accepted code is wrong.** Through the #1069 execution differential
+(unicorn vs wasmtime, bit-exact), every negative input disagreed and every
+non-negative one agreed, with `got ^ want == 0x8000_0000` on **every** failing row —
+precisely the sign bit. All 60 factors share the param's sign, so 60 of them
+multiply to a positive result; an odd number of sign contributions means one factor
+is not the value it should be. The defect is in the **wide-file path, not pool
+growth**, derived: `live24` in the same differential exercises
+`vfp-frame-locals+pool-grow` and is bit-exact.
+
+It survived because **#1267 is the only rung with no execution oracle.** It has
+encoding tests — the VPUSH/VPOP pair, its position relative to the frame `sub sp`,
+the #1273 stack-param refusal — and nothing in `scripts/repro/` covers it.
+
+**Latent, not active, and the distinction is load-bearing:** the rung currently
+rescues nothing, so no shipped binary miscompiles through this path today. What made
+it urgent is that the obvious reach fix would have made it live, converting two loud
+declines in a real customer module into possibly-wrong code — "accept more and check
+less" by name. **So the rung is not in the tree.** What is committed is a test
+pinning the honest state, whose last assertion is a tripwire that fails the moment
+someone adds the rung, forcing them to add execution coverage in the same change.
+Proven potent by applying the rung and watching it go red.
+
+### Two `must` artifacts had predicates that could not be evaluated
+
+**LADDER (#1432)** required re-measuring the ladder, and **BLOCKERCLASS (#242)**
+required re-deriving the ARM NEVER set "from LADDER's fresh ladder". Both are
+blocked on the same unmounted corpus, so BLOCKERCLASS's `done-when` could never be
+checked and would have read as merely undone. Both are rescoped to what is
+derivable, with the blocked half named.
+
+**LADDER's delivered half is a provenance defect** that is why the block took so
+long to diagnose. The ladder header cited its manifest as
+`corpora/wasm-243/MANIFEST.sha256` — a bare relative path that reads as
+repo-relative. It is not: `corpora/` is absent from this repo, tracked by zero
+files, and not even gitignored, and `partial_census_1017.py` took the corpus as a
+positional argument helped only as ".wasm files or directories". **The path the
+ladder cited was defined nowhere in the tree**, and this release was one command
+from publishing that the corpus was unobtainable. It is not lost, it is unmounted.
+Both the ladder header and the script's own `--help` now say so, with the last known
+location.
+
+**BLOCKERCLASS's delivered half is a naming and a refutation.** The top ARM NEVER
+class is register exhaustion, **70 of 141 modules**, labelled with its provenance
+(the RQ-64-HISTOGRAM re-attribution, v0.64 — *not* a v0.78 measurement). Then the
+inference writes itself: two of the four flag-off capabilities are
+register-allocation capabilities, so "the fix for half the NEVER set is built and
+not shipped" is one sentence away. **It is refuted.** The two "register exhaustions"
+are different sites — `free_callee_saved` at `instruction_selector.rs:9238` on the
+selector path, versus `SYNTH_SPILL_ON_EXHAUST` — read at `optimizer_bridge.rs:784`
+and consulted at `:3719` — gating
+the optimized path's #496 allocator. Two files, two code paths, one shared name.
+v0.63's lesson bounds it independently: RQ-63-ARMI64OFF cleared a 46-module primary
+blocker and gained **zero** modules, so the honest ceiling on clearing the 70 is
+unknown, not 70.
+
+### The cost model exists, derives from the real encoder, and does not ship
+
+**COSTMODEL (#1433).** The premise survives its own refuting command — CLAUDE.md
+still prices "a 2-byte register copy and a 4-byte frame reload identically" — but
+locating the metric showed the lane was about to build a cost model that already
+exists and is not shipped. Three cost notions on the ARM path:
+
+1. **The shipped spill decision prices no bytes at all.** It is Belady next-use
+   distance (`optimizer_bridge.rs:7522`, `:7611`). Belady is not wrong; it is
+   optimal for reload *count* under a known future, and it optimizes a different
+   objective than emitted size — so on the byte axis every candidate is priced
+   identically, which is stronger than the recorded wording.
+2. **A byte-size function exists** (`estimate_arm_byte_size`, `:371`) but serves
+   branch displacement, and its own doc comment calls it "a *hand-maintained
+   mirror* of the encoder" — the #498 structural cause.
+3. **The real-encoder cost model exists and does not ship**: `graph_alloc.rs:583`
+   prices each web as `enc(op) * weight` — the real encoder's own byte length —
+   normalized `W / (span * degree)`. Behind `SYNTH_GRAPH_ALLOC`, default off.
+
+So the finding is the North Star's own rule one layer down: of three cost notions,
+the one that *derives from the shipped encoder* is the one that is not shipped.
+
+### A second live instance of the digit-class floor
+
+**FLOORREGEX2 (#1435).** `1[0-9]{2,}` accepts 100–199 and 1000–1999 and **rejects
+200–999**, so a required context went red when the population grew past 199.
+Replaced by `scripts/ci_citation_floor.py`, arithmetic rather than a character
+class, with 15 self-test assertions including a negative control that pins the OLD
+regex rejecting the live line.
+
+### The script every merge goes through had no test
+
+**RITUAL (#1440).** `scripts/merge_ritual.sh` runs four checks and performs the
+merge inside its own `&&` chain. It had no test, no CI reference and no shellcheck
+anywhere in the tree, and its CHECK3b wait loop was `while :; do … sleep 60; done`
+with **no bound at all** — so its failure mode was a *hang* rather than a signal.
+Three releases have already had to repair it.
+
+The loop is now bounded (`MAX_WAIT_MIN`, default 180, overridable because runner
+capacity is a fleet property and not a property of this script). On exhaustion it
+prints `TIMEOUT` and exits **2 — a refusal**, never a fall-through to a verdict,
+because timing out tells you nothing about whether the PR is mergeable.
+
+`scripts/test_merge_ritual.py` is the first test for it — 11 assertions in the
+required `claim-check` job — and it does two different things without conflating
+them. **Execution:** the timeout is tested by *extracting the shipped loop text*
+and running it against a stub `gh`, so the lines under test are the lines that
+ship; with nothing pending the same loop exits normally, and that positive control
+is load-bearing because otherwise "it exits 2" would be equally consistent with a
+loop that can never succeed. **Structure:** the rest are static and each is proven
+non-vacuous by a mutation — the merge sits inside an `&&` chain, `merge_gate`'s
+exit code is read from the process and not through a pipe, the wait floor is
+derived from branch protection.
+
+**The test found two defects in itself**, both this release's own class: the
+merge-chain assertion matched a *comment* containing `gh pr merge` and reported the
+shipped merge as unchained, and two mutations used `replace(…, 1)` so the mutant
+was rejected by nothing. Both surfaced only because each assertion is required to
+reject its mutant.
+
+### Carried, and each measured rather than waved off
+
+- **PINDEBT6 (#1373).** `known_open_pins` is **84** and
+  `known_open_pinned_cases` **157**; the delta across v0.78 is **zero**, derived by
+  reading `git show v0.77.0:claims.yaml` rather than quoting prose. The tool's own
+  columns say it last moved at v0.74.0 and is now held for five releases. The ground
+  is short and derived: `git diff --name-only v0.77.0..HEAD -- '*.rs'` returns
+  exactly one file and it is under `tests/`, so no emitted byte can move. Two
+  candidates were rejected, and unlike previous PINDEBT lanes one was *attempted* —
+  WIDEFILE built a reach increment, measured a real gain, and reverted it because
+  the execution oracle refused it.
+- **VARVE (#1422).** A recorded **non-action**, on the maintainer's decision after
+  CI infrastructure supplied fleet data. `varve.toml` is untouched
+  (`git log v0.77.0..HEAD -- varve.toml` is empty), `VARVE_ROOT` is set on no job.
+  Across the 12-runner fleet there are four different answers for the `2026.09`
+  line, and `hwm=4` fails 100% while `hwm=3` passes 100% across 29 runs — nothing
+  flickers. **The inversion:** if the true high-water is 4 the reds are the only
+  informative runs; if it is 3 they are false positives. Either way the check is not
+  authoritative anywhere, and a per-job `VARVE_ROOT` would make every run first
+  contact — silencing the alarm by blinding the detector. The open question is
+  upstream, not synth's.
+- **ARCHMODEL (#1136).** spar#445 re-verified: OPEN, `updatedAt` equals `createdAt`
+  at 2026-09-03T10:57:37Z with zero comments — untouched for 27 days. Steps 1–2 are
+  N/A for the **sixteenth** consecutive release, derived **by artifact identity**
+  rather than by today's tag vocabulary (v0.77's tag-keyed census undercounted a
+  15-release run as 14) and confirmed with the gate's own
+  `find_filed_steps12_decision` across every release directory.
+
+### Trace-graph delta — reported, and this time verified rather than repeated
+
+**errors +0 / −0; warnings +30 / −0.**
+
+Previous releases called this "structural, not a regression". That was checked here
+rather than copied: the 30 new warnings are **10 artifacts × exactly 3 classes** —
+`RQ-*` ids are not commit-trailer shaped, `req-type: process` sits outside the
+loaded schema, and each system requirement wants an incoming `verifies` link — the
+same three classes at the same per-artifact rate as v0.77's +24 over 8 artifacts
+(9 each at 9 artifacts, then 10 each at 10 — re-derived after this release's last
+artifact landed, because a figure taken from files the release edits is true only
+at a named commit),
+produced by the same rivet 0.37.0. A peer session was working on rivet
+schema-validation warnings; it has not landed, and `req-type: process` is still
+outside the loaded schema.
+
+<!-- DERIVED by scripts/release_notes_from_rivet.py from `rivet diff` -->
+<!-- base v0.77.0 · rivet 0.37.0 · do not hand-edit the lists -->
+
+### Artifacts (10 added, 0 removed, 0 modified, 649 unchanged)
+
+- **RQ-78-ARCHMODEL** — Recurring N/A: feature-loop steps 1-2 (spar AADL -> WIT) deferred again on spar#445 — filed, not waived
+- **RQ-78-BLOCKERCLASS** — Census the ARM NEVER set by PRIMARY blocker and name the top class — scope the reach fix, do not start it blind
+- **RQ-78-COSTMODEL** — Reproduce the cost-metric mispricing as an executable differential — a 2-byte copy and a 4-byte reload are priced identically
+- **RQ-78-FEATURESET** — The delivered binary is not the full feature set — derive which capabilities ship off, on BOTH axes
+- **RQ-78-FLOORREGEX2** — A SECOND live instance of the digit-class floor — it rejected 200-999 and failed a REQUIRED context because the population grew
+- **RQ-78-LADDER** — Re-measure the acceptance ladder — reach has had no live number for fourteen releases
+- **RQ-78-PINDEBT6** — Pin debt, sixth consecutive measurement — and this time the count itself is known to include five non-debt entries
+- **RQ-78-RITUAL** — The script every merge goes through had no test and an unbounded wait loop that failed by hanging
+- **RQ-78-VARVE** — The varve high-water refusal is a RECORDED NON-ACTION — the check is not authoritative anywhere, and the open question is upstream
+- **RQ-78-WIDEFILE** — The reach fix that would have shipped a silent miscompile — the ladder's last rung has no pool-grow retry and no execution oracle
+
+### Trace-graph delta
+
+- errors: **+0 / -0**
+- warnings: **+30 / -0**
+
+> 30 new warning(s), 0 new errors. Listed so the release says whether it improved the trace graph or degraded it — v0.69 shipped 22 unseen (#1337).
+
 ## [0.77.0] - 2026-09-30
 
 ### What is this green ABOUT?

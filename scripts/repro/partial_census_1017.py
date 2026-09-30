@@ -946,7 +946,20 @@ def self_test():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("roots", nargs="*", help=".wasm files or directories")
+    # WHERE THE CORPUS IS. The 243-module ladder corpus is NOT in this repo and is
+    # NOT fetchable from it: `corpora/` is untracked, absent, and not even
+    # gitignored, so the path the ladder cites reads as repo-relative and is not.
+    # A v0.78 lane read it that way and was one command from reporting the corpus
+    # UNOBTAINABLE. It lives on an external volume — last seen at
+    # `/Volumes/Work/corpora/wasm-243` with its manifest verified 243/243 OK
+    # (recorded at `docs/reviews/v0.63-cold-review.md:83`). Mount that volume, or
+    # pass whatever path holds a manifest with those 243 sha256 entries.
+    ap.add_argument("roots", nargs="*",
+                    help=".wasm files or directories. The 243-module ladder "
+                         "corpus is EXTERNAL to this repo — see the comment above "
+                         "this argument; last known at "
+                         "/Volumes/Work/corpora/wasm-243 (unmounted volume), "
+                         "manifest MANIFEST.sha256, 243 entries")
     ap.add_argument("--self-test", action="store_true",
                     help="RQ-64-HISTOGRAM: run the instrument's own checks "
                          "(numeric mask, sum-invariant negative control); "

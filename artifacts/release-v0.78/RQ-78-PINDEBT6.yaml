@@ -54,4 +54,43 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1373"
+      # The REPORT shipped; the pin closure did not, so the artifact does not
+      # claim the outcome. R11 requires this beside a `landed:` on a
+      # non-claiming status. v0.75's PINDEBT3, v0.76's PINDEBT4 and v0.77's
+      # PINDEBT5 carried the same shape for the same reason.
+      disposition: deferred
+      landed: "#1438"
+      verification-track: manual
+      verified-by: >-
+        Deliberately `manual:`. THIS IS A REPORT OF NON-DELIVERY on the count, which is the deliverable
+        when it is true. RE-DERIVED at the v0.78 cut with the tool's OWN report rather than a
+        hand-rolled walk — `claim_check.py claims.yaml --metric`, because v0.77 recorded that a
+        hand-rolled AST walk returned 0 for all ten tables and was simply wrong: `known_open_pins` = 84
+        (baseline 27, +57, must FALL, 6 waivers), `known_open_pinned_cases` = 157. THE DELTA ACROSS
+        v0.78 IS ZERO, derived by reading `git show v0.77.0:claims.yaml` rather than quoting last
+        release's prose: 84 / 157 there, 84 / 157 here. The tool's own `held` column says FIVE releases
+        now carry this value, and its `last-change` column says it last MOVED at v0.74.0 — both derived
+        from claims.yaml, not from this record.
+        WHY NO PIN CLOSED, and the ground is short and DERIVED: this release contains no change to
+        shipped compiler code. `git diff --name-only v0.77.0..HEAD -- '*.rs'` returns exactly ONE file,
+        `crates/synth-backend/tests/vfp_local_pressure_1069.rs`, and it is under a `tests/` directory —
+        so no emitted byte can move and no pinned wrong answer could. (Derived with `--name-only` and
+        not `--stat | wc -l`, which gave v0.77 THIRTEEN files where there were twelve because 13 is the
+        summary row.)
+        TWO CANDIDATES WERE REJECTED, and unlike previous PINDEBT lanes one of them was ATTEMPTED
+        rather than reasoned about. (1) The #1426 residual — `controller@0.10.0#step` on the VFP
+        frame-home spill-slot pool — carried forward from v0.77 on the same measured ground: the
+        recovery ladder's rungs are insufficient for that function's float-local pressure, so the
+        remaining work is register-allocator work. (2) NEW THIS RELEASE: RQ-78-WIDEFILE found that the
+        ladder's last rung has no pool-grow retry, BUILT the retry, measured a real reach gain (the
+        wall for a synthetic family moved 60 -> 66) and then REVERTED it, because the #1069 execution
+        differential showed the newly-accepted code disagreeing with wasmtime in exactly the sign bit
+        on every negative input. Filed as #1439. A reach increment that would have shipped a silent
+        miscompile is not a pin closure, and taking it would have added defects rather than removing
+        debt.
+        CARRIED, NOT FIXED, and named so the figure is read correctly: #1428 records that FIVE of the
+        84 entries pin CORRECT behaviour (regression guards pinned at 0, plus one pinned `decline`), so
+        roughly 6% of a must-FALL debt figure is not debt; and the selector-parity VANISHED check is
+        gated on `key[0] in ran_files`, so a pin whose fixture leaves the corpus is neither confirmed
+        nor refuted. Both are v0.78-untouched and both remain the honest qualifications on the 84.
       done-when: "manual:2026-09-30 the pin count is re-derived at the v0.78 cut with claim_check's own _pin_table, the delta against v0.77.0's ledger is stated, and either a pin CLOSES or the refusal names the rejected candidate and the ground for rejecting it"

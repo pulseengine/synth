@@ -1,0 +1,77 @@
+artifacts:
+  - id: RQ-78-RITUAL
+    type: system-req
+    release: v0.78
+    status: implemented
+    title: "The script every merge goes through had no test and an unbounded wait loop that failed by hanging"
+    description: >
+      `scripts/merge_ritual.sh` runs four checks and performs the merge inside its own
+      `&&` chain. It had no test, no CI reference and no shellcheck anywhere in the
+      tree, and its CHECK3b wait loop was `while :; do … sleep 60; done` with no bound
+      at all — so its failure mode was a HANG rather than a signal.
+
+      WHY IT BELONGS TO THIS THEME, which is about what ships rather than about the
+      machinery: this is the one piece of machinery every shipped commit passes
+      through, and three separate releases have had to repair it (RQ-72-RITUAL created
+      it, RQ-73-STEP8 added the squash-fidelity call, RQ-77-SUBJECT fixed a wait loop
+      that counted checks with an EMPTY conclusion and an exit code read through a
+      `| tee`). Every property it relies on was held in place by nothing but the file
+      not being edited.
+
+      REFUTING COMMAND: `python3 scripts/test_merge_ritual.py`. To check the timeout is
+      real rather than grepped, revert the loop to `while :; do … sleep 60; done` and
+      watch the EXECUTION assertions fail rather than the structural one.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1440"
+      # HELD OPEN, MEASURED: #1440 names two residuals this lane did NOT close —
+      # shellcheck is absent from this machine, so a CI step for it could not be
+      # verified locally and wiring an unverified step into a required job is how
+      # a gate stops being trusted; and the ritual's END-TO-END behaviour is
+      # still untested, only its structure and its wait loop.
+      issue-scope: outlives
+      done-when: "contains:scripts/test_merge_ritual.py:RQ-78-RITUAL"
+      verified-by: >-
+        DELIVERED. `scripts/merge_ritual.sh`'s wait loop is now BOUNDED — `MAX_WAIT_MIN`, default 180,
+        overridable through `MERGE_RITUAL_MAX_WAIT_MIN` because runner capacity is a fleet property and
+        not a property of this script (synth holds 1-2 of 12 self-hosted slots and a release PR has
+        taken ~2.5h, so 3h is generous rather than tight). On exhaustion it prints TIMEOUT and exits 2 —
+        a REFUSAL, never a fall-through to a verdict, because timing out tells you nothing about whether
+        the PR is mergeable. A hang is worse to diagnose than a refusal: there is nothing to read.
+        `scripts/test_merge_ritual.py` is the repo's FIRST test for the ritual: 11 assertions, wired
+        into the required `claim-check` job, hermetic (no PR, no network).
+        IT DOES TWO DIFFERENT THINGS AND DOES NOT CONFLATE THEM, which is the honesty of the file.
+        EXECUTION: the timeout is tested by EXTRACTING THE SHIPPED LOOP TEXT from `merge_ritual.sh` and
+        running it against a stub `gh`, so the lines under test are the lines that ship and nothing is
+        mirrored — a re-typed loop would be a hand-written mirror of a shipped thing, the class this
+        repo's North Star names. With a 1-minute budget and checks that never settle it exits 2 with
+        TIMEOUT; with nothing pending THE SAME loop exits normally, and that POSITIVE CONTROL is
+        load-bearing, because without it "it exits 2" would be equally consistent with a loop that can
+        never succeed. STRUCTURE: the remaining invariants are static, and each is proven NON-VACUOUS by
+        removing the property from a copy and checking the assertion then fails — the merge sits inside
+        an `&&` chain, `merge_gate`'s exit code is read from the PROCESS and not through a pipe, the
+        ritual greps the literal `GATEOK`, the wait floor is derived from branch protection rather than
+        hardcoded, and the loop is bounded.
+        WHAT A TEST OF A SHELL SCRIPT CANNOT PROVE, stated rather than left implied: the ritual's real
+        behaviour needs a live PR, a live branch-protection API and a live merge, none of it reproducible
+        here, and a test that stubbed all of it would be testing the stub. The static half proves a
+        property has not silently DISAPPEARED, which is exactly what the three repairs above were.
+        TWO DEFECTS THE TEST FOUND IN ITSELF, recorded because they are this release's own class. (1)
+        The merge-chain assertion searched the whole file for `gh pr merge` and matched a COMMENT at
+        line 25 — "`gh pr merge --squash` uses the PR title…" — which carries no `&&`, so it reported
+        the SHIPPED merge as unchained while the real statement 20 lines further down is correctly
+        chained. A true statement about the wrong subject, inside the test written to catch that class.
+        (2) Two mutations used `.replace(old, new, 1)`, so an `in`-style predicate still found a later
+        copy of the token and the mutant was REJECTED BY NOTHING: the assertion looked non-vacuous while
+        proving nothing. Both were caught only because the loop REQUIRES the mutant to fail, which is
+        the difference between a mutation check and a decoration.
+        NOT CLOSED, and named on #1440 rather than left to look done: shellcheck is ABSENT from this
+        machine, so a CI step for it could not be verified locally and wiring an unverified step into a
+        required job is how a gate stops being trusted; and the ritual is still untested END TO END.

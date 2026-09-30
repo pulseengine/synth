@@ -67,6 +67,13 @@ echo "  subject: origin/$HEADREF = ${EXPECT:0:8}"
 FLOOR=$(gh api "repos/$REPO/branches/main/protection/required_status_checks/contexts" --jq 'length')
 [ -n "$FLOOR" ] && [ "$FLOOR" -gt 0 ] || { echo "REFUSE: could not derive the required-context count; the wait would be unbounded"; exit 2; }
 echo "  wait floor: $FLOOR required contexts must be present before a verdict"
+# The wait BUDGET, in minutes (one poll per minute). Overridable because runner
+# capacity is a fleet property, not a property of this script: synth holds 1-2 of
+# 12 self-hosted slots and a release PR has taken ~2.5h, so a 3h default is
+# generous rather than tight. The default is deliberately NOT unbounded.
+MAX_WAIT_MIN=${MERGE_RITUAL_MAX_WAIT_MIN:-180}
+WAITED=0
+echo "  wait budget: ${MAX_WAIT_MIN} minute(s), then REFUSE rather than hang"
 while :; do
   read -r N P <<EOF
 $(gh pr view "$PR" --repo "$REPO" --json statusCheckRollup --jq '
@@ -75,6 +82,20 @@ $(gh pr view "$PR" --repo "$REPO" --json statusCheckRollup --jq '
   | @tsv')
 EOF
   if [ "${N:-0}" -ge "$FLOOR" ] && [ "${P:-1}" = "0" ]; then break; fi
+  # A WAIT THAT EXHAUSTS ITS BUDGET MUST SAY SO, not hang. Before this cap the
+  # loop was `while :; do ... sleep 60; done` with no bound at all, so its
+  # failure mode was a HANG — an operator staring at a silent terminal with no
+  # verdict, which is worse to diagnose than a refusal because there is nothing
+  # to read. It is a REFUSAL (exit 2: could not judge), never a fall-through to
+  # a verdict: timing out tells you nothing about whether the PR is mergeable.
+  WAITED=$((WAITED + 1))
+  if [ "$WAITED" -ge "$MAX_WAIT_MIN" ]; then
+    echo "REFUSE: TIMEOUT after ${WAITED} minutes waiting for CHECK3b."
+    echo "  $N non-advisory checks present (floor $FLOOR), $P still without a conclusion."
+    echo "  This is NOT a verdict about the PR — the wait ran out, so nothing is known."
+    echo "  Raise MERGE_RITUAL_MAX_WAIT_MIN and re-run, or investigate runner capacity."
+    exit 2
+  fi
   sleep 60
 done
 echo "  settled at $(date -u '+%H:%MZ') with $N non-advisory checks present"

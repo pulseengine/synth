@@ -2,7 +2,19 @@
 
 **Measured 2026-09-06** on synth at `e3a09ac2` (all v0.63 capability work merged),
 over the **243-module reachable corpus** (131 core + 112 components, unique by
-sha256, manifest at `corpora/wasm-243/MANIFEST.sha256`).
+sha256, manifest `MANIFEST.sha256`, 243 entries / 243 OK / 0 failed as verified at
+`docs/reviews/v0.63-cold-review.md:83`).
+
+> **THE CORPUS IS EXTERNAL TO THIS REPO** (RQ-78-LADDER). `corpora/` is not
+> tracked here, not present, and not gitignored, so the bare path this header used
+> to cite — `corpora/wasm-243/…` — reads as repo-relative and is not. That cost a
+> v0.78 lane real time and nearly produced a published claim that the corpus was
+> unobtainable; it is not lost, it is unmounted. Last known location:
+> `/Volumes/Work/corpora/wasm-243`. Re-measuring the ladder requires mounting that
+> volume (the machine holding it answered on port 22 but refused every offered
+> auth method on 2026-09-30). Until then every rung below carries the measurement
+> date and commit in this header and MUST be cited with them — a ladder figure
+> quoted without its date is the #1286 defect.
 
 Produced by `scripts/repro/partial_census_1017.py --ladder`. Rungs are reported
 **separately and never summed into one rate** — see "Why a ladder" below.

@@ -50,4 +50,36 @@ artifacts:
       priority: should
       issue: "#1136"
       carried-from: RQ-77-ARCHMODEL
+      # The re-verification shipped; steps 1-2 did not, because the upstream
+      # blocker has not moved. R11 requires a disposition beside `landed:` on a
+      # non-claiming status: `landed:` alone cannot tell an increment from full
+      # delivery left unflipped.
+      disposition: deferred
+      landed: "#1438"
+      verification-track: manual
+      verified-by: >-
+        Deliberately `manual:`. The deliverable is a re-verification carrying a DATE; a `contains:`
+        pointing at this artifact's own file goes TRUE the moment the file exists and reds R3.
+        RE-VERIFIED 2026-09-30 (`date -u`, the only timestamp source), STATE BEFORE BODY as the
+        refuting command requires: spar#445 is OPEN, its `updatedAt` EQUALS its `createdAt` at
+        2026-09-03T10:57:37Z, and it carries ZERO comments — so not merely "still open" but UNTOUCHED
+        for 27 days. Feature-loop steps 1-2 are therefore N/A for the SIXTEENTH consecutive release on
+        that same unchanged upstream reason.
+        THE COUNT IS DERIVED BY ARTIFACT IDENTITY, NOT BY TAG SET, because v0.77 got that wrong in
+        exactly this artifact: a tag-keyed census returned FOURTEEN where the answer was FIFTEEN,
+        since v0.65's filing predates today's five-tag vocabulary and a census keyed on today's tags
+        cannot see it. Walking the release directories and matching on artifact IDENTITY gives 16
+        filings, v0.63 through v0.78, contiguous with no gaps.
+        AND IT IS CONFIRMED WITH THE GATE'S OWN COMMITTED FUNCTION rather than a hand-written tag
+        comparison: `loop_conformance_check.find_filed_steps12_decision(docs, v)` was called for every
+        release directory in the tree. It returns a NON-STALE filing for exactly 16 releases, v0.63
+        through v0.78, contiguous, and it discharges v0.78's slot with THIS artifact. v0.61 and v0.62
+        return a match marked `stale` — an earlier release's filing, which is the function reporting
+        that they have none of their own, and is why the run starts at v0.63 rather than earlier.
+        THE FIVE TAGS ARE INTACT — [process, carried, spar, aadl, feature-loop] — and that matters
+        because the matcher needs `feature-loop` AND one of {aadl, spar} AND a non-empty `issue:`, and
+        this artifact has gone INVISIBLE to it three times (v0.65, v0.69, v0.75), with EITHER half of
+        the conjunction dropped in practice. Every incident was caught before its tag, so no release
+        ever SHIPPED an invisible filing; carrying the warning is not what prevents it, carrying the
+        tags is.
       done-when: "manual:2026-09-30 spar#445 re-verified at the v0.78 cut with its state and updatedAt recorded, and the consecutive N/A count DERIVED from the filed artifacts BY ARTIFACT IDENTITY rather than by today's tag vocabulary"

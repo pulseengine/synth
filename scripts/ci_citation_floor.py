@@ -97,13 +97,34 @@ def check(text: str) -> list[str]:
     return fails
 
 
+# An ARITHMETIC floor on this self-test's OWN work, and the reason it is here is
+# itself a finding: `shipped_feature_census.py` added exactly this guard in the
+# SAME release and cited THIS file's lane (#1435) as its precedent — so the idea
+# was invented here and never transferred back. v0.78's round-1 gate review
+# measured the gap: deleting the `an ABSENT line REFUSES` assertion took the run
+# from 15 printed assertions to 14 with rc=0 and "0 failure(s)".
+#
+# A FLOOR, not an equality: adding an assertion must never red, losing one must.
+MIN_ASSERTIONS = 15
+
+
 def self_test() -> int:
+    # A FROZEN SAMPLE of the real line, captured 2026-09-30 at the v0.78 cut —
+    # NOT the current output, and deliberately not kept in step with it. The
+    # figures move with the corpus every release (the tree emitted `7275 test
+    # names / 209 artifact files` when this comment was written), and a fixture
+    # that has to be re-synced each time is a fixture nobody trusts. What this
+    # sample pins is the SHAPE the parser must read. The LIVE line is checked by
+    # the ci.yml step that runs this script against the real
+    # `/tmp/artifact-cites.log`, which is where a real drift would surface.
     live = ("artifact citations: 33 cited (15 target, 18 filter) over 7274 test "
             "names / 133 test targets in 206 artifact files — 32 resolve, "
             "0 false claim(s), 1 planned-but-unwritten")
     fails = []
+    ran = []
 
     def ok(name, cond):
+        ran.append(name)
         print(f"  {'ok  ' if cond else 'FAIL'} {name}")
         if not cond:
             fails.append(name)
@@ -134,7 +155,14 @@ def self_test() -> int:
        any(f.startswith("EXACT:") for f in check(live.replace("0 false claim", "1 false claim"))))
     ok("zero cited is a floor failure, not a pass",
        any("cited=0" in f for f in check(live.replace("33 cited", "0 cited"))))
-    print(f"ci-citation-floor-self-test: {len(fails)} failure(s)")
+    print(f"ci-citation-floor-self-test: {len(ran)} assertions, "
+          f"{len(fails)} failure(s)")
+    if len(ran) < MIN_ASSERTIONS:
+        print(f"REFUSE: only {len(ran)} assertions ran, floor is "
+              f"{MIN_ASSERTIONS}. Assertions were REMOVED or the body stopped "
+              f"early — '0 failures' from a test that did not run is exactly the "
+              f"vacuous green a floor exists to make impossible.")
+        return 1
     return 1 if fails else 0
 
 
