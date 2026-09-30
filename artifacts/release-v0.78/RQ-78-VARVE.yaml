@@ -56,4 +56,39 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1422"
+      # A RECORDED NON-ACTION. Nothing was changed, deliberately, on the
+      # maintainer's decision — so the artifact must not claim delivery. R11
+      # requires a disposition beside `landed:` on a non-claiming status.
+      disposition: deferred
+      landed: "#1438"
+      verification-track: manual
+      verified-by: >-
+        Deliberately `manual:`, and deliberately a NON-ACTION: the deliverable is that nothing was
+        changed and that the reason is written down where the next release will read it.
+        THE DECISION IS THE MAINTAINER'S, taken 2026-09-30 after CI infrastructure supplied fleet data,
+        and it REPLACED an earlier "do both" decision that was WITHDRAWN. So: `VARVE_ROOT` is NOT set,
+        the pin is NOT bumped, no runner cache is cleared, and infra is NOT asked to route around the
+        failing runners.
+        CONFIRMED UNCHANGED rather than asserted: `git log v0.77.0..HEAD -- varve.toml` is EMPTY, the
+        pin still reads layer `2026.09.2` digest `sha256:67d585476be898dc…`, and `grep -rn VARVE_ROOT
+        .github/` returns nothing, so the env var is set on no job. The only varve-touching path in
+        this release's diff is THIS ARTIFACT FILE, which is the record and not an action.
+        THE FLEET EVIDENCE, which is why the non-action is right. The high-water mark is LOCAL state
+        (`<store>/state/high-water-marks.json`), and `HighWaterMarks::load` treats a missing file as
+        first contact and accepts anything. Across the 12-runner fleet there are FOUR different answers
+        for the `2026.09` line — 4 runners with no file at all (the check is already vacuous there), 4
+        at hwm 3 (pass), 3 at hwm 4 (fail), 1 at hwm 13 — and across 29 runs hwm=4 fails 100% while
+        hwm=3 passes 100%. NOTHING FLICKERS, so this is not flakiness to retry away.
+        THE INVERSION, stated because it is what makes every local remedy wrong: if the line's true
+        high-water is 4 then the RED runs are the only INFORMATIVE ones and the passes are vacuous; if
+        it is 3 then the reds are false positives. Nobody can tell from the runner side, and EITHER WAY
+        THE CHECK IS NOT AUTHORITATIVE ANYWHERE. A per-job `VARVE_ROOT` would make every run first
+        contact, which is functionally the cache-clearing that infra itself flagged as "silencing the
+        alarm by blinding the detector" — it would turn an ambiguous signal into a guaranteed-green one
+        and destroy the evidence needed to resolve the ambiguity.
+        THE OPEN QUESTION IS UPSTREAM AND NOT SYNTH'S: what is the `2026.09` line's authoritative
+        counter? varve#204 is its diagnostic half. Runner 8 at hwm 13 deserves its own look. v0.77's
+        release PR failed this job on `pulseengine-ci-01-6`, an hwm=4 runner, at the `varve install`
+        step — consistent with the mechanism but NOT independent confirmation, because the runner is a
+        proxy for the value rather than a second measurement of it.
       done-when: "manual:2026-09-30 the non-action is recorded with the fleet evidence and the inversion stated, varve.toml and the workflows are confirmed UNCHANGED, and the authoritative-counter question is carried upstream rather than answered locally"
