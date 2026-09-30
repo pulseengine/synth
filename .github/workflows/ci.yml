@@ -406,6 +406,17 @@ jobs:
       - name: Unit-test the citation FLOOR — arithmetic, not a digit class (#1435)
         run: python3 scripts/ci_citation_floor.py --self-test
 
+      # RQ-78-FEATURESET: "is the binary we deliver the full feature set, or is
+      # capability hiding behind a flag?" was answerable only by reading 128
+      # source files. This derives it. The CENSUS is a measurement with no
+      # expected value, so only `--self-test` is a gate — and its assertion floor
+      # is ARITHMETIC, inside the script, because `grep -qE '[0-9]+ assertions'`
+      # accepts zero and would pass a self-test whose body stopped running (the
+      # #1435 digit-class defect, one layer up from where this job already fixed
+      # it). Hermetic: no corpus, no synth binary.
+      - name: Shipped-feature census self-test — feature polarity is not boolean polarity (RQ-78-FEATURESET)
+        run: python3 scripts/shipped_feature_census.py --self-test
+
       - name: Artifact citation gate — no artifact claims a test that does not exist (911)
         run: |
           set -euo pipefail
