@@ -32,6 +32,30 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1243"
+      disposition: refuted
+      verified-by: >-
+        REFUTED — THE PREMISE WAS ELEVEN RELEASES DEAD, and the refuting command this artifact
+        carries is what found it, on the first tick of the release. `.github/workflows/ci.yml` no
+        longer asserts these floors with character classes: the step calls
+        `scripts/ci_mutants_gate.py`, whose own docstring states the principle ("floor is arithmetic;
+        a character class over digits is not a floor") and which compares NUMBERS
+        (`value >= bound`, floors 4/2/2/1/1), printing the offending value instead of exiting
+        silently. It landed in 1bfade3d on 2026-09-09 and is present in every release from v0.66.0
+        onward; `grep -c` for a live assertion using the old form returns 0. The ISSUE was still
+        OPEN, which is what made it look scopeable. The analysis in the issue was entirely correct
+        and the pathology reproduces for the pattern AS WRITTEN — measured: 3 rejected, 4 and 9
+        accepted, 10 and 39 REJECTED (the bug), 40 and 400 accepted — so this is not a bad report,
+        it is a fixed one. #1243 is closed with that evidence. WHAT THIS LANE ACTUALLY CONTRIBUTES,
+        and it is the more useful half: an open issue is a signal about the TRACKER, not about the
+        TREE, and v0.77's own planning read it as the latter. The lane was scoped `must` after
+        reading the issue's STATE (open) and its BODY (precise, well-evidenced) WITHOUT running the
+        refuting command written into this very artifact. That is this release's theme committed by
+        the release that named it — a true signal about the wrong subject — and the lane that looked
+        most obviously correct got verified least. The actionable residual is not the regex: a fix
+        that ships WITHOUT closing its issue leaves a scoping trap for whoever plans next, and this
+        one cost a must-lane. NO CODE CHANGED, deliberately: there is nothing to fix, and
+        manufacturing a change to make the lane look delivered is the failure mode this programme
+        exists to prevent.
       # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
       # artifact's own file goes TRUE the moment the file exists and reds R3;
       # and a `contains:` naming a COMMENT is satisfied by a comment, which

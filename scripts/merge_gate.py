@@ -198,13 +198,79 @@ def decide(roll: dict, required: list[str], current: bool, behind: int,
     }
 
 
-def gate(pr: str, repo: str, required: list[str]):
-    """Fetch the PR's live state and hand it to `decide`."""
+class GateRefusal(Exception):
+    """The gate cannot JUDGE — distinct from judging and saying no.
+
+    RQ-77-SUBJECT (#1418). A refusal exits 2 and never prints GATEOK, because a
+    caller must be able to tell "the gate ran and the answer is no" from "the
+    gate could not tell what it was being asked about". v0.76's RQ-76-CLOSUREMAIN
+    drew the same distinction in `issue_closure_check` for the same reason.
+    """
+
+
+def subject_refusal(n_non_advisory: int, head: str, expect_head: str | None):
+    """Is the gate about to judge the WRONG SUBJECT? Pure, so the self-test
+    covers it with no network.
+
+    RQ-77-SUBJECT (#1418). Two ways this gate could return a TRUE verdict about
+    something other than the thing it was asked about, both measured in v0.76:
+
+    1. AN EMPTY ROLLUP IS NOT A VERDICT. Right after a push, `gh pr view` can
+       return zero checks. Every derived count is then 0 — no reds, nothing
+       pending — and the arithmetic below is about the empty set. CHECK1 does
+       catch this today by reporting all nine required contexts missing, so it
+       has never merged anything wrongly; but "9 missing" reads as a verdict
+       about the PR when it is really "nothing has registered yet", and relying
+       on a downstream check to notice is the shape this release is named for.
+       Observed live on #1407 at the v0.75 cut: "TERMINAL: 0 non-adv".
+
+    2. A ROLLUP CAN BELONG TO THE PREVIOUS HEAD. After a force-push GitHub keeps
+       serving the old head's checks — and the dangerous case is not an empty
+       set but a COMPLETE GREEN one, which sails through any emptiness guard.
+       Measured on #1410 in v0.76: the PR object still reported head 272e78b1
+       with 72 green contexts while `check-runs` for the pushed SHA c84de062
+       returned total_count 0.
+
+       CHECK2 already catches the common form, and that is worth stating so this
+       refusal is not oversold: a stale PRE-REBASE head LACKS main's advance, so
+       `behind > 0` and CHECK2 reds. What it does NOT catch is an amend-shaped
+       force-push where old and new heads share a merge-base — both are
+       `behind == 0`, every check passes on the old head's CI, and `gh pr merge`
+       merges the new content. `--expect-head` closes exactly that gap, and only
+       when the caller supplies the SHA it pushed; absent it, this returns None
+       and nothing changes.
+
+    Returns a reason string, or None when the subject is sound.
+    """
+    if n_non_advisory == 0:
+        return ("the rollup holds ZERO non-advisory checks. That is not a green "
+                "PR, it is a PR whose checks have not registered — every count "
+                "below would be about the empty set. Re-run once CI appears")
+    if expect_head and not (head.startswith(expect_head)
+                            or expect_head.startswith(head)):
+        return (f"the PR's head is {head[:12]} but this gate was asked about "
+                f"{expect_head[:12]}. After a force-push the rollup can still "
+                f"serve the PREVIOUS head's complete green set, so a verdict "
+                f"here would be true about the wrong commit")
+    return None
+
+
+def gate(pr: str, repo: str, required: list[str], expect_head: str | None = None):
+    """Fetch the PR's live state and hand it to `decide`.
+
+    The rollup and `headRefOid` come from ONE query on purpose: fetched
+    separately they can skew, and the verdict would then be about a rollup and a
+    head that were never simultaneously true.
+    """
     d = json.loads(sh("gh", "pr", "view", pr, "--repo", repo,
                       "--json", "statusCheckRollup,baseRefOid,headRefOid"))
     roll = {(c.get("name") or c.get("context")):
             (c.get("conclusion") or c.get("state") or "PENDING")
             for c in d["statusCheckRollup"]}
+    n_non_adv = sum(1 for k in roll if not is_advisory(k))
+    why = subject_refusal(n_non_adv, d["headRefOid"], expect_head)
+    if why:
+        raise GateRefusal(why)
     current, behind = branch_currency(d["headRefOid"])
     base_agrees = d["baseRefOid"].startswith(sh("git", "rev-parse", "origin/main")[:8])
     return decide(roll, required, current, behind, base_agrees)
@@ -408,6 +474,33 @@ def self_test() -> int:
     r = decide(dict(green, **{"Some Job": "PENDING"}), real, True, 0, True)
     check("CHECK3b: a non-advisory PENDING -> REFUSED", not r["CHECK3b"][0])
 
+    # ---- RQ-77-SUBJECT (#1418): the gate must REFUSE a wrong subject -----
+    #
+    # These are pure and need no repository, which is the point: the failures
+    # they guard are about WHICH rollup and WHICH head the verdict describes,
+    # and that question is answerable without any network.
+    check("SUBJECT: an EMPTY rollup REFUSES rather than reading as green",
+          (subject_refusal(0, "aaaaaaaa", None) or "").startswith("the rollup holds ZERO"),
+          str(subject_refusal(0, "aaaaaaaa", None)))
+    check("SUBJECT: a populated rollup with no expectation does NOT refuse",
+          subject_refusal(9, "aaaaaaaa", None) is None,
+          str(subject_refusal(9, "aaaaaaaa", None)))
+    check("SUBJECT: a head that is not the one asked about REFUSES",
+          "was asked about" in (subject_refusal(72, "272e78b1c0de", "c84de062") or ""),
+          str(subject_refusal(72, "272e78b1c0de", "c84de062")))
+    check("SUBJECT: the head the caller asked about does NOT refuse",
+          subject_refusal(72, "c84de062aaaa", "c84de062") is None,
+          str(subject_refusal(72, "c84de062aaaa", "c84de062")))
+    check("SUBJECT: a SHORT expectation matches a full head (prefix, either way)",
+          subject_refusal(72, "c84de062", "c84de062aaaa") is None,
+          str(subject_refusal(72, "c84de062", "c84de062aaaa")))
+    # The dangerous shape is a FULL GREEN rollup belonging to the previous head.
+    # Emptiness guards cannot see it, which is why the head check is separate
+    # from the population check rather than folded into one predicate.
+    check("RQ-77-SUBJECT: a COMPLETE green rollup on the wrong head still REFUSES",
+          subject_refusal(72, "oldoldold", "newnewnew") is not None,
+          "a full population must not excuse a wrong subject")
+
     print(f"merge-gate-self-test: {len(fails)} failure(s)")
     return 1 if fails else 0
 
@@ -421,6 +514,10 @@ def main() -> int:
                     help="post-merge: record whether the squash altered "
                          "content (#1269 ask 2). Requires --pr.")
     ap.add_argument("--repo", default="pulseengine/synth")
+    ap.add_argument("--expect-head", default=None,
+                    help="RQ-77-SUBJECT (#1418): the head SHA this gate is "
+                         "being asked about. A mismatch REFUSES (exit 2) "
+                         "instead of judging the previous head's rollup.")
     args = ap.parse_args()
 
     if args.self_test:
@@ -452,7 +549,13 @@ def main() -> int:
         "gh", "api",
         f"repos/{args.repo}/branches/main/protection/required_status_checks/contexts",
         "--jq", ".[]").splitlines() if l.strip()]
-    res = gate(args.pr, args.repo, required)
+    try:
+        res = gate(args.pr, args.repo, required, args.expect_head)
+    except GateRefusal as why:
+        # Exit 2, and NEVER GATEOK: `merge_ritual.sh` gates the merge on the
+        # literal string GATEOK, so a refusal must not print it even by accident.
+        print(f"GATEREFUSED {why}")
+        return 2
     ok = True
     for k, (passed, detail) in res.items():
         print(f"{k}={passed} {detail}")
