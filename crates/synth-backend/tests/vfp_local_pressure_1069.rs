@@ -235,12 +235,22 @@ fn live24_slot_exhaustion_message_still_triggers_the_pool_grow() {
 /// The residual decline on the external reporter's `controller@0.10.0#step` is
 /// this pool exhaustion. It used to cite #1069 — which is CLOSED and titled
 /// "GI-FPU-002: three named cascade entry points are the entire remaining
-/// gap…", i.e. titled about the `GI-FPU-002` class v0.76 FIXED, and whose thread
-/// never mentions the spill-slot pool at all. Citing a closed issue is this
-/// repo's documented convention and is NOT the defect (RQ-74-STALEMSG measured
-/// 93% of citation sites pointing at closed issues). The defect is that a
-/// reporter following THIS citation lands on an issue whose title says the gap
-/// is elsewhere and, by implication, already closed.
+/// gap…", i.e. titled about the `GI-FPU-002` class v0.76 FIXED.
+///
+/// ITS THREAD DOES DISCUSS THE POOL, and the first version of this comment said
+/// it did not — a false statement produced by a narrow regex
+/// (`spill.slot pool|pool exhaust|slot pool`) returning a true zero, because the
+/// thread writes "pool-grow" and "*slot* exhaustion". Caught by v0.77's round-1
+/// cold review. What it actually says is stronger for this change: "the pool-grow
+/// rung (#587) cannot fire for this shape". So a reporter sent there reads an
+/// argument that the pool mechanism is NOT their problem, while their function
+/// declines on precisely that mechanism.
+///
+/// Citing a closed issue is this repo's documented convention and is NOT the
+/// defect (RQ-74-STALEMSG measured 93% of citation sites pointing at closed
+/// issues). The defect is that a reporter following THIS citation lands on an
+/// issue whose title says the gap is elsewhere and, by implication, already
+/// closed.
 ///
 /// WHY A TEST RATHER THAN A COMMENT: the citation is prose inside a format
 /// string, so nothing would notice it drifting back. This asserts BOTH
@@ -248,8 +258,14 @@ fn live24_slot_exhaustion_message_still_triggers_the_pool_grow() {
 /// asserting only the first would stay green if someone cited both.
 ///
 /// The grow-retry substring is asserted by `live24_...` above and is deliberately
-/// untouched by this: `arm_backend.rs` matches it as CONTROL FLOW, and only the
-/// `#NNNN:` prefix outside that substring moved.
+/// untouched by this: `arm_backend.rs` matches it as CONTROL FLOW. The MATCHED
+/// CONST is byte-identical to v0.76.0; what changed sits outside it — the `#NNNN:`
+/// prefix AND a new explanatory sentence naming #1318 and #1069. An earlier version
+/// of this comment said "only the `#NNNN:` prefix … moved", which is false: round 1
+/// of the cold review corrected that sentence in `instruction_selector.rs` and round
+/// 2 found it still standing HERE, in the twin edited by the same commit. Fixing one
+/// of two identical claims is the shape v0.71 recorded as "a twin check does not
+/// inherit the fix".
 #[test]
 fn the_pool_exhaustion_diagnostic_cites_the_open_pool_issue_not_the_closed_class_one() {
     let ops = live_f32_ops(24);

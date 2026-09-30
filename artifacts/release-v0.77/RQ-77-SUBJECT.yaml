@@ -37,6 +37,15 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1418"
+      # HELD OPEN DELIBERATELY, on decisive grounds: the release that made the
+      # wrong-subject class its THEME found FOUR MORE INSTANCES of that class in
+      # its own measurement code (a classifier cutting at the first of five
+      # markers; a tag-keyed census undercounting a 15-release run as 14; a table
+      # walk locating one of ten and reporting zero; a probe rejected at the
+      # front door reporting zero). This lane fixed two instances in the
+      # committed ritual, which is an increment, not the class. A class issue
+      # cannot be closed by the release that demonstrates the class is live.
+      issue-scope: outlives
       landed: "#1423"
       verified-by: >-
         DELIVERED IN THE COMMITTED RITUAL, which is the part that matters: the five instances this

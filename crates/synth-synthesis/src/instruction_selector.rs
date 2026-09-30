@@ -3334,20 +3334,20 @@ fn alloc_vfp_local_frame_slot(spill: &mut SpillState, is_double: bool) -> Result
             // RQ-77-FALCON2 (#1318): the CITATION moved from #1069 to #1426.
             // #1069 is CLOSED and titled "GI-FPU-002: three named cascade entry
             // points are the entire remaining gap…" — i.e. titled about the
-            // class v0.76 FIXED — and its thread never mentions the spill-slot
-            // pool at all (grep over body + comments: zero). Citing a closed
-            // issue is this repo's convention and is not the defect
-            // (RQ-74-STALEMSG: 93% of sites do). The defect is that a reporter
-            // clicking THIS citation lands on an issue whose title says the gap
-            // is elsewhere and, by implication, fixed. #1426 is OPEN and titled
-            // about the pool.
+            // class v0.76 FIXED. Its thread DOES discuss the pool — to argue
+            // the pool-grow rung "cannot fire for this shape", which is why
+            // sending a POOL-EXHAUSTION decline there misleads twice over.
+            // Citing a closed issue is this repo's convention and is not the
+            // defect (RQ-74-STALEMSG: 93% of sites do); the defect is that a
+            // reporter clicking THIS citation reads a title saying the gap is
+            // elsewhere. #1426 is OPEN and titled about the pool.
             //
             // THE SUBSTRING IS CONTROL FLOW and is deliberately untouched:
             // `arm_backend.rs` matches VFP_FRAME_HOME_SLOT_EXHAUSTION to rerun
             // the VFP frame stage with a grown pool, and
             // `live24_slot_exhaustion_message_still_triggers_the_pool_grow`
-            // pins that end-to-end. Only the `#NNNN:` prefix changed, which is
-            // outside the matched text.
+            // pins that end-to-end. The matched const is byte-identical; what
+            // changed is outside it (prefix + this explanatory clause).
             "#1426: {VFP_FRAME_HOME_SLOT_EXHAUSTION} — more frame-resident \
              float locals than the pool holds; the backend retries with a \
              pool sized from the function's local count and this surfaces \

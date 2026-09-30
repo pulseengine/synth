@@ -149,15 +149,59 @@ def verify():
             rows.append((f"negative {aid}", v, False))
     print("\nseparation experiment (RAW text, incl. YAML comments) — the control "
           "must RED, negatives must stay green")
+    separating = []
     for stage in ("naive", "real-status", "not-quoted"):
         ok = all(v[stage] == must for _l, v, must in rows)
+        if ok:
+            separating.append(stage)
         detail = " ".join(f"{l.split()[-1]}={'RED' if v[stage] else 'green'}"
                           for l, v, _m in rows)
         print(f"  {stage:14s} {'SEPARATES' if ok else 'fails    '}  {detail}")
-    print("  VERDICT: no stage separates. The control reds under all three, and so "
-          "do\n  records that correctly narrate their own history — which is why "
-          "this script\n  must not be wired, and why RQ-77-PROSEBLIND records a "
-          "refutation rather than a gate.")
+
+    # THE VERDICT IS DERIVED, NOT PRINTED. v0.77's round-1 gate review found this
+    # sentence hardcoded: repointing CONTROL at bd81bc8c — the commit where v0.68
+    # CORRECTED the false claim, so the control is green under every stage and
+    # demonstrates nothing — still printed "The control reds under all three".
+    # A conclusion that cannot be wrong about its own experiment is the defect
+    # RQ-77-PROSEBLIND exists to record, one level up.
+    # NOTE round 2: `rows` is SEEDED with the control unconditionally at the top of
+    # this function, so a "no positive control" branch here would be DEAD CODE. It
+    # was written and removed rather than left in as a refusal that cannot fire —
+    # which is the same defect class as a marker in a comment. The reachable guard
+    # is the green-control one below, and it is red-first proven.
+    ctrl = next(v for _l, v, must in rows if must)
+    ctrl_red = [s for s in ("naive", "real-status", "not-quoted") if ctrl[s]]
+    if not ctrl_red:
+        sys.exit(f"REFUSE: the positive control is GREEN under all three stages, so "
+                 f"this experiment is UNINFORMATIVE — it cannot distinguish 'no "
+                 f"rule separates' from 'no rule fires at all'. Check that CONTROL "
+                 f"still names a commit whose artifact carries the false claim; "
+                 f"{CONTROL[0]} was chosen because the claim is live there.")
+    if separating:
+        print(f"  VERDICT: {len(separating)} stage(s) SEPARATE — "
+              f"{', '.join(separating)}. That CONTRADICTS RQ-69-PROSEGATE's and "
+              f"RQ-77-PROSEBLIND's recorded refutation, which say none does. "
+              f"Re-measure before believing either: a rule that separates is a "
+              f"gate this repo could wire, and #1319 would be wrong to hold as "
+              f"refuted.")
+    else:
+        # THE CAUSAL CLAUSE IS DERIVED TOO. Round 2 constructed the 2-of-3 case and
+        # found the count derived while the *reason* stayed a literal — and at a
+        # stage where the control goes GREEN, non-separation is caused by the
+        # control, not by the negatives. Say which.
+        green_at = [s for s in ("naive", "real-status", "not-quoted")
+                    if s not in ctrl_red]
+        if green_at:
+            cause = (f"at {', '.join(green_at)} the CONTROL itself stays green, so "
+                     f"non-separation there is the control failing to fire, not a "
+                     f"negative firing")
+        else:
+            cause = ("so do records that correctly narrate their own history, "
+                     "which is what makes every stage fire on a true statement")
+        print(f"  VERDICT: no stage separates. The control reds under "
+              f"{len(ctrl_red)} of 3 ({', '.join(ctrl_red) or 'none'}); {cause} — "
+              f"which is why this script must not be wired, and why "
+              f"RQ-77-PROSEBLIND records a refutation rather than a gate.")
 
 
 def main():

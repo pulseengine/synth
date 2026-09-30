@@ -5,6 +5,251 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.0] - 2026-09-30
+
+### What is this green ABOUT?
+
+v0.73 asked *is it still broken?* v0.74 asked *can the gate tell?* and answered by
+mutation. v0.75 asked why the answer kept being "no, in the same way". v0.76 asked
+**is the input real?** — because every recording v0.75 built was hand-written by
+the same author as the gate.
+
+v0.77 asks the question v0.76 kept running into by accident. Not whether the input
+is real, but whether the **subject is right**. A check can consume real input,
+execute real code and return a real pass — **about something other than the thing
+you meant**. The pass is not a lie about its own subject; it is a true statement
+about the wrong one.
+
+**This is a blind spot in the two techniques this project relies on most.**
+Mutation testing cannot find it: the mutation is applied to the subject the author
+*intended*, which the check never reads. Red-first cannot find it either — the
+check does go red when you break what it actually looks at. v0.76 hit it five
+times in its own release machinery, each found by accident rather than by a gate.
+Filed as #1418.
+
+**The scope rule, stated because it is the reflex:** this is not "add more
+assertions". An additional assertion about the wrong subject is another true
+statement about the wrong thing, and it reads as hardening. It was refused in
+review by name. Nor is it "audit every check in the repo". **The acceptance case
+is a subject mismatch being REFUSED**, never a subject being printed — a check
+that prints its subject and carries on has moved the problem into prose.
+
+### The merge ritual now refuses, instead of judging the wrong PR
+
+**SUBJECT (#1418).** `merge_gate.py` gained a distinction it did not have: the
+difference between *judging and saying no* and *being unable to judge*. A new
+`GateRefusal` exits **2** with `GATEREFUSED`, which the ritual cannot mistake for
+the `GATEOK` literal it greps for. Two subjects are now refused rather than
+counted:
+
+- **A rollup holding zero non-advisory checks.** That is not a green PR, it is a
+  PR whose checks have not registered, and every count below it would be about
+  the empty set.
+- **A head that is not the one the gate was asked about.** `merge_ritual.sh`
+  derives the subject itself (`git rev-parse origin/<headref>`) and passes it as
+  `--expect-head`, so a complete green set belonging to a *previous* head — the
+  precise shape that fooled v0.76's waiter after a force-push — refuses.
+
+The ritual also derives its **population floor** from the branch protection API
+rather than a hardcoded number, and refuses if that returns zero.
+
+### A refusal's reason now reaches the log
+
+**STDERR (#1419).** `oracle_run.py` drives **206 oracles** in CI and had no tests
+at all. An oracle refusing via `sys.exit("REFUSE: …")` had its reason **discarded**
+— the log showed only `VACUOUS … measured 0`.
+
+**The issue named the wrong mechanism, and fixing what it said would have changed
+nothing.** It reported that the driver "discards stderr". The driver runs oracles
+**in-process** via `runpy`, and there is no stderr redirection anywhere in the
+file. (It *does* import `subprocess`, to monkeypatch `Popen.__init__` and count
+compilations — so the precise statement is that no oracle is run in a subprocess
+and no stream is redirected, not that the module never mentions one.) What actually happens is that `sys.exit(str)` puts the
+string in `SystemExit.code` and the handler coerced a non-int to `1` without
+printing it. CPython prints a non-int exit code itself — but the driver catches
+`SystemExit` first, so it never gets the chance. The exit code always propagated,
+so this was never a false pass; what CI lost was *why*.
+
+**188 of the 206** oracles refuse via `sys.exit(<non-int>)`, derived by walking
+the paths that appear after `oracle_run.py` in `ci.yml`. A plain grep for
+`sys.exit(` over `scripts/**/*.py` gives **244 files and 660 sites** — a true
+count of the **wrong population**, which is this release's theme in one line.
+
+**And the first published version of this very figure was an instance of it**,
+caught by round 1 of the cold review. It said "170 of 188", derived by reading
+only the paths on the *same line* as each `oracle_run.py` invocation. Eighteen
+invocations continue onto a `\`-continuation line, so the driver's real
+population is **206**, of which **188** refuse — and the collision is what made it
+hard to see, because the true refusing count equals the previously claimed
+denominator. The eighteen in the blind spot were not incidental: they include
+**five of the six pin tables** RQ-77-PINDEBT5 audits and `falcon_opt_1318_dif‑
+ferential.py`, the external reporter's own oracle. Corrected in all six places
+that carried it.
+
+### Two premises were already dead when the release was planned
+
+Both were `must` priority, and both dissolved on contact with a refuting command.
+The pattern is about the **board**, not the code: a fix that ships without closing
+its issue leaves a scoping trap for whoever plans next.
+
+- **FLOORREGEX (#1243)** — recorded `disposition: refuted`. The defect it
+  describes was fixed in **v0.66.0** (`1bfade3d`), eleven releases before it was
+  scoped.
+- **PROSEBLIND (#1319)** — the refutation had already shipped in **v0.69**. So
+  this lane delivered what v0.69 lacked instead: a **positive control**. The
+  census now pins a known-contradictory commit and artifact, and **refuses** if
+  its control text cannot be read — a census that silently loses its control
+  reports "no contradictions found" and "I checked nothing" with the same output.
+
+### The population where no single number existed
+
+**CENSUS (#1403).** v0.76 asserted "353 module-level literal tables across 173
+files" from a predicate described only in prose. A cold reviewer implemented that
+stated predicate at the same commit and got **362 across 190**; looser readings
+gave 493 and 649. The figures were marked UNVERIFIED.
+
+The defect is not the arithmetic. It is that **a hand-asserted count of
+hand-written tables is itself a hand-written table**, and the prose never pinned
+the predicate. So this lane does not report one number. It reports **five named
+readings** — 41 / 200 / 200 / 320 / 414 tables — and **the spread is the finding**,
+a factor of 10. Anyone citing a figure must name which reading. A single number
+here would have recreated #1403's own defect one level up.
+
+### The external reporter: the residual did NOT move, and this says so
+
+**FALCON2 (#1318, cpetig — external reporter).** Conduct rule 4 binds by name: for
+an externally reported defect still open, a release whose only work on it was
+**hardening the oracle around it** does not count as progress. A fifth hardening
+is not delivery.
+
+**Measured, not assumed.** Re-downloaded the reporter's `errors.zip` and confirmed
+`opt.wasm` at sha256 `7065f112…`. With the literal command line from his report,
+on the shipping tree: **1 of 17 exported functions still skipped** —
+`controller@0.10.0#step`. v0.76's delivery holds; six of his seven declines moved
+and stayed moved.
+
+**Not attempted, with the reason.** The recovery ladder is fully spent:
+`vfp-spill + vfp-frame-locals+pool-grow(218)` reaches `GI-FPU-002` *"VFP register
+file exhausted"*, and `vfp-frame-locals + vfp-wide-file` reaches the pool
+exhaustion. Not a missing rung — the rungs are insufficient for this function's
+float-local pressure, making it register-allocator work in the area this project
+guards against miscompiles. **Filed as #1426** with the measurement rather than
+half-done.
+
+**What did land: the diagnostic stops sending him to the wrong defect.** Citing a
+*closed* issue is this repo's documented convention and is **not** the defect —
+93% of citation sites point at closed issues. The defect is that #1069 is
+**titled** about the `GI-FPU-002` class v0.76 *fixed*, and its thread never
+mentions the pool: grepping body plus every comment for `spill.slot pool|pool
+exhaust|slot pool` returns **zero**. A reporter following it is sent to a thread
+saying the gap is elsewhere. It now cites #1426. The control-flow substring is
+untouched — `arm_backend.rs` matches that message as a **string** to rerun the VFP
+frame stage with a grown pool, so the text is control flow, not prose.
+
+**#1318 stays open** (`issue-scope: outlives`): his ask is a module that compiles,
+and one function still declines. The tag does not close it.
+
+### Two artifacts report non-delivery, deliberately
+
+**PINDEBT5 (#1373).** The pin debt has not moved since v0.74.0, and v0.77 changes
+no emitted byte, so no pinned wrong answer could move; the candidate that could
+have closed one is #1426, rejected with its ground recorded. But the lane added
+the question no previous PINDEBT had asked: **would a pin going stale even be
+noticed?** `stale_pin_check.py` checks a *different subject* — that the pin's
+ISSUE is open. Audited: **all six non-empty tables are exact in both directions**
+and go red when a pinned defect is fixed. So the count is live debt, now measured
+rather than hoped. Two qualifications filed as **#1428**: five entries pin
+*correct* behaviour (regression guards wearing debt's clothing), and the parity
+VANISHED check is gated on a corpus glob, so a pin whose fixture leaves the corpus
+is neither confirmed nor refuted.
+
+**ARCHMODEL (#1136).** spar#445 is OPEN and **untouched** — `updatedAt` equals
+`createdAt`, zero comments — so the **fifteenth** consecutive N/A.
+
+### The theme kept firing, inside this release's own work
+
+Recorded because a theme that only finds instances in the *previous* release is a
+theme nobody is using:
+
+- A re-measurement of the reporter's module returned rc=1 with **zero skip lines**
+  because the module file had been purged. "No skip lines" is indistinguishable
+  from "nothing skips any more" — reported carelessly it would have told an
+  external reporter his blocker was fixed, on a measurement whose subject was a
+  missing file.
+- A classifier splitting the selector ratchet's delta cut the region at the
+  **first** `#[cfg(test)]` — line 308 of a 19,905-line file, one of five — and
+  measured one file where the population is a family of three. It reported "0
+  added, 0 removed": true, about a 307-line prefix, and it would have justified a
+  waiver with fabricated composition.
+- A tag-keyed census of the ARCHMODEL run returned **14** filings where the answer
+  is **15**, because v0.65's filing predates the five-tag vocabulary the census
+  keyed on. The undercount would have been reported from a green derivation, by
+  the artifact whose entire purpose is keeping a deferral visible.
+- A walk counting benign pins matched only `ast.Assign` and located just **one**
+  of the ten declared tables — nine are `AnnAssign` — and that one is empty, so it
+  reported "0" having inspected no entries. Zero benign pins and zero tables
+  inspected are the same output with opposite meanings.
+
+Each was caught the same way: by refusing to accept a figure until it was tied to
+something independently derived — the gate's own numbers, the checker's own region
+function, an expected shape. **A derived population of zero is a refusal, not a
+pass.**
+
+### Artifacts, derived from rivet rather than remembered
+
+<!-- DERIVED by scripts/release_notes_from_rivet.py from `rivet diff` -->
+<!-- base v0.76.0 · rivet 0.37.0 · do not hand-edit the lists -->
+
+**8 added, 0 removed, 0 modified, 641 unchanged** — the list below is the tool's own output, pasted unedited.
+
+- **RQ-77-ARCHMODEL** — Recurring N/A: feature-loop steps 1-2 (spar AADL -> WIT) deferred again on spar#445 — filed, not waived
+- **RQ-77-CENSUS** — The literal-table census is prose, not a script — v0.76 marked it UNVERIFIED and an independent reconstruction disagreed
+- **RQ-77-FALCON2** — The falcon residual is a DIFFERENT defect from the one v0.76 moved, and its diagnostic cites an issue titled about the opposite thing
+- **RQ-77-FLOORREGEX** — `[4-9][0-9]*` means 'first digit 4-9', not 'at least 4' — a CI floor whose subject is a digit rather than a magnitude
+- **RQ-77-PINDEBT5** — Pin debt, fifth consecutive measurement — no pin closed, and an audit of whether a CLOSED pin would even be noticed
+- **RQ-77-PROSEBLIND** — status_evidence R11 reads the structured fields, so a false status claim in an artifact's own PROSE is invisible to it
+- **RQ-77-STDERR** — A refusal's REASON never reached the log — and #1419's stated mechanism (discarded stderr) was not the cause
+- **RQ-77-SUBJECT** — A green can be TRUE ABOUT THE WRONG SUBJECT — the release machinery's five instances, and a refusal that makes the class loud
+
+This list is derived because it was once remembered and got it wrong: v0.66 filed
+two of its own artifacts under `[Unreleased]` (#1337). It is also pasted **unedited**
+— round 2 of the cold review found the first version reordered and paraphrased every
+title while carrying the tool's own "do not hand-edit the lists" comment, which made
+the provenance claim false even though all eight ids were present and the counts
+byte-matched.
+
+### Trace-graph delta — reported, not silently shipped
+
+**errors +0 / −0; warnings +24 / −0.**
+
+A release that cannot say whether it improved or degraded the trace graph is not
+reporting on itself — v0.69 shipped 22 unseen warnings and v0.70's own planning PR
+added 21 more. So: the 24 are **three per artifact across the eight**, in exactly
+three classes, and all three are pre-existing convention mismatches rather than new
+defects:
+
+1. `RQ-77-*` ids are not commit-trailer shaped (rivet wants an all-digit suffix).
+2. `req-type: process` is outside the loaded schema's allowed set — **107**
+   occurrences across **100** artifact files, and `rivet validate` reports exactly
+   107 warnings of that class, so the two agree. (Round 2 of the cold review
+   corrected this from 97, a figure no predicate I could construct reproduces;
+   `v0.76.0` carries 99.)
+3. Each system requirement wants an incoming `verifies` link from a verification
+   artifact.
+
+**Measured as structural, not as a regression:** v0.76's eight artifacts carry
+exactly the same 24. Every release in this programme adds this constant, and the
+honest statement is that v0.77 neither improved nor worsened the graph while adding
+its share of a known, unaddressed debt. Naming the three classes is the first step
+to retiring them; none is fixed here, and pretending the delta is zero would be the
+misreport this section exists to prevent.
+
+### Numbers
+
+Every figure here is re-derived on the shipping tree at the cut. Mutation tallies
+are reported per lane and never summed — they count different things against
+different denominators.
+
 ## [0.76.0] - 2026-09-29
 
 ### The input no live call ever produced
