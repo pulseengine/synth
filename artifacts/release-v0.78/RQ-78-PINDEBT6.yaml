@@ -83,7 +83,7 @@ artifacts:
         recovery ladder's rungs are insufficient for that function's float-local pressure, so the
         remaining work is register-allocator work. (2) NEW THIS RELEASE: RQ-78-WIDEFILE found that the
         ladder's last rung has no pool-grow retry, BUILT the retry, measured a real reach gain (the
-        wall for a synthetic family moved 58 -> 64) and then REVERTED it, because the #1069 execution
+        wall for a synthetic family moved 60 -> 72) and then REVERTED it, because the #1069 execution
         differential showed the newly-accepted code disagreeing with wasmtime in exactly the sign bit
         on every negative input. Filed as #1439. A reach increment that would have shipped a silent
         miscompile is not a pin closure, and taking it would have added defects rather than removing

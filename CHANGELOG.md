@@ -37,7 +37,8 @@ Check** job.
 
 Measured at the cut, on two axes because the word "features" names two mechanisms:
 
-- **Runtime flags.** 38 `SYNTH_*` reads in shipped code. **Four** are capabilities
+- **Runtime flags.** 38 distinct `SYNTH_*` flags in shipped code, read at 61
+  sites. **Four** are capabilities
   the binary does not execute with no environment set — `SYNTH_GRAPH_ALLOC`,
   `SYNTH_FACT_SPEC`, `SYNTH_SPILL_ON_EXHAUST`, `SYNTH_RV_ADDR_FOLD` — plus 2
   modifiers of those, 1 measure-only, 15 opt-outs that ship on, 2 solver budgets,
@@ -85,7 +86,8 @@ and 2 already had their retries.
 
 **Adding the retry extends reach**, measured on a synthetic family whose locals are
 consumed by a right-leaning nest so all stay live at once: the last compiling case
-moved from 58 to 64 locals, and the new wall at 72 is the genuine `[sp,#imm]`
+moved from **60 to 72** locals — 59 compiles today at 2040 bytes, and with the
+rung 60 and 64 compile — the new wall being the genuine `[sp,#imm]`
 1020-byte VSTR/VLDR ceiling, declined loudly. The cost half moved the right way too
 — 1956 bytes at 60 locals against 2040 at 59, because 32 allocatable S-registers
 instead of 16 means fewer values need a frame slot at all.
@@ -138,7 +140,8 @@ inference writes itself: two of the four flag-off capabilities are
 register-allocation capabilities, so "the fix for half the NEVER set is built and
 not shipped" is one sentence away. **It is refuted.** The two "register exhaustions"
 are different sites — `free_callee_saved` at `instruction_selector.rs:9238` on the
-selector path, versus `SYNTH_SPILL_ON_EXHAUST` at `optimizer_bridge.rs:3719` gating
+selector path, versus `SYNTH_SPILL_ON_EXHAUST` — read at `optimizer_bridge.rs:784`
+and consulted at `:3719` — gating
 the optimized path's #496 allocator. Two files, two code paths, one shared name.
 v0.63's lesson bounds it independently: RQ-63-ARMI64OFF cleared a 46-module primary
 blocker and gained **zero** modules, so the honest ceiling on clearing the 70 is

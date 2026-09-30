@@ -41,9 +41,10 @@ artifacts:
       # HELD OPEN, MEASURED. #1437 carries THREE asks and this lane delivers
       # exactly ONE. Ask 1 (commit the census, wire the self-test) is done. Ask 2
       # — decide PER CAPABILITY whether each flip is scheduled or the flag is
-      # permanent, and record it where a reader finds it — is not: three of the
-      # five say only "evidence-gated" with no owner for the evidence, and one is
-      # silicon-gated (#580) and not this repo's to decide. Ask 3 — decide whether
+      # permanent, and record it where a reader finds it — is not: TWO of the FOUR
+      # say only "evidence-gated" with no owner for the evidence, one is gated on
+      # #494's phasing, and one is silicon-gated (#580) and not this repo's to
+      # decide. Ask 3 — decide whether
       # the crates.io binary lacking `synth verify` is intended — is a maintainer
       # decision this release has no standing to make. Closing on ask 1 is the
       # v0.71/v0.73 shape: an umbrella closed by one delivered item.
@@ -53,8 +54,12 @@ artifacts:
         DELIVERED, and the deliverable is the derivation, not the number.
         `scripts/shipped_feature_census.py` is committed and its `--self-test` (39 assertions) AND the census itself run in
         the REQUIRED `Claim Check` job.
-        MEASURED at this cut, at commit `8f564ad8` — stated because this figure is derived from files
-        this release edits. AXIS 1, runtime env flags, over 128 shipped source files: 38 `SYNTH_*`
+        MEASURED at this cut, at commit `fac5b463` — the commit that corrected the census predicate, and a
+        REACHABLE one, stated because this figure is derived from files this release edits. An earlier
+        version of this sentence cited `8f564ad8`, which `git merge-base --is-ancestor` reports is NOT an
+        ancestor of this branch: it was the pre-rename cost-model commit, orphaned when its subject was
+        amended off an artifact id. A provenance citation naming an UNREACHABLE commit is worse than
+        none, because it looks checkable. AXIS 1, runtime env flags, over 128 shipped source files: 38 `SYNTH_*`
         flags. FOUR are capabilities the delivered binary does not execute with no environment set —
         `SYNTH_GRAPH_ALLOC` (whole-function Chaitin/Briggs colouring with the real-encoder cost model),
         `SYNTH_FACT_SPEC` (#494 proof-carrying specialization), `SYNTH_SPILL_ON_EXHAUST` (#496/#580
@@ -117,9 +122,12 @@ artifacts:
         over synthetic ONE-LINE strings and a census over 128 real MULTI-LINE files. (1) THE
         TEST-MODULE CUT WAS A DOCUMENTED REPEAT of the v0.77 selector-classifier defect: it truncated
         at the FIRST `#[cfg(test)]`, and `instruction_selector.rs` carries a `#[cfg(test)] fn
-        aapcs_param_regs` helper at 1% of its 29,616 lines, so the census discarded 99% of the shipped
-        selector, plus two thirds each of `properties.rs` and `expansion_validator.rs` — 4 of 128 files
-        cut early. NO FLAG WAS LOST at this commit, which is LUCK AND NOT A PREDICATE: the sole read
+        aapcs_param_regs` helper at line 308 of its 19,905 lines, so the census discarded 98% of the shipped
+        selector, plus two thirds each of `properties.rs` and `expansion_validator.rs` — THREE of 128
+        files lose shipped code that way. Two corrections inside one sentence, both from round 1: 29,616
+        is the v0.57 figure for this file, quoted historically in CLAUDE.md and not its size; and the
+        count is 3, not 4 — the fourth, `optimizer_bridge.rs`, merely has more than one `#[cfg(test)]`
+        and its first sits at 79.7%, losing nothing shipped. NO FLAG WAS LOST at this commit, which is LUCK AND NOT A PREDICATE: the sole read
         after any cut (`SYNTH_SEL_DSL_REGEN`) happens to sit in a genuine `mod tests`. One env read
         added to the selector body would have vanished silently, and vanishing UNDER-reports, which
         answers the maintainer's question reassuringly and wrongly. Each `#[cfg(test)]` ITEM is now
@@ -167,8 +175,9 @@ artifacts:
         that link into no binary at all (#1277 — `synth-analysis`, `synth-abi`, `synth-memory`,
         `synth-wit`), and `--features z3-solver` on `synth-verify`, which is a differential oracle
         rather than shipped capability.
-        WHAT THIS LANE DOES NOT CLAIM: that any of the five SHOULD be flipped. Three say only
-        "evidence-gated" with no owner for the evidence, `SYNTH_SPILL_ON_EXHAUST` is silicon-gated
-        (#580) and not this lane's to flip, and the reach half of the evidence needs the corpus
+        WHAT THIS LANE DOES NOT CLAIM: that any of the FOUR should be flipped. TWO say only
+        "evidence-gated" with no owner for the evidence, `SYNTH_FACT_SPEC` is gated on #494's phasing,
+        and `SYNTH_SPILL_ON_EXHAUST` is silicon-gated (#580) and not this lane's to flip — two plus one
+        plus one, which is the arithmetic the earlier "three of the five" failed, and the reach half of the evidence needs the corpus
         RQ-78-LADDER is blocked on. The deliverable is that the question is now mechanical; the
         decisions are asks 2 and 3 on #1437.

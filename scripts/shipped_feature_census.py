@@ -203,9 +203,13 @@ def non_test(text: str) -> str:
     NOT a truncation at the first `#[cfg(test)]`. That was this file's own first
     implementation and it is a DOCUMENTED REPEAT of the v0.77 selector-classifier
     defect: `instruction_selector.rs` carries a `#[cfg(test)] fn aapcs_param_regs`
-    helper at 1% of a 29,616-line file, so cutting there discarded 99% of the
-    shipped selector — and `properties.rs` and `expansion_validator.rs` lost
-    two thirds each. Four of 128 files cut early. No flag was lost at the
+    helper at line 308 of a 19,905-line file, so cutting there discarded 98% of
+    the shipped selector — and `properties.rs` and `expansion_validator.rs` lost
+    two thirds each. THREE of 128 files lose shipped code that way (a fourth,
+    `optimizer_bridge.rs`, has more than one `#[cfg(test)]` but its first is at
+    79.7% and loses nothing shipped — counting it gives the 4 an earlier draft of
+    this comment reported). 29,616 was the v0.57 figure for this file and is
+    quoted historically in CLAUDE.md; it is not its size. No flag was lost at the
     measuring commit, which is luck, not a predicate: the sole read after a cut
     (`SYNTH_SEL_DSL_REGEN`) happens to sit in a genuine `mod tests`. One env read
     added to the selector's body would have vanished silently.
@@ -579,7 +583,7 @@ def self_test() -> int:
 
     # ======================== TRAP 3 — the test cut, a DOCUMENTED v0.77 REPEAT
     # instruction_selector.rs carries `#[cfg(test)] fn aapcs_param_regs` at 1% of
-    # a 29,616-line file. Truncating at the first `#[cfg(test)]` discarded 99% of
+    # a 19,905-line file. Truncating at the first `#[cfg(test)]` discarded 98% of
     # the shipped selector. Each cfg(test) ITEM must go, not everything after it.
     sel_shape = ('fn ship_a() { std::env::var("SYNTH_BEFORE"); }\n'
                  '#[cfg(test)]\n'

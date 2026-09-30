@@ -12,7 +12,7 @@ artifacts:
       which only an execution oracle could show, and that rung had none.
 
       WHY IT BELONGS TO THIS THEME, on both halves: it is a measured reach increment
-      (the wall for a synthetic family moves 58 -> 64) and a measured cost result
+      (the wall for a synthetic family moves 60 -> 72) and a measured cost result
       (the wide register file makes the frame SMALLER — 1956 bytes at 60 locals
       against 2040 at 59). And it is the release's own gating rule doing its job:
       every reach increment ships with the oracle that makes newly-accepted input

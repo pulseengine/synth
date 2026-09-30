@@ -82,7 +82,7 @@ artifacts:
         printed rows sum to the modules they rank (12 rows, 141 modules) after an earlier instrument
         fragmented one cause across rows by failing to mask hex payloads. It is NOT a v0.78 measurement.
         THE OBSERVATION THAT MADE THIS LANE WORTH FINISHING, and it is this release's theme landing on
-        the release's own plan. RQ-78-FEATURESET derived that five capabilities ship flag-off, and TWO
+        the release's own plan. RQ-78-FEATURESET derived that FOUR capabilities ship flag-off, and TWO
         of them are register-allocation capabilities: `SYNTH_GRAPH_ALLOC` (whole-function Chaitin/Briggs
         colouring) and `SYNTH_SPILL_ON_EXHAUST` (post-exhaustion spill instead of a hard decline). The
         largest reach blocker is "register exhaustion". The inference writes itself — the fix for half
@@ -90,7 +90,7 @@ artifacts:
         check. THE TWO "REGISTER EXHAUSTIONS" ARE DIFFERENT SITES. The 70-module decline is raised by
         `free_callee_saved` at `crates/synth-synthesis/src/instruction_selector.rs:9238`, searching the
         five-register `CALLEE_SAVED_POOL` on the SELECTOR path. `SYNTH_SPILL_ON_EXHAUST` is consulted at
-        `crates/synth-synthesis/src/optimizer_bridge.rs:3719`, gating the OPTIMIZED path's VCR-RA-001
+        `crates/synth-synthesis/src/optimizer_bridge.rs:784` and CONSULTED at `:3719`, gating the OPTIMIZED path's VCR-RA-001
         allocator spill (#496), whose own comment says "otherwise the #496 decline stands for the whole
         function". Two decline sites in two files on two code paths, sharing a NAME. Whether clearing
         the allocator's exhaustion prevents the selector's — plausibly via the optimized path no longer

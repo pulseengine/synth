@@ -30,9 +30,23 @@ artifacts:
       be bought with the other.
 
       THE CONSTRAINT A FIX MUST NOT BREAK: any cost change alters emitted code and must
-      not regress the WCET bounds. Those bounds are priced from the REAL ENCODER's own
-      byte lengths (`straightline_expansion_real`), not from the estimator, and synth is
-      the only system in its comparison space emitting a sound per-function cycle bound.
+      not regress the WCET bounds, and synth is the only system in its comparison space
+      emitting a sound per-function cycle bound.
+
+      CORRECTED AT THE CUT — this paragraph asserted that those bounds "are priced from
+      the REAL ENCODER's own byte lengths (`straightline_expansion_real`), not from the
+      estimator". That generalises a narrow exception into the rule, and round 1 of the
+      cold review refuted it: the GENERAL straight-line path is
+      `straightline_expansion` at `crates/synth-backend/src/wcet.rs:119`, which calls
+      `synth_synthesis::estimate_arm_byte_size` — THE ESTIMATOR. Its own doc says so.
+      `straightline_expansion_real` at `:142` is consulted from exactly ONE match arm
+      (`:342`), the #936 i64 family the estimator does not cover. The soundness argument
+      still holds and is simply a different one: the estimator is pinned to the real
+      encoder by the `estimator_encoder_agreement` oracle, which is why using it is
+      provably >= the real cost rather than a hand literal — and that is also why the
+      same file can call it a "hand-maintained mirror" two paragraphs later without
+      contradiction. The obligation on a fix is unchanged: do not make the estimator and
+      the real encoder disagree.
       A change that made estimator and encoder disagree would break the soundness
       argument, not merely a quality number. Every subtraction stays gated on
       byte-identity or an execution differential.
