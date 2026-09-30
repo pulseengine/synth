@@ -108,6 +108,28 @@ DIAG = re.compile(r"(DEBUG|STATS|VERBOSE|DUMP|REPORT|AUDIT|OBJDUMP|SOLVER_DIFF)$
 # named here rather than bucketed by a regex that claims too much.
 SOLVER_BUDGET = {"SYNTH_ORDEAL_DEADLINE_MS", "SYNTH_ORDEAL_MAX_CONFLICTS"}
 
+# MEASURE-ONLY, and this entry is the PROOF THAT THE NAME RULE ABOVE IS NOT
+# ENOUGH. `SYNTH_SHADOW_ALLOC` is named exactly like a capability — no DEBUG,
+# STATS or DUMP suffix for `DIAG` to catch — and the first version of this census
+# reported it as a capability the delivered binary lacks. It is not. Its own
+# source says so at `arm_backend.rs:2014`: "the measure-only bridge between the
+# built analysis layer and the eventual virtual-register wiring ... off by default
+# and side-effect-free either way", and `:1954` groups it WITH the diagnostics —
+# "Diagnostics inside (SYNTH_FUSE_STATS, SYNTH_SHADOW_ALLOC, SYNTH_SPILL_REPORT)
+# ... never a byte change". Its guarded block contains three `eprintln!` and no
+# mutation. So the earlier count of 5 OVER-reported hidden capability by one.
+#
+# A DERIVED DISCRIMINATOR WAS TRIED AND REJECTED, recorded so it is not re-tried
+# blind: score each flag's guarded block by print macros versus mutation markers
+# (`&mut`, `.push(`, `.insert(`, ...) and call a print-only block measure-only.
+# It finds SHADOW_ALLOC — and also flags `SYNTH_GRAPH_ALLOC` and
+# `SYNTH_GRAPH_ALLOC_FORCE`, which ARE real capabilities: their reads sit inside a
+# tiny `fn enabled()` whose block is the boolean, not the capability's effect. TWO
+# FALSE POSITIVES IN THREE HITS. A gate that noisy gets routed around, which this
+# repo's own ratchet documentation warns about by name, so it is not shipped and
+# the classification stays an explicit, grounded list of one.
+MEASURE_ONLY = {"SYNTH_SHADOW_ALLOC"}
+
 ON, OFF, UNKNOWN = "on-by-default", "SHIPS-OFF", "undetermined"
 
 # An ARITHMETIC floor on the self-test's own work, checked in Python rather than
@@ -117,7 +139,7 @@ ON, OFF, UNKNOWN = "on-by-default", "SHIPS-OFF", "undetermined"
 # here would be the same mistake in a file whose subject is mechanical honesty.
 # It is a FLOOR, not an equality: adding an assertion must never red CI, but
 # losing one must.
-MIN_ASSERTIONS = 36
+MIN_ASSERTIONS = 39
 
 # A binding whose NAME is negative inverts what its boolean means. These are the
 # words this tree actually uses; an unmatched name is read as positive, which is
@@ -332,6 +354,8 @@ def census(root: pathlib.Path = ROOT):
     for flag, ss in sorted(sites.items()):
         if flag in SOLVER_BUDGET:
             kind, verdicts = "solver-budget", {"solver-budget"}
+        elif flag in MEASURE_ONLY:
+            kind, verdicts = "measure-only", {"measure-only"}
         elif DIAG.search(flag):
             kind, verdicts = "instrumentation", {"instrumentation"}
         else:
@@ -402,6 +426,7 @@ def main() -> int:
     modifiers = [r for r in off_all if r[4] is not None]
     on = [r for r in rows if r[2] == ON]
     instr = [r for r in rows if r[2] == "instrumentation"]
+    meas = [r for r in rows if r[2] == "measure-only"]
     budget = [r for r in rows if r[2] == "solver-budget"]
     unk = [r for r in rows if r[2] == UNKNOWN]
 
@@ -420,6 +445,10 @@ def main() -> int:
     print(f"\n  SOLVER BUDGETS — on by default WITH A VALUE, and the value decides")
     print(f"  what gets proven, so these are not 'no emitted byte changes': {len(budget)}")
     for flag, where, _k, _ss, _m in budget:
+        print(f"    {flag:32} {where}")
+    print(f"\n  MEASURE-ONLY — off by default and side-effect-free, so being off is")
+    print(f"  not missing capability. Named, with the source line as ground: {len(meas)}")
+    for flag, where, _k, _ss, _m in meas:
         print(f"    {flag:32} {where}")
     print(f"\n  instrumentation, classified by NAME (a JUDGEMENT, not derived): {len(instr)}")
     print("    " + ", ".join(f for f, _w, _k, _s, _m in instr))
@@ -443,6 +472,12 @@ def main() -> int:
             note = "  <- in NEITHER delivered binary"
         print(f"    {f:24} = [{feats[f].strip()}]{note}")
 
+    named = len(instr) + len(budget) + len(meas)
+    print(f"\n  THE LIMIT OF THIS CENSUS, stated rather than left to be discovered:")
+    print(f"  it derives POLARITY (is the capability reachable with the variable")
+    print(f"  unset?) from the code. Whether a flag CHANGES EMITTED BYTES is a")
+    print(f"  separate question it decides BY NAME for {named} of {len(rows)} flags, and")
+    print(f"  `SYNTH_SHADOW_ALLOC` is the proof that rule misses things.")
     print(f"\nshipped-feature-census: axis 1 — {len(rows)} flags, {len(ships_off)} "
           f"capabilities ship off (+{len(modifiers)} modifiers), {len(unk)} "
           f"undetermined; axis 2 — {len(gated)} features off the default build, "
@@ -580,6 +615,18 @@ def self_test() -> int:
        modifier_of("SYNTH_ORPHAN_FORCE", {"SYNTH_ORPHAN_FORCE", "SYNTH_OTHER"}) is None)
     ok("a two-level extension attributes to its NEAREST parent",
        modifier_of("SYNTH_A_B_C", {"SYNTH_A", "SYNTH_A_B", "SYNTH_A_B_C"}) == "SYNTH_A_B")
+
+    # ==================================== the measure-only correction (over-report)
+    ok("RQ-78-FEATURESET: `SYNTH_SHADOW_ALLOC` is MEASURE-ONLY, not a capability "
+       "the binary lacks — its own source calls it side-effect-free, and the first "
+       "census OVER-reported hidden capability by one",
+       "SYNTH_SHADOW_ALLOC" in MEASURE_ONLY)
+    ok("RQ-78-FEATURESET: and `DIAG` cannot catch it — the name carries no DEBUG/"
+       "STATS/DUMP suffix, which is why the name rule needed an explicit list",
+       not DIAG.search("SYNTH_SHADOW_ALLOC"))
+    ok("the three name-decided buckets are DISJOINT, so no flag is counted twice",
+       not (MEASURE_ONLY & SOLVER_BUDGET)
+       and not any(DIAG.search(f) for f in MEASURE_ONLY | SOLVER_BUDGET))
 
     # ============================================== AXIS 2 — the Cargo features
     feats, reach, release_extra = cargo_feature_axis()

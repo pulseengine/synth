@@ -53,13 +53,40 @@ artifacts:
         DELIVERED, and the deliverable is the derivation, not the number.
         `scripts/shipped_feature_census.py` is committed and its `--self-test` (36 assertions) runs in
         the REQUIRED `Claim Check` job.
-        MEASURED at this cut. AXIS 1, runtime env flags, over 128 shipped source files: 38 `SYNTH_*`
-        flags. FIVE are capabilities the delivered binary does not execute with no environment set —
+        MEASURED at this cut, at commit `8f564ad8` — stated because this figure is derived from files
+        this release edits. AXIS 1, runtime env flags, over 128 shipped source files: 38 `SYNTH_*`
+        flags. FOUR are capabilities the delivered binary does not execute with no environment set —
         `SYNTH_GRAPH_ALLOC` (whole-function Chaitin/Briggs colouring with the real-encoder cost model),
         `SYNTH_FACT_SPEC` (#494 proof-carrying specialization), `SYNTH_SPILL_ON_EXHAUST` (#496/#580
-        post-exhaustion spill instead of a hard decline), `SYNTH_RV_ADDR_FOLD`, `SYNTH_SHADOW_ALLOC`.
-        Plus 2 modifiers of those, 15 opt-outs that ship ON, 2 solver budgets that ship ON with a
-        value, 14 instrumentation flags, and ZERO undetermined. AXIS 2, Cargo features, which no census
+        post-exhaustion spill instead of a hard decline) and `SYNTH_RV_ADDR_FOLD` (which calls
+        `fold_const_addr(&mut ctx.out)`, so it demonstrably moves bytes). Plus 2 modifiers of those, 1
+        MEASURE-ONLY flag, 15 opt-outs that ship ON, 2 solver budgets that ship ON with a value, 14
+        instrumentation flags, and ZERO undetermined. The six buckets sum to 38.
+        THE FOUR WAS FIVE UNTIL THIS RECORD'S OWN NUMBER WAS CHECKED AGAINST THE SOURCE, and the
+        correction runs the OPPOSITE way from every other error in this lane: it OVER-reported hidden
+        capability. `SYNTH_SHADOW_ALLOC` is MEASURE-ONLY. Its own source says so at
+        `crates/synth-backend/src/arm_backend.rs:2014` — "the measure-only bridge between the built
+        analysis layer and the eventual virtual-register wiring ... off by default and side-effect-free
+        either way" — and `:1954` groups it WITH the diagnostics: "Diagnostics inside (SYNTH_FUSE_STATS,
+        SYNTH_SHADOW_ALLOC, SYNTH_SPILL_REPORT) ... never a byte change". Its guarded block holds three
+        `eprintln!` and no mutation. It was filed as a capability because it is NAMED like one: no
+        DEBUG/STATS/DUMP suffix for the `DIAG` name rule to catch. Being off is not missing capability
+        for a flag that changes no emitted byte, so reporting it as one inflated the answer to the
+        maintainer's question — in the alarming direction, which is its own kind of wrong.
+        A DERIVED DISCRIMINATOR WAS TRIED AND REJECTED WITH ITS MEASUREMENT, recorded so it is not
+        re-tried blind: score each flag's guarded block by print macros versus mutation markers and call
+        a print-only block measure-only. It finds `SYNTH_SHADOW_ALLOC` — and ALSO flags
+        `SYNTH_GRAPH_ALLOC` and `SYNTH_GRAPH_ALLOC_FORCE`, which are real capabilities, because their
+        reads sit inside a tiny `fn enabled()` whose block is the boolean and not the capability's
+        effect. TWO FALSE POSITIVES IN THREE HITS. This repo's own ratchet documentation says a gate
+        people cannot move honestly is a gate they route around, so it was NOT shipped and the
+        classification is an explicit grounded list of one instead of a noisy rule.
+        SO THE CENSUS NOW STATES ITS OWN LIMIT rather than leaving it to be discovered: it DERIVES
+        POLARITY — is the capability reachable with the variable unset — from the code, and that half is
+        mechanical. Whether a flag CHANGES EMITTED BYTES is a SEPARATE question it decides BY NAME for
+        17 of 38 flags (14 instrumentation, 2 solver budgets, 1 measure-only), and
+        `SYNTH_SHADOW_ALLOC` is the standing proof that the name rule misses cases. That sentence is
+        printed by the tool on every run, not only recorded here. AXIS 2, Cargo features, which no census
         of runtime reads can see: TWO DIFFERENT BINARIES ARE DELIVERED and they do not carry the same
         set. `release.yml` builds `-p synth-cli --features verify`; `cargo install synth-cli` takes
         `default = ["riscv"]` only, so `synth verify` is NOT COMPILED INTO THE CRATES.IO BINARY. It
