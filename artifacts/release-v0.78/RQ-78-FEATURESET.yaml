@@ -1,0 +1,147 @@
+artifacts:
+  - id: RQ-78-FEATURESET
+    type: system-req
+    release: v0.78
+    status: implemented
+    title: "The delivered binary is not the full feature set — derive which capabilities ship off, on BOTH axes"
+    description: >
+      The maintainer asked whether the binary we deliver is our full feature set, or
+      whether capability is "hiding behind features and other things". Answering it
+      required reading 128 source files, and three hand censuses in one sitting gave
+      three different answers: 15, then 9, then 5.
+
+      A question about the shipped artifact must be answerable mechanically, so this
+      lane commits the census rather than the count.
+
+      WHY IT BELONGS TO THIS THEME. "What does it compile, and what does that code
+      cost" is a question about the binary we ship. A capability reachable only when an
+      environment variable is set is not in that binary's behaviour, so every reach and
+      cost figure this release publishes is implicitly scoped to the flag-off
+      configuration — and until now nothing said which capabilities that excludes.
+
+      TWO AXES, because the ask said "features" and in this repo that word names two
+      different mechanisms. Censusing one would read as the whole answer.
+
+      REFUTING COMMAND: run `python3 scripts/shipped_feature_census.py`. If its axis-1
+      count disagrees with any figure in this record, the script is wrong or the figure
+      was — establish which BEFORE citing either. A capability shipping off is a
+      DISCLOSURE; an UNDETERMINED flag is the failure, because it means the census
+      cannot describe the binary, and the script exits non-zero on one.
+    tags:
+      - process
+      - feature-loop
+      - measurement
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1437"
+      # HELD OPEN, MEASURED. #1437 carries THREE asks and this lane delivers
+      # exactly ONE. Ask 1 (commit the census, wire the self-test) is done. Ask 2
+      # — decide PER CAPABILITY whether each flip is scheduled or the flag is
+      # permanent, and record it where a reader finds it — is not: three of the
+      # five say only "evidence-gated" with no owner for the evidence, and one is
+      # silicon-gated (#580) and not this repo's to decide. Ask 3 — decide whether
+      # the crates.io binary lacking `synth verify` is intended — is a maintainer
+      # decision this release has no standing to make. Closing on ask 1 is the
+      # v0.71/v0.73 shape: an umbrella closed by one delivered item.
+      issue-scope: outlives
+      done-when: "contains:scripts/shipped_feature_census.py:RQ-78-FEATURESET"
+      verified-by: >-
+        DELIVERED, and the deliverable is the derivation, not the number.
+        `scripts/shipped_feature_census.py` is committed and its `--self-test` (36 assertions) runs in
+        the REQUIRED `Claim Check` job.
+        MEASURED at this cut. AXIS 1, runtime env flags, over 128 shipped source files: 38 `SYNTH_*`
+        flags. FIVE are capabilities the delivered binary does not execute with no environment set —
+        `SYNTH_GRAPH_ALLOC` (whole-function Chaitin/Briggs colouring with the real-encoder cost model),
+        `SYNTH_FACT_SPEC` (#494 proof-carrying specialization), `SYNTH_SPILL_ON_EXHAUST` (#496/#580
+        post-exhaustion spill instead of a hard decline), `SYNTH_RV_ADDR_FOLD`, `SYNTH_SHADOW_ALLOC`.
+        Plus 2 modifiers of those, 15 opt-outs that ship ON, 2 solver budgets that ship ON with a
+        value, 14 instrumentation flags, and ZERO undetermined. AXIS 2, Cargo features, which no census
+        of runtime reads can see: TWO DIFFERENT BINARIES ARE DELIVERED and they do not carry the same
+        set. `release.yml` builds `-p synth-cli --features verify`; `cargo install synth-cli` takes
+        `default = ["riscv"]` only, so `synth verify` is NOT COMPILED INTO THE CRATES.IO BINARY. It
+        loud-declines ("Verification requested but not compiled into this binary. Rebuild with: cargo
+        build --features verify"), which is correct behaviour, but the two published artifacts answer
+        differently and nothing recorded that. `awsm` and `wasker` are in neither; `exports_only_275_probe`
+        is in neither BY DESIGN, since the release binary physically cannot carry a switch that
+        re-introduces a fixed defect.
+        WHY THE THREE HAND COUNTS DISAGREED, and it is ONE mechanism: THE POLARITY OF THE BOOLEAN IS
+        NOT THE POLARITY OF THE FEATURE. Two live sites in `arm_backend.rs` settle it — their booleans
+        are OPPOSITE when unset and both capabilities ship ON: `857: let promote = var("SYNTH_NO_LOCAL_PROMOTE").is_err()`
+        (unset -> true) and `1684: let islands_disabled = var_os("SYNTH_NO_LITPOOL_ISLANDS").is_some()`
+        (unset -> false). What closes the gap is the BINDING NAME, which says what the boolean MEANS. So
+        the rule is one line with no special cases: ON <=> (boolean when unset) XOR (binding name is
+        negative). A FIRST DRAFT SPECIAL-CASED `SYNTH_NO_*` BY NAME AND ITS OWN SELF-TEST REJECTED IT:
+        keying on the prefix gets every `is_err` site backwards, and it would have been a hand-written
+        mirror of a naming convention rather than a reading of the code — the defect class this
+        project's North Star forbids, one tier down. The prefix now carries no weight; a negative
+        control pins that a `SYNTH_NO_*` flag which must be SET to enable ships OFF.
+        THE 5-vs-7 GAP IS DERIVED TOO. A flag whose name strictly extends another READ flag's name
+        modifies that flag rather than gating its own capability (`SYNTH_GRAPH_ALLOC_FORCE` ->
+        `SYNTH_GRAPH_ALLOC`), with a negative control: a `_FORCE` flag whose parent is read NOWHERE
+        gates its own capability and counts as one. My own hand count of 5 had silently DROPPED these
+        two; the derivation shows them in their own bucket. 5 and 7 were both true about different
+        populations, which is why the spread is printed rather than one figure (the RQ-77-CENSUS
+        convention).
+        THREE BLIND SPOTS FOUND BY A COLD READ OF THE FIRST COMMIT, all in the gap between a self-test
+        over synthetic ONE-LINE strings and a census over 128 real MULTI-LINE files. (1) THE
+        TEST-MODULE CUT WAS A DOCUMENTED REPEAT of the v0.77 selector-classifier defect: it truncated
+        at the FIRST `#[cfg(test)]`, and `instruction_selector.rs` carries a `#[cfg(test)] fn
+        aapcs_param_regs` helper at 1% of its 29,616 lines, so the census discarded 99% of the shipped
+        selector, plus two thirds each of `properties.rs` and `expansion_validator.rs` — 4 of 128 files
+        cut early. NO FLAG WAS LOST at this commit, which is LUCK AND NOT A PREDICATE: the sole read
+        after any cut (`SYNTH_SEL_DSL_REGEN`) happens to sit in a genuine `mod tests`. One env read
+        added to the selector body would have vanished silently, and vanishing UNDER-reports, which
+        answers the maintainer's question reassuringly and wrongly. Each `#[cfg(test)]` ITEM is now
+        removed by brace balance with a scanner that is not fooled by a `{` inside a string literal.
+        (2) THE BINDING WINDOW WAS FORWARD-ONLY, so rustfmt could flip a verdict: 13 reads in this tree
+        have their binding on a previous line, including `SYNTH_GRAPH_ALLOC`'s own `fn enabled()`, and
+        the wrapped `islands_disabled` shape classifies OFF under a forward-only window and ON in fact.
+        Naively widening BACKWARD is also wrong — two lines above `SYNTH_FUSE_STATS` sits an unrelated
+        `let arm_instrs = ...` a window would adopt — so the search is scoped to the ENCLOSING
+        STATEMENT, with BOTH shapes pinned. (3) FIRST-READ-WINS had no agreement check, the
+        `.position()`/`.rposition()` shape; every site is now classified and a disagreement REFUSES. 6
+        flags are read at more than one site and all 6 agree, so the earlier output was correct but
+        unlicensed. THAT REFUSAL WAS DEAD CODE in the first attempt — `verdicts` was overwritten with a
+        one-element set before its size was tested, so `len(verdicts) > 1` could never be true — and
+        its own red-first fixture was ALSO wrong, using `let off = ...` when `off` is a negative
+        binding word, so both sites classified ON and the fixture proved nothing about the refusal.
+        Both corrected; the refusal fires.
+        AND THE FEATURE PARSER REPEATED THE CHARACTER-CLASS DEFECT A THIRD TIME IN THIS PROJECT'S
+        HISTORY. `[a-z][a-z0-9-]*` silently dropped `exports_only_275_probe` for its UNDERSCORES,
+        exactly as `[a-z-]*` misses `synth-backend-aarch64` for its DIGITS and as `[4-9][0-9]*` is not
+        a floor (#1435). A feature the parser misses reads as "not declared", which is
+        indistinguishable from "not hidden". Widened, and the underscore name is pinned BY NAME.
+        TWO BUCKET LABELS CORRECTED FOR HONESTY rather than left as they read. `DIAG` decides 14 of 38
+        flags by a regex over NAMES: that is a JUDGEMENT, not a derivation, and it is printed as its
+        own bucket instead of folded into the derived counts. And `SYNTH_ORDEAL_DEADLINE_MS` /
+        `SYNTH_ORDEAL_MAX_CONFLICTS` sat under a bucket label asserting "no emitted byte changes",
+        which is FALSE: `synth-verify/src/solver.rs` documents that setting the deadline to 0 "re-opens
+        the #849 hang class", and a query that times out answers `Unknown`, so the budget decides what
+        gets PROVEN and therefore which proof-carrying elisions are admitted. They are named as solver
+        budgets, a third polarity (on by default WITH A VALUE) this census does not otherwise model.
+        REFUSALS, each made to fire rather than asserted: an empty glob; a non-empty source set with
+        zero `SYNTH_*` reads; cross-site disagreement; and any `crates/*/build.rs` reading a `SYNTH_*`
+        variable, because a COMPILE-time gate is invisible to a census of runtime reads and would make
+        this script under-report the very thing it measures. Nothing does today — verified, 128 of 270
+        `.rs` files under `crates/` are shipped code and the other 142 are 135 `tests/`, 6 `examples/`
+        and 1 `benches/`. That refusal is gated with a POSITIVE CONTROL: the same temp tree WITHOUT a
+        build.rs must classify successfully, or the refusal proves nothing about the build script.
+        THE ASSERTION FLOOR IS ARITHMETIC AND INSIDE THE SCRIPT. `grep -qE '[0-9]+ assertions'` — the
+        shape two other CI steps use — is a DIGIT CLASS, not a floor: it accepts zero, so it passes a
+        self-test whose body stopped running. That is the #1435 defect this same job fixes one layer
+        up. Proven potent by DELETING one real assertion (35 < 36, rc=1) with the exit code read
+        WITHOUT A PIPE, because the first attempt reported rc=0 over a real refusal — a pipeline's exit
+        code is the last command's, and `tail`'s was 0.
+        STILL UNCENSUSED, named here rather than left to read as absent: the four library-only crates
+        that link into no binary at all (#1277 — `synth-analysis`, `synth-abi`, `synth-memory`,
+        `synth-wit`), and `--features z3-solver` on `synth-verify`, which is a differential oracle
+        rather than shipped capability.
+        WHAT THIS LANE DOES NOT CLAIM: that any of the five SHOULD be flipped. Three say only
+        "evidence-gated" with no owner for the evidence, `SYNTH_SPILL_ON_EXHAUST` is silicon-gated
+        (#580) and not this lane's to flip, and the reach half of the evidence needs the corpus
+        RQ-78-LADDER is blocked on. The deliverable is that the question is now mechanical; the
+        decisions are asks 2 and 3 on #1437.

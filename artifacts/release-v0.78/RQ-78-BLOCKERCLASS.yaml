@@ -36,9 +36,21 @@ artifacts:
       if the top class turns out to be something the project has already decided not to
       do.
 
-      REFUTING COMMAND: run the census on the shipping tree rather than reading v0.63's
-      figures, and re-derive the NEVER set from RQ-78-LADDER's fresh ladder rather than
-      from the stale one. If the NEVER set has shrunk materially, the ranking changes.
+      RESCOPED AT THE v0.78 CUT, because the predicate as first written could not be
+      EVALUATED. It required re-deriving the NEVER set "from RQ-78-LADDER's fresh
+      ladder", and that ladder is blocked: the 243-module corpus lives at
+      `/Volumes/Work/corpora/wasm-243` on an unmounted volume, and the host that
+      carries it refuses key, password and keyboard-interactive auth. A `must` artifact
+      whose done-when silently cannot be checked is worse than one that reports a
+      blocker, so the freshness half is separated from the naming half below and the
+      measurement's PROVENANCE is labelled rather than implied.
+
+      REFUTING COMMAND: read the ranking's measurement commit and date before citing any
+      row. The live ranking is the RQ-64-HISTOGRAM re-attribution (#1159, v0.64), NOT a
+      v0.78 measurement — and v0.63's own lesson is recorded beside it: RQ-63-ARMI64OFF
+      cleared a 46-module PRIMARY blocker and gained ZERO reach, because every one of the
+      46 landed on the next rung. Any inference of the form "clear the top class, gain N
+      modules" is that error and must be refuted, not repeated.
     tags:
       - process
       - reach
@@ -50,4 +62,59 @@ artifacts:
       req-type: process
       priority: must
       issue: "#242"
-      done-when: "manual:2026-09-30 the ARM NEVER set is censused by PRIMARY blocker on the shipping tree, ranked, and the top class plus the oracle it requires are named — or the ranking is published with a reasoned refusal to scope the top class"
+      # PARTIAL, and named as such. The NAMING half is delivered; the FRESH
+      # measurement is not, and cannot be without the corpus. R11 requires a
+      # disposition beside a `landed:` on a non-claiming status, and forbids one
+      # beside a claiming status — so this stays `proposed` rather than asserting
+      # a delivery it did not make. A `must` visibly at `partial` is the honest
+      # report; `implemented` would be the false one.
+      disposition: partial
+      landed: "#1438"
+      verification-track: manual
+      done-when: "manual:2026-09-30 the top ARM NEVER class is NAMED from the live ranking with its provenance stated (RQ-64-HISTOGRAM re-attribution, #1159, v0.64 — not a v0.78 measurement), the oracle it would require is named, and the naive 'flip the flag and gain the class' inference is REFUTED with its specific ground; the FRESH per-blocker re-census is recorded as BLOCKED on the RQ-78-LADDER corpus, with the blocker named"
+      verified-by: >-
+        PARTIAL. What is delivered is the NAMING and one REFUTATION; what is not is a fresh measurement.
+        THE TOP CLASS, from the live ranking: `register exhaustion — no free callee-saved register to
+        hold a call result while reloading a preserved param`, SEVENTY of the 141 ARM NEVER modules,
+        half the reach headroom and more than the next two classes combined (#929 AAPCS i64 even-aligned
+        pair, 40; `encode_operand2` non-rotated immediate, 9). PROVENANCE, stated rather than implied:
+        this is the RQ-64-HISTOGRAM re-attribution (#1159, v0.64), whose instrument asserts that its
+        printed rows sum to the modules they rank (12 rows, 141 modules) after an earlier instrument
+        fragmented one cause across rows by failing to mask hex payloads. It is NOT a v0.78 measurement.
+        THE OBSERVATION THAT MADE THIS LANE WORTH FINISHING, and it is this release's theme landing on
+        the release's own plan. RQ-78-FEATURESET derived that five capabilities ship flag-off, and TWO
+        of them are register-allocation capabilities: `SYNTH_GRAPH_ALLOC` (whole-function Chaitin/Briggs
+        colouring) and `SYNTH_SPILL_ON_EXHAUST` (post-exhaustion spill instead of a hard decline). The
+        largest reach blocker is "register exhaustion". The inference writes itself — the fix for half
+        the NEVER set is built and not shipped — and it is REFUTED, on a ground specific enough to
+        check. THE TWO "REGISTER EXHAUSTIONS" ARE DIFFERENT SITES. The 70-module decline is raised by
+        `free_callee_saved` at `crates/synth-synthesis/src/instruction_selector.rs:9238`, searching the
+        five-register `CALLEE_SAVED_POOL` on the SELECTOR path. `SYNTH_SPILL_ON_EXHAUST` is consulted at
+        `crates/synth-synthesis/src/optimizer_bridge.rs:3719`, gating the OPTIMIZED path's VCR-RA-001
+        allocator spill (#496), whose own comment says "otherwise the #496 decline stands for the whole
+        function". Two decline sites in two files on two code paths, sharing a NAME. Whether clearing
+        the allocator's exhaustion prevents the selector's — plausibly via the optimized path no longer
+        falling back — is UNTESTED, and it is exactly the class this release is about: a true-sounding
+        sentence about the wrong subject, one level up, in the plan rather than in a gate. I was one
+        sentence from writing it as a finding.
+        SO THE OBLIGATION IS NAMED, NOT DISCHARGED: before any release claims a reach gain from
+        flipping either flag, it must show the SELECTOR's `free_callee_saved` decline disappearing on
+        named modules, not the allocator's. And v0.63's recorded lesson bounds the upside independently
+        of that: RQ-63-ARMI64OFF cleared a 46-module primary blocker and gained ZERO modules, because
+        a primary-blocker count is not a feature count and all 46 landed on the next rung. The honest
+        ceiling on clearing the 70 is therefore UNKNOWN and not 70.
+        THE ORACLE THE CLASS WOULD REQUIRE, named as the gating rule demands: an execution differential
+        over the newly-accepted modules, because the whole point of spill-on-exhaust is that code which
+        previously DECLINED now compiles — so there is no byte-identity baseline to compare against (the
+        v0.72 blind-by-construction negative control, whose lesson is recorded). It needs the boot
+        sweep's shape: run the emitted image and compare observable behaviour against wasmtime, per
+        newly-accepted module, with the decline-to-accept transition named per module so a silent change
+        of subject is visible.
+        BLOCKED, with the blocker named rather than implied: the fresh per-primary-blocker re-census
+        needs the 243-module corpus at `/Volumes/Work/corpora/wasm-243` (manifest provenance recorded at
+        `docs/reviews/v0.63-cold-review.md:83` — 243 entries, 243 OK, 0 failed). `/Volumes/Work` is not
+        mounted; `mac.fritz.box` resolves and port 22 is OPEN but returns `Permission denied
+        (publickey,password,keyboard-interactive)`, and attempting passwords was declined. This is a
+        PROVENANCE defect being fixed in the open, not corpus loss — the corpus exists and its location
+        is now written down where the next lane will look, which is the half of RQ-78-LADDER that does
+        NOT need the mount.

@@ -54,4 +54,39 @@ artifacts:
       # own file goes TRUE the moment the file exists and reds R3; and v0.76 proved a
       # `contains:` naming a COMMENT cannot fail. The delivering lane replaces this
       # with a `contains:` naming EXECUTED code in a test file when it flips status.
-      done-when: "manual:2026-09-30 the ladder is re-measured on the shipping tree by partial_census_1017.py --ladder, carries its own commit and date, and the reach floor is pinned in claims.yaml as a direction: up ratchet whose value equals the live derivation"
+      # PARTIAL. The re-measurement is BLOCKED on a corpus this machine cannot
+      # reach, so the predicate is rewritten to what was actually delivered —
+      # the PROVENANCE defect that blocked it, fixed — with the measurement half
+      # named as blocked rather than left to look undone-for-no-reason. R11
+      # requires a disposition beside `landed:` on a non-claiming status.
+      disposition: partial
+      landed: "#1438"
+      verification-track: manual
+      done-when: "manual:2026-09-30 the PROVENANCE defect is fixed — the ladder header and partial_census_1017.py's own --help both record that the 243-module corpus is EXTERNAL to this repo and name its last known location — and the re-measurement is recorded as BLOCKED with the blocker named; the reach FLOOR is explicitly NOT pinned this release, with the reason stated"
+      verified-by: >-
+        PARTIAL, and the part delivered is the one that was blocking the other. THE RE-MEASUREMENT DID
+        NOT HAPPEN: the 243-module corpus is on an unmounted external volume, last known at
+        `/Volumes/Work/corpora/wasm-243`; the host that carries it resolves and answers on port 22 but
+        returned `Permission denied (publickey,password,keyboard-interactive)` on 2026-09-30, and
+        attempting passwords was declined rather than tried. So the ladder still reads v0.63 and every
+        reach statement in this release is scoped to a 2026-09-06 tree, which is now SAID in the file
+        rather than inferable from its title.
+        WHAT WAS DELIVERED IS A PROVENANCE DEFECT, and it is the reason the block took so long to
+        diagnose. The ladder header cited its manifest as `corpora/wasm-243/MANIFEST.sha256` — a BARE
+        RELATIVE PATH that reads as repo-relative. It is not: `corpora/` is absent from this repo, is
+        tracked by zero files, and is not even gitignored, and `partial_census_1017.py` took the corpus
+        as a positional `roots` argument whose help said only ".wasm files or directories", so the path
+        the ladder cites was DEFINED NOWHERE IN THE TREE. This lane was one command from publishing that
+        the corpus was UNOBTAINABLE — an extra refuting command found it on a volume instead. It is not
+        lost, it is unmounted, and the difference is the whole finding. Both ends now record it: the
+        ladder header carries an explicit "THE CORPUS IS EXTERNAL TO THIS REPO" note with the last known
+        absolute path and the auth failure's date, and the script's own `--help` says the same where an
+        operator will actually read it. This is the half of the deliverable that does NOT need the mount,
+        and it is what makes the next attempt cheap.
+        THE REACH FLOOR IS DELIBERATELY NOT PINNED THIS RELEASE, and saying so is the point rather than
+        an omission. The theme pins a reach FLOOR that must rise against a cost CEILING that must fall,
+        slack-free, so neither can be bought with the other. Pinning a floor at the v0.63 figures would
+        pin a number measured on a tree fourteen releases old — and pinning a cost ceiling ALONE, with
+        no floor beside it, is exactly the alternating the theme forbids: it would let a release buy
+        cost wins with reach losses and stay green. So neither half is pinned, and the artifact says
+        which and why, rather than shipping the half that happened to be reachable.
