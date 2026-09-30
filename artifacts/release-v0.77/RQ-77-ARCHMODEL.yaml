@@ -64,7 +64,7 @@ artifacts:
       # non-claiming status: `landed:` alone cannot tell an increment from
       # full delivery left unflipped.
       disposition: deferred
-      landed: "#PENDING"
+      landed: "#1429"
       issue: "#1136"
       carried-from: RQ-76-ARCHMODEL
       done-when: "manual: spar#445 re-verified 2026-09-30 — OPEN, created AND last updated 2026-09-03T10:57:37Z with ZERO comments, so untouched for 27 days; feature-loop steps 1-2 N/A for the FIFTEENTH consecutive release on that same unchanged upstream reason"

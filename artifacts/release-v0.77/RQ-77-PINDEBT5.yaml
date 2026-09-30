@@ -40,7 +40,7 @@ artifacts:
       # delivery left unflipped. v0.75's PINDEBT3 and v0.76's PINDEBT4 carried
       # the same shape for the same reason.
       disposition: deferred
-      landed: "#PENDING"
+      landed: "#1429"
       issue: "#1373"
       carried-from: RQ-76-PINDEBT4
       done-when: "manual: re-derived 2026-09-30 with claim_check's own _pin_table — 84 entries / 157 cases, the same pair `git show v0.76.0:claims.yaml` carries, so the delta across v0.77 is ZERO; no pin closed, the rejected candidate and its ground are named in verified-by, and this release ADDS the audit of whether a closed pin would be detected at all"
