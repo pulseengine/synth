@@ -416,6 +416,13 @@ jobs:
       # it). Hermetic: no corpus, no synth binary.
       - name: Shipped-feature census self-test — feature polarity is not boolean polarity (RQ-78-FEATURESET)
         run: python3 scripts/shipped_feature_census.py --self-test
+      # AND THE CENSUS ITSELF, because it DOES carry an expected value: `main()`
+      # returns 1 when any flag is UNDETERMINED. Wiring only `--self-test` left the
+      # name-decided bucketing unexercised — v0.78's round-1 gate review deleted the
+      # whole MEASURE_ONLY/DIAG/SOLVER_BUDGET block, watched the answer move from 4
+      # hidden capabilities to 15 with 2 undetermined, and CI stayed GREEN.
+      - name: Shipped-feature census — zero UNDETERMINED flags (RQ-78-FEATURESET)
+        run: python3 scripts/shipped_feature_census.py
 
       # RQ-78-RITUAL (#1440): the script EVERY merge goes through had no test, no
       # CI reference and an UNBOUNDED wait loop whose failure mode was a hang.

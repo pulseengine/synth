@@ -276,7 +276,17 @@ fn wide60_declines_and_the_ladder_dies_on_the_wide_file_rung_1426() {
     // signal, because it says the rung landed and roughly how big the result is.
     let err = ladder_compile("wide60", &ops, false)
         .map(|code| format!("{} bytes", code.len()))
-        .expect_err("60 right-leaning-consumed homed f32 locals must still DECLINE");
+        .expect_err(
+            "60 right-leaning-consumed homed f32 locals must still DECLINE. \
+             IF THIS FIRED, THE RUNG LANDED: give the ladder's stage 3 its \
+             pool-grow retry and this shape compiles. Before trusting that as \
+             reach, flip this test to assert a successful compile AND add a \
+             right-leaning 60-local export to scripts/gen_vfp_local_1069.py, \
+             regenerate the .wat, and add it to F32_EXPORTS in the #1069 \
+             execution differential — the wide-file path emitted SIGN-WRONG \
+             code for every negative input when this was measured (#1439), so a \
+             compile-only green here says nothing about the bytes",
+        );
     // The ladder must REACH the last rung — if it stopped earlier the asymmetry
     // above would be about an unreached rung and this test would prove nothing.
     assert!(

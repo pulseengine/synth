@@ -51,7 +51,7 @@ artifacts:
       done-when: "contains:scripts/shipped_feature_census.py:RQ-78-FEATURESET"
       verified-by: >-
         DELIVERED, and the deliverable is the derivation, not the number.
-        `scripts/shipped_feature_census.py` is committed and its `--self-test` (36 assertions) runs in
+        `scripts/shipped_feature_census.py` is committed and its `--self-test` (39 assertions) AND the census itself run in
         the REQUIRED `Claim Check` job.
         MEASURED at this cut, at commit `8f564ad8` — stated because this figure is derived from files
         this release edits. AXIS 1, runtime env flags, over 128 shipped source files: 38 `SYNTH_*`

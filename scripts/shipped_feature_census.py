@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
-# ci-status: wired — `--self-test` runs in the required `claim-check` job. The
-# census itself prints a DERIVED list and asserts nothing about the compiler's
-# output, so there is no expected value for CI to fail on beyond the self-test.
+# ci-status: wired — BOTH `--self-test` and the census itself run in the required
+# `claim-check` job. An earlier version of this header said the census "asserts
+# nothing about the compiler's output, so there is no expected value for CI to
+# fail on beyond the self-test", and wired only `--self-test`. That was FALSE
+# about this very file: `main()` returns 1 when any flag is UNDETERMINED, which
+# IS an expected value (zero undetermined). v0.78's round-1 gate review measured
+# the consequence — deleting the whole `MEASURE_ONLY`/`DIAG`/`SOLVER_BUDGET`
+# bucketing moved the reported answer from 4 hidden capabilities to 15 and
+# introduced 2 undetermined flags, and CI stayed GREEN because nothing ran the
+# census. The two `MEASURE_ONLY` assertions are membership-in-a-constant
+# tautologies; running the census is what exercises the bucketing that consumes
+# them.
 """Which capabilities does the SHIPPED binary actually have? (#1437)
 
 THE QUESTION, asked by the maintainer: "you need to be sure that the binary we
@@ -647,7 +656,8 @@ def self_test() -> int:
     ok("an unrecognised expression is UNDETERMINED, never bucketed as on or off",
        feature_polarity("SYNTH_T", 'let x = weird_helper("SYNTH_T");') == UNKNOWN)
     ok("an empty source set REFUSES rather than reporting zero capabilities",
-       _refuses(lambda: census(pathlib.Path("/nonexistent-root-for-census"))))
+       _refuses(lambda: census(pathlib.Path("/nonexistent-root-for-census")),
+                "matched no files"))
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         root = pathlib.Path(d)
@@ -657,12 +667,12 @@ def self_test() -> int:
         # POSITIVE CONTROL: without a build.rs the same tree must SUCCEED, or the
         # refusal below proves nothing about the build script.
         ok("the temp tree classifies WITHOUT a build.rs (positive control)",
-           not _refuses(lambda: census(root)))
+           not _refuses(lambda: census(root), "reads a SYNTH_* variable"))
         (root / "crates/c/build.rs").write_text(
             'fn main() { if std::env::var("SYNTH_COMPILE_GATE").is_ok() {} }')
         ok("RQ-78-FEATURESET: a build.rs reading a SYNTH_* var REFUSES — a "
            "compile-time gate is invisible to a runtime census",
-           _refuses(lambda: census(root)))
+           _refuses(lambda: census(root), "reads a SYNTH_* variable"))
     with tempfile.TemporaryDirectory() as d:
         root = pathlib.Path(d)
         (root / "crates/a/src").mkdir(parents=True)
@@ -676,7 +686,7 @@ def self_test() -> int:
             'let enable = std::env::var("SYNTH_SPLIT").is_ok();')
         ok("RQ-78-FEATURESET: one flag classified DIFFERENTLY at two read sites "
            "REFUSES — first-match-wins is the #757 `.position()` shape",
-           _refuses(lambda: census(root)))
+           _refuses(lambda: census(root), "classify DIFFERENTLY"))
     with tempfile.TemporaryDirectory() as d:
         root = pathlib.Path(d)
         (root / "crates/c/src").mkdir(parents=True)
@@ -684,7 +694,7 @@ def self_test() -> int:
         ok("RQ-78-FEATURESET: a NON-EMPTY source set with zero SYNTH_* reads "
            "REFUSES — '0 capabilities hidden' from a broken pattern is a true "
            "statement about nothing",
-           _refuses(lambda: census(root)))
+           _refuses(lambda: census(root), "zero SYNTH_* reads"))
 
     print(f"shipped-feature-census-self-test: {len(ran)} assertions, "
           f"{len(fails)} failure(s)")
@@ -697,11 +707,24 @@ def self_test() -> int:
     return 1 if fails else 0
 
 
-def _refuses(fn) -> bool:
+def _refuses(fn, needle: str) -> bool:
+    """Did `fn` refuse, AND was it THIS refusal?
+
+    The first version checked only the `REFUSE:` PREFIX. That made all four
+    refusal assertions interchangeable: deleting the empty-glob refusal left the
+    self-test GREEN at 39 assertions / 0 failures, because the DOWNSTREAM
+    zero-reads refusal fired instead and satisfied the matcher. One assertion
+    named a refusal it was not testing — a true statement about the wrong
+    subject, in the file whose own subject is that class. Found by v0.78's
+    round-1 gate review, which deleted the refusal and watched nothing go red.
+    So every caller now passes a distinctive substring of the refusal it means.
+    """
+    assert needle, "REFUSE: an empty needle would make this matcher vacuous again"
     try:
         fn()
     except SystemExit as e:
-        return str(e).startswith("REFUSE:")
+        msg = str(e)
+        return msg.startswith("REFUSE:") and needle in msg
     return False
 
 
