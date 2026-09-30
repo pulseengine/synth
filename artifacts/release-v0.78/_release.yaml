@@ -1,0 +1,122 @@
+# v0.78 — "What does it compile, and what does that code cost?"
+#
+# COMMENTS ONLY. This file carries the planning reasoning; the artifacts carry the
+# claims. It is deliberately free of numbers that live anywhere else. That rule was
+# learned in v0.72, broken in v0.73 in the very paragraph warning about it, enforced
+# again by v0.74's round 1; v0.75's round 1 still had to delete two statistics that had
+# crept back in. v0.76 held it and v0.77 held it. A retraction that edits the artifact
+# and not the plan file is how "the sentence came back" reproduces.
+#
+# ---------------------------------------------------------------------------
+# THIS IS A CHANGE OF DIRECTION, AND IT CAME FROM THE MAINTAINER
+# ---------------------------------------------------------------------------
+#
+# Five releases asked epistemic questions about the machinery:
+#   v0.73  is it still broken?
+#   v0.74  CAN THE GATE TELL?          (answered by mutation; most walked through)
+#   v0.75  why is it tested one call short of where it runs?
+#   v0.76  IS THE INPUT REAL?          (every recording was authored by the gate's author)
+#   v0.77  IS THE SUBJECT RIGHT?       (a true pass about the wrong thing)
+#
+# That arc paid for itself and is not finished. But the maintainer asked for something
+# else, in these words: "how we make more instructions to work and how to improve the
+# performance of what we build — consider that we want to be better than current
+# compiler."
+#
+# So v0.78 asks: WHAT DOES IT COMPILE, AND WHAT DOES THAT CODE COST?
+#
+# ---------------------------------------------------------------------------
+# THE TWO ARE ONE LEVER MEASURED TWICE
+# ---------------------------------------------------------------------------
+#
+# Do NOT alternate between them. The subtraction ratchet already proves the mechanism:
+# pin BOTH directions and a change that improves one while regressing the other goes
+# RED in the PR that caused it.
+#
+#   REACH   is a FLOOR that must RISE.
+#   COST    is a CEILING that must FALL.
+#
+# That is how two things get worked at once honestly — not by dividing attention, but
+# by making the trade impossible to take silently. A reach fix that costs cycles must
+# say so; a peephole that drops a decline must say so.
+#
+# ---------------------------------------------------------------------------
+# THE FIRST FINDING IS THAT ONE OF THE TWO IS NOT MEASURED AT ALL
+# ---------------------------------------------------------------------------
+#
+# The acceptance ladder predates this release by many tags, and every release in
+# between claimed capability work. The figures are in RQ-78-LADDER, not here. What
+# belongs here is the consequence: reach currently has NO live number, so the ladder
+# is not a nice-to-have but the DENOMINATOR everything else is scoped from. Two of the
+# six lanes are therefore MEASUREMENT lanes, deliberately — this programme's recurring
+# failure is scoping from stale or prose figures, and v0.77 found TWO of its own `must`
+# premises already delivered before it started.
+#
+# ---------------------------------------------------------------------------
+# SCOPE — WHAT THIS IS NOT
+# ---------------------------------------------------------------------------
+#
+# SCOPE IS NOT A BETTER ALLOCATOR SEARCH. Ruled out with reasons already recorded, and
+# it must be refused in review BY NAME: regalloc2's backtracking engine (its wins are
+# pressure-at-scale wins), ILP/SMT in the compile path (trusted-base cost), SSA-chordal
+# (optimizes the non-binding constraint; synth is not SSA), ML-guided eviction
+# (non-deterministic quality, antithetical to a proof-carrying compiler). LLVM and
+# WebKit both converged on cost model, coalescing/hints and splitting; RQ-59-MEASURE
+# found the same independently on synth's own tail.
+#
+# SCOPE IS NOT "ACCEPT MORE AND CHECK LESS". Every reach increment ships with the
+# oracle that makes newly-accepted input safe, and THE ORACLE LANDS FIRST. A reach
+# number bought by weakening a refusal is not reach; it is the thing this project
+# exists to avoid, wearing reach's clothing.
+#
+# SCOPE IS NOT PUBLISHING A BENCHMARK. If any comparison is ever published it carries a
+# COMPLIANCE COLUMN (bounds-check mode, trap-preservation status, spec categories), the
+# acceptance rate as the DENOMINATOR cited from the ladder with its date and commit,
+# WCET reported SEPARATELY from throughput, and the word "unverified" where a
+# competitor's status is unverified. The 2026 wasm2c findings showed several AOT wasm
+# compilers posting numbers flattered by undisclosed non-compliance; the failure mode is
+# not dishonesty, it is that an unstated envelope turns every comparison into flattery.
+#
+# ---------------------------------------------------------------------------
+# "BETTER THAN CURRENT COMPILERS" — THE FRAMING DECIDES WINNABILITY
+# ---------------------------------------------------------------------------
+#
+# Beating LLVM on cycles is the LOSING version of the goal, and every approach that
+# would chase it is ruled out above. The winnable version is already written down in
+# the North Star's strategic note:
+#
+#   * No safety-certified wasm runtime exists. synth's structural advantage is having
+#     NO RUNTIME TO CERTIFY — the CompCert-shaped story DO-333 already tells
+#     authorities how to consume.
+#   * The moat is the two artifacts DAL-A certification actually consumes: proven
+#     functional correctness, and SOUND TIMING BOUNDS. No surveyed system produces
+#     either.
+#   * Loud-decline-over-silent-miscompile is the real differentiator against systems
+#     that accept everything and are quietly wrong on some of it.
+#
+# So the target is: on the accepted subset, COMPETITIVE on cycles, and the ONLY
+# compiler in the comparison that also ships a proof and a sound WCET bound. That is a
+# claim nobody else can make, and it does not require winning a benchmark war.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS RELEASE MUST NOT DO
+# ---------------------------------------------------------------------------
+#
+# Do not act on the varve high-water refusal. The maintainer WITHDREW an earlier
+# "do both" decision once infra's fleet data arrived, because a per-job store blinds a
+# detector that may be the only informative signal on the fleet. RQ-78-VARVE is a
+# recorded NON-action; the open question is upstream.
+#
+# Do not "fix" the mutation ledger's stale anchors. Only `ci_subset` ids are
+# re-pointed because `.mutants[]` is the survey's HISTORY; v0.76 round 2 established
+# the staleness is inert and no shipped number depends on it. A lane that tidied it
+# would destroy preserved measurement.
+#
+# Do not convert a DISCLOSED judgement into a derived number by asserting it harder.
+# Where a figure is marked unverified, the fix is a committed script that derives it,
+# or the marking stands.
+#
+# Do not report a rung that CANNOT move as a measured zero. The ladder's
+# `+no-optimize` rung is structurally inert under its own base invocation and says so;
+# a rung that cannot move reported as +0 is the gate-that-cannot-fail class inside a
+# measurement harness.

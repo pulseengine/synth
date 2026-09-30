@@ -1,0 +1,53 @@
+artifacts:
+  - id: RQ-78-BLOCKERCLASS
+    type: system-req
+    release: v0.78
+    status: proposed
+    title: "Census the ARM NEVER set by PRIMARY blocker and name the top class — scope the reach fix, do not start it blind"
+    description: >
+      The last measured ladder says 141 of 243 modules NEVER compile on ARM. That is the
+      reach headroom, and it is currently an undifferentiated number. This lane ranks it
+      by PRIMARY BLOCKER and names the largest class plus the oracle that class would
+      need — it does NOT start the fix.
+
+      RQ-63-RVGLOBAL's lesson applies directly and is why this is a separate lane from
+      the fix: a census's "N blocked" is a PRIMARY-blocker count, not a feature count,
+      and v0.63 misread its own census that way once already.
+
+      TWO CANDIDATES ARE ALREADY NAMED as well-trodden elsewhere and closable WITHOUT
+      spending the trust story (CLAUDE.md North Star EXTENSION), so the census should
+      confirm or refute their rank rather than discover them: AArch64 import dispatch is
+      the Wasker/wasm2c undefined-symbol pattern, which is synth's OWN ARM
+      `--relocatable` design ported; and multi-memory became a Wasm 3.0 standard on
+      2025-09-17, so "we only do standardized wasm" no longer declines it.
+
+      MULTI-MEMORY CARRIES A HARD CONSTRAINT that must be restated in any scoping:
+      memory k>0 CANNOT be bounds-checked on ANY profile (#1145, RQ-62-MEMISOLATE) —
+      the software guard compares against R10 and mask mode derives size-1 from R10,
+      both MEMORY 0's size by the register contract. So reach here ships with the
+      per-memory region table and an embedder obligation, never a silent guard.
+
+      THE GATING RULE IS NON-NEGOTIABLE: every reach increment ships with the oracle
+      that makes newly-accepted input safe, and THE ORACLE LANDS FIRST. Accepting more
+      and checking less is not reach.
+
+      DELIVERABLE: a ranked per-primary-blocker census of the NEVER set, the top class
+      named, and the oracle it would need stated. A refutation is a legitimate outcome
+      if the top class turns out to be something the project has already decided not to
+      do.
+
+      REFUTING COMMAND: run the census on the shipping tree rather than reading v0.63's
+      figures, and re-derive the NEVER set from RQ-78-LADDER's fresh ladder rather than
+      from the stale one. If the NEVER set has shrunk materially, the ranking changes.
+    tags:
+      - process
+      - reach
+      - measurement
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#242"
+      done-when: "manual:2026-09-30 the ARM NEVER set is censused by PRIMARY blocker on the shipping tree, ranked, and the top class plus the oracle it requires are named — or the ranking is published with a reasoned refusal to scope the top class"

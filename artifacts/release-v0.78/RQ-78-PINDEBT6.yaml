@@ -1,0 +1,57 @@
+artifacts:
+  - id: RQ-78-PINDEBT6
+    type: system-req
+    release: v0.78
+    status: proposed
+    title: "Pin debt, sixth consecutive measurement — and this time the count itself is known to include five non-debt entries"
+    description: >
+      The known-open pin count is a `direction: down` ratchet that has not moved since
+      v0.74.0. v0.77 measured it again (delta ZERO) and added the question no previous
+      lane had asked: would a pin going STALE — its defect fixed — be DETECTED? The
+      answer was a positive one: all six non-empty tables are exact in BOTH directions
+      and go red when a pinned defect is fixed, so the count is live debt rather than a
+      mixture of debt and fossils.
+
+      The live value is NOT restated here. Read it from claims.yaml on the tree being
+      planned with `claim_check.py claims.yaml --metric`; a second copy of a pinned
+      number in prose is how the "first reduction" falsehood survived v0.74 in four
+      places at once, including inside a 75/75-passing ledger.
+
+      WHAT v0.78 INHERITS THAT PREVIOUS LANES DID NOT, filed as #1428: FIVE of the
+      entries pin CORRECT behaviour — regression guards at 0, and one pinned `decline` —
+      so "close the pin" is undefined for them and they can never fall by being fixed.
+      About 6% of a must-FALL debt figure is not debt. And the selector-parity VANISHED
+      check is gated on `key[0] in ran_files` from a corpus glob, so a pin whose fixture
+      is renamed or removed is neither confirmed nor refuted; the arm corpus sweep has an
+      explicit "PHASE A STALE" rule for that class and parity does not.
+
+      A SEPARATE UNIT PROBLEM, also inherited: `known_open_pinned_cases` sums cases where
+      `cases_at:` is declared and 1-per-entry otherwise, so `false_reject_1229`
+      contributes 12 to a total named "cases" while ci.yml independently pins the SAME
+      population at 130. One repo, one population, two numbers, both green — and the
+      repo's own standing rule forbids summing tallies with different denominators.
+
+      DELIVERABLE, and it may legitimately be a refutation: either close a pin with a
+      compiler fix, or publish the measured reason none in the current population is
+      closable within a release, naming the cheapest candidate and what its predicate
+      would have to be. Every remaining entry is an oracle observing a live wrong answer
+      on the shipped compiler, so each is closed by a COMPILER FIX and nothing else;
+      re-attribution does not move it, and a case-preserving pin merge is a REVIEW-TIME
+      obligation the ratchet cannot catch.
+
+      REFUTING COMMAND: `python3 scripts/claim_check.py claims.yaml --metric` and derive
+      the per-table decomposition with the tool's own `_pin_table` — never a hand-rolled
+      AST walk, which returned 0 for all ten tables in v0.76 and located one of ten in
+      v0.77.
+    tags:
+      - process
+      - carried
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1373"
+      done-when: "manual:2026-09-30 the pin count is re-derived at the v0.78 cut with claim_check's own _pin_table, the delta against v0.77.0's ledger is stated, and either a pin CLOSES or the refusal names the rejected candidate and the ground for rejecting it"
