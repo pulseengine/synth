@@ -3750,9 +3750,47 @@ claims:
         # What would make this the WRONG call: if the closed-share inverted,
         # a closed-issue citation becomes the exception, this script grows a
         # verdict and must be WIRED, and the ceiling falls back to 8.
+        # 9 -> 10 (RQ-77-CENSUS #1403, v0.77). The conversation, since the rule
+        # at the top of this block requires one:
+        #
+        # literal_table_census_1403.py derives the module-level literal-table
+        # population that v0.76 asserted from PROSE and then had to mark
+        # UNVERIFIED, after an independent reconstruction of the stated predicate
+        # disagreed with the published figure (362/190 against 353/173, with
+        # looser readings giving 493 and 649).
+        #
+        # It reports the count under FIVE NAMED READINGS rather than one number,
+        # and that is why it cannot be wired: there is no single figure for CI to
+        # assert. Measured at this cut over 266 parsed files — strict-dict 41,
+        # strict-any 200, guarded-any 200, nested-any 320, anywhere-any 414. The
+        # SPREAD (a factor of 10.1) is the result: the ambiguous part was the
+        # PREDICATE, not the tree, and a census that picked one reading would
+        # recreate #1403's own defect one level up.
+        #
+        # Same KIND as the three `measurement` entries already justified here
+        # (partial_census_1017, diagnostic_issue_census_345, prose_status_claim_1319):
+        # a report whose numbers a human judges, whose SUBJECT is gated elsewhere.
+        # What gates these shapes is claim_check's `pin-table` kind over the
+        # KNOWN*/PINNED* tables the ledger names, plus the `known_open_pins`
+        # ratchet on their entries — none of which this census duplicates.
+        #
+        # NOT raised to green a build: the build was green before this file
+        # existed and deleting it would green it again. It is raised because a
+        # derivation has to SHIP to be re-runnable, and putting the file outside
+        # scripts/repro/ so the glob misses it would be routing around the gate.
+        # A parallel census written earlier in this same lane WAS deleted rather
+        # than shipped once it turned out to duplicate an existing one, and the
+        # ceiling went back to 9 before this entry raised it to 10 — the friction
+        # here is what surfaced that duplication.
+        #
+        # What would make this the WRONG call, in the shape the #1017 note used:
+        # if the three ambiguities ever get settled — by a written predicate the
+        # repo agrees on, or by the readings converging — the census grows a
+        # single number and a verdict, and must then be WIRED with the ceiling
+        # falling back to 9.
         pattern: '^# ci-status: manual'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        max: 9
+        max: 10
       - kind: count-max                      # known debt: zero, and it stays zero
         pattern: '^# ci-status: unwired'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']

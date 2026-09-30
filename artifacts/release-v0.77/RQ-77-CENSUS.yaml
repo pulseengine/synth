@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-77-CENSUS
     type: system-req
     release: v0.77
-    status: proposed
+    status: implemented
     title: "The literal-table census is prose, not a script — v0.76 marked it UNVERIFIED and an independent reconstruction disagreed"
     description: >
       v0.76 asserted a census of module-level literal tables across `scripts/**/*.py`
@@ -36,10 +36,61 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1403"
+      landed: "#PENDING"
+      verified-by: >-
+        DELIVERED — the population is now DERIVED, and the derivation's own finding is that no single
+        number was ever available. `scripts/repro/literal_table_census_1403.py` enumerates
+        `scripts/**/*.py` by an `ast` walk and reports the count under FIVE NAMED READINGS rather than
+        one figure, because v0.76 established that the prose predicate did not pin the answer: it
+        asserted 353 tables across 173 files, an independent reconstruction of the stated predicate got
+        362 across 190, and looser readings gave 493 and 649. MEASURED at this cut over 266 parsed
+        files: strict-dict 41 tables / 33 files; strict-any 200 / 113; guarded-any 200 / 113;
+        nested-any 320 / 161; anywhere-any 414 / 183. THE SPREAD IS THE RESULT — 41 to 414, a factor
+        of 10.1 — and it is why #1403's figure could not be reproduced: the ambiguous part was the
+        PREDICATE, not the tree. The prose left three real questions, each of which moves the number,
+        and none of which it answered: does "module-level" include a `class` body or an
+        `if TYPE_CHECKING:` block; does "of constants" admit a container of containers; is a bare
+        `list` of strings a table or only a `dict`. The original 353 sits between nested-any and
+        anywhere-any, so the author was using a loose reading they never stated.
+        ONE AMBIGUITY TURNS OUT NOT TO BE LIVE, which is the kind of thing only a derivation can tell
+        you: `guarded-any` EQUALS `strict-any` at 200/113, so no module-level literal table in this
+        tree sits inside an `if`/`try` block. The distinction is real in the abstract and empty here,
+        and a reader can now see that instead of guessing.
+        WHY IT REPORTS A SPREAD RATHER THAN PICKING ONE. A census that published a single number would
+        recreate the defect #1403 is about, one level up: a figure whose subject is whichever
+        reconstruction the reader happens to make. The readings are NAMED and NOT RANKED, and any
+        citation must say which one it used — this record does. That is the v0.77 theme applied to a
+        measurement rather than to a gate.
+        NOT WIRED, and declared: `# ci-status: manual (measurement)`. It has no expected values and
+        nothing for CI to fail on; the shapes it counts are gated elsewhere — `claim_check`'s
+        `pin-table` kind walks the `KNOWN*`/`PINNED*` suppression tables the ledger names, and
+        `known_open_pins` ratchets their 84 entries. Wiring a census that always exits 0 would be a
+        green asserting nothing.
+        TWO FALSE CLAIMS WERE CAUGHT IN THIS RECORD BEFORE IT SHIPPED, by running the consistency
+        check it asserted instead of assuming it. A draft said the suppression tables are "a subset of
+        the 41 strict-dict hits" — they are not: exactly ONE of the 41 is a `KNOWN*`/`PINNED*` table.
+        They appear under `nested-any` (7 of them) and not before, which is a real structural fact the
+        census surfaces rather than a quirk: those tables hold CONTAINERS of constants, not constants,
+        so any "of constants" reading that forbids nesting cannot see them at all. The same draft
+        credited `ci_pool_tripwire` with walking them; that script counts ci.yml JOB POOLS (71 job
+        definitions — 46 ubuntu-latest, 21 self-hosted, 2 macos-latest) and has nothing to do with pin
+        tables. Recorded because it is the lane's own class: two true-sounding sentences about the
+        wrong subject, in the artifact whose subject is exactly that. Same disposition and same recorded reason as
+        `partial_census_1017.py` and `diagnostic_issue_census_345.py`, so the manual-oracle ceiling
+        moves by one with this entry rather than silently.
+        NON-VACUITY, proven rather than asserted: the census REFUSES if its glob matches no files
+        ("every count below would be about the empty set") and REFUSES if every reading finds zero
+        tables across a non-empty file set ("the predicate is broken, not the tree"). A census that
+        reported "0 tables" from a broken glob would be a true statement about nothing.
+        A BUG IN MY OWN FIRST DRAFT, recorded because it is the same class the lane is about: the
+        element walk read `.values` on every container, which is a `Dict`-only attribute — `List`,
+        `Tuple` and `Set` use `.elts`. It crashed rather than miscounting, which is the lucky case; had
+        it silently skipped sequence literals the strict-dict reading would have looked authoritative
+        while measuring a narrower population than its own name claims.
       # Dated `manual:` predicate, QUOTED. A `contains:` pointing at this
       # artifact's own file goes TRUE the moment the file exists and reds R3;
       # and a `contains:` naming a COMMENT is satisfied by a comment, which
       # v0.76's round 2 proved cannot fail (RQ-76-MUTRETIRE). The delivering
       # lane replaces this with a `contains:` naming EXECUTED code in a TEST
       # file when it flips the status.
-      done-when: "manual:2026-09-29 a committed census script derives the literal-table population, re-runnable at any commit, and the artifact quotes ITS output rather than prose"
+      done-when: "contains:scripts/repro/literal_table_census_1403.py:RQ-77-CENSUS"
