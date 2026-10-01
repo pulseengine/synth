@@ -41,10 +41,56 @@ artifacts:
       descriptor from a hardcoded `WASM_PAGE_SIZE`. THE ORACLE LANDS FIRST — this is a
       reach increment, and accepting more while checking less is refused by name.
 
-      REFUTING COMMAND: compile a module declaring `(pagesize 1)`. If it no longer
-      refuses, this premise is stale. And if it ACCEPTS while `__synth_mem_size_0` still
-      reports 64 KiB pages, that is the over-grant #1315 warned about, moved from silent
-      to subtle — which is worse than the refusal, not better.
+      THE SCOPING ABOVE IS REFUTED BY THE SPEC, MEASURED 2026-10-01, AND THE LANE IS
+      RESCOPED RATHER THAN RE-AIMED. "Powers of two >= 32 B" is not implementable, because
+      the custom-page-sizes proposal does not permit it. The authority is this repo's OWN
+      vendored suite, not a third-party validator:
+      `tests/spec-testsuite/proposals/custom-page-sizes/custom-page-sizes-invalid.wast`
+      asserts `(memory 0 (pagesize 32))` INVALID by name, alongside 2, 4, 8, 16, 64, 128,
+      256, 512, 1024, 2048, 4096, 8192, 16384 and 32768. Across the proposal's four `.wast`
+      files the only sizes exercised as LEGAL are `pagesize 1` (19 occurrences) and
+      `pagesize 65536` (14). So the permitted set is exactly {1, 65536}, and 65536 is the
+      default — meaning THE ENTIRE CAPABILITY IS `(pagesize 1)`, byte-granular sizing.
+
+      Checked against implementations too, with the lineage stated rather than implied:
+      `wasm-tools validate --features all` and `wasmtime 41.0.0 -W custom-page-sizes=y`
+      both reject every intermediate power of two — but wasmtime VENDORS wasmparser from
+      wasm-tools, so those are two front-ends on ONE validator and are not independent
+      readings. The vendored spec suite is what makes this a spec fact. Note also that
+      `wasm-tools parse` ASSEMBLES all of them: the declaration reaches the bytes
+      (`flags=0x09`, `log2` byte appended) and only VALIDATION rejects it, so "it
+      assembles" is not evidence of legality.
+
+      WHAT SURVIVES, AND IT IS THE PART THAT MATTERS TO THE BOARD. `(pagesize 1)` sizes a
+      memory in BYTES, so a tenant declaring N pages gets N bytes instead of a 64 KiB page.
+      That is a finer lever than the rejected ask, not a coarser one, and it still answers
+      the G474: two tenants of roughly 20 KiB each fit in 96 KiB where two 64 KiB pages
+      cannot. The ARMv7-M PMSA constraint does NOT go away — an MPU region must still be a
+      power of two >= 32 B and size-aligned — so the RESERVATION must round the declared
+      byte count UP to an MPU-legal extent while the module's declared size does not.
+      THAT TENSION IS THE LANE'S REAL DESIGN QUESTION and it must be answered explicitly,
+      because `__synth_mem_size_N` is what an embedder programs one region from: reporting
+      the declared byte count while reserving a rounded extent re-creates #1315's
+      over-grant in miniature, and reporting the rounded extent tells the module something
+      it did not declare. Name the choice and its consequence; do not let it be implicit.
+
+      MEASURED STARTING POINT, two memories, `-t cortex-m3 --relocatable --all-exports`:
+      `__synth_mem_count = 0x2`, `__synth_mem_size_0 = __synth_mem_size_1 = 0x10000`. The
+      region table is emitted for MULTI-memory modules only; a single-memory module gets no
+      `__synth_mem_*` symbols at all, so any oracle asserting over that table needs two
+      memories or it measures nothing.
+
+      REFUTING COMMAND, CORRECTED — and the correction is the point. The original said
+      "compile a module declaring `(pagesize 1)`; if it no longer refuses, this premise is
+      stale", which CANNOT DISCRIMINATE: 1 byte is below the 32 B floor the lane first
+      asked for, so under that scoping `(pagesize 1)` would have had to keep refusing even
+      after the capability landed, and the command would report "still refuses" in both
+      worlds. Under the corrected scope `(pagesize 1)` IS the capability, so it is now the
+      right probe for the opposite reason. Use BOTH legs: `(pagesize 1)` must flip from
+      REFUSE to ACCEPT with `__synth_mem_size_N` equal to the declared byte count, and
+      `(pagesize 32)` must refuse FOREVER — as spec-invalid input, with a diagnostic that
+      says so rather than repeating the "no backend reads it" text, because after the
+      capability lands that sentence is false.
     tags:
       - process
       - reach
@@ -56,4 +102,4 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1441"
-      done-when: "manual:2026-10-01 the declared page size is HONOURED for powers of two >= 32 B with `__synth_mem_size_N` and the reservation moving together, the execution oracle for the newly-accepted shapes LANDS FIRST, and the `memory.size` lowering no longer divides by a literal 65536 — or the lane reports plainly which half it could not do"
+      done-when: "manual:2026-10-01 the SPEC-PERMITTED set is established from the vendored suite rather than assumed (measured: exactly {1, 65536}, so the capability is `(pagesize 1)` alone and the >= 32 B scoping is REFUTED), the execution oracle for `(pagesize 1)` LANDS FIRST and is shown potent, `(pagesize 1)` is honoured with `__synth_mem_size_N` equal to the declared byte count, the declared-size-vs-MPU-rounded-reservation choice is NAMED with its over-grant consequence, the `memory.size` lowering no longer divides by a literal 65536, and spec-invalid sizes keep refusing with a diagnostic that does NOT repeat the now-false \"no backend reads it\" text — or the lane reports plainly which of these it could not do"
