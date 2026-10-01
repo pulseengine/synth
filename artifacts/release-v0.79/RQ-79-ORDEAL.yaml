@@ -54,5 +54,28 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1431"
+      # Both the bump and its measurement landed, but the artifact stays `proposed`
+      # rather than claiming: a claiming status arms R2, which wants a `contains:`
+      # naming EXECUTED code, and this lane's evidence is a measured verdict tally
+      # rather than a new test. The disposition records the increment instead.
+      disposition: partial
+      landed: "#1446"
       verification-track: manual
+      verified-by: >-
+        LANDED. ordeal is pinned `=0.22.1` — the MINIMAL fix, not the latest 0.24.0 — with the
+        affectedness analysis written into the pin's own comment, and `Cargo.lock` pins ordeal AND
+        ordeal-lrat at 0.22.1. THE AFFECTEDNESS IS MEASURED, NOT REASONED: 276 passed / 0 failed /
+        6 suites, IDENTICAL at both pins on ONE tree with only the pin switched. That is decisive
+        rather than suggestive because the encoding is byte-identical at power-of-two widths, and
+        synth shifts only at 32/64 — its non-power-of-two widths (11, 23, 31, 52, 63) occur solely
+        as `extract` results in IEEE-754 field classification, never under a shift. Upstream states
+        the same bound independently.
+        The pin's OWN protocol was followed because its comment demands it: all four CI feature
+        sets build including `z3-solver`; the solver-heavy suite finishes in 36.77 s against a WALL
+        CLOCK, because the failure mode of a solver bump here is a HANG and not an error (ordeal
+        0.12 hung div/rem trap VCs for 4-6 h); and CHANGELOG 0.20.0/0.21.0/0.22.0/0.22.1 carry ZERO
+        breaking changes.
+        ALSO CAUGHT: dependabot's open PR proposed `=0.22.0`, the LAST AFFECTED version — not its
+        error, since 0.22.1 did not exist when it opened, but merging it would have landed an
+        affected verification engine. Closed with that reason rather than left for a tidy-up pass.
       done-when: "manual:2026-10-01 ordeal is pinned at >= 0.22.1 with the affectedness analysis recorded in the pin's own comment, every CI feature set builds, and the verdict tally is measured IDENTICAL at the old and new pins ON ONE TREE with the run counts stated — or the lane reports which verdict moved, because a moved verdict IS the finding"

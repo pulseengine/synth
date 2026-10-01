@@ -856,6 +856,28 @@ SCOPE_ISSUE = re.compile(r"^#(\d+)$")
 # everything else (plan/chore/docs/salvage/investigate/track) is process.
 DELIVERY_TYPES = frozenset({"feat", "fix", "perf", "proof", "test"})
 ID_ANYWHERE = re.compile(r"\bRQ-\d+-[A-Z0-9]+\b")
+# RQ-79-PINDEBT7: the LANE subject convention, taught because the window guard
+# asked for it by name ("Teach the new shape rather than lowering this floor").
+# `v0.79 PAGESIZE lane: ...` and `v0.79 ARCHMODEL: ...` name RQ-79-PAGESIZE and
+# RQ-79-ARCHMODEL. This convention exists because an ID-LEADING subject is read
+# as a delivery CLAIM (R4 reds when the named artifact is not CLAIMING and its
+# `landed:` does not name the PR), so lane work on a `proposed` artifact cannot
+# use it. The suffix is REQUIRED to be upper-case, which is what keeps
+# `v0.79 plan:` and `v0.79 scope:` — planning commits, not deliveries — OUT.
+# Held to the SAME attribution and acknowledgment demand as ARTIFACT_ID: an
+# unknown id still reds, and a recognized one still needs `landed:`.
+# The optional ` (#NNNN)` is load-bearing, not cosmetic: R4-lane applies the same
+# acknowledgment demand as R4, and `_acknowledge` can only match a `landed:` entry
+# when the SUBJECT carries the PR. Without it a lane commit reds its own artifact
+# before the squash appends the number — measured on this very commit.
+LANE_SUBJECT = re.compile(
+    r"^v\d+\.(\d+) ([A-Z][A-Z0-9]*)(?: lane)?(?: \(#\d+\))?:")
+
+
+def lane_artifact_id(subject: str) -> str | None:
+    """`v0.79 PAGESIZE lane: ...` -> "RQ-79-PAGESIZE", else None."""
+    m = LANE_SUBJECT.match(subject)
+    return f"RQ-{m.group(1)}-{m.group(2)}" if m else None
 ISSUE_ANYWHERE = re.compile(r"#(\d+)\b")
 RELEASE_VERSION = re.compile(r"release-v(\d+)\.(\d+)")
 
@@ -1885,6 +1907,16 @@ def check(root: Path, release_glob: str, subjects: list[str],
         delivery_hits += 1
         _acknowledge(art_id, subject, "R4")
 
+    # R4-lane: the LANE subject convention, same demand as the id-leading form.
+    for subject in subjects:
+        if ARTIFACT_ID.match(subject):
+            continue
+        lane_id = lane_artifact_id(subject)
+        if lane_id is None or lane_id not in by_id:
+            continue
+        delivery_hits += 1
+        _acknowledge(lane_id, subject, "R4-lane")
+
     # R4-conv (#1250): the delivery-typed conventional subject R4 never saw.
     for subject in subjects:
         if ARTIFACT_ID.match(subject):
@@ -1971,6 +2003,19 @@ def check(root: Path, release_glob: str, subjects: list[str],
                     failures.append(
                         f"R10: delivery-shaped commit in the release window "
                         f"names artifact {am.group(1)}, which no release file "
+                        f"defines: {subject!r} — work landed against an "
+                        f"artifact id that does not exist"
+                    )
+                continue
+            lane_id = lane_artifact_id(subject)
+            if lane_id is not None:
+                window_delivery += 1
+                if lane_id in by_id:
+                    window_attributed += 1
+                else:
+                    failures.append(
+                        f"R10-lane: lane-shaped commit in the release window "
+                        f"names artifact {lane_id}, which no release file "
                         f"defines: {subject!r} — work landed against an "
                         f"artifact id that does not exist"
                     )

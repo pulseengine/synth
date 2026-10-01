@@ -60,5 +60,27 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1136"
+      # The filing itself IS this artifact's deliverable, and it landed in #1444
+      # together with the tag-conjunction fix that made it visible to the matcher.
+      # Still `proposed` because the DEFERRAL continues: spar#445 is open, so
+      # steps 1-2 remain skipped. R11 requires a disposition beside `landed:`.
+      disposition: partial
+      landed: "#1444"
       verification-track: manual
+      verified-by: >-
+        PARTIAL. The deferral is FILED and, for the first time in four occurrences, the filing is
+        VISIBLE to the gate that exists to see it. As first written this artifact carried only
+        [process, feature-loop] — HALF of what `find_filed_steps12_decision` requires — so the
+        matcher returned `RQ-63-ARCHMODEL`, a SIXTEEN-release-old filing, marked stale. That is
+        the FOURTH occurrence (v0.65, v0.69, v0.75, v0.79) and the fourth caught before a tag.
+        Tags restored to v0.78's working five and the done-when now requires the full conjunction
+        be verified by RUNNING the matcher and asserting `stale=False`, never by reading the tag
+        list. Verified: `find_filed_steps12_decision(docs, "v0.79")` returns RQ-79-ARCHMODEL with
+        `stale=False`.
+        BLOCKER RE-CHECKED, state before body: pulseengine/spar#445 is OPEN — spar accepts
+        property associations from UNDECLARED property sets silently (rc=0), so an invented
+        property is indistinguishable from a satisfied one. Generating WIT from an architecture
+        nobody validated would manufacture exactly the untraceable-evidence problem the loop
+        exists to prevent, so steps 1-2 stay skipped and the deferral stands on a CURRENT ground
+        rather than a stale one.
       done-when: "manual:2026-10-01 the seventeenth consecutive skip of feature-loop steps 1-2 is filed on #1136 with the ordinal DERIVED from the artifact set, spar#445's state RE-CHECKED and dated, and the matcher's FULL CONJUNCTION satisfied — `feature-loop` in tags AND tags intersecting {aadl, spar} AND a non-empty `issue:` — verified by RUNNING `loop_conformance_check.find_filed_steps12_decision` for THIS release and asserting it returns this artifact with `stale=False`, never by eye"
