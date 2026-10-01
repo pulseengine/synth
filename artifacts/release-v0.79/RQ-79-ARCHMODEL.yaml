@@ -34,11 +34,24 @@ artifacts:
       keep a deferral VISIBLE became invisible to the conformance gate, which is the exact
       failure this artifact is a defence against.
 
+      AND IT HAPPENED AGAIN, TO THIS ARTIFACT, BETWEEN THE PLANNING PR AND THIS CORRECTION.
+      As first written it carried only [process, feature-loop] — satisfying HALF the
+      conjunction — so `find_filed_steps12_decision("v0.79")` returned `RQ-63-ARCHMODEL`,
+      a SIXTEEN-release-old filing, marked stale. That is the FOURTH occurrence (v0.65,
+      v0.69, v0.75, v0.79) and the fourth to be caught before a tag. The tags are not
+      decoration: the matcher is deliberately SHAPE-based rather than id-based so the
+      citation goes to an artifact that actually exists, and the cost of that design is
+      that an incomplete tag set fails SILENTLY by matching someone else's filing. Do not
+      assert the tag set from memory — run the matcher.
+
       REFUTING COMMAND: `gh issue view 445 --repo pulseengine/spar --json state`. If it is
       CLOSED, the deferral's stated ground is gone and steps 1-2 must be attempted or
       declined on a NEW ground — never carried on a stale one.
     tags:
       - process
+      - carried
+      - spar
+      - aadl
       - feature-loop
     links:
       - type: derives-from
@@ -48,4 +61,4 @@ artifacts:
       priority: should
       issue: "#1136"
       verification-track: manual
-      done-when: "manual:2026-10-01 the seventeenth consecutive skip of feature-loop steps 1-2 is filed on #1136 with the ordinal DERIVED from the artifact set, spar#445's state RE-CHECKED and dated, and the `feature-loop` tag present so the conformance gate can see the deferral"
+      done-when: "manual:2026-10-01 the seventeenth consecutive skip of feature-loop steps 1-2 is filed on #1136 with the ordinal DERIVED from the artifact set, spar#445's state RE-CHECKED and dated, and the matcher's FULL CONJUNCTION satisfied — `feature-loop` in tags AND tags intersecting {aadl, spar} AND a non-empty `issue:` — verified by RUNNING `loop_conformance_check.find_filed_steps12_decision` for THIS release and asserting it returns this artifact with `stale=False`, never by eye"
