@@ -55,6 +55,27 @@ jobs:
         run: cargo build --features riscv --bin synth
       - name: Run spec-suite compile census (exact-pinned, all backends)
         run: python3 scripts/spec_compile_census.py
+      # RQ-79-PAGESIZE (#1441): the oracle that must land BEFORE `(pagesize 1)` is
+      # honoured. IT LIVES HERE AND NOT IN ci.yml FOR A MEASURED REASON: it DERIVES
+      # the spec-permitted page sizes from tests/spec-testsuite, which is a SUBMODULE
+      # that only this workflow checks out (`submodules: recursive`, above). Wired
+      # into ci.yml's trap-semantics-oracle job instead, the directory would be EMPTY
+      # and the oracle would red on its own absent-suite floor — the same emptiness
+      # this workflow's header says it was created to fix.
+      # Derived, not hardcoded: the legal set is {1, 65536}, which REFUTED the lane's
+      # first scoping of "powers of two >= 32 B" — `(pagesize 32)` is asserted
+      # INVALID by name in custom-page-sizes-invalid.wast. Live today with the
+      # capability ABSENT: every spec-invalid size is refused, the default is accepted
+      # with 0x10000 per memory in the #1145 region table, and `(pagesize 1)`'s
+      # refusal must still cite #1315 — a refusal that stops explaining itself fails
+      # here rather than passing. It AUTO-STRENGTHENS when the capability lands (the
+      # mode is PROBED, not switched by hand) to assert `__synth_mem_size_N` == the
+      # declared BYTE count plus a new `__synth_mem_region_N` == that count rounded up
+      # to a power of two >= 32, the ARMv7-M PMSA constraint. Two-memory fixtures
+      # throughout: a single-memory module emits no `__synth_mem_*` symbols at all, so
+      # the size legs would be vacuous while still printing PASS.
+      - name: Run declared-page-size oracle (#1441, spec-derived)
+        run: SYNTH=./target/debug/synth python3 scripts/oracle_run.py scripts/repro/pagesize_oracle_1441.py
       # RQ-65-MVPCORE (#1017) / #1225: the census above measures the
       # SINGLE-MODULE path for a one-module .wast (what every execution oracle
       # compiles) and the refusing multi-module merge for the rest. This step
