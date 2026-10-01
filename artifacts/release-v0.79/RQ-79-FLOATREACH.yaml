@@ -1,0 +1,69 @@
+artifacts:
+  - id: RQ-79-FLOATREACH
+    type: system-req
+    release: v0.79
+    status: proposed
+    title: "Two minimal float reach gaps, bisected — and one wildcard match arm that misdescribes both"
+    description: >
+      The theme pins reach as a FLOOR that must RISE. These are the two smallest, best-bounded
+      increments available, both found by bisection while hunting #1436, both filed with
+      controls already written, and both on ARM Cortex-M with a hardware FPU.
+
+      #1448 — TWO OR MORE FLOAT LOCALS MUTATED INSIDE A LOOP DECLINE. Bisected on 2026-10-01
+      at main `f8f2d72b`: one f32 local mutated in a loop and used twice in the tail COMPILES;
+      two locals mutated in the loop DECLINE; the same arithmetic with NO loop COMPILES; two
+      locals present but only one mutated inside COMPILES; the f64 twin DECLINES; the i32 twin
+      COMPILES. So the discriminator is narrow and specific — not the local count, not the
+      tail expression, not the parameter, not integers. THAT SHAPE IS WHAT CONTROL AND
+      ESTIMATION MATH IS: a loop updating two or more float accumulators, and a quaternion
+      integration is four. This is the ordinary body of the code this backend exists to
+      compile, not an exotic corner.
+
+      #1447 — A FLOAT-TYPED `if`-RESULT IS CATEGORICALLY UNREACHABLE. `(if (result f32))` with
+      ZERO parameters and two constant arms declines on every FPU-bearing Cortex-M target
+      (m4f, m7, m7dp), relocatable and self-contained alike. `(if (result i32))` and
+      `(if (result i64))` at the identical shape COMPILE, and `-b aarch64` COMPILES it. The
+      message says "function too complex" about a zero-parameter two-constant function.
+
+      THE SHARED DIAGNOSTIC DEFECT, and it is independent of the reach work and far cheaper.
+      `pop_float` (`crates/synth-synthesis/src/instruction_selector.rs:3216`) handles
+      `FloatSpilled | DoubleSpilled` BY NAME, with an accurate `#881` missed-reload-site
+      message — and then falls through to a WILDCARD `Some(_)` whose message asserts "the
+      stack top was an integer value — invalid wasm or an unlowered mixed int/float
+      sequence". `StackVal` also has `Reg`, `Spilled` and `Double` (an f64 in a D-register),
+      so the wildcard fires on values that are not integers. BOTH HALVES WERE DEMONSTRATED
+      FALSE AT ONCE: the two-float-locals loop with an `f32.gt` exit condition contains no
+      integer anywhere and still produces that message, and it validates under
+      `--features all`. One arm is matched by name and tells the truth; its neighbour guesses.
+      This repo already records the no-wildcard-arm concern for #615's silent-NOP class.
+
+      NOT THE SAME AS #1267 / #1426 / #1318, stated explicitly because that umbrella now holds
+      several distinct defects and conflating them has cost this project time before: those are
+      register-file and spill-slot-pool EXHAUSTION, reached under pressure, with a different
+      sub-message. These two fire at MINIMUM pressure — two locals and two constants. Compare
+      the SUB-MESSAGE, never the error code.
+
+      THE ORACLE LANDS FIRST, and here that is not a formality: both fixes would ACCEPT input
+      that is refused today, so there is no byte-identity baseline to compare against — the
+      v0.72 blind-by-construction negative control applies exactly. Each needs an EXECUTION
+      differential over the newly-accepted shapes before the acceptance lands.
+
+      REFUTING COMMAND: compile the minimal reproducer in #1448 (two f32 locals mutated in a
+      loop) and the one in #1447 (`(if (result f32))`, no params, const arms). Both rc=1 today.
+      Delete one local, or swap f32 for i32, for the controls that must compile. IN ZSH PASS
+      COMPILER FLAGS AS AN ARRAY — a quoted flag string becomes ONE argument and every row of
+      a probe matrix reads DECLINED for a reason unrelated to the code; that produced a full
+      page of false declines here until a must-compile control caught it.
+    tags:
+      - process
+      - reach
+      - quality
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1448"
+      verification-track: manual
+      done-when: "manual:2026-10-01 both boundaries are recorded with their bisection AND their must-compile/must-decline controls; the wildcard `Some(_)` arm in pop_float names the actual StackVal variant instead of asserting 'an integer value'; and any ACCEPTANCE of a previously-declined shape lands only behind an EXECUTION differential over the newly-accepted modules — or the lane reports plainly that it measured the gaps and did not widen reach"

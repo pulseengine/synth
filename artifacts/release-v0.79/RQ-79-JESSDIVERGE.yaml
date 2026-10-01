@@ -1,0 +1,72 @@
+artifacts:
+  - id: RQ-79-JESSDIVERGE
+    type: system-req
+    release: v0.79
+    status: proposed
+    title: "An externally reported SILENT MISCOMPILE: the quaternion integrates correctly, then the rotation sees identity"
+    description: >
+      PROMOTED TO THE v0.79 HEADLINE by the maintainer on 2026-10-01, over the PAGESIZE
+      capability, because a silent miscompile reported from outside is the class this project
+      exists to prevent and it outranks a reach gain.
+
+      THE REPORT (#1436, jess). A synth-lowered `falcon-cascade/ekf@0.10.0#estimate`
+      (synth 0.64.0) diverges from wasmtime over the same module: 10 of 14 state words
+      bit-exact, FOUR wrong — and they are exactly the ones the accelerometer reaches THROUGH
+      the quaternion rotation. On ARM `vel-n` is EXACTLY `ax*dt` and `vel-e` exactly `ay*dt`:
+      the UNROTATED values. The quaternion INTEGRATION is bit-exact. So the lowered code
+      integrates attitude correctly and then applies an IDENTITY rotation.
+
+      THE ELIMINATION IS UNUSUALLY COMPLETE AND SHOULD NOT BE REDONE: argument passing (6 flat
+      f32, the args demonstrably arrive), loom (the pre-loom module diverges bit-identically),
+      a 93-value `az` sweep (best 10/14; no single value explains it), the harness's memory
+      paint, and THE EMULATOR — QEMU 11.1.1 `mps2-an500` and Renode 1.16.1 on an RT1176 model
+      agree BIT-FOR-BIT on all 31 parked words, including the four wrong ones. Two
+      independently written Cortex-M7 implementations, same bits, both disagreeing with
+      wasmtime. Repro digest-pinned in jess; record AFD-125.
+
+      WHAT THIS RELEASE RULED OUT, measured rather than argued. The obvious hypothesis was the
+      home-register alias class (#1189) on the VFP path: an identity rotation from a correctly
+      integrated quaternion is what reading an INITIAL-value copy looks like, since the identity
+      quaternion (1,0,0,0) rotates nothing. It is REFUTED on every shape synth accepts —
+      `select` with a re-read, a `block` result with a re-read, a `br_if`-carried value with a
+      re-read, `get`-`set`-`use`, an f32 local carried through a loop, and an f32 local live
+      across a call are ALL bit-exact against wasmtime (24 executions, 0 divergences, with a
+      passing i32 twin and an f32 passthrough as positive controls IN the run).
+
+      AND THE "MISSING f32 LEG" OF THE ALIAS DIFFERENTIAL IS A CONSEQUENCE, NOT AN OVERSIGHT.
+      `home_alias_class_1189_*` and `join_alias_1189_*` carry i32/i64/promo fixtures and zero
+      f32 ones. The reason is that `(if (result f32))` does not compile at all (#1447), so an
+      f32 join-alias fixture would be entirely `EXPECTED_SKIPS` — there is nothing to execute.
+      Writing that leg would have produced a green oracle measuring nothing.
+
+      SO THE SEARCH SPACE NARROWED RATHER THAN CLOSED, and the remaining candidate is named:
+      the 14-field / 56-byte RETURN AREA marshalling. The four wrong fields are adjacent in the
+      record and the correct ones are too, which is a layout-shaped signature rather than an
+      arithmetic one. NOT YET TESTED, and it must not be asserted until it is.
+
+      RULE 4 APPLIES AND IS THE REASON THIS ARTIFACT EXISTS. jess's defect is STILL OPEN; a
+      release whose only work on it was hardening oracles around it does not count as progress.
+      So this artifact reports what was RULED OUT and what was not reached, rather than
+      presenting the elimination as delivery. Nothing was posted to #1436 — the finding is a
+      refutation of an internal hypothesis, which belongs in the release notes and not in a
+      reporter's inbox (rule 1).
+
+      REFUTING COMMAND: re-run jess's own oracle on the CURRENT compiler before building on any
+      of this — `hardware/renode/cascade-invoke/run-ekf-oracle.sh` in jess, plus
+      `tools/cascade-differential/ekf_ref.py <module> 16` for the wasmtime reference. The report
+      is against synth 0.64.0 and the tree is now fifteen releases later; if the four fields are
+      bit-exact today the premise is dead and jess should hear THAT, briefly and first.
+    tags:
+      - process
+      - reach
+      - quality
+      - measurement
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1436"
+      verification-track: manual
+      done-when: "manual:2026-10-01 the divergence is re-measured on the CURRENT compiler rather than inherited from the 0.64.0 report; the ruled-out hypotheses are recorded WITH their execution counts and their positive controls; and either the cause is named with a reaching module, or the lane states plainly that it did not reach the cause and names the untested candidate — never presenting elimination as progress on an open external defect"

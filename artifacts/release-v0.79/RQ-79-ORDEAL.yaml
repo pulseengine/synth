@@ -1,0 +1,58 @@
+artifacts:
+  - id: RQ-79-ORDEAL
+    type: system-req
+    release: v0.79
+    status: proposed
+    title: "A soundness advisory in the verification ENGINE — bump it, and measure that no verdict moved"
+    description: >
+      GHSA-xfxf-qxr3-435x / ordeal#182. Every published ordeal release from 0.2.0 through
+      0.22.0 bit-blasted `bvshl`, `bvlshr`, `bvashr` and rotations with too few
+      barrel-shifter stages when the operand width is NOT a power of two. An affected query
+      could answer `unsat` to a satisfiable goal WITH A CERTIFICATE THAT RE-CHECKS, because
+      the LRAT checker certifies the CNF it was handed and the CNF was the wrong encoding.
+
+      THAT IS WHY THIS OUTRANKED ITS PRIORITY. ordeal is synth's DEFAULT translation-
+      validation engine, and the failure mode is a verification outage shaped exactly like a
+      verification success — the class this project has recorded five separate times as "a
+      green that is true about the wrong subject". synth pinned `=0.19.0`, inside the range.
+
+      SYNTH WAS NOT AFFECTED, AND THE POINT IS THAT IT WAS MEASURED. The static reading is
+      that every shift/rotate site in `synth-verify` operates on 32- or 64-bit values; the
+      non-power-of-two widths that DO occur (11, 23, 31, 52, 63) appear only as `extract`
+      results and equality constants in IEEE-754 field classification, never as a shift
+      operand. Upstream states the same bound independently: "Widths 1, 2, 4, 8, 16, 32, 64
+      and 128 are unaffected. Their encoding is unchanged." But a reading is not a
+      measurement, and the byte-identical encoding at power-of-two widths is exactly what
+      makes the empirical test DECISIVE: if synth only shifts at 32/64 then every verdict
+      must be identical across the bump, and any moved verdict would be the finding.
+
+      THE PIN'S OWN PROTOCOL WAS FOLLOWED because the pin's comment demands it — build ALL
+      CI feature sets including `z3-solver`, run the solver-heavy suites against a WALL
+      CLOCK (the failure mode of a solver bump here is a HANG, not an error: ordeal 0.12
+      hung div/rem trap VCs for 4-6 hours), and read the upstream CHANGELOG. Bumped to
+      0.22.1, the MINIMAL fix, not the latest 0.24.0: for a 0.x solver a minor bump is a
+      breaking bump and this dependency is the verification engine.
+
+      ONE THING THE LANE ALSO CAUGHT: dependabot's open PR proposed `=0.22.0` — the LAST
+      AFFECTED version. Not dependabot's error (it was opened before 0.22.1 existed) but
+      merging it would have landed an affected engine. Closed with that reason rather than
+      left to be picked up on a tidy-up pass.
+
+      REFUTING COMMAND: `grep ordeal crates/synth-verify/Cargo.toml` and
+      `cargo tree -p synth-verify | grep ordeal`. If the pin is below 0.22.1 the bump has
+      not landed. And re-run `cargo test -p synth-verify` at BOTH pins on ONE tree before
+      believing any claim that verdicts are unchanged — a single-pin pass proves nothing
+      about a difference.
+    tags:
+      - process
+      - quality
+      - security
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1431"
+      verification-track: manual
+      done-when: "manual:2026-10-01 ordeal is pinned at >= 0.22.1 with the affectedness analysis recorded in the pin's own comment, every CI feature set builds, and the verdict tally is measured IDENTICAL at the old and new pins ON ONE TREE with the run counts stated — or the lane reports which verdict moved, because a moved verdict IS the finding"
