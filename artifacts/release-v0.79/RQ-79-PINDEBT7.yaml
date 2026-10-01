@@ -96,5 +96,35 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1373"
+      # PARTIAL. The tripwire question is ANSWERED and the figure is decomposed, but
+      # the attention gap this lane uncovered is not closed. R11 requires a disposition
+      # beside `landed:` on a non-claiming status.
+      disposition: partial
+      landed: "#1452"
       verification-track: manual
+      verified-by: >-
+        PARTIAL, and three of this artifact's own statements were measured WRONG and corrected.
+        ONE: the tripwire is LOCATED — a `count-eq` pin at `claims.yaml:3133`, not code in
+        `claim_check.py`; the earlier note was true about the wrong LAYER. Shown POTENT by three
+        mutations against a backup copy: a matching `KNOWN_*` literal reds ("derived 13 !=
+        documented 12"), while `SUPPRESSED_CASES` and `KNOWN_VIA_DICT = dict(...)` stay green. Both
+        documented escapes are REAL and the pin's own comment already names them as a deliberate
+        narrowness. CLAUDE.md is ACCURATE, so nothing outranks the re-ask.
+        TWO: the "toll booth" reading is REFUTED by the waivers' own text. Four of six record pins
+        CLOSED BY FIXES, about 120 in total (RQ-66-BOTHWRONG 77, RQ-67-CALLEESAVE 38/321 cases,
+        RQ-67-HIGHWORD 4/26, RQ-74-PINDEBT2 one more). Both rises are labelled measurement
+        expansion in the ledger's own words. The real defect is the COMPARISON: baseline 27 was set
+        when the population was NARROWEST, and it has since widened by ~106 counted wrong answers,
+        so "84 vs 27" spans two denominators.
+        THREE: the re-ask as scoped is ALREADY PERFORMED, continuously. Every non-empty table pins
+        EXACT IN BOTH DIRECTIONS (each says so), and the oracles RAN and PASSED on main `e0cfef85`
+        — checked, not assumed. A pin cannot be stale while its oracle is green, so "all 84 still
+        wrong" is the verified present state rather than a measurement to make.
+        COMPOSITION, via the checker's own `_pin_table`/`_top_level_bindings` after a hand-rolled
+        walk disagreed three times: nine dict-LITERAL tables give 45 entries, ONE DictComp gives 39
+        (13 fixtures x 3 backends, `DECLINES` holding one cell — 38 real false-accepts, 1 correct
+        decline), and FOUR of ten tables are EMPTY, all four from the original population. 84
+        entries are ~59 hand-written decisions; quote the figure as OBSERVED WRONG ANSWERS.
+        NOT DONE: the attention gap. 28 of 40 open pinned issues were never revisited, nothing
+        committed covers that, and this lane did not close it.
       done-when: "manual:2026-10-01 the tripwire is LOCATED (claims.yaml:3133, CONFIRMED accurate and shown potent with both documented escapes real); the '84 vs baseline 27' framing is corrected to say the DENOMINATOR moved and that four of six waivers record ~120 pins CLOSED BY FIXES; and the re-ask is reported as what it is — already continuous, because every pin is exact in both directions and its oracle ran green on a named commit — with the REAL gap named instead: 28 of 40 open pinned issues never revisited, which no committed check covers"

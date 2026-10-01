@@ -102,4 +102,25 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1441"
+      # PARTIAL and named as such. What landed is the REFUTATION of this lane's own
+      # scoping plus the oracle that must precede the capability; the capability itself
+      # did not. R11 requires a disposition beside `landed:` on a non-claiming status,
+      # and `proposed` is the honest status for a capability nobody shipped.
+      disposition: partial
+      landed: "#1445"
+      verified-by: >-
+        PARTIAL. WHAT LANDED: the spec-permitted set is DERIVED, this lane's own scoping is
+        REFUTED, and the oracle is wired. The vendored
+        `custom-page-sizes-invalid.wast` asserts `(pagesize 32)` INVALID by name, so the legal set
+        is exactly {1, 65536} and the entire capability is `(pagesize 1)` — "powers of two >= 32
+        B" was never implementable. `scripts/repro/pagesize_oracle_1441.py` DERIVES that set from
+        the suite by paren-balanced removal of negative assertions (a flat regex reads
+        `(pagesize 0)` out of the POSITIVE file as legal, which is how its first run failed), runs
+        28 assertions, and AUTO-STRENGTHENS when the capability lands because its mode is PROBED
+        rather than switched. Wired into spec-suite.yml and not ci.yml, because the suite is a
+        submodule only that workflow checks out. Potency: 6 of 7 mutations RED, the survivor
+        documented in place rather than hidden.
+        WHAT DID NOT LAND: the capability. `(pagesize 1)` still refuses, and the
+        declared-size-versus-MPU-rounded-reservation choice is NAMED (two symbols, maintainer's
+        decision 2026-10-01) but not implemented. REACH DID NOT MOVE, and saying so is the point.
       done-when: "manual:2026-10-01 the SPEC-PERMITTED set is established from the vendored suite rather than assumed (measured: exactly {1, 65536}, so the capability is `(pagesize 1)` alone and the >= 32 B scoping is REFUTED), the execution oracle for `(pagesize 1)` LANDS FIRST and is shown potent, `(pagesize 1)` is honoured with `__synth_mem_size_N` equal to the declared byte count, the declared-size-vs-MPU-rounded-reservation choice is NAMED with its over-grant consequence, the `memory.size` lowering no longer divides by a literal 65536, and spec-invalid sizes keep refusing with a diagnostic that does NOT repeat the now-false \"no backend reads it\" text — or the lane reports plainly which of these it could not do"
