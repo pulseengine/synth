@@ -32,11 +32,32 @@ artifacts:
       re-read, `get`-`set`-`use`, an f32 local carried through a loop, and an f32 local live
       across a call are ALL bit-exact against wasmtime (24 executions, 0 divergences, with a
       passing i32 twin and an f32 passthrough as positive controls IN the run).
+      THAT RUN IS NOT COMMITTED, and this is stated here rather than left for a reader to
+      discover: it happened in-session and nothing in the tree reproduces it. `grep -rl 1436
+      scripts/repro/ crates/*/tests/` is empty, and the shipped `join_alias_1189_*` and
+      `home_alias_class_1189_*` differentials carry no f32 leg at all (main/i64/call in the
+      join family, promo in the home-alias family). So
+      the figures above are a RECORD, not a re-derivable fact, and the refutation they
+      support cannot currently be checked by anyone else. Committing that oracle is a v0.80
+      obligation — and under rule 4 it would still not be progress on #1436.
+      THE FIRST done-when CLAUSE IS UNMET. It asks that the divergence be re-measured on the
+      CURRENT compiler rather than inherited from the 0.64.0 report, and it sits BEFORE the
+      either/or, so the honest-reporting escape does not cover it. No such re-measurement
+      was performed. Nothing in the gate notices — and the reason first given here was
+      itself false, in the same commit that added the field it denied: this artifact DOES
+      carry `landed: "#1449"`. The real reason is that R11's failure branch requires a
+      `landed:` with NO `disposition:`, and this artifact has both, so the rule is satisfied
+      and never looks at whether a done-when clause was met.
 
-      AND THE "MISSING f32 LEG" OF THE ALIAS DIFFERENTIAL IS A CONSEQUENCE, NOT AN OVERSIGHT.
-      `home_alias_class_1189_*` and `join_alias_1189_*` carry i32/i64/promo fixtures and zero
-      f32 ones. The reason is that `(if (result f32))` does not compile at all (#1447), so an
-      f32 join-alias fixture would be entirely `EXPECTED_SKIPS` — there is nothing to execute.
+      AND THE "MISSING f32 LEG" OF THE ALIAS DIFFERENTIAL IS A REAL GAP. This paragraph
+      first claimed the opposite — that it was a CONSEQUENCE rather than an oversight,
+      because `(if (result f32))` does not compile (#1447) so an f32 fixture would be
+      entirely `EXPECTED_SKIPS` with nothing to execute. A cold review refuted that and the
+      detail is recorded in `verified-by:` below: the generator enumerates nine join shapes
+      and only one is an `if`, so an f32 port would have six or seven EXECUTING legs. The
+      families also differ and were collapsed here: `join_alias_1189_*` carries main, i64
+      and call fixtures, while the `promo` fixture belongs to `home_alias_class_1189_*`.
+      Neither family has any f32 leg, which is what makes the gap real.
       Writing that leg would have produced a green oracle measuring nothing.
 
       SO THE SEARCH SPACE NARROWED RATHER THAN CLOSED, and the remaining candidate is named:
@@ -68,5 +89,59 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1436"
+      disposition: partial
+      landed: "#1449"
       verification-track: manual
+      verified-by: >-
+        PARTIAL, AND UNDER RULE 4 THIS IS NOT PROGRESS ON #1436. The externally reported divergence is
+        NOT fixed and its cause was NOT found. What was delivered is one REFUTATION and one filing.
+        REFUTED: the leading hypothesis, the home-register alias class on the VFP path. Every f32 join
+        shape probed accepts and agrees with wasmtime — `select` with a re-read, a `block` result with
+        a re-read, a `br_if`-carried value, `get`-`set`-`use`, a local carried through a loop, and a
+        local live across a call. THE HONEST LIMIT OF THAT EVIDENCE, stated because the sweep is the
+        load-bearing half of the refutation: it was run in-session and is NOT COMMITTED. Nothing in the
+        tree cites #1436 (`grep -rl 1436 scripts/repro/ crates/*/tests/` is empty) and the shipped
+        `join_alias_1189_*` differentials carry main, i64 and call fixtures with no f32 leg
+        (the `promo` fixture is the separate `home_alias_class_1189_*` family). So the
+        refutation is not reproducible by anyone else, and committing that oracle is a v0.80
+        obligation. AND ONE EXCUSE WITHDRAWN, because a cold review refuted it: it was going to be
+        recorded that the alias differentials' missing f32 leg is a CONSEQUENCE rather than an
+        oversight, on the ground that `(if (result f32))` does not compile (#1447) so an f32 port
+        would be entirely `EXPECTED_SKIPS`. THAT IS FALSE. `scripts/gen_home_alias_class_1189.py`
+        enumerates NINE control-flow JOIN shapes and only ONE is an `if` (`:89`): the others are
+        three `select` forms (`:67`, `:69`, `:71`), a function-level `br_if` (`:74`), a `br_if`
+        into a value-carrying block (`:78`), a `br_table` on a home index (`:82`), a block
+        fall-through result (`:93`) and a loop (`:97`). TWO of those eight cannot take an f32
+        home for a SPEC reason, not a synth one — `sel_cond` uses the home as `select`'s
+        condition and `brtab` as `br_table`'s index, both i32 by definition — so an f32 port
+        would have SIX or SEVEN executing legs, not eight. "Nine" is also the count of join
+        shapes rather than of what the generator emits, which is three modules carrying 117
+        exported FUNCTIONS (59/49/12 `(export "` lines minus one `(memory (export ...))` per
+        module). And of the two that cannot be ported, `brtab` has no f32 form at all rather
+        than merely a skipped one: the home IS the `br_table` index. so the
+        missing f32 leg is a REAL GAP in the oracle and not a justified absence. ALSO FILED: #1450, the multi-result return convention is undocumented and unexercised.
+        IT WAS THE REMAINING CANDIDATE AND IT IS NOW ELIMINATED, from the reporter's own data
+        rather than from any oracle this release built. #1450 measures, at arity 14 (matching
+        the 14-field record), that multi-result returns land in `s2..` with the LAST
+        duplicated into `s0` and the caller-supplied return area never written. That cannot
+        produce the reported symptom: any marshalling defect — wrong register, wrong order,
+        unwritten buffer — corrupts most or all of a record, and cannot leave TEN words
+        bit-exact IN PLACE while four are wrong in a semantically coherent pattern. Ten exact
+        means the marshalling delivered faithfully whatever was computed, so those four values
+        were already wrong before they were stored. #1450 stays real and open; it is not this
+        defect.
+        AND THE MECHANISM IS NOW ARITHMETIC RATHER THAN INFERRED. The four diverging words
+        decode as an identity rotation and nothing else: `vel-d` = `3c20ba20` = 0.0098100007 =
+        9.81 x 0.001, one tick of UNROTATED gravity, and `pos-d` = `36a495a2` = 4.9050004e-06,
+        the matching one-tick free-fall distance, with north and east receiving nothing.
+        THE EVIDENCE ALSO ESCALATED AFTER THIS ARTIFACT WAS FIRST WRITTEN: the reporter
+        confirmed it on the ACTUAL i.MX RT1176 over SWD, so THREE independent ARM
+        implementations (Renode 1.16.1, QEMU 11.1.1, real silicon) agree bit-for-bit and all
+        three disagree with wasmtime. "Emulation artefact" and "two emulators share a bug" are
+        both retired.
+        STILL NOT NAMED, and the release claims no progress: the step between a correctly
+        integrated quaternion (its words are among the ten that are exact) and a rotation
+        behaving as though it read the initial one. Naming the instruction requires reading
+        synth's output against its input; the module is not in the thread and has been asked
+        for.
       done-when: "manual:2026-10-01 the divergence is re-measured on the CURRENT compiler rather than inherited from the 0.64.0 report; the ruled-out hypotheses are recorded WITH their execution counts and their positive controls; and either the cause is named with a reaching module, or the lane states plainly that it did not reach the cause and names the untested candidate — never presenting elimination as progress on an open external defect"

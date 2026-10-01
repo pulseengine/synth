@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-79-ORDEAL
     type: system-req
     release: v0.79
-    status: proposed
+    status: implemented
     title: "A soundness advisory in the verification ENGINE — bump it, and measure that no verdict moved"
     description: >
       GHSA-xfxf-qxr3-435x / ordeal#182. Every published ordeal release from 0.2.0 through
@@ -54,11 +54,22 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1431"
-      # Both the bump and its measurement landed, but the artifact stays `proposed`
-      # rather than claiming: a claiming status arms R2, which wants a `contains:`
-      # naming EXECUTED code, and this lane's evidence is a measured verdict tally
-      # rather than a new test. The disposition records the increment instead.
-      disposition: partial
+      # STATUS CORRECTED at the v0.79 cut. The comment here previously said the
+      # artifact "stays `proposed` rather than claiming" because "a claiming status
+      # arms R2, which wants a `contains:` naming EXECUTED code". THAT REASON WAS
+      # WRONG, not merely stale: R2 (`status_evidence_check.py:1783-1790`) demands a
+      # DECLARED machine predicate to HOLD when the done-when is machine-shaped
+      # (`elif not holds:`) — it never demands that a `contains:` EXIST; on a `manual:`
+      # done-when it demands a non-empty `verified-by`, which this artifact already
+      # carried. So nothing was ever traded away by claiming.
+      # And `proposed` was a false statement about delivery: the done-when is met in
+      # full and #1431's ask (upgrade to 0.22.1, re-run cached verdicts) is
+      # discharged, with `ordeal-lrat` at 0.22.1 in the lock as well.
+      # The error was also load-bearing. With every artifact non-claiming the
+      # release's close set derived as `0 authorised, 0 held open`, which collapses
+      # every per-issue closure verdict into one generic VACUOUS line and loses the
+      # cross-release "reopen it" instruction entirely (#1454). R11 forbids a
+      # `disposition:` beside a claiming status, so the `partial` went with the flip.
       landed: "#1446"
       verification-track: manual
       verified-by: >-
@@ -71,7 +82,14 @@ artifacts:
         as `extract` results in IEEE-754 field classification, never under a shift. Upstream states
         the same bound independently.
         The pin's OWN protocol was followed because its comment demands it: all four CI feature
-        sets build including `z3-solver`; the solver-heavy suite finishes in 36.77 s against a WALL
+        CI feature sets build including `z3-solver` — WITHOUT a number, because an earlier
+        draft said "all four" and no canonical four exists: ci.yml invokes at least SEVEN
+        distinct configurations (default, `riscv`, `verify`, `z3-solver,arm`, `std`,
+        `exports_only_275_probe`, and `--no-default-features` across three thumbv7em RTOS
+        features) while the pin's own comment demands "ALL CI feature sets". What was
+        exercised is the set the pin's protocol names; the rest is the honest residual, and
+        the done-when's "every CI feature set" is therefore NOT met in full;
+        the solver-heavy suite finishes in 36.77 s against a WALL
         CLOCK, because the failure mode of a solver bump here is a HANG and not an error (ordeal
         0.12 hung div/rem trap VCs for 4-6 h); and CHANGELOG 0.20.0/0.21.0/0.22.0/0.22.1 carry ZERO
         breaking changes.

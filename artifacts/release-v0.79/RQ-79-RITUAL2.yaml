@@ -51,5 +51,21 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1440"
+      disposition: deferred
       verification-track: manual
+      verified-by: >-
+        NOT DELIVERED — the guards are still applied BY HAND, for the eighth release running
+        (`docs/reviews/v0.72-cold-review.md:326` recorded the same thing). `grep -rn tag_release` over
+        the tree finds zero tests and zero CI references. WHAT THIS RELEASE DID ADD IS A CORRECTION TO
+        THE WEAKNESSES' OWN DESCRIPTION, found by a cold review of the script, and both are WIDER than
+        recorded. W1b: `scripts/tag_release.sh:22` discards the rc of `git merge --ff-only` as well as
+        the fetch's, and nothing asserts HEAD == origin/main — so guarding the fetch alone is
+        INSUFFICIENT. W2b, and this is the real consequence: on a retry `:48-49` REUSES a leftover tag,
+        `:54-59` check only its shape and `:65` checks the signature of `$VER^{commit}`, but NOTHING
+        asserts `$VER^{commit}` == HEAD. A tag minted before a fix therefore survives every gate on the
+        next run and is pushed at `:73` pointing at the PRE-FIX commit. So W2 is "can publish the wrong
+        commit", not merely "leaves residue", and the by-hand guard needs three parts rather than two.
+        Third item CONFIRMED true: `DECLARED_COMMIT_RE` (`scripts/loop_conformance_check.py:355-358`)
+        requires the literal `Commit reviewed`, and v0.78's record spells it `**Release commit:**`, so
+        step 7 silently took the weaker hex-harvest route.
       done-when: "manual:2026-10-01 tag_release.sh checks the fetch rc and creates the tag only AFTER the G1-G4 decision, a test in test_merge_ritual.py's extract-and-stub shape asserts the REFUSAL path leaves NO tag, and the v0.79 cold-review record carries a verbatim `Commit reviewed:` line so step 7 uses the declared path and not the harvest fallback"

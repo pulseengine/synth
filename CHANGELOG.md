@@ -5,6 +5,310 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.79.0] - 2026-10-01
+
+### "Reach you can trust" — and reach did not move
+
+The theme pinned reach as a FLOOR that must rise against emitted-code cost as a
+CEILING that must fall, both slack-free so neither could be bought with the other.
+**v0.79 pinned NEITHER, and accepted no input it previously refused.** That is the
+honest headline, stated first because the alternative is a release that reads as
+progress on a number nobody measured.
+
+What the release did instead was find out that its own headline was not
+implementable as scoped, and then measure three further reach gaps precisely enough
+to be fixed.
+
+### The capability lane refuted its own scoping
+
+(Not the headline. The headline is #1436 below: the maintainer promoted that lane
+over this one on 2026-10-01, on the ground that an external silent miscompile
+outranks a capability gain. An earlier draft of these notes gave the slot to
+PAGESIZE, which contradicted the decision recorded in `RQ-79-JESSDIVERGE`.)
+
+**RQ-79-PAGESIZE** was scoped — by the REPORTER, not by this lane — to honour
+declared page sizes for powers of two >= 32 bytes, on the ground that ARMv7-M PMSA
+requires an MPU region to be a power of two >= 32 B anyway. The hardware reasoning
+is sound and the proposal forbids it. From this repo's OWN vendored suite — not a
+third-party validator — `custom-page-sizes-invalid.wast` asserts `(pagesize 32)`
+INVALID by name, under its own heading "Power-of-two page sizes that are not 1 or
+64KiB". The legal set is exactly {1, 65536}, and 65536 is the default, so the
+entire capability is `(pagesize 1)`: byte-granular sizing. That is a FINER lever
+than the one asked for, and it still answers the board that motivated the ask — two
+~20 KiB tenants fit in a G474's 96 KiB where two 64 KiB pages cannot.
+
+The oracle landed and the capability did not. `pagesize_oracle_1441.py` DERIVES the
+permitted set from the vendored suite rather than hardcoding it, asserts that every
+spec-invalid size is refused and that the #1145 region table reports 0x10000 per
+memory, and AUTO-STRENGTHENS when the capability arrives because its mode is probed
+rather than switched. PMSA does not go away: an MPU region must still be a power of
+two >= 32 B, so the reservation must round up while the declaration does not, and
+the decision taken for that is a SECOND symbol — `__synth_mem_size_N` keeps
+carrying the declared byte count, a new `__synth_mem_region_N` would carry the
+MPU-legal rounded extent — rather than one number meaning both. **Neither symbol
+exists in the emitted output today.** `grep -rn __synth_mem_region crates/` is
+empty. Outside these notes the name appears in two places, both scaffolding rather
+than output: `scripts/repro/pagesize_oracle_1441.py`, as an assertion that begins to
+bite when the capability lands, and `.github/workflows/spec-suite.yml:103`, which greps
+for it. An earlier draft said "only inside" the oracle — a quoted command result that
+was not re-run after the sentence around it was narrowed. Recording a decision is
+not shipping it, and the sentence that said this "is now resolved" was contradicted
+by this paragraph's own first line.
+
+### A soundness advisory in the verification engine
+
+**RQ-79-ORDEAL.** Every published ordeal from 0.2.0 through 0.22.0 mis-encoded
+shifts and rotations at non-power-of-two widths, and could answer `unsat` to a
+satisfiable goal WITH A CERTIFICATE THAT RE-CHECKS — a verification outage shaped
+exactly like a verification success, in the engine synth's translation validation
+depends on. Pinned `=0.22.1`, the minimal fix.
+
+Affectedness was MEASURED, not reasoned: 276 passed / 0 failed / 6 suites,
+IDENTICAL at both pins on one tree. That is decisive rather than suggestive because
+the encoding is byte-identical at power-of-two widths and synth shifts only at
+32/64 — its non-power-of-two widths (11, 23, 31, 52, 63) occur solely as `extract`
+results in IEEE-754 field classification, never under a shift. Dependabot's open PR
+proposed `=0.22.0`, the LAST AFFECTED version; closed with that reason.
+
+### Two reach gaps bisected, and one ABI gap that is not a reach gap
+
+The two REACH gaps are each filed with a minimal reproducer, a must-compile control
+and a must-decline control, so each boundary is a measurement rather than an
+impression. The third, #1450, is classified separately and deliberately: the module
+COMPILES, so nothing about it declines and a "must-decline control" would have no
+meaning. It is an ABI/correctness gap. It also has no rivet artifact OF ITS OWN: no artifact names it in an
+`issue:` field, so unlike the other two it carries no typed record and no committed
+reproducer, and that is a gap in this release's own bookkeeping. (An earlier draft said
+`grep -rn 1450 artifacts/` is empty. It is not — `RQ-79-JESSDIVERGE` mentions #1450 in
+prose at `:104`. The substantive claim survives; the quoted command did not.)
+
+- **#1447** — a float-typed `if`-result is CATEGORICALLY unreachable on all THREE
+  FPU-bearing Cortex-M targets it was measured on — `cortex-m4f`, `cortex-m7` and
+  `cortex-m7dp` — at zero parameters with two constant arms. (Not "every FPU-bearing
+  Cortex-M": `has_single_precision_fpu` is `M4F | M7 | M7DP | M55` and `cortex-m55` was
+  never tried, so the earlier universal covered a population a quarter of which was
+  unmeasured.) The i32
+  and i64 twins at the identical shape compile, and AArch64 compiles it. The
+  diagnostic says "function too complex" about a two-constant function.
+- **#1448** — TWO OR MORE float locals mutated inside a loop decline; one does not;
+  the same arithmetic without a loop compiles; the f64 twin declines; the i32 twin
+  compiles. That shape is what control and estimation math IS — a quaternion
+  integration is four accumulators.
+- **#1450** — multi-result functions return by an UNDOCUMENTED, UNEXERCISED
+  convention: results land in `s2..`, the LAST one is duplicated into `s0`, and the
+  caller-supplied return area is never written at any arity. The embedder ABI doc
+  specifies `R0-R8, LR` and says nothing about VFP returns; no oracle runs a
+  multi-result export on ARM.
+
+**#1448 alone** declines at a WILDCARD match arm (`pop_float`,
+`instruction_selector.rs:3215`, message on `:3216`) whose message asserts "the stack
+top was an integer value — invalid wasm or an unlowered mixed int/float sequence".
+An earlier draft said #1447 and #1448 SHARE that arm. They do not, and that draft
+contradicted its own previous paragraph, which had already quoted #1447's message
+correctly: #1447 declines at `instruction_selector.rs:1398` with "if/else result
+reconciliation with a spilled arm result is not supported by the current register
+allocator (#313) — function too complex". Two sites, two messages; attaching `:3215`
+to both made a wrong attribution read as a measured one. **The claim this release first made about
+that arm was itself wrong, and a cold review caught it.** The witness offered was a
+two-float-locals loop with an `f32.gt` exit condition, described as containing "no
+integer anywhere". It does: `f32.gt` YIELDS an i32 and `br_if` consumes one. And the witness was badly chosen: `pop_float` matches `Float`
+first and then the spilled float variants, so `Some(_)` is reachable only via `Reg`,
+`Spilled` or `Double`, and in a module with no f64 values `Double` cannot be on the
+stack — leaving exactly the two variants for which "an integer value" is right. A
+later draft then called the message "plausibly accurate" on that witness, which
+concedes too much: accuracy attaches only to the message's FIRST clause. Its second
+disjunct, "or an unlowered mixed int/float sequence", is falsified by the same module,
+which VALIDATES under `--features all` — the real cause is a selector defect, which
+that disjunction excludes.
+
+What survives is the STATIC argument, which is narrower and sound: the `Double` arm
+reaches the same message, and an f64 value on the stack is not an integer, so the
+message is wrong for that variant. The empirical refutation is withdrawn. No
+correction to the arm landed, and no test pins its wording.
+
+### An external silent miscompile: ruled out, not solved
+
+**#1436** (jess) reports a synth-lowered falcon `ekf#estimate` diverging from
+wasmtime — 10 of 14 state words bit-exact, four wrong, and the four are exactly the
+ones the accelerometer reaches THROUGH the quaternion rotation. THREE independent ARM
+implementations now agree bit-for-bit — Renode 1.16.1, QEMU 11.1.1, and the ACTUAL
+i.MX RT1176 on a Pixhawk 6X-RT, loaded over SWD after these notes were first drafted.
+The reporter's conclusion is the right one: neither "it is an emulation artefact" nor
+"two emulators share a bug" survives that.
+
+The obvious hypothesis — the home-register alias class on the VFP path — is
+NOT REPRODUCED, and the weaker verb is deliberate: its evidence is a sweep that is not
+committed (below), so "refuted" would claim more than anyone can currently check. Every f32 join shape probed accepts and agrees with wasmtime: `select` with
+a re-read, a `block` result with a re-read, a `br_if`-carried value,
+`get`-`set`-`use`, a local carried through a loop, and a local live across a call.
+
+**That sweep is NOT COMMITTED, and the refutation rests on it.** It was run in
+this session and nothing in the tree reproduces it: `grep -rl 1436 scripts/repro/
+crates/*/tests/` is empty, and the shipped differentials have no f32 leg at all:
+`join_alias_1189_*` carries main, i64 and call fixtures, while the `promo` fixture
+belongs to the separate `home_alias_class_1189_*` family. An earlier draft attributed
+promo to the join family, collapsing two families into one. So nobody else can re-run the
+measurement that rules the hypothesis out. Committing that oracle is a v0.80
+obligation, and under rule 4 landing it would still not count as progress on #1436 —
+it would make the refutation checkable, which is a different and smaller thing.
+
+An excuse for the missing f32 leg was drafted and is WITHDRAWN, because a cold
+review refuted it. The draft said the gap was a CONSEQUENCE rather than an oversight,
+on the ground that `(if (result f32))` does not compile (#1447), so an f32 port of
+the fixture would be entirely `EXPECTED_SKIPS` — a green oracle measuring nothing.
+That is false. `scripts/gen_home_alias_class_1189.py` enumerates NINE
+control-flow join shapes and exactly ONE is an `if` (`:89`); the rest are three
+`select` forms, a function-level `br_if`, a `br_if` into a value-carrying block, a
+`br_table` on a home index, a block fall-through result and a loop. TWO of those eight
+cannot take an f32 home for a SPEC reason rather than a synth one — `sel_cond` uses the
+home as `select`'s condition and `brtab` as `br_table`'s index, both i32 by definition —
+so the honest figure is six or seven executing join legs, not eight. "Nine" is also the
+count of JOIN shapes rather than of what the generator emits, which is three modules
+carrying 117 exported FUNCTIONS (120 `(export "` lines less one `(memory (export …))` per
+module). And of the two unportable shapes, `brtab` has no f32 form at all rather than a
+skipped one — the home IS the `br_table` index.
+The missing leg is a real gap in the oracle, and it sits exactly where the reported
+defect lives.
+
+**The cause was not found.** Under rule 4 this release made no progress on #1436:
+narrowing a search space is not a fix. **What this release did add, at the cut and from
+the reporter's own data rather than from any new oracle, is one mechanism and one
+elimination.**
+
+THE MECHANISM IS ARITHMETIC, not merely a mismatch. Decoding the four diverging words:
+`vel-d` = `3c20ba20` = 0.0098100007 = 9.81 x 0.001, one tick of UNROTATED gravity, and
+`pos-d` = `36a495a2` = 4.9050004e-06 = the matching one-tick free-fall distance, while
+north and east receive nothing. That is what an identity rotation does and nothing else
+does, so the reported "the quaternion integrates correctly, then the rotation sees
+identity" is confirmed numerically rather than inferred.
+
+THE RETURN-ABI CLASS IS ELIMINATED. #1450 was the live candidate — multi-result returns
+land in `s2..` with the LAST duplicated into `s0` and the caller-supplied return area
+never written, measured at arity 14, which matches the 14-field record. It does not
+survive the reporter's 10-of-14: any marshalling defect, whether wrong register, wrong
+order or unwritten buffer, corrupts most or all of a record and cannot leave ten words
+bit-exact IN PLACE while four are wrong in a semantically coherent pattern. Ten exact
+means the marshalling delivered faithfully whatever was computed, so those four values
+were already wrong before they were stored. #1450 remains a real and open defect; it is
+not this one.
+
+WHAT IS STILL NOT NAMED is the step between a correctly integrated quaternion — the
+record's quaternion words are among the ten that are exact — and a rotation behaving as
+though it read the initial one. Naming the instruction needs synth's output read against
+its input, and the module is not in the thread; it has been asked for.
+
+### Machinery
+
+- **The pin-debt figure compares two denominators.** `known_open_pins` at 84
+  against `baseline: 27` is not accumulated debt: four of six waivers record pins
+  CLOSED BY FIXES (~120 in total), both rises are labelled measurement expansion in
+  the ledger's own words, and the baseline was set when the population was
+  NARROWEST. The re-ask the artifact asked for is ALREADY performed on every push,
+  because every pin is exact in both directions and its oracle runs green. The real
+  gap is attention. In #1373's own words, measured 2026-09-24 on the v0.72.0
+  tag and NOT derivable from this tree, "28 of 40 open issues have not been touched since
+  the day they were filed". An earlier draft wrote "28 of 40 open PINNED issues", which
+  inverts the issue's point — #1373 says the opposite: "28 open issues have NO pin, so the
+  method above says nothing about them". The pinned population it reports separately is 85
+  entries over 158 cases. Nothing committed covers the attention gap either way.
+- **The release-window recognizer deadlocked every PR** and has been taught the
+  lane-subject shape, the remedy its own message named. The window scan walks
+  `--first-parent` from the PR MERGE COMMIT, so a PR's own commits are invisible to
+  it; with no id-leading subject already on main the floor fired on every PR and no
+  PR could fix it. `LANE_SUBJECT` now recognizes `v0.79 PAGESIZE lane:` in both
+  loops, held to the same acknowledgment and attribution demands. It was exercised
+  by hand in both new directions at the cut, and that is the honest limit of the
+  claim: `grep -rn "R4-lane\|R10-lane\|lane_artifact_id" scripts/` finds the code
+  only in `status_evidence_check.py` itself, and `scripts/test_status_evidence_check.py`
+  has no test for either direction. So the release's ONLY substantive instrument
+  change ships with no committed test and no negative control — in a repo whose
+  recorded rule is that a gate is proven only by being made to go red. One detail
+  worth knowing rather than discovering later: the commit that ADDED the recognizer
+  is not matched by it, because `pindebt` is lower-case and the pattern requires
+  `[A-Z][A-Z0-9]*`.
+- **#1459 — a REQUIRED check graded the same source differently on two runners, and
+  that is the only Rust change in this release.** `Clippy` passed on `main` and failed on
+  all three heads of the release branch with ZERO Rust files changed between them.
+  Cause: `dtolnay/rust-toolchain@stable` resolves to whatever stable each self-hosted
+  runner has already cached — both logs say `stable-x86_64-unknown-linux-gnu
+  **unchanged**` — and the two runners disagreed. `main`'s job ran on `...-01-12` at
+  rustc **1.98.1** and passed; the branch's ran on `...-01-11` at rustc **1.99.0** and
+  failed. The 1.99.0 runner was RIGHT: that release adds
+  `needless_borrows_for_generic_args`, which fires three times in
+  `crates/synth-synthesis/src/liveness.rs` (`:5793`, `:9614`, `:9621`), all `&closure`
+  where `closure` suffices. Fixed by taking clippy's own suggestion, and VERIFIED RED-FIRST against that exact
+  toolchain rather than hoped: `cargo +1.99.0 clippy -p synth-synthesis --all-targets
+  -- -D warnings` gives rc=101 with exactly those three errors on the pre-fix commit
+  and rc=0 on this one. Character-level,
+  line-count neutral, and it does not change the accept set, so the headline above still
+  holds. **`main` was latently red and passed only by landing on the older runner**, so
+  any PR reds or greens on this lint by lottery. It is the same shape as this release's
+  own VARVE finding — a check whose verdict is not a function of its subject — this time
+  in the required-check path. No fix is proposed for the lottery itself: pinning a
+  toolchain changes a REQUIRED check's behaviour, and the options are enumerated in the
+  issue rather than chosen here. One cheap thing is independent of that choice: the
+  resolved `rustc` version appears ONLY in the job log today, so nothing can answer
+  "which compiler graded this PR?" without downloading logs.
+- **#1451** — a self-hosted runner failing every job with `steps=0`, which reddened
+  a REQUIRED context on a clean PR. Filed with the discriminator, because
+  `gh pr checks` shows only `fail` and cannot separate a wedged runner from a real
+  content failure.
+
+- **#1454 — a vacuous close set collapses every per-issue verdict into one generic
+  line, in the one path that discards its exit code.** Found at the cut, deriving
+  v0.79's close set, and the first version of this finding was itself wrong in the
+  way this release is named for. It said the guards were "off" and fired "NOTHING".
+  A review of the machinery corrected that: the vacuous state is LOUD-RED — `check()`
+  returns a `VACUOUS` failure and `main()` exits 1 either way. The original wording
+  was true per-guard and false about the gate's verdict.
+  What is really lost is the INSTRUCTION. `issue_closure_check` returns on the empty
+  set BEFORE the loop that compares the window's closures against what earlier
+  releases declared, so every per-issue verdict collapses into one remark about
+  artifact hygiene. Measured in that state, closing #1318 — an external reporter's
+  blocker, held open by `RQ-77-FALCON2` — produces no `reopen it`; on the live tree
+  it produces exactly that, by name. R12 independently forbids `issue-scope:
+  outlives` on a non-claiming artifact, with a sound reason: an undelivered
+  artifact's issue stays open anyway. So a release of refutations and partials is
+  forced into that state. And `tag_release.sh:94-95` runs the gate behind `|| echo`, so
+  there the red stops nothing. An earlier draft added "and no CI job runs it on the real
+  artifact tree at all", which is FALSE: `.github/workflows/ci.yml:647` runs
+  `scripts/test_issue_closure_check.py`, and that suite calls `check()` against the LIVE
+  `artifacts/release-v0.70/` — its own comment at `:378` says it is "not frozen". The
+  defensible statement is narrower: no CI job runs the gate FOR THE RELEASE BEING CUT,
+  against that release's own close set; the only invocation that does is the advisory one
+  in `tag_release.sh`. Both checkers are correct alone; the composition is the defect.
+- **RQ-79-ORDEAL said `partial` while its own evidence said LANDED.** Its
+  `verified-by` opens "LANDED", its done-when is met in full, and #1431's ask —
+  upgrade to 0.22.1, re-run cached verdicts — is discharged, with `ordeal-lrat`
+  also at 0.22.1 in the lock. The `disposition: partial` was wrong, and it was
+  load-bearing: it kept the artifact non-claiming, which is what made the close
+  set vacuous. Corrected to `implemented`, so #1431 is the one issue this release
+  authorises closing, and the cross-release guards are live again.
+
+<!-- DERIVED by scripts/release_notes_from_rivet.py from `rivet diff` -->
+<!-- base v0.78.0 · rivet 0.37.0 · do not hand-edit the lists -->
+
+### Artifacts (11 added, 0 removed, 0 modified, 659 unchanged)
+
+- **RQ-79-ARCHMODEL** — Recurring N/A, seventeenth filing: feature-loop steps 1-2 (spar AADL -> WIT) skipped again, blocker still open
+- **RQ-79-FEATURESET2** — The flag-off capability count is DERIVED but not PINNED — so it can grow back silently
+- **RQ-79-FLOATREACH** — Two minimal float reach gaps, bisected — and one wildcard match arm that misdescribes the f64 value it also covers
+- **RQ-79-JESSDIVERGE** — An externally reported SILENT MISCOMPILE: the quaternion integrates correctly, then the rotation sees identity
+- **RQ-79-LADDER** — Re-measure the acceptance ladder — reach has now had no live number for fifteen releases
+- **RQ-79-ORDEAL** — A soundness advisory in the verification ENGINE — bump it, and measure that no verdict moved
+- **RQ-79-PAGESIZE** — No backend reads the declared page size — and the >=32 B scoping asked for is SPEC-INVALID, so the whole capability is (pagesize 1)
+- **RQ-79-PINDEBT7** — The pin-debt figure compares two different denominators, and the re-ask it asks for is already performed on every push
+- **RQ-79-RITUAL2** — tag_release.sh's two known weaknesses are guarded BY HAND every release — commit the guards
+- **RQ-79-VARVE** — varve install refuses the pinned layer on 2 of 5 REPORTED runs — the reporter also locates it in the rollback CHECK, and BOTH halves are unconfirmed: this lane's own fleet data shows nothing flickering
+- **RQ-79-WIDEFILE2** — Root-cause the wide-file sign error, give #1267 the execution oracle it never had, and only THEN extend the ladder
+
+### Trace-graph delta
+
+- errors: **+0 / -0**
+- warnings: **+33 / -0**
+
+> 33 new warning(s), 0 new errors. Listed so the release says whether it improved the trace graph or degraded it — v0.69 shipped 22 unseen (#1337).
+
 ## [0.78.0] - 2026-09-30
 
 ### What does it compile, and what does that code cost?

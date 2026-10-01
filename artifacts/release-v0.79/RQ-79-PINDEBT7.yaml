@@ -3,7 +3,7 @@ artifacts:
     type: system-req
     release: v0.79
     status: proposed
-    title: "The pin-debt ratchet must FALL and has risen 57 with six waivers — the safeguard is being paid off, not honoured"
+    title: "The pin-debt figure compares two different denominators, and the re-ask it asks for is already performed on every push"
     description: >
       RQ-66-PINDEBT pinned `known_open_pins` `direction: down` so that a release ending
       with more suppressions than it began is red, and so that adding a pin is paid for by
@@ -61,14 +61,29 @@ artifacts:
       Nine dict-LITERAL tables contribute 45 entries; ONE DictComp contributes 39 —
       `invalid_accept_1207`'s `KNOWN` is a 13-fixture x 3-backend product whose `DECLINES` set
       holds exactly one cell, so 38 are real false-accepts and 1 is a correct decline. FOUR of
-      the ten declared tables are EMPTY, all four from the original population: their pins
-      were closed. `_pin_table`'s docstring calls each key "one hand-written decision", which
+      the ten declared tables are EMPTY, and THREE of those four are from the original
+      population — not all four, which a cold review showed is arithmetically impossible:
+      the original population has four members and one of them (`selector_parity_197`'s
+      `KNOWN`, 20 entries) is NON-empty, so at most three empties can come from it. The
+      fourth empty table is `i64_result_pair_1189_differential`'s `KNOWN`, which entered
+      the population in v0.66 via RQ-66-WATCHED and is empty because RQ-67-HIGHWORD closed
+      #1240 and deleted its entries. THREE of the four emptied because a fix closed the
+      pins. THE FOURTH DID NOT, and an earlier draft of this sentence said "in every case
+      the pins were closed by fixes", which read an emptied suppression table as progress —
+      inside the artifact whose whole subject is pin-debt honesty.
+      `home_alias_audit_corpus_1189.py:41-43` says it in its own words: the #1222
+      declared-width gate "removed the HIT, not the miscompile — `checkRange` still compares
+      `$to` at R1:R2 ... so #1226 stays OPEN and is simply no longer visible to this audit;
+      no line here can see it". #1226 is OPEN today. `:165-173` adds that "the write that
+      made #1226 visible is gone while the wrong homing remains. A #1226 fix will not flip
+      anything HERE." So one empty table means the defect became INVISIBLE to its oracle,
+      which is the opposite of debt being paid. `_pin_table`'s docstring calls each key "one hand-written decision", which
       is not what it counts for a comprehension — 14 decisions there produce 39 keys, so 84
       entries correspond to roughly 59 decisions. THIS IS NOT GROUNDS TO LOWER THE NUMBER:
       every one of those 38 cells is an observed wrong answer. Quote the figure as OBSERVED
       WRONG ANSWERS, never as hand-written decisions.
 
-      THE TRIPWIRE IS LOCATED AND CLAUDE.md IS ACCURATE — the "could not find it" note this
+      THE TRIPWIRE IS LOCATED AND CLAUDE.md WAS NOT ACCURATE (see `verified-by:`) — the "could not find it" note this
       artifact first carried was a true statement about the WRONG LAYER. It is not code in
       `scripts/claim_check.py`; it is a `count-eq` pin at `claims.yaml:3133`, inside
       `SYNTH-KNOWN-OPEN-PINS-RQ66`:
@@ -78,7 +93,10 @@ artifacts:
       exactly the wrong conclusion. VERIFIED POTENT, three mutations each applied against a
       backup copy: a matching `KNOWN_NEWTHING = { ... }` turns it RED ("count drifted: derived
       13 != documented 12"); `SUPPRESSED_CASES = { ... }` stays GREEN; and
-      `KNOWN_VIA_DICT = dict(...)` stays GREEN. Both documented escapes are REAL, and the
+      `KNOWN_VIA_DICT = dict(...)` stays GREEN. The documentation named THREE escapes, not
+      two, and only ONE of the three is real as described: `dict(...)` genuinely escapes the
+      regex. A dict COMPREHENSION escapes neither layer, and `.update()` escapes neither but
+      is silently counted as ZERO — see `verified-by:`. So "both documented escapes are REAL", and the
       pin's own comment already says so — "NARROW ON PURPOSE, documented so the narrowness is
       a choice and not a blind spot" — naming the review obligation. So the documentation
       describes a mechanism that IS there, and the re-ask is NOT outranked.
@@ -107,9 +125,21 @@ artifacts:
         ONE: the tripwire is LOCATED — a `count-eq` pin at `claims.yaml:3133`, not code in
         `claim_check.py`; the earlier note was true about the wrong LAYER. Shown POTENT by three
         mutations against a backup copy: a matching `KNOWN_*` literal reds ("derived 13 !=
-        documented 12"), while `SUPPRESSED_CASES` and `KNOWN_VIA_DICT = dict(...)` stay green. Both
-        documented escapes are REAL and the pin's own comment already names them as a deliberate
-        narrowness. CLAUDE.md is ACCURATE, so nothing outranks the re-ask.
+        documented 12"), while `SUPPRESSED_CASES` and `KNOWN_VIA_DICT = dict(...)` stay green. The two escapes TESTED
+        are REAL. BUT THE CERTIFICATION WAS WRONG, and a cold review caught it: this lane
+        named THREE escapes and tested two. The third — a dict COMPREHENSION — does NOT
+        escape either layer. `_pin_table` reads a DictComp through `_count_dict_comp`, which
+        RQ-66-PINDEBT added for exactly that purpose, and the tripwire regex matches its
+        opening `= {` like any literal's; all 12 hits were re-derived and
+        `invalid_accept_1207_differential.py:133` is one of them. The counter-example is the
+        LARGEST table in the population: that DictComp contributes 39 of the 84 entries, so
+        the documentation told a reader the biggest table was invisible to both layers when
+        it is visible to both. So CLAUDE.md was NOT accurate, and the false sentence was
+        corrected in CLAUDE.md and in the `claims.yaml` comment above the tripwire, which
+        carried the same error ("requires an `ast.Dict` node"). What remains true is
+        narrower: `dict(...)` and `.update()` genuinely escape both. This outranked nothing
+        — the re-ask still stands — but a lane that certifies documentation must test every
+        claim the documentation makes, not the subset it happened to probe.
         TWO: the "toll booth" reading is REFUTED by the waivers' own text. Four of six record pins
         CLOSED BY FIXES, about 120 in total (RQ-66-BOTHWRONG 77, RQ-67-CALLEESAVE 38/321 cases,
         RQ-67-HIGHWORD 4/26, RQ-74-PINDEBT2 one more). Both rises are labelled measurement
@@ -123,8 +153,26 @@ artifacts:
         COMPOSITION, via the checker's own `_pin_table`/`_top_level_bindings` after a hand-rolled
         walk disagreed three times: nine dict-LITERAL tables give 45 entries, ONE DictComp gives 39
         (13 fixtures x 3 backends, `DECLINES` holding one cell — 38 real false-accepts, 1 correct
-        decline), and FOUR of ten tables are EMPTY, all four from the original population. 84
+        decline), and FOUR of ten tables are EMPTY — THREE from the original population, the fourth
+        (`i64_result_pair_1189_differential`'s `KNOWN`) added in v0.66 by RQ-66-WATCHED; an
+        earlier draft said "all four from the original population", which is impossible
+        because one original member is non-empty. 84
         entries are ~59 hand-written decisions; quote the figure as OBSERVED WRONG ANSWERS.
-        NOT DONE: the attention gap. 28 of 40 open pinned issues were never revisited, nothing
-        committed covers that, and this lane did not close it.
-      done-when: "manual:2026-10-01 the tripwire is LOCATED (claims.yaml:3133, CONFIRMED accurate and shown potent with both documented escapes real); the '84 vs baseline 27' framing is corrected to say the DENOMINATOR moved and that four of six waivers record ~120 pins CLOSED BY FIXES; and the re-ask is reported as what it is — already continuous, because every pin is exact in both directions and its oracle ran green on a named commit — with the REAL gap named instead: 28 of 40 open pinned issues never revisited, which no committed check covers"
+        ALSO DELIVERED BY THIS LANE, and previously missing from this record even though
+        `status_evidence_check.py`'s own comment attributes it here: the release-window
+        recognizer. The window scan walks `--first-parent` from the PR MERGE COMMIT, so a
+        PR's own commits are invisible to it; with no id-leading subject already on main the
+        VACUOUS floor fired on every PR and no PR could fix it. `LANE_SUBJECT` /
+        `lane_artifact_id` now recognize the `v0.79 PAGESIZE lane:` shape in both the R4 and
+        R10 loops, held to the same acknowledgment and attribution demands. It is the only
+        substantive instrument change in v0.79, and it ships with NO committed test and no
+        negative control — `scripts/test_status_evidence_check.py` has no case for either
+        direction — which is a real gap against this repo's own rule that a gate is proven
+        only by being made to go red.
+        NOT DONE: the attention gap. In #1373's own words, measured 2026-09-24 on the
+        v0.72.0 tag and not derivable from this tree, "28 of 40 open issues have not been
+        touched since the day they were filed". An earlier draft wrote "open PINNED issues",
+        which inverts the issue's point — it says the opposite: "28 open issues have NO pin,
+        so the method above says nothing about them". Nothing committed covers the attention
+        gap, and this lane did not close it.
+      done-when: "manual:2026-10-01 the tripwire is LOCATED (claims.yaml:3133) and EVERY claim the documentation makes about it is tested — confirmed where true and CORRECTED where false, the dict-comprehension escape being false while `dict(...)` and `.update()` are real; the '84 vs baseline 27' framing is corrected to say the DENOMINATOR moved and that four of six waivers record ~120 pins CLOSED BY FIXES; and the re-ask is reported as what it is — already continuous, because every pin is exact in both directions and its oracle ran green on a named commit — with the REAL gap named instead: in #1373's own words, 28 of 40 open issues untouched since filing, which no committed check covers"

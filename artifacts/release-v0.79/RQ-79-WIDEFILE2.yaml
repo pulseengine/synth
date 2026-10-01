@@ -40,4 +40,18 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1439"
+      disposition: deferred
+      verified-by: >-
+        NOT DELIVERED — none of the three steps was started, and the order stays fixed. The sign error
+        is NOT root-caused, #1267 still has NO execution differential, and the pool-grow retry was
+        correctly NOT added. v0.78 built that retry, measured a real reach gain, and reverted it because
+        the #1069 execution differential showed the newly-accepted code disagreeing with wasmtime in
+        exactly the sign bit on every negative input (#1439). So the obvious extension of the recovery
+        ladder remains blocked on a CORRECTNESS defect in the wide-file path — the only rung with
+        encoding tests and no execution oracle. Adding the retry first would convert loud declines into
+        possibly-wrong code, which is "accept more and check less". TWO FIGURES RECORDED SO THEY ARE NOT
+        INFLATED LATER: the reach on offer is SIX locals (the wall moves 60 -> 66), not twelve — an
+        earlier draft promoted an untested docstring figure of 72 into a headline and a cold review
+        caught it; and on the external reporter's module that rung is reached TWICE and rescues neither
+        call. THE EXTERNAL RESIDUAL DID NOT MOVE, and this release does not claim it did.
       done-when: "manual:2026-10-01 the sign error is ROOT-CAUSED with the mechanism named, #1267 has an EXECUTION differential in scripts/repro/ wired in ci.yml, and the retry lands only after both — or the lane reports which step it stopped at and why"
