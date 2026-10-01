@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: compiles >= 18
+# ci-checks: compiles >= 20
 """RQ-79-PAGESIZE (#1441) — the oracle that must land BEFORE `(pagesize 1)` is honoured.
 
 WHY THIS EXISTS, AND WHY IT LANDS FIRST. #1315 closed by REFUSING a declared
@@ -72,7 +72,7 @@ INVALID_WAST = SUITE / "custom-page-sizes-invalid.wast"
 # otherwise leave every loop below iterating over nothing.
 MIN_INVALID = 14
 MIN_LEGAL = 2
-MIN_ASSERTIONS = 29
+MIN_ASSERTIONS = 28
 
 PMSA_MIN_REGION = 32  # ARMv7-M PMSA: a region is a power of two >= 32 bytes.
 DEFAULT_PAGE = 65536  # named once: a diagnostic that restates its own expected
@@ -194,13 +194,19 @@ def two_memory_wat(pagesize: int | None, pages: int) -> str:
     )
 
 
-def assemble(tmp: Path, name: str, wat: str) -> Path | None:
+def write_wat(tmp: Path, name: str, wat: str) -> Path:
+    """Write the module as .wat and hand it STRAIGHT to synth.
+
+    Deliberately NOT via `wasm-tools parse`: that binary is absent on the CI
+    runner (measured — the first wired run died with
+    `FileNotFoundError: 'wasm-tools'`, the local-env-is-not-CI class), while
+    synth parses WAT itself. Removing the dependency also removes a second
+    opinion about which modules are well-formed: synth's own parse-or-refuse IS
+    the verdict this oracle is about.
+    """
     w = tmp / f"{name}.wat"
     w.write_text(wat)
-    out = tmp / f"{name}.wasm"
-    p = subprocess.run(["wasm-tools", "parse", str(w), "-o", str(out)],
-                       capture_output=True, text=True)
-    return out if p.returncode == 0 and out.is_file() else None
+    return w
 
 
 def compile_arm(binary: Path, wasm: Path, obj: Path) -> subprocess.CompletedProcess:
@@ -247,27 +253,25 @@ def main() -> int:
         # ── spec-INVALID sizes: synth must refuse every one ──────────────────
         refused_invalid = 0
         for sz in sorted(invalid):
-            w = assemble(tmp, f"inv{sz}", two_memory_wat(sz, 1))
-            if w is None:
-                # The assembler rejects some malformed forms outright; those
-                # never reach synth and are not evidence about synth.
-                continue
+            w = write_wat(tmp, f"inv{sz}", two_memory_wat(sz, 1))
             p = compile_arm(binary, w, tmp / f"inv{sz}.o")
+            # Every size reaches synth now, so a refusal is synth's OWN verdict —
+            # whether it declines at the parser or at the page-size check, both
+            # are rc != 0 and both are "synth did not accept spec-invalid input".
             check(p.returncode != 0,
                   f"synth ACCEPTED (pagesize {sz}), which the shipped spec suite "
                   f"asserts invalid — accepting input the spec rejects is worse "
                   f"than refusing input it permits")
             refused_invalid += 1
         check(refused_invalid >= MIN_INVALID,
-              f"only {refused_invalid} spec-invalid sizes actually reached synth "
-              f"(want >= {MIN_INVALID}); the rest were dropped by the assembler, "
-              f"so this leg measured almost nothing")
-        print(f"spec-invalid: {refused_invalid} sizes reached synth, all refused")
+              f"only {refused_invalid} spec-invalid sizes were tested "
+              f"(want >= {MIN_INVALID}) — the derived population thinned, so this "
+              f"leg measured almost nothing")
+        print(f"spec-invalid: {refused_invalid} sizes tested, all refused by synth")
 
         # ── the default page size, declared and undeclared: accepted ─────────
         for name, ps in (("explicit65536", 65536), ("undeclared", None)):
-            w = assemble(tmp, name, two_memory_wat(ps, 1))
-            check(w is not None, f"{name} failed to assemble")
+            w = write_wat(tmp, name, two_memory_wat(ps, 1))
             obj = tmp / f"{name}.o"
             p = compile_arm(binary, w, obj)
             check(p.returncode == 0,
@@ -291,9 +295,7 @@ def main() -> int:
 
         # ── `(pagesize 1)`: the capability. Mode is DERIVED, not switched ────
         PAGES = 20000
-        w = assemble(tmp, "ps1", two_memory_wat(1, PAGES))
-        check(w is not None, "(pagesize 1) failed to assemble — it is SPEC-LEGAL, "
-                             "so a wasm-tools that rejects it is the finding")
+        w = write_wat(tmp, "ps1", two_memory_wat(1, PAGES))
         obj = tmp / "ps1.o"
         p = compile_arm(binary, w, obj)
 
