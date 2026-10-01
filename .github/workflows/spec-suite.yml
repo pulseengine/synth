@@ -68,6 +68,14 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
+      # pyelftools for the declared-page-size oracle below: it reads the #1145
+      # region table from the SYMTAB (never from disasm text, #850/#489). This
+      # workflow had NO pip step at all, so the oracle's first two wired runs
+      # died on absent tooling — `wasm-tools` (removed as a dependency) and then
+      # `elftools`. Same form as ci.yml's oracle jobs; the
+      # `--break-system-packages` fallback is load-bearing on newer runners.
+      - name: Python deps for the page-size oracle
+        run: pip install pyelftools || pip install --break-system-packages pyelftools
       - name: Single-module .wast == its module alone, byte for byte (#1225)
         run: |
           set -euo pipefail

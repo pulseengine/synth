@@ -86,6 +86,33 @@ def fail(msg: str) -> "None":
     sys.exit(1)
 
 
+def preflight() -> None:
+    """Name EVERY external dependency up front, before any work.
+
+    Written because this oracle's first two wired runs each died on a different
+    absent dependency, one CI round-trip apiece: `wasm-tools` (since removed --
+    synth parses WAT itself) and then `elftools`, which is imported DEFERRED
+    inside mem_symbols() and so was invisible to a top-level import scan. The
+    environment a thing runs in is part of its contract, and checking
+    preconditions one-at-a-time against a failure is debugging, not auditing.
+
+    Every dependency therefore gets named here, where a miss is one clear line
+    instead of a traceback from the middle of a run.
+    """
+    missing = []
+    try:
+        import elftools.elf.elffile  # noqa: F401
+    except ImportError:
+        missing.append("pyelftools (python module `elftools`) — reads the #1145 "
+                       "region table from the SYMTAB; `pip install pyelftools`")
+    if not SUITE.is_dir():
+        missing.append(f"{SUITE.relative_to(ROOT)} — the spec suite is a SUBMODULE; "
+                       f"only a checkout with `submodules: recursive` has it")
+    if missing:
+        fail("missing dependencies, named up front rather than hit mid-run:\n  - "
+             + "\n  - ".join(missing))
+
+
 def _strip_negative_assertions(text: str) -> tuple[str, str]:
     """Split a .wast into (positive, negative) by removing whole
     `(assert_malformed ...)` / `(assert_invalid ...)` forms by PAREN BALANCE.
@@ -242,6 +269,7 @@ def roundup_pow2_min32(n: int) -> int:
 
 
 def main() -> int:
+    preflight()
     legal, invalid = spec_sets()
     binary = synth_bin()
     print(f"spec suite: {len(legal)} legal {sorted(legal)}, "
