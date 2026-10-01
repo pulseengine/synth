@@ -42,7 +42,26 @@ synth-synthesis = { path = "../synth-synthesis", version = "0.78.0", optional = 
 # CHANGELOG-called-out) and adds opt-in `cadical`/`cert-bundle` features
 # (unused here); 0.18 is benches/BMC corpus + internal solver split, with the
 # core certified solve path unchanged (verified by this repo's #997 lane).
-ordeal = "=0.19.0"
+# 0.22.1 is a SOUNDNESS fix, not a feature bump (GHSA-xfxf-qxr3-435x /
+# ordeal#182, synth#1431). Every release 0.2.0..=0.22.0 bit-blasted `bvshl`,
+# `bvlshr`, `bvashr` and rotations with too few barrel-shifter stages when the
+# operand width is NOT a power of two (3, 5, 12, 24, 48, ...). Affected queries
+# could return `Unsat` WITH A CERTIFICATE THAT RE-CHECKS, because the LRAT
+# checker certifies the CNF it was handed and the CNF was the wrong encoding --
+# a verification outage that looks exactly like a verification success. The
+# encoding is byte-identical at widths 1, 2, 4, 8, 16, 32, 64, 128.
+#
+# SYNTH'S AFFECTEDNESS, measured rather than assumed: every shift/rotate site in
+# synth-verify operates on 32- or 64-bit values (ARM register semantics, WASM
+# i32/i64), both powers of two. Non-power-of-two widths DO occur -- 11, 23, 31,
+# 52, 63 -- but only as `extract` results and equality constants in IEEE-754
+# field classification (f64 exponent 11 / mantissa 52, f32 mantissa 23,
+# sign-excluded 31 and 63), never as a shift or rotate operand. The bump is
+# therefore expected to leave every verdict unchanged, and THAT IS THE TEST:
+# the encoding is byte-identical at power-of-two widths, so unchanged verdicts
+# are evidence of non-affectedness and ANY changed verdict is the finding.
+# Reasoning alone would not have settled it.
+ordeal = "=0.22.1"
 
 # Z3: optional differential oracle (feature `z3-solver`) — no longer default.
 # Default features only (NO `static-link-z3`/`bundled`): z3-sys links the
