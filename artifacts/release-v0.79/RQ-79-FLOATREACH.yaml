@@ -3,7 +3,7 @@ artifacts:
     type: system-req
     release: v0.79
     status: proposed
-    title: "Two minimal float reach gaps, bisected — and one wildcard match arm that misdescribes both"
+    title: "Two minimal float reach gaps, bisected — and one wildcard match arm that misdescribes the f64 value it also covers"
     description: >
       The theme pins reach as a FLOOR that must RISE. These are the two smallest, best-bounded
       increments available, both found by bisection while hunting #1436, both filed with
@@ -20,8 +20,9 @@ artifacts:
       compile, not an exotic corner.
 
       #1447 — A FLOAT-TYPED `if`-RESULT IS CATEGORICALLY UNREACHABLE. `(if (result f32))` with
-      ZERO parameters and two constant arms declines on every FPU-bearing Cortex-M target
-      (m4f, m7, m7dp), relocatable and self-contained alike. `(if (result i32))` and
+      ZERO parameters and two constant arms declines on all THREE FPU-bearing Cortex-M targets it was
+      measured on (m4f, m7, m7dp) — not "every", because `has_single_precision_fpu` is
+      `M4F | M7 | M7DP | M55` and `cortex-m55` was never tried — relocatable and self-contained alike. `(if (result i32))` and
       `(if (result i64))` at the identical shape COMPILE, and `-b aarch64` COMPILES it. The
       message says "function too complex" about a zero-parameter two-constant function.
 
@@ -30,10 +31,16 @@ artifacts:
       `FloatSpilled | DoubleSpilled` BY NAME, with an accurate `#881` missed-reload-site
       message — and then falls through to a WILDCARD `Some(_)` whose message asserts "the
       stack top was an integer value — invalid wasm or an unlowered mixed int/float
-      sequence". `StackVal` also has `Reg`, `Spilled` and `Double` (an f64 in a D-register),
-      so the wildcard fires on values that are not integers. BOTH HALVES WERE DEMONSTRATED
-      FALSE AT ONCE: the two-float-locals loop with an `f32.gt` exit condition contains no
-      integer anywhere and still produces that message, and it validates under
+      sequence". The wildcard covers `Reg`, `Spilled` and `Double`, and a cold review
+      narrowed this correctly: `Reg` and `Spilled` ARE the integer variants by their own doc
+      comments, so the message is ACCURATE for two of the three. The conclusion rests on
+      `Double` alone (an f64 in a D-register), for which "an integer value" is simply wrong.
+      THE EMPIRICAL HALF IS WITHDRAWN: the witness offered was a two-float-locals loop with
+      an `f32.gt` exit condition, called a module containing "no integer anywhere". It is
+      not — `f32.gt` YIELDS an i32 and `br_if` consumes one — and in a module with no f64
+      values `Double` cannot be on the stack, leaving exactly the two variants for which the
+      message is right. So that witness is the worst available one for this claim. What
+      stands is the static argument via `Double`. The module does validate under
       `--features all`. One arm is matched by name and tells the truth; its neighbour guesses.
       This repo already records the no-wildcard-arm concern for #615's silent-NOP class.
 
@@ -65,5 +72,35 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1448"
+      disposition: partial
+      landed: "#1449"
       verification-track: manual
+      verified-by: >-
+        PARTIAL, and the part delivered is the bisection, not the fix. BOTH BOUNDARIES ARE RECORDED
+        WITH MINIMAL REPRODUCERS AND FILED: #1447, a float `if`-result is categorically unreachable —
+        it declines at minimum pressure — zero parameters, two constant arms — so
+        PRESSURE is not what triggers it. Stated carefully, because synth's own sub-message
+        for this shape does name the allocator: "if/else result reconciliation with a spilled
+        arm result is not supported by the current register allocator (#313)". The claim is
+        that the shape is categorically unreachable rather than pressure-dependent, NOT that
+        the allocator is uninvolved; and #1448, two or
+        more float locals mutated inside a loop decline on Cortex-M while one does not. Each carries
+        its must-compile control beside its must-decline case, so neither is a one-sided observation.
+        NOT DELIVERED: the wildcard `Some(_)` arm in `pop_float` (`crates/synth-synthesis/src/
+        instruction_selector.rs:3216`) still asserts "an integer value — invalid wasm" for `Reg`,
+        `Spilled` AND `Double`. It misdescribes the #1448 boundary, NOT both:
+        a cold review established that #1447 declines at a DIFFERENT site,
+        `instruction_selector.rs:1398` ("if/else result reconciliation with a spilled arm
+        result ... (#313) — function too complex"), and never reaches `pop_float`. The arm
+        is also accurate for `Reg` and `Spilled`, which ARE the integer variants; only
+        `Double` makes its message wrong. AND THE NARROWING'S PREMISE IS AN INFERENCE, NOT A MEASUREMENT, which a cold
+        review flagged and this artifact should not present as settled: "`Reg` and `Spilled`
+        are integer entries" is read off their DOC COMMENTS. #1448 is precisely a case where
+        f32 lowering is broken, so an f32 value sitting in a `Reg` entry would make the
+        message accurate-by-accident rather than accurate-by-construction, and the narrowing
+        would have over-corrected. Settling it needs the variant inspected at the decline,
+        which was not done. The message and would mislead the next
+        reader to a type error rather than a reach limit. The arm was not corrected and no test pins
+        its message. So the lane converted two unknowns into two filed, bisected defects and changed
+        no emitted code and no diagnostic.
       done-when: "manual:2026-10-01 both boundaries are recorded with their bisection AND their must-compile/must-decline controls; the wildcard `Some(_)` arm in pop_float names the actual StackVal variant instead of asserting 'an integer value'; and any ACCEPTANCE of a previously-declined shape lands only behind an EXECUTION differential over the newly-accepted modules — or the lane reports plainly that it measured the gaps and did not widen reach"

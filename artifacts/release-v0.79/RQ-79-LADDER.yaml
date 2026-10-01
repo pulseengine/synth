@@ -12,7 +12,10 @@ artifacts:
       MEASUREMENT half as blocked. The ladder still reads "v0.63", measured 2026-09-06 at
       `e3a09ac2`.
 
-      WHY IT MATTERS MORE THIS RELEASE, not less. v0.79's headline lane is PAGESIZE, a
+      WHY IT MATTERS MORE THIS RELEASE, not less. (This sentence was written in the
+      planning PR and is superseded: on 2026-10-01 the maintainer promoted #1436 to the
+      headline over PAGESIZE, because an external silent miscompile outranks a capability
+      gain. The reach argument below is unaffected.) v0.79's capability lane is PAGESIZE, a
       reach increment. The theme pins reach as a FLOOR that must RISE — and a floor cannot
       be pinned against a denominator measured on a tree now fifteen releases old. v0.78
       declined to pin the reach floor FOR THAT REASON and said so; repeating the decline
@@ -51,5 +54,18 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1432"
+      disposition: deferred
       verification-track: manual
+      verified-by: >-
+        NOT DELIVERED, and the blocker is unchanged from v0.78. Reach has now had no live number for
+        FIFTEEN releases: `docs/status/ACCEPTANCE_LADDER.md` still reads v0.63, measured 2026-09-06 at
+        `e3a09ac2`. The 243-module corpus is UNMOUNTED, not lost — last known at
+        `/Volumes/Work/corpora/wasm-243`; `mac.fritz.box` resolves and answers on port 22 but returns
+        `Permission denied (publickey,password,keyboard-interactive)`, and attempting passwords stayed
+        DECLINED. The human action that would unblock it is mounting that volume or granting key auth
+        on that host; nothing in this repo can. THE REACH FLOOR IS THEREFORE DELIBERATELY NOT PINNED,
+        and saying so is the point rather than an omission: pinning a floor from the v0.63 figures
+        would pin a number measured on a tree fifteen releases old, and pinning the cost CEILING alone
+        is exactly the alternating the theme forbids — it would let a release buy cost wins with reach
+        losses and stay green. So neither half of the pair is pinned for the second release running.
       done-when: "manual:2026-10-01 the ladder is re-measured by the COMMITTED tool on the shipping tree carrying its own date and commit AND the reach floor is pinned as a `direction: up` ratchet — or the lane reports reach as having no live number, names the specific human action that would unblock it, and says why the floor stays unpinned"

@@ -3,7 +3,7 @@ artifacts:
     type: system-req
     release: v0.79
     status: proposed
-    title: "varve install refuses the pinned layer on 2 of 5 runs — the intermittency is in the rollback CHECK, not the pin"
+    title: "varve install refuses the pinned layer on 2 of 5 REPORTED runs — the reporter also locates it in the rollback CHECK, and BOTH halves are unconfirmed: this lane's own fleet data shows nothing flickering"
     description: >
       Step 0 of the feature loop resolves every tool through a pinned varve layer, so that
       no release is built by a toolchain mixture no single layer ever produced. `varve.toml`
@@ -47,5 +47,18 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1422"
+      disposition: deferred
       verification-track: manual
+      verified-by: >-
+        NOT DELIVERED, and deliberately not acted on. The maintainer's recorded non-action of
+        2026-09-30 stands and was not revisited: do NOT set `VARVE_ROOT`, do NOT bump the pin, do NOT
+        clear a runner cache, do NOT route around the failing runners. The intermittency was NOT
+        reproduced at this cut with a stated run count sufficient to distinguish 2-in-5 from noise, and
+        no such run was attempted here, so this lane contributes no new measurement. The reason it is
+        correct to leave alone is already derived and unchanged: across the 12-runner fleet there are
+        FOUR answers for the `2026.09` line — 4 runners with no high-water file at all (the check is
+        already vacuous there), 4 at hwm 3 (pass 100%), 3 at hwm 4 (fail 100%), 1 at hwm 13 — so across
+        29 runs nothing FLICKERS, and a per-job `VARVE_ROOT` would make every run first contact, which
+        is silencing the alarm by blinding the detector. The open question is UPSTREAM and not synth's:
+        what is the `2026.09` line's authoritative counter.
       done-when: "manual:2026-10-01 the intermittency is reproduced with a stated run count sufficient to distinguish 2-in-5 from noise, or reported as not-reproducible-at-this-cut WITH the run count said — and the rollback-check hypothesis is confirmed or refuted upstream with the captured message and layer digest"

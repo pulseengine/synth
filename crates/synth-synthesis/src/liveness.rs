@@ -5790,7 +5790,7 @@ pub fn validate_final_allocation_in_areas_with_vfp_homes(
         let mut slots: BTreeMap<i32, SlotState> = BTreeMap::new();
         while i < instrs.len() && is_straight_line(&instrs[i].op) {
             match &instrs[i].op {
-                Str { addr, .. } if sp_slot(addr).is_some_and(&policed) => {
+                Str { addr, .. } if sp_slot(addr).is_some_and(policed) => {
                     let slot = sp_slot(addr).unwrap();
                     // Shadow only when the slot's current owner holds a value that
                     // has NOT yet been reloaded (still live). Overwriting an
@@ -9611,14 +9611,14 @@ fn spill_rechoice_segment(
                 pair.rd,
                 c.is_some(),
                 c.as_ref()
-                    .map(|c| segment_value_trace(c).map(&strip).as_ref() == Some(&baseline)),
+                    .map(|c| segment_value_trace(c).map(strip).as_ref() == Some(&baseline)),
                 c.as_ref().map(|c| pool_peak_pressure(c)),
             );
         }
         if let Some(candidate) = candidate
             // Guard (a), per pair: value flow provably unchanged (modulo
             // exit-dead registers' unobservable exit values, above).
-            && segment_value_trace(&candidate).map(&strip).as_ref() == Some(&baseline)
+            && segment_value_trace(&candidate).map(strip).as_ref() == Some(&baseline)
             // Post-exhaustion: guard (c) PER PAIR — one over-pressure pair
             // must not discard every other pair's sound dissolve (the final
             // all-or-nothing check below would).

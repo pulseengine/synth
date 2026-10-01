@@ -11,11 +11,16 @@ artifacts:
       (model the architecture in spar, GENERATE the WIT from it) have now been skipped for
       SEVENTEEN consecutive releases.
 
-      THE ORDINAL IS DERIVED, NOT COUNTED BY HAND: `ls
-      artifacts/release-v*/RQ-*ARCHMODEL*.yaml | wc -l` returns 16, spanning v0.63 through
-      v0.78 inclusive with no gaps, so this is the seventeenth. The derivation is written
-      here because an ordinal asserted from memory is the kind of number this project has
-      had to correct.
+      THE ORDINAL IS DERIVED, NOT COUNTED BY HAND, AND THE DERIVATION IS STATED WITH THE
+      COMMIT IT IS TRUE AT, because the first version of this sentence was itself wrong.
+      It said `ls artifacts/release-v*/RQ-*ARCHMODEL*.yaml | wc -l` "returns 16". That was
+      true only before THIS artifact's own file existed; run at any commit that contains
+      it, the same command returns 17. The reproducible form: there are 16 PRIOR filings,
+      v0.63 through v0.78 inclusive with no gaps, so this is the SEVENTEENTH, and the
+      command returns 17 at this commit. The derivation is written here because an ordinal
+      asserted from memory is the kind of number this project has had to correct — and the
+      correction needed was the repo's own "a number is invalidated by the edit that
+      writes it", landing on the sentence that exists to prevent it.
 
       THE BLOCKER IS STILL OPEN AND WAS RE-CHECKED AT THIS CUT, state before body:
       **pulseengine/spar#445 is OPEN** — "spar accepts property associations from

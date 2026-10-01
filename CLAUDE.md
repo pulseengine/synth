@@ -263,10 +263,18 @@ ever-growing pile of locally-correct patches.**
 > pins (a loud refusal is reach, not silent wrongness) and the ci.yml
 > `# ci-checks:` floors; the population itself is pinned, so a new
 > `KNOWN*`/`PINNED*` table must be listed or excluded, never unnoticed — that
-> tripwire sees only a top-level `NAME = { ... }` dict LITERAL (matching what
-> `_pin_table` itself can read without running the oracle); a table built via
-> `dict(...)`, a comprehension, or `.update()` calls would slip past both and
-> is a review-time obligation, not a caught one. **It is also scoped BY NAME**
+> tripwire matches a top-level `NAME = {` opening — which is NOT the same as "only a
+> dict LITERAL", and an earlier version of this paragraph said that and was wrong in a
+> way a lane then certified as accurate. MEASURED, at the v0.79 cut: a dict
+> COMPREHENSION matches the regex like any literal AND is read by `_pin_table` through
+> `_count_dict_comp`, and the live counter-example is the LARGEST table in the
+> population (`invalid_accept_1207_differential.py:133`, 39 of the 84 entries) — so it
+> escapes neither layer. The escapes that are real are narrower and differently
+> shaped: `NAME = dict(...)` has no `= {`, so the regex misses it; `NAME = {}` followed
+> by `.update()` calls DOES match the regex and IS read by `_pin_table`, which returns
+> **0** without raising — a silent UNDERCOUNT rather than an escape, and strictly worse,
+> because the table sits inside the pinned population contributing nothing. Both remain
+> a review-time obligation, not a caught one. **It is also scoped BY NAME**
 > (`^(?:KNOWN|PINNED)[A-Z0-9_]*`), so a suppression table called anything else
 > — `SUPPRESSED_CASES`, say — escapes the tripwire AND the ratchet entirely.
 > Demonstrated in the v0.73 round-2 gate review: a byte-identical table under a

@@ -48,5 +48,14 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1437"
+      disposition: deferred
       verification-track: manual
+      verified-by: >-
+        NOT DELIVERED. The census (`scripts/shipped_feature_census.py`) ships and is wired into Claim
+        Check on both axes, but its figures are still unpinned, so the flag-off capability count can
+        grow back silently — which is the whole of what this lane was for. No ceiling was added to
+        claims.yaml and no disposition was written for any of the four capabilities. Deferred to v0.80
+        with nothing measured here. One correction worth carrying so it is not re-derived wrongly: the
+        issue's TITLE says five capabilities and the census derives FOUR — `SYNTH_SHADOW_ALLOC` is
+        measure-only. Take 4 from the census, never 5 from the title.
       done-when: "manual:2026-10-01 the flag-off capability count is pinned in claims.yaml as a slack-free ceiling with `direction: down` and the pin is shown POTENT by moving it, and each of the four capabilities carries a written disposition — shipped, or held with the evidence that would flip it named"

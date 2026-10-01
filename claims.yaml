@@ -3123,11 +3123,22 @@ claims:
       # known-open list must be added to the population or written into the
       # exclusion list, and this count moves either way. NARROW ON PURPOSE,
       # documented so the narrowness is a choice and not a blind spot: the
-      # pattern sees only a `NAME = { ... }` / `NAME: T = { ... }` literal —
-      # a table built via `dict(...)`, a dict comprehension, or assembled by
-      # `.update()` calls would slip past this tripwire (and past `_pin_table`
-      # itself, which requires an `ast.Dict` node). Every table in the
-      # population today is a literal; a future oracle choosing another shape
+      # pattern sees a `NAME = { ... }` / `NAME: T = { ... }` opening brace.
+      # CORRECTED at the v0.79 cut, because the previous wording here was FALSE and
+      # was certified accurate by a lane that tested only two of the three escapes
+      # it named. A DICT COMPREHENSION does NOT slip past either half: the regex
+      # matches its opening `= {` like any other, and `_pin_table` reads it via
+      # `_count_dict_comp` (RQ-66-PINDEBT's own extension). The live counter-example
+      # is the LARGEST table in the population — `invalid_accept_1207_differential
+      # .py:133 KNOWN` is a DictComp contributing 39 of the 84 counted entries, so a
+      # reader who believed this comment would have thought the biggest table was
+      # invisible to both. THE TWO REMAINING ESCAPES ARE NOT THE SAME SHAPE, and the
+      # first version of this correction got the second one wrong too, so it is
+      # measured here rather than reasoned: `NAME = dict(...)` has no `= {`, so the
+      # regex misses it entirely. `NAME = {}` followed by `.update()` calls DOES match
+      # the regex, and `_pin_table` DOES read it — returning 0 without raising. That is
+      # a SILENT UNDERCOUNT, not an escape, and it is worse: the table is inside the
+      # pinned population, counts toward this `expect:`, and contributes nothing. Both
       # must be caught at review, not by this pattern.
       - kind: count-eq
         pattern: '^(?:KNOWN|PINNED)[A-Z0-9_]*\s*(?::[^=\n]*)?=\s*\{'

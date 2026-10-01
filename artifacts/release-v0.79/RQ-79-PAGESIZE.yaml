@@ -3,7 +3,7 @@ artifacts:
     type: system-req
     release: v0.79
     status: proposed
-    title: "No backend reads the declared page size, so a per-domain tenant costs 64 KiB minimum — and a named board cannot hold two"
+    title: "No backend reads the declared page size — and the >=32 B scoping asked for is SPEC-INVALID, so the whole capability is (pagesize 1)"
     description: >
       synth REFUSES `(pagesize N)` and the refusal is correct and well-worded; it is not
       to be reverted. But it closed by making a silent wrong answer loud, not by
