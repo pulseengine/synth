@@ -1,0 +1,55 @@
+artifacts:
+  - id: RQ-79-RITUAL2
+    type: system-req
+    release: v0.79
+    status: proposed
+    title: "tag_release.sh's two known weaknesses are guarded BY HAND every release — commit the guards"
+    description: >
+      v0.78 gave `merge_ritual.sh` a bounded wait that prints TIMEOUT instead of hanging,
+      plus `scripts/test_merge_ritual.py` (11 assertions, wired into Claim Check) which
+      extracts the SHIPPED loop and runs it against a stub `gh`. That closed the merge
+      half. The TAG half is still carried in an operator's head, and that is the defect.
+
+      TWO WEAKNESSES, guarded by hand at every tag for many releases:
+
+      W1 — `git fetch -q origin main` at `scripts/tag_release.sh:21` has its return code
+      UNCHECKED. A fetch that fails leaves the script comparing against a STALE
+      `origin/main`, so every downstream "HEAD == origin/main" assertion is true about the
+      wrong tree. This is precisely the class this project has recorded as "a green that is
+      TRUE about the WRONG SUBJECT", and it is in the release script.
+
+      W2 — THE TAG IS CREATED BEFORE THE G1-G4 DECISION (`:28`-`:72`). The gates compute
+      `G1`/`G2`/`G3`/`G4` and only then decide, so a REFUSAL leaves the tag object sitting
+      there. The hand remedy is to delete it GATED ON `git ls-remote --tags origin` rather
+      than on a return code — because a local tag that was never pushed and a pushed tag
+      are different situations with the same rc, and deleting on rc alone can remove a tag
+      that is already public.
+
+      THE FIX IS NOT "BE CAREFUL": it is to move the tag creation AFTER the gate decision
+      and to check the fetch, with a test in `test_merge_ritual.py`'s shape — extract the
+      shipped code, run it against a stub, and assert the REFUSAL path leaves no tag. A
+      weakness documented in a brief is a weakness that survives the brief.
+
+      THIRD ITEM, SMALL AND MEASURED THIS RELEASE. `loop_conformance_check.py:356` reads a
+      DECLARED `Commit reviewed: <sha>` line from the cold-review record and demotes its
+      hex-token harvest to a FALLBACK (`:365`) — the fix that closed #1161 in v0.63. The
+      v0.78 record spells its header `**Release commit: ...**`, which does NOT match that
+      regex, so step 7 silently took the weaker fallback path. Nothing was wrong with the
+      v0.78 record's CONTENT; the gate just certified it by the weaker route. v0.79's
+      record writes `Commit reviewed:` verbatim.
+
+      REFUTING COMMAND: `grep -n 'git fetch' scripts/tag_release.sh` and check for an `rc`
+      test on the following line, and confirm `git tag` still precedes the `G1..G4`
+      decision. If either has been fixed, drop that half rather than re-describing it.
+    tags:
+      - process
+      - quality
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1440"
+      verification-track: manual
+      done-when: "manual:2026-10-01 tag_release.sh checks the fetch rc and creates the tag only AFTER the G1-G4 decision, a test in test_merge_ritual.py's extract-and-stub shape asserts the REFUSAL path leaves NO tag, and the v0.79 cold-review record carries a verbatim `Commit reviewed:` line so step 7 uses the declared path and not the harvest fallback"

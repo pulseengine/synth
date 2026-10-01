@@ -1,0 +1,51 @@
+artifacts:
+  - id: RQ-79-VARVE
+    type: system-req
+    release: v0.79
+    status: proposed
+    title: "varve install refuses the pinned layer on 2 of 5 runs — the intermittency is in the rollback CHECK, not the pin"
+    description: >
+      Step 0 of the feature loop resolves every tool through a pinned varve layer, so that
+      no release is built by a toolchain mixture no single layer ever produced. `varve.toml`
+      pins `realm = "pulseengine"`, `channel = "rolling"`, `layer = "2026.09.2"`.
+
+      THE DEFECT, as reported: `varve install` refuses the pinned layer on 2 of 5 runs with
+      an IDENTICAL message and an UNMODIFIED pin. Identical message plus unmodified input
+      plus non-deterministic outcome is the signature of a check reading state that is not
+      the pin — and the reporter located it in the ROLLBACK check rather than in resolution.
+      That matters for scoping: a flaky install is an annoyance, but a rollback check that
+      intermittently refuses a layer it earlier accepted is a check whose verdict is not a
+      function of its subject, and a toolchain gate with that property can also pass when
+      it should refuse. The failing direction is the loud one; the silent direction is what
+      makes this worth a `must`-adjacent look rather than a retry loop.
+
+      TWO THINGS NOT TO DO, recorded so they are not re-litigated. Do not work around it by
+      bypassing varve — the refusal outside a pinned project is the FEATURE (a shim exits 1
+      rather than falling back to an ambient binary), and routing around it is how the
+      mixed-toolchain hazard comes back. And do not reach for `VARVE_TRUST_ROOT`: the realm
+      is authoritative and cannot be overridden by the ambient environment, which is exactly
+      why it is preferred over the env var.
+
+      THE DELIVERABLE FOR SYNTH IS NARROW AND HONEST, because the defect is not in this
+      repo: reproduce the intermittency with a run count that can distinguish 2-in-5 from
+      noise, capture the identical message and the layer digest on both outcomes, and report
+      it upstream with that evidence. If synth cannot reproduce it at this cut, that is the
+      report — `report-tool-friction` exists so the next release does not re-hit a
+      workaround nobody wrote down.
+
+      REFUTING COMMAND: run `varve install` five times and record the outcomes with `varve
+      which synth` beside each. A clean 5-of-5 does not refute a 2-in-5 intermittency, so
+      say the run count rather than concluding from one pass — a rate read off a single
+      instant is not a property of the pool.
+    tags:
+      - process
+      - quality
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1422"
+      verification-track: manual
+      done-when: "manual:2026-10-01 the intermittency is reproduced with a stated run count sufficient to distinguish 2-in-5 from noise, or reported as not-reproducible-at-this-cut WITH the run count said — and the rollback-check hypothesis is confirmed or refuted upstream with the captured message and layer digest"

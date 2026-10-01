@@ -1,0 +1,18 @@
+# v0.79 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS by rule. Every number about this release lives
+# in the artifacts that derive it, or in the CHANGELOG at the cut. A figure here
+# would be a second copy with no derivation behind it, which is how v0.74's
+# "first reduction" falsehood survived in four places at once.
+#
+# THEME — "Reach you can trust", continuing v0.78 rather than restarting.
+#
+# v0.78 established the pair (reach FLOOR / cost CEILING) and pinned NEITHER, for
+# reasons it recorded: the ladder corpus is on an unmounted volume, and pinning a
+# lone ceiling is the alternating the theme forbids. v0.79 inherits both, and the
+# reach half now has a named downstream consumer blocked on a specific board.
+#
+# WHAT CHANGED THE SHAPE OF THE REACH WORK. v0.78 found the recovery ladder's last
+# rung has no pool-grow retry, BUILT the retry, measured a real gain, and REVERTED
+# it because the execution oracle showed sign-wrong code. So the order is fixed and
+# is not negotiable: root-cause, then the missing execution oracle, THEN the rung.

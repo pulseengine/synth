@@ -1,0 +1,51 @@
+artifacts:
+  - id: RQ-79-ARCHMODEL
+    type: system-req
+    release: v0.79
+    status: proposed
+    title: "Recurring N/A, seventeenth filing: feature-loop steps 1-2 (spar AADL -> WIT) skipped again, blocker still open"
+    description: >
+      The feature loop's rule on itself: if a conditional step is marked N/A for the same
+      reason THREE features running, file it — that pattern is how a real MC/DC gap and a
+      missing attestation chain stayed hidden across roughly twenty features. Steps 1-2
+      (model the architecture in spar, GENERATE the WIT from it) have now been skipped for
+      SEVENTEEN consecutive releases.
+
+      THE ORDINAL IS DERIVED, NOT COUNTED BY HAND: `ls
+      artifacts/release-v*/RQ-*ARCHMODEL*.yaml | wc -l` returns 16, spanning v0.63 through
+      v0.78 inclusive with no gaps, so this is the seventeenth. The derivation is written
+      here because an ordinal asserted from memory is the kind of number this project has
+      had to correct.
+
+      THE BLOCKER IS STILL OPEN AND WAS RE-CHECKED AT THIS CUT, state before body:
+      **pulseengine/spar#445 is OPEN** — "spar accepts property associations from
+      UNDECLARED property sets silently (rc=0) — a typo'd or invented property is
+      indistinguishable from a satisfied one". That is not an inconvenience, it is a
+      disqualifying one for this purpose: synth's whole case is that the model DRIVES the
+      build rather than sitting beside it, and a modelling tool that cannot distinguish an
+      invented property from a satisfied one would let synth generate WIT from an
+      architecture nobody validated. Adopting it in that state would manufacture exactly
+      the untraceable-evidence problem the loop exists to prevent.
+
+      SO THE DEFERRAL IS CORRECT AND THE FILING IS THE DELIVERABLE. What this artifact
+      must NOT become is a silent annual ritual: the honest form is a visible `feature-loop`
+      tagged artifact naming the blocker, its state, and the date it was re-checked. KEEP
+      THE `feature-loop` TAG — v0.69's ARCHMODEL lost it, and the filing that exists to
+      keep a deferral VISIBLE became invisible to the conformance gate, which is the exact
+      failure this artifact is a defence against.
+
+      REFUTING COMMAND: `gh issue view 445 --repo pulseengine/spar --json state`. If it is
+      CLOSED, the deferral's stated ground is gone and steps 1-2 must be attempted or
+      declined on a NEW ground — never carried on a stale one.
+    tags:
+      - process
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1136"
+      verification-track: manual
+      done-when: "manual:2026-10-01 the seventeenth consecutive skip of feature-loop steps 1-2 is filed on #1136 with the ordinal DERIVED from the artifact set, spar#445's state RE-CHECKED and dated, and the `feature-loop` tag present so the conformance gate can see the deferral"
