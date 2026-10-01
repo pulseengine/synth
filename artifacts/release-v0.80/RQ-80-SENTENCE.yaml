@@ -1,0 +1,78 @@
+artifacts:
+  - id: RQ-80-SENTENCE
+    type: system-req
+    release: v0.80
+    status: proposed
+    title: "Make ONE class of gate-unreadable statement mechanically checkable — or refute that the class can be gated"
+    description: >
+      THE HEADLINE, and every figure in it is DERIVED from the committed review record rather
+      than asserted — an earlier draft of this artifact said "roughly thirty" and "three", and
+      neither reconciled with anything on disk, which would have made the headline artifact of
+      a release about unsupported prose the first thing a cold reviewer took.
+
+      `docs/reviews/v0.79-cold-review.md` enumerates TWENTY defect items with stable markers:
+      TEN in round 1 (`**1.`-`**10.`), EIGHT in round 2's "new defects introduced by a
+      correction" (`N1`-`N8`), and TWO pre-existing that round 1's rewrite left standing
+      (`P1`, `P2`). A third reviewer's pass and the PR body add further items that carry no
+      marker, so twenty is a FLOOR on the count and not an estimate of it. They span the
+      release notes, typed artifact `verified-by:` prose, CLAUDE.md, a claims.yaml comment, a
+      published issue body and the release PR's description.
+
+      TWO FIGURES COME FROM THE RECORD'S OWN CLOSING SECTION, quoted rather than recomputed:
+      "Thirteen of the statements corrected across the two rounds were about the release's own
+      machinery rather than about the compiler", and the release found "nine false or
+      unsupported statements that no gate could see".
+
+      WHAT ARGUES THE PROBLEM IS STRUCTURAL is the N-series: EIGHT of the twenty were defects
+      introduced BY a correction — that is what the N prefix means in that record — and the
+      third reviewer then found more inside round 2's own corrections. Meanwhile `claim_check`
+      held 75/75 at every commit in the window.
+
+      The existing gates read STRUCTURE: field presence, status/disposition combinations,
+      counts, regex populations. A sentence is not structure. v0.68 already recorded that "R11
+      reads structured fields, so contradicting PROSE stays invisible"; v0.79 is that finding
+      at scale.
+
+      DELIVERABLE: take ONE named class and make it checkable, red-first, with the gate proven
+      by being made to go red. Cheapest candidate first, because it is the most structured: an
+      artifact whose `verified-by:` prose contradicts its own `status:`/`disposition:`.
+
+      THE INSTANCE IS CITABLE AND IT REACHED MAIN, which is why this class is first rather than
+      merely plausible. At commit `28196ec7` — an ancestor of `origin/main`, verified with `git
+      merge-base --is-ancestor` — `artifacts/release-v0.79/RQ-79-ORDEAL.yaml` carried `status:
+      proposed` and `disposition: partial` while line 65 of its own `verified-by:` opens with the
+      single word `LANDED.` Every gate was green. R11 was not merely blind to it: R11 was
+      SATISFIED BY IT. Its obligation is that a `landed:` beside a non-claiming status must carry
+      a disposition saying why it is not claiming, and the disposition was there — so the field
+      that exists to flag an under-claim is the same field whose presence let the prose
+      over-claim. The contradiction was corrected at `1175b348`, the version-bump commit, by a
+      cold reviewer reading the sentence. Not by a gate, because no gate reads sentences.
+
+      Two further candidates, ranked cheapest-first, are enumerated in #1461.
+
+      A REFUTATION IS A LEGITIMATE OUTCOME and must be reported with numbers rather than
+      abandoned quietly. RQ-74-STALEMSG set out to build a tripwire, measured 93% of citation
+      sites pointing at closed issues, and correctly refused to ship a gate that would red 363
+      sites on day one. A gate people cannot move honestly is a gate they route around.
+
+      REFUTING COMMAND, and it tests the COUNT rather than gate-greenness, because an earlier
+      draft's command could not have caught its own wrong number:
+      `grep -cE '^\*\*([0-9]+\.|N[1-8] |P[12] )' docs/reviews/v0.79-cold-review.md` must
+      print 20. If it prints something else the record moved and this artifact's figures are
+      stale — re-derive them before citing them. Then
+      `git log --oneline v0.78.0..v0.79.0` for the commits and
+      `python3 scripts/claim_check.py claims.yaml` for 75/75: if any of those twenty statements
+      DID red a gate, the premise is dead and this lane should not be built.
+    tags:
+      - process
+      - measurement
+      - gate-potency
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1461"
+      verification-track: manual
+      done-when: "manual:2026-10-31 ONE named class is either gated — with the gate shown RED on a planted instance and GREEN on the corrected tree, and the planted instance removed — or REFUTED with a census stating how many existing sites the gate would red and why that makes it unshippable"

@@ -1,0 +1,42 @@
+artifacts:
+  - id: RQ-80-ARCHMODEL
+    type: system-req
+    release: v0.80
+    status: proposed
+    title: "Recurring N/A, eighteenth filing: feature-loop steps 1-2 (spar AADL -> WIT) skipped again, blocker still open"
+    description: >
+      EIGHTEENTH consecutive skip of feature-loop steps 1-2. THE ORDINAL IS DERIVED BY ARTIFACT
+      IDENTITY, NOT BY TAG SET, and stated with the commit it is true at: there are 17 PRIOR
+      filings, v0.63 through v0.79 inclusive with no gaps, so this is the EIGHTEENTH, and `ls
+      artifacts/release-v*/RQ-*ARCHMODEL*.yaml | wc -l` returns 18 at any commit containing this
+      file. Deriving it by tag set is wrong — v0.77's tag-keyed census returned 14 where the
+      answer was 15, because v0.65's filing predates the five-tag vocabulary.
+
+      BLOCKER: pulseengine/spar#445 — spar accepts property associations from UNDECLARED property
+      sets silently (rc=0), so an invented property is indistinguishable from a satisfied one,
+      which is disqualifying for generating WIT from AADL. Re-check its STATE before its body.
+
+      THIS ARTIFACT MUST KEEP BOTH HALVES OF ITS TAG CONJUNCTION. The step 1-2 matcher needs
+      `"feature-loop" in tags` AND `tags & {aadl, spar}` AND a non-empty `issue:`. It has gone
+      INVISIBLE to the conformance gate three times (v0.65, v0.69, v0.75) because one half or the
+      other was dropped, and the whole point of the filing is to keep a deferral VISIBLE.
+
+      REFUTING COMMAND: `gh issue view 445 --repo pulseengine/spar --json state` and
+      `python3 -c "import sys; sys.path.insert(0,'scripts'); import loop_conformance_check as L;
+      print(L.find_filed_steps12_decision('docs','v0.80'))"`. If spar#445 is closed, the
+      deferral's ground is gone; if the matcher returns None, the tags are wrong.
+    tags:
+      - process
+      - carried
+      - spar
+      - aadl
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1136"
+      verification-track: manual
+      done-when: "manual:2026-10-31 the eighteenth filing exists with BOTH the feature-loop tag and a spar/aadl tag so the step 1-2 matcher sees it, the ordinal is derived by artifact identity with the commit stated, and spar#445's STATE is re-checked and recorded"

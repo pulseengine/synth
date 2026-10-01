@@ -1,0 +1,44 @@
+artifacts:
+  - id: RQ-80-CLOSEGATE
+    type: system-req
+    release: v0.80
+    status: proposed
+    title: "A vacuous close set collapses every per-issue closure verdict into one generic line, in the one path that discards its exit code"
+    description: >
+      FOUND AT THE v0.79 CUT and filed as #1454. `issue_closure_check.check()` returns on an
+      empty authorised-and-held-open set BEFORE the loop that compares the window's closures
+      against `prior_attribution`. The gate still reds — that detail was corrected mid-release,
+      the first version of the finding wrongly said the guards were "off" — but every per-issue
+      verdict collapses into one remark about artifact hygiene.
+
+      WHAT IS ACTUALLY LOST is the actionable instruction. Measured in the vacuous state,
+      closing an issue a PRIOR release held open produces no named "reopen it"; on a non-vacuous
+      tree it produces exactly that, by name. And `scripts/tag_release.sh:94-95` runs the gate
+      behind `|| echo`, so there its exit code is discarded entirely — v0.79 had to re-run it by
+      hand to get an enforced verdict.
+
+      WHY A RELEASE LANDS IN THAT STATE: R12 rightly forbids `issue-scope: outlives` beside a
+      non-claiming status, so a release whose artifacts are ALL non-claiming cannot populate
+      `held_open` at all. v0.79 had eleven artifacts, all `proposed`, and derived `0 authorised,
+      0 held open`. One artifact corrected to a claiming status was the single field that took
+      the release out of the early return.
+
+      DO NOT FIX THIS BY LOOSENING R12 — its reasoning is sound and v0.79 tried the other way
+      first, reddening ten artifacts with a correct message. The suggested shape is in the issue:
+      run the closure loop unconditionally and report vacuity as a finding about the authorised
+      set.
+
+      REFUTING COMMAND: construct a vacuous tree and call `check(root, "v0.80", closed={<an
+      issue a prior release held open>})`. If a named "reopen it" appears, this is already fixed.
+    tags:
+      - process
+      - gate-potency
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1454"
+      verification-track: manual
+      done-when: "manual:2026-10-31 the closure loop runs unconditionally with vacuity reported as a finding about the authorised set rather than as an early return, shown RED on a planted closure of a prior-release held-open issue in the vacuous state; and GATE5's discarded exit code is either fixed or recorded as a deliberate residual with its reason"

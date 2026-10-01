@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-80-LADDER
+    type: system-req
+    release: v0.80
+    status: proposed
+    title: "Reach has had no live number for SIXTEEN releases, and the pair the theme requires is unpinned for the third release running"
+    description: >
+      `docs/status/ACCEPTANCE_LADDER.md` still reads v0.63, measured 2026-09-06 at `e3a09ac2`.
+      v0.64 through v0.79 have shipped since. Every statement about synth's reach is therefore a
+      statement about a tree sixteen releases old, which CLAUDE.md's own rule forbids publishing
+      beside a performance comparison.
+
+      THE BLOCKER IS UNCHANGED AND IS NOT CORPUS LOSS: the 243-module corpus is UNMOUNTED at
+      `/Volumes/Work/corpora/wasm-243`. `mac.fritz.box` resolves and answers on port 22 but
+      returns `Permission denied (publickey,password,keyboard-interactive)`. Attempting passwords
+      stays DECLINED. The human action that would unblock it is mounting that volume or granting
+      key auth on that host; nothing in this repo can.
+
+      SAY THE CONSEQUENCE RATHER THAN LETTING IT ACCUMULATE: v0.78 pinned neither half of the
+      reach-floor/cost-ceiling pair, v0.79 pinned neither, and v0.80 inherits an unpinned pair
+      for the THIRD release running. Pinning the cost ceiling alone is the alternating the theme
+      forbids, because it lets a release buy cost wins with reach losses and stay green. So the
+      honest options are: the corpus mounts and BOTH are pinned, or neither is and the artifact
+      says so again — but a third silent carry is how a theme becomes decoration.
+
+      Keep the `+no-optimize` rung labelled STRUCTURALLY INERT: every ladder invocation passes
+      `--relocatable`, forcing the direct selector, so it can only ever report +0. A rung that
+      cannot move reported as a measured zero is a gate-that-cannot-fail inside a measurement
+      harness.
+
+      REFUTING COMMAND: `head -6 docs/status/ACCEPTANCE_LADDER.md` and `test -d
+      /Volumes/Work/corpora/wasm-243`. If the header names a recent release, or the path exists,
+      this premise is dead.
+    tags:
+      - process
+      - reach
+      - measurement
+      - carried
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1432"
+      verification-track: manual
+      done-when: "manual:2026-10-31 either the corpus mounts and the ladder is re-measured by the COMMITTED tool with its own date and commit AND BOTH the reach floor and the cost ceiling are pinned slack-free, or the lane states that reach has no live number for the sixteenth release, names the human action, and records explicitly that the pair is unpinned for the third consecutive release"

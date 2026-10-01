@@ -1,0 +1,46 @@
+artifacts:
+  - id: RQ-80-RITUAL3
+    type: system-req
+    release: v0.80
+    status: proposed
+    title: "Commit the tag-script guards, hand-carried for the ninth release — and do NOT 'fix' the unsigned tag, which is deliberate"
+    description: >
+      CARRIED. `grep -rn tag_release` over the tree still finds ZERO tests and ZERO CI
+      references, and `docs/reviews/v0.72-cold-review.md:326` recorded the same thing eight
+      releases ago.
+
+      THE WEAKNESSES ARE WIDER THAN PREVIOUSLY RECORDED, established by a v0.79 cold review of
+      the script. W1: `scripts/tag_release.sh:21`'s `git fetch` has its rc unchecked. W1b: `:22`
+      discards the rc of `git merge --ff-only` TOO, and nothing asserts HEAD == origin/main — so
+      guarding the fetch alone is insufficient. W2b, and this is the real consequence: on a
+      retry `:48-49` REUSES a leftover tag, `:54-59` check only its shape and `:65` checks the
+      signature of `$VER^{commit}`, but NOTHING asserts `$VER^{commit}` == HEAD. A tag minted
+      before a fix therefore survives every gate on the next run and is pushed pointing at the
+      PRE-FIX commit. So W2 is "can publish the wrong commit", not merely "leaves residue".
+
+      THE `git tag -a` vs `-s` QUESTION IS ANSWERED, AND THE ANSWER IS LEAVE IT. Measured:
+      `tag.gpgsign` is unset at local, global AND system scope; v0.76.0/v0.77.0/v0.78.0 are all
+      `type=tag` with ZERO signature blocks; and `tag_release.sh:58` ASSERTS
+      `signature_blocks == 0`. An unsigned annotated tag is the intended shape and the script
+      actively refuses a signed one — making it signed would trip its own G3 and red the tag
+      step. The signing guarantee lives on the tagged COMMIT, which G4 verifies.
+
+      ONE MORE TRAP FOR THE GUARD ITSELF: `git rev-parse <unknown-ref>` ECHOES the argument on
+      stdout and errors only on stderr, so `git rev-parse "$VER" 2>/dev/null` reports a tag that
+      does not exist. Use `git rev-parse --verify --quiet`.
+
+      REFUTING COMMAND: `grep -rn tag_release scripts/test_merge_ritual.py .github/workflows/`.
+      If a test or CI reference exists, the guards landed without this lane.
+    tags:
+      - process
+      - release-surface
+      - carried
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1440"
+      verification-track: manual
+      done-when: "manual:2026-10-31 W1, W1b, W2 and W2b are guarded IN the committed script with the tag created only after the G1-G4 decision, a test in test_merge_ritual.py's extract-and-stub shape proves the REFUSAL path leaves no tag and that a pre-existing tag not pointing at HEAD is refused, and the unsigned-annotated shape is left intact with its G3 assertion unchanged"

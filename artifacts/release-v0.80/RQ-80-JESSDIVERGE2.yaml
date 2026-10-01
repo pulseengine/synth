@@ -1,0 +1,111 @@
+artifacts:
+  - id: RQ-80-JESSDIVERGE2
+    type: system-req
+    release: v0.80
+    status: proposed
+    title: "Name the stale-attitude read — it is NOT an identity rotation, and the module is now in the repo"
+    description: >
+      CARRIED from v0.79 at `disposition: partial`, and REWRITTEN at the v0.80 cut because the
+      reporter answered after that artifact was written. Two statements in the first draft of THIS
+      artifact are now refuted by their own refuting command, and both refutations make the lane
+      sharper.
+
+      THE MODULE IS OBTAINABLE. `repro/synth-1436/` on jess `main` carries `c.wasm` (68252 B,
+      pre-loom) and `c.loom.wasm` (65199 B) with a `SHA256SUMS.txt` and a README recording the five
+      pinned relay component digests, meld 0.58.3 flags, loom 1.4.0 and the exact `synth compile`
+      line — verified present with `gh api repos/pulseengine/jess/contents/repro/synth-1436`. The
+      reporter also confirms the pre-loom module reproduces it bit-identically, so loom is not
+      involved, and supplies a QEMU recipe (`qemu-system-arm -machine mps2-an500 -cpu cortex-m7`,
+      then `xp /31xw 0x20011400`) so the ARM side needs no board. The first draft of this artifact
+      said the module was not in the thread. That was the v0.73 failure repeating — an artifact
+      declaring a reporter's module unobtainable when it was supplied — and it was caught only
+      because the artifact carried a command to check.
+
+      IT IS NOT AN IDENTITY ROTATION. That was this lane's own characterisation and the reporter's
+      tick-16 measurement refutes it: `pos-n 34e23ae4`, `pos-e 35627030`, `vel-n 38aee883`,
+      `vel-e 392f1ef4` — all non-zero on silicon. The rotation is identity at tick 1 and doing
+      something wrong-but-not-nothing by tick 16. The signature is a LAGGED OR STALE ATTITUDE READ,
+      not a hardcoded identity: at tick 1 the previous quaternion IS the initial identity, which is
+      precisely why tick 1 looked like one. The surviving half of the old framing is "a rotation
+      behaving as though it read the initial one", and the tick-16 numbers are the evidence for the
+      "read" half.
+
+      SO THE HYPOTHESIS THIS ARTIFACT PREVIOUSLY OFFERED IS DEAD and is recorded as dead rather
+      than quietly dropped: it proposed that an off-diagonal factor reading as 0.0 collapses the
+      matrix to identity. A zero-read cannot produce tick 16.
+
+      WHAT REMAINS SETTLED, so it is not re-derived: `vel-d = 3c20ba20 = 9.81 x 0.001` and
+      `pos-d = 36a495a2 = 1/2 x 9.81 x 0.001^2` hold at tick 1 to about 2 ULP, the residual being an
+      f32 multiply-accumulate. Three independent ARM implementations — Renode 1.16.1, QEMU 11.1.1
+      and the actual i.MX RT1176 over SWD — agree bit-for-bit and all three disagree with wasmtime,
+      so "emulation artefact" is retired. The RETURN-ABI class (#1450) stays ELIMINATED and the
+      reporter independently agrees with the reasoning: ten words bit-exact IN PLACE cannot survive a
+      marshalling defect.
+
+      THE ELIMINATION THAT IS NOW IN QUESTION IS A DIFFERENT ONE, and the reporter was careful not to
+      overclaim about it, so this artifact will be too. v0.79 ruled out the HOME-REGISTER ALIAS class
+      on the VFP path using an in-session sweep that nothing in the tree reproduces. A stale-local
+      read belongs to that class, and the tick-1-versus-tick-16 pattern points back toward it. The
+      reporter explicitly is NOT reopening the elimination; what they name is that its evidence is
+      the one piece neither side can check.
+
+      THAT CHANGES WHY THE f32 JOIN ORACLE MATTERS — it is now the discriminator, not a tidiness
+      obligation — AND THE REPORTER NAMED ITS SHAPE: "a local written this iteration, read after a
+      call, INSIDE A LOOP", because that is what the lag hypothesis predicts and it is exactly the
+      shape a SINGLE-ITERATION join test would pass. The shipped `join_alias_1189_*` and
+      `home_alias_class_1189_*` differentials have no f32 leg at all, so there is nothing to extend.
+
+      BUT THE ORACLE MUST BE BUILT ON THE INTEGER PATH, NOT THE VFP ONE, and that is measured on the
+      reporter's own committed module rather than assumed. A first disassembly pass at the v0.80 cut
+      compiled `c.loom.wasm` with their exact command on 0.79.0 and found that EVERY f32 memory
+      access in `ekf#estimate`, `attitude#tick` and `position#tick` goes through `sp` — 308/238,
+      60/41 and 175/87 — and that ZERO use `r11`, the linear-memory base. Linear memory is reached
+      with INTEGER `ldr`/`str` (106 read, 130 written via `r11`) and the f32 bits cross into VFP
+      through core registers (269 `vmov sN,rX`, 220 `vmov rX,sN`). The quaternion persists across
+      ticks, so it lives in linear memory, so it travels as an INTEGER WORD. An f32-REGISTER join
+      sweep would not observe that path at all. The shape stands; the register file it is built over
+      changes.
+
+      TWO CLASSES THAT PASS ALSO CAME OUT OF THAT PASS, recorded with their instrument's honesty.
+      Caller-saved S-register clobber across a call is NOT SUPPORTED: every callee writes S0-S15 and
+      none saves them, which is CORRECT because those are caller-saved, and `ekf#estimate` keeps f32
+      values in frame slots and reloads after each call, leaving only `s0` (argument in, return out)
+      live across a `BL`. That reads as "not supported" and not "eliminated" because the analyser's
+      POSITIVE CONTROL was EMPTY — it never demonstrated it could see the spilled case. The VFP
+      frame-slot class IS eliminated and is self-validating: 33 slots, 33 written, 33 read, matched
+      sets, so neither a lost update nor a stale incoming read.
+
+      AND STATIC READING HAS A CEILING HERE, which bounds what the next pass should attempt: all 236
+      `r11` accesses are REGISTER-OFFSET, none constant-offset, so "the update writes one field and
+      the rotation reads another" cannot be settled by comparing immediates. The reporter's QEMU
+      recipe is what makes the next step cheap — watch which addresses the rotation's quaternion
+      loads resolve to against the ones the attitude update stores, with no dataflow reconstruction.
+
+      RULE 4 BINDS AND IS NOT SOFTENED BY ANY OF THE ABOVE: committing that oracle is NOT progress on
+      #1436. Only naming the defect is. The oracle is how this lane earns the right to keep or
+      withdraw an elimination; it is not the deliverable.
+
+      ONE CAVEAT TO CARRY RATHER THAN QUERY, in the reporter's own terms: the on-target procedure is
+      intermittent — some attempts park all zeros with no sentinel, which they discard as "did not
+      run" rather than reading as data — a watchdog is refuted by measurement, and the cause is
+      unknown. That is their disclosure about their own rig and this lane does not re-litigate it.
+
+      REFUTING COMMAND, three parts, and the first two are the ones that fired on the previous draft:
+      `gh api repos/pulseengine/jess/contents/repro/synth-1436` must list the two modules — check
+      BEFORE writing that anything is unobtainable. Then read the thread's newest comment before
+      relying on any mechanism stated here, because this artifact has already been overtaken once.
+      Then `grep -rl 1436 scripts/repro/ crates/*/tests/`; if that is non-empty the oracle half
+      already landed and this lane starts at the disassembly.
+    tags:
+      - correctness
+      - reach
+      - external-report
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1436"
+      verification-track: manual
+      done-when: "manual:2026-10-31 the instruction or pass that reads a STALE attitude is NAMED by running the reporter's committed module under their QEMU recipe and comparing the addresses the rotation's quaternion loads resolve to against the ones the attitude update stores, or the lane states plainly that it did not reach the cause AND says what it tried; separately the join sweep is COMMITTED as an executable oracle over the INTEGER path that actually carries linear-memory f32 traffic (measured: zero f32 accesses use r11), covering a value written this iteration and read after a call INSIDE A LOOP, red-first, so the v0.79 home-alias elimination is either re-established on evidence in the tree or WITHDRAWN"

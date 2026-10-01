@@ -1,0 +1,46 @@
+artifacts:
+  - id: RQ-80-TOOLCHAIN
+    type: system-req
+    release: v0.80
+    status: proposed
+    title: "A REQUIRED check graded the same source two ways on two runners, and the resolved compiler appears only in the job log"
+    description: >
+      MEASURED AT THE v0.79 CUT and filed as #1459. With ZERO Rust files changed, `Clippy` —
+      one of the nine REQUIRED contexts — passed on `main` and failed on all three heads of the
+      release branch. Cause: `dtolnay/rust-toolchain@stable` resolves to whatever stable each
+      self-hosted runner has already CACHED (both logs report the toolchain `unchanged`), and
+      the runners disagreed. main's job ran on `...-01-12` at rustc 1.98.1 and passed; the
+      branch's ran on `...-01-11` at rustc 1.99.0 and failed.
+
+      THE 1.99.0 RUNNER WAS RIGHT — that release adds `needless_borrows_for_generic_args`, which
+      fired three times in `liveness.rs`. v0.79 fixed it, VERIFIED RED-FIRST against 1.99.0
+      (rc=101 pre-fix with exactly those three errors, rc=0 after). So `main` was LATENTLY red
+      and passed only by landing on the older runner: any PR, including one touching no Rust,
+      reds or greens on this lint by runner lottery.
+
+      This is the same class as RQ-79-VARVE — a check whose verdict is not a function of its
+      subject — this time in the required-check path.
+
+      NO FIX IS PRESCRIBED for the lottery, deliberately: pinning a toolchain changes a REQUIRED
+      check's behaviour, which this repo's rule says is not safe to do casually, and the options
+      with their costs are enumerated in the issue for a decision. What IS separable and cheap:
+      the resolved `rustc` version appears ONLY in the job log today, so nothing can answer
+      "which compiler graded this PR?" without downloading logs.
+
+      REFUTING COMMAND: for one job, `gh api repos/pulseengine/synth/actions/jobs/<id>/logs
+      --allow-escape-sequences | tr -d '\033' | grep -oE 'rustc 1\.[0-9]+\.[0-9]+'`. Note that
+      WITHOUT `--allow-escape-sequences` gh writes NOTHING — an empty result there is a fact
+      about gh, not about the log.
+    tags:
+      - process
+      - gate-potency
+      - infrastructure
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1459"
+      verification-track: manual
+      done-when: "manual:2026-10-31 the resolved rustc version is surfaced where it can be read without downloading logs, and the toolchain lottery is either resolved by an explicitly chosen option from #1459 or recorded as an accepted risk with the decision and its owner named"

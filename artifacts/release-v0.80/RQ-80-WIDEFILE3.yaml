@@ -1,0 +1,39 @@
+artifacts:
+  - id: RQ-80-WIDEFILE3
+    type: system-req
+    release: v0.80
+    status: proposed
+    title: "The fixed order, third release running: root-cause the wide-file sign error, give #1267 an execution differential, and only THEN add the retry"
+    description: >
+      CARRIED UNCHANGED from v0.79, where it was `disposition: deferred` with nothing started.
+      The order is not negotiable and the reason is recorded: v0.78 BUILT the pool-grow retry
+      for the recovery ladder's last rung, measured a real reach gain, and REVERTED it because
+      the #1069 execution differential showed the newly-accepted code disagreeing with wasmtime
+      in EXACTLY the sign bit on every negative input (#1439).
+
+      WHAT IS ALREADY DERIVED, so do not re-measure it: the defect is in the WIDE-FILE path and
+      not in pool growth, because `live24` in the same differential exercises
+      `vfp-frame-locals+pool-grow` and is bit-exact. The reach on offer is SIX locals (the wall
+      moves 60 -> 66), NOT twelve — an earlier draft promoted an untested docstring figure of 72
+      into a headline and a cold review caught it.
+
+      `wide60_declines_and_the_ladder_dies_on_the_wide_file_rung_1426` in
+      `crates/synth-backend/tests/vfp_local_pressure_1069.rs` is a TRIPWIRE whose 4th assertion
+      fails the moment stage 3 gains a grow retry. That is deliberate: it makes "accept more and
+      check less" impossible to do quietly.
+
+      REFUTING COMMAND: `grep -rln 1267 scripts/repro/` — if an execution differential for
+      #1267 now exists, step 2 is already done and the lane starts at step 3.
+    tags:
+      - correctness
+      - reach
+      - carried
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1439"
+      verification-track: manual
+      done-when: "manual:2026-10-31 the sign error is ROOT-CAUSED with the mechanism named, #1267 has an EXECUTION differential in scripts/repro/ wired in ci.yml, and the retry is added ONLY after both — or the lane reports which of the three steps it reached and why it stopped"

@@ -1,0 +1,39 @@
+artifacts:
+  - id: RQ-80-STEP7
+    type: system-req
+    release: v0.80
+    status: proposed
+    title: "The cold-review conformance gate passes on a record naming a PREVIOUS release's commit"
+    description: >
+      BREAK-TESTED AT THE v0.79 CUT and filed as #1456. `loop_conformance_check.py:715-733`
+      computes an ancestry check and then returns DERIVED_PASS on BOTH outcomes — only the prose
+      differs. The effective bar is "the declared sha resolves to an object". Measured: a record
+      declaring v0.78.0's release commit, or v0.70.0's, passes step 7 just as the real candidate
+      does.
+
+      The loosening was justified — a squash merge discards the reviewed branch head, so
+      requiring ancestry of HEAD would red legitimate records — but the constraint was dropped
+      entirely rather than replaced. A validated tightening is in the issue: require the declared
+      sha NOT be an ancestor of the previous release tag, which reds both prior-release commits
+      while passing the legitimate squash cases.
+
+      RELATED AND CONFIRMED: `DECLARED_COMMIT_RE` requires the literal `Commit reviewed` with the
+      sha IN BACKTICKS. v0.78's record spelled it `**Release commit:**`, which does not match, so
+      step 7 silently took the weaker hex-harvest route for a whole release. v0.79's record
+      writes the matching spelling, tested against the regex before being written.
+
+      REFUTING COMMAND: write a scratch `docs/reviews/` record declaring v0.78.0's commit and run
+      `loop_conformance_check.py v0.80.0`. If step 7 reds, this is already fixed. Delete the
+      scratch file afterwards.
+    tags:
+      - process
+      - gate-potency
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1456"
+      verification-track: manual
+      done-when: "manual:2026-10-31 step 7 reds on a record declaring a previous release's commit and passes on a legitimate post-squash head, both shown by execution; or the tightening is refuted with the specific legitimate record it would wrongly red"

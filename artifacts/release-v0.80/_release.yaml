@@ -1,0 +1,35 @@
+# v0.80 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS by rule. Every number about this release lives
+# in the artifact that derives it, or in the CHANGELOG at the cut. A figure here
+# would be a second copy with no derivation behind it, which is how v0.74's
+# "first reduction" falsehood survived in four places at once.
+#
+# THEME — "The sentence no gate can read" (#1461).
+#
+# v0.79 shipped with every structured gate green at every commit, and corrected a
+# long list of false, unsupported or misleading STATEMENTS across three cold-review
+# rounds to get there: in the release notes, in typed `verified-by:` prose, in
+# CLAUDE.md, in a claims.yaml comment, in a published issue body and in the release
+# PR's own description. Some of those defects lived INSIDE a previous round's
+# correction. The structured gates read fields, counts and populations; a sentence
+# is none of those, so none of them could fail. That is the subject.
+#
+# WHAT THAT MEANS FOR THE SHAPE OF THE RELEASE. The headline lane takes ONE named
+# class and either gates it — proven by being made to go red, then green — or
+# REFUTES it with a census of how many existing sites the gate would red on day
+# one. A refutation is a result, not a retreat: RQ-74-STALEMSG set out to build a
+# tripwire, measured the convention it would have outlawed, and correctly refused
+# to ship a gate nobody could move honestly.
+#
+# THE THEME DOES NOT REPLACE THE CARRIED REACH WORK, and the carried lanes keep
+# their recorded ORDER rather than being re-litigated. The wide-file lane still
+# root-causes before it re-adds the rung that v0.78 built, measured and reverted on
+# its own execution oracle. The pagesize lane ships the capability behind an oracle
+# that already landed. The ladder lane states plainly what it cannot measure, and
+# names the human action, rather than letting a stale denominator accumulate
+# quietly for another release.
+#
+# AND THE EXTERNAL DEFECT IS NOT SATISFIED BY INSTRUMENT WORK. Hardening the oracle
+# around a reporter's still-open defect is not progress on that defect. The lane
+# for it owes either a named cause or a plain statement that it did not reach one.
