@@ -1,0 +1,55 @@
+artifacts:
+  - id: RQ-79-LADDER
+    type: system-req
+    release: v0.79
+    status: proposed
+    title: "Re-measure the acceptance ladder — reach has now had no live number for fifteen releases"
+    description: >
+      CARRIED from v0.78 at `disposition: partial`, and the carry is the point: v0.78
+      delivered the PROVENANCE half (both the ladder header and
+      `partial_census_1017.py --help` now say the 243-module corpus is EXTERNAL to this
+      repo and name its last known path `/Volumes/Work/corpora/wasm-243`) and recorded the
+      MEASUREMENT half as blocked. The ladder still reads "v0.63", measured 2026-09-06 at
+      `e3a09ac2`.
+
+      WHY IT MATTERS MORE THIS RELEASE, not less. v0.79's headline lane is PAGESIZE, a
+      reach increment. The theme pins reach as a FLOOR that must RISE — and a floor cannot
+      be pinned against a denominator measured on a tree now fifteen releases old. v0.78
+      declined to pin the reach floor FOR THAT REASON and said so; repeating the decline
+      without attacking the block is how a deferral becomes a permanent exemption.
+
+      THE BLOCK IS AN ACCESS PROBLEM, NOT CORPUS LOSS, and that distinction was v0.78's
+      actual finding: `mac.fritz.box` resolves and answers on port 22 but returned
+      `Permission denied (publickey,password,keyboard-interactive)` on 2026-09-30.
+      Attempting passwords was declined rather than tried, and that stays declined.
+
+      SO THE DELIVERABLE IS SCOPED TO WHAT THIS MACHINE CAN DO: either the volume mounts
+      and the committed tool re-measures, or the lane states plainly that reach has no
+      live number and names what a human would have to do (mount the volume, or add this
+      machine's key to the host). A `must` that reports a blocker is honest; a `must`
+      whose predicate silently cannot be evaluated is the shape v0.78 had to rescope.
+
+      AND ONE HONESTY REQUIREMENT THE FILE ALREADY MEETS AND MUST KEEP MEETING: the
+      `+no-optimize` rung is STRUCTURALLY INERT and labelled so, never reported as a
+      measured `+0` — every ladder invocation passes `--relocatable`, which forces the
+      direct selector, so that rung can only ever report zero. A rung that cannot move
+      reported as zero is the gate-that-cannot-fail class living inside a measurement
+      harness.
+
+      REFUTING COMMAND: `head -6 docs/status/ACCEPTANCE_LADDER.md` and `ls
+      /Volumes/Work/corpora/wasm-243 2>&1 | head -1`. If the header names a recent release
+      the premise is dead; if the path lists, the block is gone and the measurement is
+      simply owed.
+    tags:
+      - process
+      - reach
+      - measurement
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1432"
+      verification-track: manual
+      done-when: "manual:2026-10-01 the ladder is re-measured by the COMMITTED tool on the shipping tree carrying its own date and commit AND the reach floor is pinned as a `direction: up` ratchet — or the lane reports reach as having no live number, names the specific human action that would unblock it, and says why the floor stays unpinned"

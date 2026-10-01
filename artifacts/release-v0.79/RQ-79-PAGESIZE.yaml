@@ -1,0 +1,59 @@
+artifacts:
+  - id: RQ-79-PAGESIZE
+    type: system-req
+    release: v0.79
+    status: proposed
+    title: "No backend reads the declared page size, so a per-domain tenant costs 64 KiB minimum — and a named board cannot hold two"
+    description: >
+      synth REFUSES `(pagesize N)` and the refusal is correct and well-worded; it is not
+      to be reverted. But it closed by making a silent wrong answer loud, not by
+      implementing the capability, and the capability is now a binding constraint on a
+      decision gale has already made.
+
+      WHY IT IS A REACH LANE AND NOT A FEATURE REQUEST. gale's seam decision keeps the
+      Component Model boundary as the privilege boundary, and meld established that
+      unforgeability is a property of the DOMAIN boundary rather than of the handle — so
+      tenant and supervisor must sit in SEPARATE memory domains. Separate domains cost a
+      whole 64 KiB page each because nothing reads the declared size, so two tenants cost
+      128 KiB before anything else. On the reporter's bench that means the WB55 (192 KiB)
+      holds two and the **G474 (96 KiB) cannot** — and the G474 is the board attached to
+      the developer machine. Packing is NOT the lever: `--pack-rebase` was measured to
+      recover ONE page, because the payload's reserved extent dominates by two orders of
+      magnitude.
+
+      SCOPED BY THE REPORTER, AND TAKE THE CHEAP VERSION: powers of two >= 32 bytes is
+      sufficient, because ARMv7-M PMSA requires an MPU region to be a power of two >= 32 B
+      and size-aligned anyway, so a finer page buys nothing. `__synth_mem_size_N` and the
+      RESERVATION must move TOGETHER — that symbol is what an embedder programs one MPU
+      region from (#1145), so moving one without the other turns the over-grant from
+      silent into subtle.
+
+      NOT ASKED FOR, on the reporter's own reasoning, and do not substitute it:
+      `__synth_mem_used_N` is better for fitting and worse for trust, because a derived
+      extent needs a derivation an embedder has to believe while a declared page size is
+      stated by the module and needs none.
+
+      MEASURED PREMISE at the v0.78 cut: `page_size_log2` is ALREADY decoded onto
+      `WasmMemory` (`synth-core/src/wasm_decoder.rs:67`) and used ONLY to refuse
+      (`synth-cli/src/main.rs:3704`), so nothing needs re-parsing. BUT IT CHANGES EMITTED
+      CODE: `memory.size` lowers to a division by a literal `65536`
+      (`synth-backend-aarch64/src/selector.rs:2557`) and `synth-memory` sizes every
+      descriptor from a hardcoded `WASM_PAGE_SIZE`. THE ORACLE LANDS FIRST — this is a
+      reach increment, and accepting more while checking less is refused by name.
+
+      REFUTING COMMAND: compile a module declaring `(pagesize 1)`. If it no longer
+      refuses, this premise is stale. And if it ACCEPTS while `__synth_mem_size_0` still
+      reports 64 KiB pages, that is the over-grant #1315 warned about, moved from silent
+      to subtle — which is worse than the refusal, not better.
+    tags:
+      - process
+      - reach
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1441"
+      done-when: "manual:2026-10-01 the declared page size is HONOURED for powers of two >= 32 B with `__synth_mem_size_N` and the reservation moving together, the execution oracle for the newly-accepted shapes LANDS FIRST, and the `memory.size` lowering no longer divides by a literal 65536 — or the lane reports plainly which half it could not do"

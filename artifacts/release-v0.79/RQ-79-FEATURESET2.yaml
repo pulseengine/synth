@@ -1,0 +1,52 @@
+artifacts:
+  - id: RQ-79-FEATURESET2
+    type: system-req
+    release: v0.79
+    status: proposed
+    title: "The flag-off capability count is DERIVED but not PINNED — so it can grow back silently"
+    description: >
+      v0.78 built `scripts/shipped_feature_census.py` and wired it into the required Claim
+      Check job on both axes. It derives, from the shipped source rather than from a
+      hand-written list: 38 environment flags, of which FOUR are capabilities that ship
+      OFF by default (plus two modifiers), 0 undetermined; and on axis 2, four features
+      are off the default build with THREE in neither delivered binary.
+
+      WHAT IS MISSING IS THE RATCHET. The census PRINTS those numbers; nothing PINS them.
+      This project has measured the consequence of exactly that gap repeatedly — a derived
+      figure with no pin is a figure that moves in a direction nobody notices, and
+      `sel_dsl_rules` sat flat at 80 for twelve releases behind a green gate. So the
+      deliverable is a `claims.yaml` pin, slack-free, in the shape the theme demands:
+      the flag-off capability count is a CEILING that must FALL, so a release that hides
+      a new capability behind a default-off flag is red unless it says so in a waiver.
+
+      AND THE COUNT IN THE ISSUE TITLE IS WRONG, which is worth saying because the issue
+      is this loop's own filing and not a reporter's. #1437 is titled "5 capabilities ship
+      flag-off". The census derived FOUR: `SYNTH_SHADOW_ALLOC` is MEASURE-ONLY — it
+      changes what is observed, not what is emitted — and counting it inflated the figure.
+      Any lane working this must take 4 from the census and not 5 from the title.
+
+      THE SECOND HALF IS A DECISION, NOT A MEASUREMENT: each of the four flag-off
+      capabilities gets a written disposition — ship it, or state why it stays off with
+      the evidence that would flip it. Two of them (`SYNTH_GRAPH_ALLOC`,
+      `SYNTH_SPILL_ON_EXHAUST`) are register-allocation capabilities, and v0.78's
+      BLOCKERCLASS lane established that the obligation on them is NAMED and NOT
+      discharged: before any release claims reach from flipping either, it must show the
+      SELECTOR's `free_callee_saved` decline disappearing on named modules, not the
+      ALLOCATOR's. Two decline sites, two files, two code paths, one shared NAME.
+
+      REFUTING COMMAND: `python3 scripts/shipped_feature_census.py` and read the figure it
+      prints. If it is not 4 capabilities, the pin value in this lane is stale before it
+      lands — take the census's number, never this artifact's.
+    tags:
+      - process
+      - quality
+      - measurement
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1437"
+      verification-track: manual
+      done-when: "manual:2026-10-01 the flag-off capability count is pinned in claims.yaml as a slack-free ceiling with `direction: down` and the pin is shown POTENT by moving it, and each of the four capabilities carries a written disposition — shipped, or held with the evidence that would flip it named"

@@ -1,0 +1,43 @@
+artifacts:
+  - id: RQ-79-WIDEFILE2
+    type: system-req
+    release: v0.79
+    status: proposed
+    title: "Root-cause the wide-file sign error, give #1267 the execution oracle it never had, and only THEN extend the ladder"
+    description: >
+      v0.78 found the recovery ladder's LAST rung (`vfp-wide-file`, #1267) is the only one
+      with no pool-grow retry, BUILT the retry, measured a real reach gain, and REVERTED
+      it — because the #1069 execution differential showed every NEGATIVE input
+      disagreeing with wasmtime in exactly the sign bit. #1267 has encoding tests and NO
+      execution oracle; nothing in `scripts/repro/` covers it.
+
+      THE ORDER IS FIXED AND IS THE WHOLE POINT: (a) root-cause the sign error; (b) give
+      #1267 an execution differential; (c) only then add the retry and flip
+      `wide60_declines_and_the_ladder_dies_on_the_wide_file_rung_1426`, which is a tripwire
+      that fails the moment the rung lands. Doing (c) first is "accept more and check
+      less" — and on the external reporter's module that rung is reached TWICE and rescues
+      neither call, so extending it blind would convert two loud declines into
+      possibly-wrong code.
+
+      WHAT IS ALREADY DERIVED, so the lane does not re-measure it: the defect is in the
+      WIDE-FILE path and not in pool growth, because `live24` in the same differential
+      exercises `vfp-frame-locals+pool-grow` and is bit-exact. And the reach on offer is
+      SIX locals, not twelve — v0.78's round 2 measured the wall at 66 after an earlier
+      draft promoted an untested docstring figure of 72 into the headline.
+
+      REFUTING COMMAND: `cargo test -p synth-backend --test vfp_local_pressure_1069 wide60`.
+      It passes today. If it fails with "stage 3 must have NO grow retry today", the rung
+      has landed and every figure in #1439 must be re-measured before anyone trusts the
+      reach gain.
+    tags:
+      - process
+      - reach
+      - quality
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1439"
+      done-when: "manual:2026-10-01 the sign error is ROOT-CAUSED with the mechanism named, #1267 has an EXECUTION differential in scripts/repro/ wired in ci.yml, and the retry lands only after both — or the lane reports which step it stopped at and why"

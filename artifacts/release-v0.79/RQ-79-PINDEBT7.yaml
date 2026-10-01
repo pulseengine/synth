@@ -1,0 +1,60 @@
+artifacts:
+  - id: RQ-79-PINDEBT7
+    type: system-req
+    release: v0.79
+    status: proposed
+    title: "The pin-debt ratchet must FALL and has risen 57 with six waivers — the safeguard is being paid off, not honoured"
+    description: >
+      RQ-66-PINDEBT pinned `known_open_pins` `direction: down` so that a release ending
+      with more suppressions than it began is red, and so that adding a pin is paid for by
+      closing one or by a written waiver. Measured live at the v0.79 planning cut
+      (`claim_check.py claims.yaml --metric`): `known_open_pins` = 84 against a baseline of
+      27 — **+57** against a must-FALL ratchet, with **6 waivers** carrying it. The
+      companion `known_open_pinned_cases` tracks at 157.
+
+      THE RATCHET IS WORKING EXACTLY AS DESIGNED AND THAT IS THE FINDING. Every one of
+      those 57 was a visible `claims.yaml` diff with a written reason; nothing was hidden.
+      But the mechanism's stated purpose was to make pins TEMPORARY, and six waivers in
+      thirteen releases is the signature of a safeguard that has become a toll booth.
+      CLAUDE.md names the precedent in the same breath: 20 selector waivers,
+      `sel_dsl_rules` flat at 80 for twelve releases, a delivery floor at 28 against a live
+      67 for eleven.
+
+      #1373 CARRIES THE OTHER HALF and it is the one that makes this actionable: of 40 open
+      pinned issues, **28 were never revisited**. A pin says "this returns the wrong answer
+      today, issue #N" — exact in both directions, which is its virtue — but nothing
+      re-asks whether it is STILL wrong. Some fraction of the 84 are plausibly already
+      fixed by unrelated work, and a suppression that hides a fixed bug also hides whatever
+      else goes wrong behind it.
+
+      SO THE DELIVERABLE IS A RE-ASK, NOT A CLEANUP: run the pinned oracles' entries
+      against the CURRENT compiler and report, per entry, STILL-WRONG or NOW-CORRECT. Every
+      NOW-CORRECT entry is a pin that can be deleted and a ratchet step that is earned
+      rather than waived. A result of "all 84 still wrong" is a legitimate and valuable
+      outcome — it converts an assumption into a measurement.
+
+      ONE NAMED ESCAPE, stated as a thing to CHECK rather than a thing I located: CLAUDE.md
+      records that the population tripwire is scoped BY NAME (`^(?:KNOWN|PINNED)...`) and
+      sees only a top-level `NAME = { ... }` dict LITERAL, so a suppression table called
+      something else — `SUPPRESSED_CASES`, say — escapes both the tripwire and the ratchet;
+      v0.73's round-2 review demonstrated a byte-identical table under a non-matching name
+      leaving `claim_check` at 75/75. I could NOT find that regex in `scripts/claim_check.py`
+      at this cut, so the lane's FIRST step is to locate it and confirm the scoping is as
+      documented — if the documentation describes a mechanism that is not there, that is
+      the more serious finding and it outranks the re-ask.
+
+      REFUTING COMMAND: `python3 scripts/claim_check.py claims.yaml --metric | grep
+      known_open`. If `known_open_pins` is at or below its baseline, this premise is dead.
+    tags:
+      - process
+      - quality
+      - measurement
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1373"
+      verification-track: manual
+      done-when: "manual:2026-10-01 the by-NAME scoping of the pin-table tripwire is LOCATED and confirmed-or-refuted against CLAUDE.md's description, and every pinned entry is re-asked against the current compiler with a per-entry STILL-WRONG / NOW-CORRECT verdict — with any NOW-CORRECT pin deleted so the ratchet step is earned rather than waived"
