@@ -511,5 +511,69 @@ class ReleaseIdentity(unittest.TestCase):
         self.assertEqual(c.findings, [])
 
 
+class Step7PriorReleaseBar(unittest.TestCase):
+    """RQ-80-STEP7 (#1456). Step 7 used to compute an ancestry test and return
+    DERIVED_PASS on BOTH branches, so the effective bar was "the declared object
+    exists" and a record naming a PREVIOUS release's commit passed. The
+    replacement bar: the declared sha must not be an ancestor of (or equal to)
+    the previous release tag.
+
+    The shas are DERIVED FROM TAGS rather than hardcoded, so the test does not
+    rot when history is rewritten, and it SKIPS LOUDLY on a shallow clone rather
+    than passing vacuously.
+    """
+
+    def _sha(self, rev):
+        rc, out = lcc.git("rev-parse", "--verify", "-q", f"{rev}^{{commit}}")
+        return out.strip() if rc == 0 else None
+
+    def _verdict(self, declared):
+        c = mk_check("v0.80.0", mode="pretag", sha=self._sha("HEAD"))
+        rec = f"# r\n\n**Commit reviewed:** `{declared}`\n"
+        with mock.patch.object(lcc, "tree_ls",
+                               return_value=["docs/reviews/v0.80-cold-review.md"]), \
+             mock.patch.object(lcc, "tree_read", return_value=rec):
+            c.step_7()
+        seven = [f for f in c.findings if f[0] == "7"]
+        self.assertTrue(seven, "step 7 recorded no finding at all")
+        return seven[0][2]
+
+    def test_a_previous_releases_commit_is_red(self):
+        for tag in ("v0.79.0", "v0.78.0"):
+            sha = self._sha(tag)
+            if sha is None:
+                self.skipTest(f"{tag} not present (shallow clone) — the bar "
+                              f"cannot be exercised, and a pass here would be "
+                              f"vacuous")
+            with self.subTest(tag=tag):
+                self.assertIn(self._verdict(sha), lcc.FAILING,
+                              f"a record declaring {tag}'s commit must RED")
+
+    def test_a_head_not_in_the_previous_release_passes(self):
+        head = self._sha("HEAD")
+        prev = self._sha("v0.79.0")
+        if head is None or prev is None:
+            self.skipTest("HEAD or v0.79.0 unresolvable; skipping loudly")
+        rc, _ = lcc.git("merge-base", "--is-ancestor", head, prev)
+        if rc == 0:
+            self.skipTest("HEAD is an ancestor of v0.79.0, so it is not a "
+                          "legitimate v0.80 declaration on this checkout")
+        self.assertEqual(self._verdict(head), lcc.DERIVED_PASS)
+
+    def test_missing_previous_tag_is_attested_not_passed(self):
+        """A release with no visible predecessor must SKIP LOUDLY. v9.0.0 has
+        minor 0, which `previous_release_tag` answers None for by construction."""
+        c = mk_check("v9.0.0", mode="pretag", sha=self._sha("HEAD"))
+        rec = "# r\n\n**Commit reviewed:** `" + (self._sha("HEAD") or "d" * 40) + "`\n"
+        with mock.patch.object(lcc, "tree_ls",
+                               return_value=["docs/reviews/v9.0-cold-review.md"]), \
+             mock.patch.object(lcc, "tree_read", return_value=rec):
+            c.step_7()
+        seven = [f for f in c.findings if f[0] == "7"]
+        self.assertTrue(seven)
+        self.assertEqual(seven[0][2], lcc.ATTESTED)
+        self.assertIn("no", seven[0][3].lower())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

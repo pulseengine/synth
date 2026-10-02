@@ -245,12 +245,28 @@ def check(root: Path, release: str, closed: set[int],
     prior = prior_attribution(artifacts, version)
     if not artifacts:
         return (["VACUOUS: zero release artifacts loaded"], [], {}, {})
-    if not authorised and not held_open:
-        return ([f"VACUOUS: no {release} artifact names an issue — the check "
-                 f"would pass no matter what was closed"], [], {}, {})
-
     failures: list[str] = []
     warnings: list[str] = []
+
+    # RQ-80-CLOSEGATE (#1454). An empty authorised-and-held-open set used to
+    # RETURN HERE, before the loop below. The gate still went red -- this line is
+    # itself a failure -- but every PER-ISSUE verdict was lost, and those are the
+    # actionable half. `prior_attribution` is built from EVERY earlier release, so
+    # the "a prior release held this open and someone closed it anyway" branch is
+    # fully computable with nothing authorised in THIS release. Measured on the
+    # v0.80 tree: closing #1318 (held open by v0.77 via RQ-77-FALCON2, and an
+    # EXTERNAL reporter's issue) produced no mention of #1318 and no "Reopen it".
+    # That is the v0.71/v0.73 shape, where the derived close set was empty and the
+    # tag would have closed that same reporter's live blocker.
+    #
+    # So vacuity is now reported as a FINDING ABOUT THE AUTHORISED SET and the
+    # loop runs regardless.
+    if not authorised and not held_open:
+        failures.append(
+            f"VACUOUS AUTHORISED SET: no {release} artifact both names an issue "
+            f"and claims completion, so nothing in this release authorises ANY "
+            f"closure. The per-issue verdicts below are still derived -- from "
+            f"earlier releases' attributions -- and must be acted on")
     for n in sorted(closed):
         if n in held_open:
             failures.append(

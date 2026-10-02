@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-80-CLOSEGATE
     type: system-req
     release: v0.80
-    status: proposed
+    status: implemented
     title: "A vacuous close set collapses every per-issue closure verdict into one generic line, in the one path that discards its exit code"
     description: >
       FOUND AT THE v0.79 CUT and filed as #1454. `issue_closure_check.check()` returns on an
@@ -41,4 +41,26 @@ artifacts:
       priority: must
       issue: "#1454"
       verification-track: manual
-      done-when: "manual:2026-10-31 the closure loop runs unconditionally with vacuity reported as a finding about the authorised set rather than as an early return, shown RED on a planted closure of a prior-release held-open issue in the vacuous state; and GATE5's discarded exit code is either fixed or recorded as a deliberate residual with its reason"
+      done-when: "contains:scripts/test_issue_closure_check.py:the per-issue verdict SURVIVES it, by name"
+      verified-by: >-
+        DELIVERED. The vacuous branch no longer RETURNS before the closure loop; it appends a finding
+        about the authorised set and the loop runs regardless. `prior_attribution` is built from EVERY
+        earlier release, so the "a prior release held this open and someone closed it anyway" branch is
+        fully derivable with nothing authorised in THIS release.
+        THE RED-FIRST USED THE WORST INSTANCE AVAILABLE, and it was live rather than planted. v0.80 IS
+        vacuous on main (authorised=0, held_open=0), and `prior_attribution` lists NINE issues a prior
+        release held open — one of which is #1318, held by v0.77 via RQ-77-FALCON2 and an EXTERNAL
+        reporter's still-open issue. Before the fix, `check(root, "v0.80", closed={1318})` returned ONE
+        generic line that never mentioned #1318 and never said "Reopen it". That is the v0.71/v0.73 shape,
+        where the derived close set was empty and the tag would have closed that same reporter's live
+        blocker. After: the named `HELD OPEN BY v0.77 BUT CLOSED` verdict for issue 1318, ending `Reopen it` — written without the hash because the keyword and the number must not sit adjacent in text that gets pasted into release notes or a PR body, which is how v0.69 auto-closed an external reporter's live blocker from a DENIAL.
+        IT ADDS NO DAY-ONE REDS, measured on main's own window rather than argued: the failure count stays
+        at ONE, and what the fix RECOVERS is a correct warning that was being discarded —
+        `ATTRIBUTED TO v0.79: #1431 ... Not a v0.80 closure`. Strictly more information, zero new failures.
+        VERIFIED, NOT ASSUMED: the committed suite reports 37 assertions and rc=0 both before and after,
+        with an IDENTICAL assertion set and zero lost; across v0.63-v0.80 x three closed-sets the patched
+        and shipped checks agree 51 times and diverge 3, every divergence in the vacuous case. The four new
+        assertions were then proven potent by re-introducing the early return, which reds exactly the two
+        that name #1318 and "Reopen it".
+        STILL OWED AND RECORDED RATHER THAN QUIETLY DROPPED: `scripts/tag_release.sh:94-95` runs GATE5
+        behind `|| echo`, discarding its exit code. That is untouched here and remains a residual.

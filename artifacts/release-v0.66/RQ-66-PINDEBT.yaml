@@ -72,7 +72,7 @@ artifacts:
         refused. Both merged; the ratchet then recorded its first fall (104 ->
         27 under RQ-66-BOTHWRONG) and its first waived rises.
       verified-by: >-
-        PENDING. The demonstration is the deliverable: add a synthetic pin and
+        DELIVERED, and the sentence that follows is the planning-time instruction, kept verbatim because it is the record of what was asked: the demonstration was the deliverable — add a synthetic pin and
         show the gate red; close one and show the number fall. Report the
         starting count as measured, not as remembered — v0.65's ten is a
         coordinator tally and the derivation may disagree, which would itself be

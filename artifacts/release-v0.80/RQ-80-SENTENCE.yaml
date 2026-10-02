@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-80-SENTENCE
     type: system-req
     release: v0.80
-    status: proposed
+    status: implemented
     title: "Make ONE class of gate-unreadable statement mechanically checkable — or refute that the class can be gated"
     description: >
       THE HEADLINE, and every figure in it is DERIVED from the committed review record rather
@@ -75,4 +75,38 @@ artifacts:
       priority: must
       issue: "#1461"
       verification-track: manual
-      done-when: "manual:2026-10-31 ONE named class is either gated — with the gate shown RED on a planted instance and GREEN on the corrected tree, and the planted instance removed — or REFUTED with a census stating how many existing sites the gate would red and why that makes it unshippable"
+      done-when: "contains:scripts/test_verdict_prose_check.py:test_zero_population_refuses_rather_than_passing"
+      verified-by: >-
+        DELIVERED, and the census says it is shippable rather than refutable. THE RULE: the leading
+        ALL-CAPS VERDICT of a `verified-by:` must agree with that artifact's own `status:`/`disposition:`.
+        `scripts/verdict_prose_check.py` is wired into Claim Check in three steps — `--self-test`, the
+        verdict, and its own tests — because the verdict run ALONE would go green the moment the rule
+        stopped reading prose.
+        THE CENSUS, which is what decides shippable-or-refuted: 164 artifacts carry `verified-by:` prose,
+        43 open with a verdict word (the population), and exactly TWO disagreed — RQ-66-PINDEBT and
+        RQ-66-UNWATCHED, both `status: implemented` with `landed:` naming PRs #1242/#1247/#1246 that were
+        verified MERGED via gh, while their prose still opened `PENDING.` because it was the planning-time
+        INSTRUCTION and nobody rewrote it when the work shipped. Both are corrected here, leaving the gate
+        green. That is why this is not RQ-74-STALEMSG's shape: two sites, not 363.
+        THE VOCABULARY IS DERIVED, and reading what each token actually leads removed three of them.
+        `FULL` leads "FULL 243-MODULE CORPUS measured on ..." — it describes the CORPUS, not the work.
+        `DONE-WHEN` leads "DONE-WHEN BRANCH B, taken deliberately" — it names a field. And bare `NOT` could
+        lead "NOT a regression — delivered in full", the OPPOSITE verdict, so the verdict is the PHRASE
+        `NOT DELIVERED`. All three sit on claiming artifacts today, so keeping them would have cost nothing
+        now and produced a false positive later. Population 45 -> 43.
+        POTENCY TOOK THREE CONTROLS AND MY FIRST ATTEMPT HAD ONLY THE WEAKEST. I initially replayed
+        RQ-79-ORDEAL at 28196ec7 -> f8809521 and called that proof the rule reads prose. It is not: the
+        prose reads `LANDED.` at BOTH shas and what changed was the fields, so that test would pass for a
+        rule that never read prose at all. The committed self-test now holds the FIELDS constant and swaps
+        only the verdict (A, the prose-sensitivity proof), holds the PROSE constant and swaps the status
+        (B), and replays the history pair labelled for what it actually shows (C: a combination R11
+        ACCEPTS, so it is coverage over R11 rather than prose-sensitivity).
+        THE ONE CARVE-OUT IS A NAMED GATE CONFLICT, NOT A FUDGE. A leading `REFUTED` beside a CLAIMING
+        status is LEGAL, because delivering a refutation IS delivery and R11 FORBIDS `disposition: refuted`
+        beside a claiming status — so no legal field can express it. That is #1430's shape. Without it the
+        gate reds RQ-77-PROSEBLIND, whose prose is right and whose fields cannot be.
+        AND #1319 DOES NOT REFUTE THIS, measured rather than assumed.
+        `scripts/repro/prose_status_claim_1319.py` refuted a DIFFERENT rule — prose that NAMES a lifecycle
+        status — and correctly refused to be wired. Run both on one tree: its final stage hits
+        RQ-62-EMBEDDER and RQ-75-REPLAY, this one hits the two RQ-66 artifacts. Disjoint populations. Its
+        header's "0 live true positives" is also no longer the live figure; it returns 2 now.

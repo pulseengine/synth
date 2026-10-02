@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-80-STEP7
     type: system-req
     release: v0.80
-    status: proposed
+    status: implemented
     title: "The cold-review conformance gate passes on a record naming a PREVIOUS release's commit"
     description: >
       BREAK-TESTED AT THE v0.79 CUT and filed as #1456. `loop_conformance_check.py:715-733`
@@ -36,4 +36,24 @@ artifacts:
       priority: should
       issue: "#1456"
       verification-track: manual
-      done-when: "manual:2026-10-31 step 7 reds on a record declaring a previous release's commit and passes on a legitimate post-squash head, both shown by execution; or the tightening is refuted with the specific legitimate record it would wrongly red"
+      done-when: "contains:scripts/test_loop_conformance_check.py:Step7PriorReleaseBar"
+      verified-by: >-
+        DELIVERED. Step 7 computed `merge-base --is-ancestor` and then returned DERIVED_PASS on BOTH
+        branches, varying only the prose, so the effective bar was "the declared object exists".
+        THE REPLACEMENT BAR: the declared sha must not be an ancestor of (or equal to) the PREVIOUS release
+        tag. A legitimate post-squash reviewed head lives on a deleted branch and so is NOT an ancestor of
+        that tag; a prior release's commit is. Validated inside the REAL checker with the record stubbed,
+        five for five: v0.79's genuine squashed-away head `a213b7f6` PASSES, a branch head PASSES, and
+        v0.79.0's, v0.78.0's and v0.63.0's release commits all RED.
+        THE PREVIOUS TAG IS IMPORTED, NOT MIRRORED. `previous_release_tag` already exists in
+        `status_evidence_check.py` with its own coverage of the missing-tag case, and re-deriving it here
+        would be exactly the hand-written mirror the North Star forbids; `issue_closure_check` already
+        imports `authorised_close_set` the same way. A release with no visible predecessor is ATTESTED —
+        skipped loudly — rather than passed silently, and an unresolvable tag is NOT_DERIVED.
+        ONE VACUOUS TEST CAUGHT ITSELF BEFORE IT COULD MISLEAD. My first attempt planted a scratch review
+        record in the WORKING TREE and ran the gate three times; all three printed the identical "no
+        docs/reviews/ record at HEAD" line, because the gate reads at the GIT REF. Three identical outputs
+        would have read as "the tightening works". The committed tests stub `tree_ls`/`tree_read` instead,
+        derive their shas FROM TAGS so they do not rot when history is rewritten, and skip loudly on a
+        shallow clone rather than passing vacuously — and the whole suite reports zero skips here. Potency
+        proven by disabling the bar, which reds `test_a_previous_releases_commit_is_red`.
