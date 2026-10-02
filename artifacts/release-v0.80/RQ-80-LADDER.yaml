@@ -43,5 +43,23 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1432"
+      disposition: deferred
       verification-track: manual
       done-when: "manual:2026-10-31 either the corpus mounts and the ladder is re-measured by the COMMITTED tool with its own date and commit AND BOTH the reach floor and the cost ceiling are pinned slack-free, or the lane states that reach has no live number for the sixteenth release, names the human action, and records explicitly that the pair is unpinned for the third consecutive release"
+      verified-by: >-
+        NOT DELIVERED, and the blocker is unchanged. Reach now has no live number for SIXTEEN releases:
+        `docs/status/ACCEPTANCE_LADDER.md` still reads "Acceptance ladder — v0.63", measured 2026-09-06
+        at `e3a09ac2`, and `git tag --list 'v0.*' --sort=creatordate` counts SIXTEEN tags after v0.63.0.
+        THE CORPUS IS UNREACHABLE, not lost, and the measurement is more specific than last release:
+        `/Volumes/Work/corpora/wasm-243` does not exist because `/Volumes/Work` IS NOT MOUNTED AT ALL —
+        the only volumes present are Macintosh HD, Data, Recovery and a Time Machine local snapshot.
+        `mac.fritz.box` resolves and answers on port 22 but returns
+        `Permission denied (publickey,password,keyboard-interactive)`, and attempting passwords stays
+        DECLINED. The human action that would unblock it is mounting that volume or granting key auth on
+        that host; nothing in this repo can.
+        AND THE CONSEQUENCE IS STATED RATHER THAN LET ACCUMULATE: v0.78 pinned neither half of the
+        reach-floor/cost-ceiling pair, v0.79 pinned neither, and v0.80 makes it the THIRD CONSECUTIVE
+        release with the pair unpinned. Pinning the cost ceiling alone is the alternating the theme
+        forbids — it would let a release buy cost wins with reach losses and stay green — so neither is
+        pinned, and that is a choice recorded here rather than an omission. A third silent carry is how
+        a theme becomes decoration, which is why this says it in full for the third time.

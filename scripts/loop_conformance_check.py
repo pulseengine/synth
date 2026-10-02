@@ -894,7 +894,76 @@ class Check:
                 "publish happens after the tag; demanding it pre-tag would "
                 "invent evidence — audited by retro mode",
             )
+            self.add(
+                "8",
+                "npm live",
+                NA_MOMENT,
+                "publish happens after the tag; audited by retro mode",
+            )
             return
+
+        # RQ-80-NPM (#1460). The npm package was TEN releases behind and nothing
+        # asked. `Release NPM` failed at its `Preflight — verify npm auth` step on
+        # every one of its last ten runs; the preflight is the part WORKING — it
+        # refuses before publishing rather than pushing an unauthenticated
+        # artifact. The defect is that a loud, repeated refusal went unacted on.
+        #
+        # WHY IT STAYED INVISIBLE, which is what this slot fixes: every release
+        # report in that period said THREE release workflows succeeded —
+        # `Release`, `Publish to crates.io`, `Signing E2E` — and all three
+        # genuinely did. `Release NPM` is a FOURTH. Counting three successes is
+        # true while omitting a fourth that always fails. And this step only ever
+        # asked about `scripts/publish.rs`, which is the CARGO surface; npm had no
+        # equivalent assertion anywhere, so a shipped artifact went missing ten
+        # times behind an accurate-sounding sentence.
+        #
+        # Placed BEFORE the crates block deliberately: that block `return`s early
+        # on an unreachable registry or a dead crate, so an npm check appended
+        # after it would be skipped exactly when something else had already gone
+        # wrong — silent in the cases that matter most.
+        #
+        # Name and version are DERIVED from the ref's own npm/package.json, never
+        # assumed, so a rename or an unbumped manifest is visible rather than
+        # papered over.
+        pkg_raw = tree_read(self.ref, "npm/package.json")
+        if not pkg_raw:
+            self.add("8", "npm live", NOT_DERIVED,
+                     "npm/package.json absent at ref — cannot derive the package "
+                     "name or version, so npm publication is UNCHECKED (#1460)")
+        else:
+            try:
+                pkg = json.loads(pkg_raw)
+                name, ver = pkg["name"], pkg["version"]
+            except Exception as exc:
+                name = ver = None
+                self.add("8", "npm live", NOT_DERIVED,
+                         f"npm/package.json unparseable at ref ({exc}) — npm "
+                         f"publication is UNCHECKED (#1460)")
+            if name and ver:
+                if ver != self.bare_version:
+                    self.add("8", "npm live", DERIVED_FAIL,
+                             f"npm/package.json declares {name}@{ver} but this "
+                             f"release is {self.bare_version} — the manifest was "
+                             f"not bumped, so even a successful publish would "
+                             f"ship the wrong version (#1460)")
+                else:
+                    code = http_status(
+                        f"https://registry.npmjs.org/{name}/{ver}")
+                    if code == 0:
+                        self.add("8", "npm live", NOT_DERIVED,
+                                 f"registry.npmjs.org unreachable checking "
+                                 f"{name}@{ver}")
+                    elif code != 200:
+                        self.add("8", "npm live", DERIVED_FAIL,
+                                 f"{name}@{ver} does NOT resolve on npm "
+                                 f"(HTTP {code}). `Release NPM` fails at its npm "
+                                 f"auth preflight; the three release workflows "
+                                 f"reported as successful do not include it "
+                                 f"(#1460)")
+                    else:
+                        self.add("8", "npm live", DERIVED_PASS,
+                                 f"{name}@{ver} resolves on registry.npmjs.org")
+
         pub = tree_read(self.ref, "scripts/publish.rs") or ""
         m = re.search(r"CRATES_TO_PUBLISH[^=]*=\s*&\[(.*?)\];", pub, re.S)
         crates = re.findall(r'"([a-z0-9-]+)"', m.group(1)) if m else []
