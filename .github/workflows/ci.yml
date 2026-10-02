@@ -460,6 +460,17 @@ jobs:
       - name: Merge-ritual test — the wait loop is bounded, and the merge stays inside its && chain (RQ-78-RITUAL)
         run: python3 scripts/test_merge_ritual.py
 
+      # RQ-80-RITUAL3 (#1440): the OTHER release-critical script had NO test for
+      # NINE releases — `grep -rn tag_release` found zero tests and zero CI
+      # references, and v0.72's cold review recorded that same absence. Its four
+      # weaknesses were hand-guarded by the operator at every tag, and W2b could
+      # PUBLISH A PRE-FIX COMMIT: the tag was created before its own decision, a
+      # refusal left it behind, and the next run checked only its SHAPE, never its
+      # COMMIT. PART 1 EXECUTES the shipped script against a throwaway repo; PART 2
+      # asserts the rest statically with every assertion proven non-vacuous.
+      - name: Tag-release test — a refusal leaves no tag, and a leftover tag not at HEAD is refused (RQ-80-RITUAL3)
+        run: python3 scripts/test_tag_release.py
+
       - name: Artifact citation gate — no artifact claims a test that does not exist (911)
         run: |
           set -euo pipefail
