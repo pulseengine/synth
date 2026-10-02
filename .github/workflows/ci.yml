@@ -150,6 +150,39 @@ jobs:
           components: clippy
           # #1279: the no_std build of synth-memory below needs a bare-metal target.
           targets: thumbv7em-none-eabihf
+      # RQ-80-TOOLCHAIN (#1459): WHICH COMPILER GRADED THIS PR? Until now the only
+      # answer was inside the job log, so a required check's verdict could not be
+      # explained without downloading logs. `@stable` resolves to whatever stable
+      # each self-hosted runner has ALREADY CACHED (both logs report the toolchain
+      # "unchanged"), and the 68 `@stable` uses in this file all share that.
+      #
+      # MEASURED over 26 Clippy runs on six runners, 2026-10-01..02: every runner
+      # transitions EXACTLY ONCE from 1.98.1 to 1.99.0 and never back — 6/6
+      # monotone. So this is not a standing lottery, it is a TRANSIENT CONVERGENCE
+      # WINDOW after each rustc release: last 1.98.1 at 12:12, last laggard flipped
+      # at 15:59, about 3h47m wide. v0.79 cut INSIDE that window, which is exactly
+      # why Clippy passed on main and failed on the branch with zero Rust changed.
+      #
+      # This writes the resolved compiler to the job SUMMARY, which is readable
+      # from the run page. It asserts nothing and cannot fail the job: pinning a
+      # toolchain changes a REQUIRED check's behaviour, which this repo's own rule
+      # says is not safe to do casually, so the window is made VISIBLE rather than
+      # closed. Next time a release lands, the disagreement is one glance away.
+      - name: Record the resolved toolchain (RQ-80-TOOLCHAIN)
+        run: |
+          {
+            echo "### Toolchain that graded this job"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| runner | \`${{ runner.name }}\` |"
+            echo "| rustc | \`$(rustc --version)\` |"
+            echo "| cargo | \`$(cargo --version)\` |"
+            echo "| clippy | \`$(cargo clippy --version)\` |"
+            echo ""
+            echo "\`@stable\` resolves per-runner from its own cache (#1459)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          rustc --version
       - name: Cache Cargo dependencies
         uses: actions/cache@v6
         with:

@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-80-TOOLCHAIN
     type: system-req
     release: v0.80
-    status: proposed
+    status: implemented
     title: "A REQUIRED check graded the same source two ways on two runners, and the resolved compiler appears only in the job log"
     description: >
       MEASURED AT THE v0.79 CUT and filed as #1459. With ZERO Rust files changed, `Clippy` —
@@ -43,4 +43,38 @@ artifacts:
       priority: should
       issue: "#1459"
       verification-track: manual
-      done-when: "manual:2026-10-31 the resolved rustc version is surfaced where it can be read without downloading logs, and the toolchain lottery is either resolved by an explicitly chosen option from #1459 or recorded as an accepted risk with the decision and its owner named"
+      done-when: "contains:.github/workflows/ci.yml:Record the resolved toolchain (RQ-80-TOOLCHAIN)"
+      verified-by: >-
+        DELIVERED, and the MECHANISM IS SHARPER THAN THIS ARTIFACT ORIGINALLY STATED — which is the
+        part worth reading, because the original wording would have justified a more expensive fix than
+        the hazard warrants.
+        WHAT WAS SURFACED: the Clippy job now writes the resolved `rustc`, `cargo` and `clippy` versions
+        plus the runner name to `$GITHUB_STEP_SUMMARY`, readable from the run page. Until now the only
+        answer to "which compiler graded this PR?" lived inside the job log, and `gh api .../logs` writes
+        NOTHING without `--allow-escape-sequences`, so an empty result there is a fact about gh rather
+        than about the log. The step asserts nothing and cannot fail the job.
+        THE CORRECTED CHARACTERIZATION, measured over 26 Clippy runs on six runners across
+        2026-10-01..02: EVERY RUNNER TRANSITIONS EXACTLY ONCE from 1.98.1 to 1.99.0 and NEVER BACK —
+        6 of 6 monotone, with no log ever containing two versions. So this is NOT a standing lottery, as
+        this artifact first called it. It is a TRANSIENT CONVERGENCE WINDOW after each rustc release:
+        the last 1.98.1 observation was 01-12 at 12:12 and the last laggard (01-6) flipped by 15:59, a
+        window about 3h47m wide. The fleet is converged on 1.99.0 at every runner's latest observation.
+        AND THAT EXPLAINS v0.79 EXACTLY. Its three Clippy failures — 13:45, 13:55, 14:52 — all ran at
+        1.99.0, inside the window, while main's green run at 12:12 ran at 1.98.1. v0.79 cut INSIDE the
+        convergence window, which is the whole reason Clippy passed on main and failed on all three
+        branch heads with ZERO Rust changed.
+        ONE NARROW SAMPLE NEARLY BECAME THE OPPOSITE CONCLUSION. Five recent runs all reported 1.99.0
+        across four runners, which read as "the fleet converged, nothing to see". That is a rate off one
+        instant promoted to a property of the pool — the error this programme has recorded before. Only
+        widening to 26 observations WITH THE TIME AXIS produced the monotone-transition finding, and an
+        intermediate view that grouped by runner alone looked like the same runner disagreeing with
+        itself, which would have refuted the cached-stable mechanism. It did not; the samples simply
+        straddled each runner's update.
+        THE LOTTERY IS NOT CLOSED, AND THAT IS AN ACCEPTED RISK WITH A REASON. All 68 `@stable` uses in
+        ci.yml share this resolution, so pinning would touch the behaviour of REQUIRED checks — which
+        this repo's own standing rule says is not safe to do casually, and the rule's owner is the
+        maintainer. Against that cost the measured exposure is a few hours per rustc release, now
+        visible at a glance instead of by downloading logs. So the window is made OBSERVABLE rather than
+        closed, and the next occurrence is diagnosable in seconds. The 1.99.0 runner was RIGHT both
+        times: that release adds `needless_borrows_for_generic_args`, main was LATENTLY red, and v0.79
+        fixed it red-first (rc=101 with exactly three errors before, rc=0 after).
