@@ -38,5 +38,23 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1136"
+      disposition: partial
       verification-track: manual
       done-when: "manual:2026-10-31 the eighteenth filing exists with BOTH the feature-loop tag and a spar/aadl tag so the step 1-2 matcher sees it, the ordinal is derived by artifact identity with the commit stated, and spar#445's STATE is re-checked and recorded"
+      verified-by: >-
+        PARTIAL. The deferral is FILED and re-verified; feature-loop steps 1-2 are skipped again.
+        THE ORDINAL IS DERIVED BY ARTIFACT IDENTITY, not by tag set, and stated with where it is true:
+        `ls artifacts/release-v*/RQ-*ARCHMODEL*.yaml | wc -l` returns 18 on this tree, v0.63 through
+        v0.80 with no gaps, so this is the EIGHTEENTH consecutive filing. Deriving it by tag set is the
+        v0.77 error, which returned 14 where the answer was 15 because v0.65's filing predates the
+        five-tag vocabulary.
+        THE MATCHER CAN SEE IT, checked rather than assumed, because this filing has gone invisible
+        three times (v0.65, v0.69, v0.75) by losing one half of its tag conjunction:
+        `find_filed_steps12_decision(docs, "v0.80")` returns RQ-80-ARCHMODEL with `stale=False`. Both
+        halves are present — `feature-loop` AND `spar`/`aadl` — plus a non-empty `issue:`.
+        THE BLOCKER IS RE-CHECKED, state before body: pulseengine/spar#445 is OPEN, last updated
+        2026-09-03. spar accepts property associations from UNDECLARED property sets silently (rc=0), so
+        an invented property is indistinguishable from a satisfied one, which is disqualifying for
+        generating WIT from AADL.
+        PARTIAL rather than delivered because the filing is the whole deliverable and the underlying
+        steps remain undone for the eighteenth release. Saying so is the point of the recurring filing.

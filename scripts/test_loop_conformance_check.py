@@ -575,5 +575,83 @@ class Step7PriorReleaseBar(unittest.TestCase):
         self.assertIn("no", seven[0][3].lower())
 
 
+class Step8NpmLive(unittest.TestCase):
+    """RQ-80-NPM (#1460). Step 8 asked only about `scripts/publish.rs` — the CARGO
+    surface — so npm publication had no assertion anywhere and the package went
+    ten releases behind while reports truthfully said three release workflows
+    succeeded. `Release NPM` is a FOURTH, and it failed its auth preflight every
+    time.
+
+    These stub the HTTP layer so the tests do not depend on the live registry: a
+    network-dependent gate test is a gate that goes quiet when the network does.
+    """
+
+    def _run(self, pkg_json, status, version="v0.80.0", mode="retro"):
+        c = mk_check(version, mode=mode)
+        reads = {"npm/package.json": pkg_json, "scripts/publish.rs": ""}
+        with mock.patch.object(lcc, "tree_read",
+                               side_effect=lambda ref, p: reads.get(p, "")), \
+             mock.patch.object(lcc, "tree_has", return_value=True), \
+             mock.patch.object(lcc, "http_status", return_value=status), \
+             mock.patch.object(lcc, "changelog_structure_verdict",
+                               return_value=(lcc.ATTESTED, "stubbed")), \
+             mock.patch.object(c, "check_run_conclusion", return_value="success"):
+            c.step_8()
+        got = [f for f in c.findings if f[1] == "npm live"]
+        self.assertTrue(got, "step 8 recorded no `npm live` finding at all")
+        return got[0]
+
+    PKG = '{"name": "@pulseengine/synth", "version": "0.80.0"}'
+
+    def test_missing_from_the_registry_is_red(self):
+        self.assertEqual(self._run(self.PKG, 404)[2], lcc.DERIVED_FAIL)
+
+    def test_present_in_the_registry_passes(self):
+        self.assertEqual(self._run(self.PKG, 200)[2], lcc.DERIVED_PASS)
+
+    def test_unreachable_registry_is_not_derived_rather_than_green(self):
+        """An unreachable registry must not read as published."""
+        self.assertEqual(self._run(self.PKG, 0)[2], lcc.NOT_DERIVED)
+
+    def test_an_unbumped_manifest_is_red_even_if_that_version_is_live(self):
+        """The old version resolving is exactly how an unbumped manifest would
+        look green. Name and version are DERIVED from the ref's own manifest."""
+        stale = '{"name": "@pulseengine/synth", "version": "0.79.0"}'
+        f = self._run(stale, 200)
+        self.assertEqual(f[2], lcc.DERIVED_FAIL)
+        self.assertIn("not bumped", f[3])
+
+    def test_absent_manifest_is_not_derived(self):
+        self.assertEqual(self._run("", 200)[2], lcc.NOT_DERIVED)
+
+    def test_unparseable_manifest_is_not_derived(self):
+        self.assertEqual(self._run("{not json", 200)[2], lcc.NOT_DERIVED)
+
+    def test_pretag_is_na_by_moment_not_a_false_red(self):
+        """Demanding publication BEFORE the tag would invent evidence."""
+        self.assertEqual(self._run(self.PKG, 404, mode="pretag")[2], lcc.NA_MOMENT)
+
+    def test_it_runs_even_when_the_crates_check_would_bail(self):
+        """Placed BEFORE the crates block, which returns early on an unparseable
+        CRATES_TO_PUBLISH — otherwise npm would go silent exactly when something
+        else had already gone wrong."""
+        c = mk_check("v0.80.0", mode="retro")
+        reads = {"npm/package.json": self.PKG, "scripts/publish.rs": ""}
+        with mock.patch.object(lcc, "tree_read",
+                               side_effect=lambda ref, p: reads.get(p, "")), \
+             mock.patch.object(lcc, "tree_has", return_value=True), \
+             mock.patch.object(lcc, "http_status", return_value=404), \
+             mock.patch.object(lcc, "changelog_structure_verdict",
+                               return_value=(lcc.ATTESTED, "stubbed")), \
+             mock.patch.object(c, "check_run_conclusion", return_value="success"):
+            c.step_8()
+        labels = {f[1]: f[2] for f in c.findings}
+        # the crates block really did bail (empty publish.rs -> unparseable list)
+        self.assertEqual(labels.get("crates live"), lcc.NOT_DERIVED,
+                         "the premise of this test is that crates bails here")
+        # ...and npm was still recorded, which is the property under test
+        self.assertEqual(labels.get("npm live"), lcc.DERIVED_FAIL)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

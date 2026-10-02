@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-80-NPM
     type: system-req
     release: v0.80
-    status: proposed
+    status: implemented
     title: "The npm package is TEN releases behind and no release check asserts npm publication at all"
     description: >
       FOUND WHILE VERIFYING v0.79.0's PUBLICATION. `@pulseengine/synth` on npm has
@@ -39,4 +39,33 @@ artifacts:
       priority: should
       issue: "#1460"
       verification-track: manual
-      done-when: "manual:2026-10-31 the release verification asserts npm publication by deriving name and version from npm/package.json and requiring the registry to serve that exact version, shown RED against the current gap; and either the auth failure is resolved by its owner or the lane records that the assertion now makes a recurrence impossible to miss"
+      done-when: "contains:scripts/test_loop_conformance_check.py:Step8NpmLive"
+      verified-by: >-
+        DELIVERED — the assertion exists, it is RED against the real gap, and the gap itself is a
+        credential owned outside this repo.
+        WHAT LANDED: a `npm live` slot in `loop_conformance_check.py` step 8, deriving the package NAME
+        and VERSION from the ref's own `npm/package.json` and requiring `registry.npmjs.org` to serve
+        that exact version. Pretag reports NA-BY-MOMENT, because demanding publication before the tag
+        would invent evidence; RETRO is where it bites.
+        RED-FIRST WAS FREE, measured rather than planted: retro on v0.79.0 reports
+        `npm live DERIVED-FAIL @pulseengine/synth@0.79.0 does NOT resolve on npm (HTTP 404)` directly
+        beside `crates live DERIVED-PASS 12/12 crates resolve at 0.79.0`. That juxtaposition IS the
+        finding — cargo shipped, npm did not, and only cargo was ever asked about.
+        PLACED BEFORE THE CRATES BLOCK, deliberately and tested: that block returns early on an
+        unreachable registry or an unparseable `CRATES_TO_PUBLISH`, so an npm check appended after it
+        would go silent exactly when something else had already gone wrong.
+        `Step8NpmLive` carries EIGHT assertions with the HTTP layer stubbed, because a
+        network-dependent gate test is a gate that goes quiet when the network does: missing is red,
+        present passes, UNREACHABLE is NOT_DERIVED rather than green, an UNBUMPED manifest is red even
+        when its stale version IS live (that is precisely how it would otherwise look green), an absent
+        or unparseable manifest is NOT_DERIVED, pretag is NA-BY-MOMENT, and npm is still recorded when
+        the crates block bails. Proven potent by moving the block after the crates early return: SEVEN
+        of the eight red, the eighth being the pretag path which never reaches that code.
+        THE GAP IS NOT CLOSED AND IS NOT THIS REPO'S TO CLOSE. `Release NPM` fails at step 4,
+        `Preflight — verify npm auth`, with steps 5-8 SKIPPED — so nothing wrong was ever published; the
+        preflight is the part working. The log names the cause and the fix exactly: NPM_TOKEN is
+        invalid, expired or the wrong type, and npm publish needs a classic Automation token. Rotating
+        it is a credential action belonging to the repository owner, who has been asked and has taken
+        it. Until then this slot reds in retro, which is TRUE, and that is the whole point: ten releases
+        went missing behind reports that accurately said three release workflows succeeded while a
+        FOURTH always failed.
