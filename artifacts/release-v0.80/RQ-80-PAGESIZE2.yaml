@@ -1,0 +1,67 @@
+artifacts:
+  - id: RQ-80-PAGESIZE2
+    type: system-req
+    release: v0.80
+    status: proposed
+    title: "The pagesize oracle landed and the capability did not — ship (pagesize 1) so a per-domain tenant stops costing 64 KiB"
+    description: >
+      CARRIED from v0.79 at `disposition: partial`. The ORACLE landed and is CI-wired in
+      `spec-suite.yml`; the CAPABILITY did not.
+
+      THIS LANE IS THE SECOND HALF OF A DELIBERATELY ORDERED PAIR, not a gap — and an earlier
+      draft of this artifact got that wrong, which is this release's own theme landing on its own
+      plan. `(pagesize 1)` is LOUD-REFUSED today, by `refuse_custom_page_size()` at
+      `crates/synth-cli/src/main.rs:3701`, landed as RQ-69-PAGESIZE (#1315, gale's ask) and PINNED
+      by `crates/synth-cli/tests/refuses_custom_page_size_1315.rs`. A test that pins the behaviour
+      makes it a DECISION, so this lane REVERSES a decision with evidence rather than fixing an
+      oversight — and the decision's own docstring states the order: "Honouring the declared size
+      is capability work with its own oracle and is NOT what this does — gale asked for the refusal
+      first, in that order."
+
+      AND `__synth_mem_size_N` ALREADY EXISTS. It is emitted SHN_ABS carrying the declared initial
+      bytes (`main.rs:7597-7600`, shipped v0.62 for #1145) and asserted at 65536 and 3x65536 by
+      `multi_memory_406.rs:238-239`. The earlier draft said neither symbol was emitted; `grep -rn
+      __synth_mem_size crates/` returns fourteen sites and refutes that. What does NOT exist is
+      `__synth_mem_region_N` — zero hits.
+
+      SO THE DELIVERABLE IS THREE COUPLED CHANGES, and the refusal's own diagnostic already names
+      why: it would report `__synth_mem_size_{idx}` as `initial_pages * 65536` for a memory the
+      module says is one byte, and that symbol is what an embedder programs one MPU region from, so
+      the region over-grants by the page-size ratio. Accepting `(pagesize 1)` therefore requires
+      `__synth_mem_size_N` to carry the DECLARED byte count, and a new `__synth_mem_region_N` to
+      carry the MPU-legal rounded extent, in the same change. The refusal and its pinning test
+      narrow together with them; neither moves alone.
+
+      THE SPEC BOUND IS SETTLED AND NARROWER THAN THE ASK, verified against this repo's OWN
+      vendored suite rather than a third-party validator: `custom-page-sizes-invalid.wast` asserts
+      `(pagesize 32)` INVALID by name under the heading "Power-of-two page sizes that are not 1 or
+      64KiB". The legal set is exactly {1, 65536}, so the reporter's ">= 32 B powers of two"
+      scoping is spec-invalid and the whole capability is `(pagesize 1)` — byte-granular, a FINER
+      lever than the one asked for, and it still answers the board that motivated the ask: two
+      ~20 KiB tenants fit a G474's 96 KiB where two 64 KiB pages cannot.
+
+      PMSA DOES NOT GO AWAY, which is why a SECOND symbol is right rather than overloading one
+      number: an MPU region must still be a power of two >= 32 B, so the reservation rounds up while
+      the declaration does not. Collapsing them would turn the over-grant from silent into subtle.
+
+      THE ORACLE LANDS FIRST remains the rule, and here it already has, so this lane is the
+      capability half and may not widen acceptance without the oracle moving with it.
+
+      REFUTING COMMAND, and run BOTH halves — the first alone is what the earlier draft ran:
+      `grep -rn __synth_mem_region crates/` must be EMPTY and `grep -rn __synth_mem_size crates/`
+      must be NON-empty. Then `python3 scripts/repro/pagesize_oracle_1441.py`, and `cargo test -p
+      synth-cli --test refuses_custom_page_size_1315` — if that test no longer passes, the refusal
+      already moved and this lane starts from a different place.
+    tags:
+      - reach
+      - capability
+      - carried
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1441"
+      verification-track: manual
+      done-when: "manual:2026-10-31 refuse_custom_page_size() is NARROWED so (pagesize 1) compiles, __synth_mem_size_N carries the DECLARED byte count and a new __synth_mem_region_N carries the MPU-legal rounded extent, all in one change with refuses_custom_page_size_1315.rs narrowed to the still-refused set in the same commit; the pagesize oracle's auto-strengthening assertions fire on the new capability rather than being skipped; and an execution differential covers a memory.size on a non-default page size"

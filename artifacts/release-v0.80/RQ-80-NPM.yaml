@@ -1,0 +1,42 @@
+artifacts:
+  - id: RQ-80-NPM
+    type: system-req
+    release: v0.80
+    status: proposed
+    title: "The npm package is TEN releases behind and no release check asserts npm publication at all"
+    description: >
+      FOUND WHILE VERIFYING v0.79.0's PUBLICATION. `@pulseengine/synth` on npm has
+      `dist-tags.latest = 0.69.0`; versions 0.70.0 through 0.79.0 are ALL missing. The `Release
+      NPM` workflow has failed on every one of its last ten runs (2026-09-22 to 2026-10-01),
+      each time at the same step — `Preflight — verify npm auth`.
+
+      THE PREFLIGHT IS NOT THE DEFECT; it is the only part working. It refuses before publishing
+      rather than pushing an unauthenticated artifact, so nothing wrong was ever published. The
+      defect is that a loud, repeated refusal went unacted on for ten consecutive releases.
+
+      WHY IT STAYED INVISIBLE, which is the part this lane must fix: every release report in that
+      period states that THREE release workflows succeeded — `Release`, `Publish to crates.io`,
+      `Signing E2E` — and all three genuinely did. `Release NPM` is a FOURTH. Counting three
+      successes is true while omitting a fourth that always fails. The exit condition also asks
+      only "are the 12 crates in `scripts/publish.rs` live?", which is the cargo surface; npm has
+      no equivalent assertion anywhere. So a shipped artifact went missing ten times behind an
+      accurate-sounding sentence. Same shape as #924 and as the theme (#1461).
+
+      The credential itself is NOT assumed to be the cause and is not this lane's to rotate —
+      whoever holds it should check it; the step's own output names the auth check.
+
+      REFUTING COMMAND: read `dist-tags.latest` from
+      `https://registry.npmjs.org/@pulseengine/synth`. If it names a recent release, the gap
+      closed without this lane.
+    tags:
+      - process
+      - release-surface
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1460"
+      verification-track: manual
+      done-when: "manual:2026-10-31 the release verification asserts npm publication by deriving name and version from npm/package.json and requiring the registry to serve that exact version, shown RED against the current gap; and either the auth failure is resolved by its owner or the lane records that the assertion now makes a recurrence impossible to miss"
