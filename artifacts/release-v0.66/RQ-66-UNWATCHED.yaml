@@ -106,7 +106,7 @@ artifacts:
         fixed for three other artifacts and missed here, on the one artifact
         whose own subject is findings nothing watches.
       verified-by: >-
-        PENDING. Red-first is the whole point here and it is not inherited —
+        DELIVERED, and the sentence that follows is the planning-time instruction, kept verbatim because it is the record of what was asked: red-first was the whole point here and it is not inherited —
         these four have no pin to move, so each oracle must be DEMONSTRATED to
         fail on `origin/main` before it is wired in, with the failing output
         recorded. An oracle added green is an oracle nobody has watched fire,

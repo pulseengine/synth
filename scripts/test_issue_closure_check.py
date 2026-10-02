@@ -359,6 +359,27 @@ def main() -> int:
     check("VACUOUS when no artifact names an issue",
           any("VACUOUS" in x for x in f), str(f))
 
+    # ---- RQ-80-CLOSEGATE (#1454): VACUITY MUST NOT SWALLOW THE PER-ISSUE
+    # VERDICT. The vacuous branch used to RETURN before the closure loop, so a
+    # release whose artifacts are ALL non-claiming lost every named instruction.
+    # `prior_attribution` is built from EARLIER releases, so the "a prior release
+    # held this open and someone closed it anyway" branch is fully derivable with
+    # nothing authorised in THIS release. Measured on the live v0.80 tree before
+    # the fix: closing #1318 — held open by v0.77, and an EXTERNAL reporter's
+    # issue — produced no mention of #1318 and never said "Reopen it".
+    held_prev = art("RQ-77-HELD", "implemented", "#1318", version=(0, 77),
+                    scope="outlives")
+    silent = art("RQ-80-SILENT", "proposed", "")      # names nothing: vacuous
+    f, _w, a, h = run([held_prev, silent], closed=[1318])
+    check("RQ-80-CLOSEGATE: the authorised set really is vacuous here",
+          not a and not h, f"- authorised={a} held={h}")
+    check("RQ-80-CLOSEGATE: vacuity is still REPORTED as a failure",
+          any("VACUOUS" in x for x in f), str(f))
+    check("RQ-80-CLOSEGATE: ...and the per-issue verdict SURVIVES it, by name",
+          any("#1318" in x for x in f), str(f))
+    check("RQ-80-CLOSEGATE: ...and still says to reopen it",
+          any("Reopen it" in x for x in f), str(f))
+
     # ---- parse_version refuses silently-unscoped input ---------------------
     ok = False
     try:

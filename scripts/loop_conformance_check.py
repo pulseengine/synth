@@ -114,6 +114,13 @@ except ImportError:  # pragma: no cover
     print("loop-conformance: FATAL — PyYAML required", file=sys.stderr)
     sys.exit(1)
 
+# RQ-80-STEP7 (#1456). SINGLE SOURCE for "which tag precedes this release" —
+# status_evidence_check owns it and its own suite covers the missing-tag case.
+# Re-deriving it here would be the hand-written mirror the North Star forbids,
+# and `issue_closure_check` already imports `authorised_close_set` the same way.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from status_evidence_check import previous_release_tag  # noqa: E402
+
 REPO_DEFAULT = "pulseengine/synth"
 # The release that introduces this gate; the step-7 review record and this
 # check itself are required from here on (regime boundary, see docstring).
@@ -716,12 +723,66 @@ class Check:
                 rc_eq, full = git("rev-parse", "--verify", "-q",
                                   f"{declared}^{{commit}}")
                 if rc_eq == 0:
+                    # RQ-80-STEP7 (#1456). The ancestry test below was computed
+                    # and then DISCARDED: both branches returned DERIVED_PASS and
+                    # only the prose differed, so the effective bar was "the
+                    # declared object exists". Measured at the v0.79 cut: a record
+                    # declaring v0.78.0's release commit, or v0.70.0's, passed
+                    # exactly as the real candidate did.
+                    #
+                    # Dropping the constraint was justified -- a squash DISCARDS
+                    # the reviewed branch head, so requiring ancestry of HEAD reds
+                    # legitimate records -- but it was dropped instead of replaced.
+                    # THE REPLACEMENT: the declared sha must not be an ancestor of
+                    # (or equal to) the PREVIOUS release tag. A legitimate
+                    # post-squash reviewed head lives on a deleted branch and is
+                    # therefore not an ancestor of that tag; a prior release's
+                    # commit is. Validated on five real shas -- v0.79's genuine
+                    # squashed-away head and a branch head PASS; v0.79.0's,
+                    # v0.78.0's and v0.63.0's release commits RED.
+                    prev = previous_release_tag(Path("."), self.majmin)
+                    if prev is None:
+                        self.add(
+                            "7", "cold-review record", ATTESTED,
+                            f"{candidates[0]} DECLARES reviewed commit "
+                            f"{declared[:12]} and the object exists, but NO "
+                            f"previous release tag is visible for {self.rid}, so "
+                            f"the prior-release bar cannot be applied — skipped "
+                            f"loudly rather than passed silently (#1456)",
+                        )
+                        return
+                    rc_pv, prev_sha = git("rev-parse", "--verify", "-q",
+                                          f"{prev}^{{commit}}")
+                    if rc_pv != 0:
+                        self.add(
+                            "7", "cold-review record", NOT_DERIVED,
+                            f"previous release tag {prev} does not resolve to a "
+                            f"commit, so the prior-release bar could not be "
+                            f"evaluated (#1456)",
+                        )
+                        return
+                    prev_sha = prev_sha.strip()
+                    rc_old, _ = git("merge-base", "--is-ancestor",
+                                    full.strip(), prev_sha)
+                    if rc_old == 0 or full.strip() == prev_sha:
+                        self.add(
+                            "7", "cold-review record", DERIVED_FAIL,
+                            f"{candidates[0]} DECLARES reviewed commit "
+                            f"{declared[:12]}, which is an ancestor of (or is) "
+                            f"the PREVIOUS release tag {prev} — so it names a "
+                            f"commit that shipped before this release, not this "
+                            f"release's reviewed head. A record can only review "
+                            f"work this release contains (#1456)",
+                        )
+                        return
                     rc_anc, _ = git("merge-base", "--is-ancestor",
                                     full.strip(), self.sha)
                     rel = ("an ancestor of the release commit"
                            if rc_anc == 0 or full.strip() == self.sha
                            else "not an ancestor — the squash-merge discarded "
                                 "the reviewed head, which is expected here")
+                    rel += f"; and NOT an ancestor of {prev}, so it is not a "
+                    rel += "previous release's commit"
                     self.add(
                         "7",
                         "cold-review record",

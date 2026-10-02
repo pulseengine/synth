@@ -424,6 +424,33 @@ jobs:
       - name: Shipped-feature census — zero UNDETERMINED flags (RQ-78-FEATURESET)
         run: python3 scripts/shipped_feature_census.py
 
+      # RQ-80-SENTENCE (#1461): v0.79 shipped with every structured gate green while
+      # its cold-review record enumerated TWENTY defect items in PROSE. The gates
+      # read fields, counts and populations; a sentence is none of those. This reads
+      # the one part of the prose that is structured enough to check — the LEADING
+      # VERDICT of `verified-by:` — against the artifact's own status/disposition.
+      # The citable instance reached main at 28196ec7: `status: proposed` +
+      # `disposition: partial` beside prose opening `LANDED.`, which R11 did not
+      # merely miss — R11 was SATISFIED BY IT, since R11 only requires a disposition
+      # to be PRESENT.
+      #
+      # `--self-test` FIRST and separately, because it is the potency evidence and it
+      # must be able to fail on its own: it holds the fields constant and swaps only
+      # the verdict (prose-sensitivity), holds the prose constant and swaps the status
+      # (field-sensitivity), and replays the real 28196ec7 -> f8809521 pair. The
+      # verdict run alone would go green the moment the rule stopped reading prose.
+      - name: Verdict-prose self-test — the rule reads BOTH the prose and the fields (RQ-80-SENTENCE)
+        run: python3 scripts/verdict_prose_check.py --self-test
+      # AND THE VERDICT, which reds when any artifact's leading verdict contradicts
+      # its own structured fields. A population of ZERO is a REFUSAL (rc=2), not a
+      # pass, so the field moving or the vocabulary rotting cannot read as success.
+      - name: Verdict-prose — no artifact's leading verdict contradicts its own fields (RQ-80-SENTENCE)
+        run: python3 scripts/verdict_prose_check.py
+      # And the script's OWN tests: the population-zero REFUSAL, the #1430
+      # carve-out, and that `FULL`/`DONE-WHEN`/bare `NOT` are not read as verdicts.
+      - name: Verdict-prose script tests (RQ-80-SENTENCE)
+        run: python3 scripts/test_verdict_prose_check.py
+
       # RQ-78-RITUAL (#1440): the script EVERY merge goes through had no test, no
       # CI reference and an UNBOUNDED wait loop whose failure mode was a hang.
       # Three releases have had to repair it. The timeout half is an EXECUTION
