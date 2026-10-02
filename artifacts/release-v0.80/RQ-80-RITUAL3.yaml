@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-80-RITUAL3
     type: system-req
     release: v0.80
-    status: proposed
+    status: implemented
     title: "Commit the tag-script guards, hand-carried for the ninth release — and do NOT 'fix' the unsigned tag, which is deliberate"
     description: >
       CARRIED. `grep -rn tag_release` over the tree still finds ZERO tests and ZERO CI
@@ -43,4 +43,47 @@ artifacts:
       priority: should
       issue: "#1440"
       verification-track: manual
-      done-when: "manual:2026-10-31 W1, W1b, W2 and W2b are guarded IN the committed script with the tag created only after the G1-G4 decision, a test in test_merge_ritual.py's extract-and-stub shape proves the REFUSAL path leaves no tag and that a pre-existing tag not pointing at HEAD is refused, and the unsigned-annotated shape is left intact with its G3 assertion unchanged"
+      done-when: "contains:scripts/test_tag_release.py:a leftover tag not at HEAD is REFUSED"
+      verified-by: >-
+        DELIVERED, and the script that every tag goes through now has its first test after NINE
+        releases of hand-guarding.
+        ALL FOUR WEAKNESSES ARE GUARDED IN THE COMMITTED SCRIPT. W1: `git fetch -q origin main` now
+        REFUSES on a non-zero rc, and the refusal names the consequence that made it matter — an
+        unchecked fetch makes every later "HEAD == origin/main" statement true about a STALE tree,
+        because the comparison succeeds with both sides holding the old value. W1b: the
+        `git merge --ff-only` rc is checked too and HEAD is ASSERTED equal to origin/main, since
+        guarding the fetch alone left a refused fast-forward silent in /dev/null. W2: THE TAG IS NOW
+        CREATED AFTER ITS OWN DECISION — it used to be minted 21 lines above, so a refusal left it
+        behind. W2b, which is the one that could publish the wrong bytes: a pre-existing tag is now
+        REFUSED unless it points AT HEAD. The old flow checked only the leftover tag's SHAPE and pushed
+        it, so a tag minted before a fix went out AT THE PRE-FIX COMMIT.
+        THE LEFTOVER-TAG TEST USES `git rev-parse --verify --quiet` PLUS THE RC, never rev-parse's
+        output, because `git rev-parse <unknown-ref>` ECHOES its argument on stdout and errors only on
+        stderr — a footgun that manufactured a false tag hazard once in v0.79.
+        G3 IS UNCHANGED AND STILL ASSERTS THE UNSIGNED SHAPE, relocated rather than rewritten: it runs
+        after creation because it reads the tag object, and on failure it DELETES the tag it just made,
+        gated on `git ls-remote --tags origin` rather than on an exit code, so a G3 refusal also leaves
+        no residue. The unsigned annotated tag is deliberate — `tag.gpgsign` is unset at every scope and
+        the previous tags carry zero signature blocks — so nothing here makes it signed. G4 moved off
+        `$VER^{commit}` onto HEAD because it now runs BEFORE the tag exists; HEAD is the commit the tag
+        will point at, which the W1b assertion above establishes.
+        AND GATE5'S EXIT CODE IS CAPTURED, which was the release's own recorded residual. It used to
+        vanish into `|| echo`, so "advisory" and "we never looked" were indistinguishable. It stays
+        advisory — nothing is closed at that point, so a red is expected — but the code is now printed,
+        which is what makes an advisory honest rather than decorative.
+        THE TEST EXECUTES THE SHIPPED LINES, in `scripts/test_tag_release.py`, wired into the required
+        claim-check job: 32 assertions, zero failures. PART 1 runs the real script against a throwaway
+        origin plus clone with stub gate scripts, so the lines under test are the lines that ship —
+        a refused run exits non-zero and creates NO tag; a leftover tag not at HEAD is refused, says
+        PRE-FIX, and is NOT pushed; a failed fetch refuses and names the stale-tree consequence; an
+        UNSIGNED tagged commit is refused; and the happy path tags, pushes and reports GATE5's rc.
+        PART 2 asserts the remaining structure and PROVES EACH ASSERTION NON-VACUOUS by removing the
+        property from a copy and checking the assertion then fails — which caught one of my own: the
+        `ls-remote` mutation first replaced the string inside the W2b REFUSE MESSAGE instead of the code,
+        so the mutation changed nothing and the non-vacuity check correctly failed until it was anchored
+        on the code line itself.
+        ONE HONEST LIMIT, stated rather than stubbed around: this harness cannot mint a SIGNED commit
+        where no key is loaded, and GATE4 rightly refuses an unsigned one. So the unsigned refusal is
+        asserted as the real property it is, and the tag-and-push path is gated on signing being
+        available and SKIPPED LOUDLY otherwise, with the push's `&&`-chain position additionally
+        asserted statically. Stubbing GATE4 would have tested the stub.
