@@ -3,99 +3,94 @@ artifacts:
     type: system-req
     release: v0.80
     status: proposed
-    title: "Name the stale-attitude read — it is NOT an identity rotation, and the module is now in the repo"
+    title: "The mechanism has been wrong TWICE — not identity, not a lagged attitude: a SIGN error in the translational sub-vector"
     description: >
-      CARRIED from v0.79 at `disposition: partial`, and REWRITTEN at the v0.80 cut because the
-      reporter answered after that artifact was written. Two statements in the first draft of THIS
-      artifact are now refuted by their own refuting command, and both refutations make the lane
-      sharper.
+      CARRIED, and REWRITTEN A SECOND TIME at 2026-10-02 because the reporter refuted the mechanism
+      this artifact asserted. THAT IS THE HEADLINE: this lane's named mechanism has been wrong TWICE
+      — first "an identity rotation", then "a lagged or stale attitude read" — and both were caught
+      by measurement rather than by review. It is the clearest case in the release for running a
+      refuting command before building on an artifact, and the done-when below is written so a third
+      wrong mechanism cannot be built on quietly.
 
-      THE MODULE IS OBTAINABLE. `repro/synth-1436/` on jess `main` carries `c.wasm` (68252 B,
-      pre-loom) and `c.loom.wasm` (65199 B) with a `SHA256SUMS.txt` and a README recording the five
-      pinned relay component digests, meld 0.58.3 flags, loom 1.4.0 and the exact `synth compile`
-      line — verified present with `gh api repos/pulseengine/jess/contents/repro/synth-1436`. The
-      reporter also confirms the pre-loom module reproduces it bit-identically, so loom is not
-      involved, and supplies a QEMU recipe (`qemu-system-arm -machine mps2-an500 -cpu cortex-m7`,
-      then `xp /31xw 0x20011400`) so the ARM side needs no board. The first draft of this artifact
-      said the module was not in the thread. That was the v0.73 failure repeating — an artifact
-      declaring a reporter's module unobtainable when it was supplied — and it was caught only
-      because the artifact carried a command to check.
+      THE LAGGED ATTITUDE IS REFUTED, and the reporter retracted their own hypothesis on their own
+      evidence. They built a QEMU TCG memory tracer (QEMU 11.1.1 accepts `--plugin` and ships none,
+      so it had to be written) and found the persistent quaternion at wasm offset `0xac18` is
+      BIT-IDENTICAL between ARM and wasmtime at ticks 1, 2, 3, 15 and 16. A stale or lagged attitude
+      would show at that offset. It does not. The attitude STATE agrees across every tick boundary;
+      only what is computed FROM it diverges.
 
-      IT IS NOT AN IDENTITY ROTATION. That was this lane's own characterisation and the reporter's
-      tick-16 measurement refutes it: `pos-n 34e23ae4`, `pos-e 35627030`, `vel-n 38aee883`,
-      `vel-e 392f1ef4` — all non-zero on silicon. The rotation is identity at tick 1 and doing
-      something wrong-but-not-nothing by tick 16. The signature is a LAGGED OR STALE ATTITUDE READ,
-      not a hardcoded identity: at tick 1 the previous quaternion IS the initial identity, which is
-      precisely why tick 1 looked like one. The surviving half of the old framing is "a rotation
-      behaving as though it read the initial one", and the tick-16 numbers are the evidence for the
-      "read" half.
+      SO THE ORACLE SHAPE THIS ARTIFACT PREVIOUSLY REQUIRED IS WRONG and is withdrawn rather than
+      left to be built. The previous done-when demanded a join sweep over "a value written this
+      iteration and read after a call INSIDE A LOOP". The reporter states plainly that is not where
+      this is, at least not for the quaternion. Building it would have spent the lane on the wrong
+      instrument.
 
-      SO THE HYPOTHESIS THIS ARTIFACT PREVIOUSLY OFFERED IS DEAD and is recorded as dead rather
-      than quietly dropped: it proposed that an off-diagonal factor reading as 0.0 collapses the
-      matrix to identity. A zero-read cannot produce tick 16.
+      THE SIGNATURE, which is what replaces the mechanism, from a whole-memory diff of both runtimes
+      (the module is fused `--memory shared` and the image maps linmem at `0x20000000`, so the same
+      offset means the same thing on both sides): SIX fields differ in the return area and ALL SIX
+      disagree in SIGN — `pos-n/e/d` and `vel-n/e/d`, exactly the translational sub-vector. What
+      AGREES is exactly the quaternion, the gyro passthrough and the innovation. Classified rather
+      than counted: 744 MASKED (ARM still holds the harness's `0xdeadbeef` paint where wasmtime
+      zero-inits; NEITHER wrote them, and counting them would be a vacuous positive), ZERO OMITTED
+      STORES, 11 ULP-CLOSE and 217 DIVERGENT. Zero omitted stores is load-bearing: the lowering is
+      not DROPPING writes, it computes different values. And the fit `vel-d(n)/(n*g*dt)` = 1.0000 to
+      1.0003 over sixteen ticks, so ARM's `vel-d` is UNCOMPENSATED GRAVITY.
 
-      WHAT REMAINS SETTLED, so it is not re-derived: `vel-d = 3c20ba20 = 9.81 x 0.001` and
-      `pos-d = 36a495a2 = 1/2 x 9.81 x 0.001^2` hold at tick 1 to about 2 ULP, the residual being an
-      f32 multiply-accumulate. Three independent ARM implementations — Renode 1.16.1, QEMU 11.1.1
-      and the actual i.MX RT1176 over SWD — agree bit-for-bit and all three disagree with wasmtime,
-      so "emulation artefact" is retired. The RETURN-ABI class (#1450) stays ELIMINATED and the
-      reporter independently agrees with the reasoning: ten words bit-exact IN PLACE cannot survive a
-      marshalling defect.
+      THE LINK BASE IS DERIVED, and it is this lane's own contribution so far. The reporter supplied
+      pc-level data and explicitly refused to guess the function mapping ("AFD-127 was exactly that
+      mistake, an inferred field layout reported as computed"). `D = +0x2e4`, so
+      `linked_addr = cascade.o .text offset + 0x2e4`. The first attempt — treating the pcs as
+      `cascade.o` offsets directly — put them on non-instruction boundaries and on `movw r5, #0x0`
+      as a "quaternion read", which is that same error one level over, so it was not reported.
+      The derivation instead required all nine pcs to land on instructions whose KIND matches the
+      role given (six loads, three stores): 285 offsets land on some instruction and the kind filter
+      leaves exactly ONE.
 
-      THE ELIMINATION THAT IS NOW IN QUESTION IS A DIFFERENT ONE, and the reporter was careful not to
-      overclaim about it, so this artifact will be too. v0.79 ruled out the HOME-REGISTER ALIAS class
-      on the VFP path using an in-session sweep that nothing in the tree reproduces. A stale-local
-      read belongs to that class, and the tick-1-versus-tick-16 pattern points back toward it. The
-      reporter explicitly is NOT reopening the elimination; what they name is that its evidence is
-      the one piece neither side can check.
+      AND THE OPERANDS CONFIRM IT INDEPENDENTLY, which is stronger than the 1-in-285: the stream
+      computes `movw r12, #0xac10` / `#0xac14` / `#0xac18` then `ldr.w r3, [r11, r12]`, and those
+      literals ARE the reporter's traced offsets, including `0xac18`. Only access KINDS were fed into
+      the search, never the addresses. All nine pcs fall inside `ekf@0.10.0#estimate`; the six reads
+      are integer `ldr.w rX, [r11, rY]` through the linear-memory base, which independently
+      corroborates this release's structural pass (zero f32 instructions in that function touch
+      `r11`). Incidentally `0xac10` is compared against 0 then written `0xFFFFFFFF` and `0xac14` is
+      compared against 1, while only `0xac18` crosses into a float register — tag/flag words ahead of
+      a payload, consistent with the reporter's layout rather than inferred onto it.
 
-      THAT CHANGES WHY THE f32 JOIN ORACLE MATTERS — it is now the discriminator, not a tidiness
-      obligation — AND THE REPORTER NAMED ITS SHAPE: "a local written this iteration, read after a
-      call, INSIDE A LOOP", because that is what the lag hypothesis predicts and it is exactly the
-      shape a SINGLE-ITERATION join test would pass. The shipped `join_alias_1189_*` and
-      `home_alias_class_1189_*` differentials have no f32 leg at all, so there is nothing to extend.
+      WHERE IT IS NOT: the state. WHERE TO LOOK: the translational computation. The 208-word run
+      `0x2000ac9c`-`0x2000afd8` is read by pcs `0x2250`/`0x2274`/`0x2298`, which map to
+      `.text+0x1f6c`/`+0x1f90`/`+0x1fb4`. Given the gravity fit, the question is where gravity is
+      subtracted — or is not.
 
-      BUT THE ORACLE MUST BE BUILT ON THE INTEGER PATH, NOT THE VFP ONE, and that is measured on the
-      reporter's own committed module rather than assumed. A first disassembly pass at the v0.80 cut
-      compiled `c.loom.wasm` with their exact command on 0.79.0 and found that EVERY f32 memory
-      access in `ekf#estimate`, `attitude#tick` and `position#tick` goes through `sp` — 308/238,
-      60/41 and 175/87 — and that ZERO use `r11`, the linear-memory base. Linear memory is reached
-      with INTEGER `ldr`/`str` (106 read, 130 written via `r11`) and the f32 bits cross into VFP
-      through core registers (269 `vmov sN,rX`, 220 `vmov rX,sN`). The quaternion persists across
-      ticks, so it lives in linear memory, so it travels as an INTEGER WORD. An f32-REGISTER join
-      sweep would not observe that path at all. The shape stands; the register file it is built over
-      changes.
+      WHAT REMAINS SETTLED, so it is not re-derived: the RETURN-ABI class (#1450) stays ELIMINATED and
+      the reporter independently agrees with the reasoning. The VFP frame-slot class is eliminated at
+      byte granularity (132 bytes written, 132 read, matched sets, zero double-width accesses).
+      Caller-saved S-register clobber is NOT SUPPORTED but NOT eliminated, because that analyser's
+      POSITIVE CONTROL CAME BACK EMPTY — and the reporter's zero-omitted-stores result is independent
+      of it either way. The v0.79 home-alias elimination still rests on an in-session sweep nothing in
+      the tree reproduces.
 
-      TWO CLASSES THAT PASS ALSO CAME OUT OF THAT PASS, recorded with their instrument's honesty.
-      Caller-saved S-register clobber across a call is NOT SUPPORTED: every callee writes S0-S15 and
-      none saves them, which is CORRECT because those are caller-saved, and `ekf#estimate` keeps f32
-      values in frame slots and reloads after each call, leaving only `s0` (argument in, return out)
-      live across a `BL`. That reads as "not supported" and not "eliminated" because the analyser's
-      POSITIVE CONTROL was EMPTY — it never demonstrated it could see the spilled case. The VFP
-      frame-slot class IS eliminated and is self-validating: 33 slots, 33 written, 33 read, matched
-      sets, so neither a lost update nor a stale incoming read.
+      TWO LIMITS THE REPORTER STATED ABOUT THEIR OWN INSTRUMENT, carried rather than queried: value
+      identity only works for DISTINCTIVE values, and 15,193 of 15,295 stored values go to <= 8
+      addresses, so the tracer CANNOT see a stale copy of the TICK-1 quaternion, which is the identity
+      (1,0,0,0) — ticks 2 onward are covered and "no stale copy" is a claim about those. And their
+      first predicate returned 54,251 events over 1,662 address pairs including symmetric ones,
+      reported as "the predicate is not specific" rather than as 1,662 defects.
 
-      AND STATIC READING HAS A CEILING HERE, which bounds what the next pass should attempt: all 236
-      `r11` accesses are REGISTER-OFFSET, none constant-offset, so "the update writes one field and
-      the rotation reads another" cannot be settled by comparing immediates. The reporter's QEMU
-      recipe is what makes the next step cheap — watch which addresses the rotation's quaternion
-      loads resolve to against the ones the attitude update stores, with no dataflow reconstruction.
+      VERSION, settled and no longer worth re-checking: 0.79.0 lowers this module BYTE-IDENTICALLY to
+      0.77.0 across every artifact, controlled by showing the two compilers genuinely differ
+      (`4b29826f` vs `3913abee`, self-reporting 0.77.0 and 0.79.0). Scoped to this module with these
+      flags.
 
-      RULE 4 BINDS AND IS NOT SOFTENED BY ANY OF THE ABOVE: committing that oracle is NOT progress on
-      #1436. Only naming the defect is. The oracle is how this lane earns the right to keep or
-      withdraw an elimination; it is not the deliverable.
+      RULE 4 BINDS AND IS NOT SOFTENED BY ANY OF THE ABOVE: committing an oracle is NOT progress on
+      #1436. Only naming the defect is. The link base is useful to the reporter and still is not
+      progress on their build.
 
-      ONE CAVEAT TO CARRY RATHER THAN QUERY, in the reporter's own terms: the on-target procedure is
-      intermittent — some attempts park all zeros with no sentinel, which they discard as "did not
-      run" rather than reading as data — a watchdog is refuted by measurement, and the cause is
-      unknown. That is their disclosure about their own rig and this lane does not re-litigate it.
-
-      REFUTING COMMAND, three parts, and the first two are the ones that fired on the previous draft:
-      `gh api repos/pulseengine/jess/contents/repro/synth-1436` must list the two modules — check
-      BEFORE writing that anything is unobtainable. Then read the thread's newest comment before
-      relying on any mechanism stated here, because this artifact has already been overtaken once.
-      Then `grep -rl 1436 scripts/repro/ crates/*/tests/`; if that is non-empty the oracle half
-      already landed and this lane starts at the disassembly.
+      REFUTING COMMAND — and this artifact is the reason the rule exists, so run all three parts.
+      READ THE THREAD'S NEWEST COMMENT FIRST: this description has been overtaken twice, and both
+      times the new evidence arrived between ticks. Then `gh api
+      repos/pulseengine/jess/contents/repro/synth-1436` must still list the two modules. Then
+      `grep -rl 1436 scripts/repro/ crates/*/tests/`; if that is non-empty an oracle already landed and
+      this lane starts from the disassembly instead.
     tags:
       - correctness
       - reach
@@ -107,5 +102,25 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1436"
+      disposition: partial
+      landed: "PR #1464 — the withdrawal of the refuted lagged-attitude mechanism (and with it the loop-shaped oracle the previous done-when required), plus the derived link base D=+0x2e4 which makes the reporter's pc dataset usable. The earlier #1463 batch carried no #1436 work. The defect is NOT named, so this is an increment and not the lane."
       verification-track: manual
-      done-when: "manual:2026-10-31 the instruction or pass that reads a STALE attitude is NAMED by running the reporter's committed module under their QEMU recipe and comparing the addresses the rotation's quaternion loads resolve to against the ones the attitude update stores, or the lane states plainly that it did not reach the cause AND says what it tried; separately the join sweep is COMMITTED as an executable oracle over the INTEGER path that actually carries linear-memory f32 traffic (measured: zero f32 accesses use r11), covering a value written this iteration and read after a call INSIDE A LOOP, red-first, so the v0.79 home-alias elimination is either re-established on evidence in the tree or WITHDRAWN"
+      done-when: "manual:2026-10-31 the instruction or pass that computes the translational sub-vector with the wrong SIGN is NAMED, by reading .text+0x1f6c onward (link base D=+0x2e4) against the reporter's traced values for the 208-word run, or the lane states plainly that it did not reach the cause AND says what it tried; the previously-required loop-shaped join sweep is WITHDRAWN as refuted and must NOT be built to satisfy this; any oracle that does land must discriminate a SIGN error in the translational computation, red-first, and the v0.79 home-alias elimination is either re-established on evidence in the tree or WITHDRAWN"
+      verified-by: >-
+        PARTIAL, and the part delivered is a WITHDRAWAL plus one measurement — not the lane.
+        WITHDRAWN: the lagged-attitude mechanism, refuted by the reporter on their own tracer evidence
+        (the persistent quaternion at wasm offset 0xac18 is bit-identical between ARM and wasmtime at
+        ticks 1, 2, 3, 15 and 16), and with it the previously-required loop-shaped join sweep, which the
+        done-when now forbids as a way to satisfy this artifact. A second wrong mechanism removed from
+        the plan is worth more than a third built on.
+        DELIVERED: the link base `D = +0x2e4`, so `linked_addr = cascade.o .text offset + 0x2e4`, which
+        makes the reporter's whole pc dataset usable. They supplied pcs and explicitly refused to guess
+        the mapping. Derived by requiring all nine pcs to land on instructions whose KIND matches their
+        stated role — 285 offsets land on some instruction, the kind filter leaves exactly ONE — and then
+        CONFIRMED independently by the operands, which compute `movw r12, #0xac10`/`#0xac14`/`#0xac18`
+        before `ldr.w r3, [r11, r12]`: those literals ARE the traced offsets, and only access KINDS were
+        fed into the search. Posted to the thread.
+        NOT DELIVERED: the defect is NOT NAMED. Rule 4 binds — the link base is useful to the reporter
+        and is still not progress on their build. The translational computation is where to look next:
+        the 208-word run 0xac9c-0xafd8, read by pcs 0x2250/0x2274/0x2298 -> .text+0x1f6c/+0x1f90/+0x1fb4,
+        with ARM's vel-d fitting UNCOMPENSATED gravity at 1.0000-1.0003 over sixteen ticks.
