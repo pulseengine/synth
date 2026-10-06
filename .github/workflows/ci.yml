@@ -154,9 +154,12 @@ jobs:
       # answer was inside the job log, so a required check's verdict could not be
       # explained without downloading logs. `@stable` resolves to whatever stable
       # each self-hosted runner has ALREADY CACHED (both logs report the toolchain
-      # "unchanged"), and the 68 `@stable` uses in this file all share that.
+      # "unchanged"), and the 66 `@stable` uses in this file all share that.
       #
-      # MEASURED over 26 Clippy runs on six runners, 2026-10-01..02: every runner
+      # MEASURED over a 26-run Clippy sample spanning six of the SEVEN runners that
+      # served 46 Clippy jobs on 2026-10-01..02. The seventh, 01-5, has exactly ONE
+      # usable observation (1.99.0), because its other Clippy job failed at `Set up
+      # job`; one observation cannot show a transition. Every sampled runner
       # transitions EXACTLY ONCE from 1.98.1 to 1.99.0 and never back — 6/6
       # monotone. So this is not a standing lottery, it is a TRANSIENT CONVERGENCE
       # WINDOW after each rustc release: last 1.98.1 at 12:12, last laggard flipped
@@ -457,7 +460,7 @@ jobs:
       - name: Shipped-feature census — zero UNDETERMINED flags (RQ-78-FEATURESET)
         run: python3 scripts/shipped_feature_census.py
 
-      # RQ-80-SENTENCE (#1461): v0.79 shipped with every structured gate green while
+      # RQ-80-SENTENCE (#1461): v0.79 shipped with `claim_check` at 75/75 while
       # its cold-review record enumerated TWENTY defect items in PROSE. The gates
       # read fields, counts and populations; a sentence is none of those. This reads
       # the one part of the prose that is structured enough to check — the LEADING

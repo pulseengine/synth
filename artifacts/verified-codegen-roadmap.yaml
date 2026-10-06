@@ -4564,7 +4564,9 @@ artifacts:
       27 (11.1 %) rising to 99 (40.7 %) once the embedder obligation is
       acknowledged, riscv 50 (20.6 %). Different denominators — not a trend
       line — and the live number is the ladder's, re-measured per release
-      by scripts/repro/partial_census_1017.py --ladder, never restated here.
+      by scripts/repro/partial_census_1017.py --ladder. The four rates above ARE a
+      restatement of that file and must be re-checked against it, or dropped, whenever
+      the ladder is re-measured (#1286).
 
       RANKED BLOCKERS, and the research finding that none needs invention:
         ~121 modules  AArch64 import dispatch (#851) — and 88 of 101 real

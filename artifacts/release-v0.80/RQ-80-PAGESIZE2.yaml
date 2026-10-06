@@ -93,7 +93,9 @@ artifacts:
         artifact's warning that honouring the declaration CHANGES EMITTED CODE rather than only data:
         ARM emits `LSR #16` (`arm_encoder.rs:1758` and `:3830`), RV32 `li rd, bytes / 65536`
         (`synth-backend-riscv/src/selector.rs:3312`), AArch64 `(limit_bytes / 65536)`
-        (`synth-backend-aarch64/src/selector.rs:2557`, `:2596`). The rest of the surface is
+        (`synth-backend-aarch64/src/selector.rs:2557`; `:2596` is the same divide inside
+        `WasmOp::MemoryGrow` and is NOT a `memory.size` site — four backends' `memory.size` lowerings
+        is the right count, five cited lines over-counted by one). The rest of the surface is
         `synth-memory` (`WASM_PAGE_SIZE` at `lib.rs:36`; `descriptor.rs:94/96/143`;
         `bounds.rs:401/402`) and `refuse_custom_page_size` at `synth-cli/src/main.rs:3701`, which is
         called from THREE sites (`:2088`, `:3975`, `:4209`) so narrowing it once covers every path.
