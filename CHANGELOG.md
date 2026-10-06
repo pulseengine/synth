@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### "The sentence no gate can read" — and now one class of sentence is read
 
-v0.79 shipped with **`claim_check` holding 75/75 at every commit in its window** while its own
+v0.79 shipped with **`claim_check` holding 75/75 at its cut** while its own
 cold-review record enumerated TWENTY defect items in PROSE — `**1.`–`**10.` in
 round 1, `N1`–`N8` introduced BY a correction, `P1`–`P2` pre-existing.
 `claim_check` held 75/75 throughout. The gates read fields, counts and
@@ -90,9 +90,12 @@ cannot fail the job.
 26-run Clippy sample spanning six of the seven runners that served Clippy on
 2026-10-01..02, EVERY sampled runner transitions exactly once from 1.98.1 to
 1.99.0 and never back — 6 of 6 monotone, with no single log ever containing two
-versions. The seventh runner (`pulseengine-ci-01-5`, the #1451 `steps=0` one)
-can neither exhibit nor refute monotonicity: its only other Clippy job failed at
-`Set up job` and never reached the compiler. `@stable` resolves per-runner from that
+versions. The window holds 46 Clippy jobs over those seven runners; which 26 were read is
+not recorded, so it is a sample. The seventh runner, `pulseengine-ci-01-5`, has
+exactly ONE usable observation (1.99.0) because its other Clippy job in the
+window failed at `Set up job` with one step — and one observation cannot exhibit
+or refute a transition. Not because its jobs never compiled: the job that ran
+succeeded with 11 steps and did run clippy. `@stable` resolves per-runner from that
 runner's own cache, so this is a bounded convergence window after a rustc
 release, not a persistent split. A narrow five-run sample read as "fleet
 converged, nothing to see" and would have justified a more expensive fix than

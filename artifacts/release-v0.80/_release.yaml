@@ -7,7 +7,7 @@
 #
 # THEME — "The sentence no gate can read" (#1461).
 #
-# v0.79 shipped with every structured gate green at every commit, and corrected a
+# v0.79 shipped with its structured gates GREEN at the cut, and corrected a
 # long list of false, unsupported or misleading STATEMENTS across three cold-review
 # rounds to get there: in the release notes, in typed `verified-by:` prose, in
 # CLAUDE.md, in a claims.yaml comment, in a published issue body and in the release

@@ -53,7 +53,16 @@ artifacts:
         answer to "which compiler graded this PR?" lived inside the job log, and `gh api .../logs` writes
         NOTHING without `--allow-escape-sequences`, so an empty result there is a fact about gh rather
         than about the log. The step asserts nothing and cannot fail the job.
-        THE CORRECTED CHARACTERIZATION, measured over 26 Clippy runs on six runners across
+        THE CORRECTED CHARACTERIZATION. The window 2026-10-01..02 holds 46 Clippy jobs over SEVEN distinct
+        runners; the monotonicity observation below rests on a 26-run sample spanning six of them, and
+        which 26 were read is NOT recorded in this tree, so treat the sample as a sample. The seventh
+        runner, `pulseengine-ci-01-5`, is outside the denominator for a reason worth stating precisely
+        because an earlier wording got it wrong: it has exactly ONE usable version observation (1.99.0,
+        job 110992202896 — which SUCCEEDED with 11 steps and did run clippy), since its other Clippy job
+        in the window, 110259172327, failed at `Set up job` with one step. ONE observation cannot exhibit
+        or refute a transition. It is NOT that its jobs never compiled, and NOT that they recorded zero
+        steps — #1451's `steps=0` signature was on `Rivet Validation` and `Rust-test Line Coverage`, not
+        on Clippy. Measured across
         2026-10-01..02: EVERY RUNNER TRANSITIONS EXACTLY ONCE from 1.98.1 to 1.99.0 and NEVER BACK —
         6 of 6 monotone, with no log ever containing two versions. So this is NOT a standing lottery, as
         this artifact first called it. It is a TRANSIENT CONVERGENCE WINDOW after each rustc release:

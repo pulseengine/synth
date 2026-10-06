@@ -36,6 +36,14 @@ artifacts:
       not DROPPING writes, it computes different values. And the fit `vel-d(n)/(n*g*dt)` = 1.0000 to
       1.0003 over sixteen ticks, so ARM's `vel-d` is UNCOMPENSATED GRAVITY.
 
+      THE HORIZON WAS THEN EXTENDED 64x BY THE REPORTER, and this artifact failed to record it for a
+      release despite instructing its own reader to check the newest comment first. At n=1024 the ratio
+      reaches 1.0086, `vel-d` is +1.0132e+01 (descending at 10.1 m/s) and `pos-d` is +5.1795e+00 against
+      the free-fall integral 1/2*g*t^2 = 5.14 m — within 1%, which is exactly what "the
+      gravity-compensation addend contributed nothing" predicts. The quaternion is STILL bit-identical at
+      tick 1024, so 64x more integration does not disturb the attitude state. The reporter escalated this
+      to their own hazard tracking (H-003 / SC-003, "Bounded is violated, measured").
+
       THE LINK BASE IS DERIVED, and it is this lane's own contribution so far. The reporter supplied
       pc-level data and explicitly refused to guess the function mapping ("AFD-127 was exactly that
       mistake, an inferred field layout reported as computed"). `D = +0x2e4`, so
@@ -106,7 +114,7 @@ artifacts:
       disposition: partial
       landed: "PR #1464 — the withdrawal of the refuted lagged-attitude mechanism (and with it the loop-shaped oracle the previous done-when required), plus the derived link base D=+0x2e4 which makes the reporter's pc dataset usable. The earlier #1463 batch carried no #1436 work. The defect is NOT named, so this is an increment and not the lane."
       verification-track: manual
-      done-when: "manual:2026-10-31 the instruction or pass at which the gravity-compensation addend is ABSENT, ZEROED or LANDING ON ANOTHER AXIS is NAMED, by reading .text+0x1f6c onward (link base D=+0x2e4) against the reporter's traced values for the 208-word run, or the lane states plainly that it did not reach the cause AND says what it tried; the previously-required loop-shaped join sweep is WITHDRAWN as refuted and must NOT be built to satisfy this; any oracle that does land must discriminate a MISSING OR ZERO-VALUED ADDEND in the translational computation, red-first — NOT a sign inversion, which the reporter explicitly declined to support because the magnitudes differ too, and the v0.79 home-alias elimination is either re-established on evidence in the tree or WITHDRAWN"
+      done-when: "manual:2026-10-31 the instruction or pass at which the gravity-compensation addend is ABSENT, ZEROED or LANDING ON ANOTHER AXIS is NAMED, by reading .text+0x1f6c onward (link base D=+0x2e4) against the reporter's traced values for the 208-word run, or the lane states plainly that it did not reach the cause AND says what it tried; the previously-required loop-shaped join sweep is WITHDRAWN as refuted and must NOT be built to satisfy this; any oracle that does land must discriminate a MISSING, ZERO-VALUED OR MISDIRECTED ADDEND in the translational computation, red-first — NOT a sign inversion, which the reporter explicitly declined to support because the magnitudes differ too; and the v0.79 home-alias elimination is either re-established on evidence in the tree or WITHDRAWN"
       verified-by: >-
         PARTIAL, and the part delivered is a WITHDRAWAL plus one measurement — not the lane.
         WITHDRAWN: the lagged-attitude mechanism, refuted by the reporter on their own tracer evidence

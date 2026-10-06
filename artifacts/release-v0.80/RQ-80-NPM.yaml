@@ -66,6 +66,6 @@ artifacts:
         preflight is the part working. The log names the cause and the fix exactly: NPM_TOKEN is
         invalid, expired or the wrong type, and npm publish needs a classic Automation token. Rotating
         it is a credential action belonging to the repository owner, who has been asked. Whether it has been
-        it. Until then this slot reds in retro, which is TRUE, and that is the whole point: ten releases
+        DONE IS NOT ESTABLISHED HERE, and the registry still serves 0.69.0. Until then this slot reds in retro, which is TRUE, and that is the whole point: ten releases
         went missing behind reports that accurately said three release workflows succeeded while a
         FOURTH always failed.
