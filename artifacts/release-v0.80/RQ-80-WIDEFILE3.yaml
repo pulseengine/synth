@@ -35,5 +35,42 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1439"
+      disposition: deferred
       verification-track: manual
       done-when: "manual:2026-10-31 the sign error is ROOT-CAUSED with the mechanism named, #1267 has an EXECUTION differential in scripts/repro/ wired in ci.yml, and the retry is added ONLY after both — or the lane reports which of the three steps it reached and why it stopped"
+      verified-by: >-
+        NOT DELIVERED — the sign error is NOT root-caused, #1267 still has no execution differential, and
+        the retry is correctly still absent. The fixed order held: nothing was accepted that is not
+        checked. What this lane did produce is ONE MECHANISM ELIMINATED, with its reasoning, which
+        narrows the next attempt.
+        THE ELIMINATED CLASS, and it is dead rather than merely unsupported. The signature — differing
+        from wasmtime in EXACTLY the sign bit, on every negative input, and not at all on positives — is
+        the behaviour of `|x|`. So the natural hypothesis is a register move emitted as VABS instead of
+        VMOV, and in Thumb-2 VFP those differ by a SINGLE BIT: `VMOV.F32 Sd,Sm` is `0xEEB00A40`,
+        `VABS.F32 Sd,Sm` is `0xEEB00AC0` — bit 7.
+        IT CANNOT HAPPEN VIA A REGISTER-SPLIT ERROR, which is what made it attractive (the wide file is
+        S16-S31, so high register numbers are exactly what differs on that rung). For a VFP TWO-register
+        op the register fields are D=bit22, Vd=15:12, M=bit5, Vm=3:0. BIT 7 IS IN NONE OF THEM, so no
+        mis-split of a register number can set it. Checked across all 1024 (Sd, Sm) pairs: zero opcode
+        corruption.
+        AND THE POSITIVE CONTROL CAME BACK EMPTY, WHICH IS THE PROOF RATHER THAN A GAP. Re-running the
+        same check with the D-register split (`s & 0xF`, `(s>>4)&1`, which is wrong for S-registers) also
+        flagged ZERO — because that error selects the WRONG REGISTER and never touches bit 7. So the
+        check was structurally incapable of failing, and WHY it was incapable is the finding: the bit the
+        hypothesis requires is unreachable from the register path. An empty control normally invalidates
+        a zero; here it converts it into an elimination.
+        ALSO CONFIRMED CORRECT, so it is not re-read next time: `encode_sreg` uses ARM's real
+        single-precision convention (`Vx = s>>1`, qualifier = `s&1`), and `encode_vfp_2reg` correctly
+        OMITS the `n << 7` that `encode_vfp_3reg` needs — because for three-register ops bit 7 IS the N
+        qualifier while for two-register ops it is opcode. That distinction is handled right.
+        SO THE DEFECT IS IN OP SELECTION OR ARITHMETIC, NOT ENCODING. Candidates are listed rather than
+        asserted, because this release has already had one lane carry two wrong mechanisms: the selector
+        choosing a genuinely different op on the wide-file path; `ArmOp::F32Copysign`, whose expansion
+        really does use VABS at `arm_encoder.rs:7310` — but #1439's family is a product nest, so do NOT
+        assume copysign is reached; or a spill/reload of the wrong frame slot.
+        WHAT WOULD SETTLE IT: re-apply v0.78's ~20-line retry mirroring stage 2 in `arm_backend.rs`, run
+        `scripts/repro/vfp_local_pressure_1069_differential.py`, and disassemble the newly-accepted
+        function. `wide60_declines_and_the_ladder_dies_on_the_wide_file_rung_1426` is a TRIPWIRE whose
+        4th assertion fails the moment stage 3 gains a grow retry — deliberately, so "accept more and
+        check less" cannot be done quietly. The reach on offer remains SIX locals (wall 60 -> 66), not
+        twelve; an untested docstring figure of 72 was promoted into a headline once and caught.
