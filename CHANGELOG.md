@@ -5,6 +5,190 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.80.0] - 2026-10-06
+
+### "The sentence no gate can read" — and now one class of sentence is read
+
+v0.79 shipped with **every structured gate green at every commit** while its own
+cold-review record enumerated TWENTY defect items in PROSE — `**1.`–`**10.` in
+round 1, `N1`–`N8` introduced BY a correction, `P1`–`P2` pre-existing.
+`claim_check` held 75/75 throughout. The gates read fields, counts and
+populations; a sentence is none of those.
+
+The citable instance reached main. At `28196ec7`, `RQ-79-ORDEAL.yaml` carried
+`status: proposed` + `disposition: partial` while its own `verified-by:` opened
+with `LANDED.` — and **R11 was not blind to it, R11 was SATISFIED BY IT**,
+because R11's only obligation is that a disposition be PRESENT.
+
+**Two of six `must` lanes delivered, one partial, three recorded as NOT
+DELIVERED with evidence.** That is the honest shape of the release and it is
+stated first.
+
+### The theme lane: a gate that reads the verdict (#1461)
+
+`scripts/verdict_prose_check.py` requires the leading ALL-CAPS verdict of a
+`verified-by:` to agree with that artifact's own `status:`/`disposition:`. It is
+wired into Claim Check as **three** steps — `--self-test`, the verdict run, and
+its own unit tests — because the verdict run alone would go green the moment the
+rule stopped reading prose.
+
+The census decided shippable-over-refutable rather than assuming it, and its
+figures are quoted from `RQ-80-SENTENCE` where they were measured rather than
+restated here (a second copy of a measured number is how it goes stale — #1286).
+Exactly **two** artifacts disagreed — `RQ-66-PINDEBT` and `RQ-66-UNWATCHED`,
+both `status: implemented` with `landed:` naming PRs verified MERGED, while their
+prose still opened `PENDING.` because that was the planning-time instruction
+nobody rewrote when the work shipped. Both corrected. The live population and
+disagreement count are printed by the gate on every CI run; read them there.
+
+Potency is pinned on real history, not a planted fixture: the rule REDS at
+`28196ec7` and PASSES at `f8809521`.
+
+### Three gates that could not fail, and now can
+
+**The closure gate's vacuous path (#1454).** A vacuous close set used to RETURN
+before the per-issue closure loop, collapsing every verdict into one generic
+line. The early return is gone; `prior_attribution` is built from every earlier
+release, so "a prior release held this open and someone closed it anyway" is
+derivable with nothing authorised in the current one. The red-first used the
+worst LIVE instance available: v0.80 was vacuous on main, and
+`check(root, "v0.80", closed={1318})` returned one generic line that never named
+the external reporter's still-open issue and never said "Reopen it".
+
+**Step 7's cold-review bar (#1456).** Step 7 computed `merge-base
+--is-ancestor` and then returned DERIVED_PASS on BOTH branches, varying only
+the prose — so the effective bar was "the declared object exists". The
+replacement bar: the declared sha must not be an ancestor of (or equal to) the
+PREVIOUS release tag. A legitimate post-squash reviewed head lives on a deleted
+branch and is NOT such an ancestor; a prior release's commit is. Five for five
+inside the real checker: v0.79's genuine squashed-away head passes, a branch
+head passes, and v0.79.0's, v0.78.0's and v0.63.0's release commits all red.
+`previous_release_tag` is IMPORTED from `status_evidence_check.py`, not
+re-derived — re-deriving it would be the hand-written mirror the North Star
+forbids.
+
+**The tag script had no test and no CI reference for nine releases (#1440).**
+`scripts/tag_release.sh` is the script every release tag goes through. Four
+weaknesses are now guarded: a failed `git fetch` used to leave every later
+`HEAD == origin/main` assertion true about a stale tree; a pre-existing tag not
+at HEAD was never checked; GATE 3 inspected a tag that did not exist yet; and
+GATE 5's exit code was discarded behind `|| echo`. `scripts/test_tag_release.py`
+(wired into CI) runs the REAL script against a throwaway bare origin and clone
+with stub gate scripts — 32 assertions, each static one proven non-vacuous by
+mutating a copy. A refusal leaves no tag, and a leftover tag not at HEAD is
+refused.
+
+### Which compiler graded the job (#1459)
+
+The Clippy job now writes the resolved `rustc`, `cargo` and `clippy` versions
+plus the runner name to `$GITHUB_STEP_SUMMARY`. The step asserts nothing and
+cannot fail the job.
+
+**The characterization in the issue title was corrected by measurement.** Over
+26 Clippy runs on six runners across 2026-10-01..02, EVERY runner transitions
+exactly once from 1.98.1 to 1.99.0 and never back — 6 of 6 monotone, with no
+single log ever containing two versions. `@stable` resolves per-runner from that
+runner's own cache, so this is a bounded convergence window after a rustc
+release, not a persistent split. A narrow five-run sample read as "fleet
+converged, nothing to see" and would have justified a more expensive fix than
+the hazard warrants; widening to 26 observations WITH the time axis is what
+produced the real shape.
+
+### npm is eleven releases behind, and now something says so (#1460)
+
+A `npm live` slot in `loop_conformance_check.py` step 8 derives the package NAME
+and VERSION from the ref's own `npm/package.json` and requires
+`registry.npmjs.org` to serve that exact version. Pretag reports NA-BY-MOMENT —
+demanding publication before the tag would invent evidence — and RETRO is where
+it bites. Red-first was free rather than planted: retro on v0.79.0 reports `npm
+live DERIVED-FAIL @pulseengine/synth@0.79.0 does NOT resolve on npm (HTTP 404)`
+directly beside `crates live DERIVED-PASS 12/12 crates resolve at 0.79.0`. That
+juxtaposition IS the finding — cargo shipped, npm did not, and only cargo was
+ever asked. The remaining gap is a credential owned outside this repo.
+
+### #1436 — the mechanism was wrong TWICE, and the withdrawal is the increment
+
+PARTIAL, and the part delivered is a WITHDRAWAL. This release's plan asserted a
+LAGGED ATTITUDE mechanism and required an oracle built on a loop shape. The
+reporter then built a QEMU TCG memory tracer and **retracted that mechanism on
+their own evidence**: the persistent quaternion at wasm offset `0xac18` is
+BIT-IDENTICAL between ARM and wasmtime at ticks 1, 2, 3, 15 and 16. The attitude
+STATE agrees across every tick boundary; only what is computed FROM it diverges.
+So the oracle this release was scoped to build would have searched where the
+defect is not.
+
+What the signature actually is, from a whole-memory diff of both runtimes: SIX
+fields differ in the return area and ALL SIX disagree in SIGN, over exactly the
+translational sub-vector (pos-n/e/d, vel-n/e/d). What AGREES is exactly the
+quaternion, the gyro passthrough and the innovation. Classified rather than
+counted: 744 masked (ARM holds the harness's `0xdeadbeef` paint where wasmtime
+zero-inits — neither wrote them, and counting them would be a vacuous positive),
+**0 omitted stores** (the lowering is not dropping stores; it computes different
+values), 11 ULP-close, 217 divergent. The fit `vel-d(n)/(n·g·dt)` = 1.0000…1.0003
+over sixteen ticks says ARM's vel-d is **uncompensated gravity**.
+
+**synth's own contribution is the derived link base.** The reporter supplied
+program counters and explicitly refused to guess the function mapping.
+`D = +0x2e4`, so `linked_addr = cascade.o .text offset + 0x2e4` — derived by
+requiring all nine pcs to land on instructions whose KIND matches their stated
+role (6 reads must be loads, 3 writes must be stores): 285 offsets land on
+instructions and the kind filter leaves exactly ONE. Confirmed independently by
+the operands — the code computes `movw r12, #0xac10`/`#0xac14`/`#0xac18` then
+`ldr.w r3, [r11, r12]`, and those literals ARE the traced offsets. All nine pcs
+fall inside `ekf@0.10.0#estimate`.
+
+Eliminated: the return-ABI class (#1450), the VFP frame-slot class (byte-level
+132/132), and now the lagged attitude. The defect is NOT named, so this is an
+increment and not the lane.
+
+### Three `must` lanes recorded as NOT DELIVERED, with the evidence
+
+**The acceptance ladder (#1432)** still reads v0.63 and the blocker is unchanged:
+the 243-module corpus lives at `/Volumes/Work/corpora/wasm-243` on an unmounted
+volume whose host refuses key, password and keyboard-interactive auth, and
+attempting passwords stays declined. Every reach statement in this release is
+scoped to a 2026-09-06 tree, which the file says rather than implies.
+
+**`(pagesize 1)` (#1441)** is deliberately not half-delivered. A half-delivery
+would ship a SILENT OVER-GRANT, which is #1315's own defect class:
+`crates/synth-core/src/wasm_decoder.rs:118` computes `self.initial_pages * 65536`
+and ignores `page_size_log2` entirely, so a `(pagesize 1)` module accepted today
+would be handed 65536× the memory it declared, with no diagnostic. Four
+`memory.size` lowering sites shift or divide by a hardcoded 65536 (ARM `LSR #16`,
+RV32 `li rd, bytes / 65536`, AArch64 `limit_bytes / 65536`), so honouring a
+declared page size CHANGES EMITTED CODE on three backends. Scope measured at 28
+shipped sites and 6 test sites; the broad 233-site figure an earlier pass
+produced is recorded as a trap, dominated by false positives. The legal set is
+settled at exactly `{1, 65536}`.
+
+**The wide-file sign error (#1439)** is not root-caused, and the retry is
+correctly still absent — nothing was accepted that cannot be checked. **One
+mechanism is eliminated:** the VABS-instead-of-VMOV hypothesis is DEAD.
+`VMOV.F32 Sd,Sm` is `0xEEB00A40` and `VABS.F32 Sd,Sm` is `0xEEB00AC0`, a
+difference of bit 7 — and for a VFP 2-register op the register fields are
+`D`=bit22, `Vd`=15:12, `M`=bit5, `Vm`=3:0, so **bit 7 is structurally
+unreachable from any register field**. The positive control came back empty and
+the reason WAS the result.
+
+### Also
+
+- **RQ-80-ARCHMODEL (#1136)** — the eighteenth consecutive filing of the same
+  recurring N/A, PARTIAL. The ordinal is derived by ARTIFACT IDENTITY, and the
+  artifact keeps BOTH its `feature-loop` tag and a spar/aadl tag, because
+  v0.69's lost `feature-loop` tag made the filing that exists to keep a deferral
+  VISIBLE invisible to the conformance gate.
+
+### Falsification statement
+
+The verdict-prose rule is falsified by any `verified-by:` whose leading ALL-CAPS
+verdict contradicts its own `status:`/`disposition:` while `claim_check` stays
+green — run `python3 scripts/verdict_prose_check.py` at the ref and compare its
+population count against the artifacts that actually open with a verdict word.
+A population of zero is a REFUSAL, not a pass. It is NOT falsified by prose that
+contradicts something other than its own structured fields: the rule reads one
+sentence against two fields, and the great majority of v0.79's twenty defect
+items were outside that class.
+
 ## [0.79.0] - 2026-10-01
 
 ### "Reach you can trust" — and reach did not move
