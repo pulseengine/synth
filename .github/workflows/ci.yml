@@ -154,9 +154,11 @@ jobs:
       # answer was inside the job log, so a required check's verdict could not be
       # explained without downloading logs. `@stable` resolves to whatever stable
       # each self-hosted runner has ALREADY CACHED (both logs report the toolchain
-      # "unchanged"), and the 68 `@stable` uses in this file all share that.
+      # "unchanged"), and the 66 `@stable` uses in this file all share that.
       #
-      # MEASURED over 26 Clippy runs on six runners, 2026-10-01..02: every runner
+      # MEASURED over a 26-run Clippy sample spanning six of the SEVEN runners that
+      # served Clippy on 2026-10-01..02 (01-5's only other Clippy job died at `Set up
+      # job`, so it can neither exhibit nor refute this): every sampled runner
       # transitions EXACTLY ONCE from 1.98.1 to 1.99.0 and never back — 6/6
       # monotone. So this is not a standing lottery, it is a TRANSIENT CONVERGENCE
       # WINDOW after each rustc release: last 1.98.1 at 12:12, last laggard flipped

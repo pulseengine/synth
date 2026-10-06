@@ -3,7 +3,7 @@ artifacts:
     type: system-req
     release: v0.80
     status: proposed
-    title: "The mechanism has been wrong TWICE — not identity, not a lagged attitude: a SIGN error in the translational sub-vector"
+    title: "The mechanism has been wrong TWICE — not identity, not a lagged attitude: the gravity-compensation addend contributes nothing to the translational sub-vector"
     description: >
       CARRIED, and REWRITTEN A SECOND TIME at 2026-10-02 because the reporter refuted the mechanism
       this artifact asserted. THAT IS THE HEADLINE: this lane's named mechanism has been wrong TWICE
@@ -63,7 +63,8 @@ artifacts:
 
       WHAT REMAINS SETTLED, so it is not re-derived: the RETURN-ABI class (#1450) stays ELIMINATED and
       the reporter independently agrees with the reasoning. The VFP frame-slot class is eliminated at
-      byte granularity (132 bytes written, 132 read, matched sets, zero double-width accesses).
+      SLOT granularity (33 slots, 33 written, 33 read, matched sets) — which is what was
+      measured and reported; `132` is only `33 x 4` and saying "bytes" reads stronger than the evidence.
       Caller-saved S-register clobber is NOT SUPPORTED but NOT eliminated, because that analyser's
       POSITIVE CONTROL CAME BACK EMPTY — and the reporter's zero-omitted-stores result is independent
       of it either way. The v0.79 home-alias elimination still rests on an in-session sweep nothing in
@@ -105,7 +106,7 @@ artifacts:
       disposition: partial
       landed: "PR #1464 — the withdrawal of the refuted lagged-attitude mechanism (and with it the loop-shaped oracle the previous done-when required), plus the derived link base D=+0x2e4 which makes the reporter's pc dataset usable. The earlier #1463 batch carried no #1436 work. The defect is NOT named, so this is an increment and not the lane."
       verification-track: manual
-      done-when: "manual:2026-10-31 the instruction or pass that computes the translational sub-vector with the wrong SIGN is NAMED, by reading .text+0x1f6c onward (link base D=+0x2e4) against the reporter's traced values for the 208-word run, or the lane states plainly that it did not reach the cause AND says what it tried; the previously-required loop-shaped join sweep is WITHDRAWN as refuted and must NOT be built to satisfy this; any oracle that does land must discriminate a SIGN error in the translational computation, red-first, and the v0.79 home-alias elimination is either re-established on evidence in the tree or WITHDRAWN"
+      done-when: "manual:2026-10-31 the instruction or pass at which the gravity-compensation addend is ABSENT, ZEROED or LANDING ON ANOTHER AXIS is NAMED, by reading .text+0x1f6c onward (link base D=+0x2e4) against the reporter's traced values for the 208-word run, or the lane states plainly that it did not reach the cause AND says what it tried; the previously-required loop-shaped join sweep is WITHDRAWN as refuted and must NOT be built to satisfy this; any oracle that does land must discriminate a MISSING OR ZERO-VALUED ADDEND in the translational computation, red-first — NOT a sign inversion, which the reporter explicitly declined to support because the magnitudes differ too, and the v0.79 home-alias elimination is either re-established on evidence in the tree or WITHDRAWN"
       verified-by: >-
         PARTIAL, and the part delivered is a WITHDRAWAL plus one measurement — not the lane.
         WITHDRAWN: the lagged-attitude mechanism, refuted by the reporter on their own tracer evidence

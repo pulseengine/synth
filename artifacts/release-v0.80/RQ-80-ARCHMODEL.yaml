@@ -23,8 +23,17 @@ artifacts:
 
       REFUTING COMMAND: `gh issue view 445 --repo pulseengine/spar --json state` and
       `python3 -c "import sys; sys.path.insert(0,'scripts'); import loop_conformance_check as L;
-      print(L.find_filed_steps12_decision('docs','v0.80'))"`. If spar#445 is closed, the
-      deferral's ground is gone; if the matcher returns None, the tags are wrong.
+      c=L.Check('v0.80.0','pulseengine/synth');
+      print(L.find_filed_steps12_decision(c.load_checkout_docs(),'v0.80'))"`.
+      THE FORM FIRST PUBLISHED HERE DID NOT RUN, and the reason is worth stating because the obvious
+      diagnosis is also wrong. It passed the STRING `'docs'` as the first argument, but the parameter is
+      `docs: list[tuple[str, object]]` — a list of (path, parsed-doc) pairs, built by
+      `Check.load_checkout_docs()`. Passing a string iterates its CHARACTERS and fails to unpack `'d'`
+      into two values, so it raises `ValueError: not enough values to unpack (expected 2, got 1)`. That
+      error reads like a tuple-return mistake and is not one: the function returns `dict | None`.
+      Invoked correctly it returns RQ-80-ARCHMODEL with `stale=False`, so the CLAIM was always true and
+      only the published command was broken. If spar#445 is closed, the deferral's ground is gone; if
+      the matcher returns None, the tags are wrong.
     tags:
       - process
       - carried

@@ -65,7 +65,7 @@ artifacts:
         `Preflight — verify npm auth`, with steps 5-8 SKIPPED — so nothing wrong was ever published; the
         preflight is the part working. The log names the cause and the fix exactly: NPM_TOKEN is
         invalid, expired or the wrong type, and npm publish needs a classic Automation token. Rotating
-        it is a credential action belonging to the repository owner, who has been asked and has taken
+        it is a credential action belonging to the repository owner, who has been asked. Whether it has been
         it. Until then this slot reds in retro, which is TRUE, and that is the whole point: ten releases
         went missing behind reports that accurately said three release workflows succeeded while a
         FOURTH always failed.

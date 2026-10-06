@@ -70,8 +70,9 @@ artifacts:
         intermediate view that grouped by runner alone looked like the same runner disagreeing with
         itself, which would have refuted the cached-stable mechanism. It did not; the samples simply
         straddled each runner's update.
-        THE LOTTERY IS NOT CLOSED, AND THAT IS AN ACCEPTED RISK WITH A REASON. All 68 `@stable` uses in
-        ci.yml share this resolution, so pinning would touch the behaviour of REQUIRED checks — which
+        THE LOTTERY IS NOT CLOSED, AND THAT IS AN ACCEPTED RISK WITH A REASON. All 66 `@stable` uses in
+        ci.yml share this resolution (66 at v0.79.0 too, so this lane did not
+        change it; 70 across all five workflow files that use the action), so pinning would touch the behaviour of REQUIRED checks — which
         this repo's own standing rule says is not safe to do casually, and the rule's owner is the
         maintainer. Against that cost the measured exposure is a few hours per rustc release, now
         visible at a glance instead of by downloading logs. So the window is made OBSERVABLE rather than

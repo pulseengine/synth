@@ -13,9 +13,11 @@ artifacts:
 
       WHAT IS ACTUALLY LOST is the actionable instruction. Measured in the vacuous state,
       closing an issue a PRIOR release held open produces no named "reopen it"; on a non-vacuous
-      tree it produces exactly that, by name. And `scripts/tag_release.sh:94-95` runs the gate
-      behind `|| echo`, so there its exit code is discarded entirely — v0.79 had to re-run it by
-      hand to get an enforced verdict.
+      tree it produces exactly that, by name. And at the time this artifact was filed
+      `scripts/tag_release.sh` ran the gate behind `|| echo`, so there its exit code was discarded
+      entirely — v0.79 had to re-run it by hand to get an enforced verdict. THAT HALF WAS CLOSED
+      LATER IN THIS SAME RELEASE by RQ-80-RITUAL3 (PR #1466): the call now captures `G5=$?` and
+      reports it.
 
       WHY A RELEASE LANDS IN THAT STATE: R12 rightly forbids `issue-scope: outlives` beside a
       non-claiming status, so a release whose artifacts are ALL non-claiming cannot populate
@@ -48,7 +50,10 @@ artifacts:
         earlier release, so the "a prior release held this open and someone closed it anyway" branch is
         fully derivable with nothing authorised in THIS release.
         THE RED-FIRST USED THE WORST INSTANCE AVAILABLE, and it was live rather than planted. v0.80 IS
-        vacuous on main (authorised=0, held_open=0), and `prior_attribution` lists NINE issues a prior
+        vacuous WHEN THIS WAS MEASURED (authorised=0, held_open=0) and is NOT vacuous at the release
+        commit, where six issues are authorised — all eleven artifacts were `proposed` at measurement
+        time and six were flipped to `implemented` later in the same release, so the red-first evidence
+        stands while the present-tense claim about main does not. `prior_attribution` lists NINE issues a prior
         release held open — one of which is #1318, held by v0.77 via RQ-77-FALCON2 and an EXTERNAL
         reporter's still-open issue. Before the fix, `check(root, "v0.80", closed={1318})` returned ONE
         generic line that never mentioned #1318 and never said "Reopen it". That is the v0.71/v0.73 shape,
@@ -57,10 +62,17 @@ artifacts:
         IT ADDS NO DAY-ONE REDS, measured on main's own window rather than argued: the failure count stays
         at ONE, and what the fix RECOVERS is a correct warning that was being discarded —
         `ATTRIBUTED TO v0.79: #1431 ... Not a v0.80 closure`. Strictly more information, zero new failures.
-        VERIFIED, NOT ASSUMED: the committed suite reports 37 assertions and rc=0 both before and after,
+        VERIFIED, NOT ASSUMED: the suite reported 37 assertions BEFORE this change and reports 41 at this
+        commit (the 37 pre-existing plus the four new), rc=0 both before and after,
         with an IDENTICAL assertion set and zero lost; across v0.63-v0.80 x three closed-sets the patched
         and shipped checks agree 51 times and diverge 3, every divergence in the vacuous case. The four new
         assertions were then proven potent by re-introducing the early return, which reds exactly the two
         that name #1318 and "Reopen it".
-        STILL OWED AND RECORDED RATHER THAN QUIETLY DROPPED: `scripts/tag_release.sh:94-95` runs GATE5
-        behind `|| echo`, discarding its exit code. That is untouched here and remains a residual.
+        THE RESIDUAL THIS ARTIFACT RECORDED IS CLOSED, and by a SIBLING LANE rather than by this one —
+        which is why the stale sentence survived to the release candidate and was caught by the cold
+        review instead of by a gate. When CLOSEGATE landed (PR #1462) `tag_release.sh` ran GATE5 behind
+        `|| echo` and discarded its exit code; RQ-80-RITUAL3 (PR #1466, four PRs later) rewrote the
+        script, and at this commit the call is followed by `G5=$?` with the code reported at
+        `scripts/tag_release.sh:155`. The old citation `:94-95` now points at a COMMENT, which is the
+        tell: a line-number citation in prose rots the moment the file is rewritten, and nothing checks
+        one. No residual remains on this point.

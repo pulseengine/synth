@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### "The sentence no gate can read" — and now one class of sentence is read
 
-v0.79 shipped with **every structured gate green at every commit** while its own
+v0.79 shipped with **`claim_check` holding 75/75 at every commit in its window** while its own
 cold-review record enumerated TWENTY defect items in PROSE — `**1.`–`**10.` in
 round 1, `N1`–`N8` introduced BY a correction, `P1`–`P2` pre-existing.
 `claim_check` held 75/75 throughout. The gates read fields, counts and
@@ -71,7 +71,9 @@ forbids.
 `scripts/tag_release.sh` is the script every release tag goes through. Four
 weaknesses are now guarded: a failed `git fetch` used to leave every later
 `HEAD == origin/main` assertion true about a stale tree; a pre-existing tag not
-at HEAD was never checked; GATE 3 inspected a tag that did not exist yet; and
+at HEAD was never checked; the tag was created BEFORE the G1/G2/G4 decision, so a refusal left it
+behind for the next run to find and push at the wrong commit (GATE 3 was *relocated* after
+creation as a consequence, not because it inspected a nonexistent tag); and
 GATE 5's exit code was discarded behind `|| echo`. `scripts/test_tag_release.py`
 (wired into CI) runs the REAL script against a throwaway bare origin and clone
 with stub gate scripts — 32 assertions, each static one proven non-vacuous by
@@ -84,17 +86,20 @@ The Clippy job now writes the resolved `rustc`, `cargo` and `clippy` versions
 plus the runner name to `$GITHUB_STEP_SUMMARY`. The step asserts nothing and
 cannot fail the job.
 
-**The characterization in the issue title was corrected by measurement.** Over
-26 Clippy runs on six runners across 2026-10-01..02, EVERY runner transitions
-exactly once from 1.98.1 to 1.99.0 and never back — 6 of 6 monotone, with no
-single log ever containing two versions. `@stable` resolves per-runner from that
+**The characterization in the issue title was corrected by measurement.** Over a
+26-run Clippy sample spanning six of the seven runners that served Clippy on
+2026-10-01..02, EVERY sampled runner transitions exactly once from 1.98.1 to
+1.99.0 and never back — 6 of 6 monotone, with no single log ever containing two
+versions. The seventh runner (`pulseengine-ci-01-5`, the #1451 `steps=0` one)
+can neither exhibit nor refute monotonicity: its only other Clippy job failed at
+`Set up job` and never reached the compiler. `@stable` resolves per-runner from that
 runner's own cache, so this is a bounded convergence window after a rustc
 release, not a persistent split. A narrow five-run sample read as "fleet
 converged, nothing to see" and would have justified a more expensive fix than
 the hazard warrants; widening to 26 observations WITH the time axis is what
 produced the real shape.
 
-### npm is eleven releases behind, and now something says so (#1460)
+### npm is ten releases behind, and now something says so (#1460)
 
 A `npm live` slot in `loop_conformance_check.py` step 8 derives the package NAME
 and VERSION from the ref's own `npm/package.json` and requires
@@ -125,7 +130,12 @@ counted: 744 masked (ARM holds the harness's `0xdeadbeef` paint where wasmtime
 zero-inits — neither wrote them, and counting them would be a vacuous positive),
 **0 omitted stores** (the lowering is not dropping stores; it computes different
 values), 11 ULP-close, 217 divergent. The fit `vel-d(n)/(n·g·dt)` = 1.0000…1.0003
-over sixteen ticks says ARM's vel-d is **uncompensated gravity**.
+over sixteen ticks says ARM's vel-d is **uncompensated gravity** — and the reporter then extended
+the horizon 64x: at n=1024 the ratio reaches 1.0086, the lowered estimator believes it is descending
+at 10.1 m/s having fallen 5.18 m, against the free-fall integral 1/2*g*t^2 = 5.14 m, with the
+quaternion still bit-exact. **The mechanism they name is ONE MISSING OR ZERO-VALUED ADDEND**, not a
+sign inversion: the magnitudes differ too, so "the sign is wrong" is an inference they explicitly
+declined. Whether the addend is absent, zeroed or landing on another axis needs synth's disassembly.
 
 **synth's own contribution is the derived link base.** The reporter supplied
 program counters and explicitly refused to guess the function mapping.
