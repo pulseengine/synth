@@ -63,5 +63,44 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1441"
+      disposition: deferred
       verification-track: manual
       done-when: "manual:2026-10-31 refuse_custom_page_size() is NARROWED so (pagesize 1) compiles, __synth_mem_size_N carries the DECLARED byte count and a new __synth_mem_region_N carries the MPU-legal rounded extent, all in one change with refuses_custom_page_size_1315.rs narrowed to the still-refused set in the same commit; the pagesize oracle's auto-strengthening assertions fire on the new capability rather than being skipped; and an execution differential covers a memory.size on a non-default page size"
+      verified-by: >-
+        NOT DELIVERED, and deliberately not half-delivered. The capability is a reach increment whose
+        FAILURE MODE IS A SILENT OVER-GRANT: accepting `(pagesize 1)` while the reservation still rounds
+        to 64 KiB is exactly #1315's defect, which the current refusal made LOUD. A partial
+        implementation would be worse than refusing, so this lane scoped the work with evidence instead
+        of starting it.
+        THE ORACLE IS IN PLACE AND NEEDS NO EDIT WHEN THE CAPABILITY ARRIVES.
+        `scripts/repro/pagesize_oracle_1441.py` is CI-wired and passes today with 28 assertions. It
+        PROBES for the capability rather than being switched by hand, so it auto-strengthens to demand
+        `__synth_mem_size_N` == the DECLARED byte count and `__synth_mem_region_N` == that count rounded
+        UP to a power of two >= 32. It asserts EXACTLY ONE of the two modes holds, so a probe matching
+        neither cannot pass having checked nothing, and it compiles TWO-memory modules because a
+        single-memory module emits no `__synth_mem_*` symbols at all. The red-first for the capability is
+        therefore free.
+        THE SCOPE IS NOW A NUMBER, AND THE OBVIOUS NUMBER IS A TRAP. A grep for
+        `65536|0x10000|WASM_PAGE_SIZE` returns 233 sites in `crates/`, and that figure is DOMINATED BY
+        FALSE POSITIVES — `I32Const(65536)` in a wrapping-multiply test, `0x10000` as a Q16.16 literal,
+        encoder fixtures. It is not the lane's surface and is recorded here only so nobody quotes it.
+        Filtering to sites where the constant stands in an arithmetic or naming relationship with PAGES:
+        28 in shipped code, 6 in tests.
+        THE DECISIVE SITE IS ONE LINE: `crates/synth-core/src/wasm_decoder.rs:118` is
+        `self.initial_pages * 65536`, while `page_size_log2` sits at `:67` on the same struct, ignored.
+        That is what makes `__synth_mem_size_N` honour the declaration.
+        AND `memory.size` REALLY DOES LOWER THROUGH A HARDCODED PAGE SHIFT, which confirms this
+        artifact's warning that honouring the declaration CHANGES EMITTED CODE rather than only data:
+        ARM emits `LSR #16` (`arm_encoder.rs:1758` and `:3830`), RV32 `li rd, bytes / 65536`
+        (`synth-backend-riscv/src/selector.rs:3312`), AArch64 `(limit_bytes / 65536)`
+        (`synth-backend-aarch64/src/selector.rs:2557`, `:2596`). The rest of the surface is
+        `synth-memory` (`WASM_PAGE_SIZE` at `lib.rs:36`; `descriptor.rs:94/96/143`;
+        `bounds.rs:401/402`) and `refuse_custom_page_size` at `synth-cli/src/main.rs:3701`, which is
+        called from THREE sites (`:2088`, `:3975`, `:4209`) so narrowing it once covers every path.
+        WHAT IS NOT IN DOUBT, so the next attempt does not re-litigate it: the legal set is exactly
+        {1, 65536}, derived from the vendored suite rather than assumed — `custom-page-sizes-invalid.wast`
+        asserts `(pagesize 32)` INVALID by name. PMSA still requires a power-of-two region >= 32 B, which
+        is why TWO symbols: the reservation rounds up while the declaration does not, and collapsing them
+        turns the over-grant from silent into subtle. And the refusal is a DECISION with a pinning test
+        whose own docstring records the ordering the reporter asked for, so the test narrows in the same
+        commit as the capability.
