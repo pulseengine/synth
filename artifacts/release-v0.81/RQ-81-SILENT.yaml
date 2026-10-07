@@ -106,6 +106,17 @@ artifacts:
         a gate nobody can move honestly is a gate they route around. So the six were added to NOT_A_VERDICT
         as MEASURED EXCLUSIONS, and the DANGEROUS escapes are deliberately not there — `NOT LANDED`, `DONE`,
         `NOT-DELIVERED` and `CLOSED` all still red, asserted individually.
+        AND THE RESIDUAL THE SIX EXCLUSIONS CREATE, named by cold-review round 1 rather than left for a
+        future reader to rediscover. The rule is keyed on the FIRST ALL-CAPS token, so one of those six
+        openers standing in front of a delivery claim leaves BOTH populations at once. MEASURED:
+        `unclassified_lead("RULE DELIVERED in full")` is None AND `leading_verdict` is None, so that
+        artifact is outside the field-vs-prose comparison and outside the escape detector; same for
+        `EVERY ask SHIPPED` and for the pre-existing `THE work is DELIVERED`. The dangerous openers are
+        still caught — `NOT LANDED yet` yields `NOT LANDED` — so the hole is exactly the generic-opener
+        shape the exclusions introduced, and it is the price of not redding six innocent artifacts.
+        NOT FIXED HERE, deliberately: closing it needs a different shape — reading the opening SENTENCE
+        rather than its first token — and that needs its own false-positive measurement, because the
+        reason these six exist is that a wider rule red six honest artifacts on day one.
         AND THAT MAKES #1476's OTHER FINDING RESOLVE ITSELF. `NOT_A_VERDICT` was INERT: every member was
         already outside COMPLETE u INCOMPLETE, so its branch was followed by a path returning None anyway, and
         deleting it changed no verdict and passed all ten unit tests. It is now LOAD-BEARING — it is the list

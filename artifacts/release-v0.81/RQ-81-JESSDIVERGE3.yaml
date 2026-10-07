@@ -144,6 +144,9 @@ artifacts:
         rather than assumed from its neighbour; it is i64 MIN and the order is right.
         THE PREMISE WAS RE-CHECKED BEFORE ANY WORK, as the artifact demands: the last six comments
         on the thread name no mechanism this artifact does not, attributed BY BODY PREFIX
-        (`**[jess]**` for the reporter's four, `**[synth release loop]**` for ours), and both module
+        (THREE of the last six carry `**[jess]`, two carry `**[synth release loop]`, and ONE carries no
+        prefix at all — the draft said "the reporter's four", and that unprefixed comment is
+        attributed by ADJACENCY, not by prefix, which is worth stating because the whole point of
+        the convention is that adjacency is not attribution), and both module
         digests verify against the reporter's own `SHA256SUMS.txt`. Lowered with synth 0.79.0 using
         the reporter's compile line; `estimate` reproduces at 15300 bytes, the figure in the thread.

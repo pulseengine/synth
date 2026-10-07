@@ -3,7 +3,7 @@
 # This file carries NO STATISTICS by rule. Every number about this release lives
 # in the artifact that derives it, or in the CHANGELOG at the cut. A figure here
 # would be a second copy with no derivation behind it, which is how v0.74's
-# "first reduction" falsehood survived in four places at once.
+# "first reduction" falsehood survived in several places at once.
 #
 # THEME — "The artifact that says nothing" (#1458).
 #
@@ -27,7 +27,9 @@
 # the census of how many existing artifacts the rule would red on day one. v0.80's
 # SENTENCE lane is the template for both outcomes, and RQ-74-STALEMSG is the template
 # for the refutation being the right answer: it set out to build a tripwire, measured
-# the convention it would have outlawed at 363 sites, and correctly refused.
+# the convention it would have outlawed across the diagnostic surface, found that
+# the overwhelming majority of citation sites were legitimate, and correctly
+# refused. The census and its figure live in RQ-74-STALEMSG, which derives them.
 #
 # THE SILENCE IS NOT A BOOKKEEPING PROBLEM. It is what made the close set vacuous,
 # which v0.80's CLOSEGATE lane had to fix separately. A release of refutations and

@@ -52,6 +52,17 @@ artifacts:
       verification-track: manual
       done-when: "manual:2026-11-30 REWRITTEN AT DELIVERY because the SECOND of this artifact's two alternatives is REFUTED by a recorded downstream decision, not by effort: what is required instead is the refutation stated with gale's own words and the citation that carries them, the fact that the relocation was BUILT AND REVERTED, the reason the stated refuting command could not catch this, and gale's architectural correction recorded so a future lane aims at the right target"
       disposition: refuted
+      # A NOTE ON THIS ARTIFACT'S OWN done-when, raised by cold-review round 1 and
+      # recorded rather than argued away. It begins "REWRITTEN AT DELIVERY", and a
+      # criterion rewritten to enumerate what was in fact delivered CANNOT FAIL —
+      # which is the opposite of what a done-when is for. The rewrite is defensible
+      # here only because the ORIGINAL criterion became unachievable by definition:
+      # it asked for the capability or a synth-core decline, and the second is the
+      # remedy the downstream refused in writing, so no honest work could satisfy it.
+      # RQ-81-COMPLIANCE took the better path on the same tree — it kept its
+      # criterion VERBATIM and recorded a tag-time obligation instead of rewriting
+      # it to something satisfiable today. That is the model; this is the exception,
+      # and the exception should be rarer than two artifacts in one release.
       verified-by: >-
         REFUTED, AND THE REFUTATION IS A RECORDED DOWNSTREAM DECISION. This artifact offered two
         alternatives: implement the capability, or DECLINE it in synth-core rather than only in the

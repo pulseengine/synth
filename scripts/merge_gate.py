@@ -380,6 +380,17 @@ def gate(pr: str, repo: str, required: list[str], expect_head: str | None = None
     if why:
         raise GateRefusal(why)
     current, behind = branch_currency(d["headRefOid"])
+    # WHERE THIS VALUE'S COVERAGE LIVES, stated because `--self-test` does NOT
+    # have it. (v0.81 round-1 cold review, finding 8.) Mutating this line to
+    # `base_agrees = True` leaves `merge_gate.py --self-test` at rc=0 with zero
+    # failures; only `scripts/test_merge_gate_callsite.py` reds it, with 2
+    # failures. That is STRUCTURAL rather than an omission: `self_test()` is
+    # hermetic by design — it builds its own repository precisely so it does not
+    # read the ambient one — and `gate()` is network-bound, so the self-test
+    # cannot reach this expression at all. Both suites are CI-wired (ci.yml:617
+    # and :625), so the coverage exists; it is simply not where a reader of the
+    # self-test would look. Do not "fix" this by making the self-test ambient.
+    #
     # RQ-81-SHEXIT (#1474): was `.startswith(sh(...)[:8])`. With rev-parse
     # failing, `""[:8]` is `""` and `str.startswith("")` is ALWAYS True, so this
     # reported value could not be False. Both sides are full 40-char shas — gh

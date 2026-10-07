@@ -84,8 +84,12 @@ artifacts:
         IT CANNOT NARROW THE LIVE GATE, and the reason is structural rather than careful: for the
         release being CUT there is no tag above it, so the bound is open and the behaviour is
         identical. MEASURED on the invocation the tag ritual actually makes —
-        `--release v0.81.0 --since-tag v0.80.0` prints `window: [v0.80.0, now)` and 1 authorised /
-        5 closed / 0 failures, before and after.
+        `--release v0.81.0 --since-tag v0.80.0` prints `window: [v0.80.0, now)` with 0 failures before
+        and after. The authorised COUNT is not an invariant and the first draft quoted it as one: it
+        said "1 authorised / 5 closed", measured before this release's other lanes recorded their
+        verdicts. At the cut it is 4 authorised / 2 held open / 5 closed — the two held open are the
+        issues declared to outlive their artifacts. What is unchanged by the window bound is the
+        FAILURE count, which is what the non-weakening claim is about.
         `later_attribution` SHIPS TOO, AND IT IS NOT REDUNDANT. The window bound removes those
         closures from the population; attribution EXPLAINS them when an operator widens the window
         on purpose, which is exactly how all 8 were found. Both paths verified on the same tree:
@@ -105,7 +109,12 @@ artifacts:
         RED-FIRST, MEASURED PER HALF so each number is attributable. Reverting ONLY
         `status_evidence_check.py`: 1 failure, the third-remedy assertion, with all four controls
         still green. Neutering `later_attribution` to return `{}` while keeping everything else: 10
-        failures across both forward directions. Full fix: 0 failures, and the sibling suite
+        failures across both forward directions — and that figure was UNREPRODUCIBLE AS STATED,
+        because it did not name the invocation. Re-derived per invocation with `later_attribution`
+        returning `{}`: v0.77.0 widened 7 failures, v0.78.0 widened 6, v0.78.0 bounded 1, every other
+        bounded audit 0. The claim the sentence needs is that the forward directions are covered,
+        which holds at 7; a failure count without its invocation is not a measurement. Full fix: 0
+        failures across all of them, and the sibling suite
         `test_status_evidence_check.py` is 116 tests OK.
         AN HONEST NOTE ON ONE ASSERTION'S POTENCY: `later_attribution is EMPTY for the release being
         cut` stays GREEN against the neutered probe, because `{}` trivially satisfies it. It pins the

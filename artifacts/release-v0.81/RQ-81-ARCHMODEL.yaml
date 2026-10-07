@@ -53,7 +53,9 @@ artifacts:
         PARTIAL. The deferral is FILED and re-verified; feature-loop steps 1-2 are skipped for the
          nineteenth consecutive release.
          THE ORDINAL IS DERIVED BY ARTIFACT IDENTITY, with the command stated so it can be re-run rather than
-         believed: `ls artifacts/release-v*/RQ-*ARCHMODEL*.yaml | wc -l` returns NINETEEN on this tree, v0.63
+         believed: `ls artifacts/release-v*/RQ-*ARCHMODEL*.yaml | wc -l` returns NINETEEN at commit
+         574a69c3 (the commit is named because this artifact's own description demands the ordinal be
+         stated with the commit it is true at, and a count without one rots the moment a filing lands), v0.63
          through v0.81 with no gaps, so this is the nineteenth filing. Deriving it by TAG SET is the v0.77
          error, which returned 14 where the answer was 15 because v0.65's filing predates the five-tag
          vocabulary — the artifact set is the stable denominator, the tag set is not.

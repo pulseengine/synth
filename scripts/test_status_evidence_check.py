@@ -2075,5 +2075,45 @@ class StatusGate1250(unittest.TestCase):
         self.assertEqual(fails(r), [])
 
 
+
+class ClosesWithoutClaimingIsScopedToRefuted(unittest.TestCase):
+    """v0.81 round-1 cold review, finding 9.
+
+    `CLOSES_WITHOUT_CLAIMING = {"refuted"}` is the set that lets a NON-claiming
+    artifact authorise its issue's closure. Widening it to include `deferred` and
+    `partial` — the exact change the module's own comment calls "the v0.69
+    accident with a field attached" — survived THIS suite at 116 tests OK. Only
+    the sibling `test_issue_closure_check.py` red it. The owning suite now pins
+    the set it owns.
+    """
+
+    def test_the_set_is_exactly_refuted(self):
+        self.assertEqual(sec.CLOSES_WITHOUT_CLAIMING, {"refuted"},
+                         "widening this set lets an UNDELIVERED artifact "
+                         "authorise closing its issue")
+
+    def test_deferred_and_partial_authorise_nothing(self):
+        from pathlib import Path
+        for disp in ("deferred", "partial"):
+            with self.subTest(disposition=disp):
+                arts = [(Path("a.yaml"), (0, 81), "RQ-X", "proposed",
+                         {"issue": "#1", "issue-scope": "closes",
+                          "disposition": disp}, [], "v0.81")]
+                auth, _held = sec.authorised_close_set(arts, (0, 81))
+                self.assertNotIn(1, auth,
+                                 f"`{disp}` did not ship its scope, so closing "
+                                 f"its issue is the v0.69 accident")
+
+    def test_CONTROL_refuted_plus_closes_does_authorise(self):
+        from pathlib import Path
+        arts = [(Path("a.yaml"), (0, 81), "RQ-X", "proposed",
+                 {"issue": "#1", "issue-scope": "closes",
+                  "disposition": "refuted"}, [], "v0.81")]
+        auth, _held = sec.authorised_close_set(arts, (0, 81))
+        self.assertEqual(auth.get(1), "RQ-X",
+                         "without this the two tests above are satisfied by a "
+                         "branch that authorises nothing at all")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

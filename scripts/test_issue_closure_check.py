@@ -254,6 +254,28 @@ def r11conflict_tests() -> None:
     check("R11CONFLICT: delivered in v0.78 then HELD in v0.80 -> the hold governs",
           any("HELD OPEN BY v0.80 BUT CLOSED: #99" in x for x in f), str(f))
 
+    # (v0.81 round-1 cold review, finding 7.) THE ORDERING OF `prior_attribution`
+    # WAS UNTESTED while its new twin's was. `sorted(versions)` -> reverse=True
+    # survived this suite at rc=0, while the identical mutation on
+    # `later_attribution` reds with 3 failures. On real data the reversal flips
+    # 21 of 86 attributions at v0.81 and converts a "Reopen it" FAILURE into a
+    # warning. The docstring claims the two functions differ in ONE CHARACTER —
+    # "a property a reviewer can check at a glance" — and only one of the two
+    # characters was pinned.
+    lo = art("RQ-70-LOW", "implemented", "#900", (0, 70))
+    hi = art("RQ-76-HIGH", "implemented", "#900", (0, 76), scope="outlives")
+    pa = C.prior_attribution([lo, hi], (0, 77))
+    check("prior_attribution keeps the HIGHEST release below the target",
+          pa.get(900, (None,))[0] == (0, 76),
+          f"got {pa.get(900)} — a reversed sort would return v0.70 and turn a "
+          f"later hold-open into an earlier authorisation")
+    check("...and it reports that release's OWN verdict, not the other's",
+          pa.get(900, (None, None))[1] == "held-open", str(pa.get(900)))
+    # the MIRROR, so the pair is pinned symmetrically
+    la = C.later_attribution([lo, hi], (0, 69))
+    check("later_attribution keeps the HIGHEST release above the target",
+          la.get(900, (None,))[0] == (0, 76), str(la.get(900)))
+
     # And the two functions differ in ONE comparison, which is the property a
     # reviewer checks: the same artifact set, audited from both sides.
     pair = [art("RQ-LOW", "implemented", "#1", (0, 70)),

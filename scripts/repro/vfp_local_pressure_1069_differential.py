@@ -196,6 +196,23 @@ assert len(_POS) >= 4 and len(_NEG) >= 4, (
     f"VALS must span BOTH signs with at least 4 each -- it is the abs-vs-neg "
     f"discriminator for #1439, not decoration. Got {len(_POS)} positive and "
     f"{len(_NEG)} negative")
+# AND THE ROWS, NOT ONLY THE COUNTS. (v0.81 round-1 cold review, finding 11.)
+# The count assertion above says the comment's reason more narrowly than the
+# comment claims: replacing every FINITE negative with an infinity or a denormal
+# keeps 4-and-4 and still passes, while deleting exactly the rows v0.78's failing
+# set is made of. Measured by the reviewer:
+# `[0.0, -0.0, inf, -inf, 1e-30, -1e-30, 1e30, -1e30]` passed.
+#
+# v0.78 recorded the failing set as EXACTLY these six, so these six are the
+# evidence and are pinned by VALUE. A future lane may add rows; it may not remove
+# one of these without re-deriving the abs-vs-neg conclusion that rests on them.
+_FAILING_SET_1439 = (-0.0, -1.0, -0.25, -3.14159265, -1e30, float("-inf"))
+_missing = [v for v in _FAILING_SET_1439 if v not in VALS]
+assert not _missing, (
+    f"VALS is missing {_missing} -- v0.78's recorded failing set for #1439 is "
+    f"exactly {_FAILING_SET_1439}, and the abs-vs-neg conclusion is derived from "
+    f"those rows failing while every POSITIVE row passed. Removing one deletes "
+    f"the evidence rather than the test")
 
 
 def main():
