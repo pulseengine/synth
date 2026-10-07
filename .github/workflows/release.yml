@@ -407,3 +407,34 @@ jobs:
               --generate-notes \
               release-assets/*
           fi
+
+  # ── Compliance report ─────────────────────────────────────────────────
+  # RQ-81-COMPLIANCE (#1453). `compliance.yml` triggers on `release:
+  # published`, and GitHub does not raise workflow runs for events caused by
+  # GITHUB_TOKEN — so the `gh release create` above has never started it.
+  # MEASURED over all 148 releases: the workflow has run 19 times EVER (1
+  # workflow_dispatch + 18 release events, every one of the 18 for a release a
+  # USER published), none since 2026-07-15, and 44 consecutive releases from the
+  # newest carry no report. There was no red check, because a workflow that never
+  # starts has no conclusion to be red.
+  #
+  # Calling it here is the remedy that adds NO credential. It runs after the
+  # release exists, because it uploads an asset to that release.
+  #
+  # IT CAN FAIL THIS WORKFLOW, and that is the point — but say what that means:
+  # the binaries are already published by now, so a failure does not un-publish
+  # them, it makes the release run RED and visible instead of silently producing
+  # nothing. Regenerate an older tag's report with compliance.yml's
+  # workflow_dispatch.
+  compliance-report:
+    name: Compliance report
+    needs: [create-release]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/compliance.yml
+    with:
+      # A tag push gives `github.ref_name`; the manual re-run path gives
+      # `inputs.tag`. compliance.yml requires a non-empty tag and refuses a
+      # value that does not start with `v`, so a wrong expression here reds
+      # rather than generating a report for the wrong thing.
+      tag: ${{ inputs.tag || github.ref_name }}

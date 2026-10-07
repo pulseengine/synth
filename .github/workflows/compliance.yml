@@ -1,9 +1,38 @@
 name: Compliance report
 
 # Publishes synth-vX.Y.Z-compliance-report.tar.gz to each GitHub Release so
-# pulseengine.eu's fetch-reports surfaces it on the Reports page. Decoupled
-# from release.yml on purpose: triggers on release publish, is additive, and
-# cannot affect the existing release flow if it fails.
+# pulseengine.eu's fetch-reports surfaces it on the Reports page.
+#
+# RQ-81-COMPLIANCE (#1453): IT IS NO LONGER DECOUPLED, AND THE OLD COMMENT HERE
+# SAID THE OPPOSITE. It read "Decoupled from release.yml on purpose: triggers on
+# release publish, is additive, and cannot affect the existing release flow if it
+# fails" — and that design is exactly what made this workflow stop running for
+# forty-four consecutive releases without a single red check.
+#
+# WHY, MEASURED over all 148 releases: `release: types: [published]` is the only
+# real trigger, and GitHub does not start workflow runs for events raised by
+# `GITHUB_TOKEN` — a deliberate, SILENT recursion guard. `release.yml` publishes
+# with `gh release create` under the default token, so the event never fires.
+# This workflow has run exactly 19 times EVER: 1 `workflow_dispatch` and 18
+# `release` events, and all 18 correspond to releases a USER published. Zero runs
+# since 2026-07-15. 129 of 148 releases carry no report, 44 of them consecutively
+# from the newest. Nothing was red, because a workflow that never starts has no
+# conclusion to be red.
+#
+# So `release.yml` now CALLS this workflow (`workflow_call`) after the release is
+# created, which is a different trigger and no new credential. The alternative —
+# publishing with a PAT so a user raises the event — was rejected: it is a
+# long-lived secret this repo would have to hold, and it would re-enable the
+# recursion the guard exists to prevent for EVERY workflow listening on release
+# events. #1460 is the standing reminder of what a credential-dependent release
+# step costs.
+#
+# AND IT CAN NOW FAIL THE RELEASE PATH, deliberately, because a gate that cannot
+# fail is this programme's recurring defect. Stated precisely so the next reader
+# is not misled: the release's binaries are already uploaded by the time this
+# runs, so a failure does NOT un-publish them — it turns the release WORKFLOW
+# red and visible instead of silently producing nothing. `workflow_dispatch`
+# remains, and it is how a missing report gets regenerated for an older tag.
 #
 # NOTE: rivet-version pins the rivet binary used to validate/export synth's
 # artifacts. Bump it if a future schema needs a newer rivet.
@@ -11,6 +40,15 @@ name: Compliance report
 on:
   release:
     types: [published]
+  # RQ-81-COMPLIANCE (#1453): called by release.yml after the release is created,
+  # because the `release: published` event above is never raised for a release
+  # published under GITHUB_TOKEN. Same job, different trigger, no new secret.
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to generate the report for (e.g. v1.2.3)'
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:

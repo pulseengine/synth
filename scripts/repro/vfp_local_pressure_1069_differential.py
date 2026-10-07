@@ -180,6 +180,23 @@ def run_f64(text, base, addr, d0):
 VALS = [0.0, -0.0, 1.0, -1.0, 0.5, -0.25, 1.5, 0.001, -3.14159265,
         1e-30, -1e30, float("inf"), float("-inf"), float("nan")]
 
+# RQ-81-WIDEFILE4 (#1439): BOTH SIGNS ARE LOAD-BEARING, and until v0.81 nothing
+# said so. The wide-file sign error (#1426) shows as `got ^ want == 0x8000_0000`
+# with magnitudes BIT-IDENTICAL, so exactly one factor's sign is wrong and only
+# an `abs` or a `neg` can do that. For a NEGATIVE input the two are
+# indistinguishable -- abs(-x) and neg(-x) both give +x -- so the positive rows
+# are the discriminator: a `neg` would corrupt them too, an `abs` leaves them
+# alone. v0.78 recorded the failing set as exactly the six NEGATIVE values and
+# no positive one, which identifies the operation as an ABS. That conclusion
+# evaporates if someone trims this list to "the interesting cases", so the span
+# is asserted rather than hoped for.
+_POS = [v for v in VALS if v == v and v > 0 or (v == 0 and str(v)[0] != "-")]
+_NEG = [v for v in VALS if v == v and (v < 0 or str(v)[0] == "-")]
+assert len(_POS) >= 4 and len(_NEG) >= 4, (
+    f"VALS must span BOTH signs with at least 4 each -- it is the abs-vs-neg "
+    f"discriminator for #1439, not decoration. Got {len(_POS)} positive and "
+    f"{len(_NEG)} negative")
+
 
 def main():
     tmp = tempfile.mkdtemp(prefix="vfp1069_")

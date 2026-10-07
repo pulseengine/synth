@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-81-JESSDIVERGE3
     type: system-req
     release: v0.81
-    status: proposed
+    status: implemented
     title: "The translational sub-vector: the gravity-compensation addend contributes nothing — find where it is absent, zeroed, or on the wrong axis"
     description: >
       CARRIED, and the mechanism has been wrong TWICE — first "an identity rotation", then
@@ -73,4 +73,62 @@ artifacts:
       priority: must
       issue: "#1436"
       verification-track: manual
-      done-when: "manual:2026-11-30 the instruction or pass at which the gravity-compensation addend is ABSENT, ZEROED or LANDING ON ANOTHER AXIS is NAMED, by reading .text+0x1f6c / +0x1f90 / +0x1fb4 (link base D=+0x2e4) against the reporter's traced values for the 208-word run 0xac9c-0xafd8, or the lane states plainly that it did not reach the cause AND says what it tried; any oracle that lands must discriminate a MISSING OR ZERO-VALUED ADDEND, red-first — NOT a sign inversion, which the reporter declined because the magnitudes differ too; hardening an oracle alone does NOT satisfy this"
+      done-when: "contains:scripts/repro/jessdiverge3_gravity_faithful_1436.py:ABSENT, ZEROED and WRONG-AXIS are all refuted"
+      verified-by: >-
+        REFUTED: all three mechanisms this artifact named are refuted, and #1436 ITSELF REMAINS
+        OPEN AND UNEXPLAINED. The artifact asked which of ABSENT, ZEROED or LANDING ON ANOTHER AXIS
+        the gravity-compensation addend suffers. Measured against the module's own bytes: NONE OF
+        THE THREE. What is refuted is this release's HYPOTHESIS, not the reporter's defect — the
+        vehicle still integrates uncompensated gravity and nothing here makes that better. The lane
+        did not reach the cause and says so rather than promoting a refutation into an explanation.
+        NO `landed:` AND NO CLAIM OF PROGRESS ON THE DEFECT, deliberately. The conduct rule is that
+        a release whose only work on an externally reported defect was hardening the oracle around
+        it does not count as progress on it. Eliminating three mechanisms narrows the search; it
+        does not move the reporter's blocker, and this artifact must not read as if it did.
+        WHAT WAS MEASURED, both sides DERIVED and neither hand-copied. The input applies gravity in
+        three parallel terms — `localA + localB * 9.81` stored to offsets 940, 936, 944 in that
+        order — and the ARM contains exactly three matching `vldr/vldr/movw+movt/vmov/vmul/vadd/str`
+        blocks storing to 940, 936, 944 in that same order, with the correct constant and the
+        addend on the correct side of the product. The neighbouring `f32.store offset=932` and
+        `i32.store offset=980` match as well, which is what shows the window is ALIGNED rather than
+        coincidentally similar. An ABSENT addend would lose the `vadd`, a ZEROED one its operand,
+        and a WRONG AXIS would permute the three offsets. None of that is present.
+        THE REFUTATION IS RE-RUNNABLE, which is the only reason it counts as evidence: shipped as
+        `scripts/repro/jessdiverge3_gravity_faithful_1436.py`, deriving both sides from a `.wat` and
+        an objdump listing rather than asserting a remembered result, so the reporter — who has the
+        module and the hardware — can run it. NEGATIVE-CONTROLLED by injecting each of the three
+        mechanisms plus a dropped term, and a derived population of ZERO is a REFUSAL rather than a
+        pass. 9 of 9 self-tests, and the matcher is shown to IGNORE a mul-add by a different
+        constant so a green cannot come from matching the wrong block.
+        THE INSTRUMENT THAT WOULD HAVE LIED, recorded because it nearly did. A byte search for
+        `9.81` as a little-endian f32 finds 6 occurrences in the wasm and ZERO in `cascade.o` —
+        which reads exactly like "synth dropped the constant" and is meaningless: synth materializes
+        an f32 constant as a `movw`/`movt` IMMEDIATE PAIR, never as literal-pool bytes. Proven by
+        the same search on `0.001`, which reports 0 in an object that demonstrably materializes it
+        22 times, one of them disassembled by hand at `.text+0x1fc4`. The shipped oracle matches the
+        instruction pair for this reason.
+        WHERE THE DIVERGENCE MUST THEREFORE BE, stated as the next measurement and not as a cause:
+        the expression is right and reads from the right slots, so what remains is the VALUE a
+        multiplicand slot holds AT RUN TIME — `[sp,#152]`, `[sp,#208]`, `[sp,#232]`. A static
+        comparison cannot see that; the reporter's existing memtrace plugin can, windowed to those
+        three slots. A FOURTH mechanism is now the live one: the addend is computed, and one of its
+        operands is wrong.
+        AND A LIVENESS CHECK THAT CAME BACK EMPTY, reported because an empty result is not a pass:
+        all six operand slots are both written and read, so "a slot read but never written" is
+        refuted too. The reason it cannot fire here is the one this programme already recorded —
+        synth reloads from the frame, so every slot has a writer.
+        NOT CLAIMED. This compares the gravity-compensation site ONLY. The pcs the reporter traced
+        (`.text+0x1f6c/+0x1f90/+0x1fb4`, link base D=+0x2e4) are a DIFFERENT computation — `mem[X]
+        += sN` accumulations, and at `+0x1fb4` `mem[0xad18] += (s2 * mem[sp+152]) * 0.001`, where
+        `0x3a83126f` is exactly dt = 1 ms. Those are not checked by the oracle and no claim is made
+        about them.
+        ALSO CHECKED AND CLEAN, so it is not left as a loose thread: the two `i64.store`s beside the
+        gravity block are lowered correctly. `i64.const 2147483648 -> offset 972` writes low word
+        `0x80000000` then high `0`, and `i64.const -9223372036854775808 -> offset 964` writes low
+        `0` then high `0x80000000`. That looked like a word swap until the second constant was read
+        rather than assumed from its neighbour; it is i64 MIN and the order is right.
+        THE PREMISE WAS RE-CHECKED BEFORE ANY WORK, as the artifact demands: the last six comments
+        on the thread name no mechanism this artifact does not, attributed BY BODY PREFIX
+        (`**[jess]**` for the reporter's four, `**[synth release loop]**` for ours), and both module
+        digests verify against the reporter's own `SHA256SUMS.txt`. Lowered with synth 0.79.0 using
+        the reporter's compile line; `estimate` reproduces at 15300 bytes, the figure in the thread.
