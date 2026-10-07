@@ -21,7 +21,7 @@ artifacts:
 
       AND IT HAS NO TEST AT ALL, which is the deeper half and was verified rather than assumed:
       `ls scripts/test_check_version_pins.py` does not exist, while the gate itself is invoked at
-      `ci.yml:241` as a REQUIRED pre-tag check. 194 lines of hand-rolled parsing, two recorded
+      `ci.yml:244` as a REQUIRED pre-tag check. 194 lines of hand-rolled parsing, two recorded
       historical incidents (#145, #924), zero potency evidence. A gate with no test cannot be shown
       to fail on the failure it defines, which is the condition both blind spots above live in.
 

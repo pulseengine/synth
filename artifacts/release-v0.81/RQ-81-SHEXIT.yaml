@@ -97,9 +97,12 @@ artifacts:
         `merge_gate.py` cannot import its `ci_pool_tripwire` sibling — a `ModuleNotFoundError`
         reported as "the scenario does not red" would have been this release's theme committed by
         the lane that exists to close it. Re-run beside its sibling, it reds.
-        THE WHOLE CALL-SITE POPULATION IS NOW CHECKED, not just the one the report led with: five
-        live sites (`rev-list --count`, two `gh pr view` -> `json.loads`, `rev-parse origin/main`,
-        `git fetch refs/pull/N/head`). None needed tolerance — a failed `gh pr view` previously
+        THE WHOLE CALL-SITE POPULATION IS NOW CHECKED, not just the one the report led with: SIX live
+        sites, derived by excluding the definition, the docstring and the self-test — `:118`
+        (`rev-list --count`), `:373` and `:736` (`gh pr view` -> `json.loads`), `:389`
+        (`rev-parse origin/main`), `:743` (`git fetch refs/pull/N/head`) and `:755` (the
+        required-contexts read). The first draft said FIVE and omitted `:755`, which is the very
+        site the description had discussed. None needed tolerance — a failed `gh pr view` previously
         produced `json.loads("")` and an ugly traceback, and now produces GATEREFUSED exit 2, which
         `merge_ritual.sh` already reads. `CommandFailed` joins `GateRefusal` in `main()`'s handler,
         so a failed command can never reach the `GATEOK` print.
@@ -108,5 +111,7 @@ artifacts:
         editing it in the main checkout while #1480's ritual was waiting would have fed
         half-finished code to the gate judging another PR. The v0.80 deferral in this artifact's
         own premise was made for the same reason; this is that deferral honoured.
-        BOTH CI STEPS OVER THIS FILE PASS: `--self-test` (ci.yml:583) 0 failures, and
-        `test_merge_gate_callsite.py` (ci.yml:591) 0 failures.
+        BOTH CI STEPS OVER THIS FILE PASS: `--self-test` (ci.yml:617) 0 failures, and
+        `test_merge_gate_callsite.py` (ci.yml:625) 0 failures. The first draft cited 583/591, which
+        were correct at v0.80.0 and are mid-sentence comment lines at this commit — a line number is
+        a fact about a tree, so it has to be re-derived in the tree being shipped.

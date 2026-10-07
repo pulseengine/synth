@@ -569,9 +569,26 @@ def main() -> int:
           set(held) == {1331, 1318}, str(sorted(held)))
     check("v0.70 replay: the five closed issues are the authorised set",
           set(auth) == V70_CLOSED, str(sorted(auth)))
-    f, _w, _a, _h = C.check(root, "v0.70", V70_CLOSED | {1331})
-    check("v0.70 replay: closing #1331 anyway is CAUGHT",
-          any("HELD OPEN BUT CLOSED: #1331" in x for x in f), str(f))
+    # (v0.81 round-1 cold review, finding 1.) This asserted that closing #1331
+    # against v0.70's close-set is CAUGHT as a failure. On the REAL tree that is
+    # no longer the right answer, and the measurement says so: v0.70 held #1331
+    # open (RQ-70-NPA), v0.72 held it open again (RQ-72-ISLANDS), and v0.73,
+    # v0.74 and v0.75 each AUTHORISED it (RQ-73-ISLANDPASS, RQ-74-ISLANDREACH,
+    # RQ-75-FLOORBIND). `later_attribution(v0.70)[1331]` is
+    # `((0, 75), "authorised", "RQ-75-FLOORBIND")`, the issue is closed today,
+    # and that closure is correct — so "Reopen it" would be the wrong
+    # instruction, which is this file's most expensive failure mode.
+    #
+    # THE LAUNDERING PROPERTY IS NOT WEAKENED, and it is tested separately above
+    # with #701, an issue NO later release delivers: that case still FAILS. The
+    # rescue fires only when a later release AUTHORISED the issue, which means a
+    # later artifact delivered it under a claiming status. Hold open, continue,
+    # deliver, close is a progression, not an override.
+    f, w, _a, _h = C.check(root, "v0.70", V70_CLOSED | {1331})
+    check("v0.70 replay: closing #1331 is NOT a reopen order — v0.75 delivered it",
+          not any("HELD OPEN BUT CLOSED: #1331" in x for x in f), str(f))
+    check("v0.70 replay: ...and it is reported, naming the release that delivered it",
+          any("DELIVERED LATER: #1331" in x and "v0.75" in x for x in w), str(w))
 
     r11conflict_tests()
     closed_since_tests()

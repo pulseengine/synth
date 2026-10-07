@@ -64,9 +64,12 @@ artifacts:
       verification-track: manual
       done-when: "contains:scripts/repro/vfp_local_pressure_1069_differential.py:discriminator for #1439, not decoration"
       verified-by: >-
-        REFUTED: two more mechanisms are dead and the THREE candidates are now ONE — but the cause is
-        NOT named, the retry is NOT re-added, and #1426 remains a silent miscompile held behind a
-        decline. The lane did not reach the cause and says so.
+        REFUTED: the MECHANISM CLASS is settled — the sign loss is an ABS, not a NEG — and one
+        mis-encoding route is dead. The cause is NOT named, the EMITTER is NOT identified, the retry
+        is NOT re-added, and #1426 remains a silent miscompile held behind a decline.
+        THIS VERDICT WAS WEAKER THAN ITS FIRST DRAFT, which claimed "the three candidates are now
+        ONE". Round 1 of the cold review falsified the enumeration that claim rested on, and the
+        correction is recorded here rather than quietly adjusted: see WHAT WAS WRONG below.
         THE DISCRIMINATOR WAS ALREADY IN v0.78's OWN DATA AND NOBODY HAD READ IT AS ONE. That is the
         finding. The failure is `got ^ want == 0x8000_0000` with magnitudes BIT-IDENTICAL, so exactly
         one factor's sign is wrong — 60 factors share the parameter's sign, 60 is EVEN, the true
@@ -79,22 +82,38 @@ artifacts:
         negatives — `-0.0, -1.0, -0.25, -3.14159265, -1e30, -inf` — with no positive row failing. A
         `neg` would have corrupted the positives too. It is an ABS. The mechanism class is settled
         from data that was sitting in the record for three releases.
-        AND A THIRD MECHANISM DIES, checked rather than assumed. If an `abs` is executing, either a
-        `VABS` is genuinely emitted or a `VMOV` is MIS-ENCODED into one. `VMOV.F32 Sd,Sm` is
-        0xEEB00A40 and `VABS.F32 Sd,Sm` is 0xEEB00AC0, a difference of bit 7, and for a 2-register
-        VFP op bit 7 is opc3, not a register field — v0.80 established that a wrong register NUMBER
-        cannot reach it. What v0.80 did not check is whether the ENCODER puts a register there by a
-        transposed shift, which is the one way a register could still set bit 7. It does not: all
-        THREE `VMOV.F32 Sd,Sm` emitters (`arm_encoder.rs:2416`, `:7257`, `:7274`) use `(n << 5)` and
-        `(m << 5)`, and every `<< 7` in that file is an A32 shift-immediate, a different encoding
-        class. The mis-encoding route is dead.
-        WHAT SURVIVES, AND IT IS NOW THE ONLY CANDIDATE: a genuinely emitted `VABS`. The sole scalar
-        f32 `VABS` emitter in the backend is the `F32Copysign` expansion at
-        `crates/synth-backend/src/arm_encoder.rs:7305-7311` (`VABS.F32` then `IT MI ; VNEG.F32`); the
-        other two sites are the f64 copysign at `:7661` and a NEON `VABS.F32 Qd, Qm` at `:6967`.
-        Candidate 1 (the selector choosing a different op) and candidate 3 (a spill/reload of the
-        wrong frame slot) are both EXCLUDED BY THE MAGNITUDE being bit-identical — a different op or
-        a wrong slot would move magnitude bits, not only the sign bit.
+        AND THE 2-REGISTER MIS-ENCODING ROUTE DIES, checked rather than assumed. If an `abs` is
+        executing, either a `VABS` is genuinely emitted or a `VMOV` is MIS-ENCODED into one.
+        `VMOV.F32 Sd,Sm` is 0xEEB00A40 and `VABS.F32 Sd,Sm` is 0xEEB00AC0, a difference of bit 7,
+        and for a 2-REGISTER VFP op bit 7 is opc3, not a register field — v0.80 established that a
+        wrong register NUMBER cannot reach it. What v0.80 did not check is whether the ENCODER puts
+        a register there by a transposed shift. It does not: all three `VMOV.F32 Sd,Sm` emitters
+        (`arm_encoder.rs:2416`, `:7257`, `:7274`) use `(n << 5)`/`(m << 5)`, and the shared
+        `encode_vfp_2reg` (`:9059`) builds `base | (d << 22) | (vd << 12) | (m << 5) | vm` — bit 7
+        untouched on every 2-register path.
+        SCOPED TO 2-REGISTER OPS, AND THE FIRST DRAFT WAS NOT. It said "every `<< 7` in that file is
+        an A32 shift-immediate, a different encoding class". That is FALSE and was self-refuting,
+        because this artifact's own description already concedes that for a THREE-register op bit 7
+        IS the N qualifier. MEASURED: 43 lines in `arm_encoder.rs` contain `<< 7`, and at least NINE
+        are VFP register fields — `:7617` is literally `(n << 7) | (m << 5)`. The claim that
+        survives is the narrow one about the 2-register encoder, which is the only one the argument
+        needs; the sweeping version was an unforced error in the load-bearing step.
+        WHAT SURVIVES is a genuinely emitted `VABS`, and the CANDIDATE SET IS NOT NARROWED TO ONE.
+        The first draft said the sole scalar-f32 `VABS` emitter is the `F32Copysign` expansion at
+        `arm_encoder.rs:7305-7311`. MEASURED, and false: `0xEEB00AC0` occurs THREE times —
+        `:1992` and `:6322`, both lowering `ArmOp::F32Abs` (a first-class selector op, on two
+        different encoder paths), and `:7310` inside the copysign expansion. `ArmOp::F32Abs` is the
+        more plausible emitter of the two by a wide margin, and the first draft did not mention it.
+        AND THE SOURCE CONTAINS NO abs AT ALL, which makes the question sharper rather than
+        answered. `scripts/repro/vfp_local_pressure_1069.wat` has ZERO `f32.abs`, ZERO
+        `f32.copysign` and ZERO `f32.neg` against 71 `f32.mul`. So whatever emits the abs emits it
+        with NO source operator to justify it — none of the three emitters should be reachable from
+        a pure product nest. "Three candidates become one" is WITHDRAWN: what is settled is the
+        mechanism CLASS, not its site.
+        TWO CANDIDATES REMAIN EXCLUDED, and for a reason the enumeration error does not touch: the
+        selector choosing a different op, and a spill/reload of the wrong frame slot, are both ruled
+        out by the magnitude being BIT-IDENTICAL — either would move magnitude bits, not only the
+        sign bit.
         NOT REACHED, STATED PLAINLY: whether the copysign expansion is actually emitted in the
         wide60 nest. That needs v0.78's retry re-applied on a scratch branch and the newly-accepted
         function DISASSEMBLED, which this lane did not do. A narrowing owes execution evidence and

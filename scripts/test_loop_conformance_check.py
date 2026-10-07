@@ -588,6 +588,63 @@ class Step7PriorReleaseBar(unittest.TestCase):
         self.assertIn("no", seven[0][3].lower())
 
 
+class Step3EmptyValuedOutcomeKey(unittest.TestCase):
+    """v0.81 round-1 cold review, findings 2 and 3.
+
+    Both are the release's OWN theme turned on the release's own rules: a case
+    that is out of the population reads as compliant.
+    """
+
+    def _docs(self, *fieldsets):
+        return [("p.yaml", {"artifacts": [
+            {"id": f"RQ-X-{i}", "fields": f} for i, f in enumerate(fieldsets)]})]
+
+    def test_an_empty_valued_landed_key_is_SILENT(self):
+        # PRE-FIX this returned (1, []) — the key was PRESENT, so the artifact
+        # counted as reporting an outcome. R11 needs a NON-EMPTY value, so a
+        # present-but-blank key was invisible to BOTH rules.
+        total, silent = lcc.artifacts_reporting_nothing(self._docs({"landed": ""}))
+        self.assertEqual((total, silent), (1, ["RQ-X-0"]))
+
+    def test_a_VALUELESS_landed_key_is_SILENT(self):
+        # A bare `landed:` in YAML parses to None, and `str(None)` is the
+        # four-character string "None" — non-empty and truthy. That is R11's own
+        # idiom, and copying it here would have swapped one hole for another.
+        total, silent = lcc.artifacts_reporting_nothing(self._docs({"landed": None}))
+        self.assertEqual((total, silent), (1, ["RQ-X-0"]))
+
+    def test_blank_disposition_and_blank_verified_by_are_SILENT_too(self):
+        # The twin check: a fix applied to one of three keys and not the others
+        # is the shape this programme has had to correct repeatedly.
+        for key in ("disposition", "verified-by", "landed"):
+            with self.subTest(key=key):
+                _t, silent = lcc.artifacts_reporting_nothing(self._docs({key: "   "}))
+                self.assertEqual(silent, ["RQ-X-0"], f"blank {key} must be silent")
+
+    def test_CONTROL_a_real_value_still_reports_an_outcome(self):
+        # Without this, the four above are satisfied by a rule that calls
+        # EVERYTHING silent, which would red every delivered release.
+        for key, val in (("landed", "#1480"), ("disposition", "refuted"),
+                         ("verified-by", "DELIVERED. ...")):
+            with self.subTest(key=key):
+                _t, silent = lcc.artifacts_reporting_nothing(self._docs({key: val}))
+                self.assertEqual(silent, [], f"{key}={val!r} must NOT be silent")
+
+    def test_CONTROL_the_live_tree_has_no_silent_artifact(self):
+        # The fix must not red the release it ships in.
+        import glob
+        import yaml
+        docs = []
+        for f in sorted(glob.glob("artifacts/release-v0.81/*.yaml")):
+            with open(f) as fh:
+                docs.append((f, yaml.safe_load(fh)))
+        if not docs:
+            self.skipTest("no v0.81 artifacts at this path — cannot exercise")
+        total, silent = lcc.artifacts_reporting_nothing(docs)
+        self.assertEqual(silent, [], f"live v0.81 has silent artifacts: {silent}")
+        self.assertGreaterEqual(total, 11, "population too small to trust")
+
+
 class Step3ReportedOutcome(unittest.TestCase):
     """RQ-81-SILENT (#1458 + #1476). OUT OF POPULATION IS INDISTINGUISHABLE FROM
     COMPLIANT: an artifact recording NO outcome is invisible to every rule that

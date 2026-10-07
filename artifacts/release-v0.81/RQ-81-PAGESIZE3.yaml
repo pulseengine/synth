@@ -85,19 +85,34 @@ artifacts:
         occupant. Closing it now would have to be undone when gale's own `pagesize` work lands.
         ONE NEW MEASUREMENT KEPT FROM THE REVERTED WORK, because it is true independently of where
         the rule lives: `WasmMemory::max_bytes()` has ZERO callers in the workspace and over-reports
-        in exactly the same way as `initial_bytes()`, which has ten. A fix applied to one of that
+        in exactly the same way as `initial_bytes()`, which has NINE live call sites (ten textual
+        occurrences, one of which is inside a comment at `synth-cli/src/main.rs:4644`). A fix applied to one of that
         pair and not the other is the twin-check shape this programme has already had to correct
         twice, so whichever lane eventually honours the declaration must move both.
         AND GALE'S ARCHITECTURAL CORRECTION, restated because it changes what a future lane should
         aim at and a refutation that drops it wastes the consultation: ARMv7-M PMSA needs
         power-of-two regions >= 32 bytes, ARMv6-M >= 256 (measured on a G031K8, MPU_TYPE
         0x00000800). "The win is not byte-exactness. It is getting the declared extent below 64 KiB
-        at all." Page granularity finer than 32 B is wasted effort; honouring power-of-two pages
-        >= 32 B is the cheap version that loses gale nothing. That — not the relocation — is the
-        shape of the next page-size lane.
+        at all."
+        AND THAT NOTE IS ABOUT MPU REGIONS, NOT PAGE SIZES — the first draft of this paragraph
+        contradicted this artifact's OWN description and the cold review caught it. The description
+        states, correctly, that a ">= 32 B power of two" PAGE scoping is SPEC-INVALID and must not be
+        re-adopted: `custom-page-sizes` permits exactly two page sizes, 1 and 65536, so there is no
+        such thing as a 32-byte page to honour. gale's >= 32 B figure is the ARMv7-M PMSA region
+        granularity the EMBEDDER programs, which is a different quantity. What survives from the
+        consultation is the sentence above — the win is getting the declared extent below 64 KiB at
+        all — and `(pagesize 1)` is the only spec-legal way to ask for that. That, not the
+        relocation and not a 32-byte page, is the shape of the next page-size lane.
         THE FIRST ALTERNATIVE WAS NOT ATTEMPTED AND IS NOT CLAIMED: honouring the declaration is 28
-        shipped sites plus an execution differential, and `scripts/repro/pagesize_oracle_1441.py`
-        REFUSED to run here for a named reason rather than a silent one — the
-        `custom-page-sizes` spec suite is a SUBMODULE, present only in a checkout with
-        `submodules: recursive`. The premise half of the refuting command was re-run and HOLDS:
-        `page_size_log2` has readers in exactly two files, the CLI refusal and the decoder field.
+        shipped sites plus an execution differential. THE REFUTING COMMAND RAN AND THE PREMISE
+        HOLDS, and this is stated from the POPULATED checkout rather than from a worktree: the
+        oracle exits 0 with `PASS: pagesize oracle, 28 assertions`, reporting `17 spec-invalid sizes
+        all refused`, `explicit65536 accepted`, and `(pagesize 1): REFUSED, diagnostic still cites
+        #1315 — capability ABSENT`. That is the REFUSAL mode, which is exactly what the refuting
+        command said would keep the premise alive.
+        A FIRST DRAFT SAID THE ORACLE "REFUSED TO RUN", AND THAT WAS TRUE OF THE WRONG SUBJECT. It
+        refuses in a fresh `git worktree`, where the `custom-page-sizes` spec suite submodule is
+        uninitialised — a property of THAT CHECKOUT, not of the oracle. Reporting a dependency
+        refusal as the lane's evidence when the oracle in fact executes and passes would have hidden
+        the stronger result. The second half also holds: `page_size_log2` has readers in exactly two
+        files, the CLI refusal and the decoder field.

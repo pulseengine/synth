@@ -86,15 +86,33 @@ def next_release_tag(tag: str, repo: str) -> str | None:
     out = subprocess.run(
         ["gh", "api", f"repos/{repo}/git/matching-refs/tags/v", "--jq",
          ".[].ref"], capture_output=True, text=True, check=True).stdout
+    # NORMALISE TO A FIXED ARITY. (v0.81 round-1 cold review, finding 13.) Both
+    # sides used to be built by splitting on "." with whatever arity the string
+    # happened to have, and Python compares tuples element-wise: `(0, 81, 0) >
+    # (0, 81)` is **True**, because the longer tuple wins once the shared prefix
+    # is equal. So a `--release v0.81` (two components, which `parse_version`
+    # accepts) compared against the tag `v0.81.0` (three) made the release's OWN
+    # tag sort ABOVE it.
+    #
+    # MEASURED before the fix: `next_release_tag("v0.77")` returned **v0.77.0**
+    # instead of v0.78.0 — bounding the window at the audited release's own tag
+    # and excluding its entire post-tag closure wave, which is precisely the set
+    # this gate exists to audit. `tag_release.sh` passes three components so the
+    # live path was unaffected, but the function is public and the next caller
+    # would not have known.
+    def _v(name: str):
+        parts = [int(x) for x in name.lstrip("v").split(".")]
+        return tuple((parts + [0, 0, 0])[:3])
+
     vs = []
     for line in out.splitlines():
         name = line.strip().removeprefix("refs/tags/")
         try:
-            vs.append((tuple(int(x) for x in name.lstrip("v").split(".")), name))
+            vs.append((_v(name), name))
         except ValueError:
             continue
     try:
-        here = tuple(int(x) for x in tag.lstrip("v").split("."))
+        here = _v(tag)
     except ValueError:
         return None
     above = sorted(v for v in vs if v[0] > here)
@@ -401,6 +419,26 @@ def check(root: Path, release: str, closed: set[int],
             f"earlier releases' attributions -- and must be acted on")
     for n in sorted(closed):
         if n in held_open:
+            # (v0.81 round-1 cold review, finding 1.) THE TWIN. The
+            # later-delivery rescue was added to the mirror loop below and NOT
+            # here, so the SAME artifacts and the SAME issue produced opposite
+            # verdicts depending only on WHICH WINDOW the closure fell in:
+            # inside, a hard "Reopen it"; outside, "not something to reopen".
+            # A hold-open is a statement about one release's scope, and whether
+            # a later release delivered it does not depend on when the issue was
+            # closed. Consulting `later` in both places is what makes the pair
+            # consistent — and "Reopen it" is this file's documented
+            # near-reopening instruction, so an inconsistent one is the costly
+            # kind.
+            _lat = later.get(n)
+            if _lat and _lat[1] == "authorised":
+                warnings.append(
+                    f"HELD OPEN BY {release} BUT DELIVERED LATER: #{n} — "
+                    f"{held_open[n]} declared `issue-scope: outlives`, and "
+                    f"{_lat[2]} in {fmt_release(_lat[0])} went on to deliver "
+                    f"it. The closure is that release's, correctly. Not "
+                    f"something to reopen")
+                continue
             failures.append(
                 f"HELD OPEN BUT CLOSED: #{n} — {held_open[n]} declares "
                 f"`issue-scope: outlives`, so its issue asks a wider question "

@@ -47,9 +47,11 @@ than by a person.
   *user* published. GitHub raises no workflow runs for `GITHUB_TOKEN` events, and
   this repo publishes with it. 129 of 148 releases carry no report, 44
   consecutively. `release.yml` now calls the workflow; the CLASS is gated.
-- **RQ-81-WIDEFILE4** (#1439) — three candidates became one. The sign loss is an
-  **abs**, not a neg, derived from v0.78's own data: the oracle has 7 positive rows
-  and the failing set was exactly the 6 negatives. Cause still not named; the
+- **RQ-81-WIDEFILE4** (#1439) — the MECHANISM CLASS is settled: the sign loss is an
+  **abs**, not a neg, derived from v0.78's own data, because the oracle has 7 positive
+  rows and the failing set was exactly the 6 negatives. The EMITTER is not identified
+  — `0xEEB00AC0` has three emitters, two of them `ArmOp::F32Abs`, and the fixture
+  contains no `f32.abs`, `f32.copysign` or `f32.neg` at all. Cause not named; the
   pool-grow retry stays out and the tripwire stays armed.
 - **RQ-81-JESSDIVERGE3** (#1436) — the gravity-compensation lowering is FAITHFUL
   instruction-for-instruction. All three named mechanisms refuted. **#1436 itself
