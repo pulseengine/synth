@@ -468,6 +468,16 @@ jobs:
       # hidden capabilities to 15 with 2 undetermined, and CI stayed GREEN.
       - name: Shipped-feature census — zero UNDETERMINED flags (RQ-78-FEATURESET)
         run: python3 scripts/shipped_feature_census.py
+      # RQ-81-JESSDIVERGE3 (#1436): the gravity-compensation comparison. Only
+      # `--self-test` is a gate, and for a reason worth stating rather than
+      # inheriting from the step above: the MODULE this oracle compares lives in
+      # pulseengine/jess, not here, so a CI run of the comparison itself would
+      # have nothing to compare and would pass vacuously. What CAN rot in this
+      # repo is the oracle's own power — the two regex matchers and the four
+      # injected mechanisms — so that is what runs. Hermetic: no module, no
+      # objdump, no synth binary.
+      - name: Gravity-addend comparison self-test — the three refuted mechanisms stay injectable (RQ-81-JESSDIVERGE3)
+        run: python3 scripts/repro/jessdiverge3_gravity_faithful_1436.py --self-test
 
       # RQ-80-SENTENCE (#1461): v0.79 shipped with `claim_check` at 75/75 while
       # its cold-review record enumerated TWENTY defect items in PROSE. The gates
