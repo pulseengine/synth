@@ -34,6 +34,35 @@ artifacts:
       truth or membership. Derive that set and fix the class, or state which sites are
       deliberately tolerant and why.
 
+      POPULATION DERIVED AT THE LANE'S START, with `ast` and not a regex — a
+      `git grep` for the literal `str(fields.get(` misses `str(art.get(`,
+      `str(a.get(`, `str(fl.get(` and `str((a[4] or {}).get(`, so it UNDERCOUNTS the
+      very class this artifact scopes. Walking every `scripts/**/*.py` for a
+      `str(<expr>.get(...))` call whose argument is a bare `.get` (an `or ""` guard
+      makes the argument a BoolOp, so already-fixed sites are excluded by
+      construction, and that exclusion is controlled):
+
+        32  total sites of the shape
+        14  of them read a YAML ARTIFACT FIELD — the live defect class, because an
+            author's bare key is what makes the value None
+        13  read GitHub API JSON or config, where the None comes from the API
+         2  are test fixtures and cannot surprise
+         3  other (two reach an artifact field through a tuple)
+        11  of the 32 are inside `status_evidence_check.py` itself
+
+      TWO SITES ARE NAMED BECAUSE THEY SIT IN R12's OWN PATH:
+      `str(fields.get("issue-scope", ""))` and `str(fields.get("issue", ""))`. A bare
+      `issue-scope:` key there reads as the INVENTED string "none" and then fails R12's
+      vocabulary check with a value no author wrote — directly beneath R11's own comment
+      admitting "Round 1 fixed the same trap in `loop_conformance_check` and left R11's
+      twin — the shape this programme has had to correct repeatedly."
+
+      WHAT THIS LANE MUST NOT DO: patch 32 sites. The classes differ in whether None is
+      reachable at all, so the deliverable is a DERIVATION plus a tripwire over the
+      artifact-field class, not a sweep. v0.82's own R14 was written with `or ""` BEFORE
+      `str()` and is therefore NOT in the population — verified by re-running the census
+      after it landed.
+
       REFUTING COMMAND: `git grep -c -F 'str(fields.get(' -- scripts/` and
       `python3 -c "print(repr(str(None).strip()))"`. If the idiom is gone from the gate
       surface, or if a shared accessor now normalises it, the premise is dead. Then

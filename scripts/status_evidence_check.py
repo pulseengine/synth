@@ -353,6 +353,17 @@ from pathlib import Path
 
 import yaml
 
+# R14 (#1484, RQ-82-CLOSEARM) reads the LEADING VERDICT of `verified-by:`. The
+# classifier and its vocabulary live in `verdict_prose_check` and are IMPORTED,
+# never mirrored: a second copy of COMPLETE/INCOMPLETE is how the model drifts
+# from the shipped table (#667's lesson, one tier down). A FAILING import must
+# be LOUD — a gate that cannot classify a verdict must not read as "no finding".
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verdict_prose_check import (  # noqa: E402
+    INCOMPLETE as VERDICT_INCOMPLETE,
+    leading_verdict as _leading_verdict,
+)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Statuses that CLAIM the artifact's stated outcome holds. Everything else
@@ -1788,6 +1799,47 @@ def check(root: Path, release_glob: str, subjects: list[str],
                         f"`proposed`, #1250); flip to a claiming status, or "
                         f"set `disposition: partial|refuted|deferred`"
                     )
+        # R14 (#1484, RQ-82-CLOSEARM). SATISFYING ONE GATE CAN ARM ANOTHER.
+        # `status: implemented` is simultaneously R3's ONLY remedy for "the
+        # status under-reports shipped work" AND `authorised_close_set`'s
+        # permission to retire the issue. v0.81's JESSDIVERGE3 and WIDEFILE4
+        # each delivered a REFUTATION, said so in their own `verified-by`, and
+        # were set claiming for R3's sake — which silently placed an externally
+        # reported live blocker in the authorised set. An operator caught it by
+        # running the closure gate before tagging; no gate did.
+        #
+        # WHY THIS DOES NOT DEMAND `outlives`, AND WHY IT CANNOT DEMAND A
+        # `disposition:`. R11 reds a non-delivery `disposition:` beside a
+        # claiming status, and R3 reds a non-claiming status whose done-when
+        # evidence exists. So for a lane that did real work and refuted its own
+        # premise, claiming + prose-only refutation + NO disposition is the
+        # FORCED configuration — there is no legal third option. Demanding
+        # `outlives` would therefore red a legitimate artifact whose issue IS
+        # resolved (RQ-77-PROSEBLIND: `verified-by` opens REFUTED, and #1319 is
+        # closed because the refutation shipped in v0.69).
+        #
+        # What this demands instead is a DECLARATION, in either direction: say
+        # `closes` or say `outlives`, in the field the closure gate already
+        # reads. The prose already states the outcome; this makes the ISSUE's
+        # fate structural rather than inferable only by reading English.
+        # R3 and R11 are untouched.
+        if version >= DISPOSITION_SINCE:
+            # `or ""` BEFORE `str()` — `str(None)` is the four-character string
+            # "None" and a bare key would read as a verdict. (#1458.)
+            _vb = str(fields.get("verified-by") or "")
+            _lead = _leading_verdict(_vb) if _vb.strip() else None
+            _iscope14 = str(fields.get("issue-scope") or "").strip().lower()
+            if _lead in VERDICT_INCOMPLETE and status in CLAIMING and not _iscope14:
+                failures.append(
+                    f"R14 {art_id}: `verified-by:` opens `{_lead}` while status "
+                    f"`{status}` claims the outcome holds, and no `issue-scope:` "
+                    f"says what that means for the ISSUE. A claiming status is "
+                    f"both R3's only remedy and the closure gate's permission, "
+                    f"so this shape silently authorises retiring an issue the "
+                    f"artifact itself says is unresolved. Declare "
+                    f"`issue-scope: outlives` (the issue survives this release) "
+                    f"or `issue-scope: closes` (the verdict resolves it)."
+                )
         # R12 (#1250, RQ-71-ISSUESCOPE): an artifact may declare that its
         # ISSUE outlives its own delivery. Separate key from `disposition:`
         # by design — see ISSUE_SCOPES above — so this never trips R11.

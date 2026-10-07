@@ -7,7 +7,7 @@
 # make this wrong" named exactly this outcome. What ships instead is this
 # script plus the convention recorded in CLAUDE.md. There is nothing here for
 # CI to fail on, which is why it is `manual` and not `wired`.
-"""RQ-74-STALEMSG (#345): what does an issue number in a diagnostic MEAN?
+r"""RQ-74-STALEMSG (#345): what does an issue number in a diagnostic MEAN?
 
 WHY THIS WAS ASKED. v0.73 cost real time twice to one diagnostic:
 
