@@ -1,0 +1,58 @@
+artifacts:
+  - id: RQ-81-WIDEFILE4
+    type: system-req
+    release: v0.81
+    status: proposed
+    title: "Root-cause the vfp-wide-file SIGN error before re-adding the pool-grow retry v0.78 built and reverted"
+    description: >
+      CARRIED from v0.78/v0.79/v0.80. The wide-file ladder rung is the only rung with no
+      pool-grow retry, because v0.78 BUILT the retry (~20 lines), measured it on its own
+      execution oracle, found the newly-accepted code SIGN-WRONG, and reverted. Re-adding the
+      retry without a named cause would ship a silent miscompile to buy a reach number — the
+      exact trade this project exists to refuse.
+
+      ONE MECHANISM IS ELIMINATED, by v0.80, and it is eliminated rather than merely
+      unsupported. The VABS-instead-of-VMOV hypothesis is DEAD: `VMOV.F32 Sd,Sm` is
+      0xEEB00A40 and `VABS.F32 Sd,Sm` is 0xEEB00AC0, a difference of bit 7 — and for a VFP
+      TWO-REGISTER op the register fields are D=bit22, Vd=15:12, M=bit5, Vm=3:0, so bit 7 is
+      STRUCTURALLY UNREACHABLE from any register field. A wrong register number cannot produce
+      a VABS. The positive control came back empty and the REASON WAS THE RESULT.
+      (For a three-register op bit 7 IS the N qualifier; that is a different encoding class and
+      does not rescue the hypothesis.)
+
+      CANDIDATES, listed WITHOUT assertion because this artifact has already been wrong about
+      a mechanism once: the selector choosing a different op; `F32Copysign`'s expansion, which
+      really does use VABS at `crates/synth-backend/src/arm_encoder.rs:7310` but may not be
+      reached by the product nest; a spill/reload of the wrong frame slot. Each is a
+      hypothesis to be killed or confirmed by reading EMITTED BYTES, not arms.
+
+      WHAT WOULD SETTLE IT: re-apply v0.78's retry on a scratch branch, run
+      `scripts/repro/vfp_local_pressure_1069_differential.py`, and DISASSEMBLE the
+      newly-accepted function rather than inferring from the differential's verdict. A
+      narrowing owes EXECUTION evidence — "it compiles now" is a fact about the validator.
+
+      THE TRIPWIRE IS ALREADY ARMED and must stay armed:
+      `wide60_declines_and_the_ladder_dies_on_the_wide_file_rung_1426` reds the moment stage 3
+      gains a grow retry, so a future reach grab cannot land silently. Do not weaken it to
+      make room; move it in the same PR with a written reason, or leave it.
+
+      THE REACH ON OFFER IS SIX LOCALS, wall 60 -> 66 — not twelve. Stating the real figure is
+      part of the lane, because an inflated one is how a silent miscompile gets justified.
+
+      REFUTING COMMAND: `grep -n "wide60_declines" -r scripts/ tests/ crates/` and
+      `git log --oneline -S"pool grow retry" -- crates/synth-backend/` . If the tripwire is
+      gone, or a retry has landed since, this premise is dead — check BEFORE building on it.
+    tags:
+      - bug
+      - carried
+      - reach
+      - vfp
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: software
+      priority: must
+      issue: "#1439"
+      verification-track: manual
+      done-when: "manual:2026-11-30 the sign error is ROOT-CAUSED with the mechanism named from EMITTED BYTES and #1267 has an execution differential over the newly-accepted function, OR the lane states plainly that it did not reach the cause, names which of the three listed candidates it killed and how, and the retry remains ABSENT with the wide60 tripwire still armed"

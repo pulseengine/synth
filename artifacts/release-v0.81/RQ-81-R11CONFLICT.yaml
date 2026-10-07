@@ -1,0 +1,55 @@
+artifacts:
+  - id: RQ-81-R11CONFLICT
+    type: system-req
+    release: v0.81
+    status: proposed
+    title: "Two committed gates give CONTRADICTORY instructions for a refuted artifact — neither is wrong on its own terms"
+    description: >
+      `issue_closure_check.py` and `status_evidence_check.py` R11 instruct the operator to do
+      opposite things about one artifact, and following either one reds the other. Found by
+      running BOTH at the v0.77 cut rather than trusting a green history.
+
+      THE SHAPE. #1243 is CLOSED and was fixed in v0.66.0. v0.77 scoped it as a `must`, found it
+      already delivered, and RQ-77-FLOORREGEX records `disposition: refuted`. Then:
+      `issue_closure_check` says `CLOSED BUT NOT AUTHORISED` and instructs "Reopen it, or name it
+      in the artifact that delivered it". Taking the second remedy — flipping the artifact to a
+      claiming status so it "names" the delivery — gives
+      `R11 ... status implemented claims the outcome holds but disposition: refuted says it does
+      not — pick one`. R11 IS RIGHT: an artifact that delivered a refutation must not claim the
+      outcome holds. So the gate that wants a claiming status and the gate that forbids one are
+      both correct, and the operator is left to choose which gate to lie to.
+
+      WHY IT IS A `should` AND NOT A `must`: it is a correctness defect in the release machinery
+      with no user-visible effect, and it fires only on the narrow combination "issue closed, fix
+      shipped in an EARLIER release, artifact refuted in a LATER one". But that combination is
+      becoming common — this programme ships refutations deliberately — and an operator forced to
+      pick a gate to lie to will eventually pick the wrong one.
+
+      WHAT A FIX LOOKS LIKE, named without being prescribed: `issue_closure_check` already has an
+      `issue-scope` vocabulary and `prior_attribution` (built from every earlier release, added by
+      v0.80's CLOSEGATE lane). A third remedy — "an earlier release accounts for it, and the later
+      artifact records a refutation" — is derivable from data both gates already have. The fix must
+      not be "loosen R11": R11's rule is the correct one.
+
+      NOTE THE QUOTING HAZARD, which has fired for real. `issue_closure_check`'s own vocabulary is
+      `CLOSED BUT NOT AUTHORISED` / `HELD OPEN BY vX.Y BUT CLOSED`, so quoting its output NEXT TO a
+      bare issue reference ARMS GitHub's closer. Any commit message, PR body or issue comment in
+      this lane must BREAK THE ADJACENCY.
+
+      REFUTING COMMAND: `python3 scripts/issue_closure_check.py --release v0.77.0 --since-tag
+      v0.76.0 --allow-unclosed` and `python3 scripts/status_evidence_check.py`. If the first no
+      longer reports a non-authorised closure for that release, v0.80's CLOSEGATE work already
+      resolved it and this premise is dead — check BEFORE building on it.
+    tags:
+      - process
+      - gate
+      - traceability
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1430"
+      verification-track: manual
+      done-when: "manual:2026-11-30 the two gates no longer instruct opposite actions for a refuted artifact whose issue was fixed in an earlier release — demonstrated by running BOTH at the v0.77 cut and showing a consistent remedy — with R11's rule UNCHANGED, or the conflict is documented as deliberate with the operator's correct choice written down and tested"

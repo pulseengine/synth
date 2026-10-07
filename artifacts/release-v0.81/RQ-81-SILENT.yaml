@@ -1,0 +1,78 @@
+artifacts:
+  - id: RQ-81-SILENT
+    type: system-req
+    release: v0.81
+    status: proposed
+    title: "OUT OF POPULATION IS INDISTINGUISHABLE FROM COMPLIANT — an artifact that reports nothing, and a verdict no rule classifies"
+    description: >
+      R11 exists to catch an artifact that says too little about its own delivery, and it
+      cannot see an artifact that says nothing at all. Its failure branch is
+      `elif landed_txt and status not in CLAIMING and not disp:` — it requires `landed:`
+      to be NON-EMPTY, so it fires on "you recorded a landing but did not say why you are
+      not claiming" and is silent on "you recorded nothing", which is strictly less
+      information. The rule's own error text names the incident it was written for
+      (v0.67 cut with all seven artifacts `proposed`, #1250) — and v0.67's artifacts were
+      silent in exactly the way the rule cannot see.
+
+      THE EVIDENCE IS IN v0.80's OWN HISTORY, not only in #1458's v0.79 table. TWO v0.80
+      `must` artifacts — RQ-80-PAGESIZE2 and RQ-80-WIDEFILE3 — reached the release
+      candidate with no `verified-by:` and no `disposition:`, with every structured gate
+      green at that commit. They were caught by a human re-reading the exit condition and
+      fixed in a record PR. A gate that needs an operator to remember it is not a gate.
+
+      AND THE SAME HOLE EXISTS ONE LEVEL IN, inside the gate v0.80 shipped for exactly this
+      subject (#1476, found by v0.80's own cold review and verified before filing).
+      `verdict_prose_check.py` is an ALLOW-LIST of thirteen tokens: six COMPLETE, seven
+      INCOMPLETE. A `verified-by:` whose leading word is anything else LEAVES THE POPULATION
+      rather than failing. Four escapes are constructible beside a contradicting status —
+      `NOT LANDED`, `DONE`, `NOT-DELIVERED`, `CLOSED` — and `NOT LANDED` is the sharpest,
+      because the module deliberately excludes a bare leading `NOT` and the consequence (NOT +
+      any COMPLETE word is unclassified) is written down nowhere. `--census` DOES print the
+      unclassified leads, and the live tree already has several, but NO GATE READS THE CENSUS.
+      Measured beside it: `NOT_A_VERDICT` is INERT (every member is already outside
+      COMPLETE u INCOMPLETE, so deleting the branch changes no verdict and passes all ten unit
+      tests), and the COMPLETE-beside-disposition branch — the half the motivating 28196ec7
+      instance is named for — is DEAD on the live population, because R11 reds that combination
+      first and 0 of 539 artifacts can reach it.
+
+      SO THE LANE IS ONE SUBJECT, NOT TWO. A silent artifact and an unclassified verdict are
+      the same defect wearing different clothes: both leave the population, and leaving the
+      population is indistinguishable from passing. Fix the class, not the two instances.
+
+      DELIVERABLE, and either outcome is a result: a rule that REDS a release artifact
+      which reports no outcome, AND makes an unclassified verdict lead VISIBLE rather than
+      silent — red-first on a real commit, then green — or a REFUTATION
+      carrying the census of how many artifacts across every shipped release the rule
+      would red on day one, with the reason the bar cannot be moved honestly. v0.80's
+      SENTENCE lane is the template for shipping it; RQ-74-STALEMSG is the template for
+      refusing to (it measured 363 sites its proposed tripwire would have outlawed).
+
+      SCOPE CARE, learned twice. The rule must be scoped to the RELEASE WINDOW, not to
+      every artifact ever filed: 293 unscoped programme artifacts exist and they are
+      silent BY DESIGN until a release scopes them (RQ-62-ROADMAPGATE). A rule that reds
+      those is the gate nobody can move. And the population must be DERIVED, not pinned —
+      a population of zero is a REFUSAL, not a pass.
+
+      REFUTING COMMAND: `python3 scripts/status_evidence_check.py` at the ref, then
+      `python3 -c "import yaml,pathlib;
+      [print(p.name, 'SILENT') for p in sorted(pathlib.Path('artifacts/release-v0.80').glob('RQ-*.yaml'))
+      if not (yaml.safe_load(p.read_text())['artifacts'][0]['fields'].keys() & {'verified-by','disposition','landed'})]"`.
+      If that prints nothing for the CURRENT release, the gate has nothing to catch TODAY
+      and the lane must say so rather than planting a fixture — the red-first then has to
+      come from real history, the way SENTENCE used `28196ec7`.
+    tags:
+      - process
+      - gate
+      - traceability
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1458"
+      # #1476 is the same class one level in: the gate v0.80 shipped for this
+      # subject has its own out-of-population hole. Folded here rather than
+      # filed as a sibling lane, because the fix is one mechanism.
+      verification-track: manual
+      done-when: "manual:2026-11-30 either a committed rule reds a release-window artifact that reports no outcome AND surfaces an artifact whose leading verdict no set classifies — both wired into a required check, both proven red on a named real commit and green at HEAD, with the population DERIVED and a zero population treated as a refusal; or each half is REFUTED with a census over every shipped release of how many artifacts it would red on day one and why that bar cannot be moved honestly. NOT_A_VERDICT is either deleted or given a demonstrated effect, and the COMPLETE-beside-disposition branch either gains a test that can reach it (a pre-0.67 fixture) or is removed as subsumed by R11"

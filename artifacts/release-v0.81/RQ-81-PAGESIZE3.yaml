@@ -1,0 +1,53 @@
+artifacts:
+  - id: RQ-81-PAGESIZE3
+    type: system-req
+    release: v0.81
+    status: proposed
+    title: "Honour (pagesize 1) end to end, or decline it loudly — no backend reads the declared page size today"
+    description: >
+      CARRIED from v0.79/v0.80, and v0.80 declined to half-deliver it on a stated ground that
+      still holds: the failure mode of a partial delivery is a SILENT OVER-GRANT, which is
+      #1315's own defect class. `crates/synth-core/src/wasm_decoder.rs:118` computes
+      `self.initial_pages * 65536` and ignores `page_size_log2` ENTIRELY, so a `(pagesize 1)`
+      module accepted without the rest of the change is handed 65536x the memory it declared,
+      with no diagnostic.
+
+      THE LEGAL SET IS EXACTLY {1, 65536} and this is settled from this repo's OWN vendored
+      suite, not a third-party validator: `custom-page-sizes-invalid.wast` asserts
+      `(pagesize 32)` INVALID by name. 65536 is the default, so the entire capability is
+      `(pagesize 1)` — byte-granular sizing. The reporter's ">= 32 B power of two" scoping was
+      spec-invalid and must not be re-adopted.
+
+      HONOURING IT CHANGES EMITTED CODE on three backends, which is why this is not a decoder
+      patch. Four `memory.size` lowering sites divide or shift by a hardcoded 65536: ARM
+      `LSR #16`, RV32 `li rd, bytes / 65536`, AArch64 `limit_bytes / 65536`. Scope MEASURED at
+      28 shipped sites and 6 test sites; the broad 233-site figure an earlier pass produced is
+      a TRAP, dominated by false positives — do not re-derive scope from a naive grep.
+
+      ALSO IN SCOPE, and cheap: #1339 — custom page size is refused only by the CLI, so a
+      caller of the PUBLISHED `synth-core` still gets in. A refusal that lives in one front end
+      is not a refusal.
+
+      THE ORACLE ALREADY LANDED. `scripts/repro/pagesize_oracle_1441.py` is CI-wired, carries
+      28 assertions, PROBES for the capability and AUTO-STRENGTHENS when it appears, asserting
+      EXACTLY ONE of two modes holds. Read its behaviour before touching it — it compiles
+      TWO-memory modules deliberately, because a single-memory module emits no
+      `__synth_mem_*` symbols for it to read.
+
+      REFUTING COMMAND: `python3 scripts/repro/pagesize_oracle_1441.py` and
+      `grep -n "page_size_log2" -r crates/`. If the oracle reports the capability MODE rather
+      than the refusal mode, the capability has landed and this premise is dead.
+    tags:
+      - feature
+      - carried
+      - reach
+      - memory
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: software
+      priority: must
+      issue: "#1441"
+      verification-track: manual
+      done-when: "manual:2026-11-30 either (pagesize 1) compiles with wasm_decoder.rs honouring page_size_log2, all four memory.size lowering sites deriving the shift from the declared page size, __synth_mem_size_N carrying the true byte size, and the CI-wired pagesize oracle flipping to its capability mode; or the capability is DECLINED in synth-core itself rather than only in the CLI (#1339) so a library caller cannot get a silent over-grant, with the over-grant demonstrated red-first"

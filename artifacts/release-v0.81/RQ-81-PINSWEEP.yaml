@@ -1,0 +1,56 @@
+artifacts:
+  - id: RQ-81-PINSWEEP
+    type: system-req
+    release: v0.81
+    status: proposed
+    title: "The pre-tag version pin sweep is blind to a split-line path-dep pin and to a single-line members list"
+    description: >
+      Two blind spots in `scripts/check_version_pins.py`, the REQUIRED pre-tag gate whose whole
+      purpose is that a stale pin cannot reach a tag. Both were break-tested at the v0.79.0 cut
+      and both are LATENT rather than currently broken — which is exactly when they are cheap.
+
+      1. A PATH-DEP PIN SPLIT ACROSS LINES IS INVISIBLE (`:51`). The check requires `path` and
+      `version` on ONE line. Measured: the `[dependencies.synth-core]` block form left at a stale
+      `0.78.0` produced 0 errors; the inline equivalent produced 1 (the positive control, so the
+      harness works and the gap is real).
+
+      2. A SINGLE-LINE `members = [...]` YIELDS ZERO MEMBERS (`:85-101`, consumed at `:133`). With
+      `members` on one line the parse returns an empty list and `check_cargo_lock` iterates
+      nothing. Planted that PLUS every `Cargo.lock` entry at `0.1.0`, and the gate still printed
+      OK. A DERIVED POPULATION OF ZERO IS A REFUSAL, NOT A PASS — and here it was a pass.
+
+      AND IT HAS NO TEST AT ALL, which is the deeper half and was verified rather than assumed:
+      `ls scripts/test_check_version_pins.py` does not exist, while the gate itself is invoked at
+      `ci.yml:241` as a REQUIRED pre-tag check. 194 lines of hand-rolled parsing, two recorded
+      historical incidents (#145, #924), zero potency evidence. A gate with no test cannot be shown
+      to fail on the failure it defines, which is the condition both blind spots above live in.
+
+      THE FIX IS NAMED AND IT IS THE PROJECT'S OWN RULE: do not hand-roll a parser to measure the
+      codebase. `tomllib` is in the standard library on this MSRV's Python and reads both forms
+      correctly. Verified on the v0.80 tree: a `tomllib` walk finds 27 path-dep pins all at the
+      workspace version and 4 path-deps with no pin at all (synth-abi, synth-analysis,
+      synth-mcdc-harness x2 — the unpublished library-only crates), and 19 workspace members. The
+      line scan agrees TODAY, which is why this is latent and not a live failure.
+
+      SCOPE ALSO INCLUDES THE ZERO-POPULATION REFUSAL: whichever way the members list is read, the
+      gate must REFUSE on an empty member set rather than printing OK, and that refusal must be
+      tested by emptying the list.
+
+      REFUTING COMMAND: `python3 -c "import tomllib,pathlib;
+      d=tomllib.loads(pathlib.Path('Cargo.toml').read_text());
+      print(len(d['workspace']['members']))"` compared against the gate's own
+      `workspace_members()`. If the two agree on a tree where `members` has been rewritten to one
+      line, the second blind spot is already fixed and this premise is half dead.
+    tags:
+      - process
+      - gate
+      - release
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1457"
+      verification-track: manual
+      done-when: "manual:2026-11-30 check_version_pins.py reads Cargo.toml with a real TOML parser rather than a line scan, so a split-line path-dep pin and a single-line members list are both seen — proven red-first by planting each form stale and showing the gate fails, with the pre-fix pass recorded — an EMPTY member set is a refusal rather than an OK, and scripts/test_check_version_pins.py EXISTS and is CI-wired, each of its assertions proven non-vacuous by mutating a copy"

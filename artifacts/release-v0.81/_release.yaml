@@ -1,0 +1,46 @@
+# v0.81 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS by rule. Every number about this release lives
+# in the artifact that derives it, or in the CHANGELOG at the cut. A figure here
+# would be a second copy with no derivation behind it, which is how v0.74's
+# "first reduction" falsehood survived in four places at once.
+#
+# THEME — "The artifact that says nothing" (#1458).
+#
+# v0.80 built a gate that reads the leading VERDICT of a `verified-by:` and reds
+# when it contradicts that artifact's own `status:`/`disposition:`. It works, it is
+# potent on real history, and it is blind to the strictly worse case: an artifact
+# that writes NO verdict at all. R11's failure branch keys on `landed_txt` being
+# non-empty, so it fires on "you recorded a landing but did not say why you are not
+# claiming" and stays silent on "you recorded nothing" — less information, no
+# finding.
+#
+# THIS RELEASE HAS THE EVIDENCE IN ITS OWN HISTORY, which is why the theme is this
+# and not something more interesting. Two v0.80 `must` artifacts — PAGESIZE2 and
+# WIDEFILE3 — reached the release candidate with no `verified-by:` and no
+# `disposition:`, and every structured gate was green at that commit. They were
+# caught by a human reading the exit condition, in a record PR cut specifically to
+# fix it. A gate that needs an operator to remember it is not a gate.
+#
+# WHAT THE HEADLINE LANE OWES. Either a rule that reds a silent release artifact —
+# proven by being made to go red on a real commit, then green — or a REFUTATION with
+# the census of how many existing artifacts the rule would red on day one. v0.80's
+# SENTENCE lane is the template for both outcomes, and RQ-74-STALEMSG is the template
+# for the refutation being the right answer: it set out to build a tripwire, measured
+# the convention it would have outlawed at 363 sites, and correctly refused.
+#
+# THE SILENCE IS NOT A BOOKKEEPING PROBLEM. It is what made the close set vacuous,
+# which v0.80's CLOSEGATE lane had to fix separately. A release of refutations and
+# partials is exactly the release whose artifacts are all non-claiming — and exactly
+# when a reader most needs each one to say what it did and did not deliver.
+#
+# THE CARRIED REACH WORK KEEPS ITS RECORDED ORDER and is not re-litigated. The
+# external silent miscompile outranks the capability lanes; that ordering was set by
+# the maintainer on 2026-10-01 and has not been revisited. The wide-file lane still
+# root-causes before re-adding the rung v0.78 built, measured and reverted on its own
+# execution oracle. The pagesize lane ships the capability behind an oracle that
+# already landed, or does not ship it. The ladder lane states plainly what it cannot
+# measure and names the human action.
+#
+# AND THE EXTERNAL DEFECT IS STILL NOT SATISFIED BY INSTRUMENT WORK. Hardening the
+# oracle around a reporter's still-open defect is not progress on that defect.
