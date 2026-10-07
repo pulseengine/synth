@@ -62,9 +62,72 @@ def parse_version(release: str) -> tuple[int, int]:
     return (int(parts[0]), int(parts[1]))
 
 
-def closed_since(tag: str, repo: str) -> set[int]:
-    """Issues closed at or after `tag`'s creation, via gh. Network; only used
-    on the live path, never in the tests.
+def tag_commit_date(tag: str, repo: str) -> str:
+    """`tag`'s commit date, ISO8601. Split out so the window has two edges.
+
+    RQ-81-R11CONFLICT (#1430). It resolves the TAG NAME directly for the reason
+    documented in `closed_since`: every synth release tag is annotated, so
+    `git/refs/tags/<tag>.object.sha` is the TAG OBJECT's sha and feeding it to
+    `commits/<sha>` answers 422.
+    """
+    return subprocess.run(
+        ["gh", "api", f"repos/{repo}/commits/{tag}", "--jq",
+         ".commit.committer.date"],
+        capture_output=True, text=True, check=True).stdout.strip()
+
+
+def next_release_tag(tag: str, repo: str) -> str | None:
+    """The release tag immediately ABOVE `tag`, or None if it is the newest.
+
+    RQ-81-R11CONFLICT (#1430). Read from the REMOTE's tags, not a local list,
+    because a stale `git fetch` would silently widen the window — and a window
+    that is too wide is exactly the defect this is here to close.
+    """
+    out = subprocess.run(
+        ["gh", "api", f"repos/{repo}/git/matching-refs/tags/v", "--jq",
+         ".[].ref"], capture_output=True, text=True, check=True).stdout
+    vs = []
+    for line in out.splitlines():
+        name = line.strip().removeprefix("refs/tags/")
+        try:
+            vs.append((tuple(int(x) for x in name.lstrip("v").split(".")), name))
+        except ValueError:
+            continue
+    try:
+        here = tuple(int(x) for x in tag.lstrip("v").split("."))
+    except ValueError:
+        return None
+    above = sorted(v for v in vs if v[0] > here)
+    return above[0][1] if above else None
+
+
+def closed_since(tag: str, repo: str, until_tag: str | None = None) -> set[int]:
+    """Issues closed in the window [`tag`, `until_tag`), via gh. Network; only
+    used on the live path, never in the tests.
+
+    THE WINDOW HAS AN UPPER EDGE NOW (RQ-81-R11CONFLICT, #1430), and the lack of
+    one was the same defect `prior_attribution` patches at the LOWER edge — read
+    that docstring first, because this is its mirror and the two belong together.
+
+    `closed:>={date}` alone is unbounded above, so auditing a release that is
+    already history sweeps in every LATER release's closure wave. MEASURED at the
+    v0.81 cut: `--release v0.77.0 --since-tag v0.76.0` reported EIGHT
+    `CLOSED BUT NOT AUTHORISED` failures whose prescribed remedy is "Reopen it".
+    SEVEN of them — #1431, #1435, #1440, #1454, #1456, #1459, #1461 — are named
+    by delivered artifacts in v0.78, v0.79 and v0.80 and were closed by THOSE
+    releases' rituals. They were never v0.77's closures; the window had no reason
+    to contain them.
+
+    This is the THIRD time a window edge in this file was one step from a wrong
+    REOPENING: the v0.74 day-truncated lower bound, the v0.76 post-tag wave, and
+    this. Each one compared a timestamp against a model of when closures happen
+    that no real release matched.
+
+    IT CANNOT NARROW THE LIVE GATE, which is the property that matters because
+    this is the gate the tag ritual runs. When auditing the release being CUT
+    there is no tag above it, `next_release_tag` returns None, and the upper
+    bound stays open — byte-identical behaviour to before. Verified by running
+    the live invocation both ways.
 
     RESOLVE THE TAG NAME DIRECTLY. The first version of this walked
     `git/refs/tags/<tag>` and fed `.object.sha` to `commits/<sha>`, which is
@@ -139,15 +202,16 @@ def closed_since(tag: str, repo: str) -> set[int]:
     consumer; the branches themselves are not exercised, and that is not claimed
     here.
     """
-    date = subprocess.run(
-        ["gh", "api", f"repos/{repo}/commits/{tag}", "--jq", ".commit.committer.date"],
-        capture_output=True, text=True, check=True).stdout.strip()
+    date = tag_commit_date(tag, repo)
     # FULL ISO8601, never `date[:10]`: GitHub's search qualifiers accept a
     # second-granular timestamp, and a release cut on the same day as its
-    # predecessor depends on it.
+    # predecessor depends on it. Same for the upper bound.
+    qual = f"closed:>={date}"
+    if until_tag:
+        qual = f"closed:{date}..{tag_commit_date(until_tag, repo)}"
     out = subprocess.run(
         ["gh", "issue", "list", "--repo", repo, "--state", "closed",
-         "--limit", "200", "--search", f"closed:>={date}",
+         "--limit", "200", "--search", qual,
          "--json", "number"],
         capture_output=True, text=True, check=True).stdout
     return {int(r["number"]) for r in json.loads(out)}
@@ -227,6 +291,73 @@ def prior_attribution(artifacts, version: tuple[int, int]):
     return found
 
 
+def later_attribution(artifacts, version: tuple[int, int]):
+    """Issues that a LATER release's artifacts account for. (RQ-81-R11CONFLICT)
+
+    The mirror of `prior_attribution`, and it exists because that function is
+    STRICTLY BACKWARD-LOOKING — correct for the release being cut, where there
+    is no "later", and wrong for every audit of history.
+
+    MEASURED at the v0.81 cut, which is what makes this a defect and not a
+    hypothetical: auditing v0.77.0 reports EIGHT `CLOSED BUT NOT AUTHORISED`
+    failures, whose prescribed remedy is "Reopen it". Seven of the eight —
+    #1431, #1435, #1440, #1454, #1456, #1459, #1461 — are named by artifacts in
+    v0.78, v0.79 and v0.80, releases that legitimately delivered and closed
+    them. Acting on that instruction would reopen seven correctly-closed issues.
+
+    THIS FILE HAS NOW BEEN ONE STEP FROM A WRONG REOPENING THREE TIMES, each
+    time because a timestamp or an ordering was compared against a model of when
+    closures happen that no real release matched: the v0.74 day-truncated
+    window, the v0.76 post-tag closure wave (see `prior_attribution`), and this.
+    The shape is the same and the remedy is always the same — widen what the
+    gate can see, never weaken what it concludes.
+
+    IT CANNOT WEAKEN THE LIVE GATE, and the reason is structural rather than
+    careful: when auditing the release being cut, NO artifact carries a version
+    above it, so this returns {} and every verdict is unchanged. The function
+    only has an effect on an audit of a release that is already history — which
+    is the only situation in which it is consulted. Pinned by a test.
+
+    LAUNDERING IS REFUSED IN THIS DIRECTION TOO. A later release declaring
+    `issue-scope: outlives` said do not close this, and that refusal is returned
+    as "held-open", which `check` makes a FAILURE rather than an excuse. Without
+    it, "a later release mentions it" would become a way to override a
+    deliberate hold.
+
+    THE MOST RECENT DECISION GOVERNS, and getting this backwards is the bug this
+    function shipped in its first draft — caught by running it, not by reading
+    it. The draft let ANY later refusal outrank ANY later authorisation, on the
+    reasoning that "a refusal must not be out-voted". MEASURED against real
+    history, that is wrong: v0.78 declared `issue-scope: outlives` on #1440 and
+    **v0.80 then DELIVERED it** (RQ-80-RITUAL3). Hold open, continue, deliver,
+    close is the normal progression of a long-running issue, and the draft read
+    it as v0.78's refusal being overridden — emitting "Reopen it" for a
+    correctly-closed issue. That is the FOURTH near-reopening in this file, and
+    it was produced by the fix for the third. So: iterate ASCENDING and let the
+    highest release be the final writer, exactly as `prior_attribution` does.
+    The two functions now differ in ONE CHARACTER — `>` where the other has `<`
+    — which is a property a reviewer can check at a glance.
+
+    Within a SINGLE release an authorisation wins over a hold-open, matching the
+    backward direction. (`check` itself is stricter for the release being CUT,
+    testing `held_open` first; that asymmetry is pre-existing and this lane does
+    not change it.)
+
+    Returns {issue: (release_tuple, "authorised" | "held-open", artifact_id)},
+    keeping the HIGHEST such release when several name the same issue.
+    """
+    found: dict[int, tuple[tuple[int, int], str, str]] = {}
+    versions = {v for _p, v, _i, _s, _f, _l, _r in artifacts
+                if v is not None and v > version}
+    for v in sorted(versions):
+        auth, held = authorised_close_set(artifacts, v)
+        for n, art in held.items():
+            found[n] = (v, "held-open", art)
+        for n, art in auth.items():
+            found[n] = (v, "authorised", art)
+    return found
+
+
 def fmt_release(v: tuple[int, int]) -> str:
     return f"v{v[0]}.{v[1]}"
 
@@ -243,6 +374,7 @@ def check(root: Path, release: str, closed: set[int],
     artifacts, _bad = load_release_artifacts(root, RELEASE_GLOB)
     authorised, held_open = authorised_close_set(artifacts, version)
     prior = prior_attribution(artifacts, version)
+    later = later_attribution(artifacts, version)
     if not artifacts:
         return (["VACUOUS: zero release artifacts loaded"], [], {}, {})
     failures: list[str] = []
@@ -287,6 +419,23 @@ def check(root: Path, release: str, closed: set[int],
                     f"ATTRIBUTED TO {fmt_release(pv)}: #{n} — closed after the "
                     f"{fmt_release(pv)} tag by that release's own ritual, and "
                     f"{art} names it. Not a {release} closure")
+        elif n not in authorised and n in later:
+            # RQ-81-R11CONFLICT (#1430): a LATER release accounts for it. Only
+            # reachable when auditing history; empty for the release being cut.
+            lv, how, art = later[n]
+            if how == "held-open":
+                failures.append(
+                    f"HELD OPEN BY {fmt_release(lv)} BUT CLOSED: #{n} — {art} "
+                    f"declares `issue-scope: outlives`, so {fmt_release(lv)} "
+                    f"deliberately did NOT close it. A later release's refusal "
+                    f"is still a refusal, and this closure overrides it. "
+                    f"Reopen it")
+            else:
+                warnings.append(
+                    f"ATTRIBUTED TO {fmt_release(lv)}: #{n} — accounted for by "
+                    f"{art} in {fmt_release(lv)}, a release LATER than "
+                    f"{release}. Not a {release} closure, and NOT something to "
+                    f"reopen")
         elif n not in authorised:
             failures.append(
                 f"CLOSED BUT NOT AUTHORISED: #{n} — no delivered {release} "
@@ -317,6 +466,24 @@ def check(root: Path, release: str, closed: set[int],
     if open_issues is not None:
         for n in sorted(held_open):
             if n not in open_issues and n not in closed:
+                # RQ-81-R11CONFLICT (#1430): the SAME forward blindness, one
+                # level in. A hold-open is a statement about THIS release's
+                # scope, not a promise for all time, so an issue a LATER release
+                # went on to DELIVER is correctly closed and this is not a
+                # finding. MEASURED: auditing v0.78.0, #1440 is declared
+                # `outlives` by RQ-78-RITUAL and is closed — and
+                # RQ-80-RITUAL3 delivered it two releases later. Without this
+                # branch the gate demands a reopening of an issue whose work
+                # shipped, which is the defect this lane exists to remove.
+                lat = later.get(n)
+                if lat and lat[1] == "authorised":
+                    warnings.append(
+                        f"HELD OPEN BY {release} BUT DELIVERED LATER: #{n} — "
+                        f"{held_open[n]} declared `issue-scope: outlives`, and "
+                        f"{lat[2]} in {fmt_release(lat[0])} went on to deliver "
+                        f"it. The closure is that release's, correctly. Not "
+                        f"something to reopen")
+                    continue
                 failures.append(
                     f"HELD OPEN BUT ALREADY CLOSED: #{n} — {held_open[n]} "
                     f"declares `issue-scope: outlives`, but the issue is not "
@@ -333,6 +500,12 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--closed", help="comma-separated issue numbers (offline)")
     g.add_argument("--since-tag", help="derive the closed set via gh, e.g. v0.70.0")
+    ap.add_argument("--until-tag",
+                    help="bound the window ABOVE at this tag (RQ-81-R11CONFLICT, "
+                         "#1430). Omitted, it is DERIVED as the release tag above "
+                         "--release, which is None for the release being cut, so "
+                         "the live invocation is unchanged. `--until-tag none` "
+                         "forces the old unbounded window for archaeology")
     ap.add_argument("--allow-unclosed", action="store_true",
                     help="report an authorised-but-open issue as a warning")
     ap.add_argument("--open",
@@ -346,7 +519,16 @@ def main() -> int:
     if args.closed is not None:
         closed = {int(x) for x in args.closed.split(",") if x.strip()}
     else:
-        closed = closed_since(args.since_tag, args.repo)
+        # RQ-81-R11CONFLICT (#1430): DERIVE the upper edge unless told otherwise.
+        # For the release being cut there is no tag above it, so this is None and
+        # the window is the same unbounded one every release before v0.81 used.
+        until = args.until_tag
+        if until is None:
+            until = next_release_tag(args.release, args.repo)
+        elif until.lower() == "none":
+            until = None
+        print(f"  window: [{args.since_tag}, {until or 'now'})")
+        closed = closed_since(args.since_tag, args.repo, until)
 
     # STATE beats the window for the authorised / held-open directions (e).
     # `--open` lets the tests drive it offline; otherwise ask the API, and if

@@ -33,6 +33,14 @@ artifacts:
       priority: must
       issue: "#1243"
       disposition: refuted
+      # RESOLVED BY v0.81's RQ-81-R11CONFLICT (#1430), and this field IS the
+      # third remedy the comment below asked for. A refuting artifact that says
+      # `issue-scope: closes` now authorises its issue's closure WITHOUT a
+      # claiming status, so both gates are satisfiable at once and R11's rule is
+      # untouched. Scoped to `refuted` only: `deferred` and `partial` did not
+      # ship their scope, and closing their issue would be the v0.69 accident
+      # with a field attached.
+      issue-scope: closes
       # WHY THERE IS NO `landed:` AND NO CLAIMING STATUS, and why the close-set
       # gate consequently REDS on #1243 — recorded rather than worked around.
       # v0.77 delivered a REFUTATION: the defect was fixed in v0.66.0
@@ -47,6 +55,11 @@ artifacts:
       # outcome holds but `disposition: refuted` says it does not — pick one".
       # R11 is right. So the gate that wants a claiming status and the gate that
       # forbids one cannot both be satisfied here.
+      #
+      # THE GAP IS NOW CLOSED — see `issue-scope: closes` above. The paragraphs
+      # below are kept as the RECORD OF THE CONFLICT, because the reasoning is
+      # what justified the remedy, and a fix whose motivation is deleted is a fix
+      # the next person undoes. What follows describes the state BEFORE v0.81.
       #
       # THE REAL GAP, FILED AS #1430: the closure gate has a category for an
       # issue a PREVIOUS release closed post-tag (RQ-76-CLOSUREMAIN added it),

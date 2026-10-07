@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-81-SHEXIT
     type: system-req
     release: v0.81
-    status: proposed
+    status: implemented
     title: "merge_gate.py's sh() discards every subprocess exit code — the v0.73 review fixed ONE of six call sites"
     description: >
       `scripts/merge_gate.py:45` defines `sh()` as `subprocess.run(args, capture_output=True,
@@ -64,4 +64,49 @@ artifacts:
       priority: should
       issue: "#1474"
       verification-track: manual
-      done-when: "manual:2026-11-30 sh() raises on a non-zero exit code with any tolerant site named explicitly, and merge_gate.py's own hermetic self-test gains a scenario where a git command FATALS and the gate REFUSES rather than returning a verdict — proven red-first by showing the pre-fix code returns a verdict on that same scenario; the `startswith(\"\")` tautology at the baseRefOid site is removed"
+      done-when: "contains:scripts/merge_gate.py:sh() ITSELF raises on a non-zero exit"
+      verified-by: >-
+        DELIVERED. `sh()` raises `CommandFailed` on a non-zero exit, the one deliberately tolerant
+        site is named at the site, the `startswith("")` tautology is gone, and the hermetic
+        self-test now carries a scenario in which a real git command FATALS and the gate REFUSES.
+        THE RED-FIRST, MEASURED BOTH WAYS on the same file. Post-fix `--self-test` is 0 failures.
+        The SAME file with only `sh()`'s body reverted to the pre-fix one-liner is 2 FAILURES, and
+        the failure text is the finding: `SHEXIT: sh() ITSELF raises on a non-zero exit — ... the
+        gate REFUSES instead of returning a verdict — returned (False, 0) from a command that
+        exited 128`. Not an error: a TUPLE the caller reads as data, whose `behind == 0` is the
+        "not stale" answer, produced by `git rev-list --count` that computed nothing.
+        BOTH PAIRED CONTROLS STAY GREEN IN BOTH CONFIGURATIONS, which is what attributes the two
+        reds to the property rather than to the fixture: `sh()` on a SUCCEEDING command still
+        returns stdout (a helper that raised on success would be an outage, not a fix), and
+        `sh_unchecked` still tolerates the same failure silently.
+        THE SECOND FAILURE MODE WAS WORSE THAN THE REPORT SAID, and it is measured rather than
+        reasoned: at the `baseRefOid` site a failing `rev-parse` gives `""[:8] == ""` and
+        `str.startswith("")` is True for every string, so `base_agrees` was a reported boolean that
+        could not be False. It now compares FULL 40-character shas — both sides are full by
+        construction (gh prints `baseRefOid` in full, `rev-parse` prints in full), checked against
+        live PR #1480 where both are 40 characters and the old and new shapes agree.
+        AN HONEST NON-RESULT, recorded because it cost one iteration and is the release's own theme
+        one level in. Hardening `branch_currency` to refuse EMPTY output as well made the
+        downstream assertion non-discriminating: two guards over one input mean a `CommandFailed`
+        out of `branch_currency` is no longer attributable to `sh()`, since either layer produces
+        it. So the exit-code contract is now pinned AT the helper, where only `sh()` can satisfy
+        it, and the comment beside it says why. Defence in depth weakened the proof before it
+        strengthened the code.
+        AND A FAILED POSITIVE CONTROL THAT WAS A HARNESS BUG, NOT A RESULT: the first red-first run
+        printed NO SHEXIT lines at all. The cause was running the reverted copy from `/tmp`, where
+        `merge_gate.py` cannot import its `ci_pool_tripwire` sibling — a `ModuleNotFoundError`
+        reported as "the scenario does not red" would have been this release's theme committed by
+        the lane that exists to close it. Re-run beside its sibling, it reds.
+        THE WHOLE CALL-SITE POPULATION IS NOW CHECKED, not just the one the report led with: five
+        live sites (`rev-list --count`, two `gh pr view` -> `json.loads`, `rev-parse origin/main`,
+        `git fetch refs/pull/N/head`). None needed tolerance — a failed `gh pr view` previously
+        produced `json.loads("")` and an ugly traceback, and now produces GATEREFUSED exit 2, which
+        `merge_ritual.sh` already reads. `CommandFailed` joins `GateRefusal` in `main()`'s handler,
+        so a failed command can never reach the `GATEOK` print.
+        NOT LANDED INTO A LIVE MEASUREMENT: written in an isolated `git worktree`, because
+        `merge_ritual.sh` executes `scripts/merge_gate.py` FROM THE REPO ROOT on every poll, so
+        editing it in the main checkout while #1480's ritual was waiting would have fed
+        half-finished code to the gate judging another PR. The v0.80 deferral in this artifact's
+        own premise was made for the same reason; this is that deferral honoured.
+        BOTH CI STEPS OVER THIS FILE PASS: `--self-test` (ci.yml:583) 0 failures, and
+        `test_merge_gate_callsite.py` (ci.yml:591) 0 failures.

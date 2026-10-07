@@ -35,12 +35,15 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         print(f"  FAIL {name}{(' — ' + detail) if detail else ''}")
 
 
-def art(art_id: str, status: str, issue: str, version=(0, 71), scope=None):
+def art(art_id: str, status: str, issue: str, version=(0, 71), scope=None,
+        disposition=None):
     """One artifact tuple in load_release_artifacts' shape:
     (path, version, id, status, fields, links, release)."""
     fields = {"issue": issue}
     if scope is not None:
         fields["issue-scope"] = scope
+    if disposition is not None:
+        fields["disposition"] = disposition
     return (Path(f"artifacts/release-v{version[0]}.{version[1]}/{art_id}.yaml"),
             version, art_id, status, fields, [], f"v{version[0]}.{version[1]}")
 
@@ -148,6 +151,117 @@ def _cw_run(table):
         return C.closed_since(CW_TAG, CW_REPO), rec
     finally:
         C.subprocess = orig
+
+
+def r11conflict_tests() -> None:
+    """RQ-81-R11CONFLICT (#1430): the two directions, and the controls.
+
+    Every assertion here was run against the PRE-FIX gate first. Recorded
+    results, so a later reader can tell which of these could ever have failed:
+    the five marked (RED) failed, and the three CONTROLS passed throughout —
+    which is what attributes the reds to the new rules rather than to the
+    fixture.
+    """
+    print("  -- RQ-81-R11CONFLICT: the third remedy (direction 2) --")
+
+    # (RED) The conflict itself: a REFUTED artifact that declares `closes`
+    # authorises its issue WITHOUT a claiming status, so R11 never has to be
+    # lied to. Pre-fix this returned an EMPTY authorised set.
+    refuted = [art("RQ-X-REFUTED", "proposed", "#1243", (0, 77),
+                   scope="closes", disposition="refuted")]
+    auth, held = authorised_close_set(refuted, (0, 77))
+    check("R11CONFLICT: refuted + `issue-scope: closes` AUTHORISES without claiming",
+          auth.get(1243) == "RQ-X-REFUTED" and not held, f"auth={auth} held={held}")
+
+    # CONTROL, and the half that could make the gate WEAKER. A refutation alone
+    # must authorise NOTHING — the declaration is what carries the intent, so an
+    # operator cannot close an issue by recording a refutation and saying no more.
+    bare = [art("RQ-X-BARE", "proposed", "#1243", (0, 77), disposition="refuted")]
+    auth, _h = authorised_close_set(bare, (0, 77))
+    check("R11CONFLICT CONTROL: a refutation ALONE authorises nothing",
+          1243 not in auth, f"auth={auth}")
+
+    # CONTROL: the scoping. `deferred` and `partial` did NOT ship their scope, so
+    # `closes` beside them must stay inert — otherwise this remedy becomes a way
+    # to close an issue no release delivered, which is the v0.69 accident.
+    for disp in ("deferred", "partial"):
+        a = [art("RQ-X-" + disp.upper(), "proposed", "#1243", (0, 77),
+                 scope="closes", disposition=disp)]
+        auth, _h = authorised_close_set(a, (0, 77))
+        check(f"R11CONFLICT CONTROL: `{disp}` + closes authorises NOTHING",
+              1243 not in auth, f"auth={auth}")
+
+    # CONTROL: `outlives` still wins over the new branch. A refuting artifact
+    # that says "do not close this" must be HELD, not authorised.
+    both = [art("RQ-X-OUT", "proposed", "#1243", (0, 77),
+                scope="outlives", disposition="refuted")]
+    auth, held = authorised_close_set(both, (0, 77))
+    check("R11CONFLICT CONTROL: `outlives` still outranks the refuted-closes branch",
+          1243 not in auth and held.get(1243) == "RQ-X-OUT", f"auth={auth} held={held}")
+
+    print("  -- RQ-81-R11CONFLICT: forward blindness (direction 1) --")
+
+    # THE NON-WEAKENING PROPERTY, pinned rather than asserted in prose: when
+    # auditing the release being CUT, no artifact carries a higher version, so
+    # the later-set is empty and every live verdict is untouched.
+    cut = [art("RQ-A", "implemented", "#10", (0, 77)),
+           art("RQ-B", "implemented", "#11", (0, 76))]
+    check("R11CONFLICT: later_attribution is EMPTY for the release being cut",
+          C.later_attribution(cut, (0, 77)) == {},
+          str(C.later_attribution(cut, (0, 77))))
+
+    # (RED) A LATER release delivered it. Auditing the earlier one must NOT say
+    # "Reopen it". Pre-fix: `CLOSED BUT NOT AUTHORISED ... Reopen it`.
+    hist = [art("RQ-OLD", "implemented", "#10", (0, 77)),
+            art("RQ-NEW", "implemented", "#99", (0, 80))]
+    f, w, _a, _h = run(hist, {10, 99}, allow_unclosed=True, open_issues=[])
+    check("R11CONFLICT: an issue a LATER release delivered is NOT a failure",
+          not any("#99" in x for x in f), str(f))
+    check("R11CONFLICT: and it is reported, attributed to that later release",
+          any("ATTRIBUTED TO v0.80: #99" in x for x in w), str(w))
+    check("R11CONFLICT: the attribution says NOT to reopen it",
+          any("#99" in x and "NOT something to reopen" in x for x in w), str(w))
+
+    # (RED) LAUNDERING REFUSED FORWARD. A later release saying `outlives` is a
+    # refusal to close, and a closure overrides it. This must stay a FAILURE —
+    # the assertion that keeps direction 1 from becoming an excuse-generator.
+    laund = [art("RQ-OLD", "implemented", "#10", (0, 77)),
+             art("RQ-HOLD", "implemented", "#99", (0, 80), scope="outlives")]
+    f, _w, _a, _h = run(laund, {10, 99}, allow_unclosed=True, open_issues=[])
+    check("R11CONFLICT: a LATER `outlives` + a closure is still a FAILURE",
+          any("HELD OPEN BY v0.80 BUT CLOSED: #99" in x for x in f), str(f))
+
+    # (RED) THE PRECEDENCE, and the bug this function shipped in its first draft.
+    # v0.78 held #99 open; v0.80 then DELIVERED it. Hold-open, continue, deliver,
+    # close is the normal progression of a long-running issue, and the draft read
+    # it as v0.78's refusal being overridden — emitting "Reopen it" for a
+    # correctly-closed issue. The MOST RECENT decision governs.
+    prog = [art("RQ-OLD", "implemented", "#10", (0, 77)),
+            art("RQ-HELD", "implemented", "#99", (0, 78), scope="outlives"),
+            art("RQ-DELIVERED", "implemented", "#99", (0, 80))]
+    f, w, _a, _h = run(prog, {10, 99}, allow_unclosed=True, open_issues=[])
+    check("R11CONFLICT: hold-open in v0.78 then DELIVERED in v0.80 is NOT a reopen",
+          not any("#99" in x for x in f), str(f))
+    check("R11CONFLICT: and it attributes to v0.80, the release that delivered it",
+          any("ATTRIBUTED TO v0.80: #99" in x for x in w), str(w))
+
+    # ...and the MIRROR of that precedence: delivered in v0.78, then a LATER
+    # release declares `outlives`. The newest word is the refusal, so it holds.
+    rev = [art("RQ-OLD", "implemented", "#10", (0, 77)),
+           art("RQ-DELIVERED", "implemented", "#99", (0, 78)),
+           art("RQ-HELD", "implemented", "#99", (0, 80), scope="outlives")]
+    f, _w, _a, _h = run(rev, {10, 99}, allow_unclosed=True, open_issues=[])
+    check("R11CONFLICT: delivered in v0.78 then HELD in v0.80 -> the hold governs",
+          any("HELD OPEN BY v0.80 BUT CLOSED: #99" in x for x in f), str(f))
+
+    # And the two functions differ in ONE comparison, which is the property a
+    # reviewer checks: the same artifact set, audited from both sides.
+    pair = [art("RQ-LOW", "implemented", "#1", (0, 70)),
+            art("RQ-HIGH", "implemented", "#2", (0, 80))]
+    check("R11CONFLICT: prior sees only BELOW, later sees only ABOVE",
+          set(C.prior_attribution(pair, (0, 77))) == {1}
+          and set(C.later_attribution(pair, (0, 77))) == {2},
+          f"prior={C.prior_attribution(pair,(0,77))} later={C.later_attribution(pair,(0,77))}")
 
 
 def closed_since_tests() -> None:
@@ -346,11 +460,44 @@ def main() -> int:
           any("CLOSED BUT NOT AUTHORISED: #999" in x for x in f), str(f))
 
     # Only releases STRICTLY BELOW the target attribute. A LATER release's
-    # artifact must not retro-authorise a closure in this window.
+    # artifact must not retro-AUTHORISE a closure in this window.
+    #
+    # THE ASSERTION MOVED IN v0.81 AND THE PROPERTY DID NOT. (RQ-81-R11CONFLICT,
+    # #1430.) It used to be written as "...therefore CLOSED BUT NOT AUTHORISED
+    # fires", which conflated the property with one particular verdict. A later
+    # release's artifact is now reported as an ATTRIBUTION WARNING instead,
+    # because "Reopen it" was the wrong instruction — measured: auditing v0.78.0
+    # emitted it for five issues that v0.79 and v0.80 had legitimately delivered
+    # and closed. What this test is actually about is that the later artifact
+    # must not land in the AUTHORISED map, and that is asserted directly now, on
+    # `_a`, where no change to the message wording can make it vacuous.
     later = art("RQ-72-LATER", "implemented", "#702", version=(0, 72))
-    f, _w, _a, _h = run([delivered, later], closed=[100, 702])
-    check("a LATER release's artifact does not attribute",
-          any("CLOSED BUT NOT AUTHORISED: #702" in x for x in f), str(f))
+    f, w, a, _h = run([delivered, later], closed=[100, 702])
+    check("a LATER release's artifact does not retro-AUTHORISE",
+          702 not in a, f"authorised={a}")
+    check("...and it is reported, as an attribution rather than a reopen order",
+          any("ATTRIBUTED TO v0.72: #702" in x for x in w)
+          and not any("#702" in x for x in f), f"warnings={w} failures={f}")
+
+    # The mirror direction, same blindness one level in: an issue THIS release
+    # held open that a LATER release went on to DELIVER is correctly closed.
+    held_then_done = [art("RQ-71-HOLD", "implemented", "#703", (0, 71),
+                          scope="outlives"),
+                      art("RQ-72-DONE", "implemented", "#703", (0, 72))]
+    f, w, _a, _h = run(held_then_done, closed=[], open_issues=[])
+    check("held open here but DELIVERED later is not a reopen order",
+          not any("#703" in x for x in f)
+          and any("DELIVERED LATER: #703" in x for x in w),
+          f"failures={f} warnings={w}")
+
+    # CONTROL for that branch: with NO later delivery, the hold-open-but-closed
+    # finding must still fire. This is the assertion that keeps the new branch
+    # from being a blanket excuse.
+    held_only = [art("RQ-71-HOLD", "implemented", "#703", (0, 71),
+                     scope="outlives")]
+    f, _w, _a, _h = run(held_only, closed=[], open_issues=[])
+    check("CONTROL: held open and closed with NO later delivery still FAILS",
+          any("HELD OPEN BUT ALREADY CLOSED: #703" in x for x in f), str(f))
 
     # ---- ANTI-VACUITY: the check must refuse to pass on an empty basis -----
     f, _w, _a, _h = run([], closed=[100])
@@ -426,6 +573,7 @@ def main() -> int:
     check("v0.70 replay: closing #1331 anyway is CAUGHT",
           any("HELD OPEN BUT CLOSED: #1331" in x for x in f), str(f))
 
+    r11conflict_tests()
     closed_since_tests()
 
     print(f"issue-closure-tests: {FAILS} failure(s)")

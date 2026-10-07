@@ -534,6 +534,11 @@ FIELD_KEYS = FIELD_KEYS_DERIVED | FIELD_KEYS_UNREAD
 
 ISSUE_SCOPES = {"closes", "outlives"}
 
+# RQ-81-R11CONFLICT (#1430): dispositions under which a NON-CLAIMING artifact
+# may still authorise its issue's closure, when it says `issue-scope: closes`.
+# `refuted` only — see the reasoning at the branch that reads this.
+CLOSES_WITHOUT_CLAIMING = {"refuted"}
+
 
 def authorised_close_set(artifacts, only_version: tuple | None = None):
     """R12 (#1250): the issues that delivering these artifacts AUTHORISES the
@@ -560,8 +565,45 @@ def authorised_close_set(artifacts, only_version: tuple | None = None):
         if not issue_txt:
             continue
         iscope = str(fields.get("issue-scope", "")).strip().lower()
-        target = held_open if iscope == "outlives" else (
-            authorised if status in CLAIMING else None)
+        disp = str(fields.get("disposition", "")).strip().lower()
+        if iscope == "outlives":
+            target = held_open
+        elif status in CLAIMING:
+            target = authorised
+        elif iscope == "closes" and disp in CLOSES_WITHOUT_CLAIMING:
+            # RQ-81-R11CONFLICT (#1430): THE THIRD REMEDY, and the whole point
+            # of this branch is that it does NOT require a claiming status.
+            #
+            # Before it, this function offered an operator exactly two targets,
+            # and for one real artifact both were wrong. #1243 was fixed in
+            # v0.66.0; v0.77 scoped it, found it already delivered, and recorded
+            # `disposition: refuted`. `issue_closure_check` then said CLOSED BUT
+            # NOT AUTHORISED and prescribed "name it in the artifact that
+            # delivered it" — i.e. a claiming status — which R11 immediately
+            # reds, correctly, because an artifact that delivered a REFUTATION
+            # must not claim the outcome holds. Two committed gates, opposite
+            # instructions, and the operator left to choose which one to lie to.
+            #
+            # R11 IS UNCHANGED. The remedy is an EXPLICIT declaration here
+            # instead: a refuting artifact that also says `issue-scope: closes`
+            # authorises the closure WITHOUT claiming delivery.
+            #
+            # SCOPED TO `refuted` DELIBERATELY, and this is the half that could
+            # make the gate weaker. `deferred` and `partial` mean the scope did
+            # NOT ship, so closing their issue would be the v0.69 accident with
+            # a field attached. Only a refutation says the question itself was
+            # answered. A refutation that should NOT close simply omits this
+            # field, or says `outlives`.
+            #
+            # AND THE REMEDY AS FIRST SKETCHED DOES NOT WORK, measured rather
+            # than assumed: RQ-81-R11CONFLICT proposed deriving it from "an
+            # earlier release accounts for it", but `prior_attribution` at v0.77
+            # covers 73 issues and #1243 is NOT one of them — v0.66's artifact
+            # names #1243 only in PROSE, its `issue:` field is #242. A remedy
+            # that cannot fire on the case it was written for is not a remedy.
+            target = authorised
+        else:
+            target = None
         if target is None:
             continue
         for m in ISSUE_ANYWHERE.finditer(issue_txt):

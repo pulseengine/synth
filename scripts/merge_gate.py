@@ -42,7 +42,57 @@ from pathlib import Path
 ADVISORY = ("codecov", "advisory")
 
 
+class CommandFailed(Exception):
+    """A subprocess this gate's verdict depends on did not succeed.
+
+    RQ-81-SHEXIT (#1474). It is an EXCEPTION and not a return value on purpose:
+    the old helper returned `""` on failure, which is indistinguishable from a
+    command that succeeded with no output, and every caller then read that empty
+    string as data. A raise cannot be ignored by accident.
+    """
+
+
 def sh(*args: str) -> str:
+    """stdout of `args`, RAISING CommandFailed on a non-zero exit.
+
+    RQ-81-SHEXIT (#1474). This used to be
+    `subprocess.run(...).stdout.strip()` with no returncode read at all — the
+    "checker succeeds about work it never did" class. The v0.73 cold review
+    found it, fixed it in `squash_fidelity` ALONE (which calls subprocess
+    directly and refuses on rc != 0, with a comment naming the incident), and
+    left the other call sites. That is the twin-check shape: the narrowing was
+    applied to the instance, not to the class.
+
+    MEASURED before the fix, both failure modes on real commands:
+
+      branch_currency("d"*40) -> behind == 0 although `git rev-list` exited 128
+        with `fatal: Invalid revision range`. `behind` is the number the
+        stale-base check is about, and the condition that held silently for 45
+        merges before #1268.
+
+      `d["baseRefOid"].startswith(sh("git","rev-parse","origin/main")[:8])`
+        -> True UNCONDITIONALLY when rev-parse fails, because `""[:8]` is `""`
+        and `str.startswith("")` is always True. A reported value that cannot
+        be False.
+
+    Use `sh_unchecked` only where a failure genuinely is not evidence, and say
+    why at the call site.
+    """
+    r = subprocess.run(args, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise CommandFailed(
+            f"{' '.join(args)} -> exit {r.returncode}: "
+            f"{(r.stderr or r.stdout).strip()[:200]}")
+    return r.stdout.strip()
+
+
+def sh_unchecked(*args: str) -> str:
+    """stdout, exit code DELIBERATELY ignored.
+
+    Exists so that tolerating a failure is a VISIBLE choice at the call site
+    rather than the default for everything. Nothing uses it today; it is here so
+    that the next person who needs it does not reach for the unchecked default.
+    """
     return subprocess.run(args, capture_output=True, text=True).stdout.strip()
 
 
@@ -66,7 +116,23 @@ def branch_currency(head: str, base_ref: str = "origin/main"):
     the head lacks; `current` is True only when that is zero, which is the
     question `baseRefOid` cannot answer."""
     behind_out = sh("git", "rev-list", "--count", f"{head}..{base_ref}")
-    behind = int(behind_out or "0")
+    # RQ-81-SHEXIT (#1474): this was `int(behind_out or "0")`, the SECOND HALF
+    # of the same swallow — with a raising `sh()` the failure path no longer
+    # reaches here, but `or "0"` would still turn "the command printed nothing"
+    # into the reassuring number. `rev-list --count` prints a count on every
+    # success, so empty output is not a zero count; it is an unanswered
+    # question, and the gate says so rather than defaulting.
+    if not behind_out.strip():
+        raise CommandFailed(
+            f"git rev-list --count {head}..{base_ref} succeeded but printed "
+            f"NOTHING. A count is not optional output, so this is an unanswered "
+            f"question and not a count of zero")
+    behind = int(behind_out)
+    # DELIBERATELY TOLERANT, and the only such site in this file: a non-zero
+    # exit from `merge-base --is-ancestor` is its ANSWER ("not an ancestor"),
+    # not a failure, so this one reads `returncode` instead of calling `sh`.
+    # It is safe here only because the `rev-list` above names the same two refs
+    # and has already raised on a ref git cannot resolve.
     anc = subprocess.run(["git", "merge-base", "--is-ancestor", base_ref, head],
                          capture_output=True)
     return (anc.returncode == 0 and behind == 0), behind
@@ -314,7 +380,13 @@ def gate(pr: str, repo: str, required: list[str], expect_head: str | None = None
     if why:
         raise GateRefusal(why)
     current, behind = branch_currency(d["headRefOid"])
-    base_agrees = d["baseRefOid"].startswith(sh("git", "rev-parse", "origin/main")[:8])
+    # RQ-81-SHEXIT (#1474): was `.startswith(sh(...)[:8])`. With rev-parse
+    # failing, `""[:8]` is `""` and `str.startswith("")` is ALWAYS True, so this
+    # reported value could not be False. Both sides are full 40-char shas — gh
+    # returns `baseRefOid` in full and `rev-parse` prints in full — so equality
+    # is the honest comparison and there is nothing for an empty string to
+    # satisfy. A failing rev-parse now raises instead of returning "".
+    base_agrees = d["baseRefOid"] == sh("git", "rev-parse", "origin/main")
     return decide(roll, required, current, behind, base_agrees)
 
 
@@ -429,6 +501,75 @@ def self_test() -> int:
                   f"verdict={verdict3} diff={d3}")
             check("fixture shape: base0 != base1 (the fixture really advanced)",
                   base0 != base1)
+
+            # ---- RQ-81-SHEXIT (#1474): a FATAL git command must REFUSE ----
+            #
+            # The scenario the self-test could not reach: a git command this
+            # gate's verdict depends on FAILS. Nothing here is mocked — `git
+            # rev-list --count <nonexistent>..main` really exits 128 with
+            # `fatal: Invalid revision range`, in this fixture, on this machine.
+            #
+            # RED-FIRST, measured against the PRE-FIX code at e995ac5c, in this
+            # same fixture:
+            #
+            #   branch_currency(missing, base1) -> (False, 0)
+            #
+            # A VERDICT. Not an error — a tuple the caller reads as data, whose
+            # `behind == 0` is the "not stale" answer, produced by a command
+            # that computed nothing. The `current=False` came from
+            # `merge-base --is-ancestor` (whose rc IS checked), so the two
+            # halves disagreed about whether anything had been measured and only
+            # the checked half said so. Had the ancestry call been the one to
+            # fail, the pair would have read (True, 0): CURRENT and NOT BEHIND,
+            # from two failed commands.
+            missing = "d" * 40
+
+            # FIRST, the HELPER'S OWN CONTRACT, asserted AT the helper.
+            #
+            # This assertion exists because of something measured while writing
+            # the two below it: `branch_currency` now ALSO refuses on empty
+            # output, so a `CommandFailed` out of `branch_currency` is no longer
+            # attributable to `sh()` — either layer produces it. Two guards over
+            # one input make a downstream assertion non-discriminating, which is
+            # this release's own theme one level in. So the exit-code contract is
+            # pinned where only `sh()` can satisfy it, with the paired control
+            # directly beside it.
+            helper_raised = None
+            try:
+                sh("git", "rev-list", "--count", f"{missing}..main")
+            except CommandFailed as why:
+                helper_raised = str(why)
+            check("SHEXIT: sh() ITSELF raises on a non-zero exit (pre-fix: returned '')",
+                  helper_raised is not None and "128" in helper_raised,
+                  f"helper_raised={helper_raised!r}")
+
+            raised = None
+            try:
+                verdict_from_a_failed_command = branch_currency(missing, base1)
+            except CommandFailed as why:
+                raised = str(why)
+            check("SHEXIT: a FATAL git command REFUSES instead of returning a verdict",
+                  raised is not None,
+                  f"returned {verdict_from_a_failed_command!r} from a command that exited 128"
+                  if raised is None else "")
+            check("SHEXIT: the refusal CARRIES the exit code and git's own stderr",
+                  raised is not None and "128" in raised and "fatal" in raised.lower(),
+                  f"raised={raised!r}")
+
+            # THE PAIRED CONTROL. Without it, the assertion above is satisfied
+            # by an `sh()` that raises on EVERYTHING — including success — which
+            # would red the gate on every real PR. So: the same helper, the same
+            # fixture, a command that SUCCEEDS.
+            check("SHEXIT control: sh() on a SUCCEEDING command still returns stdout",
+                  sh("git", "rev-parse", "HEAD") == fresh
+                  or sh("git", "rev-parse", "HEAD") == g("rev-parse", "HEAD"),
+                  "a helper that raises on success is not a fix, it is an outage")
+            # And the deliberate escape hatch is still an escape hatch: silent,
+            # empty, no raise. Asserted so that `sh_unchecked` cannot quietly
+            # become a second checked helper and leave the next author with no
+            # tolerant option at all.
+            check("SHEXIT control: sh_unchecked TOLERATES the same failure, silently",
+                  sh_unchecked("git", "rev-list", "--count", f"{missing}..main") == "")
         finally:
             os.chdir(cwd)
 
@@ -603,7 +744,7 @@ def main() -> int:
         "--jq", ".[]").splitlines() if l.strip()]
     try:
         res = gate(args.pr, args.repo, required, args.expect_head)
-    except GateRefusal as why:
+    except (GateRefusal, CommandFailed) as why:
         # Exit 2, and NEVER GATEOK: `merge_ritual.sh` gates the merge on the
         # literal string GATEOK, so a refusal must not print it even by accident.
         print(f"GATEREFUSED {why}")
