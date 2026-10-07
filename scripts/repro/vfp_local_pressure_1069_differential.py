@@ -190,12 +190,38 @@ VALS = [0.0, -0.0, 1.0, -1.0, 0.5, -0.25, 1.5, 0.001, -3.14159265,
 # no positive one, which identifies the operation as an ABS. That conclusion
 # evaporates if someone trims this list to "the interesting cases", so the span
 # is asserted rather than hoped for.
+import struct as _struct  # noqa: E402  (bit-exact row pinning, below)
+
 _POS = [v for v in VALS if v == v and v > 0 or (v == 0 and str(v)[0] != "-")]
 _NEG = [v for v in VALS if v == v and (v < 0 or str(v)[0] == "-")]
 assert len(_POS) >= 4 and len(_NEG) >= 4, (
     f"VALS must span BOTH signs with at least 4 each -- it is the abs-vs-neg "
     f"discriminator for #1439, not decoration. Got {len(_POS)} positive and "
     f"{len(_NEG)} negative")
+# AND THE ROWS, NOT ONLY THE COUNTS. (v0.81 round-1 cold review, finding 11.)
+# The count assertion above says the comment's reason more narrowly than the
+# comment claims: replacing every FINITE negative with an infinity or a denormal
+# keeps 4-and-4 and still passes, while deleting exactly the rows v0.78's failing
+# set is made of. Measured by the reviewer:
+# `[0.0, -0.0, inf, -inf, 1e-30, -1e-30, 1e30, -1e30]` passed.
+#
+# v0.78 recorded the failing set as EXACTLY these six, so these six are the
+# evidence and are pinned by VALUE. A future lane may add rows; it may not remove
+# one of these without re-deriving the abs-vs-neg conclusion that rests on them.
+_FAILING_SET_1439 = (-0.0, -1.0, -0.25, -3.14159265, -1e30, float("-inf"))
+# COMPARE BY BIT PATTERN, not by `==`. (v0.81 round-2 cold review, finding 4.)
+# The first version of this guard used `v not in VALS`, and `-0.0 == 0.0` is True
+# in IEEE-754 — so membership was satisfied by `+0.0` and deleting `-0.0` left
+# BOTH assertions passing. `-0.0` is the SIGN-BIT row: the one value in the set
+# whose entire content is the sign, on a defect that is a sign error. The row most
+# central to the conclusion was the only one not actually pinned.
+_bits = {_struct.pack("<f", _v) for _v in VALS}
+_missing = [v for v in _FAILING_SET_1439 if _struct.pack("<f", v) not in _bits]
+assert not _missing, (
+    f"VALS is missing {_missing} -- v0.78's recorded failing set for #1439 is "
+    f"exactly {_FAILING_SET_1439}, and the abs-vs-neg conclusion is derived from "
+    f"those rows failing while every POSITIVE row passed. Removing one deletes "
+    f"the evidence rather than the test")
 
 
 def main():

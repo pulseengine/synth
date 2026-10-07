@@ -91,12 +91,17 @@ artifacts:
         produces nothing" to "visibly red". Saying only "it can fail the release path" would have
         overclaimed.
         AND THE CLASS IS GATED, NOT THE INSTANCE, which is this programme's own rule applied to its
-        own machinery. `scripts/release_trigger_check.py` asserts that ANY workflow declaring a
-        `release:` trigger and no other automatic one must be reachable from `release.yml`;
+        own machinery. `scripts/release_trigger_check.py` asserts that any workflow which declares a
+        `release:` trigger OR UPLOADS AN ASSET TO A RELEASE, and has no other automatic trigger, must
+        be reachable from `release.yml` — transitively, not just directly. Keying it on the trigger
+        alone was evadable by DELETING the trigger, and keying it on `gh release upload` alone was
+        evadable by switching to `gh release create`, which attaches assets the same way at
+        `release.yml:405`. A caller job with `if: false` no longer counts either;
         `workflow_dispatch` explicitly does NOT satisfy it, because a trigger a human must remember
         is the defect and not the fix. RED-FIRST ON THE REAL TREE: deleting release.yml's
         `compliance-report` job gives rc=1 naming the GITHUB_TOKEN mechanism; restoring it gives
-        rc=0. Nine self-test assertions, including a positive control that the rule is silent once
+        rc=0. Fifteen self-test assertions (nine at first; round 2 of the cold review found three evasions and
+        the fixes brought six more, three of them controls), including a positive control that the rule is silent once
         the caller exists, a control that a second automatic trigger is out of scope, and the PyYAML
         trap where a bare `on:` key parses as the BOOLEAN True — a gate reading only the string key
         would see no triggers and pass everything. Both halves are CI-wired.

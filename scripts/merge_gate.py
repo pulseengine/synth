@@ -197,7 +197,7 @@ def fidelity_exit(verdict: str) -> int:
     one. Mutating `return fidelity_exit(verdict)` to `return 0` in `main()`
     still leaves `--self-test` green — that clause remains accurate. What is NO
     LONGER true is the conclusion drawn from it: v0.75 delivered
-    `scripts/test_merge_gate_callsite.py`, it is CI-wired at `ci.yml:472` in the
+    `scripts/test_merge_gate_callsite.py`, it is CI-wired at `ci.yml:625` in the
     required `Claim Check` job, and it REDS on exactly that mutation with three
     failures. Read the state of a gap before describing it. The
     reviewer applied ten such mutations to `gate()` and `main()` — including
@@ -380,6 +380,17 @@ def gate(pr: str, repo: str, required: list[str], expect_head: str | None = None
     if why:
         raise GateRefusal(why)
     current, behind = branch_currency(d["headRefOid"])
+    # WHERE THIS VALUE'S COVERAGE LIVES, stated because `--self-test` does NOT
+    # have it. (v0.81 round-1 cold review, finding 8.) Mutating this line to
+    # `base_agrees = True` leaves `merge_gate.py --self-test` at rc=0 with zero
+    # failures; only `scripts/test_merge_gate_callsite.py` reds it, with 2
+    # failures. That is STRUCTURAL rather than an omission: `self_test()` is
+    # hermetic by design — it builds its own repository precisely so it does not
+    # read the ambient one — and `gate()` is network-bound, so the self-test
+    # cannot reach this expression at all. Both suites are CI-wired (ci.yml:617
+    # and :625), so the coverage exists; it is simply not where a reader of the
+    # self-test would look. Do not "fix" this by making the self-test ambient.
+    #
     # RQ-81-SHEXIT (#1474): was `.startswith(sh(...)[:8])`. With rev-parse
     # failing, `""[:8]` is `""` and `str.startswith("")` is ALWAYS True, so this
     # reported value could not be False. Both sides are full 40-char shas — gh
@@ -718,31 +729,44 @@ def main() -> int:
     if not args.pr:
         ap.error("--pr is required unless --self-test")
 
-    if args.squash_fidelity:
-        d = json.loads(sh("gh", "pr", "view", args.pr, "--repo", args.repo,
-                          "--json", "headRefOid,baseRefOid,mergeCommit,state"))
-        if d["state"] != "MERGED":
-            print(f"squash-fidelity: #{args.pr} is {d['state']}, not MERGED — "
-                  f"nothing to attest")
-            return 1
-        # The branch is deleted by `--delete-branch`; the PULL ref is not.
-        sh("git", "fetch", "-q", "origin", f"refs/pull/{args.pr}/head")
-        head = d["headRefOid"]
-        merged = d["mergeCommit"]["oid"]
-        verdict, lines, behind = squash_fidelity(head, merged, d["baseRefOid"])
-        print(f"squash-fidelity #{args.pr}: {verdict} "
-              f"(diff_lines={lines}, behind={behind}, "
-              f"head={head[:8]}, merged={merged[:8]})")
-        # INDETERMINATE is not a pass. It means the branch was stale, so the
-        # diff contains main's advance and the number proves nothing — the
-        # condition that silently held for 45 merges before #1268.
-        return fidelity_exit(verdict)
-
-    required = [l.strip() for l in sh(
-        "gh", "api",
-        f"repos/{args.repo}/branches/main/protection/required_status_checks/contexts",
-        "--jq", ".[]").splitlines() if l.strip()]
+    # (v0.81 round-1 cold review, finding 10.) THE TRY STARTS HERE, not at the
+    # `gate()` call. RQ-81-SHEXIT made `sh()` raise, and three of its call sites
+    # in this function sat OUTSIDE the handler: the two below and the
+    # required-contexts read further down. Measured: `--pr 1 --repo
+    # pulseengine/nonexistent-xyz-zz` produced an UNCAUGHT CommandFailed
+    # traceback at **rc=1** with no `GATEREFUSED` printed.
+    #
+    # rc=1 is GATEFAIL's code — "the answer is no". So the fix changed the
+    # failure's SHAPE without extending the classification, and a caller could
+    # not tell "the answer is no" from "the gate could not tell", which is
+    # exactly the distinction `GateRefusal`'s own docstring exists to preserve.
+    # A legitimate non-zero verdict (`fidelity_exit`, GATEFAIL) is NOT a refusal
+    # and still returns its own code: only the two exception types are converted.
     try:
+        if args.squash_fidelity:
+            d = json.loads(sh("gh", "pr", "view", args.pr, "--repo", args.repo,
+                              "--json", "headRefOid,baseRefOid,mergeCommit,state"))
+            if d["state"] != "MERGED":
+                print(f"squash-fidelity: #{args.pr} is {d['state']}, not MERGED — "
+                      f"nothing to attest")
+                return 1
+            # The branch is deleted by `--delete-branch`; the PULL ref is not.
+            sh("git", "fetch", "-q", "origin", f"refs/pull/{args.pr}/head")
+            head = d["headRefOid"]
+            merged = d["mergeCommit"]["oid"]
+            verdict, lines, behind = squash_fidelity(head, merged, d["baseRefOid"])
+            print(f"squash-fidelity #{args.pr}: {verdict} "
+                  f"(diff_lines={lines}, behind={behind}, "
+                  f"head={head[:8]}, merged={merged[:8]})")
+            # INDETERMINATE is not a pass. It means the branch was stale, so the
+            # diff contains main's advance and the number proves nothing — the
+            # condition that silently held for 45 merges before #1268.
+            return fidelity_exit(verdict)
+
+        required = [l.strip() for l in sh(
+            "gh", "api",
+            f"repos/{args.repo}/branches/main/protection/required_status_checks/contexts",
+            "--jq", ".[]").splitlines() if l.strip()]
         res = gate(args.pr, args.repo, required, args.expect_head)
     except (GateRefusal, CommandFailed) as why:
         # Exit 2, and NEVER GATEOK: `merge_ritual.sh` gates the merge on the

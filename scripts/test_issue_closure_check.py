@@ -153,6 +153,47 @@ def _cw_run(table):
         C.subprocess = orig
 
 
+def next_release_tag_tests() -> None:
+    """v0.81 round-2 cold review, finding 9.
+
+    `next_release_tag` was CHANGED by round 1 (mixed-arity tuple comparison) and
+    pinned by nothing, while every other correction in that commit got a test.
+    Its own comment names the risk it leaves: the live caller passes three
+    components, so the defect was latent — and the next caller would not have
+    known. Driven through a stub so it needs no network.
+    """
+    print("  -- next_release_tag: arity and ordering --")
+    TAGS = ("refs/tags/v0.76.0\nrefs/tags/v0.77.0\nrefs/tags/v0.78.0\n"
+            "refs/tags/v0.81.0\nrefs/tags/not-a-version\n")
+
+    def _stub(tag):
+        import subprocess
+        real = subprocess.run
+        class R:
+            stdout = TAGS
+        subprocess.run = lambda *a, **k: R()
+        try:
+            return C.next_release_tag(tag, "owner/repo")
+        finally:
+            subprocess.run = real
+
+    # THE DEFECT: `(0,77,0) > (0,77)` is True, so a 2-component release name
+    # matched its OWN tag and bounded the window at the release being audited —
+    # excluding the whole closure wave the gate exists to read.
+    check("next_release_tag: a 2-component name does NOT match its own tag",
+          _stub("v0.77") == "v0.78.0", f"got {_stub('v0.77')!r}")
+    check("next_release_tag: the 3-component form agrees with it",
+          _stub("v0.77.0") == "v0.78.0", f"got {_stub('v0.77.0')!r}")
+    check("next_release_tag: the NEWEST release has no successor",
+          _stub("v0.81.0") is None and _stub("v0.81") is None)
+    check("next_release_tag: it returns the IMMEDIATE successor, not the newest",
+          _stub("v0.76.0") == "v0.77.0", f"got {_stub('v0.76.0')!r}")
+    check("next_release_tag: a non-version tag is ignored, not crashed on",
+          _stub("v0.78.0") == "v0.81.0", f"got {_stub('v0.78.0')!r}")
+    check("next_release_tag: a non-version RELEASE name returns None",
+          _stub("not-a-version") is None)
+
+
 def r11conflict_tests() -> None:
     """RQ-81-R11CONFLICT (#1430): the two directions, and the controls.
 
@@ -253,6 +294,28 @@ def r11conflict_tests() -> None:
     f, _w, _a, _h = run(rev, {10, 99}, allow_unclosed=True, open_issues=[])
     check("R11CONFLICT: delivered in v0.78 then HELD in v0.80 -> the hold governs",
           any("HELD OPEN BY v0.80 BUT CLOSED: #99" in x for x in f), str(f))
+
+    # (v0.81 round-1 cold review, finding 7.) THE ORDERING OF `prior_attribution`
+    # WAS UNTESTED while its new twin's was. `sorted(versions)` -> reverse=True
+    # survived this suite at rc=0, while the identical mutation on
+    # `later_attribution` reds with 3 failures. On real data the reversal flips
+    # 21 of 86 attributions at v0.81 and converts a "Reopen it" FAILURE into a
+    # warning. The docstring claims the two functions differ in ONE CHARACTER —
+    # "a property a reviewer can check at a glance" — and only one of the two
+    # characters was pinned.
+    lo = art("RQ-70-LOW", "implemented", "#900", (0, 70))
+    hi = art("RQ-76-HIGH", "implemented", "#900", (0, 76), scope="outlives")
+    pa = C.prior_attribution([lo, hi], (0, 77))
+    check("prior_attribution keeps the HIGHEST release below the target",
+          pa.get(900, (None,))[0] == (0, 76),
+          f"got {pa.get(900)} — a reversed sort would return v0.70 and turn a "
+          f"later hold-open into an earlier authorisation")
+    check("...and it reports that release's OWN verdict, not the other's",
+          pa.get(900, (None, None))[1] == "held-open", str(pa.get(900)))
+    # the MIRROR, so the pair is pinned symmetrically
+    la = C.later_attribution([lo, hi], (0, 69))
+    check("later_attribution keeps the HIGHEST release above the target",
+          la.get(900, (None,))[0] == (0, 76), str(la.get(900)))
 
     # And the two functions differ in ONE comparison, which is the property a
     # reviewer checks: the same artifact set, audited from both sides.
@@ -569,10 +632,28 @@ def main() -> int:
           set(held) == {1331, 1318}, str(sorted(held)))
     check("v0.70 replay: the five closed issues are the authorised set",
           set(auth) == V70_CLOSED, str(sorted(auth)))
-    f, _w, _a, _h = C.check(root, "v0.70", V70_CLOSED | {1331})
-    check("v0.70 replay: closing #1331 anyway is CAUGHT",
-          any("HELD OPEN BUT CLOSED: #1331" in x for x in f), str(f))
+    # (v0.81 round-1 cold review, finding 1.) This asserted that closing #1331
+    # against v0.70's close-set is CAUGHT as a failure. On the REAL tree that is
+    # no longer the right answer, and the measurement says so: v0.70 held #1331
+    # open (RQ-70-NPA), v0.72 held it open again (RQ-72-ISLANDS), and v0.73,
+    # v0.74 and v0.75 each AUTHORISED it (RQ-73-ISLANDPASS, RQ-74-ISLANDREACH,
+    # RQ-75-FLOORBIND). `later_attribution(v0.70)[1331]` is
+    # `((0, 75), "authorised", "RQ-75-FLOORBIND")`, the issue is closed today,
+    # and that closure is correct — so "Reopen it" would be the wrong
+    # instruction, which is this file's most expensive failure mode.
+    #
+    # THE LAUNDERING PROPERTY IS NOT WEAKENED, and it is tested separately above
+    # with #701, an issue NO later release delivers: that case still FAILS. The
+    # rescue fires only when a later release AUTHORISED the issue, which means a
+    # later artifact delivered it under a claiming status. Hold open, continue,
+    # deliver, close is a progression, not an override.
+    f, w, _a, _h = C.check(root, "v0.70", V70_CLOSED | {1331})
+    check("v0.70 replay: closing #1331 is NOT a reopen order — v0.75 delivered it",
+          not any("HELD OPEN BUT CLOSED: #1331" in x for x in f), str(f))
+    check("v0.70 replay: ...and it is reported, naming the release that delivered it",
+          any("DELIVERED LATER: #1331" in x and "v0.75" in x for x in w), str(w))
 
+    next_release_tag_tests()
     r11conflict_tests()
     closed_since_tests()
 

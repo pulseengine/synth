@@ -323,7 +323,32 @@ def artifacts_reporting_nothing(docs) -> tuple[int, list[str]]:
         for art in (doc or {}).get("artifacts") or []:
             total += 1
             fields = art.get("fields") or {}
-            if not ({"verified-by", "disposition", "landed"} & set(fields)):
+            # A VALUE, not a KEY. (v0.81 round-1 cold review, finding 2.) This
+            # tested `& set(fields)` — KEY PRESENCE — so `landed: ""`, a bare
+            # `landed:` (which PyYAML parses as None) and `disposition: ""` all
+            # counted as "reported an outcome". That is precisely the artifact
+            # this rule exists to catch: R11's own branch needs a NON-EMPTY
+            # value, so a present-but-BLANK key (`landed: ""`) was invisible to
+            # BOTH rules and carried strictly less information than an absent one.
+            #
+            # PRECISELY ONE OF THE THREE CASES, not all three. (v0.81 round-2 cold
+            # review, finding 7.) A VALUELESS key (`landed:` with nothing after
+            # it) did NOT escape R11 — it made R11 FIRE, on the invented string
+            # "None", because `str(None)` is non-empty. That is a different defect
+            # in R11's own idiom and it is fixed there too, rather than left as
+            # the twin of this one.
+            #
+            # `or ""` BEFORE `str()` is load-bearing and is NOT R11's idiom:
+            # R11 writes `str(fields.get("landed", "")).strip()`, and
+            # `str(None)` is the four-character string "None", which is
+            # non-empty and truthy. Copying that idiom here would have swapped
+            # one hole for another.
+            #
+            # MEASURED LATENT, not live: across 196 artifacts, ZERO outcome keys
+            # are valueless or blank (379 carry a real value), so this changes no
+            # verdict on the shipping tree and costs a test.
+            if not any(str(fields.get(k) or "").strip()
+                       for k in ("verified-by", "disposition", "landed")):
                 silent.append(str(art.get("id") or "<no id>"))
     return total, silent
 
@@ -616,13 +641,17 @@ class Check:
         # drift the North Star forbids, and this check exists because the first
         # copy already had a hole.
         _unclassified = []
+        _population = 0   # artifacts that actually carry a `verified-by`
+        _total = 0        # artifacts scanned, so a zero population is visible
         try:
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             import verdict_prose_check as _vpc  # noqa: PLC0415
             for _p, _doc in docs:
                 for _a in (_doc or {}).get("artifacts") or []:
                     _vb = (_a.get("fields") or {}).get("verified-by")
+                    _total += 1
                     if isinstance(_vb, str) and _vb.strip():
+                        _population += 1
                         _u = _vpc.unclassified_lead(_vb)
                         if _u:
                             _unclassified.append(f"{_a.get('id')}:{_u}")
@@ -644,13 +673,31 @@ class Check:
                     + ". Either use a classified verdict, or add the opening to "
                     "NOT_A_VERDICT as a MEASURED exclusion (#1476)",
                 )
+            elif not _population:
+                # (v0.81 round-1 cold review, finding 3.) This arm used to assert
+                # "every `verified-by` opening is classified" over a population of
+                # ZERO and report DERIVED_PASS. Nothing carried a `verified-by`,
+                # so there were no openings to classify and the sentence was
+                # vacuously true — the exact shape this release is named after.
+                # Reachable, not hypothetical: a PLANNING cut has every artifact
+                # with no outcome fields at all, which the sibling slot's own
+                # comment records as 11 of 11 for v0.81.
+                self.add(
+                    "3", "verdict classified", NOT_DERIVED,
+                    f"{_total} artifact(s) scanned and NONE carries a "
+                    f"`verified-by`, so there is no opening to classify. A "
+                    f"population of zero is a refusal, not a pass — the silent "
+                    f"artifacts are the finding, and the slot above is what "
+                    f"reports them",
+                )
             else:
                 self.add(
                     "3",
                     "verdict classified",
                     DERIVED_PASS,
-                    "every `verified-by` opening is either a classified verdict "
-                    "or a declared non-verdict — no silent escapes",
+                    f"all {_population} `verified-by` opening(s) of {_total} "
+                    f"artifact(s) are either a classified verdict or a declared "
+                    f"non-verdict — no silent escapes",
                 )
 
         ci = tree_read(self.ref, ".github/workflows/ci.yml") or ""

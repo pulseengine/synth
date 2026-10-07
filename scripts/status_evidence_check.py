@@ -565,7 +565,7 @@ def authorised_close_set(artifacts, only_version: tuple | None = None):
         if not issue_txt:
             continue
         iscope = str(fields.get("issue-scope", "")).strip().lower()
-        disp = str(fields.get("disposition", "")).strip().lower()
+        disp = str(fields.get("disposition") or "").strip().lower()
         if iscope == "outlives":
             target = held_open
         elif status in CLAIMING:
@@ -1154,7 +1154,7 @@ def introducing_commit(root: Path, kind: str, path: str,
 
 
 def landed_prs(fields: dict) -> set[str]:
-    return set(re.findall(r"#(\d+)", str(fields.get("landed", ""))))
+    return set(re.findall(r"#(\d+)", str(fields.get("landed") or "")))
 
 
 def release_window_subjects(root: Path, version: tuple):
@@ -1755,8 +1755,17 @@ def check(root: Path, release_glob: str, subjects: list[str],
         # WHY it is not claiming; a non-delivery disposition beside a claiming
         # status is a contradiction. See DISPOSITION_SINCE.
         if version >= DISPOSITION_SINCE:
-            landed_txt = str(fields.get("landed", "")).strip()
-            disp = str(fields.get("disposition", "")).strip().lower()
+            # `or ""` BEFORE `str()`. (v0.81 round-2 cold review, finding 7.)
+            # This was `str(fields.get("landed", ""))`, and `str(None)` is the
+            # four-character string "None" — non-empty and truthy. So a BARE
+            # `landed:` key (PyYAML parses it as None) made R11 report a landing
+            # record that does not exist, and a bare `disposition:` made it report
+            # the INVENTED value "none" as an illegal disposition. Round 1 fixed
+            # the same trap in `loop_conformance_check` and left R11's twin — the
+            # shape this programme has had to correct repeatedly. Latent: zero
+            # live artifacts carry a valueless outcome key.
+            landed_txt = str(fields.get("landed") or "").strip()
+            disp = str(fields.get("disposition") or "").strip().lower()
             if disp and disp not in DISPOSITIONS:
                 failures.append(
                     f"R11 {art_id}: `disposition: {disp}` is not one of "

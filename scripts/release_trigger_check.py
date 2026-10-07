@@ -61,11 +61,33 @@ def triggers(doc) -> dict:
     return on or {}
 
 
+def _cannot_run(job: dict) -> bool:
+    """Is this job's `if:` a literal falsehood?
+
+    (v0.81 round-1 cold review, finding 6.) `called_workflows` read only `uses`,
+    so `if: false` on the calling job satisfied this gate while guaranteeing the
+    job never runs — and a SKIPPED job does not red a workflow run either, so the
+    evasion was invisible at both layers. That is the same "produces nothing,
+    nothing is red" shape the gate exists to detect, one level up.
+
+    Deliberately narrow: only a LITERAL false is detected (`if: false`, and the
+    `${{ false }}` spelling YAML hands over as a string). An arbitrary expression
+    cannot be evaluated here, and pretending otherwise would be a checker that
+    claims more than it does.
+    """
+    cond = job.get("if")
+    if cond is False:
+        return True
+    return str(cond).strip().lower().replace(" ", "") in {
+        "false", "${{false}}", "${{!true}}"}
+
+
 def called_workflows(doc) -> set[str]:
-    """Workflow files this one invokes with `uses: ./.github/workflows/x.yml`."""
+    """Workflow files this one invokes with `uses: ./.github/workflows/x.yml`,
+    EXCLUDING jobs that cannot run. See `_cannot_run`."""
     out: set[str] = set()
     for job in (doc or {}).get("jobs", {}).values():
-        if not isinstance(job, dict):
+        if not isinstance(job, dict) or _cannot_run(job):
             continue
         uses = str(job.get("uses", ""))
         if uses.startswith("./.github/workflows/"):
@@ -73,21 +95,73 @@ def called_workflows(doc) -> set[str]:
     return out
 
 
-def check(workflows: dict[str, dict]) -> list[str]:
-    """Findings. `workflows` maps filename -> parsed doc."""
+def uploads_to_a_release(text: str) -> bool:
+    """Does this workflow's TEXT upload an asset to a GitHub Release?
+
+    (v0.81 round-1 cold review, finding 5.) THE POPULATION USED TO BE KEYED ON
+    THE `release:` TRIGGER, which is the one thing the defect removes. Measured:
+    deleting `compliance.yml`'s release trigger AND release.yml's caller job left
+    this gate at rc=0 with "0 failures" — a two-line edit that restores the exact
+    v0.80 state of forty-four releases with no compliance report, invisible to the
+    gate built to prevent it.
+    
+    So membership is derived from what the workflow DOES instead: a workflow that
+    uploads an asset to a release must run per release, and you cannot produce a
+    release asset without uploading one. The trigger is a hint; the upload is the
+    capability.
+    """
+    for raw in text.splitlines():
+        line = raw.strip()
+        # A COMMENT IS NOT A CAPABILITY. (v0.81 round-2 cold review, finding 5.)
+        # Matching the raw text red a `workflow_dispatch`-only workflow whose only
+        # occurrence was the sentence "we deliberately do NOT use
+        # `gh release upload`" — a gate that reds a file for saying it does not do
+        # the thing.
+        if line.startswith("#"):
+            continue
+        # BOTH VERBS. (v0.81 round-2 cold review, finding 3.) This matched only
+        # `gh release upload`, and the first docstring here claimed "you cannot
+        # produce a release asset without uploading one". That is FALSE and
+        # `release.yml:405` is the counter-example in this very repo:
+        # `gh release create "$VERSION" --title … release-assets/*` attaches every
+        # asset without the word "upload". Swapping one verb therefore evaded the
+        # whole gate and restored the v0.80 state at rc=0.
+        if "gh release upload" in line or "gh release create" in line:
+            return True
+    return False
+
+
+def check(workflows: dict[str, dict], texts: dict[str, str] | None = None) -> list[str]:
+    """Findings. `workflows` maps filename -> parsed doc; `texts` maps filename ->
+    raw source, used to derive the population by what a workflow DOES."""
     if not workflows:
         return ["REFUSED: zero workflows parsed. A derived population of zero is "
                 "a refusal, not a pass — this is a path or parse failure"]
     if RELEASE_WF not in workflows:
         return [f"REFUSED: {RELEASE_WF} not among the parsed workflows, so "
                 f"reachability cannot be derived at all"]
-    reachable = called_workflows(workflows[RELEASE_WF])
+    # TRANSITIVELY reachable. (v0.81 round-2 cold review, finding 5.) Only DIRECT
+    # callers counted, so an uploader invoked by a workflow that release.yml calls
+    # — a legitimate two-hop shape — red as unreachable. Reachability is a
+    # property of the call GRAPH, not of one edge.
+    reachable: set[str] = set()
+    frontier = [RELEASE_WF]
+    while frontier:
+        cur = frontier.pop()
+        for nxt in called_workflows(workflows.get(cur) or {}):
+            if nxt not in reachable:
+                reachable.add(nxt)
+                frontier.append(nxt)
     findings: list[str] = []
     for name, doc in sorted(workflows.items()):
         if name == RELEASE_WF:
             continue
         tr = triggers(doc)
-        if "release" not in tr:
+        src = (texts or {}).get(name, "")
+        # IN POPULATION if it declares a `release:` trigger OR if it uploads an
+        # asset to a release. The second is what survives the defect: see
+        # `uploads_to_a_release`.
+        if "release" not in tr and not uploads_to_a_release(src):
             continue
         auto = {k for k in tr if k not in ("workflow_dispatch", "workflow_call")}
         if auto - {"release"}:
@@ -95,9 +169,12 @@ def check(workflows: dict[str, dict]) -> list[str]:
             continue
         if name in reachable:
             continue
+        why_in = ("declares a `release:` trigger and no other automatic one"
+                  if "release" in tr else
+                  "UPLOADS AN ASSET TO A RELEASE (`gh release upload`) and has no "
+                  "automatic trigger at all")
         findings.append(
-            f"DEAD TRIGGER: {name} declares a `release:` trigger and no other "
-            f"automatic one, and {RELEASE_WF} does not call it "
+            f"DEAD TRIGGER: {name} {why_in}, and {RELEASE_WF} does not call it "
             f"(`uses: ./.github/workflows/{name}`). This repo publishes releases "
             f"with GITHUB_TOKEN, and GitHub raises no workflow runs for that "
             f"token's events — so this workflow can NEVER run. It will produce "
@@ -107,15 +184,21 @@ def check(workflows: dict[str, dict]) -> list[str]:
     return findings
 
 
-def load(root: Path) -> dict[str, dict]:
+def load(root: Path) -> tuple[dict[str, dict], dict[str, str]]:
+    """(parsed docs, raw texts). The TEXTS are what the population is derived
+    from, so a workflow whose YAML changes shape is still measured by what it
+    does."""
     out: dict[str, dict] = {}
+    texts: dict[str, str] = {}
     d = root / WF_DIR
     for f in sorted(d.glob("*.yml")) + sorted(d.glob("*.yaml")):
+        raw = f.read_text()
+        texts[f.name] = raw
         try:
-            out[f.name] = yaml.safe_load(f.read_text())
+            out[f.name] = yaml.safe_load(raw)
         except yaml.YAMLError as why:
             out[f.name] = {"__parse_error__": str(why)}
-    return out
+    return out, texts
 
 
 def self_test() -> int:
@@ -168,6 +251,53 @@ def self_test() -> int:
                   "c.yml": {True: {"release": {"types": ["published"]}}}})),
        "PyYAML turns a bare `on` key into True; missing that makes this vacuous")
 
+    # (v0.81 round-1 cold review, findings 4, 5 and 6.) Each of these three
+    # evasions left the gate at rc=0 with "0 failures" on the REAL tree.
+    TEXT = {"compliance.yml": 'run: gh release upload "$TAG" "$A" --clobber'}
+
+    # F5 — the population must survive DELETING the trigger it used to key on.
+    no_trigger = {"on": {"workflow_dispatch": {}}}
+    ck("F5: a workflow that UPLOADS to a release is in population without a release trigger",
+       any("DEAD TRIGGER: compliance.yml" in x for x in
+           check({RELEASE_WF: rel_bare, "compliance.yml": no_trigger}, TEXT)),
+       "deleting the trigger must not delete the finding")
+    ck("F5 CONTROL: with the caller present it is silent even then",
+       check({RELEASE_WF: rel_calling, "compliance.yml": no_trigger}, TEXT) == [])
+    ck("F5 CONTROL: a workflow that uploads NOTHING stays out of population",
+       check({RELEASE_WF: rel_bare, "x.yml": no_trigger}, {"x.yml": "run: echo hi"}) == [])
+
+    # F6 — a job that cannot run does not count as calling the workflow.
+    rel_if_false = {"jobs": {"z": {"if": False,
+                                   "uses": "./.github/workflows/compliance.yml"}}}
+    ck("F6: `if: false` on the calling job does NOT satisfy the rule",
+       any("DEAD TRIGGER" in x for x in
+           check({RELEASE_WF: rel_if_false, "compliance.yml": comp}, TEXT)))
+    ck("F6: the `${{ false }}` spelling is caught too",
+       _cannot_run({"if": "${{ false }}"}) and _cannot_run({"if": "false"}))
+    ck("F6 CONTROL: a REAL condition is not treated as always-false",
+       not _cannot_run({"if": "github.event_name == 'push'"})
+       and not _cannot_run({}),
+       "an unevaluable expression must not be read as false")
+
+    # (v0.81 round-2 cold review, findings 3 and 5.) The upload-derived population
+    # was evadable by one verb, and it red two honest shapes.
+    ck("R2-3: `gh release create` with assets is in population too",
+       any("DEAD TRIGGER" in x for x in
+           check({RELEASE_WF: rel_bare, "c.yml": {"on": {"workflow_dispatch": {}}}},
+                 {"c.yml": 'run: gh release create "$T" release-assets/*'})),
+       "release.yml attaches assets exactly this way, so keying on `upload` alone "
+       "was evadable by swapping one verb")
+    ck("R2-5 CONTROL: a COMMENT mentioning the command is NOT a capability",
+       check({RELEASE_WF: rel_bare, "c.yml": {"on": {"workflow_dispatch": {}}}},
+             {"c.yml": "# we deliberately do NOT use `gh release upload` here"}) == [],
+       "a gate must not red a file for saying it does not do the thing")
+    ck("R2-5 CONTROL: reachability is TRANSITIVE, not one edge",
+       check({RELEASE_WF: {"jobs": {"a": {"uses": "./.github/workflows/mid.yml"}}},
+              "mid.yml": {"jobs": {"b": {"uses": "./.github/workflows/c.yml"}}},
+              "c.yml": {"on": {"workflow_call": {}}}},
+             {"c.yml": 'run: gh release upload "$T" x'}) == [],
+       "an uploader reached via a workflow release.yml calls is reachable")
+
     # vacuity
     ck("VACUITY: zero workflows is a REFUSAL",
        any("REFUSED" in x for x in check({})))
@@ -185,10 +315,24 @@ def main() -> int:
     args = ap.parse_args()
     if args.self_test:
         return self_test()
-    wfs = load(args.root)
+    wfs, texts = load(args.root)
     bad = [n for n, d in wfs.items() if isinstance(d, dict) and "__parse_error__" in d]
     print(f"  workflows parsed: {len(wfs)} ({len(bad)} unparseable)")
-    findings = check({n: d for n, d in wfs.items() if "__parse_error__" not in (d or {})})
+    # (v0.81 round-1 cold review, finding 4.) An unparseable workflow used to be
+    # FILTERED OUT of the population and the gate exited 0. Measured: making
+    # `compliance.yml` unparseable AND deleting the caller job gave
+    # "1 unparseable / 0 failures / rc=0". `check()` already refused a ZERO
+    # population and a missing release.yml, so unreadable input was considered —
+    # and the non-release.yml case was missed. An unreadable workflow is a gate
+    # that cannot be audited, which is a refusal, not a pass.
+    findings = [
+        f"UNPARSEABLE: {n} could not be parsed ({(d or {})['__parse_error__'][:90]}), "
+        f"so whether it needs to be reachable from {RELEASE_WF} cannot be derived. "
+        f"An unreadable workflow is a refusal, not a pass"
+        for n, d in sorted(wfs.items()) if "__parse_error__" in (d or {})
+    ]
+    findings += check({n: d for n, d in wfs.items() if "__parse_error__" not in (d or {})},
+                      texts)
     for f in findings:
         print(f"FAIL {f}")
     rel = wfs.get(RELEASE_WF) or {}

@@ -72,6 +72,21 @@ artifacts:
       req-type: software
       priority: must
       issue: "#1436"
+      # RQ-81-JESSDIVERGE3 delivered ITS scope — the three named mechanisms are
+      # refuted against the module's own bytes, and the oracle that proves it is
+      # re-runnable. The ISSUE is the broader question, and it is UNANSWERED: the
+      # lowered module still diverges and the vehicle still integrates
+      # uncompensated gravity. #1436 is also an EXTERNALLY REPORTED defect —
+      # `author.login` is avrabe, but the body opens `**[jess]`, so an
+      # author-based filter reads it as internal and is structurally blind.
+      #
+      # WITHOUT THIS FIELD THE TAG WOULD HAVE CLOSED IT. `status: implemented` is
+      # CLAIMING, and a claiming status is exactly what `authorised_close_set`
+      # reads as "this release may close the issue" — so satisfying R3 silently
+      # armed the closer. That is conduct rule 4 breached by machine: a release
+      # whose only work on an open externally reported defect was hardening the
+      # oracle around it does not count as progress on it.
+      issue-scope: outlives
       verification-track: manual
       done-when: "contains:scripts/repro/jessdiverge3_gravity_faithful_1436.py:ABSENT, ZEROED and WRONG-AXIS are all refuted"
       verified-by: >-
@@ -129,6 +144,9 @@ artifacts:
         rather than assumed from its neighbour; it is i64 MIN and the order is right.
         THE PREMISE WAS RE-CHECKED BEFORE ANY WORK, as the artifact demands: the last six comments
         on the thread name no mechanism this artifact does not, attributed BY BODY PREFIX
-        (`**[jess]**` for the reporter's four, `**[synth release loop]**` for ours), and both module
+        (THREE of the last six carry `**[jess]`, two carry `**[synth release loop]`, and ONE carries no
+        prefix at all — the draft said "the reporter's four", and that unprefixed comment is
+        attributed by ADJACENCY, not by prefix, which is worth stating because the whole point of
+        the convention is that adjacency is not attribution), and both module
         digests verify against the reporter's own `SHA256SUMS.txt`. Lowered with synth 0.79.0 using
         the reporter's compile line; `estimate` reproduces at 15300 bytes, the figure in the thread.

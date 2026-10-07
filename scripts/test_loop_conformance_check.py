@@ -588,6 +588,110 @@ class Step7PriorReleaseBar(unittest.TestCase):
         self.assertIn("no", seven[0][3].lower())
 
 
+class Step3VerdictClassifiedRefusesZeroPopulation(unittest.TestCase):
+    """v0.81 round-2 cold review, finding 6.
+
+    Round 1 made the `verdict classified` slot refuse a population of zero, and
+    pinned NOTHING: mutating `elif not _population:` to `elif False:` left the
+    suite at rc=0. The positive direction — that it DOES refuse — was uncovered,
+    in the same commit whose new test class is docstringed "findings 2 and 3".
+    """
+
+    def _slot(self, docs):
+        c = mk_check("v0.81.0", mode="pretag", sha=None)
+        # `load_release_docs` is a METHOD on the check object, not a module
+        # function — patch what the code actually calls.
+        c.load_release_docs = lambda: docs
+        c.step_3()
+        return [f for f in c.findings if f[1] == "verdict classified"]
+
+    def test_zero_verdict_bearing_artifacts_is_NOT_DERIVED(self):
+        # artifacts exist, but none carries a `verified-by` — so there is no
+        # opening to classify and "every opening is classified" is vacuous.
+        docs = [("p.yaml", {"artifacts": [
+            {"id": "RQ-X-1", "fields": {"landed": "#1"}},
+            {"id": "RQ-X-2", "fields": {"disposition": "refuted"}}]})]
+        got = self._slot(docs)
+        self.assertTrue(got, "the slot recorded nothing at all")
+        self.assertEqual(got[0][2], lcc.NOT_DERIVED,
+                         f"expected NOT_DERIVED over a population of zero, got "
+                         f"{got[0][2]}: {got[0][3][:90]}")
+
+    def test_CONTROL_a_classified_verdict_still_passes(self):
+        docs = [("p.yaml", {"artifacts": [
+            {"id": "RQ-X-1", "fields": {"verified-by": "DELIVERED. all of it"}}]})]
+        got = self._slot(docs)
+        self.assertTrue(got)
+        self.assertEqual(got[0][2], lcc.DERIVED_PASS,
+                         f"a classified verdict must PASS: {got[0][3][:90]}")
+
+    def test_CONTROL_an_unclassified_lead_still_FAILS(self):
+        # without this, the two above are satisfied by a slot that never fails
+        docs = [("p.yaml", {"artifacts": [
+            {"id": "RQ-X-1", "fields": {"verified-by": "NOT LANDED yet"}}]})]
+        got = self._slot(docs)
+        self.assertTrue(got)
+        self.assertEqual(got[0][2], lcc.DERIVED_FAIL,
+                         f"an escape must FAIL: {got[0][3][:90]}")
+
+
+class Step3EmptyValuedOutcomeKey(unittest.TestCase):
+    """v0.81 round-1 cold review, findings 2 and 3.
+
+    Both are the release's OWN theme turned on the release's own rules: a case
+    that is out of the population reads as compliant.
+    """
+
+    def _docs(self, *fieldsets):
+        return [("p.yaml", {"artifacts": [
+            {"id": f"RQ-X-{i}", "fields": f} for i, f in enumerate(fieldsets)]})]
+
+    def test_an_empty_valued_landed_key_is_SILENT(self):
+        # PRE-FIX this returned (1, []) — the key was PRESENT, so the artifact
+        # counted as reporting an outcome. R11 needs a NON-EMPTY value, so a
+        # present-but-blank key was invisible to BOTH rules.
+        total, silent = lcc.artifacts_reporting_nothing(self._docs({"landed": ""}))
+        self.assertEqual((total, silent), (1, ["RQ-X-0"]))
+
+    def test_a_VALUELESS_landed_key_is_SILENT(self):
+        # A bare `landed:` in YAML parses to None, and `str(None)` is the
+        # four-character string "None" — non-empty and truthy. That is R11's own
+        # idiom, and copying it here would have swapped one hole for another.
+        total, silent = lcc.artifacts_reporting_nothing(self._docs({"landed": None}))
+        self.assertEqual((total, silent), (1, ["RQ-X-0"]))
+
+    def test_blank_disposition_and_blank_verified_by_are_SILENT_too(self):
+        # The twin check: a fix applied to one of three keys and not the others
+        # is the shape this programme has had to correct repeatedly.
+        for key in ("disposition", "verified-by", "landed"):
+            with self.subTest(key=key):
+                _t, silent = lcc.artifacts_reporting_nothing(self._docs({key: "   "}))
+                self.assertEqual(silent, ["RQ-X-0"], f"blank {key} must be silent")
+
+    def test_CONTROL_a_real_value_still_reports_an_outcome(self):
+        # Without this, the four above are satisfied by a rule that calls
+        # EVERYTHING silent, which would red every delivered release.
+        for key, val in (("landed", "#1480"), ("disposition", "refuted"),
+                         ("verified-by", "DELIVERED. ...")):
+            with self.subTest(key=key):
+                _t, silent = lcc.artifacts_reporting_nothing(self._docs({key: val}))
+                self.assertEqual(silent, [], f"{key}={val!r} must NOT be silent")
+
+    def test_CONTROL_the_live_tree_has_no_silent_artifact(self):
+        # The fix must not red the release it ships in.
+        import glob
+        import yaml
+        docs = []
+        for f in sorted(glob.glob("artifacts/release-v0.81/*.yaml")):
+            with open(f) as fh:
+                docs.append((f, yaml.safe_load(fh)))
+        if not docs:
+            self.skipTest("no v0.81 artifacts at this path — cannot exercise")
+        total, silent = lcc.artifacts_reporting_nothing(docs)
+        self.assertEqual(silent, [], f"live v0.81 has silent artifacts: {silent}")
+        self.assertGreaterEqual(total, 11, "population too small to trust")
+
+
 class Step3ReportedOutcome(unittest.TestCase):
     """RQ-81-SILENT (#1458 + #1476). OUT OF POPULATION IS INDISTINGUISHABLE FROM
     COMPLIANT: an artifact recording NO outcome is invisible to every rule that

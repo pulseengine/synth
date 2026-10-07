@@ -33,7 +33,7 @@ artifacts:
       COMPLETE u INCOMPLETE, so deleting the branch changes no verdict and passes all ten unit
       tests), and the COMPLETE-beside-disposition branch — the half the motivating 28196ec7
       instance is named for — is DEAD on the live population, because R11 reds that combination
-      first and 0 of 539 artifacts can reach it.
+      first and 0 of the 539 pinned at the v0.80.0 anchor can reach it (`ANCHOR_PROGRAMME`; the LIVE count at this commit is 550).
 
       SO THE LANE IS ONE SUBJECT, NOT TWO. A silent artifact and an unclassified verdict are
       the same defect wearing different clothes: both leave the population, and leaving the
@@ -99,20 +99,44 @@ artifacts:
         sets are IMPORTED from the shipped module, never mirrored, and an import failure reports NOT-DERIVED
         rather than passing.
         THE MEASUREMENT RESHAPED THIS HALF. A red-on-any-unclassified-lead rule would have red SIX innocent
-        artifacts on day one: over 175 artifacts carrying `verified-by`, the live unclassified openings are
+        artifacts on day one: over 181 artifacts carrying a non-empty `verified-by` (derived by scanning
+          `artifacts/release-v*/*.yaml`), the live unclassified openings are
         exactly CLASSIFICATION, TRIAGE, EVERY ATTRIBUTION, ADDED, BYTE IDENTITY and RULE — one occurrence
         each, all in v0.65..v0.77, and none of them a verdict about the work. That is the RQ-74-STALEMSG trap:
         a gate nobody can move honestly is a gate they route around. So the six were added to NOT_A_VERDICT
         as MEASURED EXCLUSIONS, and the DANGEROUS escapes are deliberately not there — `NOT LANDED`, `DONE`,
         `NOT-DELIVERED` and `CLOSED` all still red, asserted individually.
+        AND THE RESIDUAL THE SIX EXCLUSIONS CREATE, named by cold-review round 1 rather than left for a
+        future reader to rediscover. The rule is keyed on the FIRST ALL-CAPS token, so one of those six
+        openers standing in front of a delivery claim leaves BOTH populations at once. MEASURED:
+        `unclassified_lead("RULE DELIVERED in full")` is None AND `leading_verdict` is None, so that
+        artifact is outside the field-vs-prose comparison and outside the escape detector; same for
+        `EVERY ask SHIPPED` and for the pre-existing `THE work is DELIVERED`. The dangerous openers are
+        still caught — `NOT LANDED yet` yields `NOT LANDED` — so the hole is exactly the generic-opener
+        shape the exclusions introduced, and it is the price of not redding six innocent artifacts.
+        NOT FIXED HERE, deliberately: closing it needs a different shape — reading the opening SENTENCE
+        rather than its first token — and that needs its own false-positive measurement, because the
+        reason these six exist is that a wider rule red six honest artifacts on day one.
         AND THAT MAKES #1476's OTHER FINDING RESOLVE ITSELF. `NOT_A_VERDICT` was INERT: every member was
         already outside COMPLETE u INCOMPLETE, so its branch was followed by a path returning None anyway, and
         deleting it changed no verdict and passed all ten unit tests. It is now LOAD-BEARING — it is the list
         that separates a declared non-verdict from an escape — and a test removes a member to show the same
         prose becomes a reported escape. The documented intent and the behaviour finally agree.
         NON-INVASIVE, PROVEN ON ONE TREE rather than argued: with and without the six additions, the existing
-        gate reports population 54 and census 175 IDENTICALLY. The additions change no verdict and no
+        gate reports the SAME population and the SAME census. The additions change no verdict and no
         population; they only give `unclassified_lead` a declared non-verdict list.
+        THE ABSOLUTE FIGURES IN THE FIRST DRAFT WERE STALE, and the cold review caught it. It said
+        "population 54 and census 175" — measured BEFORE v0.81's own eleven artifacts recorded their
+        outcomes, each of which adds one to both. Re-derived from the GATE'S OWN OUTPUT at this
+        commit: population 65 and census 186, and 175 + 11 = 186 exactly. A count is invalidated by
+        the edit that writes it, and this release wrote eleven of them.
+        AND THE FIRST CORRECTION OF THIS SENTENCE WAS ITSELF WRONG, which round 2 caught. It replaced
+        the stale pair with "181 of 196" — a HAND-SCAN over `artifacts/release-v*/*.yaml`, while the
+        gate globs `artifacts/**/*.yaml` and reports over a different, larger population. The stale
+        pair had been ONE COHERENT MEASUREMENT; the correction substituted a second denominator into
+        a sentence whose subject is what the gate reports. Do not hand-roll a parser to measure what
+        a shipped gate already derives — this programme's own rule, broken while fixing a
+        measurement error.
         AND THE RULE WAS POTENT AGAINST THE SUITE ITSELF, which is the evidence I did not plan for. The new
         slot red an existing fixture, RQ-61-X, that modelled a "green v0.61 shape" with no outcome — accurate
         under the old rules and incomplete once reporting an outcome became part of green. The FIXTURE
@@ -120,6 +144,6 @@ artifacts:
         model green; fixtures modelling FAILING shapes stay silent deliberately. Reverting that fixture on a
         copy reds ReleaseShapeReplay, so the slot is not vacuous.
         NOT DELIVERED, AND SAID SO: the COMPLETE-beside-disposition branch is still DEAD on the live
-        population (R11 reds that combination first; 0 of 539 artifacts can reach it). It is left alone rather
+        population (R11 reds that combination first; 0 of the 539 pinned at the v0.80.0 anchor can reach it (`ANCHOR_PROGRAMME`; the LIVE count at this commit is 550)). It is left alone rather
         than given a synthetic pre-0.67 fixture, because a test that can only be reached by constructing an
         artifact the gates forbid is evidence about the fixture and not about the branch.
