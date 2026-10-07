@@ -47,3 +47,60 @@ artifacts:
       issue: "#1453"
       verification-track: manual
       done-when: "manual:2026-11-30 a compliance report is attached to a release's assets by an automated path again — verified by listing that release's assets, not by a workflow-run listing, which under-reports — with the chosen remedy named and the reason it was preferred stated, and the job able to FAIL rather than only to be skipped"
+      disposition: partial
+      verified-by: >-
+        PARTIAL, AND THE DONE-WHEN IS DELIBERATELY NOT LOOSENED. The wiring is in place and proven
+        red-first, but this artifact's bar is "a compliance report is attached to a release's assets
+        by an automated path again, verified by listing that release's assets" — and that evidence
+        can only exist AFTER a release. It arrives at the v0.81.0 tag. Rewriting the criterion into
+        something satisfiable today would be loosening a gate to make it green, which is the one
+        move this programme forbids. TAG-TIME OBLIGATION: after v0.81.0 publishes, list its assets
+        and confirm `synth-v0.81.0-compliance-report.tar.gz` is among them.
+        THE NUMBER IS THE ARGUMENT, and it is bigger than the title says. Derived over ALL 148
+        releases via the PAGINATED API, because `gh release list --limit 100` silently stops at 100
+        and `gh run list` under-reports: 129 of 148 releases carry NO compliance report, and 44
+        consecutively from the newest. `compliance.yml` has run NINETEEN TIMES EVER.
+        AND THE 2x2 IS THE MECHANISM, not a correlation. Of those 19 runs, ONE is a
+        `workflow_dispatch` and EIGHTEEN are `release` events — and all 18 correspond to releases a
+        USER published. Zero `release`-triggered runs exist for any of the 126 bot-published
+        releases. `release.yml` publishes with `gh release create` under the default `GITHUB_TOKEN`,
+        and GitHub raises no workflow runs for that token's events: a deliberate recursion guard,
+        and a silent one.
+        EVERY COUNTEREXAMPLE IS ACCOUNTED FOR, which is what makes this a derivation rather than a
+        trend. Five releases break the simple "user-published iff has a report" rule. FOUR of them
+        — v0.1.1, v0.2.0, v0.2.1, v0.3.0, all May 2026 — PREDATE `compliance.yml`, which first
+        landed 2026-06-05 in `7cb38558`; they are out of the population by construction. The FIFTH,
+        v0.11.31, is bot-published and DOES have a report: it came from that single
+        `workflow_dispatch` on 2026-06-05, the day the workflow landed. So the recursion guard has
+        no counterexample in the entire history, and the dispatch run is positive evidence that THE
+        JOB WORKS AND ONLY THE TRIGGER IS DEAD — which is what decides the remedy.
+        A FIRST READING OF THIS WAS WRONG AND IS CORRECTED HERE RATHER THAN QUIETLY DROPPED: over
+        the newest 100 releases the split looked PERFECT, 18 with and 82 without, zero
+        counterexamples. Paginating to all 148 produced the five above. A truncated view is not the
+        whole thing, and `--limit 100` on a 148-item list is a truncated view that returns success.
+        REMEDY 1 CHOSEN — `release.yml` now CALLS `compliance.yml` via `workflow_call` after the
+        release is created. The reason is the credential surface: remedy 2 (publish with a PAT) is a
+        long-lived secret this repo would have to hold, AND it would re-enable the recursion guard's
+        suppression for every workflow listening on release events, not just this one. #1460 is the
+        standing demonstration of what a credential-dependent release step costs — the npm package
+        is eleven releases behind on a token nobody can rotate from inside CI. Remedy 1 adds no
+        secret and reuses the job that is already proven to work.
+        IT CAN NOW FAIL, AND WHAT THAT MEANS IS STATED RATHER THAN IMPLIED. A `workflow_call` job
+        that fails fails the calling workflow, so the release run goes RED. It does NOT un-publish
+        the binaries, which are uploaded by the preceding job — the change is from "silently
+        produces nothing" to "visibly red". Saying only "it can fail the release path" would have
+        overclaimed.
+        AND THE CLASS IS GATED, NOT THE INSTANCE, which is this programme's own rule applied to its
+        own machinery. `scripts/release_trigger_check.py` asserts that ANY workflow declaring a
+        `release:` trigger and no other automatic one must be reachable from `release.yml`;
+        `workflow_dispatch` explicitly does NOT satisfy it, because a trigger a human must remember
+        is the defect and not the fix. RED-FIRST ON THE REAL TREE: deleting release.yml's
+        `compliance-report` job gives rc=1 naming the GITHUB_TOKEN mechanism; restoring it gives
+        rc=0. Nine self-test assertions, including a positive control that the rule is silent once
+        the caller exists, a control that a second automatic trigger is out of scope, and the PyYAML
+        trap where a bare `on:` key parses as the BOOLEAN True — a gate reading only the string key
+        would see no triggers and pass everything. Both halves are CI-wired.
+        THE BACKLOG IS A MAINTAINER DECISION AND IS NOT TOUCHED. 44 releases could have reports
+        regenerated with `compliance.yml`'s `workflow_dispatch`, one tag at a time. That is 44
+        outward-facing writes to already-published release pages, so it is named here and left
+        alone rather than done unasked.

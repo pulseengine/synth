@@ -468,6 +468,21 @@ jobs:
       # hidden capabilities to 15 with 2 undetermined, and CI stayed GREEN.
       - name: Shipped-feature census — zero UNDETERMINED flags (RQ-78-FEATURESET)
         run: python3 scripts/shipped_feature_census.py
+      # RQ-81-COMPLIANCE (#1453): a workflow whose only automatic trigger CANNOT
+      # FIRE. `compliance.yml` declares `release: published`, and GitHub raises no
+      # workflow runs for events caused by GITHUB_TOKEN, which is how this repo
+      # publishes — so it ran 19 times EVER and not once in 44 consecutive
+      # releases, with no red check anywhere, because a workflow that never starts
+      # has no conclusion to be red. BOTH halves run: `--self-test` is the
+      # potency evidence (9 assertions including the pre-fix shape, the
+      # workflow_dispatch-does-not-count control and the PyYAML `on:`-is-True
+      # trap), and the bare run is the live assertion over this tree's own
+      # workflows. Red-first on the real tree: deleting release.yml's
+      # `compliance-report` job gives rc=1 with the mechanism named.
+      - name: Release-trigger self-test — a dead trigger stays detectable (RQ-81-COMPLIANCE)
+        run: python3 scripts/release_trigger_check.py --self-test
+      - name: Release-trigger wiring — no workflow can be unreachable from release.yml (RQ-81-COMPLIANCE)
+        run: python3 scripts/release_trigger_check.py
       # RQ-81-JESSDIVERGE3 (#1436): the gravity-compensation comparison. Only
       # `--self-test` is a gate, and for a reason worth stating rather than
       # inheriting from the step above: the MODULE this oracle compares lives in
