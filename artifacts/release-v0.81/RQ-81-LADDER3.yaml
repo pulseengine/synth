@@ -53,5 +53,32 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1432"
+      disposition: deferred
       verification-track: manual
-      done-when: "manual:2026-11-30 either the ladder is re-measured on the shipping tree by the committed tool with its own date and commit, or the lane names the SPECIFIC human action that would unblock it (which key installed where, or which host mounted) rather than restating 'blocked', and records that the reach floor stays unpinned with the reason"
+      done-when: "manual:2026-11-30 the BLOCKER is re-verified at this release rather than restated from the plan — /Volumes/ enumerated, the ladder header read, the staleness re-counted — and the SPECIFIC human action that would unblock it is named (which key installed where, or which host mounted), with the reach floor explicitly NOT pinned and the reason given"
+      verified-by: >-
+        NOT DELIVERED, and the blocker is re-verified at this release rather than carried forward on trust.
+         THE MEASUREMENT, taken fresh: `docs/status/ACCEPTANCE_LADDER.md` still opens "# Acceptance ladder —
+         v0.63". `ls -d /Volumes/Work` returns "No such file or directory", and enumerating the mount table
+         gives exactly `com.apple.TimeMachine.localsnapshots`, `Data`, `Macintosh HD`, `Recovery` — so the
+         volume is absent, not merely unreadable, and that is a different claim from "the corpus is lost".
+         THE STALENESS GREW BY ONE THIS RELEASE AND THE NUMBER IS DERIVED, not incremented by hand:
+         `git tag --list 'v0.*' --sort=creatordate | awk 'f;/v0.63.0/{f=1}' | wc -l` returns SEVENTEEN, where
+         v0.80's own run of the same command returned sixteen. v0.80.0 is the seventeenth release shipped
+         against a denominator measured on a 2026-09-06 tree at e3a09ac2.
+         THE HUMAN ACTION IS NAMED, which is what v0.80's artifact owed and did not supply, because "blocked"
+         restated four releases running is the accumulation shape this programme keeps having to correct. ONE
+         of these unblocks it: mount the volume that carries `/Volumes/Work/corpora/wasm-243` on the release
+         machine; or install a key for `mac.fritz.box` that satisfies publickey auth, which is the host last
+         known to hold it and which answers on port 22 while refusing publickey, password and
+         keyboard-interactive; or relocate the 243-module corpus to a path inside this repo's reach and update
+         the ladder header plus `partial_census_1017.py --help`, both of which already record the external
+         location. ATTEMPTING PASSWORDS STAYS DECLINED and is not one of the options.
+         THE REACH FLOOR IS DELIBERATELY NOT PINNED, and saying which half is withheld is the point. Pinning a
+         floor at the v0.63 figures would pin a number measured seventeen releases ago; pinning a cost ceiling
+         alone would let a release buy cost wins with reach losses and stay green. Neither half is pinned and
+         the artifact says so, rather than shipping whichever half happened to be reachable.
+         THE PROVENANCE HALF REMAINS FIXED from v0.78 and was re-checked: the ladder header carries the
+         explicit "THE CORPUS IS EXTERNAL TO THIS REPO" note with the last known absolute path, and the
+         script's own `--help` says the same where an operator will actually read it. That is what makes each
+         next attempt cheap, and it is why this lane is a deferral with an action rather than a mystery.

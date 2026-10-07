@@ -46,5 +46,30 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1136"
+      disposition: partial
       verification-track: manual
-      done-when: "manual:2026-11-30 the nineteenth filing exists with BOTH the feature-loop tag and a spar/aadl tag so the step 1-2 matcher sees it, the ordinal is derived by artifact identity with the commit stated, spar#445's STATE is re-checked and recorded, and the artifact reports an outcome rather than being silent"
+      done-when: "manual:2026-11-30 the nineteenth filing exists with BOTH the feature-loop tag and a spar/aadl tag so the step 1-2 matcher SEES it (shown by running the matcher, not by reading the tags), the ordinal is derived by ARTIFACT IDENTITY with the command and the commit stated, spar#445's STATE is re-checked before its body, and this artifact REPORTS AN OUTCOME rather than being silent — which is this release's own theme applied to its own recurring filing"
+      verified-by: >-
+        PARTIAL. The deferral is FILED and re-verified; feature-loop steps 1-2 are skipped for the
+         nineteenth consecutive release.
+         THE ORDINAL IS DERIVED BY ARTIFACT IDENTITY, with the command stated so it can be re-run rather than
+         believed: `ls artifacts/release-v*/RQ-*ARCHMODEL*.yaml | wc -l` returns NINETEEN on this tree, v0.63
+         through v0.81 with no gaps, so this is the nineteenth filing. Deriving it by TAG SET is the v0.77
+         error, which returned 14 where the answer was 15 because v0.65's filing predates the five-tag
+         vocabulary — the artifact set is the stable denominator, the tag set is not.
+         THE MATCHER CAN SEE IT, SHOWN BY RUNNING THE MATCHER rather than by reading the tags, because this
+         filing has gone invisible three times (v0.65, v0.69, v0.75) by losing one half of its tag
+         conjunction: `find_filed_steps12_decision(Check('v0.81.0', …).load_checkout_docs(), 'v0.81')` returns
+         RQ-81-ARCHMODEL with `stale=False`. Both halves are present — `feature-loop` AND `spar`/`aadl` — plus
+         a non-empty `issue:`. Reading the tag list would have been the weaker check: it confirms the tags
+         exist, not that the matcher's conjunction accepts them.
+         THE BLOCKER IS RE-CHECKED, STATE BEFORE BODY: pulseengine/spar#445 is OPEN, last updated
+         2026-09-03T10:57:37Z. spar accepts property associations from UNDECLARED property sets silently
+         (rc=0), so an invented property is indistinguishable from a satisfied one, which is disqualifying for
+         generating WIT from AADL. Reading the body before the state is the recorded v0.73 error, where a
+         CLOSED and silicon-verified issue was nearly held open on the strength of its body.
+         AND THIS ARTIFACT IS NOT SILENT, which is this release's theme landing on its own recurring filing. A
+         recurring N/A that reports nothing is exactly the shape RQ-81-SILENT is about: the filing exists to
+         say "skipped again, and here is why", so a `verified-by` saying it is the deliverable rather than a
+         formality. PARTIAL and not delivered, because the filing is the whole deliverable and the underlying
+         steps remain undone for the nineteenth release.

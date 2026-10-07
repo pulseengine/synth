@@ -47,5 +47,40 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1451"
+      disposition: refuted
       verification-track: manual
-      done-when: "manual:2026-11-30 the merge ritual reports a RUNNER-SUSPECT diagnosis for a failing required job that recorded zero steps, naming the runner and the sibling step count, demonstrated against a real historical run; the diagnosis is ADVISORY and CHECK3 is proven UNRELAXED by showing a zero-step red still blocks the merge; no required check is retargeted or disabled and no infra change is requested"
+      done-when: "manual:2026-11-30 REWRITTEN AT DELIVERY because the premise was REFUTED by this lane's own refuting command: the steps=0 signature is absent from current history, so a detector for it cannot be red-first gated and must not be built. What is required instead is the REFUTATION recorded with its numbers (failed jobs examined, steps==0 count, the window, and 01-5's own failed-job count), the issue's own stated refuting observation shown SATISFIED by a named job id, and the surviving observation — that a steps=0 failure is indistinguishable from a content failure in the default `gh pr checks` view — stated as still-true-but-not-demonstrable rather than silently dropped"
+      verified-by: >-
+        REFUTED, by this lane's own refuting command, and the issue refuted ITSELF by the criterion it
+        wrote down. #1451's body says: "Refuting observation: any job completing successfully on
+        `pulseengine-ci-01-5`, with steps > 0. One such job and this diagnosis is wrong." That job exists.
+        THE MEASUREMENT, two independent ways rather than one lucky sample. Job 110992202896 on
+        pulseengine-ci-01-5 at 2026-10-02T19:21:49Z: conclusion=success, 11 steps, and it reached the
+        compiler — step 4 `Record the resolved toolchain (RQ-80-TOOLCHAIN)` and step 6 `Run clippy` both
+        succeeded at rustc 1.99.0. Then the whole recent window, because one job proves only one job: over
+        100 runs spanning 2026-10-02..2026-10-07, 31 failed, and across those 231 FAILED JOBS the count of
+        jobs recording steps==0 is ZERO. 01-5 contributed SIX of those failed jobs and every one records
+        steps. So this is NOT "01-5 went quiet so we cannot tell" — it is actively serving work and failing
+        some of it, and none of it exhibits the shape.
+        WHAT IS REFUTED IS THE GENERALISATION, NOT THE ORIGINAL OBSERVATION. The two steps=0 jobs that
+        motivated the filing were real and remain in the record (`Rivet Validation` and `Rust-test Line
+        Coverage`, both on 01-5, both zero steps). What is false is "01-5 is wedged" and "every future job
+        assigned to it fails the same way and the steps=0 count on it keeps rising". It recovered; the count
+        stopped at two.
+        SO NO DETECTOR WAS BUILT, AND THAT IS THE DELIVERABLE. A RUNNER-SUSPECT diagnosis gated on steps==0
+        cannot be red-first proven against a history that contains no instance, and this programme's own rule
+        is that a gate which cannot be shown to fire is the gate-that-cannot-fail class. Building it anyway
+        would have produced an untestable check plus a sentence claiming it works. The refuting command asked
+        for exactly this outcome in advance: "if every failing job records a non-zero step count, the
+        signature is absent from current history and the lane must say so rather than building a detector for
+        a shape it cannot demonstrate."
+        THE OBSERVATION THAT OUTLIVES THE DIAGNOSIS, recorded so it is not lost with the refutation: a
+        steps=0 failure is still indistinguishable from a content failure in `gh pr checks`, which reports
+        only `fail`. The step count is what separates them and it is not in the default view. That gap is
+        real independently of whether any runner is currently wedged, and it is NOT demonstrable today, so it
+        is stated as an open observation rather than converted into a lane.
+        AND ONE CONSEQUENCE FOR THE ISSUE, which is deliberately NOT acted on here. #1451 stays OPEN. A
+        refuted lane is not a delivery, so `issue_closure_check` would read any closure as unauthorised — the
+        precise failure that #1430 describes and that RQ-81-R11CONFLICT carries. Closing it to tidy the board
+        would manufacture that failure. The measurement is posted on the thread instead, so the stale
+        diagnosis is corrected where a reader will meet it.
