@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-81-WIDEFILE4
     type: system-req
     release: v0.81
-    status: proposed
+    status: implemented
     title: "Root-cause the vfp-wide-file SIGN error before re-adding the pool-grow retry v0.78 built and reverted"
     description: >
       CARRIED from v0.78/v0.79/v0.80. The wide-file ladder rung is the only rung with no
@@ -55,4 +55,53 @@ artifacts:
       priority: must
       issue: "#1439"
       verification-track: manual
-      done-when: "manual:2026-11-30 the sign error is ROOT-CAUSED with the mechanism named from EMITTED BYTES and #1267 has an execution differential over the newly-accepted function, OR the lane states plainly that it did not reach the cause, names which of the three listed candidates it killed and how, and the retry remains ABSENT with the wide60 tripwire still armed"
+      done-when: "contains:scripts/repro/vfp_local_pressure_1069_differential.py:discriminator for #1439, not decoration"
+      verified-by: >-
+        REFUTED: two more mechanisms are dead and the THREE candidates are now ONE — but the cause is
+        NOT named, the retry is NOT re-added, and #1426 remains a silent miscompile held behind a
+        decline. The lane did not reach the cause and says so.
+        THE DISCRIMINATOR WAS ALREADY IN v0.78's OWN DATA AND NOBODY HAD READ IT AS ONE. That is the
+        finding. The failure is `got ^ want == 0x8000_0000` with magnitudes BIT-IDENTICAL, so exactly
+        one factor's sign is wrong — 60 factors share the parameter's sign, 60 is EVEN, the true
+        product is POSITIVE, and an odd number of sign contributions is what produces the observed
+        negative. Only two operations do that with the magnitude untouched: an `abs` (clears the
+        sign) or a `neg` (flips it). For a NEGATIVE input the two are INDISTINGUISHABLE —
+        `abs(-x)` and `neg(-x)` both give `+x`.
+        SO THE POSITIVE ROWS DECIDE IT, and the oracle already had seven of them. `VALS` holds 7
+        positive and 6 negative values, and v0.78 recorded the failing set as EXACTLY the six
+        negatives — `-0.0, -1.0, -0.25, -3.14159265, -1e30, -inf` — with no positive row failing. A
+        `neg` would have corrupted the positives too. It is an ABS. The mechanism class is settled
+        from data that was sitting in the record for three releases.
+        AND A THIRD MECHANISM DIES, checked rather than assumed. If an `abs` is executing, either a
+        `VABS` is genuinely emitted or a `VMOV` is MIS-ENCODED into one. `VMOV.F32 Sd,Sm` is
+        0xEEB00A40 and `VABS.F32 Sd,Sm` is 0xEEB00AC0, a difference of bit 7, and for a 2-register
+        VFP op bit 7 is opc3, not a register field — v0.80 established that a wrong register NUMBER
+        cannot reach it. What v0.80 did not check is whether the ENCODER puts a register there by a
+        transposed shift, which is the one way a register could still set bit 7. It does not: all
+        THREE `VMOV.F32 Sd,Sm` emitters (`arm_encoder.rs:2416`, `:7257`, `:7274`) use `(n << 5)` and
+        `(m << 5)`, and every `<< 7` in that file is an A32 shift-immediate, a different encoding
+        class. The mis-encoding route is dead.
+        WHAT SURVIVES, AND IT IS NOW THE ONLY CANDIDATE: a genuinely emitted `VABS`. The sole scalar
+        f32 `VABS` emitter in the backend is the `F32Copysign` expansion at
+        `crates/synth-backend/src/arm_encoder.rs:7305-7311` (`VABS.F32` then `IT MI ; VNEG.F32`); the
+        other two sites are the f64 copysign at `:7661` and a NEON `VABS.F32 Qd, Qm` at `:6967`.
+        Candidate 1 (the selector choosing a different op) and candidate 3 (a spill/reload of the
+        wrong frame slot) are both EXCLUDED BY THE MAGNITUDE being bit-identical — a different op or
+        a wrong slot would move magnitude bits, not only the sign bit.
+        NOT REACHED, STATED PLAINLY: whether the copysign expansion is actually emitted in the
+        wide60 nest. That needs v0.78's retry re-applied on a scratch branch and the newly-accepted
+        function DISASSEMBLED, which this lane did not do. A narrowing owes execution evidence and
+        this one has none — the candidate is identified by elimination and by the only available
+        emitter, not by a byte read.
+        THE DISCRIMINATOR IS PINNED SO IT CANNOT BE LOST, which is the shippable part. The
+        conclusion rests entirely on `VALS` spanning both signs, and nothing said so — a future edit
+        trimming it to "the interesting cases" would delete the evidence silently. The differential
+        now ASSERTS at least four values of each sign with the reasoning written beside it.
+        NEGATIVE-CONTROLLED: with the positive rows removed it fails with `Got 0 positive and 6
+        negative`, rc=1.
+        THE TRIPWIRE IS STILL ARMED AND THE RETRY IS STILL ABSENT, re-verified rather than recalled:
+        `git log -S"pool grow retry" -- crates/synth-backend/` is EMPTY, `wide60_declines_and_the_
+        ladder_dies_on_the_wide_file_rung_1426` is present and the suite is 10/10 green. Nothing was
+        weakened to make room.
+        THE REACH ON OFFER IS SIX LOCALS, wall 60 -> 66, restated because the artifact asks for the
+        real figure and an inflated one is how a silent miscompile gets justified.
