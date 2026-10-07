@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-82-ARCHMODEL
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "Recurring N/A, twentieth filing: feature-loop steps 1-2 (spar AADL -> WIT) skipped again, blocker still open"
+    description: >
+      The feature loop's steps 1 and 2 generate WIT from a spar AADL model. They have been
+      skipped for every release in a long run, and the filing exists so that the skip stays
+      VISIBLE rather than becoming the silent default.
+
+      THE ORDINAL IS DERIVED BY ARTIFACT IDENTITY, never by counting releases: the filings
+      are the `RQ-*ARCHMODEL*` artifacts, and the count must be stated WITH THE COMMIT it is
+      true at, because the next filing invalidates it. v0.81's own artifact had to be
+      corrected for stating the count without its commit.
+
+      KEEP BOTH TAGS. The filing must carry `feature-loop` AND a spar/aadl tag, or the step
+      1-2 matcher goes blind and the deferral stops being visible — which is the exact
+      failure RQ-69-ARCHMODEL shipped, when the filing that exists to keep a deferral
+      visible lost the tag that makes it findable.
+
+      AND REPORT AN OUTCOME. A recurring N/A is still an artifact, so it carries a
+      `verified-by` saying "skipped again, and here is why" and a `disposition`. v0.81's
+      SILENT lane made that mechanical: an artifact with no outcome field is now red at the
+      tag, and this filing is exactly the shape that used to slip through.
+
+      REFUTING COMMAND:
+      `ls artifacts/release-v*/RQ-*ARCHMODEL*.yaml | wc -l` (state the commit with the
+      number) and `gh issue view 445 --repo pulseengine/spar --json state`. If the blocker
+      is CLOSED, steps 1-2 are unblocked and this is no longer an N/A filing — check the
+      issue's STATE before its BODY, because a body is written once and never updated.
+      Then run the step 1-2 matcher rather than reading the tags, to show the filing is
+      actually SEEN.
+    tags:
+      - process
+      - feature-loop
+      - spar
+      - aadl
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1136"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the twentieth filing exists with BOTH the feature-loop tag and a spar/aadl tag, shown SEEN by running the step 1-2 matcher rather than by reading the tags; the ordinal derived by ARTIFACT IDENTITY and stated with the commit it is true at; spar#445's STATE re-checked before its body; and an outcome recorded rather than the artifact being silent"

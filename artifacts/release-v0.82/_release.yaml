@@ -1,0 +1,47 @@
+# v0.82 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS by rule. Every number about this release lives
+# in the artifact that derives it, or in the CHANGELOG at the cut. A figure here
+# would be a second copy with no derivation behind it — and v0.81's cold review
+# found that the sentence warning about exactly that had itself drifted across
+# four releases, because nobody re-read the source.
+#
+# THEME — "Satisfying one gate can arm another" (#1484).
+#
+# v0.81's theme was that a case OUT OF POPULATION is indistinguishable from a
+# compliant one. This is that one level up: a case that SATISFIES TWO RULES whose
+# CONJUNCTION is false.
+#
+# The evidence is v0.81's own near-miss, and it is worth stating plainly because
+# neither gate was wrong. Two artifacts delivered a refutation and a narrowing, so
+# their own prose says the defects are unresolved. They were set to a claiming
+# status for exactly one reason: R3 reds a non-claiming status whose done-when
+# evidence exists. But a claiming status is ALSO what the closure gate reads as
+# permission to close the issue. So satisfying R3 entitled the tag to close an
+# external reporter's live blocker. An operator caught it by RUNNING the closure
+# gate before tagging rather than after.
+#
+# R3 is right. The closure rule is right. Nothing reads them together, and the
+# only remedy R3 offers is also a permission.
+#
+# WHAT THAT MAKES THIS RELEASE ABOUT: coupling between gates, and the classes
+# behind single instances. v0.81 fixed the `str(None)` shape FIVE times across TWO
+# gates in TWO cold-review rounds and never asked how many more sites have it. It
+# pinned a float row with `in` and left the one value where `==` is not identity
+# unfalsifiable — on the sign-bit row of a sign defect. Both are lanes here,
+# scoped as POPULATIONS to be derived rather than instances to be patched.
+#
+# CARRIED, and each for a reason recorded rather than restated: the falcon
+# divergence, where the expression is now proven faithful and an operand's runtime
+# value is the next measurement; the wide-file sign loss, where the mechanism class
+# is settled and the emitter is not; the acceptance ladder, where the blocker is a
+# human action and attempting passwords stays declined; the page-size capability,
+# where TWO remedies are off the table on recorded downstream evidence and this
+# artifact exists partly to stop the third attempt; and the recurring N/A filing,
+# at twenty.
+#
+# ONE PATTERN NAMED AS A HAZARD rather than given a lane: a `done-when` REWRITTEN
+# AT DELIVERY to enumerate what was in fact delivered cannot fail. Two v0.81
+# artifacts did it. A third kept its criterion verbatim and recorded a tag-time
+# obligation instead, which is the model. If a lane here needs its criterion
+# rewritten, say why the original became unachievable before rewriting it.

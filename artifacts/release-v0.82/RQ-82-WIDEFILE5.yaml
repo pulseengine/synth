@@ -1,0 +1,62 @@
+artifacts:
+  - id: RQ-82-WIDEFILE5
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "The wide-file sign loss is an ABS and the fixture contains none — identify the emitter from EMITTED BYTES"
+    description: >
+      CARRIED from v0.78/v0.79/v0.80/v0.81. The wide-file rung is still the only ladder rung
+      with no pool-grow retry, because v0.78 BUILT the retry, found the newly-accepted code
+      SIGN-WRONG, and reverted. The tripwire
+      `wide60_declines_and_the_ladder_dies_on_the_wide_file_rung_1426` is armed and must
+      stay armed.
+
+      WHAT v0.81 SETTLED: the mechanism CLASS. `got ^ want == 0x8000_0000` with magnitudes
+      BIT-IDENTICAL means exactly one factor's sign is wrong, and only an `abs` or a `neg`
+      does that. For a NEGATIVE input the two are indistinguishable — so the POSITIVE rows
+      decide it. The oracle carries 7 positive and 6 negative values and v0.78's failing
+      set is EXACTLY the six negatives, so a `neg` is ruled out. It is an ABS. Those six
+      rows are now pinned BY BIT PATTERN, after v0.81's round 2 found that pinning them
+      with `in` left `-0.0` unfalsifiable because `-0.0 == 0.0`.
+
+      WHAT v0.81 WITHDREW, and this is the open question: it claimed the sole scalar-f32
+      `VABS` emitter is the `F32Copysign` expansion. `0xEEB00AC0` has THREE emitters —
+      `arm_encoder.rs:1992` and `:6322`, both lowering `ArmOp::F32Abs` on two different
+      encoder paths, plus `:7310` in copysign. The 2-register mis-encoding route IS dead
+      (all three `VMOV.F32 Sd,Sm` emitters and the shared `encode_vfp_2reg` leave bit 7
+      untouched), but the EMITTER is not identified.
+
+      AND THE SOURCE HAS NO ABS AT ALL, which sharpens it rather than answering it:
+      `scripts/repro/vfp_local_pressure_1069.wat` contains ZERO `f32.abs`, ZERO
+      `f32.copysign` and ZERO `f32.neg` against 130 `f32.mul` operators. So whatever emits
+      the abs emits it with no source operator to justify it, and none of the three
+      emitters should be reachable from a pure product nest.
+
+      WHAT WOULD SETTLE IT: re-apply v0.78's retry on a scratch branch, compile the wide60
+      fixture, and DISASSEMBLE the newly-accepted function — looking for `0xEEB00AC0` in
+      the emitted stream and, if present, which of the three sites produced it. A
+      narrowing owes EXECUTION evidence; "the differential says FAITHFUL now" is a fact
+      about the validator.
+
+      THE REACH ON OFFER IS SIX LOCALS, wall 60 -> 66 — not twelve. Stating the real figure
+      is part of the lane, because an inflated one is how a silent miscompile gets justified.
+
+      REFUTING COMMAND: `grep -n "wide60_declines" -r scripts/ tests/ crates/` and
+      `git log --oneline -S"pool grow retry" -- crates/synth-backend/`. If the tripwire is
+      gone or a retry has landed, this premise is dead. Then
+      `grep -c -F '0xEEB00AC0' crates/synth-backend/src/arm_encoder.rs` — if that is no
+      longer THREE, the emitter population moved and the enumeration must be re-derived.
+    tags:
+      - bug
+      - carried
+      - reach
+      - vfp
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1439"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the newly-accepted wide60 function is DISASSEMBLED with v0.78's retry applied and the instruction that loses the sign is NAMED with its emitter site, or the lane states plainly that it did not reach it and what it tried; the retry remains ABSENT and the wide60 tripwire still armed unless the cause is named AND an execution differential covers the newly-accepted function"
