@@ -153,6 +153,47 @@ def _cw_run(table):
         C.subprocess = orig
 
 
+def next_release_tag_tests() -> None:
+    """v0.81 round-2 cold review, finding 9.
+
+    `next_release_tag` was CHANGED by round 1 (mixed-arity tuple comparison) and
+    pinned by nothing, while every other correction in that commit got a test.
+    Its own comment names the risk it leaves: the live caller passes three
+    components, so the defect was latent — and the next caller would not have
+    known. Driven through a stub so it needs no network.
+    """
+    print("  -- next_release_tag: arity and ordering --")
+    TAGS = ("refs/tags/v0.76.0\nrefs/tags/v0.77.0\nrefs/tags/v0.78.0\n"
+            "refs/tags/v0.81.0\nrefs/tags/not-a-version\n")
+
+    def _stub(tag):
+        import subprocess
+        real = subprocess.run
+        class R:
+            stdout = TAGS
+        subprocess.run = lambda *a, **k: R()
+        try:
+            return C.next_release_tag(tag, "owner/repo")
+        finally:
+            subprocess.run = real
+
+    # THE DEFECT: `(0,77,0) > (0,77)` is True, so a 2-component release name
+    # matched its OWN tag and bounded the window at the release being audited —
+    # excluding the whole closure wave the gate exists to read.
+    check("next_release_tag: a 2-component name does NOT match its own tag",
+          _stub("v0.77") == "v0.78.0", f"got {_stub('v0.77')!r}")
+    check("next_release_tag: the 3-component form agrees with it",
+          _stub("v0.77.0") == "v0.78.0", f"got {_stub('v0.77.0')!r}")
+    check("next_release_tag: the NEWEST release has no successor",
+          _stub("v0.81.0") is None and _stub("v0.81") is None)
+    check("next_release_tag: it returns the IMMEDIATE successor, not the newest",
+          _stub("v0.76.0") == "v0.77.0", f"got {_stub('v0.76.0')!r}")
+    check("next_release_tag: a non-version tag is ignored, not crashed on",
+          _stub("v0.78.0") == "v0.81.0", f"got {_stub('v0.78.0')!r}")
+    check("next_release_tag: a non-version RELEASE name returns None",
+          _stub("not-a-version") is None)
+
+
 def r11conflict_tests() -> None:
     """RQ-81-R11CONFLICT (#1430): the two directions, and the controls.
 
@@ -612,6 +653,7 @@ def main() -> int:
     check("v0.70 replay: ...and it is reported, naming the release that delivered it",
           any("DELIVERED LATER: #1331" in x and "v0.75" in x for x in w), str(w))
 
+    next_release_tag_tests()
     r11conflict_tests()
     closed_since_tests()
 

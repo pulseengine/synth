@@ -197,7 +197,7 @@ def fidelity_exit(verdict: str) -> int:
     one. Mutating `return fidelity_exit(verdict)` to `return 0` in `main()`
     still leaves `--self-test` green — that clause remains accurate. What is NO
     LONGER true is the conclusion drawn from it: v0.75 delivered
-    `scripts/test_merge_gate_callsite.py`, it is CI-wired at `ci.yml:472` in the
+    `scripts/test_merge_gate_callsite.py`, it is CI-wired at `ci.yml:625` in the
     required `Claim Check` job, and it REDS on exactly that mutation with three
     failures. Read the state of a gap before describing it. The
     reviewer applied ten such mutations to `gate()` and `main()` — including

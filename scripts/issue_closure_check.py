@@ -45,6 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from status_evidence_check import (  # noqa: E402
+    CLAIMING,
     authorised_close_set,
     load_release_artifacts,
 )
@@ -261,6 +262,24 @@ def open_issues_now(repo: str) -> set[int] | None:
         return None
 
 
+def _claiming_ids(artifacts) -> set[str]:
+    """Artifact ids whose status CLAIMS the outcome holds.
+
+    (v0.81 round-2 cold review, finding 2.) `authorised_close_set` admits TWO
+    routes to "authorised": a CLAIMING status, and — since this release's own
+    R11CONFLICT lane — a non-claiming artifact with `issue-scope: closes` beside
+    `disposition: refuted`. Collapsing both into one kind let a later REFUTATION
+    rescue a deliberate hold-open under a message that said "DELIVERED LATER".
+    A refutation is not a delivery.
+
+    Shared by BOTH attribution functions on purpose: they have identical loop
+    bodies, and round 2 of this review found a fix applied to one of exactly that
+    kind of pair. One classifier, used twice.
+    """
+    return {art_id for _p, _v, art_id, status, _f, _l, _r in artifacts
+            if status in CLAIMING}
+
+
 def prior_attribution(artifacts, version: tuple[int, int]):
     """Issues that an EARLIER release's artifacts account for, and how.
 
@@ -300,12 +319,14 @@ def prior_attribution(artifacts, version: tuple[int, int]):
     found: dict[int, tuple[tuple[int, int], str, str]] = {}
     versions = {v for _p, v, _i, _s, _f, _l, _r in artifacts
                 if v is not None and v < version}
+    claiming = _claiming_ids(artifacts)
     for v in sorted(versions):
         auth, held = authorised_close_set(artifacts, v)
         for n, art in held.items():
             found[n] = (v, "held-open", art)
         for n, art in auth.items():
-            found[n] = (v, "authorised", art)
+            found[n] = (v, "delivered" if art in claiming else "refuted-closes",
+                        art)
     return found
 
 
@@ -367,12 +388,14 @@ def later_attribution(artifacts, version: tuple[int, int]):
     found: dict[int, tuple[tuple[int, int], str, str]] = {}
     versions = {v for _p, v, _i, _s, _f, _l, _r in artifacts
                 if v is not None and v > version}
+    claiming = _claiming_ids(artifacts)
     for v in sorted(versions):
         auth, held = authorised_close_set(artifacts, v)
         for n, art in held.items():
             found[n] = (v, "held-open", art)
         for n, art in auth.items():
-            found[n] = (v, "authorised", art)
+            found[n] = (v, "delivered" if art in claiming else "refuted-closes",
+                        art)
     return found
 
 
@@ -431,7 +454,7 @@ def check(root: Path, release: str, closed: set[int],
             # near-reopening instruction, so an inconsistent one is the costly
             # kind.
             _lat = later.get(n)
-            if _lat and _lat[1] == "authorised":
+            if _lat and _lat[1] == "delivered":
                 warnings.append(
                     f"HELD OPEN BY {release} BUT DELIVERED LATER: #{n} — "
                     f"{held_open[n]} declared `issue-scope: outlives`, and "
@@ -446,6 +469,23 @@ def check(root: Path, release: str, closed: set[int],
         elif n not in authorised and n in prior:
             pv, how, art = prior[n]
             if how == "held-open":
+                # THE THIRD SITE. (v0.81 round-2 cold review, finding 1.) Round 1
+                # gave the later-delivery rescue to two of the FOUR branches that
+                # emit "Reopen it" and left this one, which MOVED the
+                # inconsistency one release over instead of removing it.
+                # Measured on the real tree with the same artifact (RQ-70-NPA) and
+                # the same issue: auditing v0.70 warned "not something to reopen"
+                # while auditing v0.71 FAILED with "Reopen it". Whether a later
+                # release delivered an issue cannot depend on which earlier
+                # release is being audited.
+                _lat = later.get(n)
+                if _lat and _lat[1] == "delivered":
+                    warnings.append(
+                        f"HELD OPEN BY {fmt_release(pv)} BUT DELIVERED LATER: "
+                        f"#{n} — {art} declared `issue-scope: outlives`, and "
+                        f"{_lat[2]} in {fmt_release(_lat[0])} went on to deliver "
+                        f"it. Not something to reopen")
+                    continue
                 failures.append(
                     f"HELD OPEN BY {fmt_release(pv)} BUT CLOSED: #{n} — "
                     f"{art} declares `issue-scope: outlives`, so "
@@ -454,14 +494,24 @@ def check(root: Path, release: str, closed: set[int],
                     f"not {fmt_release(pv)}'s own ritual. Reopen it")
             else:
                 warnings.append(
-                    f"ATTRIBUTED TO {fmt_release(pv)}: #{n} — closed after the "
+                    f"ATTRIBUTED TO {fmt_release(pv)}"
+                    f"{' (on a REFUTATION, not a delivery)' if how == 'refuted-closes' else ''}"
+                    f": #{n} — closed after the "
                     f"{fmt_release(pv)} tag by that release's own ritual, and "
                     f"{art} names it. Not a {release} closure")
         elif n not in authorised and n in later:
             # RQ-81-R11CONFLICT (#1430): a LATER release accounts for it. Only
             # reachable when auditing history; empty for the release being cut.
             lv, how, art = later[n]
-            if how == "held-open":
+            if how == "refuted-closes":
+                failures.append(
+                    f"CLOSED ON A LATER REFUTATION: #{n} — {art} in "
+                    f"{fmt_release(lv)} declares `issue-scope: closes` beside "
+                    f"`disposition: refuted`, which is NOT a delivery. A "
+                    f"refutation does not discharge a hold-open. If the issue's "
+                    f"question really is answered, say so in an artifact that "
+                    f"claims it")
+            elif how == "held-open":
                 failures.append(
                     f"HELD OPEN BY {fmt_release(lv)} BUT CLOSED: #{n} — {art} "
                     f"declares `issue-scope: outlives`, so {fmt_release(lv)} "
@@ -514,7 +564,7 @@ def check(root: Path, release: str, closed: set[int],
                 # branch the gate demands a reopening of an issue whose work
                 # shipped, which is the defect this lane exists to remove.
                 lat = later.get(n)
-                if lat and lat[1] == "authorised":
+                if lat and lat[1] == "delivered":
                     warnings.append(
                         f"HELD OPEN BY {release} BUT DELIVERED LATER: #{n} — "
                         f"{held_open[n]} declared `issue-scope: outlives`, and "

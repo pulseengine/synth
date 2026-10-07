@@ -328,8 +328,15 @@ def artifacts_reporting_nothing(docs) -> tuple[int, list[str]]:
             # `landed:` (which PyYAML parses as None) and `disposition: ""` all
             # counted as "reported an outcome". That is precisely the artifact
             # this rule exists to catch: R11's own branch needs a NON-EMPTY
-            # value, so a present-but-valueless key was invisible to BOTH rules
-            # and carried strictly less information than an absent one.
+            # value, so a present-but-BLANK key (`landed: ""`) was invisible to
+            # BOTH rules and carried strictly less information than an absent one.
+            #
+            # PRECISELY ONE OF THE THREE CASES, not all three. (v0.81 round-2 cold
+            # review, finding 7.) A VALUELESS key (`landed:` with nothing after
+            # it) did NOT escape R11 — it made R11 FIRE, on the invented string
+            # "None", because `str(None)` is non-empty. That is a different defect
+            # in R11's own idiom and it is fixed there too, rather than left as
+            # the twin of this one.
             #
             # `or ""` BEFORE `str()` is load-bearing and is NOT R11's idiom:
             # R11 writes `str(fields.get("landed", "")).strip()`, and

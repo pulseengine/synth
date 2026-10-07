@@ -190,6 +190,8 @@ VALS = [0.0, -0.0, 1.0, -1.0, 0.5, -0.25, 1.5, 0.001, -3.14159265,
 # no positive one, which identifies the operation as an ABS. That conclusion
 # evaporates if someone trims this list to "the interesting cases", so the span
 # is asserted rather than hoped for.
+import struct as _struct  # noqa: E402  (bit-exact row pinning, below)
+
 _POS = [v for v in VALS if v == v and v > 0 or (v == 0 and str(v)[0] != "-")]
 _NEG = [v for v in VALS if v == v and (v < 0 or str(v)[0] == "-")]
 assert len(_POS) >= 4 and len(_NEG) >= 4, (
@@ -207,7 +209,14 @@ assert len(_POS) >= 4 and len(_NEG) >= 4, (
 # evidence and are pinned by VALUE. A future lane may add rows; it may not remove
 # one of these without re-deriving the abs-vs-neg conclusion that rests on them.
 _FAILING_SET_1439 = (-0.0, -1.0, -0.25, -3.14159265, -1e30, float("-inf"))
-_missing = [v for v in _FAILING_SET_1439 if v not in VALS]
+# COMPARE BY BIT PATTERN, not by `==`. (v0.81 round-2 cold review, finding 4.)
+# The first version of this guard used `v not in VALS`, and `-0.0 == 0.0` is True
+# in IEEE-754 — so membership was satisfied by `+0.0` and deleting `-0.0` left
+# BOTH assertions passing. `-0.0` is the SIGN-BIT row: the one value in the set
+# whose entire content is the sign, on a defect that is a sign error. The row most
+# central to the conclusion was the only one not actually pinned.
+_bits = {_struct.pack("<f", _v) for _v in VALS}
+_missing = [v for v in _FAILING_SET_1439 if _struct.pack("<f", v) not in _bits]
 assert not _missing, (
     f"VALS is missing {_missing} -- v0.78's recorded failing set for #1439 is "
     f"exactly {_FAILING_SET_1439}, and the abs-vs-neg conclusion is derived from "

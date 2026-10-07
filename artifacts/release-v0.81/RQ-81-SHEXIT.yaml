@@ -98,11 +98,18 @@ artifacts:
         reported as "the scenario does not red" would have been this release's theme committed by
         the lane that exists to close it. Re-run beside its sibling, it reds.
         THE WHOLE CALL-SITE POPULATION IS NOW CHECKED, not just the one the report led with: SIX live
-        sites, derived by excluding the definition, the docstring and the self-test — `:118`
-        (`rev-list --count`), `:373` and `:736` (`gh pr view` -> `json.loads`), `:389`
-        (`rev-parse origin/main`), `:743` (`git fetch refs/pull/N/head`) and `:755` (the
-        required-contexts read). The first draft said FIVE and omitted `:755`, which is the very
-        site the description had discussed. None needed tolerance — a failed `gh pr view` previously
+        sites, derived by excluding the definition, the docstring and the self-test: `rev-list
+        --count`, TWO `gh pr view` -> `json.loads`, `rev-parse origin/main`, `git fetch
+        refs/pull/N/head`, and the required-contexts read. The first draft said FIVE and omitted the
+        last, which is the very site the description had discussed.
+        LINE NUMBERS ARE DELIBERATELY NOT QUOTED HERE, and the reason is this artifact's own
+        correction history: round 1 replaced a stale `ci.yml` pair and wrote "a line number is a fact
+        about a tree, so it has to be re-derived in the tree being shipped" — and then round 2 found
+        that the six `sh()` line numbers round 1 had just added were ALREADY stale by eleven,
+        because the NEXT correction commit inserted eleven lines above them. A line number in an
+        artifact is invalidated by the next edit to the file it points at. The sites are named by
+        what they DO, which is stable; re-derive the numbers with
+        `git grep -n -F 'sh(' scripts/merge_gate.py` in the tree you are reading. None needed tolerance — a failed `gh pr view` previously
         produced `json.loads("")` and an ugly traceback, and now produces GATEREFUSED exit 2, which
         `merge_ritual.sh` already reads. `CommandFailed` joins `GateRefusal` in `main()`'s handler,
         so a failed command can never reach the `GATEOK` print.

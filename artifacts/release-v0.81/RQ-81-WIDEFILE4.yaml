@@ -106,7 +106,9 @@ artifacts:
         more plausible emitter of the two by a wide margin, and the first draft did not mention it.
         AND THE SOURCE CONTAINS NO abs AT ALL, which makes the question sharper rather than
         answered. `scripts/repro/vfp_local_pressure_1069.wat` has ZERO `f32.abs`, ZERO
-        `f32.copysign` and ZERO `f32.neg` against 71 `f32.mul`. So whatever emits the abs emits it
+        `f32.copysign` and ZERO `f32.neg` against 130 `f32.mul` OPERATORS on 71 lines — the zeros and the
+        130 are operator counts, stated in the same unit after round 2 found a line count standing
+        among them. So whatever emits the abs emits it
         with NO source operator to justify it — none of the three emitters should be reachable from
         a pure product nest. "Three candidates become one" is WITHDRAWN: what is settled is the
         mechanism CLASS, not its site.

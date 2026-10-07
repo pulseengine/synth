@@ -17,11 +17,15 @@ in v0.80's own history: two artifacts reached the release candidate silent, ever
 structured gate green, caught by a human re-reading the exit condition. A gate
 that needs an operator to remember it is not a gate.
 
-**The gate this release shipped caught this release.** At the v0.81 cut,
-`loop_conformance_check` step 3 reported *"2/11 artifacts record NO outcome"* —
-RQ-81-SHEXIT and RQ-81-R11CONFLICT, mid-flight in their own PR. Unplanned
-potency on live data, and the first time this class was caught by machine rather
-than by a person.
+**The gate this release shipped caught this release**, and the arc is derivable on
+main's own first-parent history rather than asserted. `artifacts_reporting_nothing`
+over `artifacts/release-v0.81/` at each commit: **11 of 11 silent** at the planning
+merge, **6 of 11** after the first lane wave, **4 of 11** after the second, and
+**0 of 11** at the candidate. Every one of those reductions is a lane recording an
+outcome it would previously have been free to omit — and v0.80 shipped two silent
+artifacts to its own release candidate with every structured gate green, caught by
+a person re-reading the exit condition. This is the first release where the machine
+asked.
 
 ### What landed
 

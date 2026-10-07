@@ -2082,7 +2082,8 @@ class ClosesWithoutClaimingIsScopedToRefuted(unittest.TestCase):
     `CLOSES_WITHOUT_CLAIMING = {"refuted"}` is the set that lets a NON-claiming
     artifact authorise its issue's closure. Widening it to include `deferred` and
     `partial` — the exact change the module's own comment calls "the v0.69
-    accident with a field attached" — survived THIS suite at 116 tests OK. Only
+    accident with a field attached" — survived THIS suite at the 116 tests it then
+    had (119 after these three). Only
     the sibling `test_issue_closure_check.py` red it. The owning suite now pins
     the set it owns.
     """

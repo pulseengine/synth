@@ -3,7 +3,9 @@
 # This file carries NO STATISTICS by rule. Every number about this release lives
 # in the artifact that derives it, or in the CHANGELOG at the cut. A figure here
 # would be a second copy with no derivation behind it, which is how v0.74's
-# "first reduction" falsehood survived in several places at once.
+# "first reduction" falsehood survived wherever nothing derived it. (The count that
+# stood here is itself a statistic, and three sibling releases quote it differently
+# from the review that found it — so it is dropped rather than re-guessed.)
 #
 # THEME — "The artifact that says nothing" (#1458).
 #

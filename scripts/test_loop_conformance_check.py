@@ -588,6 +588,53 @@ class Step7PriorReleaseBar(unittest.TestCase):
         self.assertIn("no", seven[0][3].lower())
 
 
+class Step3VerdictClassifiedRefusesZeroPopulation(unittest.TestCase):
+    """v0.81 round-2 cold review, finding 6.
+
+    Round 1 made the `verdict classified` slot refuse a population of zero, and
+    pinned NOTHING: mutating `elif not _population:` to `elif False:` left the
+    suite at rc=0. The positive direction — that it DOES refuse — was uncovered,
+    in the same commit whose new test class is docstringed "findings 2 and 3".
+    """
+
+    def _slot(self, docs):
+        c = mk_check("v0.81.0", mode="pretag", sha=None)
+        # `load_release_docs` is a METHOD on the check object, not a module
+        # function — patch what the code actually calls.
+        c.load_release_docs = lambda: docs
+        c.step_3()
+        return [f for f in c.findings if f[1] == "verdict classified"]
+
+    def test_zero_verdict_bearing_artifacts_is_NOT_DERIVED(self):
+        # artifacts exist, but none carries a `verified-by` — so there is no
+        # opening to classify and "every opening is classified" is vacuous.
+        docs = [("p.yaml", {"artifacts": [
+            {"id": "RQ-X-1", "fields": {"landed": "#1"}},
+            {"id": "RQ-X-2", "fields": {"disposition": "refuted"}}]})]
+        got = self._slot(docs)
+        self.assertTrue(got, "the slot recorded nothing at all")
+        self.assertEqual(got[0][2], lcc.NOT_DERIVED,
+                         f"expected NOT_DERIVED over a population of zero, got "
+                         f"{got[0][2]}: {got[0][3][:90]}")
+
+    def test_CONTROL_a_classified_verdict_still_passes(self):
+        docs = [("p.yaml", {"artifacts": [
+            {"id": "RQ-X-1", "fields": {"verified-by": "DELIVERED. all of it"}}]})]
+        got = self._slot(docs)
+        self.assertTrue(got)
+        self.assertEqual(got[0][2], lcc.DERIVED_PASS,
+                         f"a classified verdict must PASS: {got[0][3][:90]}")
+
+    def test_CONTROL_an_unclassified_lead_still_FAILS(self):
+        # without this, the two above are satisfied by a slot that never fails
+        docs = [("p.yaml", {"artifacts": [
+            {"id": "RQ-X-1", "fields": {"verified-by": "NOT LANDED yet"}}]})]
+        got = self._slot(docs)
+        self.assertTrue(got)
+        self.assertEqual(got[0][2], lcc.DERIVED_FAIL,
+                         f"an escape must FAIL: {got[0][3][:90]}")
+
+
 class Step3EmptyValuedOutcomeKey(unittest.TestCase):
     """v0.81 round-1 cold review, findings 2 and 3.
 

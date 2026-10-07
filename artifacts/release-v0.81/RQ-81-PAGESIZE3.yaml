@@ -96,8 +96,11 @@ artifacts:
         occupant. Closing it now would have to be undone when gale's own `pagesize` work lands.
         ONE NEW MEASUREMENT KEPT FROM THE REVERTED WORK, because it is true independently of where
         the rule lives: `WasmMemory::max_bytes()` has ZERO callers in the workspace and over-reports
-        in exactly the same way as `initial_bytes()`, which has NINE live call sites (ten textual
-        occurrences, one of which is inside a comment at `synth-cli/src/main.rs:4644`). A fix applied to one of that
+        in exactly the same way as `initial_bytes()`, which has NINE live call sites. Derived as
+        `git grep -n -F '.initial_bytes()' -- crates/`: ten occurrences of the CALL form, one of them
+        commented out at `synth-cli/src/main.rs:4644`. Counting the bare name instead gives eleven,
+        because `synth-backend-riscv/src/backend.rs:308` mentions it in prose and the definition
+        itself matches — which is why the pattern is stated rather than just the number. A fix applied to one of that
         pair and not the other is the twin-check shape this programme has already had to correct
         twice, so whichever lane eventually honours the declaration must move both.
         AND GALE'S ARCHITECTURAL CORRECTION, restated because it changes what a future lane should

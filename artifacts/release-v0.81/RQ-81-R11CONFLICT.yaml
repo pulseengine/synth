@@ -83,9 +83,15 @@ artifacts:
         other. The upper edge is now DERIVED as the release tag above the audited one.
         IT CANNOT NARROW THE LIVE GATE, and the reason is structural rather than careful: for the
         release being CUT there is no tag above it, so the bound is open and the behaviour is
-        identical. MEASURED on the invocation the tag ritual actually makes —
-        `--release v0.81.0 --since-tag v0.80.0` prints `window: [v0.80.0, now)` with 0 failures before
-        and after. The authorised COUNT is not an invariant and the first draft quoted it as one: it
+        identical. MEASURED on the invocation the tag ritual ACTUALLY makes, which
+        `scripts/tag_release.sh:149` fixes as `--release "$VER" --since-tag "$VER"
+        --allow-unclosed`: 0 failures before and after the change.
+        THE FIRST DRAFT NAMED THE WRONG COMMAND AND ROUND 2 CAUGHT IT. It cited
+        `--release v0.81.0 --since-tag v0.80.0` with "0 failures", and that command yields FOUR
+        failures at rc=1 — they are `AUTHORISED BUT STILL OPEN` warnings promoted to failures because
+        `--allow-unclosed` was omitted. The INVARIANCE claim holds either way (identical counts with
+        the old and new script), but a failure count without its invocation is not a measurement —
+        which is what this artifact says two paragraphs further down, about a different number. The authorised COUNT is not an invariant and the first draft quoted it as one: it
         said "1 authorised / 5 closed", measured before this release's other lanes recorded their
         verdicts. At the cut it is 4 authorised / 2 held open / 5 closed — the two held open are the
         issues declared to outlive their artifacts. What is unchanged by the window bound is the
@@ -115,7 +121,7 @@ artifacts:
         bounded audit 0. The claim the sentence needs is that the forward directions are covered,
         which holds at 7; a failure count without its invocation is not a measurement. Full fix: 0
         failures across all of them, and the sibling suite
-        `test_status_evidence_check.py` is 116 tests OK.
+        `test_status_evidence_check.py` is 119 tests OK.
         AN HONEST NOTE ON ONE ASSERTION'S POTENCY: `later_attribution is EMPTY for the release being
         cut` stays GREEN against the neutered probe, because `{}` trivially satisfies it. It pins the
         non-weakening property against a FUTURE change to the version comparison, not against this

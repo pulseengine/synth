@@ -127,11 +127,16 @@ artifacts:
         population; they only give `unclassified_lead` a declared non-verdict list.
         THE ABSOLUTE FIGURES IN THE FIRST DRAFT WERE STALE, and the cold review caught it. It said
         "population 54 and census 175" — measured BEFORE v0.81's own eleven artifacts recorded their
-        outcomes, each of which adds one to both. Re-derived at this commit: the gate reports
-        population 65, and 181 of 196 artifacts carry a non-empty `verified-by`. A count is
-        invalidated by the edit that writes it, and this release wrote eleven of them. What the
-        sentence ASSERTS is the invariant — identical with and without the six additions — and that
-        holds at either count.
+        outcomes, each of which adds one to both. Re-derived from the GATE'S OWN OUTPUT at this
+        commit: population 65 and census 186, and 175 + 11 = 186 exactly. A count is invalidated by
+        the edit that writes it, and this release wrote eleven of them.
+        AND THE FIRST CORRECTION OF THIS SENTENCE WAS ITSELF WRONG, which round 2 caught. It replaced
+        the stale pair with "181 of 196" — a HAND-SCAN over `artifacts/release-v*/*.yaml`, while the
+        gate globs `artifacts/**/*.yaml` and reports over a different, larger population. The stale
+        pair had been ONE COHERENT MEASUREMENT; the correction substituted a second denominator into
+        a sentence whose subject is what the gate reports. Do not hand-roll a parser to measure what
+        a shipped gate already derives — this programme's own rule, broken while fixing a
+        measurement error.
         AND THE RULE WAS POTENT AGAINST THE SUITE ITSELF, which is the evidence I did not plan for. The new
         slot red an existing fixture, RQ-61-X, that modelled a "green v0.61 shape" with no outcome — accurate
         under the old rules and incomplete once reporting an outcome became part of green. The FIXTURE

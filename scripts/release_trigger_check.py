@@ -110,7 +110,25 @@ def uploads_to_a_release(text: str) -> bool:
     release asset without uploading one. The trigger is a hint; the upload is the
     capability.
     """
-    return "gh release upload" in text
+    for raw in text.splitlines():
+        line = raw.strip()
+        # A COMMENT IS NOT A CAPABILITY. (v0.81 round-2 cold review, finding 5.)
+        # Matching the raw text red a `workflow_dispatch`-only workflow whose only
+        # occurrence was the sentence "we deliberately do NOT use
+        # `gh release upload`" — a gate that reds a file for saying it does not do
+        # the thing.
+        if line.startswith("#"):
+            continue
+        # BOTH VERBS. (v0.81 round-2 cold review, finding 3.) This matched only
+        # `gh release upload`, and the first docstring here claimed "you cannot
+        # produce a release asset without uploading one". That is FALSE and
+        # `release.yml:405` is the counter-example in this very repo:
+        # `gh release create "$VERSION" --title … release-assets/*` attaches every
+        # asset without the word "upload". Swapping one verb therefore evaded the
+        # whole gate and restored the v0.80 state at rc=0.
+        if "gh release upload" in line or "gh release create" in line:
+            return True
+    return False
 
 
 def check(workflows: dict[str, dict], texts: dict[str, str] | None = None) -> list[str]:
@@ -122,7 +140,18 @@ def check(workflows: dict[str, dict], texts: dict[str, str] | None = None) -> li
     if RELEASE_WF not in workflows:
         return [f"REFUSED: {RELEASE_WF} not among the parsed workflows, so "
                 f"reachability cannot be derived at all"]
-    reachable = called_workflows(workflows[RELEASE_WF])
+    # TRANSITIVELY reachable. (v0.81 round-2 cold review, finding 5.) Only DIRECT
+    # callers counted, so an uploader invoked by a workflow that release.yml calls
+    # — a legitimate two-hop shape — red as unreachable. Reachability is a
+    # property of the call GRAPH, not of one edge.
+    reachable: set[str] = set()
+    frontier = [RELEASE_WF]
+    while frontier:
+        cur = frontier.pop()
+        for nxt in called_workflows(workflows.get(cur) or {}):
+            if nxt not in reachable:
+                reachable.add(nxt)
+                frontier.append(nxt)
     findings: list[str] = []
     for name, doc in sorted(workflows.items()):
         if name == RELEASE_WF:
@@ -224,7 +253,6 @@ def self_test() -> int:
 
     # (v0.81 round-1 cold review, findings 4, 5 and 6.) Each of these three
     # evasions left the gate at rc=0 with "0 failures" on the REAL tree.
-    up = {"gh release upload": None}  # marker: texts carry the capability
     TEXT = {"compliance.yml": 'run: gh release upload "$TAG" "$A" --clobber'}
 
     # F5 — the population must survive DELETING the trigger it used to key on.
@@ -250,6 +278,25 @@ def self_test() -> int:
        not _cannot_run({"if": "github.event_name == 'push'"})
        and not _cannot_run({}),
        "an unevaluable expression must not be read as false")
+
+    # (v0.81 round-2 cold review, findings 3 and 5.) The upload-derived population
+    # was evadable by one verb, and it red two honest shapes.
+    ck("R2-3: `gh release create` with assets is in population too",
+       any("DEAD TRIGGER" in x for x in
+           check({RELEASE_WF: rel_bare, "c.yml": {"on": {"workflow_dispatch": {}}}},
+                 {"c.yml": 'run: gh release create "$T" release-assets/*'})),
+       "release.yml attaches assets exactly this way, so keying on `upload` alone "
+       "was evadable by swapping one verb")
+    ck("R2-5 CONTROL: a COMMENT mentioning the command is NOT a capability",
+       check({RELEASE_WF: rel_bare, "c.yml": {"on": {"workflow_dispatch": {}}}},
+             {"c.yml": "# we deliberately do NOT use `gh release upload` here"}) == [],
+       "a gate must not red a file for saying it does not do the thing")
+    ck("R2-5 CONTROL: reachability is TRANSITIVE, not one edge",
+       check({RELEASE_WF: {"jobs": {"a": {"uses": "./.github/workflows/mid.yml"}}},
+              "mid.yml": {"jobs": {"b": {"uses": "./.github/workflows/c.yml"}}},
+              "c.yml": {"on": {"workflow_call": {}}}},
+             {"c.yml": 'run: gh release upload "$T" x'}) == [],
+       "an uploader reached via a workflow release.yml calls is reachable")
 
     # vacuity
     ck("VACUITY: zero workflows is a REFUSAL",
