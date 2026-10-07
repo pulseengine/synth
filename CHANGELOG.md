@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.0] - 2026-10-07
+
+### "Out of population is indistinguishable from compliant"
+
+v0.80 shipped a gate that reds when a `verified-by:`'s leading ALL-CAPS verdict
+contradicts its own `status`/`disposition`. It is potent on real history. It was
+**blind to the strictly worse case** — an artifact writing no verdict at all —
+because R11's failure branch keys on `landed:` being non-empty. The evidence was
+in v0.80's own history: two artifacts reached the release candidate silent, every
+structured gate green, caught by a human re-reading the exit condition. A gate
+that needs an operator to remember it is not a gate.
+
+**The gate this release shipped caught this release.** At the v0.81 cut,
+`loop_conformance_check` step 3 reported *"2/11 artifacts record NO outcome"* —
+RQ-81-SHEXIT and RQ-81-R11CONFLICT, mid-flight in their own PR. Unplanned
+potency on live data, and the first time this class was caught by machine rather
+than by a person.
+
+### What landed
+
+- **RQ-81-SILENT** (#1458 + #1476) — an artifact reports an outcome if it carries
+  any of `verified-by`/`disposition`/`landed`, asserted at the tag rather than per
+  PR, because a `proposed` artifact has no outcome fields by construction and the
+  same rule on every PR reds every planning PR. One level in, `unclassified_lead()`
+  separates "not a verdict" from "unknown verdict word" — a conflation that made
+  `NOT_A_VERDICT` inert — and the census is now read by a gate.
+- **RQ-81-SHEXIT** (#1474) — `merge_gate.py`'s `sh()` discarded every exit code, so
+  a FATAL command returned `""`, indistinguishable from success with no output.
+  Measured before the fix: `branch_currency` returned `(False, 0)` — a verdict —
+  from a `git rev-list` that exited 128. And `base_agrees` could not be `False`,
+  because `""[:8]` is `""` and `str.startswith("")` is always true.
+- **RQ-81-R11CONFLICT** (#1430) — two committed gates instructed opposite actions
+  for one refuted artifact. The v0.77 audit went **8 failures to 0** with R11's
+  rule unchanged. Direction one turned out to be a WINDOW bug: `closed:>={tag}`
+  had no upper bound, the same defect `prior_attribution` patches at the lower edge.
+- **RQ-81-PINSWEEP** (#1457) — the required pin gate got its first test in nine
+  releases; 3 of 6 new tests failed against the pre-fix gate.
+- **RQ-81-COMPLIANCE** (#1453) — `compliance.yml` has run **19 times ever**: one
+  `workflow_dispatch` and 18 `release` events, every one of the 18 for a release a
+  *user* published. GitHub raises no workflow runs for `GITHUB_TOKEN` events, and
+  this repo publishes with it. 129 of 148 releases carry no report, 44
+  consecutively. `release.yml` now calls the workflow; the CLASS is gated.
+- **RQ-81-WIDEFILE4** (#1439) — three candidates became one. The sign loss is an
+  **abs**, not a neg, derived from v0.78's own data: the oracle has 7 positive rows
+  and the failing set was exactly the 6 negatives. Cause still not named; the
+  pool-grow retry stays out and the tripwire stays armed.
+- **RQ-81-JESSDIVERGE3** (#1436) — the gravity-compensation lowering is FAITHFUL
+  instruction-for-instruction. All three named mechanisms refuted. **#1436 itself
+  remains open and unexplained.**
+- **RQ-81-PAGESIZE3** (#1441) — REFUTED. One of the two remedies this plan offered
+  is one the downstream consumer had already asked for in writing not to be
+  shipped. It was built, then reverted.
+- **RQ-81-RUNNERBLAME** (#1451) — REFUTED by its own refuting command.
+- **RQ-81-LADDER3** (#1432) — DEFERRED, with the human action named.
+- **RQ-81-ARCHMODEL** (#1136) — the nineteenth recurring N/A filing.
+
+### Trace graph
+
+`rivet diff` against v0.80.0: **errors +0 / -0**, warnings **+33 / -0**. The 33
+decompose exactly as 11 + 11 + 11 — three per new artifact: an `RQ-NN-NAME` id is
+not commit-trailer shaped, `req-type: process` is outside the schema's enum, and a
+process requirement gated by CI carries no `verifies` link. A constant
+per-artifact cost of the filing convention, not a degradation.
+
 ## [0.80.0] - 2026-10-06
 
 ### "The sentence no gate can read" — and now one class of sentence is read
