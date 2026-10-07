@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+# ci-checks: stdout /([0-9]+) assertions/ >= 9
+# ci-status: wired — `--self-test` runs in the required `claim-check` job and is the
+# POTENCY evidence: it injects each of the three mechanisms this lane refuted, plus a
+# dropped term, and refuses a derived population of zero. The COMPARISON itself cannot be
+# wired and that is a property of the input, not an omission: the module it compares lives
+# in pulseengine/jess (`repro/synth-1436/c.loom.wasm`), so a CI run here would have nothing
+# to compare and would pass VACUOUSLY — the exact shape this gate exists to prevent. The
+# reporter has the module and the hardware and can run the comparison; what can rot in THIS
+# repo is the oracle's own power, so that is what CI asserts.
 """RQ-81-JESSDIVERGE3 (#1436): is the GRAVITY-COMPENSATION addend lowered faithfully?
 
 The reporter's measurement named ONE MISSING OR ZERO-VALUED ADDEND — `+ g_nav`,
@@ -145,9 +154,11 @@ def compare(wat: list, arm: list) -> list[str]:
 def self_test() -> int:
     """NEGATIVE CONTROLS. A comparison that cannot fail is not a comparison."""
     fails = 0
+    ran = 0
 
     def check(name, cond, detail=""):
-        nonlocal fails
+        nonlocal fails, ran
+        ran += 1
         if cond:
             print(f"  ok   {name}")
         else:
@@ -200,7 +211,22 @@ def self_test() -> int:
     check("the ARM matcher IGNORES a mul-add by a different constant",
           arm_triples(arm_sample.replace("0x411c", "0x3a83")) == [])
 
-    print(f"jessdiverge3-self-test: {fails} failure(s)")
+    # The COUNT is printed and floored in the `# ci-checks:` header, not just the
+    # failure total: a body that stopped running early prints "0 failure(s)" and
+    # looks identical to a green suite. That is the #1435 digit-class defect, and
+    # the floor is arithmetic here rather than a `grep -qE '[0-9]+ assertions'`,
+    # which accepts ZERO.
+    #
+    # WHAT IT DOES AND DOES NOT CATCH, measured rather than assumed. Deleting the
+    # last three assertions gives `6 assertions` then REFUSED, rc=1 — that is the
+    # rot this floor is for. It does NOT catch an early `return` placed ABOVE this
+    # line, which skips the guard entirely: the first probe written for it did
+    # exactly that, returned 0, and looked like a passing control. Saying so here
+    # is cheaper than the next reader re-deriving it.
+    print(f"jessdiverge3-self-test: {ran} assertions, {fails} failure(s)")
+    if ran < 9:
+        print(f"REFUSED: only {ran} assertions ran; the suite did not complete")
+        return 1
     return 1 if fails else 0
 
 
