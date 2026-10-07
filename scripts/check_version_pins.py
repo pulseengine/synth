@@ -19,6 +19,7 @@ from __future__ import annotations
 import glob
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 VERSION_RE = re.compile(r'version\s*=\s*"([^"]+)"')
@@ -40,22 +41,43 @@ def workspace_version(root: Path) -> str:
 
 
 def check_path_dep_pins(root: Path, expected: str) -> list[str]:
-    """Every `{ path = "../sibling", version = "X" }` pin must equal `expected`."""
+    """Every intra-workspace `path` dependency carrying a `version` must equal
+    `expected`.
+
+    RQ-81-PINSWEEP (#1457): this was a LINE SCAN requiring `path` and `version`
+    on ONE line, so the equivalent block form was invisible —
+
+        [dependencies.synth-core]
+        path = "../synth-core"
+        version = "0.78.0"        # stale; the scan printed OK
+
+    Measured with a paired control on the v0.80 tree: the block form at a stale
+    version gave 0 errors while the inline equivalent gave 1. Latent there (no
+    crate used the block form), which is why it was cheap to close.
+
+    Now parsed with `tomllib`, so BOTH spellings are the same thing to the gate
+    — the project's own rule against hand-rolling a parser to measure the
+    codebase, applied to the gate that measures the release.
+    """
     errors: list[str] = []
     for path in sorted(glob.glob(str(root / "crates" / "*" / "Cargo.toml"))):
         rel = Path(path).relative_to(root)
-        for n, line in enumerate(Path(path).read_text().splitlines(), 1):
-            # An intra-workspace pin is a single inline table carrying BOTH a
-            # relative `path =` and a `version =`. (Plain `version = "..."` for
-            # the crate's own [package] or for external deps is ignored.)
-            if 'path = "../' in line and "version" in line:
-                m = VERSION_RE.search(line)
-                if m and m.group(1) != expected:
-                    name = line.split("=", 1)[0].strip()
+        try:
+            doc = tomllib.loads(Path(path).read_text())
+        except tomllib.TOMLDecodeError as why:
+            errors.append(f"{rel}: not parseable as TOML ({why}) — a gate that "
+                          f"cannot read a manifest must not pass it")
+            continue
+        for table in ("dependencies", "dev-dependencies", "build-dependencies"):
+            for name, spec in (doc.get(table) or {}).items():
+                if not isinstance(spec, dict):
+                    continue
+                if "path" not in spec or "version" not in spec:
+                    continue
+                if spec["version"] != expected:
                     errors.append(
-                        f"{rel}:{n}: path-dep `{name}` pinned at "
-                        f'"{m.group(1)}" but workspace is "{expected}"'
-                    )
+                        f'{rel}: path-dep `{name}` in [{table}] pinned at '
+                        f'"{spec["version"]}" but workspace is "{expected}"')
     return errors
 
 
@@ -83,21 +105,26 @@ def check_module_bazel(root: Path, expected: str) -> list[str]:
 
 
 def workspace_members(root: Path) -> list[str]:
-    """Crate names from `[workspace] members` — the set `Cargo.lock` must carry."""
-    members: list[str] = []
-    in_members = False
-    for line in (root / "Cargo.toml").read_text().splitlines():
-        stripped = line.strip()
-        if stripped.startswith("members"):
-            in_members = True
-            continue
-        if in_members:
-            if stripped.startswith("]"):
-                break
-            m = re.match(r'"crates/([^"]+)"', stripped)
-            if m:
-                members.append(m.group(1))
-    return members
+    """Crate names from `[workspace] members` — the set `Cargo.lock` must carry.
+
+    RQ-81-PINSWEEP (#1457): this walked lines and required `members` to open a
+    multi-line array, so `members = [...]` on ONE line returned an EMPTY LIST.
+    `check_cargo_lock` then iterated nothing and the gate printed OK over a
+    lockfile whose every entry was wrong. Measured: `members` on one line plus
+    all 19 workspace entries set to `0.1.0` gave rc=0, while the SAME lock
+    damage with `members` multi-line gave rc=1 — so the lock check worked and
+    the members parse was what disabled it.
+
+    A DERIVED POPULATION OF ZERO IS A REFUSAL, NOT A PASS, so the empty case is
+    now raised by the caller rather than silently iterating nothing.
+    """
+    doc = tomllib.loads((root / "Cargo.toml").read_text())
+    members = (doc.get("workspace") or {}).get("members") or []
+    out: list[str] = []
+    for m in members:
+        if isinstance(m, str) and m.startswith("crates/"):
+            out.append(m.split("/", 1)[1])
+    return out
 
 
 def check_cargo_lock(root: Path, expected: str) -> list[str]:
@@ -130,7 +157,16 @@ def check_cargo_lock(root: Path, expected: str) -> list[str]:
                 versions[name] = q.group(1)
                 name = None
     errors: list[str] = []
-    for member in workspace_members(root):
+    members = workspace_members(root)
+    if not members:
+        # RQ-81-PINSWEEP (#1457): with no members this loop asserts NOTHING and
+        # the gate used to print OK. A derived population of zero is a refusal.
+        return [
+            "Cargo.toml: [workspace] members derived EMPTY, so the Cargo.lock "
+            "check would assert nothing at all. That is a parse failure or a "
+            "malformed manifest, not a clean workspace"
+        ]
+    for member in members:
         got = versions.get(member)
         if got is None:
             errors.append(f"Cargo.lock: workspace member `{member}` has no entry")
