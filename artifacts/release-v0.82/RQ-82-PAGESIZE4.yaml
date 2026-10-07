@@ -1,0 +1,52 @@
+artifacts:
+  - id: RQ-82-PAGESIZE4
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "Honour (pagesize 1) end to end — and do NOT relocate the refusal, which the downstream refused in writing"
+    description: >
+      CARRIED, and this artifact exists partly to stop a specific mistake being made a
+      third time.
+
+      TWO REMEDIES ARE OFF THE TABLE, both on recorded evidence. First, RELOCATING THE
+      CLI REFUSAL INTO synth-core: gale answered on #1145 on 2026-09-22 — "please do not
+      spend the effort on relocating the refusal. Refusing in the library closes a door
+      gale wants open" — and RQ-71-PAGELIB's title states the conclusion outright. v0.81
+      BUILT that relocation anyway, found the record only by sweeping for stale citations
+      of the symbol it had moved, and reverted it. Second, a ">= 32 B power of two" PAGE
+      scoping: the vendored suite asserts `(memory 0 (pagesize 32))` INVALID by name, so
+      the only legal non-default page size is 1. gale's ">= 32 B" is the ARMv7-M PMSA
+      REGION granularity the embedder programs, and v0.81's own artifact confused the two
+      before its cold review caught it.
+
+      WHAT IS LEFT IS THE CAPABILITY ITSELF, and gale's sentence is the target: "The win is
+      not byte-exactness. It is getting the declared extent below 64 KiB at all."
+      `(pagesize 1)` is the only spec-legal way to ask for that. SCOPE MEASURED at the v0.80
+      cut: 28 shipped sites, not 233 — `wasm_decoder.rs:118` ignores `page_size_log2` and
+      `memory.size` lowers through a hardcoded `LSR #16`.
+
+      AND ONE MEASUREMENT v0.81 LEFT BEHIND, true wherever the rule lives:
+      `WasmMemory::max_bytes()` has ZERO callers and over-reports identically to
+      `initial_bytes()`, which has nine live call sites. Whichever lane honours the
+      declaration must move BOTH, or it is the twin-check shape again.
+
+      REFUTING COMMAND: `python3 scripts/repro/pagesize_oracle_1441.py` IN A CHECKOUT WITH
+      SUBMODULES — it needs `tests/spec-testsuite`, and a fresh `git worktree` has it
+      uninitialised, which v0.81 misreported as the oracle refusing. If it reports the
+      capability MODE rather than the refusal mode, the capability has landed and this
+      premise is dead. Then `git grep -n -F 'refuse_custom_page_size' -- artifacts/` —
+      READ WHAT COMES BACK before scoping any remedy that moves it.
+    tags:
+      - feature
+      - carried
+      - reach
+      - memory
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      issue: "#1441"
+      verification-track: manual
+      done-when: "manual:2026-12-31 either (pagesize 1) compiles with the declared page size honoured at the decoder, all four memory.size lowering sites and both byte-size accessors, with the CI-wired pagesize oracle flipping to its capability mode and an execution differential over a non-default page size; or the lane states with numbers why not — and in neither case is the refusal relocated into synth-core"

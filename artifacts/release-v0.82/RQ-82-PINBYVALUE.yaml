@@ -1,0 +1,44 @@
+artifacts:
+  - id: RQ-82-PINBYVALUE
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "A float pinned with `in` is unfalsifiable where `-0.0 == 0.0` — and that was the sign-bit row of a sign defect"
+    description: >
+      v0.81's round 2 found a guard whose single most important row could not fail, and the
+      reason generalises to every float-valued pin in the oracle surface.
+
+      THE INSTANCE. Round 1 pinned v0.78's six recorded failing values BY VALUE rather than
+      by count, using `v not in VALS`. IEEE-754 says `-0.0 == 0.0`, so membership was
+      satisfied by `+0.0`: deleting `-0.0` from the fixture left BOTH assertions passing.
+      `-0.0` is the SIGN-BIT row — the one value whose entire content is its sign — on a
+      defect (#1439) that IS a sign error. The row most central to the conclusion was the
+      only one not actually pinned. Fixed by comparing `struct.pack("<f", v)`.
+
+      WHY A LANE: `==` and `in` over floats are the natural way to write such a pin, and
+      they are silently wrong for `-0.0` and silently USELESS for NaN (`nan != nan`, so
+      `nan in [nan]` is False and a NaN row can never be pinned by membership at all). The
+      oracle surface is full of float fixtures — the differentials carry value tables,
+      and several assert over them.
+
+      MEASURE BEFORE FIXING: derive how many float-valued membership or equality pins exist
+      across `scripts/repro/`, and which of them carry a `-0.0` or a NaN row. A pin over
+      `1.0` is fine; the defect is specific to the values where `==` is not identity.
+
+      REFUTING COMMAND: `python3 -c "print(-0.0 == 0.0, float('nan') in [float('nan')])"`
+      and `git grep -n -F ' in VALS' -- scripts/repro/`. If the first prints `False True`
+      the language changed and this is moot; if the second finds no membership pins, the
+      population is gone — and A DERIVED POPULATION OF ZERO IS A REFUSAL, so prove the
+      scanner on the known `vfp_local_pressure_1069_differential.py` case first.
+    tags:
+      - process
+      - oracle
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1439"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the population of float-valued equality or membership pins in scripts/repro/ is DERIVED with a number, every one whose table contains `-0.0` or NaN is converted to a bit-pattern comparison, and each conversion is proven red-first by deleting exactly the row that previously escaped"

@@ -1,0 +1,54 @@
+artifacts:
+  - id: RQ-82-VALUELESSKEY
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "`str(None)` is the four-character string \"None\" — five sites fixed in one release is a CLASS, not five instances"
+    description: >
+      v0.81 fixed this shape FIVE times across TWO gates, in two separate cold-review
+      findings, and never audited the class.
+
+      THE SHAPE. A YAML key written with no value parses to `None`. `str(None)` is
+      `"None"` — four characters, non-empty and TRUTHY. So the idiom
+      `str(fields.get(k, "")).strip()` reads a VALUELESS key as a present value, and the
+      idiom `k in fields` reads it as present too. The two failure directions are
+      opposite and both wrong: the silent-artifact rule counted a valueless `landed:` as
+      "an outcome was reported", while R11 FIRED on it, reporting a landing record that
+      does not exist and — for `disposition:` — reporting the INVENTED value "none" as an
+      illegal disposition.
+
+      MEASURED IN v0.81: round 1 found the first direction in
+      `loop_conformance_check.artifacts_reporting_nothing` and fixed it with
+      `str(fields.get(k) or "")`. Round 2 then found that R11's own twin had been left
+      standing — four more sites in `status_evidence_check.py`. Five sites, two gates, two
+      rounds. Nobody asked how many more there are.
+
+      WHY IT IS WORTH A LANE RATHER THAN A SWEEP: the gate surface reads artifact fields
+      in dozens of places, and a valueless key is INDISTINGUISHABLE from a present one at
+      every site that uses the idiom. It is also LATENT — zero of the live artifacts carry
+      a valueless outcome key — which is exactly why it will not be noticed when it
+      arrives.
+
+      SCOPE IT BY DERIVATION, NOT BY GREP ALONE: `git grep -n 'fields.get('` finds the
+      idiom, but the population that MATTERS is the sites whose result is then tested for
+      truth or membership. Derive that set and fix the class, or state which sites are
+      deliberately tolerant and why.
+
+      REFUTING COMMAND: `git grep -c -F 'str(fields.get(' -- scripts/` and
+      `python3 -c "print(repr(str(None).strip()))"`. If the idiom is gone from the gate
+      surface, or if a shared accessor now normalises it, the premise is dead. Then
+      `python3 -c "import yaml; print(repr(yaml.safe_load('a:\n')['a']))"` — if PyYAML no
+      longer yields None for a valueless key, the mechanism is gone.
+    tags:
+      - process
+      - gate
+      - traceability
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1458"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the population of sites that read an artifact field and then test it for truth or membership is DERIVED and reported with a number, every member either normalises a valueless key or declares itself deliberately tolerant at the site, and a test asserts the normalisation on at least one site per gate — proven red-first by reverting that site"

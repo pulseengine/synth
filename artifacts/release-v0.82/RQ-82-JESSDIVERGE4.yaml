@@ -1,0 +1,58 @@
+artifacts:
+  - id: RQ-82-JESSDIVERGE4
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "The gravity addend is computed from the right slots and still contributes nothing — read the slots' RUNTIME values"
+    description: >
+      CARRIED from v0.78/v0.79/v0.80/v0.81. #1436 is an EXTERNALLY REPORTED defect — the
+      issue's `author.login` is the shared account and its body opens `**[jess]`, so an
+      author filter reads it as internal and is structurally blind.
+
+      WHAT v0.81 SETTLED, and it narrows the hunt rather than ending it: the
+      gravity-compensation lowering is FAITHFUL instruction-for-instruction. The input
+      applies gravity in three parallel `localA + localB * 9.81` terms stored to offsets
+      940, 936, 944, and the ARM contains exactly three matching
+      `vldr/vldr/movw+movt/vmov/vmul/vadd/str` blocks storing to those offsets IN THAT
+      ORDER, with the correct constant and the addend on the correct side of the product.
+      The neighbouring `f32.store offset=932` and `i32.store offset=980` match too, which
+      is what shows the window is ALIGNED rather than coincidentally similar. ABSENT,
+      ZEROED and LANDING-ON-ANOTHER-AXIS are all refuted at that site, by a re-runnable
+      oracle with each mechanism injectable.
+
+      SO THE EXPRESSION IS RIGHT AND AN OPERAND IS WRONG. The multiplicands are read from
+      `[sp,#152]`, `[sp,#208]` and `[sp,#232]`. A static comparison cannot see what a slot
+      HOLDS at run time; the reporter's existing QEMU memtrace plugin can, windowed to
+      those three words. That is the next measurement and it is the whole lane.
+
+      A LIVENESS PASS CAME BACK EMPTY AND THAT IS REPORTED AS SUCH: all six operand slots
+      are both written and read, so "a slot read but never written" is refuted too. The
+      reason it cannot fire is recorded — synth reloads f32 from the frame, so every slot
+      has a writer.
+
+      CONDUCT: rules 1-3 govern this thread. An update LEADS with what changed FOR THEM in
+      a few sentences, and detail only on request. v0.81 did NOT comment, because
+      eliminating mechanisms narrows a search without moving a blocker — rule 4 — and the
+      artifact says so. If this lane produces the slot values, THAT is something for them.
+
+      REFUTING COMMAND: re-read the thread before building anything —
+      `gh issue view 1436 --json comments --jq '.comments[-6:][].body'` — and attribute by
+      BODY PREFIX, never by `author.login`. Then re-run the shipped oracle:
+      `python3 scripts/repro/jessdiverge3_gravity_faithful_1436.py --self-test` and, with
+      the module from pulseengine/jess, `--wat`/`--dis`. If it now reports the lowering
+      DIVERGES, v0.81's refutation was wrong and this artifact must be rewritten before
+      work starts.
+    tags:
+      - bug
+      - carried
+      - external-report
+      - vfp
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1436"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the RUNTIME value of `[sp,#152]`, `[sp,#208]` and `[sp,#232]` at the gravity-compensation site is measured on at least one tick and compared against what the wasm semantics require, naming which operand is wrong and why — or the lane states plainly that it did not obtain them and what it tried; and any comment to the thread LEADS with what changed for the reporter"

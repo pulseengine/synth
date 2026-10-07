@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-82-FIRSTTOKEN
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "The verdict rule reads the FIRST ALL-CAPS TOKEN, so a generic opener in front of a delivery claim leaves both populations"
+    description: >
+      v0.81 NAMED this residual and deliberately did not close it. The naming is the
+      starting point, not the finding.
+
+      THE SHAPE. `verdict_prose_check` classifies a `verified-by` by its leading ALL-CAPS
+      phrase. v0.81 added SIX measured exclusions to `NOT_A_VERDICT` — CLASSIFICATION,
+      TRIAGE, EVERY, ADDED, BYTE, RULE — because a red-on-any-unclassified-lead rule would
+      have red six innocent artifacts on day one. Those exclusions are load-bearing and
+      correct. They also mean one of those words standing in FRONT of a delivery claim
+      leaves the artifact outside BOTH the field-vs-prose comparison AND the escape
+      detector. MEASURED: `unclassified_lead("RULE DELIVERED in full")` is None and
+      `leading_verdict` is None; same for `EVERY ask SHIPPED` and for the pre-existing
+      `THE work is DELIVERED`.
+
+      THE DANGEROUS OPENERS ARE STILL CAUGHT — `NOT LANDED yet` yields `NOT LANDED` — so
+      the hole is exactly the generic-opener shape the exclusions introduced. It is the
+      price v0.81 paid for not redding six honest artifacts, paid knowingly.
+
+      WHAT A FIX LOOKS LIKE, named without being prescribed: read the opening SENTENCE
+      rather than its first token, so a verdict word anywhere in the first sentence puts
+      the artifact in population. That is a WIDER rule than the one v0.81 measured, and
+      the measurement is the lane: derive how many of the live artifacts it would red, and
+      whether each is a real contradiction or an honest opener. A gate people cannot move
+      honestly is a gate they route around (RQ-74-STALEMSG), and that is why v0.81 did not
+      just widen it.
+
+      REFUTING COMMAND:
+      `python3 -c "import sys; sys.path.insert(0,'scripts'); import verdict_prose_check as v; print(v.unclassified_lead('RULE DELIVERED in full'), v.leading_verdict('RULE DELIVERED in full'))"`.
+      If either is non-None the escape is already closed and this premise is dead. Then
+      `python3 scripts/verdict_prose_check.py --census` to re-derive the live population
+      before proposing a wider rule.
+    tags:
+      - process
+      - gate
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1476"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the number of live artifacts a sentence-scoped rule would newly put in population is DERIVED and reported, each one classified as a real contradiction or an honest opener, and either the wider rule ships with its day-one red count at zero or the lane states with numbers why widening is refused"

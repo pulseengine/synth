@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-82-LADDER4
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "The acceptance ladder is eighteen releases stale — reach still has no live number"
+    description: >
+      CARRIED from v0.79/v0.80/v0.81, and the blocker has been the same each time: the
+      corpus the ladder measures is not mounted, and the host that holds it refuses auth.
+
+      WHY IT MATTERS MORE THAN ITS AGE. `docs/status/ACCEPTANCE_LADDER.md` is the single
+      place this project is allowed to cite a reach figure from — CLAUDE.md forbids copying
+      rates into prose, and the compliance envelope requires publishing the acceptance rate
+      as the denominator of every performance claim. A stale ladder means every reach
+      statement is either a citation of an eighteen-release-old measurement or an
+      unsupported one.
+
+      WHAT v0.81 ESTABLISHED, and it is a human action rather than an engineering one: the
+      corpus path is unmounted, `/Volumes/` holds only Data, Macintosh HD and Recovery, and
+      the host refuses auth. ATTEMPTING PASSWORDS STAYS DECLINED. So the lane cannot
+      proceed by effort.
+
+      TWO HONEST PATHS, neither prescribed: name the SPECIFIC human action that unblocks it
+      (which key installed where, or which host mounted) and stop re-deriving the blocker
+      every release; or CHANGE THE MEASUREMENT so it runs on a corpus CI can carry, and say
+      plainly that the rungs are then over a different, smaller population — which makes
+      them incomparable to the v0.63 figures and must be labelled as such rather than
+      presented as a trend. v0.81 recorded the first and the blocker did not move.
+
+      REFUTING COMMAND: `ls /Volumes/` and
+      `head -20 docs/status/ACCEPTANCE_LADDER.md`. If the corpus is mounted, the blocker is
+      gone and this is an ordinary measurement lane. If the ladder's header no longer reads
+      v0.63, someone re-measured and the staleness count must be re-derived rather than
+      carried forward.
+    tags:
+      - reach
+      - carried
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1432"
+      verification-track: manual
+      done-when: "manual:2026-12-31 either the ladder carries a measurement from this release's tree with its date, commit and corpus, or the SPECIFIC human action that would unblock it is named precisely enough to be executed by someone else, with the reach floor explicitly NOT pinned and the reason given"

@@ -1,0 +1,66 @@
+artifacts:
+  - id: RQ-82-COMPLIANCE2
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "Verify the compliance trigger actually fired at v0.81.0, and decide the backlog of releases with no report"
+    description: >
+      v0.81 found that `compliance.yml` had run NINETEEN TIMES EVER — one
+      `workflow_dispatch` and eighteen `release` events, every one of the eighteen for a
+      release a USER published — because GitHub raises no workflow runs for `GITHUB_TOKEN`
+      events and this repo publishes with it. It wired `release.yml` to CALL the workflow
+      and gated the CLASS with `scripts/release_trigger_check.py`.
+
+      THE PART v0.81 COULD NOT DO, and said so rather than loosening its criterion: its
+      done-when requires "a compliance report attached to a release's assets by an
+      automated path again, verified by listing that release's assets", and that evidence
+      can only exist AFTER a release. It recorded a tag-time obligation instead of
+      rewriting the criterion to something satisfiable the same day — the better of the two
+      patterns that release used.
+
+      SO THE FIRST HALF OF THIS LANE IS A VERIFICATION, not a build: list v0.81.0's assets
+      and confirm `synth-v0.81.0-compliance-report.tar.gz` is among them. If it is NOT, the
+      `workflow_call` wiring did not work and the reason is the finding.
+
+      THE SECOND HALF IS A MAINTAINER DECISION, named and not taken: the releases with no
+      report could have one regenerated with `compliance.yml`'s `workflow_dispatch`, one tag
+      at a time. That is a large number of outward-facing writes to already-published
+      release pages, so it is a decision rather than a task. Derive the current count rather
+      than carrying v0.81's figure forward.
+
+      MEASURED AT THE v0.81.0 TAG, which MOVED the defect rather than removing it. The
+      wiring WORKED: `Compliance report / Generate compliance report` RAN on the tag, 7
+      steps, `Resolve tag` green — it had never fired at all before. It then FAILED at step
+      4, so `Upload report to release` SKIPPED, and v0.81.0's release carries 13 assets with
+      NO `synth-v0.81.0-compliance-report.tar.gz`. THE NEW CAUSE IS NAMED AND IS NOT THE OLD
+      ONE: the job runs a single `actions/checkout`, so rivet reports `could not load
+      externals: IO error: external project at ./.rivet/re...` and then every cross-repo
+      `traces-to` link reads as a dangling target (GI-004 `gale:SWREQ-KILN-001`, CC-004
+      `kiln:REQ_FUNC_014`, CM-004, KB-001 and more), which is the #1012 shape: link errors
+      beside unloaded externals mean RESOLUTION NEVER RAN, not that the links are broken.
+      So do NOT re-litigate the trigger; the trigger is fixed. The remaining work is giving
+      that job the externals it needs, or having it decline loudly instead of erroring.
+
+      DO NOT HAND-ATTACH THE TARBALL. Conduct rule 4's logic applies internally: making the
+      oracle reachable is not delivery of the report, and an attached artifact nobody
+      generated is worse than an absent one.
+
+      REFUTING COMMAND:
+      `gh release view v0.81.0 --json assets --jq '[.assets[].name]'` and
+      `gh api --paginate repos/pulseengine/synth/actions/workflows --jq '.workflows[] | select(.path|test("compliance")) | .id'`
+      then the runs for that id. If a report IS attached to v0.81.0, the first half is
+      already satisfied and this lane is only the backlog decision. Paginate: `gh run list`
+      UNDER-reports, and `gh release list --limit 100` stops at 100 on a longer list.
+    tags:
+      - process
+      - release
+      - compliance
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1453"
+      verification-track: manual
+      done-when: "manual:2026-12-31 v0.81.0's assets are LISTED and the presence or absence of its compliance report is reported as derived fact — with the cause named if absent — and the backlog count is re-derived by pagination and put to the maintainer as a decision rather than actioned unasked"

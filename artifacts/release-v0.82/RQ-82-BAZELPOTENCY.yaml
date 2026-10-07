@@ -1,0 +1,48 @@
+artifacts:
+  - id: RQ-82-BAZELPOTENCY
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "One of the nine required contexts has never been negative-controlled: Bazel Build & Proofs"
+    description: >
+      v0.81 ran a gate-potency pass over all nine required contexts and proved EIGHT potent
+      with paired controls — a baseline green, an injected violation that reds with an
+      attributable diagnostic, and a restore. `Bazel Build & Proofs` was recorded UNPROVEN
+      rather than assumed, which is honest and is also a standing gap: it gates the Rocq
+      proof suite, which is the artifact this project's whole trust story rests on.
+
+      WHY IT WAS NOT CONTROLLED, measured rather than excused: Nix is intact on the release
+      machine (2.33.1 after sourcing `nix-daemon.sh` — the `/etc/zshrc` block is wiped
+      periodically by macOS updates) and bazel is on PATH, but the cache is COLD: bazel was
+      downloading its own launcher and `~/.cache/bazel` does not exist. A paired control
+      needs TWO full cold Bazel+Nix+Rocq proof builds, which is not a sensible spend during
+      an active release with a merge ritual running.
+
+      WHAT WOULD SETTLE IT: a control that does not need a full proof build. The cheapest
+      honest shape is a NEGATIVE CONTROL ON ONE PROOF — introduce a `sorry`/`admit` or break
+      one `Qed` in a single `.v` file and confirm the job reds, with the rest of the suite
+      cached. Note the documented hazard: this repo has shipped a "fail on sorry" gate where
+      all twelve `sorry`s carried a self-exempting comment, so the control must be a BROKEN
+      PROOF and not merely an added keyword.
+
+      WARM THE CACHE FIRST, and treat that as part of the lane rather than setup: the gap
+      exists because the control is expensive, so making it cheap IS the deliverable.
+
+      REFUTING COMMAND: `gh api repos/pulseengine/synth/branches/main/protection/required_status_checks/contexts --jq '.[]'`
+      — if `Bazel Build & Proofs` is no longer required, the premise is dead. Then
+      `ls ~/.cache/bazel 2>/dev/null | head -1` and `which nix` after sourcing
+      `/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh`; if the cache is warm the
+      stated cost is wrong and the control should just be run.
+    tags:
+      - process
+      - gate
+      - proofs
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1456"
+      verification-track: manual
+      done-when: "manual:2026-12-31 `Bazel Build & Proofs` is recorded POTENT with a paired control — a broken proof reds the job, the unmodified tree passes it, both with run links — or the lane states with measured build times why the control remains unaffordable and what would make it affordable"

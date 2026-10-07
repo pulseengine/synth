@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-82-NPM
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "The npm package is still many releases behind, and the blocker is a credential outside this repo"
+    description: >
+      CARRIED, and the lane exists to keep a HUMAN ACTION visible rather than to do
+      engineering work.
+
+      WHERE IT STANDS. The npm ASSERTION exists and works: the retro conformance check
+      derives `npm live` against the registry and reports a FAILURE when the published
+      version does not resolve, beside `crates live` passing. So the gate is not the
+      problem. `Release NPM` fails at its "Preflight — verify npm auth" step with the
+      publish steps SKIPPED — which means the preflight is doing its job — and the token
+      needs rotating to a classic Automation token. That is a credential nobody inside this
+      repository can rotate.
+
+      WHY IT IS NOT A CLOSURE. #1460's title has two clauses and only one shipped, so
+      RQ-80-NPM carries `issue-scope: outlives`: the artifact's own scope landed, the issue
+      asks the wider question. That is the field's documented purpose and it is why the
+      closure gate is quiet about it rather than demanding a reopening.
+
+      WHAT THIS LANE OWES: re-derive the gap rather than restating it, and state the
+      specific action precisely enough for someone else to execute — which secret, in which
+      settings, of what type. A carried blocker that is re-described each release without
+      its action named is how a thing stays open for a year.
+
+      REFUTING COMMAND:
+      `curl -s -H "User-Agent: synth-release/0.82" https://registry.npmjs.org/@pulseengine%2fsynth | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['dist-tags'])"`
+      and `gh run list --workflow 'Release NPM' --limit 3`. If the registry's latest matches
+      the shipped workspace version, the gap closed and this premise is dead. NOTE: a 403
+      from crates.io or a missing User-Agent is NOT evidence of "not published" — the
+      request shape matters.
+    tags:
+      - process
+      - release
+      - carried
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1460"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the registry gap is RE-DERIVED against the live registry with the request shape stated, and the unblocking action is named as a specific secret of a specific type in a specific place — or the package resolves at the shipped version and the clause is satisfied; `issue-scope: outlives` retained either way until both clauses hold"

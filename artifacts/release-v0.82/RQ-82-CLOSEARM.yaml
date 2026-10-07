@@ -1,0 +1,57 @@
+artifacts:
+  - id: RQ-82-CLOSEARM
+    type: system-req
+    release: v0.82
+    status: proposed
+    title: "Satisfying one gate ARMED another: a claiming status is both R3's remedy and the closer's permission, and nothing reads the conjunction"
+    description: >
+      v0.81 nearly closed an external reporter's live defect by machine, and neither gate
+      involved was wrong.
+
+      THE MECHANISM, from v0.81's own history. Two artifacts delivered a REFUTATION and a
+      NARROWING, so their `verified-by` says the defect is unresolved. They were set
+      `status: implemented` for exactly one reason: R3 reds a `proposed` status whose
+      done-when evidence EXISTS ("the status under-reports shipped work"). But
+      `authorised_close_set` reads a CLAIMING status as "this release may close the issue".
+      So satisfying R3 silently entitled the tag to close #1436 — whose own artifact says
+      it "REMAINS OPEN AND UNEXPLAINED" — and #1439, whose cause is not named.
+
+      IT WAS CAUGHT BY AN OPERATOR RUNNING THE CLOSURE GATE BEFORE TAGGING, not by a gate.
+      That is the same shape v0.81's own theme names one level up: not a case outside a
+      rule's population, but a case that SATISFIES TWO RULES WHOSE CONJUNCTION IS FALSE.
+      The remedy shipped (`issue-scope: outlives` on both) is correct and manual; nothing
+      stops the next operator from satisfying R3 the same way and not noticing.
+
+      WHAT A FIX LOOKS LIKE, named without being prescribed: the contradiction is derivable
+      from two fields the gates already read. An artifact whose `verified-by` opens with an
+      INCOMPLETE verdict (the existing `INCOMPLETE` set) while its status is CLAIMING and
+      it carries no `issue-scope: outlives` is asserting both "the outcome holds" and "it
+      does not" — about the ISSUE rather than about the scope. R11 already reds the
+      disposition form of that contradiction; this is the `verified-by`-prose form, and
+      v0.80's SENTENCE lane built the machinery to read it.
+
+      DO NOT fix this by loosening R3. R3 is right: a `proposed` status over evidence that
+      exists IS an under-report. The defect is that its only remedy is also a permission.
+
+      REFUTING COMMAND: `python3 scripts/issue_closure_check.py --release v0.81.0
+      --since-tag v0.81.0 --allow-unclosed` and
+      `git grep -n -F 'issue-scope: outlives' -- artifacts/release-v0.81/`. If the v0.81
+      artifacts no longer carry `outlives`, or the authorised set no longer contains an
+      issue whose artifact disclaims progress, the instance is gone — re-derive the shape
+      before building on it. Then
+      `python3 -c "import sys; sys.path.insert(0,'scripts'); import status_evidence_check as s; print(sorted(s.INCOMPLETE))"`
+      — if an INCOMPLETE verdict beside a claiming status is ALREADY red, this premise is dead.
+    tags:
+      - process
+      - gate
+      - release
+      - traceability
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1484"
+      verification-track: manual
+      done-when: "manual:2026-12-31 an artifact that claims its outcome holds while its own `verified-by` opens with an INCOMPLETE verdict and declares no `issue-scope: outlives` is RED, proven red-first against v0.81's own two artifacts with the `outlives` field removed, and proven NOT to red either of them as shipped; R3's rule unchanged; and the live population measured before the rule lands so a day-one red count is known rather than discovered"
