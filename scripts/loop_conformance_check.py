@@ -297,6 +297,37 @@ def find_filed_steps12_decision(
     return stale
 
 
+def artifacts_reporting_nothing(docs) -> tuple[int, list[str]]:
+    """(total, ids) for release artifacts that record NO OUTCOME AT ALL.
+
+    RQ-81-SILENT (#1458 + #1476). An artifact reports an outcome if it carries
+    ANY of `verified-by`, `disposition` or `landed`. One that carries none of
+    them is OUT OF THE POPULATION of every rule that reads those fields, and
+    out of population is indistinguishable from compliant.
+
+    R11 is the rule this exists beside, and R11 cannot see this case BY
+    CONSTRUCTION: its failure branch is `elif landed_txt and status not in
+    CLAIMING and not disp`, which requires `landed:` to be NON-EMPTY. So it
+    fires on "you recorded a landing but did not say why you are not claiming"
+    and stays silent on "you recorded nothing" — strictly LESS information for
+    no finding.
+
+    MEASURED, and this is the red-first evidence rather than a planted fixture:
+    at 5ad2662f (main immediately before the v0.80 record PR) this returns
+    (11, ['RQ-80-PAGESIZE2', 'RQ-80-WIDEFILE3']) — two `must` artifacts silent
+    with every structured gate green. At 6950aa99 and after it returns (11, []).
+    """
+    total = 0
+    silent: list[str] = []
+    for _path, doc in docs:
+        for art in (doc or {}).get("artifacts") or []:
+            total += 1
+            fields = art.get("fields") or {}
+            if not ({"verified-by", "disposition", "landed"} & set(fields)):
+                silent.append(str(art.get("id") or "<no id>"))
+    return total, silent
+
+
 def artifacts_missing_done_when(
     docs: list[tuple[str, object]],
 ) -> tuple[int, list[str], int, int]:
@@ -541,6 +572,86 @@ class Check:
                 f"{evaluable} mechanically evaluable (contains:/file:), "
                 f"{manual} manual: (declared only; R3 cannot fire on these)",
             )
+
+        # RQ-81-SILENT (#1458 + #1476): did this release SHIP an artifact that
+        # reports nothing? R11 cannot ask that — see artifacts_reporting_nothing.
+        #
+        # WHY THIS LIVES AT THE TAG AND NOT IN status_evidence_check, which is
+        # the design question and was settled by MEASUREMENT rather than taste:
+        # a `proposed` artifact has no outcome fields BY CONSTRUCTION, so the
+        # same rule run on every PR reds every PLANNING PR. Measured on the v0.81
+        # planning PR the moment it landed: 11 of 11 artifacts silent, all of them
+        # legitimately so. The answerable question is not "is an artifact silent"
+        # but "did this release SHIP one", and only the cut can answer it.
+        #
+        # The zero-artifact case is already refused above (the #1064 shape), so a
+        # DERIVED_PASS here cannot be vacuous for want of a population.
+        _silent_total, _silent = artifacts_reporting_nothing(docs)
+        if _silent:
+            self.add(
+                "3",
+                "reported outcome",
+                DERIVED_FAIL,
+                f"{len(_silent)}/{_silent_total} artifacts record NO outcome — no "
+                f"`verified-by`, no `disposition`, no `landed`: "
+                f"{', '.join(_silent[:5])}"
+                + ("..." if len(_silent) > 5 else "")
+                + ". R11 is satisfied by these because its branch requires a "
+                "non-empty `landed:`; out of population is not compliance. Record "
+                "the outcome, or say why there is none (#1458)",
+            )
+        elif _silent_total:
+            self.add(
+                "3",
+                "reported outcome",
+                DERIVED_PASS,
+                f"{_silent_total}/{_silent_total} artifacts record an outcome "
+                "(verified-by, disposition or landed) — none is silent",
+            )
+
+        # RQ-81-SILENT (#1476), the second half of the same subject: a verdict
+        # that LOOKS like a verdict and that no set classifies LEAVES THE
+        # POPULATION of verdict_prose_check rather than failing it. The sets are
+        # IMPORTED from the shipped module, never mirrored — a second copy is the
+        # drift the North Star forbids, and this check exists because the first
+        # copy already had a hole.
+        _unclassified = []
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import verdict_prose_check as _vpc  # noqa: PLC0415
+            for _p, _doc in docs:
+                for _a in (_doc or {}).get("artifacts") or []:
+                    _vb = (_a.get("fields") or {}).get("verified-by")
+                    if isinstance(_vb, str) and _vb.strip():
+                        _u = _vpc.unclassified_lead(_vb)
+                        if _u:
+                            _unclassified.append(f"{_a.get('id')}:{_u}")
+        except Exception as _why:  # the import failing is NOT a pass
+            self.add("3", "verdict classified", NOT_DERIVED,
+                     f"verdict_prose_check unavailable ({_why}) — cannot tell a "
+                     "classified verdict from an escape")
+        else:
+            if _unclassified:
+                self.add(
+                    "3",
+                    "verdict classified",
+                    DERIVED_FAIL,
+                    f"{len(_unclassified)} artifact(s) open with a verdict-SHAPED "
+                    f"lead that no set classifies, so verdict_prose_check never "
+                    f"compares them against their own fields: "
+                    f"{', '.join(_unclassified[:4])}"
+                    + ("..." if len(_unclassified) > 4 else "")
+                    + ". Either use a classified verdict, or add the opening to "
+                    "NOT_A_VERDICT as a MEASURED exclusion (#1476)",
+                )
+            else:
+                self.add(
+                    "3",
+                    "verdict classified",
+                    DERIVED_PASS,
+                    "every `verified-by` opening is either a classified verdict "
+                    "or a declared non-verdict — no silent escapes",
+                )
 
         ci = tree_read(self.ref, ".github/workflows/ci.yml") or ""
         if tree_has(self.ref, "scripts/status_evidence_check.py") and "status_evidence_check.py" in ci:

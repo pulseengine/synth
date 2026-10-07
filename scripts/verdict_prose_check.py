@@ -72,7 +72,19 @@ INCOMPLETE = {"PARTIAL", "PENDING", "NOT DELIVERED", "DEFERRED", "BLOCKED",
 # now and produce a false positive the first time such prose led a non-claiming
 # artifact. Re-run --census before adding to either set.
 NOT_A_VERDICT = {"FULL", "DONE-WHEN", "RED-FIRST", "THE", "BOTH", "MEASURED",
-                 "ORACLE", "CHARACTERIZATION", "DECIDED", "ENUMERATION"}
+                 "ORACLE", "CHARACTERIZATION", "DECIDED", "ENUMERATION",
+                 # RQ-81-SILENT (#1476). Added as MEASURED EXCLUSIONS when
+                 # `unclassified_lead` made this set load-bearing: these are the
+                 # SIX openings that the LEAD regex catches on the live tree and
+                 # that are not verdicts about the work. Derived, not guessed —
+                 # over 175 artifacts carrying `verified-by`, these are exactly
+                 # the unclassified leads, one occurrence each, all in v0.65..v0.77.
+                 # Without them a red-on-unclassified gate would red six innocent
+                 # artifacts on day one, which is the RQ-74-STALEMSG trap: a gate
+                 # nobody can move honestly is a gate they route around.
+                 # The DANGEROUS escapes are deliberately NOT here, so they red:
+                 # NOT LANDED, DONE, NOT-DELIVERED, CLOSED.
+                 "CLASSIFICATION", "TRIAGE", "EVERY", "ADDED", "BYTE", "RULE"}
 # See THE CARVE-OUT above (#1430).
 LEGAL_BESIDE_CLAIMING = {"REFUTED"}
 
@@ -94,6 +106,41 @@ def leading_verdict(vb):
     if first in COMPLETE or first in INCOMPLETE:
         return first
     return None
+
+
+def unclassified_lead(vb):
+    """The leading ALL-CAPS run when it LOOKS LIKE A VERDICT but no set
+    classifies it — the #1476 hole, made nameable.
+
+    `leading_verdict` returns None for TWO different situations and that
+    conflation IS the defect: "this opening is not a verdict about the work"
+    (correct, nothing to check) and "this verdict word is not in any set"
+    (an ESCAPE — out of population, and out of population is
+    indistinguishable from compliant). Measured escapes on the live sets:
+    `NOT LANDED`, `DONE`, `NOT-DELIVERED`, `CLOSED`. `NOT LANDED` is the
+    sharpest, because excluding a bare leading `NOT` means `NOT` + any
+    COMPLETE word is unclassified, and that consequence was written down
+    nowhere.
+
+    NOTE WHAT THIS DOES TO `NOT_A_VERDICT`. Before this function the set was
+    INERT: every member was already outside COMPLETE u INCOMPLETE, so its
+    branch was always followed by a path returning None anyway, and deleting
+    it changed no verdict and passed every unit test. Here it becomes
+    LOAD-BEARING — it is the list that separates a deliberate non-verdict
+    opening from an escape. The documented intent and the behaviour now agree.
+    """
+    m = LEAD.match(vb.strip())
+    if not m:
+        return None
+    phrase = " ".join(m.group(1).split())
+    if phrase in COMPLETE or phrase in INCOMPLETE:
+        return None
+    first = phrase.split()[0]
+    if first in COMPLETE or first in INCOMPLETE:
+        return None
+    if first in NOT_A_VERDICT:
+        return None
+    return phrase
 
 
 def artifacts(root="."):

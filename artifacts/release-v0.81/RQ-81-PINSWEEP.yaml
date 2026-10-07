@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-81-PINSWEEP
     type: system-req
     release: v0.81
-    status: proposed
+    status: implemented
     title: "The pre-tag version pin sweep is blind to a split-line path-dep pin and to a single-line members list"
     description: >
       Two blind spots in `scripts/check_version_pins.py`, the REQUIRED pre-tag gate whose whole
@@ -53,4 +53,35 @@ artifacts:
       priority: should
       issue: "#1457"
       verification-track: manual
-      done-when: "manual:2026-11-30 check_version_pins.py reads Cargo.toml with a real TOML parser rather than a line scan, so a split-line path-dep pin and a single-line members list are both seen — proven red-first by planting each form stale and showing the gate fails, with the pre-fix pass recorded — an EMPTY member set is a refusal rather than an OK, and scripts/test_check_version_pins.py EXISTS and is CI-wired, each of its assertions proven non-vacuous by mutating a copy"
+      done-when: "contains:scripts/test_check_version_pins.py:a derived population of"
+      verified-by: >-
+        DELIVERED. Both blind spots are closed by parsing TOML instead of lines, the REQUIRED gate that had
+        no test for nine releases now has one, and the empty member set is a refusal rather than an OK.
+        RED-FIRST, AND THE RED IS THE POINT. `scripts/test_check_version_pins.py` was written BEFORE the fix
+        and run against the pre-fix gate: THREE of its six tests FAILED, each printing the gate's own
+        `OK: path-dep pins + MODULE.bazel + Cargo.lock + npm/package.json all at 0.80.0` over real damage —
+        a stale `[dependencies.X]` block pin, a one-line `members` list beside every lock entry at `0.1.0`,
+        and an empty member set. The two POSITIVE CONTROLS passed throughout (a consistent tree is green, a
+        stale INLINE pin reds), so the harness demonstrably produces both verdicts and the three failures are
+        about the gate rather than the fixture.
+        THE PAIRED CONTROL THAT LOCATES THE DEFECT, and it is why the members parse and not the lock check is
+        named: one-line `members` with all entries at `0.1.0` gave rc=0, while THE SAME LOCK DAMAGE with
+        `members` multi-line gave rc=1. The lock check works; the members parse disabled it. Both are
+        asserted, so neither can regress silently.
+        THE FIX IS THE PROJECT'S OWN RULE APPLIED TO THE GATE THAT MEASURES THE RELEASE: do not hand-roll a
+        parser to measure the codebase. `tomllib` is stdlib on this MSRV, reads the inline and block forms as
+        the same thing, and reads `members` whether it is written on one line or twenty.
+        NO FALSE POSITIVES INTRODUCED, verified rather than hoped: the pre-fix gate and the post-fix gate were
+        both run against THE SAME real tree and both return rc=0 with the same summary line. The gate's own
+        `workspace_members()` returns 19, identical to a `tomllib` read of the same file, and path-dep errors
+        are 0. The change adds detection without changing any verdict on the shipping tree.
+        BOTH BLIND SPOTS WERE LATENT, NOT LIVE, AND THAT IS WHY THIS WAS CHEAP: measured at the v0.80 cut,
+        `members` was multi-line and no crate used the block form, so all 27 pins were visible and v0.80's own
+        bump was genuinely checked. Fixing a latent hole costs a test; fixing it after it fires costs a tag.
+        WIRED WHERE IT WILL BE READ: the test runs in the `pin-sweep` job immediately after the gate it tests,
+        so a future rewrite of either one cannot pass without the other.
+        A NOTE ON WHAT IS NOT CLAIMED: the parse is now authoritative for the four surfaces the gate already
+        covered (path-dep pins, MODULE.bazel, Cargo.lock, npm/package.json). `docs/status/FEATURE_MATRIX.md`
+        also carries the workspace version and is NOT in this gate — it is GENERATED and staleness-gated by
+        claim_check instead, which is the right owner, and saying so here keeps the next reader from assuming
+        this gate covers every version surface in the tree.

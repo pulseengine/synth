@@ -24,21 +24,30 @@ on attestations alone.
 Stdlib unittest only:  python3 scripts/test_loop_conformance_check.py
 """
 
+import os
 import pathlib
 import sys
 import unittest
+
+import yaml
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import loop_conformance_check as lcc  # noqa: E402
 
 
-def artifact(aid, tags=(), issue="", done_when="ok", release=None):
+def artifact(aid, tags=(), issue="", done_when="ok", release=None, verified_by=None):
+    """`verified_by` exists because RQ-81-SILENT made "reports an outcome" part
+    of a green release shape. A fixture that models a GREEN release must now
+    carry one of verified-by/disposition/landed; fixtures that model a FAILING
+    shape may stay silent, and several deliberately do."""
     fields = {}
     if issue:
         fields["issue"] = issue
     if done_when is not None:
         fields["done-when"] = done_when
+    if verified_by is not None:
+        fields["verified-by"] = verified_by
     a = {"id": aid, "tags": list(tags), "fields": fields, "status": "proposed"}
     if release is not None:
         a["release"] = release
@@ -368,7 +377,11 @@ class ReleaseShapeReplay(unittest.TestCase):
             "scripts/oracle_wiring_check.py": "#",
             "scripts/mcdc_gate.py": "BRANCH_POPULATION = {}",
         }
-        docs = [("artifacts/release-v0.61/RQ-61-X.yaml", {"artifacts": [artifact("RQ-61-X")]})]
+        # RQ-81-SILENT: a GREEN shape now has to report an outcome. This fixture
+        # was accurate under the old rules and became incomplete when the rule
+        # tightened — the fixture changed, not the rule.
+        docs = [("artifacts/release-v0.61/RQ-61-X.yaml",
+                 {"artifacts": [artifact("RQ-61-X", verified_by="DELIVERED. fixture")]})]
         self.run_steps_3_4_5(c, files, docs)
         self.assertEqual([f for f in c.findings if f[2] in lcc.FAILING], [])
 
@@ -573,6 +586,87 @@ class Step7PriorReleaseBar(unittest.TestCase):
         self.assertTrue(seven)
         self.assertEqual(seven[0][2], lcc.ATTESTED)
         self.assertIn("no", seven[0][3].lower())
+
+
+class Step3ReportedOutcome(unittest.TestCase):
+    """RQ-81-SILENT (#1458 + #1476). OUT OF POPULATION IS INDISTINGUISHABLE FROM
+    COMPLIANT: an artifact recording NO outcome is invisible to every rule that
+    reads `verified-by`/`disposition`/`landed`, and R11 cannot see it because its
+    branch requires a non-empty `landed:`.
+
+    The red-first evidence is REAL HISTORY, not a planted fixture: at 5ad2662f
+    (main immediately before the v0.80 record PR) two `must` artifacts were silent
+    with every structured gate green; at 6950aa99 they are not. Both are asserted
+    below and the test SKIPS LOUDLY if the commits are unreachable rather than
+    passing vacuously.
+    """
+
+    def _docs_at(self, ref, rid):
+        rc, _ = lcc.git("rev-parse", "--verify", "-q", f"{ref}^{{commit}}")
+        if rc != 0:
+            return None
+        docs = []
+        for path in lcc.tree_ls(ref, f"artifacts/release-{rid}/"):
+            name = os.path.basename(path)
+            if name in ("_release.yaml", "_release.yml"):
+                continue
+            if not name.endswith((".yaml", ".yml")):
+                continue
+            docs.append((path, yaml.safe_load(lcc.tree_read(ref, path) or "")))
+        return docs
+
+    def test_the_pure_helper_names_the_silent_ids(self):
+        docs = [
+            ("a.yaml", {"artifacts": [{"id": "RQ-X-SPEAKS",
+                                       "fields": {"verified-by": "DELIVERED. x"}}]}),
+            ("b.yaml", {"artifacts": [{"id": "RQ-X-DISPOSED",
+                                       "fields": {"disposition": "deferred"}}]}),
+            ("c.yaml", {"artifacts": [{"id": "RQ-X-LANDED",
+                                       "fields": {"landed": "#1"}}]}),
+            ("d.yaml", {"artifacts": [{"id": "RQ-X-SILENT",
+                                       "fields": {"issue": "#9", "priority": "must"}}]}),
+        ]
+        total, silent = lcc.artifacts_reporting_nothing(docs)
+        self.assertEqual(total, 4)
+        self.assertEqual(silent, ["RQ-X-SILENT"],
+                         "any ONE of verified-by/disposition/landed counts as "
+                         "reporting; only the artifact with none of them is silent")
+
+    def test_an_artifact_with_no_fields_key_at_all_is_silent(self):
+        total, silent = lcc.artifacts_reporting_nothing(
+            [("a.yaml", {"artifacts": [{"id": "RQ-X-NOFIELDS"}]})])
+        self.assertEqual((total, silent), (1, ["RQ-X-NOFIELDS"]),
+                         "a missing `fields` map must not crash and must not "
+                         "read as compliant")
+
+    def test_empty_population_is_not_a_pass(self):
+        total, silent = lcc.artifacts_reporting_nothing([])
+        self.assertEqual((total, silent), (0, []))
+        # step_3 refuses total == 0 ABOVE this slot (the #1064 zero-artifact
+        # shape), which is what stops a DERIVED_PASS here being vacuous. This
+        # asserts the helper reports the zero rather than inventing a pass.
+
+    def test_red_first_on_real_history_5ad2662f(self):
+        docs = self._docs_at("5ad2662f", "v0.80")
+        if docs is None:
+            self.skipTest("5ad2662f unreachable (shallow clone) — the red-first "
+                          "anchor cannot be asserted, skipping LOUDLY rather "
+                          "than passing")
+        total, silent = lcc.artifacts_reporting_nothing(docs)
+        self.assertEqual(total, 11)
+        self.assertEqual(sorted(silent), ["RQ-80-PAGESIZE2", "RQ-80-WIDEFILE3"],
+                         "the two `must` artifacts that reached the v0.80 "
+                         "candidate silent while every structured gate was green")
+
+    def test_green_after_the_record_landed_6950aa99(self):
+        docs = self._docs_at("6950aa99", "v0.80")
+        if docs is None:
+            self.skipTest("6950aa99 unreachable (shallow clone) — skipping LOUDLY")
+        total, silent = lcc.artifacts_reporting_nothing(docs)
+        self.assertEqual((total, silent), (11, []),
+                         "the record PR gave both artifacts a disposition and a "
+                         "verified-by, so the rule must go green on the same tree "
+                         "it reds one commit earlier")
 
 
 class Step8NpmLive(unittest.TestCase):

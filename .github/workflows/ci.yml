@@ -242,6 +242,15 @@ jobs:
       # v0.7.0-class desync that breaks release.yml + publish at tag-push time.
       - name: Check intra-workspace version pins
         run: python3 scripts/check_version_pins.py
+      # RQ-81-PINSWEEP (#1457): the gate above had NO TEST for nine releases
+      # while standing between a desynced pin and a tag, with two recorded
+      # incidents behind it (#145 sank the v0.7.0 tag; #924 found a Cargo.lock
+      # holding zero entries at the new version AFTER a bump). Two blind spots
+      # were measured with paired controls and are closed by parsing TOML
+      # instead of lines; these tests are the red-first evidence, and three of
+      # them FAIL against the pre-fix gate.
+      - name: Version-pin sweep test — a block-form pin and a one-line members list are both SEEN (RQ-81-PINSWEEP)
+        run: python3 scripts/test_check_version_pins.py
       - uses: dtolnay/rust-toolchain@stable
       # #924: the OTHER lockfile failure. `check_version_pins.py` above asserts
       # every workspace member is in Cargo.lock at the workspace version — that
