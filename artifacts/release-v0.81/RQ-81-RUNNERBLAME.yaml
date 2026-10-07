@@ -1,0 +1,51 @@
+artifacts:
+  - id: RQ-81-RUNNERBLAME
+    type: system-req
+    release: v0.81
+    status: proposed
+    title: "A REQUIRED check reddened by a runner that never ran a step is indistinguishable from a content failure"
+    description: >
+      A self-hosted runner failed every job it picked up with ZERO steps recorded, and reddened
+      the REQUIRED `Rivet Validation` check on a PR whose content was clean. The signature is
+      unambiguous once you look for it and invisible if you do not: a passing `Rivet Validation`
+      takes ~16 seconds and records 11 steps; the failing one burned 10 minutes and recorded NONE,
+      so it never reached the rivet commands at all. The failure is the runner, not the diff.
+
+      THE SCOPE IS SYNTH'S SIDE OF IT, DELIBERATELY. This lane does NOT ask infra to route around
+      a runner, does not disable a required check, and does not retarget one — retargeting a
+      REQUIRED check is recorded as NOT SAFE. The maintainer's recorded non-action on the
+      neighbouring runner-health issue binds by analogy: silencing a detector is not fixing a
+      fault. What this lane owes is ATTRIBUTION — the merge ritual must be able to say "this red
+      is the runner" with evidence, rather than an operator reasoning it out each time from a
+      duration and a hunch.
+
+      WHAT THAT MEANS CONCRETELY: `steps == 0` on a job whose sibling runs on other PRs record a
+      consistent step count is derivable from the Actions API, and the merge ritual already reads
+      check runs by name and derives run ids from `details_url` (it cannot trust
+      `gh run list --commit SHA`). A ritual that reports `RUNNER-SUSPECT <job> steps=0 runner=<name>
+      (siblings record N)` beside its CHECK3 verdict turns a recurring half-hour of manual
+      forensics into a line of output — and, importantly, does NOT auto-merge past it. The red
+      stays red; what changes is that the operator is told where to look.
+
+      THE FAILURE MODE TO AVOID IS THE OBVIOUS ONE: a rule that treats `steps=0` as benign would
+      let a genuinely broken job through. The verdict is ADVISORY DIAGNOSIS, never a merge
+      permission, and the lane must demonstrate that it does not relax CHECK3.
+
+      REFUTING COMMAND: pick a recent REQUIRED check failure and ask the API for its steps —
+      `gh api repos/pulseengine/synth/actions/runs/<id>/jobs --jq '[.jobs[] | {name, conclusion,
+      runner_name, steps: (.steps|length)}]'`. If every failing job records a non-zero step count,
+      the signature is absent from current history and the lane must say so rather than building a
+      detector for a shape it cannot demonstrate.
+    tags:
+      - process
+      - ci
+      - gate
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1451"
+      verification-track: manual
+      done-when: "manual:2026-11-30 the merge ritual reports a RUNNER-SUSPECT diagnosis for a failing required job that recorded zero steps, naming the runner and the sibling step count, demonstrated against a real historical run; the diagnosis is ADVISORY and CHECK3 is proven UNRELAXED by showing a zero-step red still blocks the merge; no required check is retargeted or disabled and no infra change is requested"

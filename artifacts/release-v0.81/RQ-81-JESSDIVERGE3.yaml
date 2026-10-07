@@ -1,0 +1,76 @@
+artifacts:
+  - id: RQ-81-JESSDIVERGE3
+    type: system-req
+    release: v0.81
+    status: proposed
+    title: "The translational sub-vector: the gravity-compensation addend contributes nothing — find where it is absent, zeroed, or on the wrong axis"
+    description: >
+      CARRIED, and the mechanism has been wrong TWICE — first "an identity rotation", then
+      "a lagged or stale attitude read" — both caught by MEASUREMENT rather than review, the
+      second by the reporter's own QEMU TCG memory tracer. THAT HISTORY IS THE REASON THIS
+      ARTIFACT'S REFUTING COMMAND MUST BE RUN FIRST. Do not re-adopt either mechanism.
+
+      WHERE IT STANDS. The persistent quaternion at wasm offset 0xac18 is BIT-IDENTICAL
+      between ARM and wasmtime at ticks 1, 2, 3, 15 and 16, and over an extended 1024-tick
+      run. The attitude STATE agrees across every tick boundary; only what is computed FROM
+      it diverges. SIX fields differ in the return area and ALL SIX disagree in SIGN, over
+      exactly the translational sub-vector (pos-n/e/d, vel-n/e/d). What AGREES is exactly the
+      quaternion, the gyro passthrough and the innovation. Classified rather than counted:
+      744 masked (ARM holds the harness's 0xdeadbeef paint where wasmtime zero-inits — neither
+      wrote them, and counting them would be a vacuous positive), 0 OMITTED STORES (the
+      lowering is not dropping stores; it computes different values), 11 ULP-close, 217
+      divergent. The fit `vel-d(n)/(n*g*dt)` = 1.0000..1.0003 over sixteen ticks says ARM's
+      vel-d is UNCOMPENSATED GRAVITY, and at 64x the horizon the ratio reaches 1.0086 with the
+      estimator believing it is descending at 10.1 m/s having fallen 5.18 m, against the free-fall
+      integral 1/2*g*t^2 = 5.14 m.
+
+      THE SIGN PATTERN IS THE SIGNATURE, NOT THE MECHANISM, and the distinction binds this lane.
+      The reporter explicitly DECLINED "therefore the sign of the rotation, or of the gravity
+      subtraction, is wrong", on the ground that THE MAGNITUDES DIFFER TOO, so it is not a pure
+      inversion. What they DO name is ONE MISSING OR ZERO-VALUED ADDEND — exactly what the
+      free-fall integral predicts. Whether the addend is ABSENT, ZEROED, or LANDING ON ANOTHER
+      AXIS needs synth's disassembly, and a lane that goes looking for a flipped sign bit is
+      looking for the wrong thing. v0.80's own artifact made this mistake in its TITLE and
+      `done-when` and was corrected by its cold review.
+
+      WHERE TO LOOK, and v0.80 derived this so v0.81 does not have to. The link base is
+      D = +0x2e4, so `linked_addr = cascade.o .text offset + 0x2e4`, derived by requiring all
+      nine of the reporter's pcs to land on instructions whose KIND matches their stated role
+      (6 reads must be loads, 3 writes must be stores) — 285 offsets land on instructions and
+      the kind filter leaves exactly ONE — and confirmed independently by the operands
+      (`movw r12, #0xac10`/`#0xac14`/`#0xac18` then `ldr.w r3, [r11, r12]`). All nine pcs fall
+      inside `ekf@0.10.0#estimate`. The 208-word run 0xac9c-0xafd8 is read by pcs
+      0x2250/0x2274/0x2298 -> .text+0x1f6c/0x1f90/0x1fb4. Read those three sites against the
+      reporter's traced values.
+
+      ELIMINATED, and not to be re-opened without new evidence: the return-ABI class (#1450),
+      the VFP frame-slot class (byte-level 132/132, self-validating), and the lagged attitude.
+      NOT SUPPORTED but NOT eliminated: caller-saved S-register clobber — the analyser's
+      POSITIVE CONTROL WAS EMPTY, and the reason (synth reloads f32 from the frame rather than
+      holding it across a call) is itself the finding.
+
+      THE FOUR CONDUCT RULES BIND THIS LANE. Rule 4 in particular: hardening the oracle around
+      this defect is NOT progress on it. The lane owes a named cause, or a plain statement that
+      it did not reach one and what it tried.
+
+      REFUTING COMMAND: re-read the issue thread before building anything —
+      `gh issue view 1436 --json comments --jq '.comments[-6:][].body'` — and attribute by BODY
+      PREFIX, never by `author.login`, because the reporter relays through a shared account.
+      The module is committed at `repro/synth-1436/` on jess main (c.wasm d854e5bb..,
+      c.loom.wasm 791ab6b5..) with a QEMU recipe; no board is needed. If the thread names a
+      mechanism this artifact does not, the artifact is wrong again and must be rewritten
+      before work starts.
+    tags:
+      - bug
+      - carried
+      - external-report
+      - miscompile
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: software
+      priority: must
+      issue: "#1436"
+      verification-track: manual
+      done-when: "manual:2026-11-30 the instruction or pass at which the gravity-compensation addend is ABSENT, ZEROED or LANDING ON ANOTHER AXIS is NAMED, by reading .text+0x1f6c / +0x1f90 / +0x1fb4 (link base D=+0x2e4) against the reporter's traced values for the 208-word run 0xac9c-0xafd8, or the lane states plainly that it did not reach the cause AND says what it tried; any oracle that lands must discriminate a MISSING OR ZERO-VALUED ADDEND, red-first — NOT a sign inversion, which the reporter declined because the magnitudes differ too; hardening an oracle alone does NOT satisfy this"

@@ -1,0 +1,67 @@
+artifacts:
+  - id: RQ-81-SHEXIT
+    type: system-req
+    release: v0.81
+    status: proposed
+    title: "merge_gate.py's sh() discards every subprocess exit code — the v0.73 review fixed ONE of six call sites"
+    description: >
+      `scripts/merge_gate.py:45` defines `sh()` as `subprocess.run(args, capture_output=True,
+      text=True).stdout.strip()` — no `returncode`, no `check=True` — so a command that FATALS
+      returns the empty string, indistinguishable from one that succeeded with no output. This is
+      the "checker succeeds about work it never did" class, in the gate the merge ritual runs.
+
+      THE CLASS WAS ALREADY UNDERSTOOD HERE, WHICH IS THE POINT. The v0.73 cold review round 2
+      found this exact bug and fixed it in `squash_fidelity` (`:90-103`), which calls
+      `subprocess.run` directly and refuses on a non-zero rc, with a comment naming the incident:
+      a `git diff` that fatalled yielded an empty string, which read as 0 lines, which read as
+      FAITHFUL. The narrowing was applied to the instance, not to the class — the twin-check
+      shape, recorded in this programme's own memory.
+
+      GRADED RATHER THAN LISTED, because a report naming every call site would be WRONG and two
+      of the three first suspected turned out guarded:
+      `:317` `d["baseRefOid"].startswith(sh("git","rev-parse","origin/main")[:8])` — a failed
+      rev-parse gives `""[:8] == ""` and `str.startswith("")` is UNCONDITIONALLY TRUE, so
+      `baseRefOid_agrees` cannot be False. MITIGATED and deliberately so: `decide()` reports it
+      BESIDE CHECK2 and its comment says it is not the check. It misleads a reader; it passes no
+      gate.
+      `:68` `behind = int(sh("git","rev-list","--count", ...) or "0")` — a failed rev-list gives
+      `behind = 0`, reading as "branch current". Narrowed by `current` also requiring
+      `merge-base --is-ancestor`, whose rc IS checked, so a git-wide failure reds. The live
+      window is rev-list failing while merge-base succeeds.
+      `:600` the required-context list — NOT an exposure, checked and refuted: CHECK1 is
+      `bool(REQUIRED_CONTEXTS) and set(required) == set(REQUIRED_CONTEXTS) and not missing`, so an
+      empty list fails the set equality and is reported as `absent_from_api`. The empty case is
+      guarded on purpose, and it is the pattern the other sites want.
+
+      AND THE REASON ITS OWN TESTS CANNOT SEE IT, which makes the red-first cheap. `merge_gate.py`
+      IS tested — a CI-wired `--self-test` (ci.yml:580) proven potent by mutation against three
+      named failure modes, plus `test_merge_gate_callsite.py` (ci.yml:588). But the self-test
+      BUILDS ITS OWN REPOSITORY with a known shape, deliberately, because an earlier version read
+      the ambient repo and passed locally while failing in CI — and in that fixture EVERY GIT
+      COMMAND SUCCEEDS. A fixture that guarantees the subprocess works cannot discriminate "the
+      subprocess failed" from "it returned nothing". So the new scenario is the EXISTING fixture
+      with a command made to fatal, asserting a REFUSAL.
+
+      DO NOT LAND THIS IN A RELEASE WHOSE OWN MERGES RUN THROUGH THIS GATE without the oracle
+      first. v0.80 deliberately did not: the defect was found at its cut, PR #1473's verdict was
+      hand-checked instead (rev-list rc=0 returning 0, merge-base rc=0, baseRefOid equal to
+      origin/main, contract_size 9 — a genuine reading), and the change was deferred rather than
+      made to the instrument mid-measurement.
+
+      REFUTING COMMAND: `sed -n '45,47p' scripts/merge_gate.py` and
+      `grep -n 'sh(' scripts/merge_gate.py | grep -v 'def sh'`. If `sh()` reads a returncode, this
+      premise is dead. Then `python3 scripts/merge_gate.py --self-test` — if it already exercises a
+      failing subprocess, the coverage half is dead too.
+    tags:
+      - process
+      - gate
+      - release
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1474"
+      verification-track: manual
+      done-when: "manual:2026-11-30 sh() raises on a non-zero exit code with any tolerant site named explicitly, and merge_gate.py's own hermetic self-test gains a scenario where a git command FATALS and the gate REFUSES rather than returning a verdict — proven red-first by showing the pre-fix code returns a verdict on that same scenario; the `startswith(\"\")` tautology at the baseRefOid site is removed"

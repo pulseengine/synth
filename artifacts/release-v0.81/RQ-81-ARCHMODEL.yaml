@@ -1,0 +1,50 @@
+artifacts:
+  - id: RQ-81-ARCHMODEL
+    type: system-req
+    release: v0.81
+    status: proposed
+    title: "Recurring N/A, nineteenth filing: feature-loop steps 1-2 (spar AADL -> WIT) skipped again, blocker still open"
+    description: >
+      NINETEENTH consecutive skip of feature-loop steps 1-2. THE ORDINAL IS DERIVED BY ARTIFACT
+      IDENTITY, NOT BY TAG SET, and must be stated with the commit it is true at: there are 18
+      prior filings, v0.63 through v0.80 inclusive with no gaps, so
+      `ls artifacts/release-v*/RQ-*ARCHMODEL*.yaml | wc -l` returns 19 at any commit containing
+      this file. Deriving it by tag set is WRONG — v0.77's tag-keyed census returned 14 where the
+      answer was 15, because v0.65's filing predates the five-tag vocabulary.
+
+      BLOCKER: pulseengine/spar#445 — spar accepts property associations from UNDECLARED property
+      sets silently (rc=0), so an invented property is indistinguishable from a satisfied one,
+      which is disqualifying for generating WIT from AADL. RE-CHECK ITS STATE BEFORE ITS BODY: an
+      issue body is written once and never updated, and this programme has already read a closed
+      issue's asks and nearly held it open.
+
+      THIS ARTIFACT MUST KEEP BOTH HALVES OF ITS TAG CONJUNCTION. The step 1-2 matcher needs
+      `"feature-loop" in tags` AND `tags & {aadl, spar}` AND a non-empty `issue:`. It has gone
+      INVISIBLE to the conformance gate three times (v0.65, v0.69, v0.75) because one half or the
+      other was dropped — and the whole point of the filing is to keep a deferral VISIBLE.
+
+      AND IT MUST NOT BE SILENT, which is this release's own theme landing on its own plan. A
+      recurring N/A whose artifact reports nothing is the exact shape RQ-81-SILENT is about: the
+      filing exists to say "skipped again, and here is why", so a `verified-by:` saying that is the
+      deliverable, not a formality.
+
+      REFUTING COMMAND: `gh issue view 445 --repo pulseengine/spar --json state` and
+      `python3 -c "import sys; sys.path.insert(0,'scripts'); import loop_conformance_check as L;
+      print(L.find_filed_steps12_decision('docs','v0.81'))"`. If spar#445 is CLOSED, the deferral's
+      ground is gone and the lane owes the real steps; if the matcher returns None, the tags are
+      wrong and the filing is invisible.
+    tags:
+      - process
+      - carried
+      - spar
+      - aadl
+      - feature-loop
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1136"
+      verification-track: manual
+      done-when: "manual:2026-11-30 the nineteenth filing exists with BOTH the feature-loop tag and a spar/aadl tag so the step 1-2 matcher sees it, the ordinal is derived by artifact identity with the commit stated, spar#445's STATE is re-checked and recorded, and the artifact reports an outcome rather than being silent"

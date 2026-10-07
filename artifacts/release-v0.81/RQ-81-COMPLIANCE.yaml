@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-81-COMPLIANCE
+    type: system-req
+    release: v0.81
+    status: proposed
+    title: "compliance.yml has not run since v0.43.0 — a bot-published release raises no on:release event"
+    description: >
+      The compliance report shipped with the release artifacts is the evidence an assessor
+      consumes, and it has not been produced for a long run of releases. The published release
+      page still shows v0.43.0's report, because it is the newest one that exists.
+
+      THIS IS NOT A FAILURE, WHICH IS WHY NOTHING CAUGHT IT. `compliance.yml` triggers on
+      `release: types: [published]`. The last release that triggered it was published by a USER;
+      every release since is published by `github-actions[bot]` via `gh release create` in
+      `release.yml` using the default `GITHUB_TOKEN`. GitHub does not start workflow runs for
+      events raised by `GITHUB_TOKEN` — a deliberate recursion guard, and a SILENT one. There is
+      no red check anywhere, because the workflow never started, and a workflow that never starts
+      has no conclusion to be red.
+
+      IT IS THE SAME CLASS AS THIS PROGRAMME'S OTHER FINDINGS: a gate that cannot fail. It is one
+      step further out than most — not an assertion that is vacuous, but a workflow with no
+      trigger. Count the releases with no report before scoping the fix; the number is the
+      argument.
+
+      TWO REMEDIES, both known, neither prescribed here: call the compliance job directly from
+      `release.yml` after the release is created (same job, different trigger, no token change), or
+      publish the release with a PAT so the event is raised by a user. The first keeps the
+      credential surface unchanged and is probably right; the second is a secret this repo would
+      then have to hold. SAY WHICH AND WHY — and if the job is called from `release.yml`, it must
+      be able to FAIL the release path, or it is a gate that cannot fail in a second way.
+
+      REFUTING COMMAND: `gh run list --workflow compliance.yml --limit 5 --json createdAt,conclusion`
+      and `gh release view v0.80.0 --json assets --jq '[.assets[].name]'`. If a compliance report
+      is attached to a recent release, this premise is dead. Note that `gh run list` UNDER-reports
+      rather than erroring, so an empty result is not by itself proof — confirm against the release
+      assets, which is the surface that matters.
+    tags:
+      - process
+      - release
+      - compliance
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1453"
+      verification-track: manual
+      done-when: "manual:2026-11-30 a compliance report is attached to a release's assets by an automated path again — verified by listing that release's assets, not by a workflow-run listing, which under-reports — with the chosen remedy named and the reason it was preferred stated, and the job able to FAIL rather than only to be skipped"
