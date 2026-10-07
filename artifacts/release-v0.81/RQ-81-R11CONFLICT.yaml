@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-81-R11CONFLICT
     type: system-req
     release: v0.81
-    status: proposed
+    status: implemented
     title: "Two committed gates give CONTRADICTORY instructions for a refuted artifact — neither is wrong on its own terms"
     description: >
       `issue_closure_check.py` and `status_evidence_check.py` R11 instruct the operator to do
@@ -52,4 +52,67 @@ artifacts:
       priority: should
       issue: "#1430"
       verification-track: manual
-      done-when: "manual:2026-11-30 the two gates no longer instruct opposite actions for a refuted artifact whose issue was fixed in an earlier release — demonstrated by running BOTH at the v0.77 cut and showing a consistent remedy — with R11's rule UNCHANGED, or the conflict is documented as deliberate with the operator's correct choice written down and tested"
+      done-when: "contains:scripts/issue_closure_check.py:THE MOST RECENT DECISION GOVERNS"
+      verified-by: >-
+        DELIVERED, BOTH DIRECTIONS, AND R11 IS UNTOUCHED. Running BOTH gates at the v0.77 cut now
+        gives ONE consistent remedy: `issue_closure_check` 0 failures and `status_evidence_check`
+        exit 0 on the same tree. Before: 8 failures and 1 respectively, with no way to satisfy both.
+        DIRECTION 2, THE NAMED CONFLICT, IS ONE EXPRESSION. `authorised_close_set` read
+        `held_open if iscope == "outlives" else (authorised if status in CLAIMING else None)`, so a
+        non-claiming artifact could only reach `authorised` by claiming — which R11 correctly reds
+        beside `disposition: refuted`. A third branch now authorises a REFUTING artifact that also
+        declares `issue-scope: closes`, no claiming status required. RQ-77-FLOORREGEX declares it
+        and #1243 is authorised; R11's rule is not altered by one character.
+        SCOPED TO `refuted` ONLY, with the controls to prove it: `deferred` and `partial` beside
+        `closes` authorise NOTHING, a refutation ALONE authorises nothing, and `outlives` still
+        outranks the new branch. Those four controls pass against the pre-fix gate too, which is
+        what attributes the single red to the new rule rather than to the fixture.
+        THE REMEDY AS THE ARTIFACT SKETCHED IT DOES NOT WORK, measured rather than assumed. This
+        artifact proposed deriving it from "an earlier release accounts for it". `prior_attribution`
+        at v0.77 covers 73 issues and #1243 is NOT among them — and the reason is structural, not an
+        oversight: #1243 WAS FILED AFTER v0.66.0 SHIPPED THE FIX, so no earlier artifact could ever
+        have named it. A remedy that cannot fire on the case it was written for is not a remedy, so
+        the shipped one is an EXPLICIT declaration instead.
+        DIRECTION 1 TURNED OUT TO BE A WINDOW BUG, and finding that changed the fix. `closed_since`
+        built `closed:>={tag}` with NO UPPER BOUND, so auditing a release that is already history
+        swept in every LATER release's closure wave. Of the 8 failures at v0.77.0, SEVEN — #1431,
+        #1435, #1440, #1454, #1456, #1459, #1461 — are named by delivered artifacts in v0.78, v0.79
+        and v0.80 and were closed by THOSE rituals. They were never v0.77's closures. This is the
+        SAME defect `prior_attribution` patches at the LOWER edge, which is the strongest evidence
+        it is a real one: the window had a model of when closures happen at one end and none at the
+        other. The upper edge is now DERIVED as the release tag above the audited one.
+        IT CANNOT NARROW THE LIVE GATE, and the reason is structural rather than careful: for the
+        release being CUT there is no tag above it, so the bound is open and the behaviour is
+        identical. MEASURED on the invocation the tag ritual actually makes —
+        `--release v0.81.0 --since-tag v0.80.0` prints `window: [v0.80.0, now)` and 1 authorised /
+        5 closed / 0 failures, before and after.
+        `later_attribution` SHIPS TOO, AND IT IS NOT REDUNDANT. The window bound removes those
+        closures from the population; attribution EXPLAINS them when an operator widens the window
+        on purpose, which is exactly how all 8 were found. Both paths verified on the same tree:
+        bounded gives 6 closed / 0 failures, `--until-tag none` gives 13 closed / 0 failures.
+        THE PRECEDENCE BUG I SHIPPED IN MY OWN FIRST DRAFT, recorded because it is the very failure
+        this lane exists to remove and it took real history to catch. The draft let ANY later refusal
+        outrank ANY later authorisation. v0.78 declared `issue-scope: outlives` on #1440 and v0.80
+        then DELIVERED it (RQ-80-RITUAL3) — hold open, continue, deliver, close is the normal
+        progression — and the draft emitted "Reopen it" for a correctly-closed issue. That would have
+        been this file's FOURTH near-reopening, caused by the fix for the third. Corrected to
+        ascending, so the two functions differ in ONE CHARACTER, `>` where the other has `<`.
+        AND THE SAME BLINDNESS ONE LEVEL IN, found by auditing every release rather than the one in
+        the report: the `HELD OPEN BUT ALREADY CLOSED` mirror loop did not consult the later set
+        either, so auditing v0.78.0 demanded a reopening of #1440 whose work shipped in v0.80. A
+        hold-open is a statement about one release's scope, not a promise for all time. Every release
+        v0.77.0 through v0.81.0 now audits with 0 failures; v0.78.0 alone went from 6 to 0.
+        RED-FIRST, MEASURED PER HALF so each number is attributable. Reverting ONLY
+        `status_evidence_check.py`: 1 failure, the third-remedy assertion, with all four controls
+        still green. Neutering `later_attribution` to return `{}` while keeping everything else: 10
+        failures across both forward directions. Full fix: 0 failures, and the sibling suite
+        `test_status_evidence_check.py` is 116 tests OK.
+        AN HONEST NOTE ON ONE ASSERTION'S POTENCY: `later_attribution is EMPTY for the release being
+        cut` stays GREEN against the neutered probe, because `{}` trivially satisfies it. It pins the
+        non-weakening property against a FUTURE change to the version comparison, not against this
+        one, and saying so is better than counting it among the ten.
+        AN EXISTING TEST WAS REPAIRED, NOT DELETED, and the distinction matters. "a LATER release's
+        artifact does not attribute" asserted the property by checking that CLOSED BUT NOT AUTHORISED
+        fires — conflating the property with one verdict. The property is that the later artifact must
+        not land in the AUTHORISED map; it is now asserted on that map directly, where no rewording
+        can make it vacuous, with a comment recording why the verdict moved to a warning.
