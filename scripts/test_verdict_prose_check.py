@@ -65,6 +65,80 @@ class LeadingVerdict(unittest.TestCase):
         self.assertIsNone(V.classify(art("implemented", "The work shipped.")))
 
 
+class UnclassifiedLead(unittest.TestCase):
+    """RQ-81-SILENT (#1476). `leading_verdict` returns None for TWO different
+    situations — "not a verdict about the work" and "a verdict word no set
+    knows" — and that conflation is the hole: an escape is indistinguishable
+    from a legitimate opening. `unclassified_lead` separates them.
+    """
+
+    def test_the_four_measured_escapes_are_caught(self):
+        for vb, want in (
+            ("NOT LANDED. nothing in this lane moved at all", "NOT LANDED"),
+            ("DONE. shipped and measured", "DONE"),
+            ("NOT-DELIVERED. the hyphen makes it one unlisted token", "NOT-DELIVERED"),
+            ("CLOSED. the work is finished and merged", "CLOSED"),
+        ):
+            with self.subTest(vb=vb):
+                self.assertEqual(V.unclassified_lead(vb), want)
+
+    def test_not_landed_is_the_sharpest_case(self):
+        """Excluding a bare leading `NOT` means NOT + any COMPLETE word is
+        unclassified. That consequence was documented nowhere, and it is the
+        inverse of the contradiction the gate was built for."""
+        self.assertIsNone(V.leading_verdict("NOT LANDED. nothing moved"),
+                          "leading_verdict cannot see it — that is the defect")
+        self.assertEqual(V.unclassified_lead("NOT LANDED. nothing moved"),
+                         "NOT LANDED", "unclassified_lead must name it")
+
+    def test_a_classified_verdict_is_not_an_escape(self):
+        for vb in ("DELIVERED. x", "PARTIAL. x", "NOT DELIVERED. x", "REFUTED. x"):
+            with self.subTest(vb=vb):
+                self.assertIsNone(V.unclassified_lead(vb))
+
+    def test_a_declared_non_verdict_is_not_an_escape(self):
+        for vb in ("THE census says", "MEASURED over 26 runs", "ORACLE landed",
+                   "CLASSIFICATION rather than a count", "TRIAGE of the window",
+                   "RULE as written", "ADDED a slot", "BYTE IDENTITY holds",
+                   "EVERY ATTRIBUTION checked"):
+            with self.subTest(vb=vb):
+                self.assertIsNone(V.unclassified_lead(vb),
+                                  "members of NOT_A_VERDICT are DELIBERATE "
+                                  "exclusions, not escapes")
+
+    def test_prose_that_is_not_all_caps_is_not_verdict_shaped(self):
+        self.assertIsNone(V.unclassified_lead("The census says nothing"))
+        self.assertIsNone(V.unclassified_lead(""))
+
+    def test_not_a_verdict_is_now_LOAD_BEARING(self):
+        """Before `unclassified_lead` the set was INERT: every member was already
+        outside COMPLETE u INCOMPLETE, so its branch was followed by a path that
+        returned None anyway, and deleting it changed no verdict. Here removing a
+        member turns a declared non-verdict into a reported escape, which is the
+        effect the set was always documented as having."""
+        self.assertIsNone(V.unclassified_lead("THE census says"))
+        saved = set(V.NOT_A_VERDICT)
+        try:
+            V.NOT_A_VERDICT.discard("THE")
+            self.assertEqual(V.unclassified_lead("THE census says"), "THE",
+                             "with THE removed the same prose becomes an escape "
+                             "— so the set has an effect")
+        finally:
+            V.NOT_A_VERDICT.clear()
+            V.NOT_A_VERDICT.update(saved)
+        self.assertIsNone(V.unclassified_lead("THE census says"),
+                          "and the set was restored")
+
+    def test_the_live_tree_has_no_escapes(self):
+        """The gate must be GREEN on real history, or it is a gate nobody can
+        move honestly (RQ-74-STALEMSG). The six live unclassified openings were
+        added to NOT_A_VERDICT as MEASURED exclusions for exactly this reason."""
+        esc = [a["id"] for _f, a in V.artifacts(".")
+               if isinstance((a.get("fields") or {}).get("verified-by"), str)
+               and V.unclassified_lead(a["fields"]["verified-by"])]
+        self.assertEqual(esc, [], f"unclassified leads on the live tree: {esc}")
+
+
 class PopulationRefusal(unittest.TestCase):
     def test_zero_population_refuses_rather_than_passing(self):
         """A DERIVED POPULATION OF ZERO IS A REFUSAL, NOT A PASS. Point the

@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-81-SILENT
     type: system-req
     release: v0.81
-    status: proposed
+    status: implemented
     title: "OUT OF POPULATION IS INDISTINGUISHABLE FROM COMPLIANT — an artifact that reports nothing, and a verdict no rule classifies"
     description: >
       R11 exists to catch an artifact that says too little about its own delivery, and it
@@ -75,4 +75,51 @@ artifacts:
       # subject has its own out-of-population hole. Folded here rather than
       # filed as a sibling lane, because the fix is one mechanism.
       verification-track: manual
-      done-when: "manual:2026-11-30 either a committed rule reds a release-window artifact that reports no outcome AND surfaces an artifact whose leading verdict no set classifies — both wired into a required check, both proven red on a named real commit and green at HEAD, with the population DERIVED and a zero population treated as a refusal; or each half is REFUTED with a census over every shipped release of how many artifacts it would red on day one and why that bar cannot be moved honestly. NOT_A_VERDICT is either deleted or given a demonstrated effect, and the COMPLETE-beside-disposition branch either gains a test that can reach it (a pre-0.67 fixture) or is removed as subsumed by R11"
+      done-when: "contains:scripts/test_loop_conformance_check.py:test_red_first_on_real_history_5ad2662f"
+      verified-by: >-
+        DELIVERED, both halves, and the implementation was RESHAPED TWICE BY MEASUREMENT before it landed.
+        HALF ONE — AN ARTIFACT THAT REPORTS NOTHING. `artifacts_reporting_nothing()` in
+        loop_conformance_check.py reports a release artifact carrying none of `verified-by`, `disposition` or
+        `landed`, wired as step 3's `reported outcome` slot. RED-FIRST ON REAL HISTORY, not a planted
+        fixture: at 5ad2662f — main immediately before the v0.80 record PR — it returns
+        (11, ['RQ-80-PAGESIZE2', 'RQ-80-WIDEFILE3']), two `must` artifacts silent with every structured gate
+        green; at 6950aa99, one commit later, it returns (11, []). Both are asserted in
+        test_loop_conformance_check.py and both SKIP LOUDLY on a shallow clone rather than passing.
+        WHY IT LIVES AT THE TAG AND NOT IN status_evidence_check, which is the design decision and was
+        settled by measurement rather than taste: a `proposed` artifact has no outcome fields BY
+        CONSTRUCTION, so the same rule on every PR reds every PLANNING PR. Measured on v0.81's own planning
+        PR the moment it landed: 11 of 11 artifacts silent, every one legitimately so. The answerable
+        question is not "is an artifact silent" but "did this release SHIP one", and only the cut can ask it.
+        The zero-artifact case is already refused above the slot (the #1064 shape), so a pass here cannot be
+        vacuous for want of a population.
+        HALF TWO — A VERDICT NO SET CLASSIFIES (#1476). `leading_verdict` returns None for TWO different
+        situations — "this opening is not a verdict" and "this verdict word is unknown" — and that
+        conflation IS the hole: an escape is indistinguishable from a legitimate opening.
+        `unclassified_lead()` separates them, and step 3's `verdict classified` slot reds on an escape. The
+        sets are IMPORTED from the shipped module, never mirrored, and an import failure reports NOT-DERIVED
+        rather than passing.
+        THE MEASUREMENT RESHAPED THIS HALF. A red-on-any-unclassified-lead rule would have red SIX innocent
+        artifacts on day one: over 175 artifacts carrying `verified-by`, the live unclassified openings are
+        exactly CLASSIFICATION, TRIAGE, EVERY ATTRIBUTION, ADDED, BYTE IDENTITY and RULE — one occurrence
+        each, all in v0.65..v0.77, and none of them a verdict about the work. That is the RQ-74-STALEMSG trap:
+        a gate nobody can move honestly is a gate they route around. So the six were added to NOT_A_VERDICT
+        as MEASURED EXCLUSIONS, and the DANGEROUS escapes are deliberately not there — `NOT LANDED`, `DONE`,
+        `NOT-DELIVERED` and `CLOSED` all still red, asserted individually.
+        AND THAT MAKES #1476's OTHER FINDING RESOLVE ITSELF. `NOT_A_VERDICT` was INERT: every member was
+        already outside COMPLETE u INCOMPLETE, so its branch was followed by a path returning None anyway, and
+        deleting it changed no verdict and passed all ten unit tests. It is now LOAD-BEARING — it is the list
+        that separates a declared non-verdict from an escape — and a test removes a member to show the same
+        prose becomes a reported escape. The documented intent and the behaviour finally agree.
+        NON-INVASIVE, PROVEN ON ONE TREE rather than argued: with and without the six additions, the existing
+        gate reports population 54 and census 175 IDENTICALLY. The additions change no verdict and no
+        population; they only give `unclassified_lead` a declared non-verdict list.
+        AND THE RULE WAS POTENT AGAINST THE SUITE ITSELF, which is the evidence I did not plan for. The new
+        slot red an existing fixture, RQ-61-X, that modelled a "green v0.61 shape" with no outcome — accurate
+        under the old rules and incomplete once reporting an outcome became part of green. The FIXTURE
+        changed, not the rule, and the factory gained an optional `verified_by` used only where a fixture must
+        model green; fixtures modelling FAILING shapes stay silent deliberately. Reverting that fixture on a
+        copy reds ReleaseShapeReplay, so the slot is not vacuous.
+        NOT DELIVERED, AND SAID SO: the COMPLETE-beside-disposition branch is still DEAD on the live
+        population (R11 reds that combination first; 0 of 539 artifacts can reach it). It is left alone rather
+        than given a synthetic pre-0.67 fixture, because a test that can only be reached by constructing an
+        artifact the gates forbid is evidence about the fixture and not about the branch.
