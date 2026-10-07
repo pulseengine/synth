@@ -72,6 +72,21 @@ artifacts:
       req-type: software
       priority: must
       issue: "#1436"
+      # RQ-81-JESSDIVERGE3 delivered ITS scope — the three named mechanisms are
+      # refuted against the module's own bytes, and the oracle that proves it is
+      # re-runnable. The ISSUE is the broader question, and it is UNANSWERED: the
+      # lowered module still diverges and the vehicle still integrates
+      # uncompensated gravity. #1436 is also an EXTERNALLY REPORTED defect —
+      # `author.login` is avrabe, but the body opens `**[jess]`, so an
+      # author-based filter reads it as internal and is structurally blind.
+      #
+      # WITHOUT THIS FIELD THE TAG WOULD HAVE CLOSED IT. `status: implemented` is
+      # CLAIMING, and a claiming status is exactly what `authorised_close_set`
+      # reads as "this release may close the issue" — so satisfying R3 silently
+      # armed the closer. That is conduct rule 4 breached by machine: a release
+      # whose only work on an open externally reported defect was hardening the
+      # oracle around it does not count as progress on it.
+      issue-scope: outlives
       verification-track: manual
       done-when: "contains:scripts/repro/jessdiverge3_gravity_faithful_1436.py:ABSENT, ZEROED and WRONG-AXIS are all refuted"
       verified-by: >-

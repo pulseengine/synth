@@ -54,6 +54,13 @@ artifacts:
       req-type: software
       priority: must
       issue: "#1439"
+      # The lane's scope was "root-cause it, OR state plainly what was killed and
+      # how" — delivered: two more mechanisms are dead and one candidate remains.
+      # The ISSUE is that the rung emits SIGN-WRONG CODE, and that is still true:
+      # the cause is not named, the pool-grow retry was deliberately not re-added,
+      # and the wide60 tripwire is still armed. Closing it would claim a fix that
+      # does not exist, so the issue outlives this artifact's delivery.
+      issue-scope: outlives
       verification-track: manual
       done-when: "contains:scripts/repro/vfp_local_pressure_1069_differential.py:discriminator for #1439, not decoration"
       verified-by: >-
