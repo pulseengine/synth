@@ -38,6 +38,15 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1460"
+      # R12 (#1430, applied retroactively as RQ-70-NPA and RQ-70-FALCONCORPUS
+      # already do). #1460's title carries TWO clauses and v0.80 delivered ONE:
+      # the npm ASSERTION now exists, and the PACKAGE is still eleven releases
+      # behind because NPM_TOKEN is a credential outside this repository.
+      # Without this field the closure gate reads a delivered artifact as
+      # entitling the release to close the issue, and reds forever on v0.80.0
+      # once the issue is honestly held open. `closes` would be the false
+      # declaration; `outlives` is the true one.
+      issue-scope: outlives
       verification-track: manual
       done-when: "contains:scripts/test_loop_conformance_check.py:Step8NpmLive"
       verified-by: >-
