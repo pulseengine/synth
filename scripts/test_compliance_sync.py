@@ -24,7 +24,12 @@ import tempfile
 WORKFLOW = pathlib.Path(__file__).resolve().parent.parent / ".github/workflows/compliance.yml"
 # Anchored on the heredoc delimiters so a reindent or a surrounding-step edit cannot
 # silently select a different block.
-HEREDOC = re.compile(r"python3 - <<'PYEOF'\n(.*?)^\s*PYEOF$", re.S | re.M)
+# Anchored on the heredoc DELIMITER rather than on the literal `python3 - `, because
+# a round-2 review showed the literal form silently under-covers: a second block
+# invoked as `python3 -u -` left `len(blocks) == 1`, so the suite certified only
+# block 0 and reported 5/5. Same "scoped by a literal" class CLAUDE.md records for
+# the pin-table tripwire regex.
+HEREDOC = re.compile(r"python3\s[^\n]*<<'PYEOF'\n(.*?)^\s*PYEOF$", re.S | re.M)
 
 
 def shipped_script() -> str:
@@ -120,15 +125,27 @@ def case_clone_without_artifacts_refused(script):
         return ok, f"rc={r.returncode} out={blob.strip()[:150]!r}"
 
 
+def _fake_clone(dest: pathlib.Path):
+    """The shape a REAL clone leaves: a `.git` DIRECTORY carrying HEAD.
+
+    An earlier version of this fixture made only an EMPTY `.git` dir, so the
+    positive control below was built from the very fake `resolved()` has to
+    reject -- the test could not see the defect because its own fixture embodied
+    it. A round-2 review found it by executing the shipped script against a
+    `.git` FILE and against an empty `.git` dir, getting rc=0 both times.
+    """
+    (dest / ".git").mkdir(parents=True)
+    (dest / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (dest / "artifact.yaml").write_text("artifacts: []\n")
+
+
 def case_resolved_dirs_accepted(script):
     """POSITIVE CONTROL: already-resolved dirs -> rc=0 without touching the network."""
     with tempfile.TemporaryDirectory() as d:
         tmp = pathlib.Path(d)
         work = tmp / "work"; work.mkdir()
         for pfx in ("alpha", "beta"):
-            dest = work / ".rivet/repos" / pfx
-            (dest / ".git").mkdir(parents=True)
-            (dest / "artifact.yaml").write_text("artifacts: []\n")
+            _fake_clone(work / ".rivet/repos" / pfx)
         r = _run(work, script, _rivet_yaml(tmp / "nonexistent_a", tmp / "nonexistent_b"))
         ok = r.returncode == 0 and "synced 2 of 2" in r.stdout
         return ok, f"rc={r.returncode} out={(r.stdout + r.stderr).strip()[:110]!r}"
@@ -159,8 +176,67 @@ def case_zero_population_refused(script):
         return (r.returncode != 0 and "NO externals" in blob), f"rc={r.returncode}"
 
 
+def _fake_tree_case(script, make_fake):
+    """A FAKE external tree must be REPLACED by a real clone, not accepted as-is.
+
+    THE ASSERTION IS ON THE OUTCOME, NOT ON rc, and that distinction is the whole
+    point. A first version of these two cases pointed the OTHER external at a
+    missing source, so the run refused because THAT clone failed -- rc was
+    non-zero for a reason having nothing to do with the fake. Both sources are
+    valid here, so the only question left is whether the fake tree got replaced:
+    after the run `.git` must be a DIRECTORY carrying HEAD, which only a real
+    clone produces. Against the pre-fix script the fake is ACCEPTED, nothing is
+    cloned, and the fake survives -- which is what this detects.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        tmp = pathlib.Path(d)
+        a, b = tmp / "src_a", tmp / "src_b"
+        _make_source(a, True); _make_source(b, True)
+        work = tmp / "work"; work.mkdir()
+        dest = work / ".rivet/repos/alpha"
+        make_fake(dest)
+        r = _run(work, script, _rivet_yaml(a, b))
+        real = (dest / ".git").is_dir() and (dest / ".git" / "HEAD").is_file()
+        ok = r.returncode == 0 and real
+        return ok, (f"rc={r.returncode} fake_replaced_by_real_clone={real} "
+                    f"out={(r.stdout + r.stderr).strip()[:74]!r}")
+
+
+def _fake_git_file(dest):
+    dest.mkdir(parents=True)
+    (dest / ".git").write_text("gitdir: /elsewhere\n")
+    (dest / "junk.yaml").write_text("x: 1\n")
+
+
+def _fake_empty_git_dir(dest):
+    (dest / ".git").mkdir(parents=True)
+    (dest / "x/y/z").mkdir(parents=True)
+    (dest / "x/y/z/deep.yaml").write_text("x: 1\n")
+
+
+def case_git_file_not_resolved(script):
+    """A `.git` FILE (the worktree/submodule shape) beside a stray yaml is NOT a clone.
+
+    A round-2 review executed this against the pre-narrowing script and got rc=0,
+    `synced 1 of 1`, with nothing cloned.
+    """
+    return _fake_tree_case(script, _fake_git_file)
+
+
+def case_empty_git_dir_not_resolved(script):
+    """An EMPTY `.git` DIRECTORY with a deeply nested yaml is NOT a clone either.
+
+    The second shape that returned rc=0: `.git` existed and a yaml was findable by
+    rglob, so `.exists() and any(rglob)` was satisfied by neither being evidence
+    of a clone.
+    """
+    return _fake_tree_case(script, _fake_empty_git_dir)
+
+
 CASES = (
     ("empty dirs SELF-HEAL to resolved", case_empty_dirs_self_heal),
+    ("a `.git` FILE is NOT resolved", case_git_file_not_resolved),
+    ("an EMPTY `.git` dir is NOT resolved", case_empty_git_dir_not_resolved),
     ("clone w/o artifacts REFUSED as UNRESOLVED (was unreachable)", case_clone_without_artifacts_refused),
     ("already-resolved ACCEPTED (positive control)", case_resolved_dirs_accepted),
     ("clone failure REFUSED, distinguishably", case_clone_failure_refused),

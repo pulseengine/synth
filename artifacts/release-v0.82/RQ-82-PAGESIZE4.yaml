@@ -98,9 +98,16 @@ artifacts:
                                               synth-core/wasm_decoder (the struct field and its
                                               propagation), one a comment. The DECLARATION
                                               reaches the decoder and is ignored thereafter.
-          memory.size lowering sites      2   arm_encoder.rs:1758 (A32) and :3830
+          hardcoded bytes->pages, ARM       2   arm_encoder.rs:1758 (A32) and :3830
                                               (Thumb) are the only two that are a runtime
-                                              LSR #16 on R10. CORRECTED by v0.82's cold
+                                              LSR #16 on R10 — and BOTH cited lines are the
+                                              COMMENT naming the operation, with the emitting
+                                              code at :1761 and :3836 respectively. That is
+                                              the same property used below to disqualify
+                                              select_default.rs:398, so it is stated here
+                                              rather than left as a double standard; the
+                                              difference is that these two comments sit
+                                              INSIDE the emitting arm. CORRECTED by v0.82's cold
                                               review -- and the corrected set was obtained
                                               by READING each candidate, not by grepping
                                               for `>>16`/`65536`: a first attempt at this

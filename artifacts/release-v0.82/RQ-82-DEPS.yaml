@@ -15,7 +15,7 @@ artifacts:
       no. That is the hold's exit condition working, not a lane failing to meet it.
 
       WHAT THE SUITE SAID, exactly. On PR #1492 at bfed8c29, run 37790630310:
-      **63 of its 68 non-cancelled jobs failed**, and the failure is UNIVERSAL rather
+      **63 of its 71 jobs failed** — 69 of those 71 were non-cancelled — and the failure is UNIVERSAL rather
       than leg-specific — FOUR distinct labels: 46 `ubuntu-latest` (x86), 13
       `self-hosted,linux,x64,rust-cpu`, 2 `ubuntu-24.04-arm` and 2 `macos-latest`. NOT ONE
       OF THE FIVE SURVIVORS COMPILES synth: Format (`cargo fmt`), Version Pin Sweep (pin +
@@ -99,7 +99,12 @@ artifacts:
 
         THE EVIDENCE IS UNIVERSAL, NOT LEG-SPECIFIC, and that distinction is what settled
         the cause. Run 37790630310 on #1492 at bfed8c29, FINAL after the run was cancelled
-        to free the starved pool: 63 of 68 non-cancelled jobs failed, across FOUR labels —
+        to free the starved pool: 63 of 71 jobs failed, across FOUR labels — and the
+        denominator is stated carefully because a round-2 review caught an earlier "63 of 68
+        NON-CANCELLED" here: 71 jobs minus 2 cancelled is 69, not 68. The 68 was
+        failure+success and silently dropped the ONE SKIPPED job, `Rust-test Line Coverage
+        (unit + integration only)` (rust-cpu), which is not cancelled. Two of the 71 also
+        carry NO verdict, stamped completed at the cancel instant. The labels —
         46 `ubuntu-latest` (x86), 13 `self-hosted,linux,x64,rust-cpu`, 2 `ubuntu-24.04-arm`,
         2 `macos-latest`. The five survivors are Format, Version Pin Sweep, Claim Check,
         Rivet Validation and Advisories, and NOT ONE of them compiles synth — two are

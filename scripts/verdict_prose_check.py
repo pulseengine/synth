@@ -95,7 +95,10 @@ NOT_A_VERDICT = {"FULL", "DONE-WHEN", "RED-FIRST", "THE", "BOTH", "MEASURED",
                  # above standing in front of a delivery claim leaves BOTH the
                  # field-vs-prose comparison AND `unclassified_lead`. Three
                  # variants were implemented against the live tree (188 artifacts
-                 # carry a `verified-by`; 67 are in population):
+                 # carry a `verified-by`; 67 are in population AT 39fd8226 —
+                 # the figures below are stated with their commits because
+                 # this block previously carried 67 and 78 nine lines apart,
+                 # which cannot hold of any one tree):
                  #
                  #   bare sentence scan   +3 in population, 0 day-one reds, but it
                  #                        INVERTS negation: "NOT LANDED yet" yields
@@ -109,7 +112,8 @@ NOT_A_VERDICT = {"FULL", "DONE-WHEN", "RED-FIRST", "THE", "BOTH", "MEASURED",
                  #                        SHIPPED", and unbounded-distance negation
                  #                        in prose is not decidable by a token rule.
                  #   decline on any       never inverts, but drops 27 of the 78 in
-                 #   negator in the       population (first-sentence scope, negators
+                 #   negator in the       population AT afa59b5d (first-sentence scope,
+                 #   sentence             negators
                  #   sentence             NOT/NO/NEVER/CANNOT/WITHOUT/NEITHER/NOR).
                  #                        Losing 27 to close a hole on 3 is a bad
                  #                        trade. An earlier version of this comment

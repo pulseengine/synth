@@ -60,7 +60,8 @@ source, was retained.
 The first failures visible on the run were four, on `ubuntu-24.04-arm` and `macos-latest`, and I
 hypothesised a leg-specific fault — then declined to assert it and named the decisive test:
 whether an x86 leg also fails. Grouping the jobs BY LABEL answered it — the run finally failed
-**63 of its 68 non-cancelled jobs across FOUR labels**, 46 of them `ubuntu-latest` and 13
+**63 of its 71 jobs across FOUR labels** (69 of the 71 were non-cancelled), 46 of them
+`ubuntu-latest` and 13
 `self-hosted … rust-cpu`. The five survivors are all metadata-level and NOT ONE compiles synth
 (Format, Version Pin Sweep, Claim Check, Rivet Validation, Advisories), two of them on the same
 `rust-cpu` pool as 13 of the failures — so the discriminator is what a job DOES, not which pool
