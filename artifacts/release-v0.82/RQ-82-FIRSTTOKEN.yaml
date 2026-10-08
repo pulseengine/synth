@@ -46,4 +46,74 @@ artifacts:
       priority: should
       issue: "#1476"
       verification-track: manual
+      disposition: refuted
+      landed: "#1476 — PR #1489: The widening was IMPLEMENTED THREE WAYS and measured against the live tree; all three cost more than the hole, so the leading-token rule stays and the refusal ships with a potency-proven guard against re-attempting it naively."
+      verified-by: >
+        REFUTED — THE PROPOSED WIDENING IS WORSE THAN THE HOLE, and the numbers say so rather
+        than the judgement. #1476 STAYS OPEN and this lane did not close it; it PRICED it.
+
+        THE REFUTING COMMAND RAN FIRST AND DID NOT REFUTE THE PREMISE: `unclassified_lead` and
+        `leading_verdict` are both None for `RULE DELIVERED in full`, `EVERY ask SHIPPED` and
+        `THE work is DELIVERED`, so the generic-opener hole is live and those artifacts sit
+        outside BOTH populations.
+
+        THE DENOMINATOR, CORRECTED MID-MEASUREMENT: the gate iterates 562 artifacts, of which
+        188 carry a `verified-by` and 67 are in population. My first report labelled 562 as
+        "with verified-by", which was the wrong denominator by a factor of three.
+
+        VARIANT 1 — BARE SENTENCE SCAN. +3 artifacts in population (RQ-64-CFOBLIG,
+        RQ-68-REPRO, RQ-77-FALCON2), all three HONEST OPENERS, day-one red count ZERO. It
+        would be shippable on those numbers alone. IT IS NOT, because it INVERTS NEGATION:
+        `NOT LANDED yet` yields `LANDED`, a COMPLETE verdict, since the only negated phrase in
+        the vocabulary is `NOT DELIVERED`. FIVE of six negated forms invert. Today those are
+        VISIBLE ESCAPES that `unclassified_lead` names and `loop_conformance_check` slot 3
+        FAILS on; the wider rule turns each into a CONFIDENT WRONG VERDICT, which is strictly
+        worse than being out of population.
+
+        AND MY FIRST TOKENIZER UNDERCOUNTED BY ONE, which is why the 3 is stated with its
+        method. A greedy two-word match consumed `RULE DELIVERED`, found it was not a verdict,
+        and DISCARDED THE `DELIVERED` WITH IT — so the artifact's own headline example came
+        back None and the newly-in-population count read 2. Restructuring to tokenise first and
+        then test pairs and singles gave 3. A positive control caught it; without one the lane
+        would have reported the wrong number about its own example.
+
+        VARIANT 2 — ADJACENT-NEGATOR AWARE. Fixes all six adjacent forms (`never DELIVERED`
+        included). Still inverts `no work was SHIPPED`, because the negator is two words away,
+        and unbounded-distance negation in prose is not decidable by a token rule at all.
+
+        VARIANT 3 — DECLINE WHENEVER ANY NEGATOR APPEARS IN THE SENTENCE. Cannot invert, by
+        construction. It drops THIRTEEN artifacts OUT of population: RQ-60-A64IMPORT,
+        RQ-62-MEMISOLATE, RQ-62-VERIFYEMBED, RQ-65-PARITY, RQ-66-UNWATCHED, RQ-77-CENSUS,
+        RQ-78-FEATURESET, RQ-78-RITUAL, RQ-79-ORDEAL, RQ-80-CLOSEGATE, RQ-80-STEP7,
+        RQ-81-PINSWEEP and RQ-82-CLOSEARM — this release's own must-lane among them. Losing
+        coverage on 13 to close a hole on 3 is a bad trade.
+
+        A FOURTH OPTION WAS TRIED AND ALSO REFUSED, and it is the one that looked free. Adding
+        the negated forms to INCOMPLETE — DERIVED from COMPLETE, not typed — has ZERO live
+        effect: 0 artifacts enter the population, 0 leave, 0 newly red, and `unclassified_lead`
+        reports 0 escapes both before and after. But it converts an UNCONDITIONAL tag-time
+        DERIVED_FAIL in `loop_conformance_check` slot 3 into a per-PR comparison that PASSES on
+        a NON-CLAIMING artifact. That is a weakening dressed as a closure. It also broke the
+        canonical escape example in THREE separate test suites — `test_verdict_prose_check`,
+        `test_loop_conformance_check` and `test_status_evidence_check` — which is evidence that
+        keeping `NOT LANDED` unclassified is a DECISION, not an oversight. It was reverted.
+
+        AND IT INVALIDATED A MEASURED NUMBER IN ANOTHER RULE'S TEST, which is worth recording:
+        `test_R14s_population_IS_the_carve_out_and_nothing_wider` asserts R14 is narrower than
+        INCOMPLETE by exactly SIX tokens. Growing INCOMPLETE made that 11 and the test failed.
+        A hardcoded count of a set that another lane may extend is the same drift this
+        programme keeps correcting.
+
+        WHAT SHIPS INSTEAD: the refusal, with all four variants and their costs recorded at the
+        decision site rather than in a release note, plus THREE GUARD TESTS so the next lane
+        cannot widen naively. PROVEN POTENT by mutation — patching `leading_verdict` into a
+        naive sentence scan fires all five inversion assertions AND the three
+        hole-still-open assertions, rc=1, and rc returns to 0 on restore. One guard pins that
+        the negated vocabulary is exactly {NOT DELIVERED}, so if a future lane changes it the
+        refusal must be re-derived rather than inherited.
+
+        THE HOLE IS STILL OPEN AND A TEST SAYS SO: the third guard asserts that
+        `RULE DELIVERED in full` remains outside both populations, so if a later change were to retire
+        the hole behind #1476, this artifact's REFUTED verdict fires rather than standing as a
+        stale claim.
       done-when: "manual:2026-12-31 the number of live artifacts a sentence-scoped rule would newly put in population is DERIVED and reported, each one classified as a real contradiction or an honest opener, and either the wider rule ships with its day-one red count at zero or the lane states with numbers why widening is refused"

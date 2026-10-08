@@ -162,5 +162,48 @@ class SelfTestIsWired(unittest.TestCase):
         self.assertEqual(V.self_test("."), 0)
 
 
+class SentenceScopeHazard1476(unittest.TestCase):
+    """RQ-82-FIRSTTOKEN (#1476): sentence scope was measured and REFUSED, and the
+    refusal needs a GUARD, not just a comment. The hazard is specific: a wider
+    rule that scans the opening sentence for a verdict word INVERTS negation,
+    because the only negated phrase in the vocabulary is `NOT DELIVERED` — so
+    `NOT LANDED` yields the COMPLETE word `LANDED`. These tests fire the moment
+    someone widens the rule without handling that."""
+
+    NEGATED = ("NOT LANDED yet", "NOT SHIPPED in this release", "NOT VERIFIED",
+               "NOT COMPLETE", "no work was SHIPPED")
+
+    def test_a_negated_verdict_is_NEVER_classified_as_COMPLETE(self):
+        """The invariant the refusal rests on. Today each returns None (out of
+        population, and `unclassified_lead` names it). A naive widening would
+        return LANDED / SHIPPED / VERIFIED / COMPLETE here — all in COMPLETE —
+        and this assertion is what stops that shipping silently."""
+        for vb in self.NEGATED:
+            with self.subTest(prose=vb):
+                self.assertNotIn(V.leading_verdict(vb), V.COMPLETE,
+                                 "a negated verdict read as COMPLETE inverts the "
+                                 "artifact's own statement about itself")
+
+    def test_the_only_negated_phrase_in_the_vocabulary_is_NOT_DELIVERED(self):
+        """The REASON the inversion exists, pinned so it is not rediscovered: if
+        a future lane adds `NOT LANDED` et al. to INCOMPLETE, the inversion risk
+        changes shape and the refusal above must be re-derived."""
+        negated = {x for x in V.INCOMPLETE if x.startswith("NOT ")}
+        self.assertEqual(negated, {"NOT DELIVERED"},
+                         "the negated vocabulary moved; re-run the #1476 "
+                         "measurement before widening the rule's scope")
+
+    def test_the_generic_opener_hole_is_still_OPEN_and_that_is_recorded(self):
+        """Honesty guard. This lane did NOT close #1476; it priced the fix. If a
+        later change closes the hole, this test fires and the artifact's verdict
+        must be updated rather than left claiming a refusal that no longer holds."""
+        for vb in ("RULE DELIVERED in full", "EVERY ask SHIPPED",
+                   "THE work is DELIVERED"):
+            with self.subTest(prose=vb):
+                self.assertIsNone(V.leading_verdict(vb))
+                self.assertIsNone(V.unclassified_lead(vb),
+                                  "still outside BOTH populations — the #1476 hole")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
