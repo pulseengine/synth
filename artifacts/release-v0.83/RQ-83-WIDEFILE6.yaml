@@ -3,29 +3,133 @@ artifacts:
     type: system-req
     release: v0.83
     status: proposed
-    title: "Disassemble the newly-accepted function with v0.78's retry applied locally"
+    title: "The newly-accepted function DISASSEMBLED: no VABS is emitted, sign cannot come from reassociation, and the named oracle never ran the shape"
     description: >
-      The mechanism class is SETTLED and the emitter is NOT. `got ^ want == 0x8000_0000` with
-      bit-identical magnitudes means exactly one factor's sign is wrong, and the POSITIVE rows decide
-      it is an ABS. `0xEEB00AC0` has THREE emitters, two of them `ArmOp::F32Abs` on different encoder
-      paths — and the fixture contains ZERO `f32.abs`, `f32.copysign` or `f32.neg` against 130
-      `f32.mul`, so none of the three should be reachable. The 2-register mis-encoding route is dead.
-      This lane applies v0.78's retry LOCALLY (it stays out of the tree) and disassembles the function.
-      The tripwire stays armed and the retry stays out until the cause is NAMED.
+      THE RETRY WAS APPLIED LOCALLY AND THE RUNG LANDS. v0.78's ~20-line pool-grow retry for the
+      ladder's stage 3, mirroring stage 2, was re-applied to `arm_backend.rs` on a scratch tree
+      (NEVER committed; restored byte-identically afterwards, `diff -q` IDENTICAL, and the
+      tripwire green again at 10/10). With it, the 60-local right-leaning shape COMPILES —
+      1956 bytes — and `wide60_declines_and_the_ladder_dies_on_the_wide_file_rung_1426` FIRED
+      exactly as it was built to: "IF THIS FIRED, THE RUNG LANDED".
 
-      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
-      legitimate outcome, reported with numbers:
-      `git grep -c -F 0xEEB00AC0 -- crates/` (expect 3 emitters) and
-      `git log -S"pool grow retry" --oneline | wc -l` (expect 0 — the retry is still out of the tree).
+      AND THE DIFFERENTIAL NAMED AS THIS DEFECT'S ORACLE NEVER RUNS THE SHAPE. With the retry
+      applied, `vfp_local_pressure_1069_differential.py` reports
+      `PASS: 70 emulations bit-identical to wasmtime`. That PASS is TRUE ABOUT THE WRONG SUBJECT:
+      its export list is `F32_EXPORTS = ["live13", "live14", "live16", "live24"]`, topping out at
+      24 locals and folding LEFT, and every one of them compiles on an EARLIER rung — `live24` on
+      `vfp-frame-locals+pool-grow`, recorded bit-exact since v0.78. The newly-accepted
+      right-leaning 60-local function is in no export list, so the oracle cannot see it. The
+      tripwire's own message predicted this in as many words — "a compile-only green here says
+      nothing about the bytes" — and names the fix: add the shape to the generator and to
+      `F32_EXPORTS`. Reading the PASS as evidence about #1439 would have been the error.
+
+      THE ABS HYPOTHESIS IS NOW REFUTED BY THE EMITTED CODE, not only by encoding reachability.
+      v0.81 established that bit 7 is unreachable from any VFP 2-register field, which killed the
+      mis-encoding ROUTE while leaving "a genuinely emitted VABS" open. Scanned over the
+      newly-accepted function's 1956 bytes, sliding by a HALFWORD so instruction alignment is not
+      assumed: ZERO `VABS.F32`, ZERO `VMOV.F32` (reg-reg), ZERO `VNEG.F32`. POSITIVE CONTROL, and
+      it is the whole reason the zero means anything: the same scanner over a 74-byte module
+      containing `f32.abs`/`f32.neg`/`f32.copysign` finds `VABS.F32` twice.
+
+      AND A SIGN ERROR IN THIS SHAPE CANNOT COME FROM REASSOCIATION — proven, not assumed.
+      `sign(a*b)` is the XOR of the two signs, and XOR is commutative, so the sign of a product is
+      INVARIANT under any reordering. Overflow breaks magnitude ASSOCIATIVITY, never sign.
+      Computed in f32 with hardware infinity saturation over the exact 60-factor chain, forward
+      and fully reversed, for params ±0.5, ±1, ±2, ±3: identical every time, `got ^ want == 0`.
+      This also explains the signature's shape rather than deepening the mystery — the chain
+      OVERFLOWS to infinity after about 25 factors, and two infinities of opposite sign differ in
+      exactly the sign bit with bit-identical magnitudes, which is the v0.78 observation's exact
+      form.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact:
+      `git grep -c -F 0xEEB00AC0 -- 'crates/*/src/*'` summed must be 3 — the SHIPPED emitters,
+      excluding the test-file match which asserts the constant rather than emitting it. THE
+      PATHSPEC IS PART OF THE COMMAND: `crates/*/src/*` gives 3, while both
+      `:(glob)crates/*/src/**` and `crates/ :!crates/*/tests/*` give 0, so a wrong pathspec looks
+      exactly like a passing refutation. And `git grep -c -F "pool grow retry" -- crates/ scripts/`
+      must return 0 (rc=1 — `grep -c` exits 1 on zero), or the retry is in the tree and this
+      lane's premise is gone. The previous revision used `git log -S"pool grow retry" | wc -l`
+      and expected 0; that command cannot answer the question — see verified-by.
     tags:
       - feature-loop
-      - process
+      - reach
+      - vfp
     links:
       - type: derives-from
         target: BR-001
     fields:
-      req-type: process
+      req-type: system
       priority: must
       issue: "#1439"
-      verification-track: manual
-      done-when: "manual:2026-12-31 disassemble the newly-accepted function with v0.78's retry applied locally — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
+      verification-track: differential
+      disposition: partial
+      landed: "PR #1501 — #1439 — v0.78's stage-3 pool-grow retry applied LOCALLY and reverted byte-identically: the rung LANDS (1956 bytes, tripwire fired) and the newly-accepted function emits ZERO VABS.F32/VMOV.F32/VNEG.F32 over 1956 bytes with a positive control finding VABS twice in a 74-byte abs module; sign is PROVEN order-invariant (XOR of signs) so reassociation is refuted; VMUL.F32 119 == 119 f32.mul so the multiply multiset is intact; the surviving class is a wrong operand from a spill/reload. The named differential is VACUOUS for this shape (F32_EXPORTS tops out at live24). The retry STAYS OUT and #1439 stays OPEN until the cause is named."
+      verified-by: >
+        PARTIAL — the cause is NOT named, so the retry STAYS OUT and the tripwire STAYS ARMED,
+        which is this lane's own stated order. What is delivered is a bounded elimination and one
+        vacuous oracle found.
+
+        BOTH REFUTING COMMANDS REFUTED THEIR OWN EXPECTATIONS, and one of them was MALFORMED in
+        this release's exact shape.
+
+        (a) `git grep -c -F 0xEEB00AC0 -- crates/` expected 3 and returns FOUR matches — three in
+        `arm_encoder.rs` and a fourth in `crates/synth-backend/tests/f32_vfp_encoding_test.rs`,
+        which asserts the constant rather than emitting it. The "three emitters" claim is right
+        about SHIPPED code and the command's glob was wider than the claim.
+
+        (b) `git log -S"pool grow retry" | wc -l` expected 0 and returns FIVE — and the command
+        CANNOT ANSWER ITS QUESTION. `git log -S` is a pickaxe: it matches every commit where the
+        occurrence COUNT CHANGED, so an addition and a later removal both match, and it says
+        nothing about HEAD. Worse, the five commits are `v0.81 scope`, `v0.81 JESSDIVERGE3`,
+        `v0.82 planning`, `v0.82 WIDEFILE5` and `v0.83 plan` — the phrase exists ONLY in
+        `artifacts/release-v0.81`, `-v0.82` and `-v0.83` YAML PROSE and ZERO times in code, so the
+        instrument was counting THE COMMITS THAT WROTE THE ARTIFACTS CARRYING IT. Its reference
+        point came from its own subject, so `expect 0` became unsatisfiable the moment the
+        artifact existed. The CLAIM it was testing is TRUE — `git grep -c -F "pool grow retry" --
+        crates/ scripts/` is 0 at HEAD — and the command is replaced with that one.
+
+        LINE NUMBERS RE-DERIVED AT THIS COMMIT, never carried: the three `0xEEB00AC0` sites in
+        `arm_encoder.rs` are 2012 (`ArmOp::F32Abs`, A32), 6366 (`ArmOp::F32Abs`, Thumb-2) and
+        7354 — which is NOT an `F32Abs` emitter at all but sits inside
+        `encode_thumb_f32_copysign`, a `VABS.F32` followed by `IT MI ; VNEG.F32`. The v0.81
+        figures 1992/6322/7310 had all moved.
+
+        THE FIXTURE'S DENOMINATOR, re-measured because two records disagreed: 130 `f32.mul`,
+        plus 15 `f64.mul`, and ZERO of `f32.abs`/`f32.copysign`/`f32.neg` AND zero of their f64
+        siblings. The durable note carried 71 since v0.81; that figure was never true — the
+        fixture has exactly ONE commit (`0ec9dc7a`, v0.60) and `git show <rev>:<path>` gives 130
+        at every revision. The note is corrected.
+
+        WHAT THE DISASSEMBLY SETTLES. Over the newly-accepted function's 1956 bytes: ZERO
+        `VABS.F32`, ZERO `VMOV.F32` reg-reg, ZERO `VNEG.F32`, with the scanner sliding by a
+        halfword rather than assuming alignment and PROVEN POTENT by a positive control that finds
+        `VABS.F32` twice in a 74-byte abs/copysign module. An emitted VABS is therefore not the
+        mechanism in this function.
+
+        AND WHAT THE ARITHMETIC SETTLES, which removes a whole class without a single compile.
+        `sign(a*b) = sign(a) XOR sign(b)`, and XOR is commutative, so a product's SIGN is invariant
+        under any reordering — overflow destroys magnitude associativity and leaves sign alone.
+        Measured over the exact chain in f32 with infinity saturation, forward versus fully
+        reversed, params ±0.5/±1/±2/±3: `got ^ want == 0x00000000` in every case. So reassociation
+        — a plausible suspect, since spilling can reorder — is REFUTED.
+
+        AND THE MULTIPLY MULTISET IS INTACT: `VMUL.F32` appears 119 times in the emitted function
+        against 119 `f32.mul` in the source, an exact match, so no multiply is dropped or
+        duplicated. (Spill-traffic counts were also taken and are deliberately NOT quoted: the
+        VLDR/VSTR masks returned nothing on the control, so they are UNPROVEN and an uncontrolled
+        number is not evidence.)
+
+        THE SURVIVING CLASS, now the only one left in this family: a WRONG OPERAND — a
+        spill/reload reading the wrong frame slot — which substitutes a value without changing
+        either the instruction count or the sign algebra. That was the last entry on v0.81's
+        candidate list and the one never tested; it is now the sole survivor rather than one of
+        four.
+
+        WHAT THIS STILL NEEDS, stated precisely so the next attempt does not repeat this one. An
+        EXECUTION oracle covering the newly-accepted shape, which does not exist: adding
+        `wide60` to `F32_EXPORTS` as-is would NOT work, because the 60-factor chain overflows to
+        ±infinity and an infinity cannot reveal a substituted operand — every wrong value still
+        multiplies to an infinity of the same sign. The shape needs factors near 1.0 so the
+        product stays finite and a wrong slot becomes visible in the mantissa. That is a fixture
+        design task, not a compile, and it is what the next increment owes.
+      done-when: "manual:2026-12-31 the wide-file sign defect's CAUSE is NAMED with the evidence that names it, an execution oracle covering the newly-accepted shape exists and is non-vacuous (finite, not overflowing), and only then the pool-grow retry lands and the #1426 tripwire flips to asserting a successful compile"
