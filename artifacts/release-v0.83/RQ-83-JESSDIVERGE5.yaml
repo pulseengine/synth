@@ -3,30 +3,110 @@ artifacts:
     type: system-req
     release: v0.83
     status: proposed
-    title: "The three runtime words, or a precise statement of what the reporter must run"
+    title: "The gravity triple READ OUT OF THE OBJECT: three slots are the DIRECTION, the discriminating operands are the ACCUMULATORS, and vel-d is a bit-exact fit"
     description: >
-      The expression is PROVEN FAITHFUL and an OPERAND IS WRONG. Everything addressable from the
-      object has been eliminated: absent, zeroed, landing-on-another-axis, identity rotation, lagged
-      attitude, return-ABI and the VFP frame-slot class. THE NEXT MEASUREMENT IS THE RUNTIME VALUE of
-      `[sp,#152]`, `[sp,#208]` and `[sp,#232]` — three words, obtainable with the reporter's existing
-      QEMU memtrace plugin. This lane either obtains them or states precisely what to run, in a few
-      sentences that LEAD with what changed for them. CONDUCT RULE 4 BINDS: #1436 is externally
-      reported and STILL OPEN, so hardening the oracle around it again is NOT progress on it.
+      THE ASK WAS POINTING AT THE WRONG THREE WORDS, and reading the object says which three.
+      This artifact planned to obtain the runtime values of `[sp,#152]`, `[sp,#208]` and
+      `[sp,#232]`. Disassembling `ekf@0.10.0#estimate` shows all three are the MULTIPLICAND of a
+      `x 9.81`, in three copies of one shape:
 
-      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
-      legitimate outcome, reported with numbers:
-      `python3 scripts/repro/jessdiverge3_gravity_faithful_1436.py --self-test` (expect 9 assertions,
-      0 failures) and `gh issue view 1436 --json comments --jq '.comments|length'` — if it is no longer
-      10, the reporter replied and that reply OUTRANKS this plan.
+        vldr s8, [sp,#<accum>] ; vldr s9, [sp,#<slot>] ; movw/movt ip = 0x411CF5C3 (+9.81)
+        vmov s10, ip ; vmul.f32 s11, s9, s10 ; vadd.f32 s9, s8, s11 ; str -> linmem
+
+      so each slot is the gravity DIRECTION component and the OTHER operand is an accumulator.
+      Derived pairs, with the hand-read block at 0x24a4 as the extractor's positive control:
+      (accum [sp,#200], slot [sp,#152]) -> +940; ([sp,#216], [sp,#232]) -> +936;
+      ([sp,#192], [sp,#208]) -> +944.
+
+      AND THE REPORTER'S PUBLISHED TICK-1 WORDS FIT ONE MECHANISM EXACTLY. If the three
+      ACCUMULATORS read zero, only the gravity term survives: the down axis becomes
+      `0 + 1.0 x 9.81 = 9.81`, integrated as `9.81 x 0.001`, whose f32 bits are 0x3C20BA20 —
+      BIT-IDENTICAL to the `vel-d` the reporter measured on Renode, QEMU and i.MX RT1176 alike.
+      The north and east axes become `0 + 0.0 x 9.81 = 0`, which is exactly the zeros measured,
+      while wasmtime's non-zero north/east come from that same accumulator. `pos-d` fits
+      `(g x dt) x dt / 2` to 5 significant figures. FOUR of four published words, ONE cause.
+
+      THIS IS HYPOTHESIS THREE AND IS RECORDED AS A FALSIFIABLE PREDICTION, NOT A CAUSE. The
+      first two were refuted — "an identity rotation" by the reporter's tick-16 numbers, "a
+      lagged attitude read" by the reporter's own TCG tracer showing the quaternion
+      BIT-IDENTICAL at every tick. Both were claims about STATE; this one is about the
+      TRANSLATIONAL COMPUTATION, which is where the previous refutation pointed, and it does not
+      contradict the quaternion agreeing. What is MEASURED is the expression shape and the
+      arithmetic fit. What is NOT measured is any runtime value, so the write-up states a
+      predicted value per slot and the conditions that refute it.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact:
+      `python3 scripts/repro/jessdiverge3_gravity_faithful_1436.py --self-test` (expect 9
+      assertions, 0 failures) and `gh issue view 1436 --json comments --jq '.comments|length'` —
+      if it is no longer 10 the reporter replied and that reply OUTRANKS this plan.
+
+      MEASURED, NEITHER REFUTED: the self-test is 9 assertions / 0 failures, and #1436 stands at
+      10 comments with the last dated 2026-10-02 from the reporter via the relay prefix.
     tags:
       - feature-loop
-      - process
+      - external
+      - vfp
     links:
       - type: derives-from
         target: BR-001
     fields:
-      req-type: process
+      req-type: system
       priority: must
       issue: "#1436"
-      verification-track: manual
-      done-when: "manual:2026-12-31 the three runtime words, or a precise statement of what the reporter must run — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
+      verification-track: differential
+      disposition: partial
+      landed: "PR #1502 — #1436 — the three slots this artifact planned to ask about are the `x 9.81` MULTIPLICANDS (the gravity direction), read from the object; the discriminating operands are the accumulators [sp,#200]/[sp,#216]/[sp,#192], paired with [sp,#152]/[sp,#232]/[sp,#208] and stored to linmem +940/+936/+944. If the accumulators read zero, one mechanism fits FOUR of four published tick-1 words, with vel-d bit-identical to f32(9.81*0.001) = 0x3C20BA20. Recorded as hypothesis three in FALSIFIABLE form; no runtime value is measured. The reply was DRAFTED AND SURFACED for approval, not posted."
+      verified-by: >
+        PARTIAL — the mechanism is NAMED as a falsifiable prediction with a bit-exact arithmetic
+        fit, and NO runtime value is measured, so the defect is not yet proven and this artifact
+        does not say it is.
+
+        DELIVERED 1 — THE OPERAND STRUCTURE, read from the object rather than inferred. The
+        reporter's module was compiled with THEIR OWN recorded invocation
+        (`-t cortex-m7dp --cortex-m --relocatable --all-exports --embedder-data-init
+        --embedder-global-init`), after verifying both inputs against the committed
+        `SHA256SUMS.txt` — `c.wasm` d854e5bb..., `c.loom.wasm` 791ab6b5..., both matching. A
+        first attempt without their flags was REFUSED by synth with a diagnostic naming #1041
+        (13 active data segments, no `__synth_wasm_data` reference), which is the refusal working.
+        `ekf@0.10.0#estimate` is at `.text+0x164`, size 0x3bc4.
+
+        DELIVERED 2 — THE THREE TRIPLES AND WHICH OPERAND IS WHICH. All three slots this artifact
+        planned to ask about are `x 9.81` multiplicands, i.e. the gravity DIRECTION, and are
+        therefore the operands most likely to be CORRECT. The discriminating operands are the
+        accumulators `[sp,#200]`, `[sp,#216]`, `[sp,#192]`. The ask becomes SIX words with a
+        predicted value each, not three.
+
+        DELIVERED 3 — THE ARITHMETIC FIT, stated with its own numbers: `f32(9.8100004196167 x
+        0.0010000000474974513)` has bits 0x3C20BA20 and the reporter's measured ARM `vel-d` is
+        0x3C20BA20. The ratio of the measured word to `g*dt` is 0.9999999768. ARM's `vel-n` and
+        `vel-e` are exact zeros; wasmtime's are -9.68e-07 and -1.94e-06.
+
+        AND AN EMPTY POSITIVE CONTROL WAS THE FINDING, twice in this lane.
+
+        (a) Searching the object for the gravity constant as a 4-byte little-endian pattern
+        returned ZERO — and so did the CONTROLS, `1.0` (62 occurrences in the wasm) and `0.001`
+        (22). The search was structurally incapable: synth materializes f32 constants as
+        `movw`/`movt` pairs and Thumb-2 scatters a 16-bit immediate across `i:imm3:imm8`, so the
+        4-byte pattern never appears contiguously. Reconstructing the pairs instead finds +9.81
+        at 5 sites and -9.81 at 2, with the controls at 34 and 18 — non-zero, so potent.
+
+        (b) The operand-pairing extractor first returned ZERO triples because its window began
+        one instruction too late and saw only one of the two `vldr`s. Caught because the block
+        had been READ BY EYE first, which served as the control; the corrected extractor
+        reproduces the hand-read pair at 0x24a4 exactly.
+
+        NOT DELIVERED, and disclosed rather than glossed: the lowering was done with synth
+        0.82.0 while the reporter ran 0.77.0, and 0.82.0 has NOT been byte-compared against
+        0.77.0 for this module. The durable record establishes 0.79.0 == 0.77.0 byte-identically
+        and says nothing about 0.82.0. Partial evidence of stability: all three slot offsets this
+        artifact inherited were derived on an earlier synth and ALL THREE reproduce here
+        (`[sp,#152]` 82 sites, `[sp,#208]` 32, `[sp,#232]` 20). The correspondence therefore
+        gives the reporter a VERSION-ROBUST instruction-pattern locator and marks the addresses
+        as orientation only.
+
+        CONDUCT: #1436 is externally reported and STILL OPEN, so rule 4 binds and no oracle was
+        hardened in its name. The reply LEADS with what changed for them — the mechanism is
+        named and their own measured word is the bit-exact fit — states the prediction and the
+        conditions that refute it, and offers detail rather than pasting it. It was DRAFTED AND
+        SURFACED to the maintainer for approval before posting, not posted from this lane.
+      done-when: "manual:2026-12-31 the reporter's divergence has a NAMED cause supported by a measured runtime value rather than an arithmetic fit alone, or the prediction recorded here is REFUTED by a run and the refutation is recorded with its numbers; and any correspondence LEADS with what changed for the reporter"
