@@ -94,7 +94,8 @@ artifacts:
         SO THE BLOCKER IS SCHEDULING, NOT COST, and it is named precisely. `ci.yml` triggers on
         `push: branches: [main]` and `pull_request: branches: [main]`, so pushing a scratch
         BRANCH raises no workflow at all — the control needs a PULL REQUEST. That queues the
-        whole workflow: 73 job keys, of which 46 are `ubuntu-latest`, 18 are
+        whole workflow: 71 job keys (DERIVED by loading ci.yml and counting `jobs`; an
+        earlier draft said 73), of which 46 are `ubuntu-latest`, 18 are
         `[self-hosted, linux, x64, rust-cpu]` and 3 are `light`. THE BINDING CONSTRAINT IS THE
         46, NOT THE 18, and an earlier draft of this sentence had it backwards: it blamed the
         seven-runner rust-cpu partition on a point sample reading 7/7 busy. Measured properly on

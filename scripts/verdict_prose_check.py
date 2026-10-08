@@ -108,12 +108,19 @@ NOT_A_VERDICT = {"FULL", "DONE-WHEN", "RED-FIRST", "THE", "BOTH", "MEASURED",
                  #   adjacent-negator     fixes those 6; still inverts "no work was
                  #                        SHIPPED", and unbounded-distance negation
                  #                        in prose is not decidable by a token rule.
-                 #   decline on any       never inverts, but drops 13 artifacts OUT
-                 #   negator in the       of population — RQ-60-A64IMPORT,
-                 #   sentence             RQ-62-MEMISOLATE, RQ-65-PARITY,
-                 #                        RQ-80-CLOSEGATE and RQ-82-CLOSEARM among
-                 #                        them. Losing coverage on 13 to close a
-                 #                        hole on 3 is a bad trade.
+                 #   decline on any       never inverts, but drops 27 of the 78 in
+                 #   negator in the       population (first-sentence scope, negators
+                 #   sentence             NOT/NO/NEVER/CANNOT/WITHOUT/NEITHER/NOR).
+                 #                        Losing 27 to close a hole on 3 is a bad
+                 #                        trade. An earlier version of this comment
+                 #                        said 13 and named RQ-80-CLOSEGATE and
+                 #                        RQ-82-CLOSEARM among them; both open
+                 #                        "DELIVERED." with NO negator, so no negator
+                 #                        rule can drop them. Corrected by v0.82's
+                 #                        cold review. The count is also
+                 #                        DEFINITION-DEPENDENT (it moves with the
+                 #                        sentence scope), which is a second reason
+                 #                        not to adopt it.
                  #
                  # Adding the negated forms to INCOMPLETE was also tried: 0 live
                  # effect (0 enter, 0 leave, 0 newly red), but it converts an
