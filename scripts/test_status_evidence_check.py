@@ -2076,6 +2076,84 @@ class StatusGate1250(unittest.TestCase):
 
 
 
+class R14ClosearmPoseVerdict1484(unittest.TestCase):
+    """RQ-82-CLOSEARM (#1484). A claiming status is simultaneously R3's ONLY
+    remedy for "the status under-reports shipped work" AND the closure gate's
+    permission to retire the issue, and nothing read their conjunction. v0.81's
+    JESSDIVERGE3 and WIDEFILE4 each delivered a REFUTATION, said so in their own
+    `verified-by`, and were set claiming for R3's sake -- which silently placed
+    an externally reported LIVE blocker in the authorised close set. An operator
+    caught it by running the closure gate before tagging; no gate did.
+
+    WHY R14 DEMANDS A DECLARATION RATHER THAN `outlives`. R11 reds a
+    non-delivery `disposition:` beside a claiming status, and R3 reds a
+    non-claiming status whose done-when evidence exists, so for a lane that did
+    real work and refuted its own premise, claiming + prose-only refutation +
+    NO disposition is the FORCED configuration. Demanding `outlives` would red
+    RQ-77-PROSEBLIND, whose `verified-by` opens REFUTED and whose issue (#1319)
+    IS closed because the refutation shipped in v0.69. So R14 demands that the
+    ISSUE's fate be STATED -- either value -- in the field the closure gate
+    already reads."""
+
+    MANUAL = "manual: the stated outcome holds"
+    REFUTED = "REFUTED. The premise did not survive its own measurement."
+    DELIVERED = "DELIVERED. Both directions, measured at the cut."
+
+    def _fx(self, fields):
+        fx = Fixture()
+        fx.release("release-v0.82/RQ-82-SUBJECT.yaml",
+                   [art("RQ-82-SUBJECT", fields.pop("status"), fields)])
+        return fx
+
+    def test_incomplete_verdict_beside_claiming_without_a_scope_is_red(self):
+        fx = self._fx({"status": "implemented", "done-when": self.MANUAL,
+                       "verified-by": self.REFUTED})
+        self.assertTrue(has(fx.run([]), "R14 RQ-82-SUBJECT"), fails(fx.run([])))
+
+    def test_outlives_satisfies_it(self):
+        fx = self._fx({"status": "implemented", "done-when": self.MANUAL,
+                       "verified-by": self.REFUTED, "issue-scope": "outlives"})
+        self.assertEqual(fails(fx.run([])), [])
+
+    def test_closes_satisfies_it_too(self):
+        # The PROSEBLIND shape: the verdict refutes the premise AND resolves the
+        # issue. Demanding `outlives` here would be false.
+        fx = self._fx({"status": "implemented", "done-when": self.MANUAL,
+                       "verified-by": self.REFUTED, "issue-scope": "closes"})
+        self.assertEqual(fails(fx.run([])), [])
+
+    def test_a_COMPLETE_verdict_is_untouched(self):
+        # CONTROL: the rule must fire on the INCOMPLETE set only, or it would
+        # demand a scope declaration from every delivered artifact in the tree.
+        fx = self._fx({"status": "implemented", "done-when": self.MANUAL,
+                       "verified-by": self.DELIVERED})
+        self.assertEqual(fails(fx.run([])), [])
+
+    def test_a_non_claiming_status_is_untouched(self):
+        # CONTROL: R3/R11 own that case. R14 must not double-report it.
+        fx = self._fx({"status": "proposed", "done-when": self.MANUAL,
+                       "verified-by": self.REFUTED})
+        self.assertFalse(has(fx.run([]), "R14 "), fails(fx.run([])))
+
+    def test_a_VALUELESS_issue_scope_key_declares_nothing_and_still_reds(self):
+        # #1458's shape: a bare `issue-scope:` parses to None, and `str(None)`
+        # is the four-character string "None" -- truthy. Read that way a
+        # valueless key would SATISFY R14 while declaring nothing at all.
+        fx = self._fx({"status": "implemented", "done-when": self.MANUAL,
+                       "verified-by": self.REFUTED, "issue-scope": None})
+        self.assertTrue(has(fx.run([]), "R14 RQ-82-SUBJECT"), fails(fx.run([])))
+
+    def test_the_vocabulary_is_IMPORTED_not_mirrored(self):
+        # DERIVE WHAT YOU CHECK AGAINST. If R14 ever grows its own copy of the
+        # verdict sets, the two drift silently -- the #667 lesson one tier down.
+        # Identity, not equality: an equal-but-separate set would still drift.
+        import verdict_prose_check as vpc
+        self.assertIs(sec.VERDICT_INCOMPLETE, vpc.INCOMPLETE,
+                      "R14 must READ verdict_prose_check's set, not copy it")
+        self.assertIs(sec._leading_verdict, vpc.leading_verdict,
+                      "R14 must READ verdict_prose_check's classifier")
+
+
 class ClosesWithoutClaimingIsScopedToRefuted(unittest.TestCase):
     """v0.81 round-1 cold review, finding 9.
 

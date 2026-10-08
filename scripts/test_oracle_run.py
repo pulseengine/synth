@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/oracle_run.py.
+r"""Unit tests for scripts/oracle_run.py.
 
 RQ-77-STDERR (#1419). This driver runs **206 oracles** in CI and had NO tests at
 all, and was not wired into `ci.yml`. The specific defect it shipped with: an

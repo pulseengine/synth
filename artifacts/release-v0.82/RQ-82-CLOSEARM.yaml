@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-82-CLOSEARM
     type: system-req
     release: v0.82
-    status: proposed
+    status: implemented
     title: "Satisfying one gate ARMED another: a claiming status is both R3's remedy and the closer's permission, and nothing reads the conjunction"
     description: >
       v0.81 nearly closed an external reporter's live defect by machine, and neither gate
@@ -39,8 +39,13 @@ artifacts:
       artifacts no longer carry `outlives`, or the authorised set no longer contains an
       issue whose artifact disclaims progress, the instance is gone — re-derive the shape
       before building on it. Then
-      `python3 -c "import sys; sys.path.insert(0,'scripts'); import status_evidence_check as s; print(sorted(s.INCOMPLETE))"`
-      — if an INCOMPLETE verdict beside a claiming status is ALREADY red, this premise is dead.
+      `python3 -c "import sys; sys.path.insert(0,'scripts'); import verdict_prose_check as v; print(sorted(v.INCOMPLETE))"`
+      — CORRECTED at the lane's start: `INCOMPLETE`/`COMPLETE` live in `verdict_prose_check`,
+      NOT in `status_evidence_check` (which owns `CLOSES_WITHOUT_CLAIMING`); the wrong module
+      raises AttributeError, which is the GOOD failure. Then derive the population with the
+      GATE'S OWN classifier and never a hand-written regex: `leading_verdict(vb) in INCOMPLETE
+      and status in CLAIMING` over `artifacts/**/*.yaml`. If that shape is ALREADY red, this
+      premise is dead.
     tags:
       - process
       - gate
@@ -53,5 +58,35 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1484"
+      landed: "R14 landed in PR #1486 — the rule, seven unit tests, both potency mutants, and the day-one red (RQ-77-PROSEBLIND gains `issue-scope: closes`)."
+      verified-by: >
+        DELIVERED, AND THE RULE JUDGES ITS OWN ARTIFACT. R14 reds an artifact whose
+        `verified-by` opens with an INCOMPLETE verdict beside a CLAIMING status with no
+        `issue-scope:` declared. This artifact is claiming, so its own verdict had to be a
+        COMPLETE one — and it is, truthfully: the rule, seven tests, paired potency mutants
+        in BOTH directions and the single day-one red are all in the tree.
+
+        PROVEN POTENT WITH PAIRED MUTANTS, because the rule has two failure directions and
+        each is invisible to the other's tests. Forcing the condition False kills the two
+        red-first tests; dropping `not _iscope14` so it over-fires kills the two green-path
+        tests; as shipped 7/7 pass and the live gate is rc=0. On real data R14 reds
+        RQ-77-PROSEBLIND, and reds BOTH v0.81 artifacts when their `outlives` is stripped —
+        the near-miss an operator caught by hand, reproduced by a gate.
+
+        THE DESIGN WAS CONSTRAINED BY THE DEFECT IT FIXES. Demanding `outlives` would have
+        reddened a legitimate artifact: R11 forbids a non-delivery `disposition:` beside a
+        claiming status and R3 forbids a non-claiming status with done-when evidence, so
+        claiming + prose-only refutation + no disposition is the FORCED configuration. R14
+        therefore demands a DECLARATION in either direction, and R3 and R11 are untouched.
+
+        THE VOCABULARY IS IMPORTED UNDER AN IDENTITY ASSERT: `INCOMPLETE` and
+        `leading_verdict` come from `verdict_prose_check`, checked with `assertIs` and not
+        `assertEqual`, because an equal-but-separate set passes today and drifts tomorrow.
+        Asserted: zero `INCOMPLETE = {` literals in the gate.
+
+        AND IT WAS NEARLY BORN WITH THE DEFECT ITS SIBLING LANE SCOPES: written as
+        `str(fields.get("issue-scope", ""))` a bare key would read as the truthy string
+        "None", so a declaration of NOTHING would have SATISFIED R14. It is written `or ""`
+        before `str()`, and a test pins exactly that case.
       verification-track: manual
-      done-when: "manual:2026-12-31 an artifact that claims its outcome holds while its own `verified-by` opens with an INCOMPLETE verdict and declares no `issue-scope: outlives` is RED, proven red-first against v0.81's own two artifacts with the `outlives` field removed, and proven NOT to red either of them as shipped; R3's rule unchanged; and the live population measured before the rule lands so a day-one red count is known rather than discovered"
+      done-when: "manual:2026-12-31 an artifact that claims its outcome holds while its own `verified-by` opens with an INCOMPLETE verdict and declares NO `issue-scope:` AT ALL is RED — EITHER value satisfies it, because R11 forbids a non-delivery `disposition:` beside a claiming status and R3 forbids a non-claiming status with done-when evidence, so claiming + prose-only refutation + no disposition is the FORCED configuration and demanding `outlives` specifically would red RQ-77-PROSEBLIND, whose issue IS resolved; proven red-first against v0.81's own two artifacts with the `outlives` field removed, proven NOT to red either of them as shipped, proven not to fire on a COMPLETE verdict or a non-claiming status, proven that a VALUELESS `issue-scope:` key still reds, and the verdict vocabulary IMPORTED from `verdict_prose_check` with an identity assert so no mirror can drift; R3's and R11's rules unchanged; and the live population measured before the rule lands so the day-one red count is known rather than discovered"

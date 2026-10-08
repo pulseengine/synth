@@ -36,6 +36,11 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1319"
+      # R14 (#1484): the `verified-by:` opens REFUTED beside a claiming status,
+      # so the ISSUE's fate must be declared rather than inferred from prose.
+      # `closes` is the truthful value: #1319 is CLOSED because the refutation
+      # this artifact records had ALREADY SHIPPED in v0.69. Not `outlives`.
+      issue-scope: closes
       landed: "#1424"
       verified-by: >-
         REFUTED, AND THE REFUTATION ALREADY SHIPPED IN v0.69 — which this lane did not know when it
