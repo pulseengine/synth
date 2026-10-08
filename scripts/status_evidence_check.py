@@ -605,6 +605,71 @@ ISSUE_SCOPES = {"closes", "outlives"}
 CLOSES_WITHOUT_CLAIMING = {"refuted"}
 
 
+def landed_two_context(artifacts, only_version: tuple | None = None):
+    """R15 (RQ-83-LANDEDBOTH, #1484): `landed:` must name BOTH the ISSUE and the
+    DELIVERING PR, because `_acknowledge` resolves a DIFFERENT one of the two
+    depending on which shape the commit subject is in.
+
+    MEASURED by reading the two functions rather than reasoning about them.
+    `_acknowledge` takes `PR_NUMBER.findall(subject)[-1]`, and `PR_NUMBER` matches
+    `(#N)` WITH PARENTHESES. On a LANE BRANCH this programme's subject reads
+    `... lane (#<issue>): ...`, so `prs[-1]` is the ISSUE. After the squash GitHub
+    appends ` (#<pr>)`, so `prs[-1]` becomes the PR. The acknowledgment therefore
+    asks `landed:` for a DIFFERENT number before and after the merge, and nothing
+    required it to carry both — v0.82 hit the R4-lane red on exactly this and
+    fixed it BY HAND.
+
+    SCOPED TO THE RELEASE BEING CUT, and the scoping is a MEASUREMENT, not a
+    convenience. Over ALL releases the population is 48 and the day-one red count
+    is TWENTY-FIVE: historical `landed:` entries name the PR ALONE, which was the
+    older convention, and they do not red today because `_acknowledge` only runs
+    for artifacts matched by a delivery commit in the CURRENT window. A rule that
+    reds 25 shipped artifacts on the day it lands is one people route around —
+    RQ-74-STALEMSG set out to build exactly such a rule and its own census refuted
+    it. Scoped to the release under check the day-one count is ZERO, and v0.82's
+    twelve all satisfy it already, which is the evidence that the convention is the
+    practice rather than an aspiration.
+
+    `only_version` comes from the caller's `_cut`, which is `max()` over the
+    artifact-bearing release files AND cross-checked against `anchor + 1`. That
+    second derivation is what keeps this check's reference independent of its own
+    subject.
+
+    Returns a list of failure strings.
+    """
+    out: list[str] = []
+    for _path, version, art_id, status, fields, _links, _release in artifacts:
+        if only_version is not None and version != only_version:
+            continue
+        # A CLAIMING status is acknowledged by its status, never by `landed:`.
+        if status in CLAIMING:
+            continue
+        landed = field_text(fields, "landed")
+        issue = field_text(fields, "issue")
+        # The rule is about the AGREEMENT of two fields. With either absent there
+        # is no disagreement to find, and R4/R11 already police their presence.
+        if not landed or not issue:
+            continue
+        nums = set(re.findall(r"#(\d+)", landed))
+        inums = set(re.findall(r"(\d+)", issue))
+        if not (nums & inums):
+            out.append(
+                f"R15 {art_id}: `landed:` names {sorted('#' + n for n in nums)} "
+                f"but NOT its own `issue: {issue}`. On the lane branch "
+                f"`_acknowledge` resolves `prs[-1]` to the ISSUE, so this reds "
+                f"R4-lane before the squash even though it would pass after. Name "
+                f"BOTH the issue and the delivering PR."
+            )
+        elif not (nums - inums):
+            out.append(
+                f"R15 {art_id}: `landed:` names only its own issue "
+                f"({sorted('#' + n for n in nums)}) and no DELIVERING PR. After "
+                f"the squash `_acknowledge` resolves `prs[-1]` to the PR, so this "
+                f"passes now and reds once merged. Name BOTH."
+            )
+    return out
+
+
 def authorised_close_set(artifacts, only_version: tuple | None = None):
     """R12 (#1250): the issues that delivering these artifacts AUTHORISES the
     release to close, and the ones deliberately held open.
@@ -2388,6 +2453,11 @@ def main() -> int:
     # Scoped to the release being CUT — that is the set the exit-condition
     # step consumes. An all-history set would be 96 issues and read as noise.
     _auth, _held = authorised_close_set(artifacts, _cut)
+    # R15 (RQ-83-LANDEDBOTH, #1484) — scoped to `_cut`, which is cross-checked
+    # against `anchor + 1` above, so the scope is not derived from the artifacts
+    # it judges.
+    _r15 = landed_two_context(artifacts, _cut)
+    failures.extend(_r15)
     # The POPULATION the close-set was derived over. Printed because the
     # authorised count alone cannot distinguish "nothing is authorised yet"
     # (the legitimate plan-time state: the AUTHORISED count is 0 at v0.72's

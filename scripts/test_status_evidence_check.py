@@ -2236,6 +2236,109 @@ class ClosesWithoutClaimingIsScopedToRefuted(unittest.TestCase):
                          "branch that authorises nothing at all")
 
 
+class LandedTwoContextR15(unittest.TestCase):
+    """RQ-83-LANDEDBOTH (#1484). `_acknowledge` takes
+    `PR_NUMBER.findall(subject)[-1]` and `PR_NUMBER` matches `(#N)` WITH
+    PARENTHESES, so on a LANE BRANCH (`... lane (#<issue>): ...`) it resolves to
+    the ISSUE and after the squash (`... (#<pr>)`) it resolves to the PR. `landed:`
+    must therefore carry BOTH, and until v0.83 nothing required it — v0.82 hit the
+    R4-lane red on exactly this and fixed it by hand.
+
+    THE SCOPE IS A MEASUREMENT. Over ALL releases the rule's population is 48 and
+    its day-one red count is TWENTY-FIVE, because historical `landed:` entries name
+    the PR ALONE and never reach `_acknowledge` (it only runs over the current
+    window). Scoped to the release being cut the count is ZERO and v0.82's twelve
+    already satisfy it. A rule reddening 25 shipped artifacts is one people route
+    around — RQ-74-STALEMSG built exactly that and its own census refuted it.
+    """
+
+    @staticmethod
+    def _art(aid, landed, issue, status="proposed", version=(0, 83)):
+        from pathlib import Path
+        return (Path("a.yaml"), version, aid, status,
+                {"landed": landed, "issue": issue}, [], f"v{version[0]}.{version[1]}")
+
+    def test_pr_only_without_the_issue_REDS(self):
+        out = sec.landed_two_context(
+            [self._art("RQ-X", "PR #1496 — delivered", "#1484")], (0, 83))
+        self.assertTrue(out, "names the PR but not its own issue")
+        self.assertIn("NOT its own", out[0])
+
+    def test_issue_only_without_a_pr_REDS(self):
+        out = sec.landed_two_context(
+            [self._art("RQ-X", "#1484 — delivered", "#1484")], (0, 83))
+        self.assertTrue(out, "names only the issue, so it reds AFTER the squash")
+        self.assertIn("no DELIVERING PR", out[0])
+
+    def test_CONTROL_both_named_is_green(self):
+        """Without this the two above are satisfied by a rule that always reds."""
+        self.assertEqual(
+            sec.landed_two_context(
+                [self._art("RQ-X", "PR #1496 — #1484 — delivered", "#1484")],
+                (0, 83)), [])
+
+    def test_CONTROL_claiming_status_is_green(self):
+        """A claiming status is acknowledged BY ITS STATUS, never by `landed:`."""
+        self.assertEqual(
+            sec.landed_two_context(
+                [self._art("RQ-X", "PR #1496", "#1484", status="implemented")],
+                (0, 83)), [])
+
+    def test_CONTROL_absent_field_is_green(self):
+        """With either field absent there is no DISAGREEMENT to find, and R4/R11
+        already police their presence. Both directions asserted."""
+        for landed, issue, why in (("", "#1484", "landed absent"),
+                                   ("PR #1496", "", "issue absent")):
+            with self.subTest(why=why):
+                self.assertEqual(
+                    sec.landed_two_context(
+                        [self._art("RQ-X", landed, issue)], (0, 83)), [])
+
+    def test_CONTROL_scoped_to_the_cut(self):
+        """A violating artifact from an OLDER release must NOT red — that scoping
+        is what takes the day-one count from 25 to 0."""
+        self.assertEqual(
+            sec.landed_two_context(
+                [self._art("RQ-OLD", "PR #1399 — delivered", "#1136",
+                           version=(0, 75))], (0, 83)), [])
+        # and the SAME artifact DOES red when it IS the release being cut, so the
+        # control above is about the scope rather than about the artifact.
+        self.assertTrue(
+            sec.landed_two_context(
+                [self._art("RQ-OLD", "PR #1399 — delivered", "#1136",
+                           version=(0, 75))], (0, 75)))
+
+    def test_the_live_tree_has_ZERO_day_one_reds(self):
+        """The claim the scoping rests on, asserted against the real tree rather
+        than quoted from the artifact that states it."""
+        import glob
+        import yaml
+        from pathlib import Path
+        arts = []
+        for f in sorted(glob.glob("artifacts/**/*.yaml", recursive=True)):
+            try:
+                d = yaml.safe_load(Path(f).read_text())
+            except Exception:
+                continue
+            if not isinstance(d, dict):
+                continue
+            for a in (d.get("artifacts") or []):
+                if not isinstance(a, dict) or "id" not in a:
+                    continue
+                rel = str(a.get("release", "")).strip().lstrip("v")
+                try:
+                    mm = tuple(int(x) for x in rel.split(".")[:2])
+                except Exception:
+                    continue
+                arts.append((Path(f), mm, a["id"],
+                             str(a.get("status", "")).strip().lower(),
+                             a.get("fields") or {}, [], rel))
+        cut = max((a[1] for a in arts), default=None)
+        self.assertIsNotNone(cut, "a population of zero is a refusal, not a pass")
+        self.assertEqual(sec.landed_two_context(arts, cut), [],
+                         "R15 must land with ZERO day-one reds on the cut")
+
+
 class ValuelessKeyClass1458(unittest.TestCase):
     """RQ-82-VALUELESSKEY (#1458). v0.81 fixed `str(None) == "None"` FIVE times
     across TWO gates in TWO cold-review rounds and never asked how many sites
