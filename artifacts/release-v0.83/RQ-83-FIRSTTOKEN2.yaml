@@ -1,0 +1,31 @@
+artifacts:
+  - id: RQ-83-FIRSTTOKEN2
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "The leading-token hole stays NAMED; #1476 is the record of why no wider rule is adoptable"
+    description: >
+      v0.82 implemented THREE widenings and REFUSED all three with numbers. The bare-sentence scan
+      INVERTS negation (5 of 6 negated forms), adjacent-negator still inverts at distance, and the
+      any-negator rule drops 27 of 78 in population at afa59b5d — a drop count that MOVES WITH THE
+      SENTENCE SCOPE, which is itself a reason it is not adoptable: a population that changes with a
+      parsing choice is not a population. #1476 stays OPEN as the record. This lane re-measures whether
+      the trade has changed and does NOT widen the rule without it.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `python3 scripts/verdict_prose_check.py --self-test` (rc=0) and re-derive the variant-3 drop
+      count at this tree — if it has fallen below the hole it would close, the trade has inverted and
+      the refusal must be revisited.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1476"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the leading-token hole stays named; #1476 is the record of why no wider rule is adoptable — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

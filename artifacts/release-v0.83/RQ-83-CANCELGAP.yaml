@@ -1,0 +1,35 @@
+artifacts:
+  - id: RQ-83-CANCELGAP
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "A CANCELLED check-run satisfies BOTH merge gates while providing no evidence"
+    description: >
+      FOUND BY v0.82's OWN THEME, INSIDE v0.82's OWN RITUAL. CHECK3 asks for zero non-advisory
+      FAILURES and cancelled is not a failure; CHECK3b asks for zero non-advisory PENDING and cancelled
+      is completed. So the conjunction "verified" is false. MEASURED: `Mach-O host-link oracle, NATIVE
+      arm64-macOS (RQ-64-MACHO)` was CANCELLED on PR #1493 with `runner=` empty and `steps=0` — a
+      RUNNER NO-SHOW — and the ritual printed GATEOK and merged. Reading rc WITHOUT a pipe,
+      `grep -i -E 'cancel|timed_out'` returns rc=1 with ZERO hits in BOTH `scripts/merge_ritual.sh` and
+      `scripts/tag_release.sh`; the only refusal lives in a hand-run guard, outside the repo and outside
+      CI. A gate written as "zero X plus zero Y" has a third state it never names, and the check-run
+      domain has five more. The lane adds the check to both scripts and DISTINGUISHES a no-show
+      (`steps=0`, no runner -> re-run) from a genuine cancellation.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `grep -c -i cancelled scripts/merge_ritual.sh` — if non-zero the ritual already checks and the
+      premise is dead; and `grep -c -i cancelled scripts/test_merge_ritual.py` — if non-zero a test
+      already covers it, so the gap is narrower than stated.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1484"
+      verification-track: manual
+      done-when: "manual:2026-12-31 a cancelled check-run satisfies both merge gates while providing no evidence — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

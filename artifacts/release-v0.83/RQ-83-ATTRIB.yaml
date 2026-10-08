@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-83-ATTRIB
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "No gate enforces TWO-SIGNAL attribution, and a prefix-only sweep is blind in both directions"
+    description: >
+      `author.login` alone calls an external reporter internal; a `**[name]` prefix alone calls a
+      relayed report internal when the relay is absent. v0.82 measured BOTH failures: a prefix-only
+      sweep called cpetig's #1318 internal, and #1441 was treated as internal all release when it is
+      fathom's. AND THE DURABLE MEMORY OF WHICH THREADS ARE HIS WAS WRONG — it asserted three where a
+      bounded-complete derivation gives six, because the derivation's `--limit 200` reached only
+      partway down a 410-issue list. A derivation that cites its command inherits that command's
+      bounds. This lane makes the two-signal rule mechanical.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `gh issue list --repo pulseengine/synth --state all --limit 2000 --json number,author --jq
+      '[.[]|select(.author.login=="cpetig")]|length'` (expect 6, and check the LOWEST issue number the
+      window actually reached) — if a narrower limit gives the same answer the truncation hazard is
+      absent here.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1484"
+      verification-track: manual
+      done-when: "manual:2026-12-31 no gate enforces two-signal attribution, and a prefix-only sweep is blind in both directions — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

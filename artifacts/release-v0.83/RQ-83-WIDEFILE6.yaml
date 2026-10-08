@@ -1,0 +1,31 @@
+artifacts:
+  - id: RQ-83-WIDEFILE6
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "Disassemble the newly-accepted function with v0.78's retry applied locally"
+    description: >
+      The mechanism class is SETTLED and the emitter is NOT. `got ^ want == 0x8000_0000` with
+      bit-identical magnitudes means exactly one factor's sign is wrong, and the POSITIVE rows decide
+      it is an ABS. `0xEEB00AC0` has THREE emitters, two of them `ArmOp::F32Abs` on different encoder
+      paths — and the fixture contains ZERO `f32.abs`, `f32.copysign` or `f32.neg` against 130
+      `f32.mul`, so none of the three should be reachable. The 2-register mis-encoding route is dead.
+      This lane applies v0.78's retry LOCALLY (it stays out of the tree) and disassembles the function.
+      The tripwire stays armed and the retry stays out until the cause is NAMED.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `git grep -c -F 0xEEB00AC0 -- crates/` (expect 3 emitters) and
+      `git log -S"pool grow retry" --oneline | wc -l` (expect 0 — the retry is still out of the tree).
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1439"
+      verification-track: manual
+      done-when: "manual:2026-12-31 disassemble the newly-accepted function with v0.78's retry applied locally — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-83-PAGESIZE5
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "The page-size capability, with the execution evidence its own done-when demands (EXTERNAL/fathom)"
+    description: >
+      TWO REMEDIES ARE OFF THE TABLE ON RECORDED EVIDENCE and this artifact exists partly to stop a
+      third attempt. gale answered on #1145: relocating the refusal closes a door gale wants open, and
+      v0.81 built it anyway and reverted. A ">= 32 B" PAGE scoping is SPEC-INVALID — the vendored suite
+      asserts `(memory 0 (pagesize 32))` invalid BY NAME, so the only legal non-default page size is 1;
+      ">= 32 B" is the ARMv7-M PMSA REGION granularity the embedder programs. The target is gale's
+      sentence: getting the declared extent below 64 KiB AT ALL. `max_bytes()` and `initial_bytes()`
+      move TOGETHER or it is the twin shape again. #1441 is FATHOM'S — external, still open, rule 4
+      binds.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `python3 scripts/repro/pagesize_oracle_1441.py` AND `df -h /System/Volumes/Data` — if the oracle
+      still refuses for want of a binary, say so WITH the free-space number; another decline is not
+      progress.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1441"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the page-size capability, with the execution evidence its own done-when demands (external/fathom) — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

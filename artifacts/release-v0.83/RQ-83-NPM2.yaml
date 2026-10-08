@@ -1,0 +1,32 @@
+artifacts:
+  - id: RQ-83-NPM2
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "The npm gap, after the compliance conclusion stops skipping the publish job"
+    description: >
+      ROTATING THE TOKEN WOULD HAVE CHANGED NOTHING. `release-npm.yml` gates its only job on
+      `github.event.workflow_run.conclusion == 'success'`, and v0.81's compliance wiring made the
+      Release run conclude FAILURE — so the npm job SKIPPED with zero steps and never reached its
+      preflight. A credential blocker that announced itself loudly every release now announces nothing.
+      The registry gap is twelve minor releases. This lane re-derives both against the live registry
+      and reports which blocker is binding.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `curl -sH 'User-Agent: synth-release-loop' https://registry.npmjs.org/@pulseengine/synth | python3
+      -c 'import json,sys; print(json.load(sys.stdin)["dist-tags"])'` — a 403 without a User-Agent is
+      NOT "not published"; and read the Release run's conclusion, because a skipped job is not a failed
+      one.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1460"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the npm gap, after the compliance conclusion stops skipping the publish job — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

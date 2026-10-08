@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-83-RANGEWIDEN
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "The wasm-tools 0.261 bump behind a CHECKED u64->usize narrowing, and the downstream surface MEASURED first"
+    description: >
+      INHERITED FROM v0.82's REFUTED DEPS LANE. wasmparser 0.261.0 widened its section-range types from
+      `Range<usize>` to `Range<u64>`, and `arena_bind.rs` indexes a `&[u8]` with them at four sites.
+      FOUR IS A FLOOR, NOT THE JOB: `synth-core` is the base crate, so the compiler stopped there and
+      the `wit-parser`/`wit-component`/`wasm-encoder` consumer surface downstream was NEVER REACHED.
+      The lane's FIRST deliverable is that number, ahead of the fix. The conversion must REFUSE loudly
+      on overflow and on a range past the buffer end — never `as usize`, which would truncate a
+      malformed 4 GiB-plus offset into a wrong-bytes read, the silent-miscompile class this project
+      exists to prevent.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `grep -c 'wasmparser = "0.261"' Cargo.toml` — if 1, the bump landed elsewhere and this lane is
+      moot; and `gh pr list --repo pulseengine/synth --state open --json number,author --jq
+      '[.[]|select(.author.login|test("dependabot";"i"))]|length'` — if 0 the held PRs were disposed of
+      without this lane.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#965"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the wasm-tools 0.261 bump behind a checked u64->usize narrowing, and the downstream surface measured first — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

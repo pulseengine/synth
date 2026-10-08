@@ -1,0 +1,31 @@
+artifacts:
+  - id: RQ-83-BLINDSIDE
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "For every required gate, the direction it CANNOT see — and whether that silence is distinguishable from a pass"
+    description: >
+      v0.83's THEME MADE CONCRETE. An instrument that takes its reference FROM what it measures is
+      blind in exactly the direction that matters, and v0.82 produced four instances: a refusal
+      comparing a counter its own loop appended to; a derivation inheriting its own command's pagination
+      window; a gate deriving its enforced field set from the idiom it polices; and anchor counts
+      measured at the anchor's own tree. This lane derives, per required gate, the direction it cannot
+      see and whether that silence reads as a pass. The rule is NOT "stop deriving" — it is that the
+      check and the checked need INDEPENDENT sources, and that independence is a property to PROVE.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `git grep -n 'or ""' -- scripts/ | wc -l` and v0.82's gate-potency record — if every required
+      gate already declares its blind direction, the premise is dead.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1484"
+      verification-track: manual
+      done-when: "manual:2026-12-31 for every required gate, the direction it cannot see — and whether that silence is distinguishable from a pass — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

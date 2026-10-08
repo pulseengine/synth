@@ -1,0 +1,29 @@
+artifacts:
+  - id: RQ-83-LANDEDBOTH
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "`landed:` must satisfy TWO `prs[-1]` derivations and nothing enforces naming both"
+    description: >
+      `_acknowledge` takes `PR_NUMBER.findall(subject)[-1]`. On a LANE BRANCH that resolves to the
+      ISSUE; after the SQUASH it resolves to the DELIVERING PR. So `landed:` must name BOTH, and no gate
+      says so — v0.82 hit the R4-lane red on exactly this and fixed it by hand. This lane makes the
+      two-context requirement enforced rather than remembered.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      Write an artifact naming only the PR, run `status_evidence_check.py` on the branch and then under
+      a squash simulation — if BOTH pass, the two-context requirement does not exist and the premise
+      holds; if either reds, it is already enforced and this lane is moot.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1484"
+      verification-track: manual
+      done-when: "manual:2026-12-31 `landed:` must satisfy two `prs[-1]` derivations and nothing enforces naming both — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
