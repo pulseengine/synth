@@ -44,7 +44,7 @@ artifacts:
       issue: "#1484"
       verification-track: manual
       disposition: partial
-      landed: "PENDING-PR-STAMP"
+      landed: "PR #1497 — #1484 — R15 `landed_two_context` reds either half of the two-context asymmetry, scoped to the release being cut because over ALL releases the day-one red count is 25 and scoped it is 0; 5/5 mutants caught, and the rule red its own artifact while this field still held a placeholder."
       verified-by: >
         PARTIAL — THE ASYMMETRY IS NOW ENFORCED, THE SUBJECT CONVENTION IS NOT. R15
         (`landed_two_context`) reds an artifact in the release being cut whose `landed:` names
