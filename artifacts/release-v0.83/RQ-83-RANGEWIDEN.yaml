@@ -5,6 +5,36 @@ artifacts:
     status: proposed
     title: "The wasm-tools 0.261 bump behind a CHECKED u64->usize narrowing, and the downstream surface MEASURED first"
     description: >
+      THE SURFACE IS MEASURED, AND THE REASON "FOUR IS A FLOOR" IS NOT THE ONE THIS ARTIFACT
+      GAVE. The inherited claim was that the count is a floor because `synth-core` is the base
+      crate and the downstream consumer surface was never reached. True, and incomplete. The
+      sharper reason, measured statically at this commit:
+
+        COMPILER-VISIBLE, 4 sites — all `arena_bind.rs`, all the SAME shape, slicing the
+        original wasm buffer by a section range: :493 and :501 (`&wasm[reader.range()]`), :520
+        (`&wasm[range.clone()]`), :554 (`&wasm[range]`, fed by `payload.as_section()` at :549).
+        These are the sites the compiler REFUSES, because `[u8]` has no `Index<Range<u64>>`.
+
+        COMPILER-INVISIBLE, 1 shipped site — `dwarf_line.rs:129`,
+        `code_base = range.start as u32`. An `as` cast accepts BOTH `Range<usize>.start` and
+        `Range<u64>.start`, so this site produces NO DIAGNOSTIC before or after the widening and
+        did not appear among v0.82's four errors. PROVEN with a compiled probe rather than
+        argued: `rustc` accepts `a.start as u32` for both types (rc=0), and `0x1_0000_0003`
+        truncates to `3` under each.
+
+      SO THE COMPILER FLAGS THE SAFE SITES AND PASSES THE TRUNCATING ONE. Slice indexing refuses
+      loudly; an existing `as` narrowing stays silent. That is this release's theme about the
+      compiler itself — its reference comes from the type system, so it is blind in exactly the
+      direction where a value is ALREADY being discarded. A lane that fixed only the four the
+      compiler named would have left the one that silently truncates.
+
+      FOUR CRATES declare a wasm-tools dependency — synth-cli (1), synth-core (2),
+      synth-frontend (4), synth-synthesis (1) — so the consumer graph beyond synth-core is real
+      and its ERROR COUNT remains UNPROVEN: establishing it needs a full workspace compile, and
+      the data volume is at 99% with ~5 GiB against a ~12 GiB build. Purging the shared
+      `~/.cargo/registry` would reach roughly 11.5 GiB and is DECLINED, because another session
+      is building in `rivet-wt-kani` off that same registry.
+
       INHERITED FROM v0.82's REFUTED DEPS LANE. wasmparser 0.261.0 widened its section-range types from
       `Range<usize>` to `Range<u64>`, and `arena_bind.rs` indexes a `&[u8]` with them at four sites.
       FOUR IS A FLOOR, NOT THE JOB: `synth-core` is the base crate, so the compiler stopped there and
@@ -20,6 +50,11 @@ artifacts:
       moot; and `gh pr list --repo pulseengine/synth --state open --json number,author --jq
       '[.[]|select(.author.login|test("dependabot";"i"))]|length'` — if 0 the held PRs were disposed of
       without this lane.
+
+      MEASURED, AND NEITHER REFUTED: `grep -c` returns rc=1 with count 0 and the declared floor
+      still reads `wasmparser = "0.256"`, so the bump has not landed elsewhere; and FOUR
+      dependabot PRs remain open, so they were not disposed of without this lane. The premise
+      holds in both directions.
     tags:
       - feature-loop
       - process
@@ -31,4 +66,38 @@ artifacts:
       priority: must
       issue: "#965"
       verification-track: manual
+      disposition: partial
+      landed: "PENDING-PR-STAMP"
+      verified-by: >
+        PARTIAL — THE SURFACE IS MEASURED AND THE BUMP IS NOT APPLIED, which is the order this
+        artifact's own description demands: the number comes ahead of the fix.
+
+        DELIVERED: the consumer surface, measured statically and split by whether the COMPILER
+        CAN SEE IT. Four visible sites, all in `arena_bind.rs` (:493, :501, :520, :554 with its
+        `as_section()` feeder at :549), every one slicing the wasm buffer by a section range and
+        therefore REFUSED by the type change. ONE shipped INVISIBLE site, `dwarf_line.rs:129`,
+        where `range.start as u32` compiles unchanged under both types — proven with a compiled
+        probe, not argued: `rustc` accepts both (rc=0) and `0x1_0000_0003` truncates to `3`
+        under each. Two further `as` sites sit in `crates/synth-core/tests/` and are excluded as
+        test code. Four crates declare a wasm-tools dependency.
+
+        THE FINDING, and it was not predicted when this lane was scoped: the compiler flags the
+        SAFE sites and passes the TRUNCATING one. A remedy that fixed only the four errors would
+        have left `dwarf_line.rs:129` silently discarding the high half of a section offset —
+        the exact class this artifact's done-when forbids, sitting in code the type change never
+        complained about.
+
+        NOT DELIVERED, stated rather than implied: the bump itself. Applying it means validating
+        it, and validating it means a full workspace compile — 99% disk, ~5 GiB against ~12 GiB.
+        Purging the shared `~/.cargo/registry` would reach roughly 11.5 GiB and is DECLINED
+        because another session builds from it. So the downstream ERROR COUNT is UNPROVEN, and
+        this lane says UNPROVEN rather than inventing a figure.
+
+        AND ONE INSTRUMENT ERROR WORTH THE RECORD, because it nearly produced a FALSE ZERO. The
+        first sweep for the invisible class used a pattern containing `\s` and returned ZERO
+        hits from `git grep -E`, which is POSIX ERE and does not support it — while the SAME
+        pattern matched under BSD `grep -E`, which accepts it as an extension. A zero from a
+        broken pattern reads exactly like an empty population, and it was caught only because
+        the known site was already in hand to serve as a positive control. Re-measured with a
+        POSIX-safe pattern the class is 3 hits, 1 of them shipped.
       done-when: "manual:2026-12-31 the wasm-tools 0.261 bump behind a checked u64->usize narrowing, and the downstream surface measured first — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
