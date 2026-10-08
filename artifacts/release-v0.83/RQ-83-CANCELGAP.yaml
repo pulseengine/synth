@@ -7,7 +7,21 @@ artifacts:
     description: >
       FOUND BY v0.82's OWN THEME, INSIDE v0.82's OWN RITUAL. CHECK3 asks for zero non-advisory
       FAILURES and cancelled is not a failure; CHECK3b asks for zero non-advisory PENDING and cancelled
-      is completed. So the conjunction "verified" is false. MEASURED: `Mach-O host-link oracle, NATIVE
+      is completed. So the conjunction "verified" is false.
+
+      THE SHAPE IS NARROWER AND WIDER THAN THIS ARTIFACT FIRST SAID, both corrected by driving
+      `decide()` OFFLINE — which is what its own docstring says it exists for. NARROWER: a
+      CANCELLED **required** context was ALREADY refused, by CHECK1, because `missing` tests
+      `!= "SUCCESS"` rather than listing bad states. The hole was precisely the NON-REQUIRED
+      half. WIDER: `TIMED_OUT` shares it, and so did every other state the module never named.
+      The six-case matrix, measured before any code changed:
+
+        all nine required SUCCESS                 -> GATEOK   (baseline)
+        + a CANCELLED NON-REQUIRED check          -> GATEOK   <- the gap (PR #1493's shape)
+        + a TIMED_OUT NON-REQUIRED check          -> GATEOK   <- a second gap, unnamed here
+        a CANCELLED REQUIRED check                -> GATEFAIL (CHECK1 names it `missing`)
+        + a FAILED NON-REQUIRED check             -> GATEFAIL (CHECK3)
+        + a SKIPPED NON-REQUIRED check            -> GATEOK   (legitimate; paths-filters) MEASURED: `Mach-O host-link oracle, NATIVE
       arm64-macOS (RQ-64-MACHO)` was CANCELLED on PR #1493 with `runner=` empty and `steps=0` — a
       RUNNER NO-SHOW — and the ritual printed GATEOK and merged. Reading rc WITHOUT a pipe,
       `grep -i -E 'cancel|timed_out'` returns rc=1 with ZERO hits in BOTH `scripts/merge_ritual.sh` and
@@ -16,11 +30,19 @@ artifacts:
       domain has five more. The lane adds the check to both scripts and DISTINGUISHES a no-show
       (`steps=0`, no runner -> re-run) from a genuine cancellation.
 
-      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
-      legitimate outcome, reported with numbers:
-      `grep -c -i cancelled scripts/merge_ritual.sh` — if non-zero the ritual already checks and the
-      premise is dead; and `grep -c -i cancelled scripts/test_merge_ritual.py` — if non-zero a test
-      already covers it, so the gap is narrower than stated.
+      REFUTING COMMAND, CORRECTED — the first version NAMED THE WRONG FILES. It checked
+      `scripts/merge_ritual.sh` and `scripts/test_merge_ritual.py`, but the decidable half of
+      the four checks lives in `scripts/merge_gate.py`, which the command never looked at. It
+      would have returned "premise holds" WITHOUT EXAMINING THE FILE THAT MATTERS — this
+      release's own theme one level out, a check whose TARGET is not the thing it checks.
+      Run instead, with rc read WITHOUT a pipe because a pipeline's rc is the last
+      command's:
+      `for f in scripts/merge_gate.py scripts/merge_ritual.sh scripts/tag_release.sh; do
+      grep -i -c -E 'cancelled|timed_out' "$f"; echo "rc=$?"; done`
+      — a non-zero count in `merge_gate.py` means the classification already exists and the
+      premise is dead. Measured BEFORE the lane: rc=1 and count=0 in all three, with a
+      POSITIVE CONTROL confirming the grep finds the string where it does exist (the hand-run
+      `tag_guards_v2.sh`, rc=0, 5 hits). Measured AFTER: `merge_gate.py` 25, `tag_release.sh` 3.
     tags:
       - feature-loop
       - process
@@ -32,4 +54,60 @@ artifacts:
       priority: must
       issue: "#1484"
       verification-track: manual
+      disposition: partial
+      landed: "PENDING-PR-STAMP"
+      verified-by: >
+        PARTIAL — THE REFUSAL IS DELIVERED, THE NO-SHOW DISCRIMINATION IS NOT, and the verdict
+        says so rather than rounding up. This artifact's done-when asks the gate to DISTINGUISH a
+        runner no-show (`steps=0`, no runner, remedy: re-run) from a genuine cancellation.
+        `decide()` cannot: it is a PURE function of the ROLLUP, which carries a name and a state
+        and no job-level `steps` or `runner_name` at all. Fetching those would make the decision
+        impure and un-drivable offline, which is the property that let this gap be MEASURED in
+        the first place. So both states REFUSE, and the refusal NAMES the no-show remedy for the
+        operator; the discrimination stays a human step, and `disposition: partial` records that
+        rather than a claiming status papering over it.
+
+        WHAT IS DELIVERED, AND THE FIX IS NOT A LONGER BLACKLIST. `merge_gate.decide()` now classifies
+        the check-state domain TOTALLY — PASSING / RED / PENDING / UNVERIFIED — and anything
+        outside `KNOWN_STATES` is refused as UNCLASSIFIED by a new CHECK3c. A state GitHub adds
+        after this was written therefore REDS the gate instead of passing silently, which is the
+        difference between a check whose reference is independent of its subject and one that
+        inherits it.
+
+        THE TAG PATH SHARES THE CLASSIFICATION RATHER THAN COPYING IT. `tag_release.sh` GATE2b
+        calls `merge_gate.py --unverified-on <sha>`; a second hand-written list of bad states is
+        the drift the North Star forbids, and v0.72 measured that cost when a literal `9` proved
+        to be a FOURTH copy of the required-context contract.
+
+        ONE NORMALISATION IS LOAD-BEARING AND WAS MEASURED BEFORE BEING WRITTEN: the REST
+        `check-runs` endpoint returns LOWERCASE conclusions while the GraphQL rollup `decide()`
+        consumes returns UPPERCASE. Comparing REST output against the uppercase sets without
+        `.upper()` matches NOTHING, and the new gate would have passed over every cancelled run
+        while looking correct — the same silent shape this lane exists to close.
+
+        POTENCY: SIX OF SIX MUTANTS CAUGHT, and the survey found a real hole in its own first
+        version. Removing `CANCELLED` from `UNVERIFIED_STATES` — the pre-v0.83 behaviour, the
+        exact regression this lane prevents — left EVERY assertion GREEN, because the catch-all
+        reclassified it as UNCLASSIFIED and CHECK3c still refused. The partition assertion could
+        not see it either: deleting a state from the domain leaves the buckets partitioning a
+        SMALLER union. That is v0.82's R13 shape recurring one tier in — a guard testing
+        EMPTINESS rather than SHRINKAGE — and the remedy is the same one v0.82 used for
+        `FIELD_KEYS_FLOOR`: `STATES_FLOOR` now REFUSES AT IMPORT naming what was lost. With it,
+        that mutant is caught before the suite even runs.
+
+        EXIT CODES ARE DISTINGUISHABLE, verified against REAL commits rather than fixtures:
+        rc=1 on bfed8c29 (two cancelled jobs, both named), rc=0 on 5d8b2ab6 (clean after its
+        no-show was re-run), rc=2 on a nonexistent sha — "could not JUDGE", which a ZERO
+        population also returns, because a derived zero is a refusal and not a pass.
+
+        AND THE TEST HARNESS CAUGHT THREE VACUOUS ASSERTIONS OF MINE before this landed, each
+        for a different reason: a mutation that removed a line the regex never read; a
+        NON-GREEDY regex matching the FIRST of two `G2=1` instances while the mutation removed
+        the second; and a comment-out (`: # G2=1`) that still CONTAINED the literal substring
+        being asserted. All three passed while asserting nothing. The fourth attempt was
+        verified against the mutant BEFORE being written.
+
+        Gates: merge_gate --self-test 58 ok / 0 FAIL, test_tag_release 39 assertions / 0
+        failures, test_merge_ritual rc=0, test_merge_gate_callsite rc=0, claim_check 75/75,
+        status_evidence rc=0, verdict_prose rc=0, both shell scripts parse.
       done-when: "manual:2026-12-31 a cancelled check-run satisfies both merge gates while providing no evidence — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
