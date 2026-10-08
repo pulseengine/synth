@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-83-PINDEBT8
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "The pin-debt ratchet, re-derived, and whether a case-preserving merge still passes silently"
+    description: >
+      `known_open_pins` is `direction: down` and `known_open_pinned_cases` rides beside it as
+      `direction: track`. v0.73's round 2 PROVED the gap: merging two per-function pins into one
+      wildcard while SUMMING their cases leaves the total unmoved, so `track` stays silent while
+      `known_open_pins` falls and the operator adds the waiver the ratchet's own message instructs them
+      to add. That path was executed and every claim held, so a case-preserving pin merge is a
+      REVIEW-TIME obligation and not a caught one. This lane re-derives the population and asks whether
+      the tripwire's NAME scoping (`^(?:KNOWN|PINNED)`) still leaves a suppression table called
+      anything else outside both the tripwire and the ratchet.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `python3 scripts/claim_check.py claims.yaml --metric` and read the printed pin figures — if
+      `known_open_pins` has fallen without a waiver the ratchet moved for a reason this lane must name;
+      and plant a byte-identical table under a non-matching name to confirm the NAME scoping gap is
+      still live.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1484"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the pin-debt ratchet, re-derived, and whether a case-preserving merge still passes silently — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

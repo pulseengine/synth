@@ -1,0 +1,32 @@
+artifacts:
+  - id: RQ-83-JESSDIVERGE5
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "The three runtime words, or a precise statement of what the reporter must run"
+    description: >
+      The expression is PROVEN FAITHFUL and an OPERAND IS WRONG. Everything addressable from the
+      object has been eliminated: absent, zeroed, landing-on-another-axis, identity rotation, lagged
+      attitude, return-ABI and the VFP frame-slot class. THE NEXT MEASUREMENT IS THE RUNTIME VALUE of
+      `[sp,#152]`, `[sp,#208]` and `[sp,#232]` — three words, obtainable with the reporter's existing
+      QEMU memtrace plugin. This lane either obtains them or states precisely what to run, in a few
+      sentences that LEAD with what changed for them. CONDUCT RULE 4 BINDS: #1436 is externally
+      reported and STILL OPEN, so hardening the oracle around it again is NOT progress on it.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `python3 scripts/repro/jessdiverge3_gravity_faithful_1436.py --self-test` (expect 9 assertions,
+      0 failures) and `gh issue view 1436 --json comments --jq '.comments|length'` — if it is no longer
+      10, the reporter replied and that reply OUTRANKS this plan.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1436"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the three runtime words, or a precise statement of what the reporter must run — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

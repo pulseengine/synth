@@ -1,0 +1,31 @@
+artifacts:
+  - id: RQ-83-ARCHMODEL2
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "The twenty-first recurring N/A filing, ordinal DERIVED by artifact identity and stated WITH its commit"
+    description: >
+      spar#445 blocks the step 1-2 matcher. The filing must keep BOTH the `feature-loop` tag AND a
+      spar/aadl tag or the matcher goes blind — v0.69's filing lost the tag and the artifact that exists
+      to be seen was not seen. The ordinal is DERIVED by artifact identity, never incremented by hand,
+      and stated with the commit it was derived at, because a count is invalidated by the edit that
+      writes it.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      Re-check spar#445's STATE before its BODY (`gh issue view 445 --repo pulseengine/spar --json
+      state`) — if CLOSED the block is gone and this is a delivery lane, not a filing; and run the step
+      1-2 matcher to prove the filing is SEEN rather than reading its tags.
+    tags:
+      - feature-loop
+      - spar
+      - aadl
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1136"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the twenty-first recurring n/a filing, ordinal derived by artifact identity and stated with its commit — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

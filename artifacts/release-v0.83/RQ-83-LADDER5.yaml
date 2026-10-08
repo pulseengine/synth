@@ -1,0 +1,31 @@
+artifacts:
+  - id: RQ-83-LADDER5
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "The acceptance ladder, or the auth blocker stated as the human action it is"
+    description: >
+      The ladder still reads v0.63 with its corpus unmounted. mac.fritz.box refuses every offered key
+      and ATTEMPTING PASSWORDS STAYS DECLINED — that is a standing refusal, not an obstacle to work
+      around. v0.82 corrected four releases of "refused every offered auth method", which was the WRONG
+      FACT: the server offers publickey and the key is not in `authorized_keys`. The blocker is a
+      one-line human action. This lane either measures the ladder or states the action, with the
+      fingerprints, and does not re-litigate the refusal.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `ssh -o BatchMode=yes -o ConnectTimeout=5 r@mac.fritz.box true; echo rc=$?` and
+      `ssh-add -l` — if rc=0 the append happened and the ladder is measurable; the fingerprints in the
+      ladder header must match what `ssh-add -l` prints, or the header is stale.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1432"
+      verification-track: manual
+      done-when: "manual:2026-12-31 the acceptance ladder, or the auth blocker stated as the human action it is — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

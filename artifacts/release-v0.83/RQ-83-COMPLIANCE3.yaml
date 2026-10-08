@@ -1,0 +1,32 @@
+artifacts:
+  - id: RQ-83-COMPLIANCE3
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "Verify the externals-sync step fired at the v0.82.0 tag, and act on the backlog decision"
+    description: >
+      v0.82 added a runtime-derived externals sync and proved it locally with both refusal controls
+      firing, then a round-2 review found `resolved()` accepted trees that were NEVER CLONED and the
+      suite's own positive control was built from that fake. Both are fixed and the oracle is POTENT
+      (4 of 7 cases flip against the pre-fix script). WHAT IS STILL UNVERIFIED IS THE TAG: the step has
+      never run on a real tag. FIRST HALF IS A VERIFICATION, not a build — list v0.82.0's assets and
+      report whether the report is among them, with the cause named if absent. The 130-of-149 backlog
+      is a MAINTAINER DECISION and is not actioned unasked.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+      legitimate outcome, reported with numbers:
+      `gh release view v0.82.0 --json assets --jq '[.assets[].name]'` — if a compliance report IS
+      attached the first half is satisfied and the lane narrows to the backlog; and
+      `python3 scripts/test_compliance_sync.py` (expect 7/7).
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1453"
+      verification-track: manual
+      done-when: "manual:2026-12-31 verify the externals-sync step fired at the v0.82.0 tag, and act on the backlog decision — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

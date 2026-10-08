@@ -1,0 +1,81 @@
+# v0.83 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS by rule. Every number about this release lives
+# in the artifact that derives it, or in the CHANGELOG at the cut. A figure here
+# would be a second copy with no derivation behind it.
+#
+# THEME — "An instrument that takes its reference FROM what it measures is blind
+# in exactly the direction that matters."
+#
+# v0.82's theme was two rules whose CONJUNCTION is false — satisfying one armed
+# the other. This is the same coupling turned inward, onto a SINGLE instrument:
+# not two gates disagreeing, but one gate whose reference point comes from its own
+# subject, so the comparison it performs is already decided before it runs.
+#
+# THE THEME IS NOT ASSERTED. v0.82 produced four instances of it, each measured,
+# and none of them was predicted when that release was scoped:
+#
+#   - The compliance externals-sync step refused on a shortfall by comparing a
+#     counter against the population — but the counter was APPENDED TO BY THE LOOP
+#     IT GUARDED, so it could only ever equal the population. The refusal was
+#     unreachable by construction, and the step reported success over empty
+#     external directories, which is the single condition it existed to prevent.
+#     Its sibling defect was reading directory EXISTENCE as resolution.
+#
+#   - A derivation of which issue threads belong to an external reporter named its
+#     own command and was still wrong, because the command's PAGINATION WINDOW was
+#     part of the claim. It reached only partway down the issue list, so the oldest
+#     threads were invisible and three of the reporter's threads were treated as
+#     not his. A derivation that cites its command inherits that command's bounds.
+#
+#   - A gate derived its enforced field set by walking its consumers for an idiom.
+#     Replacing the idiom — correctly, to fix a different defect — silently removed
+#     keys from the gate's population, and the module's own anti-vacuity guard
+#     stayed green because it tests EMPTINESS, not SHRINKAGE.
+#
+#   - The status-evidence anchor's two counts are measured AT THE ANCHOR'S OWN
+#     TREE, so moving the anchor re-points the thing the pins are compared against.
+#     Moving one of the three sites alone reds a sibling check with a message
+#     blaming the instrument rather than the edit.
+#
+# WHAT THAT MAKES THIS RELEASE ABOUT: for each standing gate, the direction it
+# CANNOT see, and whether that silence is distinguishable from a pass. The North
+# Star says DERIVE what you check against from the artifact you ship. These four
+# are what happens when that derivation goes one step too far and the reference
+# collapses into the subject. The rule is not "stop deriving" — it is that the
+# check and the thing checked need INDEPENDENT sources, and that independence is
+# itself a property to be proven rather than assumed.
+#
+# CARRIED, each for a reason recorded rather than restated: the falcon divergence,
+# where the expression is proven faithful and an operand's runtime value is the
+# named next measurement; the wide-file sign loss, where the mechanism class is
+# settled and the emitter is not; the acceptance ladder, where the blocker is a
+# human action and attempting passwords stays declined; the page-size capability,
+# where two remedies are off the table on recorded downstream evidence; and the
+# recurring N/A filing.
+#
+# INHERITED FROM A REFUTATION, not from a plan: v0.82 consolidated the held
+# dependency bumps and the suite REFUSED them. A wasm-tools release widened the
+# parser's section ranges from a pointer-sized type to a fixed-width one, and the
+# compiler stopped at the base crate — so the reported error count measured WHERE
+# COMPILATION STOPPED, not the size of the job. The downstream consumer surface
+# was never reached and is still unmeasured. That measurement is this release's
+# first deliverable on it, ahead of the fix; and the conversion the fix needs must
+# REFUSE loudly on a value it cannot represent rather than truncating, because a
+# silent narrowing of an attacker-influenced offset is the miscompile class this
+# project exists to prevent.
+#
+# ONE PATTERN NAMED AS A HAZARD rather than given a lane, carried forward because
+# it recurred: a `done-when` REWRITTEN AT DELIVERY to enumerate what was in fact
+# delivered cannot fail. v0.82 rewrote one — legitimately, since the original
+# became unachievable when the bump was withdrawn — and the replacement is HARDER
+# than what was delivered, so it cannot pass vacuously. That is the model: if a
+# criterion must change, say why the original became unachievable BEFORE rewriting
+# it, and make the replacement harder rather than descriptive.
+#
+# A SECOND HAZARD, new, and it surfaced inside v0.82's own cold review: a
+# correction is itself an unreviewed claim. The first round corrected a false site
+# count and introduced a wrong one in its place, derived by a grep that swept in a
+# different operation entirely; the corrected figure was only right after each
+# site was READ. The second round is briefed to attack the first's corrections for
+# this reason, and the numbers a correction introduces have had no review passes.
