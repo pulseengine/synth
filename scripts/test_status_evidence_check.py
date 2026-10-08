@@ -2148,10 +2148,52 @@ class R14ClosearmPoseVerdict1484(unittest.TestCase):
         # verdict sets, the two drift silently -- the #667 lesson one tier down.
         # Identity, not equality: an equal-but-separate set would still drift.
         import verdict_prose_check as vpc
-        self.assertIs(sec.VERDICT_INCOMPLETE, vpc.INCOMPLETE,
-                      "R14 must READ verdict_prose_check's set, not copy it")
+        self.assertIs(sec.VERDICT_LEGAL_BESIDE_CLAIMING, vpc.LEGAL_BESIDE_CLAIMING,
+                      "R14 must READ verdict_prose_check's carve-out, not copy it")
         self.assertIs(sec._leading_verdict, vpc.leading_verdict,
                       "R14 must READ verdict_prose_check's classifier")
+
+    def test_R14s_population_IS_the_carve_out_and_nothing_wider(self):
+        """R14 first keyed on the whole INCOMPLETE set and was therefore LOOSER
+        than its sibling by 6 of 7 tokens -- a conjunction defect inside the fix
+        for conjunction defects. `verdict_prose_check` already reds an incomplete
+        verdict beside a claiming status with no `disposition:`, and R11 FORBIDS
+        the disposition that would satisfy it, so for those six the only legal
+        shape is NOT TO CLAIM. R14 firing there advertised the wrong remedy."""
+        import verdict_prose_check as vpc
+        self.assertEqual(sec.VERDICT_LEGAL_BESIDE_CLAIMING, {"REFUTED"},
+                         "the carve-out is one word wide; if it grows, re-derive "
+                         "which shapes verdict_prose leaves silent")
+        wider = vpc.INCOMPLETE - sec.VERDICT_LEGAL_BESIDE_CLAIMING
+        self.assertEqual(len(wider), 6, f"expected 6 tokens outside it, got {wider}")
+        # A token OUTSIDE the carve-out beside a claiming status must NOT be an R14
+        # finding -- verdict_prose owns it, and the remedy there is a non-claiming
+        # status, not a declaration.
+        fx = self._fx({"status": "implemented", "done-when": self.MANUAL,
+                       "verified-by": "PARTIAL. The static half only."})
+        self.assertFalse(has(fx.run([]), "R14 "), fails(fx.run([])))
+
+    def test_the_NON_CLAIMING_shape_passes_every_rule(self):
+        """THE SAFER SHAPE, pinned so it cannot regress. A lane that did real work
+        and did NOT resolve its issue should not claim at all:
+
+            status: proposed   disposition: partial   landed: <increment>
+
+        R4-lane is satisfied by `landed:` (its message is a DISJUNCTION -- "flip the
+        status OR record the increment"); R11 wants a disposition beside a
+        non-claiming status; R12 would red on `outlives` here so issue-scope is
+        OMITTED; verdict_prose passes an incomplete verdict beside a non-claiming
+        status; R14 is out of population. Crucially the issue is then NEVER placed
+        in the authorised close set, where the claiming shape authorises retirement
+        and takes it back with a second field."""
+        fx = Fixture()
+        fx.release("release-v0.82/RQ-82-SUBJECT.yaml", [art(
+            "RQ-82-SUBJECT", "proposed",
+            {"done-when": self.MANUAL, "disposition": "partial",
+             "landed": "the static half; the runtime values were not obtained",
+             "verified-by": "PARTIAL. Narrowed, not resolved."},
+        )])
+        self.assertEqual(fails(fx.run([])), [])
 
 
 class ClosesWithoutClaimingIsScopedToRefuted(unittest.TestCase):
