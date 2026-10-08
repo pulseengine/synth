@@ -360,7 +360,7 @@ import yaml
 # be LOUD — a gate that cannot classify a verdict must not read as "no finding".
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from verdict_prose_check import (  # noqa: E402
-    INCOMPLETE as VERDICT_INCOMPLETE,
+    LEGAL_BESIDE_CLAIMING as VERDICT_LEGAL_BESIDE_CLAIMING,
     leading_verdict as _leading_verdict,
 )
 
@@ -1829,7 +1829,19 @@ def check(root: Path, release_glob: str, subjects: list[str],
             _vb = str(fields.get("verified-by") or "")
             _lead = _leading_verdict(_vb) if _vb.strip() else None
             _iscope14 = str(fields.get("issue-scope") or "").strip().lower()
-            if _lead in VERDICT_INCOMPLETE and status in CLAIMING and not _iscope14:
+            # NARROWED to the CARVE-OUT, measured. R14 first keyed on the whole
+            # INCOMPLETE set, which made it LOOSER than its sibling and advertised
+            # the wrong remedy. `verdict_prose_check` already reds an incomplete
+            # verdict beside a claiming status with no `disposition:` for every token
+            # EXCEPT `LEGAL_BESIDE_CLAIMING` (the #1430 carve-out, one member:
+            # REFUTED) — and R11 forbids the `disposition:` that would satisfy it, so
+            # for those tokens the only legal shape is NOT TO CLAIM at all
+            # (`status: proposed` + `disposition:` + `landed:`). Firing R14 there told
+            # authors to add a declaration when the answer was to stop claiming.
+            # The carve-out is the ONLY shape where verdict_prose is silent AND a
+            # claiming status authorises closure — i.e. exactly v0.81's near-miss.
+            if (_lead in VERDICT_LEGAL_BESIDE_CLAIMING and status in CLAIMING
+                    and not _iscope14):
                 failures.append(
                     f"R14 {art_id}: `verified-by:` opens `{_lead}` while status "
                     f"`{status}` claims the outcome holds, and no `issue-scope:` "
