@@ -63,4 +63,80 @@ artifacts:
       priority: should
       issue: "#1453"
       verification-track: manual
+      disposition: partial
+      landed: "#1453 — v0.81.0's assets LISTED (13, zero compliance reports) with the cause DERIVED; the externals-sync step added to compliance.yml and proven locally 7-of-7 with both refusal controls firing; the backlog RE-DERIVED as 130 of 149 and put to the maintainer as a DECISION, not actioned."
+      verified-by: >
+        PARTIAL — BOTH DONE-WHEN HALVES ARE DELIVERED AND THE FIX IS UNVERIFIABLE UNTIL A
+        RELEASE RUNS IT. #1453 stays open: no report is attached to any release by an
+        automated path yet, and this release will be the first test of the remedy.
+
+        FIRST HALF, A VERIFICATION AND IT CAME BACK NEGATIVE. v0.81.0 carries THIRTEEN assets
+        and ZERO matching `compliance` — derived with
+        `gh release view v0.81.0 --json assets`, not inferred.
+
+        THE REFUTING COMMAND'S SECOND HALF IS BLIND BY CONSTRUCTION, and that is worth more
+        than the number it returns. It asks for the runs of `compliance.yml`'s workflow id; the
+        answer is STILL 19 (1 `workflow_dispatch`, 18 `release`), newest `v0.43.0` — which
+        reads as "the wiring did not work". IT DID. A `workflow_call` invocation does NOT
+        create a run of the called workflow; it appears as a JOB INSIDE THE CALLER'S RUN. Found
+        there: run 37654229482 ("Release", conclusion failure) contains
+        `Compliance report / Generate compliance report`, 7 steps, and its step list is exactly
+        step 2 `Resolve tag` SUCCESS, step 3 a single `actions/checkout@v7` SUCCESS, step 4
+        `Generate compliance report` FAILURE, step 5 `Upload report to release` SKIPPED. So the
+        trigger is fixed and must not be re-litigated; the job now runs and fails.
+
+        THE CAUSE, DERIVED ON THIS TREE RATHER THAN CARRIED. `rivet.yaml` declares SEVEN
+        externals — gale, jess, kiln, loom, meld, scry, sigil — each with `git:` and
+        `ref: main` and deliberately NO `path:` (the #1012 rule: a declared local path takes
+        precedence and a dead one poisons resolution for everyone). Their clones live under
+        `.rivet/repos/<prefix>`, and `.rivet/` is GITIGNORED at `.gitignore:62` with ZERO
+        tracked files. A single `actions/checkout` therefore CANNOT supply them, which is why
+        rivet reported `could not load externals: IO error` and every cross-repo `traces-to`
+        read as dangling. The job's own log is no longer retrievable — the API returns 0 bytes
+        — so the quoted error is v0.81's recorded reading, not a re-derivation, and the step
+        list above is what this release verified independently.
+
+        AND THE REMEDY IS PROVEN END-TO-END ON THE SAME TREE, which is the part that makes this
+        more than a plausible fix. With the seven clones PRESENT locally, `rivet validate`
+        returns PASS with `Cross-repo backlinks: 1032 (external artifacts linking to local)`.
+        That is the #1012 non-vacuity signature satisfied: resolution RAN. Absent externals
+        give link errors beside zero backlinks; present externals give 1032. AND THE VERSIONS
+        MATCH: the local binary reports `rivet 0.37.0 (6f9ef82c master 2026-09-22)` and the CI
+        action pins `rivet-version: v0.37.0`, so this is the same rivet CI will run, not a
+        near-enough one. An earlier draft of this sentence hedged about a version difference;
+        the versions were then checked and are identical.
+
+        WHAT SHIPPED, AND THE PATTERN IS NOT NEW. A `Sync rivet externals` step inserted
+        BETWEEN the checkout and the report, lifted from `ci.yml`'s federated-graph job
+        (#1143): AUTHENTICATE FOR QUOTA, NOT FOR ACCESS — all seven siblings are PUBLIC, but
+        GitHub rate-limits ANONYMOUS git traffic hardest from datacenter address space, and a
+        throttled response makes git fall back to interactive auth, surfacing on a tty-less
+        runner as `fatal: could not read Username`, which reads like a permissions failure and
+        is not one. The `url.insteadOf` rewrite is scoped to the step and removed by a `trap`
+        rather than persisted.
+
+        THE LIST IS DERIVED AT RUNTIME FROM `rivet.yaml`, not mirrored into the workflow, so
+        adding an external never needs a second edit — the hand-written-mirror drift this
+        project's North Star forbids. PROVEN by extracting the embedded script FROM THE
+        WORKFLOW FILE and running it, so the test cannot drift from what ships: on the real
+        tree it reports `synced 7 of 7 externals`; with `externals: {}` it REFUSES, because a
+        zero population would otherwise succeed while syncing nothing; with an unclonable
+        external it REFUSES. Both controls fired.
+
+        SECOND HALF, A DECISION PUT AND NOT TAKEN. Re-derived BY PAGINATION (two pages, 149
+        releases) rather than carried: 19 releases carry a compliance report and 130 DO NOT,
+        with 45 CONSECUTIVE from the newest and the most recent report at v0.43.0. v0.81
+        recorded 129 of 148 and 44 consecutive; each is one higher now because v0.81.0 itself
+        shipped without one. The 19 matches the 19 workflow runs exactly, which corroborates
+        the mechanism. Regenerating them is possible one tag at a time via
+        `workflow_dispatch`, and it is 130 outward-facing writes to already-published release
+        pages — SO IT IS THE MAINTAINER'S CALL AND NOTHING WAS ACTIONED. The tarball was NOT
+        hand-attached: making the oracle reachable is not delivery of the report.
+
+        THE RESIDUAL, NAMED: no per-PR static gate pins the STEP ORDER, so a future edit could
+        move the sync after the report and nothing would red until a release. It was NOT bolted
+        onto `release_trigger_check.py`, whose own docstring is explicit that it polices
+        trigger reachability and that a different population belongs in a different gate. The
+        in-step non-vacuity refusal is the gate that does exist, and it fires on zero or
+        partial syncs.
       done-when: "manual:2026-12-31 v0.81.0's assets are LISTED and the presence or absence of its compliance report is reported as derived fact — with the cause named if absent — and the backlog count is re-derived by pagination and put to the maintainer as a decision rather than actioned unasked"

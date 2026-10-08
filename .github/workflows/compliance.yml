@@ -79,6 +79,66 @@ jobs:
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
+      # RQ-82-COMPLIANCE2 (#1453): THE TRIGGER WAS FIXED AND THE JOB STILL PRODUCED
+      # NOTHING. v0.81 made this workflow reachable (it ran on the v0.81.0 tag for
+      # the first time ever, 7 steps) and it then FAILED at `Generate compliance
+      # report`, so `Upload report to release` SKIPPED and v0.81.0 carries 13 assets
+      # with no compliance tarball. DERIVED, not inferred: the single `actions/checkout`
+      # above gives the job synth ONLY, while `rivet.yaml` declares SEVEN externals
+      # whose clones live under `.rivet/repos/<prefix>` — a path that is GITIGNORED
+      # (.gitignore:62) and therefore cannot arrive with any checkout. rivet then
+      # reports `could not load externals: IO error` and every cross-repo `traces-to`
+      # target reads as dangling. That is the #1012 signature: link errors BESIDE
+      # unloaded externals mean resolution never ran, not that the links are broken.
+      #
+      # THE PATTERN IS NOT NEW — it is lifted from ci.yml's federated-graph job,
+      # #1143. AUTHENTICATE FOR QUOTA, NOT FOR ACCESS: all seven siblings are PUBLIC,
+      # so no permission is needed, but GitHub rate-limits ANONYMOUS git traffic and
+      # a throttled response makes git fall back to interactive auth, surfacing on a
+      # tty-less runner as `fatal: could not read Username for 'https://github.com'`
+      # — which reads like a permissions failure and is not one. GITHUB_TOKEN is
+      # repo-scoped and that is fine; the authenticated RATE LIMIT is the point. The
+      # rewrite is scoped to this step and removed on exit rather than persisted.
+      - name: Sync rivet externals (network — the 7 PUBLIC sibling repos)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          trap 'git config --global --unset-all url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf || true' EXIT
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 - <<'PYEOF'
+          import pathlib, subprocess, sys, yaml
+
+          # DERIVED from rivet.yaml, so adding an external never needs a second
+          # edit here. A hand-written mirror of this list is the drift the North
+          # Star forbids.
+          ext = (yaml.safe_load(pathlib.Path("rivet.yaml").read_text()) or {}).get("externals") or {}
+          if not ext:
+              sys.exit("REFUSE: rivet.yaml declares NO externals — a zero population "
+                       "here would make this step succeed while syncing nothing, and "
+                       "the report would be generated against an unresolved graph.")
+          root = pathlib.Path(".rivet/repos")
+          root.mkdir(parents=True, exist_ok=True)
+          cloned = []
+          for name, cfg in sorted(ext.items()):
+              dest = root / (cfg.get("prefix") or name)
+              if dest.exists():
+                  cloned.append(name); continue
+              r = subprocess.run(["git", "clone", "--depth", "1", "--branch",
+                                  cfg.get("ref") or "main", cfg["git"], str(dest)],
+                                 capture_output=True, text=True)
+              if r.returncode != 0:
+                  sys.exit(f"REFUSE: clone of {name} failed rc={r.returncode}: "
+                           f"{r.stderr.strip()[-400:]}")
+              cloned.append(name)
+          # NON-VACUITY: every declared external must be present, or the report
+          # would be built on a partially resolved graph and look complete.
+          if len(cloned) != len(ext):
+              sys.exit(f"REFUSE: synced {len(cloned)} of {len(ext)} declared externals")
+          print(f"synced {len(cloned)} of {len(ext)} externals: {', '.join(cloned)}")
+          PYEOF
+
       - name: Generate compliance report
         id: report
         uses: pulseengine/rivet/.github/actions/compliance@v0.39.0
