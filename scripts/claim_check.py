@@ -148,6 +148,10 @@ import ast
 import glob
 import json
 import pathlib
+
+# RQ-82-VALUELESSKEY (#1458): a waiver `reason:` written bare parses to None
+# and `str(None)` is "None" — a waiver would read as HAVING a reason.
+from artifact_fields import field_text
 import re
 import shutil
 import subprocess
@@ -1278,7 +1282,7 @@ def check_ratchet(derived, ev):
                 f"THIS PR stating why the growth is justified [{_RATCHET_HELP}]"
             )
         for w in matching:
-            if not str(w.get("reason", "")).strip():
+            if not field_text(w, "reason"):
                 fails.append(
                     f"ratchet {name!r}: waiver to {value} has an EMPTY reason — a "
                     f"waiver is a stated justification, not a checkbox"

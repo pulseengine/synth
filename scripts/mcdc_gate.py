@@ -53,6 +53,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
+
+# RQ-82-VALUELESSKEY (#1458): the restatement ledger is author-written YAML,
+# so a bare key must read as ABSENT, not as the string "None".
+from artifact_fields import field_text
 import sys
 from pathlib import Path
 
@@ -356,7 +360,7 @@ def check_restatement_ledger() -> list[str]:
     for i, e in enumerate(RESTATEMENTS):
         who = f"RESTATEMENTS[{i}] ({e.get('date', '?')})"
         for field in ("date", "refs", "population_evidence"):
-            if not str(e.get(field, "")).strip():
+            if not field_text(e, field):
                 problems.append(
                     f"{who}: empty {field!r} — evidence is mandatory; a floor "
                     f"movement without it is the #1100 anti-pattern"
@@ -371,7 +375,7 @@ def check_restatement_ledger() -> list[str]:
                 worse = floors[k] > prev[k] if k == "dead" else floors[k] < prev[k]
                 if worse:
                     loosened.append(k)
-            if loosened and not str(e.get("drift", "")).strip():
+            if loosened and not field_text(e, "drift"):
                 problems.append(
                     f"{who}: loosens {loosened} but carries no per-function "
                     f"'drift' decomposition — a later reader cannot audit it"

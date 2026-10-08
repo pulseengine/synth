@@ -80,4 +80,81 @@ artifacts:
       priority: should
       issue: "#1458"
       verification-track: manual
+      disposition: partial
+      landed: "PR #1492 — #1458 — One shared accessor in scripts/artifact_fields.py, 26 call sites converted across FOUR gates, a declared-subset shrinkage floor for R13, and six tests; the two surviving sites are declared OUT OF CLASS with reasons."
+      verified-by: >
+        PARTIAL — THE CLASS IS CLOSED ON THE GATE SURFACE AND TWO SITES ARE DECLARED
+        TOLERANT RATHER THAN FIXED. #1458 is already CLOSED (retired by v0.81), so this is
+        carried analysis and the artifact is deliberately non-claiming.
+
+        THE REFUTING COMMAND RAN FIRST AND DID NOT REFUTE: the idiom is live
+        (`git grep -c -F 'str(fields.get('` returns 2 in loop_conformance_check.py and 15 in
+        status_evidence_check.py), `str(None).strip()` is still `'None'`, and
+        `yaml.safe_load('a:\n')['a']` is still `None`.
+
+        THE POPULATION, RE-DERIVED WITH `ast` AND NOT A REGEX, and it REPRODUCED this
+        artifact's own figure: 32 unguarded `str(<expr>.get(...))` calls across
+        `scripts/**/*.py`, 15 already `or`-guarded and excluded BY CONSTRUCTION. The
+        narrower population the done-when asks for — reads then TESTED for truth or
+        membership — is 15 at one hop. THE WALKER IS ONE-HOP AND SAYS SO: a 16th,
+        `str(art.get("status", ""))`, reaches `status in CLAIMING` through the loaded tuple
+        at a SECOND hop, so 15 is a floor and not an exact figure. It is also IMMUNE,
+        because neither `"None"` nor `""` is in the status vocabulary.
+
+        AFTER: 17 unguarded tree-wide, and the truth-or-membership-tested set falls 15 -> 2.
+
+        THE SECOND DEFECT, MEASURED, IN v0.81'S OWN REMEDY. v0.81 fixed all five sites with
+        `str(x.get(k) or "")`. That form is wrong in the OPPOSITE direction — it reads a
+        legitimate `0` or `False` as absent, the sentinel/value-`0` collision this project
+        has corrected across three releases. HONEST SCOPE: no current site can receive a
+        falsy non-None value, because every key in the population (`issue`, `issue-scope`,
+        `verified-by`, `shipped-in`, `disposition`, `status`, `reason`, `drift`) is
+        string-valued by schema. So this is a property of the IDIOM, not a live defect, and
+        `field_str` removes the question instead of leaving it to the next author.
+
+        AND ONE LATENT HOLE IN A REQUIRED GATE, which is the sharpest thing here. `Claim
+        Check` refuses a `claims.yaml` waiver with no `reason:` via
+        `if not str(w.get("reason", "")).strip()`. A waiver whose `reason:` is written BARE
+        parses to None, reads as the four-character string `"None"`, and the waiver
+        therefore reads as JUSTIFIED. Demonstrated both ways on the same input: old idiom
+        `'None'` -> accepted, accessor `''` -> refused.
+
+        THE FINDING THAT IS THIS RELEASE'S OWN THEME, IN THE MIRROR. Replacing the idiom
+        BROKE R13. `_derive_field_keys` DERIVES R13's enforced key set by ast-walking the
+        consumer files for `fields.get("literal")`, so removing that shape silently dropped
+        `issue-scope`, `landed` and `disposition` from the population. Three of R13's four
+        unit tests went red and the module's ANTI-VACUITY GUARD STAYED GREEN, because it
+        tests only EMPTINESS — the exact defect `_derive_field_keys`'s own docstring names
+        ("the anti-vacuity guard only tests non-emptiness ... that is the very 'cannot see
+        population shrinkage' defect"), arriving through the fix for a different one.
+        Satisfying one gate DISARMED another, and only somebody else's tests noticed.
+
+        REMEDIES, BOTH OF THEM, because the floor alone would turn every future
+        normalisation into a hard stop the author must widen: `FIELD_ACCESSORS` teaches the
+        derivation that `field_str`/`field_text` ARE field reads, and `FIELD_KEYS_FLOOR` is
+        a DECLARED SUBSET of the derived set — losing a key is a refusal naming the key,
+        while ADDING one stays free.
+
+        POTENCY, PAIRED, AND THE FIRST CONTROL WAS REJECTED. Mutating a single `landed` read
+        produced rc=1 — but from R4, not the floor, because `landed` is read TWICE and the
+        key was never lost. A changed output via a DIFFERENT rule is as misleading as an
+        unchanged one. Re-run on `shipped-in`, the only key read exactly once: the floor
+        fired with its own message naming `['shipped-in']`, and rc returned to 0 on restore.
+        The tripwire forbidding the raw idiom in the gates was proven red-first ONCE PER GATE
+        by reverting one site in each, and its recognizer carries a positive control because
+        a tripwire asserting ZERO must be shown able to find one.
+
+        WHAT IS DECLARED TOLERANT RATHER THAN FIXED, named so the exclusion is not silent:
+        `loop_conformance_check.py` reads `cr["name"]` from GitHub check-run JSON, where a
+        None means the API omitted the field rather than an author leaving it bare, and
+        `.startswith` on `"None"` and on `""` both fail identically;
+        `repro/bulk_mask_679_differential.py` tests `manifest["safety_bounds"]` for
+        membership in a closed two-word vocabulary, which `"None"` and `""` both fail. Both
+        are immune, and neither is in an artifact gate.
+
+        ONE CONSTRAINT DISCOVERED AND RESPECTED: `test_mcdc_gate.py` runs a MUTATED COPY of
+        `mcdc_gate.py` in a temp directory, so a sibling import does not resolve there. The
+        sibling is now staged beside the copy — which keeps the normalisation
+        single-sourced instead of mirroring it — and the mutation test was re-proven potent
+        afterwards by breaking the gate's refusal string and watching it fail.
       done-when: "manual:2026-12-31 the population of sites that read an artifact field and then test it for truth or membership is DERIVED and reported with a number, every member either normalises a valueless key or declares itself deliberately tolerant at the site, and a test asserts the normalisation on at least one site per gate — proven red-first by reverting that site"

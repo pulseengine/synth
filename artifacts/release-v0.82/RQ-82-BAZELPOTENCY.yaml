@@ -45,4 +45,80 @@ artifacts:
       priority: should
       issue: "#1456"
       verification-track: manual
+      disposition: partial
+      landed: "PR #1492 — #1456 — The gap is NARROWED, not closed: this artifact's own cost model was wrong by an order of magnitude — the job runs in 2.0-2.3 min, MEASURED on two commits — so the control is CHEAP and the blocker is SCHEDULING. Recorded UNPROVEN, with the mechanism and the trigger named."
+      verified-by: >
+        PARTIAL — `Bazel Build & Proofs` IS STILL RECORDED UNPROVEN, which is the honest state
+        the gate-potency pass requires, and the gap is materially narrower than v0.81 left it.
+        No paired control was run, so nothing here claims potency.
+
+        THE REFUTING COMMAND RAN FIRST AND DID NOT REFUTE. The protection API still lists nine
+        contexts and `Bazel Build & Proofs` is one of them; `~/.cache/bazel` DOES NOT EXIST, so
+        the cache is cold as recorded; nix answers 2.33.1 after sourcing `nix-daemon.sh` and
+        bazel is at `/opt/homebrew/bin/bazel`. Every stated precondition holds.
+
+        THIS ARTIFACT'S COST MODEL WAS WRONG BY AN ORDER OF MAGNITUDE, and that is the finding.
+        It says a paired control "needs TWO full cold Bazel+Nix+Rocq proof builds". MEASURED
+        from CI's own job records on two separate commits — ee9a9559 (the v0.81 release commit)
+        and 93c5e4b4 — the job completes in 2.3 and 2.0 MINUTES. It is `runs-on: ubuntu-latest`
+        with `bazel-contrib/setup-bazel` restoring a `disk-cache` keyed on the workflow plus a
+        `repository-cache`, so the Rocq toolchain and the compiled libraries come back from
+        cache. The expensive route was never the only route: the cost belongs to the LOCAL
+        reproduction, not to the control.
+
+        AND THE BUILD GRAPH MAKES A ONE-FILE CONTROL CHEAP, read from `coq/BUILD.bazel` rather
+        than assumed: the suite is a chain of per-module `rocq_library` targets with EXPLICIT
+        `deps` over 34 `.v` files, not one monolithic target. Breaking a single proof therefore
+        rebuilds that library and its reverse dependencies only. Breaking `base` would rebuild
+        everything; breaking a leaf rebuilds one. Which targets are leaves needs
+        `bazel query`, which needs a server start and the external repos, so it is NAMED as the
+        next step rather than guessed at here.
+
+        ONE POTENCY SUB-FINDING, BY INSPECTION AND LABELLED AS SUCH. The `Verify Rocq proofs`
+        step is a bare `run: bazel test //coq:verify_proofs` — no `|| true`, no
+        `|| [ $? -eq 4 ]` — so it CANNOT pass vacuously on Bazel exit 4, "no tests matched".
+        That matters because the step DIRECTLY BELOW IT in the same job documents exactly that
+        bug (#945: a tolerated exit 4 made the Renode step "pass while selecting nothing") and
+        guards it deliberately. The proof step is on the right side of that line. This is
+        INSPECTION, not a control: it establishes the step cannot swallow a failure, not that a
+        broken proof produces one.
+
+        THE LOCAL ROUTE IS REFUTED ON MEASURED DISK, a constraint this artifact did not know:
+        the data volume is at 99% with 7.3 GiB available. A cold Bazel+Nix+Rocq build does not
+        fit, and `/nix/store` is already 21 GiB. 16 GiB sits in a SIBLING project's
+        `rivet/target` and was deliberately NOT purged — it belongs to another repository and
+        another session, no compiler was running in it at the time of checking, and buying a
+        rebuild for another project is not this lane's call to make. Nothing in the remaining
+        release path needs a local build, so disk is not blocking.
+
+        SO THE BLOCKER IS SCHEDULING, NOT COST, and it is named precisely. `ci.yml` triggers on
+        `push: branches: [main]` and `pull_request: branches: [main]`, so pushing a scratch
+        BRANCH raises no workflow at all — the control needs a PULL REQUEST. That queues the
+        whole workflow: 73 job keys, of which 46 are `ubuntu-latest`, 18 are
+        `[self-hosted, linux, x64, rust-cpu]` and 3 are `light`. THE BINDING CONSTRAINT IS THE
+        46, NOT THE 18, and an earlier draft of this sentence had it backwards: it blamed the
+        seven-runner rust-cpu partition on a point sample reading 7/7 busy. Measured properly on
+        #1491's CI run via the JOBS api grouped by `labels`: ALL 46 queued jobs were
+        `ubuntu-latest` and ZERO self-hosted jobs were queued — the partition had already
+        finished sixteen rust-cpu jobs across all seven runners. The stall was GitHub-hosted
+        concurrency, consumed org-wide (loom 4 running + 5 queued, rivet 1 + 8, synth 0
+        running) and nothing to do with the label partition.
+        AND THIS REPO HAD ALREADY RECORDED THAT CORRECTION, which is the part worth keeping:
+        RQ-61-CICAP's `landed:` says "a point sample showed rust-cpu 7/7 and I inferred
+        saturation; 10 samples over ~9 minutes with runs queued throughout show all 12
+        self-hosted runners idle ... the bottleneck is the GitHub-hosted quota, not the
+        self-hosted fleet", and RQ-62-CLAIMCHECK calls the same 7/7 reading "a merge-wave
+        transient". A carried artifact family is a strong signal that a decision already
+        exists, and `git grep -n rust-cpu -- artifacts/` would have produced it before the
+        diagnosis rather than after.
+        The CONCLUSION is unchanged and now rests on the right number: a
+        deliberately-broken-proof PR queues 46 GitHub-hosted jobs behind the release's own, so
+        it waits until the queue drains.
+
+        WHAT WOULD SETTLE IT, affordable and unblocked once the queue drains: open a scratch PR
+        that breaks ONE leaf proof (a broken `Qed`, NOT an added `sorry` — this repo has
+        shipped a "fail on sorry" gate where all twelve `sorry`s carried a self-exempting
+        comment), confirm `Bazel Build & Proofs` reds with an attributable diagnostic, record
+        the run link, close the PR without merging, and confirm the unmodified tree passes. Two
+        job runs at ~2 minutes each, both on GitHub-hosted runners, zero local disk.
       done-when: "manual:2026-12-31 `Bazel Build & Proofs` is recorded POTENT with a paired control — a broken proof reds the job, the unmodified tree passes it, both with run links — or the lane states with measured build times why the control remains unaffordable and what would make it affordable"

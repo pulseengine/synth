@@ -51,6 +51,10 @@ RQ-77-PROSEBLIND, whose prose is right and whose fields cannot be.
 """
 import argparse, glob, re, sys, yaml
 from collections import Counter
+# RQ-82-VALUELESSKEY (#1458): one normalisation, imported not re-typed. `scripts/`
+# is sys.path[0] when this runs as a script, and status_evidence_check inserts it
+# before importing this module, so the bare import resolves in BOTH entry paths.
+from artifact_fields import field_str, field_text
 
 CLAIMING = {"implemented", "verified", "accepted"}
 NON_DELIVERY_DISPOSITION = {"partial", "deferred", "refuted", "blocked", "superseded"}
@@ -200,8 +204,8 @@ def classify(a):
     if tok is None:
         return None                      # not a verdict word; out of population
     kind = "complete" if tok in COMPLETE else "incomplete"
-    status = str(a.get("status", "")).strip().lower()
-    disp = str(fl.get("disposition", "")).strip().lower()
+    status = field_str(a, "status").strip().lower()
+    disp = field_text(fl, "disposition").lower()
     claiming, non_delivery = status in CLAIMING, disp in NON_DELIVERY_DISPOSITION
     if kind == "complete":
         if not claiming:

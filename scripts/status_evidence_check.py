@@ -359,6 +359,7 @@ import yaml
 # from the shipped table (#667's lesson, one tier down). A FAILING import must
 # be LOUD — a gate that cannot classify a verdict must not read as "no finding".
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from artifact_fields import field_str, field_text  # noqa: E402
 from verdict_prose_check import (  # noqa: E402
     LEGAL_BESIDE_CLAIMING as VERDICT_LEGAL_BESIDE_CLAIMING,
     leading_verdict as _leading_verdict,
@@ -423,6 +424,10 @@ DISPOSITIONS = {"partial", "refuted", "deferred"}
 # `fields.get("disposition")` and nothing else, so declaring that an issue
 # outlives its artifact's delivery cannot trip it — the artifact keeps claiming
 # its own outcome, which is true, and says only that the ISSUE is wider.
+# The normalising accessors from `artifact_fields`. A read through one of these
+# is a field read, and the derivation below must see it (RQ-82-VALUELESSKEY).
+FIELD_ACCESSORS = ("field_str", "field_text")
+
 FIELD_KEY_CONSUMERS = (
     "status_evidence_check.py",
     "loop_conformance_check.py",
@@ -484,6 +489,27 @@ def _derive_field_keys() -> set[str]:
                 f"silently, which is the failure this derivation exists to stop.")
         tree = ast.parse(f.read_text(errors="ignore"))
         for n in ast.walk(tree):
+            # RQ-82-VALUELESSKEY (#1458): THE NORMALISING ACCESSOR IS A READ TOO.
+            # This walk keyed only on `fields.get("k")`. Replacing that idiom with
+            # `field_text(fields, "k")` removed the shape it reads, and R13's key
+            # set SILENTLY LOST `issue-scope`, `landed` and `disposition` — three
+            # of its four unit tests went red and the anti-vacuity guard below
+            # stayed green, because it only tests NON-EMPTINESS and cannot see
+            # SHRINKAGE. That is the exact defect this function's own docstring
+            # names, arriving through the fix for a different one: a gate that
+            # derives its population from an idiom must know EVERY idiom that
+            # reads the same thing. Hence FIELD_KEYS_FLOOR below.
+            if (isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Name)
+                    and n.func.id in FIELD_ACCESSORS
+                    and len(n.args) >= 2
+                    and isinstance(n.args[1], ast.Constant)
+                    and isinstance(n.args[1].value, str)):
+                acc_recv = n.args[0]
+                if ((isinstance(acc_recv, ast.Name) and acc_recv.id == "fields")
+                        or isinstance(acc_recv, ast.BoolOp)):
+                    keys.add(n.args[1].value)
+                continue
             if not (isinstance(n, ast.Call)
                     and isinstance(n.func, ast.Attribute)
                     and n.func.attr == "get"
@@ -508,6 +534,34 @@ def _derive_field_keys() -> set[str]:
 
 
 FIELD_KEYS_DERIVED = _derive_field_keys()
+
+# SHRINKAGE FLOOR (RQ-82-VALUELESSKEY, #1458). The anti-vacuity guard below
+# catches only the EMPTY derivation, and `_derive_field_keys`'s own docstring
+# says so: "the anti-vacuity guard only tests non-emptiness ... that is the very
+# 'cannot see population shrinkage' defect". v0.82 then WALKED INTO IT — swapping
+# `fields.get("k", "")` for the normalising `field_text(fields, "k")` dropped
+# three keys and the guard stayed green. Only R13's unit tests noticed, and a
+# gate whose population is protected by somebody else's tests is not protected.
+#
+# So the floor is a DECLARED SUBSET, not a count: a key that stops being derived
+# must be removed here in the same commit, with the reason, which makes the
+# narrowing a visible diff instead of a silent one. It is deliberately a SUBSET
+# rather than an equality pin so that ADDING a field key stays free.
+FIELD_KEYS_FLOOR = frozenset({
+    "disposition", "done-when", "issue", "issue-scope", "landed",
+    "shipped-in", "verified-by",
+})
+_lost = FIELD_KEYS_FLOOR - FIELD_KEYS_DERIVED
+if _lost:
+    raise SystemExit(
+        "status_evidence_check: FIELD_KEYS_DERIVED no longer contains "
+        f"{sorted(_lost)} — R13 has STOPPED enforcing nesting for "
+        f"{'that key' if len(_lost) == 1 else 'those keys'} and would look "
+        "identical to a clean run. If the key is genuinely gone, drop it from "
+        "FIELD_KEYS_FLOOR in the same commit and say why; do not widen this "
+        "check. (Usual cause: a read was rewritten into an idiom "
+        "`_derive_field_keys` does not recognise — see FIELD_ACCESSORS.)"
+    )
 
 # Keys artifacts CARRY that no script reads. Deriving from reads cannot find
 # these by construction, and that is exactly why they need listing: a
@@ -572,11 +626,11 @@ def authorised_close_set(artifacts, only_version: tuple | None = None):
     for _path, version, art_id, status, fields, _links, _release in artifacts:
         if only_version is not None and version != only_version:
             continue
-        issue_txt = str(fields.get("issue", "")).strip()
+        issue_txt = field_text(fields, "issue")
         if not issue_txt:
             continue
-        iscope = str(fields.get("issue-scope", "")).strip().lower()
-        disp = str(fields.get("disposition") or "").strip().lower()
+        iscope = field_text(fields, "issue-scope").lower()
+        disp = field_text(fields, "disposition").lower()
         if iscope == "outlives":
             target = held_open
         elif status in CLAIMING:
@@ -1072,7 +1126,7 @@ def load_release_artifacts(root: Path, release_glob: str):
                     path,
                     version,
                     str(art["id"]),
-                    str(art.get("status", "")),
+                    field_str(art, "status"),
                     art.get("fields") or {},
                     art.get("links") or [],
                     art.get("release"),
@@ -1165,7 +1219,7 @@ def introducing_commit(root: Path, kind: str, path: str,
 
 
 def landed_prs(fields: dict) -> set[str]:
-    return set(re.findall(r"#(\d+)", str(fields.get("landed") or "")))
+    return set(re.findall(r"#(\d+)", field_str(fields, "landed")))
 
 
 def release_window_subjects(root: Path, version: tuple):
@@ -1262,7 +1316,7 @@ def check_programme(root: Path, programme_glob: str = PROGRAMME_GLOB,
         for art in arts:
             checked += 1
             art_id = str(art["id"])
-            if "status" not in art or not str(art.get("status") or "").strip():
+            if "status" not in art or not field_str(art, "status").strip():
                 missing += 1
                 failures.append(
                     f"P1 {art_id}: no `status` in {rel} — a missing status "
@@ -1614,14 +1668,14 @@ def check_unscoped(root: Path, programme_glob: str = PROGRAMME_GLOB,
             if isinstance(a, dict) and "id" in a
         ]
         for art in arts:
-            if FIELD_VERSION.match(str(art.get("release") or "").strip()):
+            if FIELD_VERSION.match(field_str(art, "release").strip()):
                 continue
             unscoped += 1
             if file_dated:
                 continue
             art_id = str(art["id"])
             # -- S2: the title.
-            title = str(art.get("title") or "")
+            title = field_str(art, "title")
             for m in TITLE_FIGURE.finditer(title):
                 citations += 1
                 if not STALENESS_ANCHOR.search(title):
@@ -1636,7 +1690,7 @@ def check_unscoped(root: Path, programme_glob: str = PROGRAMME_GLOB,
                     )
                     break
             # -- S1: description + every prose-valued field.
-            units = [("description", str(art.get("description") or ""))]
+            units = [("description", field_str(art, "description"))]
             units.extend(_prose_fields(art.get("fields")))
             for where, text in units:
                 for sentence in _sentences(text):
@@ -1714,7 +1768,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
                 f"#1059 splice shape (a sibling absorbed them); every release "
                 f"artifact must carry its own trace links"
             )
-        if version >= DECLARE_SINCE and not str(fields.get("issue", "")).strip():
+        if version >= DECLARE_SINCE and not field_text(fields, "issue"):
             failures.append(
                 f"R5 {art_id}: no non-empty `fields.issue` in {path.name} — "
                 f"required for release files >= v0.60 (#1059)"
@@ -1775,8 +1829,8 @@ def check(root: Path, release_glob: str, subjects: list[str],
             # the same trap in `loop_conformance_check` and left R11's twin — the
             # shape this programme has had to correct repeatedly. Latent: zero
             # live artifacts carry a valueless outcome key.
-            landed_txt = str(fields.get("landed") or "").strip()
-            disp = str(fields.get("disposition") or "").strip().lower()
+            landed_txt = field_text(fields, "landed")
+            disp = field_text(fields, "disposition").lower()
             if disp and disp not in DISPOSITIONS:
                 failures.append(
                     f"R11 {art_id}: `disposition: {disp}` is not one of "
@@ -1826,9 +1880,9 @@ def check(root: Path, release_glob: str, subjects: list[str],
         if version >= DISPOSITION_SINCE:
             # `or ""` BEFORE `str()` — `str(None)` is the four-character string
             # "None" and a bare key would read as a verdict. (#1458.)
-            _vb = str(fields.get("verified-by") or "")
+            _vb = field_str(fields, "verified-by")
             _lead = _leading_verdict(_vb) if _vb.strip() else None
-            _iscope14 = str(fields.get("issue-scope") or "").strip().lower()
+            _iscope14 = field_text(fields, "issue-scope").lower()
             # NARROWED to the CARVE-OUT, measured. R14 first keyed on the whole
             # INCOMPLETE set, which made it LOOSER than its sibling and advertised
             # the wrong remedy. `verdict_prose_check` already reds an incomplete
@@ -1859,8 +1913,8 @@ def check(root: Path, release_glob: str, subjects: list[str],
         # floor: it is optional, so no shipped artifact is burdened by it,
         # and the two v0.70 artifacts that carry it retroactively (the ones
         # whose prose decision this field mechanises) get checked too.
-        iscope = str(fields.get("issue-scope", "")).strip().lower()
-        issue_txt = str(fields.get("issue", "")).strip()
+        iscope = field_text(fields, "issue-scope").lower()
+        issue_txt = field_text(fields, "issue")
         if iscope and iscope not in ISSUE_SCOPES:
             failures.append(
                 f"R12 {art_id}: `issue-scope: {iscope}` is not one of "
@@ -1897,7 +1951,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
             continue
         if status in CLAIMING:
             if kind == "manual":
-                if not str(fields.get("verified-by", "")).strip():
+                if not field_text(fields, "verified-by"):
                     failures.append(
                         f"R2 {art_id}: status `{status}` on a `manual:` "
                         f"done-when with no `verified-by` — 'the PR merged' is "
@@ -1922,7 +1976,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
         # write the basis for why code-existence IS the outcome.
         if (status in CLAIMING and kind in ("contains", "file")
                 and is_crate_source(dw_path)
-                and not str(fields.get("verified-by", "")).strip()):
+                and not field_text(fields, "verified-by")):
             failures.append(
                 f"R9 {art_id}: status `{status}` on a code-existence "
                 f"done-when into crate source ({dw_path}) — a predicate that "
@@ -1969,7 +2023,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
             r7_checked += 1
             rc, _ = _git(root, "merge-base", "--is-ancestor", intro, prev_tag)
             if rc == 0:
-                shipped = str(fields.get("shipped-in", "")).strip()
+                shipped = field_text(fields, "shipped-in")
                 if not shipped:
                     failures.append(
                         f"R7 {art_id}: done-when evidence was introduced by "
@@ -2078,7 +2132,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
     # fields.issue -> holder artifacts (several releases may hold one issue).
     issue_holders: dict[str, list] = {}
     for a in artifacts:
-        num = str((a[4] or {}).get("issue", "")).strip().lstrip("#")
+        num = field_str(a[4] or {}, "issue").strip().lstrip("#")
         if num.isdigit():
             issue_holders.setdefault(num, []).append(a)
     # Every PR number any artifact's landed:/verified-by: prose names — the
@@ -2088,7 +2142,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
     for a in artifacts:
         for field in ("landed", "verified-by"):
             acknowledged_prs.update(
-                re.findall(r"#(\d+)", str((a[4] or {}).get(field, ""))))
+                re.findall(r"#(\d+)", field_str(a[4] or {}, field)))
 
     issue_delivery_hits = 0
     window_delivery = 0

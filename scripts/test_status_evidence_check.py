@@ -2236,5 +2236,107 @@ class ClosesWithoutClaimingIsScopedToRefuted(unittest.TestCase):
                          "branch that authorises nothing at all")
 
 
+class ValuelessKeyClass1458(unittest.TestCase):
+    """RQ-82-VALUELESSKEY (#1458). v0.81 fixed `str(None) == "None"` FIVE times
+    across TWO gates in TWO cold-review rounds and never asked how many sites
+    had the shape. Derived here with `ast`: 32 unguarded `str(<expr>.get(...))`
+    calls across `scripts/**/*.py`, 15 of them reaching a truth-or-membership
+    test at one hop (a 16th, `art["status"]`, reaches one at two hops through
+    the loaded tuple, and is immune because neither `"None"` nor `""` is in the
+    status vocabulary). The two gate files are now at ZERO by construction."""
+
+    GATES = ("status_evidence_check.py", "verdict_prose_check.py")
+
+    @staticmethod
+    def _str_get_sites(source: str):
+        """`str(<expr>.get(...))` call lines, `or`-guarded ones included."""
+        import ast
+        out = []
+        for n in ast.walk(ast.parse(source)):
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id == "str" and len(n.args) == 1):
+                continue
+            arg = n.args[0]
+            inner = arg.values[0] if isinstance(arg, ast.BoolOp) else arg
+            if (isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr == "get"):
+                out.append(n.lineno)
+        return out
+
+    def test_the_recognizer_is_NOT_vacuous(self):
+        """POSITIVE CONTROL. A tripwire asserting ZERO must be shown capable of
+        finding one, or the zero below is indistinguishable from a broken walk —
+        and in this programme an empty derivation twice WAS the finding."""
+        planted = 'x = str(fields.get("k", ""))\ny = str(fields.get("k") or "")\n'
+        self.assertEqual(len(self._str_get_sites(planted)), 2,
+                         "the walk cannot see the shape it is asked to forbid")
+        self.assertEqual(self._str_get_sites("x = fields.get('k')"), [],
+                         "the walk fires on a bare .get, so ZERO would be luck")
+
+    def test_neither_gate_reads_a_field_through_the_raw_idiom(self):
+        """THE TRIPWIRE. Both gates read artifact fields only through
+        `artifact_fields`, so a valueless key cannot read as `"None"` in
+        either."""
+        from pathlib import Path
+        here = Path(sec.__file__).resolve().parent
+        for name in self.GATES:
+            with self.subTest(gate=name):
+                sites = self._str_get_sites((here / name).read_text())
+                self.assertEqual(sites, [],
+                                 f"{name} reads a mapping through "
+                                 f"str(x.get(...)) at lines {sites}; use "
+                                 f"field_str/field_text from artifact_fields")
+
+    def test_field_str_fixes_the_valueless_key(self):
+        import yaml
+        from artifact_fields import field_str, field_text
+        d = yaml.safe_load("k:\n")                     # a BARE key
+        self.assertIsNone(d["k"], "PyYAML no longer yields None; premise dead")
+        self.assertEqual(str(d.get("k", "")), "None",
+                         "the v0.80 idiom must still be shown wrong")
+        self.assertEqual(field_str(d, "k"), "")
+        self.assertEqual(field_text(d, "k"), "")
+
+    def test_field_str_does_NOT_erase_a_legitimate_falsy_value(self):
+        """v0.81's own remedy, `str(x.get(k) or "")`, is wrong in the OTHER
+        direction: it reads `0` and `False` as absent — the sentinel/value-`0`
+        collision this project has corrected across three releases. No current
+        site can receive a falsy non-None value (every key in the population is
+        string-valued by schema), so this pins the IDIOM, not a live defect."""
+        from artifact_fields import field_str
+        for raw, want in ((0, "0"), (False, "False"), ("", ""), ("t", "t")):
+            with self.subTest(value=raw):
+                d = {"k": raw}
+                self.assertEqual(field_str(d, "k"), want)
+                if not raw and raw != "":
+                    self.assertEqual(str(d.get("k") or ""), "",
+                                     "the `or` idiom must still be shown lossy")
+
+    def test_R13s_key_set_CANNOT_shrink_silently(self):
+        """The regression this lane caused and then closed: swapping the idiom
+        for the accessor dropped `issue-scope`, `landed` and `disposition` from
+        FIELD_KEYS_DERIVED while the anti-vacuity guard stayed green, because it
+        tests only emptiness. The floor is a declared SUBSET, so losing a key
+        is a refusal and ADDING one stays free."""
+        self.assertTrue(sec.FIELD_KEYS_FLOOR <= sec.FIELD_KEYS_DERIVED,
+                        f"lost {sorted(sec.FIELD_KEYS_FLOOR - sec.FIELD_KEYS_DERIVED)}")
+        for k in ("issue-scope", "landed", "disposition"):
+            with self.subTest(key=k):
+                self.assertIn(k, sec.FIELD_KEYS_FLOOR,
+                              "the three keys the accessor swap silently lost "
+                              "must be the ones the floor pins")
+        self.assertTrue(sec.FIELD_KEYS_FLOOR < sec.FIELD_KEYS_DERIVED
+                        or sec.FIELD_KEYS_FLOOR == sec.FIELD_KEYS_DERIVED,
+                        "a floor WIDER than the derivation would never fire")
+
+    def test_the_derivation_reads_the_accessor_and_not_just_dot_get(self):
+        """Why the floor alone is not enough: the derivation must KNOW the
+        accessor, or every future normalisation re-breaks R13 and the floor
+        turns a silent narrowing into a hard stop the author has to widen."""
+        self.assertIn("field_str", sec.FIELD_ACCESSORS)
+        self.assertIn("field_text", sec.FIELD_ACCESSORS)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

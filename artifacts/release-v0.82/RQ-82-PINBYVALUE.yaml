@@ -41,4 +41,71 @@ artifacts:
       priority: should
       issue: "#1439"
       verification-track: manual
+      disposition: partial
+      landed: "PR #1492 — Every row of the #1439 fixture is now pinned BY BIT PATTERN — 8 of 14 were unpinned, now 0 of 14, each proven by its own firing mutation — and the artifact's premise that SEVERAL oracles assert over float tables is REFUTED at one."
+      verified-by: >
+        PARTIAL — THE FIXTURE IS NOW FULLY PINNED, THE PREMISE IS PARTLY REFUTED, AND #1439's
+        EMITTER IS STILL NOT NAMED. This lane hardened the oracle AROUND the defect and did
+        not touch the defect, so it is not progress on #1439 and the artifact stays
+        non-claiming. (#1439 is INTERNAL — no `**[name]` body prefix, `author.login` avrabe —
+        so conduct rule 4 does not bind here, but the honest framing is the same either way.)
+
+        THE REFUTING COMMAND RAN FIRST AND DID NOT REFUTE: `-0.0 == 0.0` is still True and
+        `float("nan") in [float("nan")]` is still False, so both mechanisms are live.
+
+        THE PREMISE IS REFUTED WHERE IT SAID "SEVERAL". The artifact expected the oracle
+        surface to be "full of float fixtures ... and several assert over them". DERIVED with
+        `ast` over `scripts/repro/`: 14 float-valued tables, 12 containing `-0.0` or NaN — but
+        the number that ASSERT over such a table is ONE FILE, and it is the known
+        `vfp_local_pressure_1069_differential.py`. There is no second site to convert. The
+        population is one, not several.
+
+        AND TWO OF MY OWN DETECTORS WERE WRONG BEFORE THAT NUMBER WAS RIGHT, which is why it
+        is stated with the method. The first looked for `ast.Compare` nodes and found NOTHING,
+        because the real guard is SET ARITHMETIC over packed bytes, not a comparison. The
+        second text-scanned each assert for `struct.pack` and classified the one known-correct
+        guard as VALUE-based, because the packing happens on a PREVIOUS line. A transitive
+        closure over derived names then over-reached to 25 names and swept in five per-value
+        input guards. The figure above comes from reading the bounded set the narrow scan
+        produced, not from a third detector.
+
+        WHAT WAS ACTUALLY UNPINNED, measured per row by DELETING IT and observing whether
+        anything reds, against `origin/main` and then against this change:
+
+          row            before   after      row            before   after
+          0.0            --       pin        -3.14159265    pin      pin
+          -0.0           pin      pin        1e-30          --       pin
+          1.0            --       pin        -1e30          pin      pin
+          -1.0           pin      pin        inf            --       pin
+          0.5            --       pin        -inf           pin      pin
+          -0.25          pin      pin        nan            --       pin
+          1.5            --       pin
+          0.001          --       pin        UNPINNED: 8 of 14 -> 0 of 14
+
+        THE NaN ROW WAS PROTECTED BY NOTHING, and it is the artifact's second mechanism
+        arriving for real. The file's own header says NaN is in the fixture deliberately — it
+        exercises the spilled reload paths, because each local's round-tripped value feeds the
+        product. Deleting it reddened NOTHING. It is the SAME FAMILY as the `-0.0` escape and
+        the OPPOSITE failure: `-0.0` was pinned VACUOUSLY TRUE because `-0.0 == 0.0`, while NaN
+        cannot be pinned by membership AT ALL because `nan != nan` would make the guard
+        vacuously FALSE on a CORRECT fixture. `struct.pack` settles both.
+
+        AND HALF THE ARGUMENT WAS PINNED. The file states the conclusion's shape itself: "the
+        positive rows are the discriminator — a `neg` would corrupt them too, an `abs` leaves
+        them alone". So the abs-vs-neg conclusion rests on BOTH halves. The negative half was
+        pinned by bits in v0.81; the positive half was pinned only by `len(_POS) >= 4` with
+        SEVEN present, so the floor permitted deleting three in silence. Pinned by bits now,
+        in a SEPARATE tuple from `_FAILING_SET_1439`, which means exactly "the six values
+        v0.78 recorded as failing" and would be falsified by adding rows to it.
+
+        THE ZERO IS EARNED, NOT VACUOUS: it rests on FOURTEEN individual firing mutations, one
+        per row, plus TWO NEGATIVE CONTROLS that must stay silent and do — REORDERING the rows
+        does not fire (the pins assert content, not order) and ADDING a row does not fire (a
+        future lane may extend the fixture).
+
+        WHAT WAS NOT RUN, PLAINLY: the differential's BODY. It needs `./target/debug/synth`,
+        which is absent on the release machine after the v0.81 disk purge, and it has no
+        `--self-test`. What this lane changes is MODULE-LEVEL fixture guards, which run at
+        import and which the 14 mutations exercised directly; CI runs the full differential
+        via `oracle_run.py`. A local oracle run is not a CI run and this does not claim to be.
       done-when: "manual:2026-12-31 the population of float-valued equality or membership pins in scripts/repro/ is DERIVED with a number, every one whose table contains `-0.0` or NaN is converted to a bit-pattern comparison, and each conversion is proven red-first by deleting exactly the row that previously escaped"
