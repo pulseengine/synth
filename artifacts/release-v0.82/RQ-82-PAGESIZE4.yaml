@@ -72,7 +72,7 @@ artifacts:
 
         THE MANDATED PRE-READ WAS RUN BEFORE ANY CODE WAS CONSIDERED, which is the rule v0.81
         violated by building first. `git grep -n -F 'refuse_custom_page_size' -- artifacts/`
-        returns SIX files spanning v0.69, v0.70, v0.71, v0.80 and v0.82 — a carried family five
+        returns SIX files spanning v0.69, v0.70, v0.71, v0.80, v0.81 and v0.82 — a carried family six
         releases deep, which is itself the signal that a decision already exists. gale's words
         are at `artifacts/release-v0.81/RQ-81-PAGESIZE3.yaml:72`: "Refused or honoured?
         HONOURED — and please do not spend the effort on relocating the refusal. Refusing in the
@@ -98,9 +98,35 @@ artifacts:
                                               synth-core/wasm_decoder (the struct field and its
                                               propagation), one a comment. The DECLARATION
                                               reaches the decoder and is ignored thereafter.
-          memory.size lowering sites      4   arm_encoder.rs:1758 and :3830,
-                                              select_default.rs:398, cortex_m.rs:152/155 —
-                                              each a hardcoded LSR #16 / >>16 on R10
+          memory.size lowering sites      2   arm_encoder.rs:1758 (A32) and :3830
+                                              (Thumb) are the only two that are a runtime
+                                              LSR #16 on R10. CORRECTED by v0.82's cold
+                                              review -- and the corrected set was obtained
+                                              by READING each candidate, not by grepping
+                                              for `>>16`/`65536`: a first attempt at this
+                                              correction claimed "9 files / 18 sites" from
+                                              such a grep and swept in MOVT high-halfword
+                                              extraction of ALREADY-COMPUTED values
+                                              (select_with_stack.rs:3571,
+                                              optimizer_bridge.rs:3685,
+                                              synth-cli/main.rs:9949/:9973/:9998), which
+                                              converts nothing -- the same mistake this row
+                                              exists to fix. Of the four originally listed,
+                                              select_default.rs:398 is a COMMENT (its arm
+                                              emits `ArmOp::MemorySize`; the shift lives in
+                                              arm_encoder) and cortex_m.rs:152 is a comment
+                                              with :155 being `self.memory_size >> 16`, the
+                                              MOVT half of the immediate LOADED INTO R10
+                                              rather than a shift OF it. The enumeration was
+                                              also ARM-only: the other shipped backends carry
+                                              their own COMPILE-TIME conversions -- RV32
+                                              selector.rs:3312 (`linear_memory_bytes /
+                                              65536`) and AArch64 selector.rs:2557 and :2596
+                                              (`limit_bytes / 65536`). The library-only
+                                              synth-memory crate also has bounds.rs:401/:402
+                                              (`size / 65536`), not linked into the binary.
+                                              FIVE conversions in shipped backends, two of
+                                              them runtime
           max_bytes                       1   mention in the whole crate tree: the DEFINITION.
                                               ZERO callers, confirming the carried measurement
           initial_bytes                  13   mentions, so the twin shape is real and both must
@@ -127,4 +153,4 @@ artifacts:
         branch's content SHIPPED by merged PR head — 1482, 1483 and 1481. Their
         `git log origin/main..HEAD` counts read 5, 6 and 2 "unpushed", which is the squash-merge
         trap rather than lost work.
-      done-when: "manual:2026-12-31 either (pagesize 1) compiles with the declared page size honoured at the decoder, all four memory.size lowering sites and both byte-size accessors, with the CI-wired pagesize oracle flipping to its capability mode and an execution differential over a non-default page size; or the lane states with numbers why not — and in neither case is the refusal relocated into synth-core"
+      done-when: "manual:2026-12-31 either (pagesize 1) compiles with the declared page size honoured at the decoder, both ARM memory.size lowering sites (arm_encoder.rs:1758/:3830 — the count was corrected from four by v0.82's cold review) and the other backends' own hardcoded bytes->pages conversions and both byte-size accessors, with the CI-wired pagesize oracle flipping to its capability mode and an execution differential over a non-default page size; or the lane states with numbers why not — and in neither case is the refusal relocated into synth-core"

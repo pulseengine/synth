@@ -80,13 +80,27 @@ artifacts:
         VARIANT 2 — ADJACENT-NEGATOR AWARE. Fixes all six adjacent forms (`never DELIVERED`
         included). Still inverts `no work was SHIPPED`, because the negator is two words away,
         and unbounded-distance negation in prose is not decidable by a token rule at all.
+        (The 562 / 188 / 67 figures above are measured AT COMMIT 39fd8226, this lane's
+        parent. At this lane's own commit 8ef921eb they are 562 / 189 / 68, because this
+        artifact's own `verified-by` entered the population — a count invalidated by the
+        edit that writes it, so it is stated with its commit.)
 
         VARIANT 3 — DECLINE WHENEVER ANY NEGATOR APPEARS IN THE SENTENCE. Cannot invert, by
-        construction. It drops THIRTEEN artifacts OUT of population: RQ-60-A64IMPORT,
-        RQ-62-MEMISOLATE, RQ-62-VERIFYEMBED, RQ-65-PARITY, RQ-66-UNWATCHED, RQ-77-CENSUS,
-        RQ-78-FEATURESET, RQ-78-RITUAL, RQ-79-ORDEAL, RQ-80-CLOSEGATE, RQ-80-STEP7,
-        RQ-81-PINSWEEP and RQ-82-CLOSEARM — this release's own must-lane among them. Losing
-        coverage on 13 to close a hole on 3 is a bad trade.
+        construction. THE DROP COUNT AND THE NAMED LIST WERE BOTH WRONG HERE, corrected by
+        v0.82's cold review and RE-DERIVED with the gate's own `artifacts()`/`classify()`:
+        with "the sentence" pinned as the FIRST sentence of `verified-by` and negators
+        {NOT, NO, NEVER, CANNOT, WITHOUT, NEITHER, NOR}, it drops TWENTY-SEVEN of the 78 in
+        population — not thirteen. And SIX of the thirteen previously named cannot be
+        dropped by ANY negator rule, because their first sentence contains no negator at
+        all: RQ-78-RITUAL ("DELIVERED."), RQ-79-ORDEAL ("LANDED."), RQ-80-CLOSEGATE,
+        RQ-80-STEP7 and RQ-81-PINSWEEP ("DELIVERED.") and RQ-82-CLOSEARM ("DELIVERED, AND
+        THE RULE JUDGES ITS OWN ARTIFACT."). Seven of the thirteen do drop. THE REFUSAL IS
+        UNCHANGED AND IN FACT STRONGER: losing coverage on 27 to close a hole on 3 is a
+        worse trade than the one this artifact originally described, so the wrong number
+        understated the case against variant 3. Note the drop count is
+        DEFINITION-DEPENDENT — it moves with the sentence scope — which is itself a reason
+        the rule is not adoptable: a population that changes with a parsing choice is not a
+        population.
 
         A FOURTH OPTION WAS TRIED AND ALSO REFUSED, and it is the one that looked free. Adding
         the negated forms to INCOMPLETE — DERIVED from COMPLETE, not typed — has ZERO live

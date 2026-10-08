@@ -108,7 +108,7 @@ jobs:
           trap 'git config --global --unset-all url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf || true' EXIT
           python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
           python3 - <<'PYEOF'
-          import pathlib, subprocess, sys, yaml
+          import pathlib, shutil, subprocess, sys, yaml
 
           # DERIVED from rivet.yaml, so adding an external never needs a second
           # edit here. A hand-written mirror of this list is the drift the North
@@ -120,23 +120,47 @@ jobs:
                        "the report would be generated against an unresolved graph.")
           root = pathlib.Path(".rivet/repos")
           root.mkdir(parents=True, exist_ok=True)
-          cloned = []
+
+          def resolved(dest):
+              """A directory EXISTING is not a synced external.
+
+              The first version of this step tested `dest.exists()`, so an EMPTY
+              `.rivet/repos/<prefix>` counted as synced. v0.82's cold review
+              demonstrated it: two empty dirs printed `synced 2 of 2`, rc=0 — the
+              exact condition this step exists to refuse. A real clone carries a
+              git dir AND at least one artifact-bearing file.
+              """
+              return (dest / ".git").exists() and any(dest.rglob("*.yaml"))
+
           for name, cfg in sorted(ext.items()):
               dest = root / (cfg.get("prefix") or name)
+              if resolved(dest):
+                  continue
               if dest.exists():
-                  cloned.append(name); continue
+                  # present but unresolved: `git clone` would fail "already exists",
+                  # so the stale tree is removed rather than silently accepted.
+                  shutil.rmtree(dest)
               r = subprocess.run(["git", "clone", "--depth", "1", "--branch",
                                   cfg.get("ref") or "main", cfg["git"], str(dest)],
                                  capture_output=True, text=True)
               if r.returncode != 0:
                   sys.exit(f"REFUSE: clone of {name} failed rc={r.returncode}: "
                            f"{r.stderr.strip()[-400:]}")
-              cloned.append(name)
-          # NON-VACUITY: every declared external must be present, or the report
-          # would be built on a partially resolved graph and look complete.
-          if len(cloned) != len(ext):
-              sys.exit(f"REFUSE: synced {len(cloned)} of {len(ext)} declared externals")
-          print(f"synced {len(cloned)} of {len(ext)} externals: {', '.join(cloned)}")
+
+          # NON-VACUITY, RE-DERIVED FROM THE FILESYSTEM rather than counted by the
+          # loop above. The original compared `len(cloned)` against `len(ext)` where
+          # `cloned` was appended to by that same loop — a counter the loop
+          # increments can only ever EQUAL the population, so the check was
+          # unreachable by construction. Reading the tree back gives the check a
+          # source independent of the thing it checks.
+          missing = sorted(n for n, c in ext.items()
+                           if not resolved(root / (c.get("prefix") or n)))
+          got = len(ext) - len(missing)
+          if missing:
+              sys.exit(f"REFUSE: {got} of {len(ext)} externals RESOLVED; "
+                       f"UNRESOLVED: {', '.join(missing)}")
+          print(f"synced {got} of {len(ext)} externals: "
+                f"{', '.join(sorted(ext))}")
           PYEOF
 
       - name: Generate compliance report

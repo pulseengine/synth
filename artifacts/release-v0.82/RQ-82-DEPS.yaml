@@ -15,10 +15,17 @@ artifacts:
       no. That is the hold's exit condition working, not a lane failing to meet it.
 
       WHAT THE SUITE SAID, exactly. On PR #1492 at bfed8c29, run 37790630310:
-      **50 of 54 completed jobs failed**, and the failure is UNIVERSAL rather than
-      leg-specific — 46 `ubuntu-latest` (x86) jobs failed alongside 2 `ubuntu-24.04-arm`
-      and 2 `macos-latest`, while the only 3 green jobs were `self-hosted,linux,x64,light`
-      ones that compile nothing. `synth-core` does not build:
+      **63 of its 68 non-cancelled jobs failed**, and the failure is UNIVERSAL rather
+      than leg-specific — FOUR distinct labels: 46 `ubuntu-latest` (x86), 13
+      `self-hosted,linux,x64,rust-cpu`, 2 `ubuntu-24.04-arm` and 2 `macos-latest`. NOT ONE
+      OF THE FIVE SURVIVORS COMPILES synth: Format (`cargo fmt`), Version Pin Sweep (pin +
+      lock consistency), Claim Check (python gates), Rivet Validation (artifact validation)
+      and Advisories (`cargo-deny`) are all metadata-level. (An earlier version of this
+      paragraph said "50 of 54 … only 3 green jobs, all `light`", measured while the run was
+      STILL IN FLIGHT and therefore true only at an instant; the run was later cancelled to
+      free the starved runner pool, which froze these figures as final. Two of the five
+      survivors are `rust-cpu`, so "light ones that compile nothing" was wrong about the
+      LABEL while right about the SUBSTANCE.) `synth-core` does not build:
 
         error[E0277]: the type `[u8]` cannot be indexed by `std::ops::Range<u64>`
 
@@ -91,9 +98,16 @@ artifacts:
         claiming the source compiles. The suite ran and said no.
 
         THE EVIDENCE IS UNIVERSAL, NOT LEG-SPECIFIC, and that distinction is what settled
-        the cause. Run 37790630310 on #1492 at bfed8c29: 50 of 54 completed jobs failed —
-        46 `ubuntu-latest` (x86), 2 `ubuntu-24.04-arm`, 2 `macos-latest`. The only 3 green
-        jobs were `self-hosted,linux,x64,light` ones that compile nothing. An earlier reading
+        the cause. Run 37790630310 on #1492 at bfed8c29, FINAL after the run was cancelled
+        to free the starved pool: 63 of 68 non-cancelled jobs failed, across FOUR labels —
+        46 `ubuntu-latest` (x86), 13 `self-hosted,linux,x64,rust-cpu`, 2 `ubuntu-24.04-arm`,
+        2 `macos-latest`. The five survivors are Format, Version Pin Sweep, Claim Check,
+        Rivet Validation and Advisories, and NOT ONE of them compiles synth — two are
+        `rust-cpu`, so the discriminator is what a job DOES, not which pool it runs on. A
+        figure quoted here earlier (50 of 54, three `light` survivors) was measured while the
+        run was still in flight: a count of a LIVE object is true only at an instant, and
+        stating it as a fact is the same class as quoting a count of the artifact it lives
+        in. An earlier reading
         of this run saw only the 4 arm64/macOS failures and hypothesised a leg-specific
         break; grouping the jobs BY LABEL refuted that hypothesis, because an API break would
         fail every leg and a leg-specific fault would spare x86. It spared nothing.
@@ -115,7 +129,9 @@ artifacts:
         and `Cargo.lock` are byte-identical to `origin/main` on the delivering branch
         (`git diff --quiet origin/main -- <file>` exits 0 for each). A grep for `0.261` would
         have been the WRONG check and would have read as a half-revert: 0.261.0 was already
-        in the lock transitively for `wasmparser`, `wasm-encoder` and `wat` before this lane
+        in the lock transitively for `wasmparser` and `wasm-encoder` — and `wat` at 1.261.0,
+        the same upstream train number carried on a DIFFERENT major, which this artifact
+        previously recorded as 0.261.0 — before this lane
         existed. The equality check was paired with a positive control — appending a comment
         line to `Cargo.toml` made it correctly report DIFFERS — so it is not vacuous.
 

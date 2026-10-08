@@ -49,8 +49,13 @@ artifacts:
 
       THE SIGN SURFACE IS WIDER THAN THREE VABS EMITTERS — enumerated, and the enumeration
       was previously defined by INSTRUCTION NAME rather than by EFFECT. An abs does not
-      require a VABS: clearing bit 31 in a GPR does the same thing. All FIVE sign-editing
-      sites in the backend, with what reaches each:
+      require a VABS: clearing bit 31 in a GPR does the same thing. The five sites below are
+      the ABS-CAPABLE f32 sites ON THE ARM BACKEND — that scope is stated because the
+      enumeration does not cover sign-editing as a whole, and the prose above treats `neg`
+      as a candidate. NOT in the five, and sign-editing: `VNEG.F32` (`0xEEB10A40`) at
+      `arm_encoder.rs:1993`, `:6325`, `:7314`; `VABS.F64` (`0xEEB00BC0`) at `:2086`,
+      `:6389`, `:7661`; `VNEG.F64` (`0xEEB10B40`) at `:2087`, `:6392`, `:7665`. The five,
+      with what reaches each:
 
         arm_encoder.rs:1992   VABS from `ArmOp::F32Abs`, A32 path     | the F32Abs|F32Neg selector arm
         arm_encoder.rs:6322   VABS from `ArmOp::F32Abs`, Thumb path   | the same arm
@@ -78,9 +83,16 @@ artifacts:
       arm — each decomposing `((v >> 12) & 0xF) << 16 | (v & 0xFFF)`. A theory that explains
       the data perfectly is still wrong if the code does not do it.
 
-      AND ONE INSTRUMENT ERROR WORTH THE RECORD: a first pass reported FOUR materializations
-      of `9.81f` because the grep was truncated by `head -8`. There are NINE lines containing
-      `0xf5c3`. Count before truncating.
+      AN INSTRUMENT ERROR WAS RECORDED HERE THAT BELONGS TO A DIFFERENT LANE, and the
+      misattribution is itself the finding. The truncated-grep anecdote about `9.81f` and
+      `0xf5c3` is #1436's gravity constant — JESSDIVERGE4's subject, where it is also
+      recorded. It is NOT this lane's: `0xf5c3` occurs in exactly three files
+      (`RQ-82-JESSDIVERGE4.yaml`, this artifact, and
+      `scripts/repro/jessdiverge3_gravity_faithful_1436.py`), and #1439's own fixture
+      `scripts/repro/vfp_local_pressure_1069.wat` contains ZERO occurrences of either
+      `9.81` or `0xf5c3`. Carrying a sibling lane's instrument error forward as this
+      lane's own evidence inflates the record of what THIS lane measured. The lesson
+      (count before truncating) stands where it was earned.
 
       WHAT REMAINS is the step this artifact already names and this lane did not reach: build
       with v0.78's retry applied LOCALLY (it stays out of the tree) and disassemble the

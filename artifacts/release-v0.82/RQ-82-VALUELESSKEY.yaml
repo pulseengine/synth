@@ -140,9 +140,22 @@ artifacts:
         key was never lost. A changed output via a DIFFERENT rule is as misleading as an
         unchanged one. Re-run on `shipped-in`, the only key read exactly once: the floor
         fired with its own message naming `['shipped-in']`, and rc returned to 0 on restore.
-        The tripwire forbidding the raw idiom in the gates was proven red-first ONCE PER GATE
-        by reverting one site in each, and its recognizer carries a positive control because
-        a tripwire asserting ZERO must be shown able to find one.
+        (The 14/13/2/3 sub-classification of the 32 sites does NOT re-derive uniquely — an
+        independent pass over the same 32 gave 16/12/2/2. The 32 itself, the 15 or-guarded
+        and the 11 inside `status_evidence_check.py` all reproduce exactly; the split is a
+        judgement call and is marked as one rather than quoted as a measurement.)
+        The tripwire forbidding the raw idiom was proven red-first once per gate IN ITS OWN
+        POPULATION, and its recognizer carries a positive control because a tripwire
+        asserting ZERO must be shown able to find one. THAT POPULATION IS TWO GATES, NOT
+        THE FOUR CONVERTED, and v0.82's cold review is what named the gap: `GATES =
+        ("status_evidence_check.py", "verdict_prose_check.py")`. `claim_check.py` and
+        `mcdc_gate.py` were converted but are OUTSIDE the tripwire and carry no
+        normalisation regression test (grep for `valueless|field_text|field_str|1458`
+        gives 0 hits in `test_claim_check.py` and one comment-only hit in
+        `test_mcdc_gate.py`). So `Claim Check` — a REQUIRED context, and the gate whose
+        latent waiver hole this artifact calls the sharpest thing here — holds the fix with
+        neither a test nor a tripwire. Named rather than closed, because widening the
+        tripwire's population is a change that owes its own red-first evidence.
 
         WHAT IS DECLARED TOLERANT RATHER THAN FIXED, named so the exclusion is not silent:
         `loop_conformance_check.py` reads `cr["name"]` from GitHub check-run JSON, where a

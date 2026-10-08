@@ -13,7 +13,7 @@ artifacts:
       `status: implemented` for exactly one reason: R3 reds a `proposed` status whose
       done-when evidence EXISTS ("the status under-reports shipped work"). But
       `authorised_close_set` reads a CLAIMING status as "this release may close the issue".
-      So satisfying R3 silently entitled the tag to close #1436 — whose own artifact says
+      So satisfying R3 silently entitled the tag to RETIRE #1436 — whose own artifact says
       it "REMAINS OPEN AND UNEXPLAINED" — and #1439, whose cause is not named.
 
       IT WAS CAUGHT BY AN OPERATOR RUNNING THE CLOSURE GATE BEFORE TAGGING, not by a gate.
@@ -61,8 +61,14 @@ artifacts:
       landed: "R14 landed in PR #1486 — the rule, seven unit tests, both potency mutants, and the day-one red (RQ-77-PROSEBLIND gains `issue-scope: closes`)."
       verified-by: >
         DELIVERED, AND THE RULE JUDGES ITS OWN ARTIFACT. R14 reds an artifact whose
-        `verified-by` opens with an INCOMPLETE verdict beside a CLAIMING status with no
-        `issue-scope:` declared. This artifact is claiming, so its own verdict had to be a
+        `verified-by` opens with a verdict in `LEGAL_BESIDE_CLAIMING` beside a CLAIMING
+        status with no `issue-scope:` declared. THAT SET HAS ONE MEMBER, `REFUTED` — not
+        all seven INCOMPLETE tokens, which is what this artifact said until v0.82's cold
+        review re-derived it. R14 was NARROWED to one token by `39fd8226` (PR #1488) in
+        this same release, and this artifact was not updated with it. The correction is to
+        the ATTRIBUTION, not to the outcome: BLOCKED, DEFERRED, NOT DELIVERED, PARTIAL,
+        PENDING and WITHDRAWN beside a claiming status are still RED, but by
+        `verdict_prose_check` and R11 rather than by R14. This artifact is claiming, so its own verdict had to be a
         COMPLETE one — and it is, truthfully: the rule, seven tests, paired potency mutants
         in BOTH directions and the single day-one red are all in the tree.
 
@@ -89,4 +95,4 @@ artifacts:
         "None", so a declaration of NOTHING would have SATISFIED R14. It is written `or ""`
         before `str()`, and a test pins exactly that case.
       verification-track: manual
-      done-when: "manual:2026-12-31 an artifact that claims its outcome holds while its own `verified-by` opens with an INCOMPLETE verdict and declares NO `issue-scope:` AT ALL is RED — EITHER value satisfies it, because R11 forbids a non-delivery `disposition:` beside a claiming status and R3 forbids a non-claiming status with done-when evidence, so claiming + prose-only refutation + no disposition is the FORCED configuration and demanding `outlives` specifically would red RQ-77-PROSEBLIND, whose issue IS resolved; proven red-first against v0.81's own two artifacts with the `outlives` field removed, proven NOT to red either of them as shipped, proven not to fire on a COMPLETE verdict or a non-claiming status, proven that a VALUELESS `issue-scope:` key still reds, and the verdict vocabulary IMPORTED from `verdict_prose_check` with an identity assert so no mirror can drift; R3's and R11's rules unchanged; and the live population measured before the rule lands so the day-one red count is known rather than discovered"
+      done-when: "manual:2026-12-31 an artifact that claims its outcome holds while its own `verified-by` opens with a verdict in R14's one-member `LEGAL_BESIDE_CLAIMING` set (`REFUTED`, narrowed by #1488 in this release) and declares NO `issue-scope:` AT ALL is RED — and the other six INCOMPLETE tokens are red by `verdict_prose_check`/R11 rather than by R14, which is where this criterion previously mis-attributed them — EITHER value satisfies it, because R11 forbids a non-delivery `disposition:` beside a claiming status and R3 forbids a non-claiming status with done-when evidence, so claiming + prose-only refutation + no disposition is the FORCED configuration and demanding `outlives` specifically would red RQ-77-PROSEBLIND, whose issue IS resolved; proven red-first against v0.81's own two artifacts with the `outlives` field removed, proven NOT to red either of them as shipped, proven not to fire on a COMPLETE verdict or a non-claiming status, proven that a VALUELESS `issue-scope:` key still reds, and the verdict vocabulary IMPORTED from `verdict_prose_check` with an identity assert so no mirror can drift; R3's and R11's rules unchanged; and the live population measured before the rule lands so the day-one red count is known rather than discovered"
