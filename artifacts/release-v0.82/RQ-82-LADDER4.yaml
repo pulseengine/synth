@@ -44,4 +44,70 @@ artifacts:
       priority: must
       issue: "#1432"
       verification-track: manual
+      disposition: partial
+      landed: "PR #1491 (issue #1432) — The human action was made EXECUTABLE and v0.78-v0.81's auth finding CORRECTED in docs/status/ACCEPTANCE_LADDER.md; the ladder itself is NOT re-measured and #1432 stays open."
+      verified-by: >
+        PARTIAL — THE LADDER IS STILL NOT MEASURED AND #1432 REMAINS OPEN. What this lane
+        delivered is a CORRECTION plus a narrowing, and the correction matters more than the
+        narrowing because four releases shipped the wrong fact.
+
+        THE REFUTING COMMAND WAS RUN FIRST AND DID NOT REFUTE. `ls /Volumes/` returns exactly
+        `com.apple.TimeMachine.localsnapshots`, `Data`, `Macintosh HD`, `Recovery` — no `Work`
+        — and `head -20 docs/status/ACCEPTANCE_LADDER.md` still opens "# Acceptance ladder —
+        v0.63". So the blocker stands and this is not an ordinary measurement lane.
+
+        THE STALENESS IS DERIVED WITH v0.81's OWN COMMAND, not incremented by hand:
+        `git tag --list 'v0.*' --sort=creatordate | awk 'f;/v0.63.0/{f=1}' | wc -l` returns
+        EIGHTEEN, where v0.81's run of the same command returned seventeen. v0.81.0 is the
+        eighteenth release shipped against a denominator measured on a 2026-09-06 tree at
+        e3a09ac2.
+
+        THE CORRECTION, AND IT CHANGES THE REMEDY. v0.78, v0.79, v0.80 and v0.81 each recorded
+        that the host "refus[es] publickey, password and keyboard-interactive" or "refused every
+        offered auth method". That conflates OFFERED with ACCEPTED, and the two imply different
+        fixes — a server-configuration change versus an authorisation entry. Re-measured
+        2026-10-08 with `ssh -o BatchMode=yes -o PreferredAuthentications=publickey -v
+        mac.fritz.box true`: the name resolves (192.168.178.109), sshd answers, and it OFFERS
+        `publickey,password,keyboard-interactive`. Publickey is ENABLED. What fails is that the
+        two keys this release machine holds are not authorised for the account the login uses.
+        No sshd change is needed; an `authorized_keys` append is.
+
+        WHAT THAT MADE EXECUTABLE, which is the half v0.81 owed and under-delivered. v0.81 named
+        three options but said only "install a key for `mac.fritz.box` that satisfies publickey
+        auth" — which key, for which account, appended where, all unnamed, so nobody else could
+        run it. Now named: the account is `r` (the login the attempt uses), the file is
+        `~r/.ssh/authorized_keys` on `mac.fritz.box`, and the key is the release machine's
+        `~/.ssh/id_ed25519.pub`, fingerprint
+        `SHA256:zvTyfAFp29N6McgyIZRf8N4bOkpnU84deMxZN140NR4`; a second key,
+        `SHA256:67Cc3EHL9UpUVb0ELbB7oKeQrR1swpVFWfD1Zd70i9A`, was also offered and also
+        rejected. ATTEMPTING PASSWORDS STAYS DECLINED and no password was attempted.
+
+        ONE NEW NEGATIVE FACT, cheap and never previously derived: the volume is not a locally
+        known disk awaiting a mount. `diskutil list` on 2026-10-08 knows NO volume named `Work`,
+        so option 2 means attaching or mounting a SECOND MACHINE's storage, not running
+        `diskutil mount` here. Prior releases enumerated `/Volumes/` only, which cannot tell
+        those two apart.
+
+        THE FIX LANDED WHERE AN OPERATOR READS IT. The host was named in four release artifacts
+        and in NONE of the ladder header, which said only "the machine holding it". The header
+        now carries the host, the account, the fingerprints, the corrected offered-vs-accepted
+        finding and the three options.
+
+        A FRESHNESS GATE WAS CONSIDERED AND REJECTED, with the reason recorded so it is not
+        re-litigated. A pin on the staleness distance could only be cleared by mounting a volume
+        on a machine this loop cannot reach, so it would red every release and be cleared by an
+        identical waiver each time — the standing-waiver accumulation shape this project has
+        already measured and corrected. CLAUDE.md records the precedent directly: RQ-74-STALEMSG
+        set out to build a staleness tripwire over diagnostic issue citations and REFUTED it,
+        because "a gate people cannot move honestly is a gate they route around". Building one
+        here would also be work on the ORACLE AROUND the defect rather than on the defect.
+
+        THE REACH FLOOR IS DELIBERATELY NOT PINNED, and this release DERIVED that rather than
+        asserting it: `grep -n -i "reach\|acceptance\|ladder\|accept_rate" claims.yaml` finds
+        no pinned rate — the only ladder-bearing entry is SYNTH-ACCEPTANCE-CITES-LADDER-1286,
+        which pins the ABSENCE of a copied figure in CLAUDE.md, and the one acceptance
+        measurement in the ledger sits under `unchecked:` with its denominator and date. Pinning
+        a floor would pin a number measured eighteen releases ago; pinning a cost ceiling alone
+        would let a release buy cost wins with reach losses and stay green. Neither half is
+        pinned and this says so.
       done-when: "manual:2026-12-31 either the ladder carries a measurement from this release's tree with its date, commit and corpus, or the SPECIFIC human action that would unblock it is named precisely enough to be executed by someone else, with the reach floor explicitly NOT pinned and the reason given"

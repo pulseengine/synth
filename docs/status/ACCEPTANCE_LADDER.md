@@ -11,8 +11,34 @@ sha256, manifest `MANIFEST.sha256`, 243 entries / 243 OK / 0 failed as verified 
 > v0.78 lane real time and nearly produced a published claim that the corpus was
 > unobtainable; it is not lost, it is unmounted. Last known location:
 > `/Volumes/Work/corpora/wasm-243`. Re-measuring the ladder requires mounting that
-> volume (the machine holding it answered on port 22 but refused every offered
-> auth method on 2026-09-30). Until then every rung below carries the measurement
+> volume, and **the host is `mac.fritz.box`** — named here, in the file an operator
+> actually reads, because four releases named it only in their release artifacts.
+>
+> **THE ACTION, SPECIFIC ENOUGH TO BE EXECUTED BY SOMEONE ELSE** (re-measured
+> 2026-10-08, and it CORRECTS what v0.78–v0.81 recorded). Those releases said the
+> host "refused every offered auth method", which conflated *offered* with
+> *accepted*. Measured with `ssh -o BatchMode=yes -o
+> PreferredAuthentications=publickey -v mac.fritz.box true`: the name resolves,
+> sshd answers, and it **offers** `publickey,password,keyboard-interactive` — so
+> publickey is ENABLED and no sshd config change is needed. What fails is
+> authorisation: the login attempted is user **`r`**, and the two keys this release
+> machine holds are not in that account's `authorized_keys`
+> (`SHA256:zvTyfAFp29N6McgyIZRf8N4bOkpnU84deMxZN140NR4` and
+> `SHA256:67Cc3EHL9UpUVb0ELbB7oKeQrR1swpVFWfD1Zd70i9A`, both rejected). So the
+> remedy is an `authorized_keys` edit, not a server-configuration one:
+>
+> 1. append the release machine's `~/.ssh/id_ed25519.pub` (the first fingerprint
+>    above) to `~r/.ssh/authorized_keys` on `mac.fritz.box`; **or**
+> 2. mount the volume carrying `/Volumes/Work/corpora/wasm-243` on the release
+>    machine directly — it is NOT a locally-known volume awaiting mount:
+>    `diskutil list` on 2026-10-08 knows no volume named `Work`, so this is a
+>    second machine, not an unmounted disk in this one; **or**
+> 3. relocate the 243-module corpus to a path inside this repo's reach and update
+>    this header plus `partial_census_1017.py --help`.
+>
+> **Attempting passwords is declined** and is not one of the options.
+>
+> Until then every rung below carries the measurement
 > date and commit in this header and MUST be cited with them — a ladder figure
 > quoted without its date is the #1286 defect.
 
