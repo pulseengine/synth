@@ -81,7 +81,7 @@ artifacts:
       issue: "#1458"
       verification-track: manual
       disposition: partial
-      landed: "#1458 — One shared accessor in scripts/artifact_fields.py, 26 call sites converted across FOUR gates, a declared-subset shrinkage floor for R13, and six tests; the two surviving sites are declared OUT OF CLASS with reasons."
+      landed: "PR #1492 — #1458 — One shared accessor in scripts/artifact_fields.py, 26 call sites converted across FOUR gates, a declared-subset shrinkage floor for R13, and six tests; the two surviving sites are declared OUT OF CLASS with reasons."
       verified-by: >
         PARTIAL — THE CLASS IS CLOSED ON THE GATE SURFACE AND TWO SITES ARE DECLARED
         TOLERANT RATHER THAN FIXED. #1458 is already CLOSED (retired by v0.81), so this is

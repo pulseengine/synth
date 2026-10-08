@@ -46,7 +46,7 @@ artifacts:
       issue: "#1456"
       verification-track: manual
       disposition: partial
-      landed: "#1456 — The gap is NARROWED, not closed: this artifact's own cost model was wrong by an order of magnitude — the job runs in 2.0-2.3 min, MEASURED on two commits — so the control is CHEAP and the blocker is SCHEDULING. Recorded UNPROVEN, with the mechanism and the trigger named."
+      landed: "PR #1492 — #1456 — The gap is NARROWED, not closed: this artifact's own cost model was wrong by an order of magnitude — the job runs in 2.0-2.3 min, MEASURED on two commits — so the control is CHEAP and the blocker is SCHEDULING. Recorded UNPROVEN, with the mechanism and the trigger named."
       verified-by: >
         PARTIAL — `Bazel Build & Proofs` IS STILL RECORDED UNPROVEN, which is the honest state
         the gate-potency pass requires, and the gap is materially narrower than v0.81 left it.

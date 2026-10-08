@@ -42,7 +42,7 @@ artifacts:
       issue: "#1439"
       verification-track: manual
       disposition: partial
-      landed: "Every row of the #1439 fixture is now pinned BY BIT PATTERN — 8 of 14 were unpinned, now 0 of 14, each proven by its own firing mutation — and the artifact's premise that SEVERAL oracles assert over float tables is REFUTED at one."
+      landed: "PR #1492 — Every row of the #1439 fixture is now pinned BY BIT PATTERN — 8 of 14 were unpinned, now 0 of 14, each proven by its own firing mutation — and the artifact's premise that SEVERAL oracles assert over float tables is REFUTED at one."
       verified-by: >
         PARTIAL — THE FIXTURE IS NOW FULLY PINNED, THE PREMISE IS PARTLY REFUTED, AND #1439's
         EMITTER IS STILL NOT NAMED. This lane hardened the oracle AROUND the defect and did

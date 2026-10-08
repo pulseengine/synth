@@ -50,7 +50,7 @@ artifacts:
       issue: "#1441"
       verification-track: manual
       disposition: deferred
-      landed: "#1441 — the mandated pre-read RUN and the relocation left off the table; scope RE-DERIVED at this commit (5 page_size_log2 sites, 4 memory.size lowering sites, max_bytes still ZERO callers); the capability DEFERRED because its own done-when demands execution evidence that cannot be obtained on this machine."
+      landed: "PR #1492 — #1441 — the mandated pre-read RUN and the relocation left off the table; scope RE-DERIVED at this commit (5 page_size_log2 sites, 4 memory.size lowering sites, max_bytes still ZERO callers); the capability DEFERRED because its own done-when demands execution evidence that cannot be obtained on this machine."
       verified-by: >
         DEFERRED — THE CAPABILITY IS NOT BUILT, AND THE REASON IS ITS OWN DONE-WHEN. #1441
         stays open. This lane ran the mandated pre-read, re-derived the scope, and declined to

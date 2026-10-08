@@ -64,7 +64,7 @@ artifacts:
       issue: "#1453"
       verification-track: manual
       disposition: partial
-      landed: "#1453 — v0.81.0's assets LISTED (13, zero compliance reports) with the cause DERIVED; the externals-sync step added to compliance.yml and proven locally 7-of-7 with both refusal controls firing; the backlog RE-DERIVED as 130 of 149 and put to the maintainer as a DECISION, not actioned."
+      landed: "PR #1492 — #1453 — v0.81.0's assets LISTED (13, zero compliance reports) with the cause DERIVED; the externals-sync step added to compliance.yml and proven locally 7-of-7 with both refusal controls firing; the backlog RE-DERIVED as 130 of 149 and put to the maintainer as a DECISION, not actioned."
       verified-by: >
         PARTIAL — BOTH DONE-WHEN HALVES ARE DELIVERED AND THE FIX IS UNVERIFIABLE UNTIL A
         RELEASE RUNS IT. #1453 stays open: no report is attached to any release by an

@@ -45,7 +45,7 @@ artifacts:
       issue: "#1136"
       verification-track: manual
       disposition: deferred
-      landed: "#1136 — the TWENTIETH filing, ordinal DERIVED BY ARTIFACT IDENTITY and stated with its commit; spar issue 445 re-checked STATE-first and still OPEN; the filing shown SEEN by RUNNING the step 1-2 matcher, which reports NA-FILED."
+      landed: "PR #1492 — #1136 — the TWENTIETH filing, ordinal DERIVED BY ARTIFACT IDENTITY and stated with its commit; spar issue 445 re-checked STATE-first and still OPEN; the filing shown SEEN by RUNNING the step 1-2 matcher, which reports NA-FILED."
       verified-by: >
         DEFERRED — STEPS 1-2 ARE SKIPPED AGAIN AND THE BLOCKER IS UNMOVED. This is the
         recurring N/A, filed so the skip stays VISIBLE rather than becoming the silent

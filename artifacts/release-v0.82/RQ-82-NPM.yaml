@@ -45,7 +45,7 @@ artifacts:
       issue: "#1460"
       verification-track: manual
       disposition: deferred
-      landed: "#1460 — the registry gap RE-DERIVED against the live registry (latest 0.69.0 vs shipped 0.81.0, TWELVE minor releases), the credential action named exactly, and a SECOND blocker FOUND: v0.81's compliance wiring made the Release run conclude failure, which SKIPS the npm job entirely."
+      landed: "PR #1492 — #1460 — the registry gap RE-DERIVED against the live registry (latest 0.69.0 vs shipped 0.81.0, TWELVE minor releases), the credential action named exactly, and a SECOND blocker FOUND: v0.81's compliance wiring made the Release run conclude failure, which SKIPS the npm job entirely."
       verified-by: >
         DEFERRED — AND THIS LANE FOUND A SECOND BLOCKER THAT WOULD HAVE SURVIVED THE TOKEN
         ROTATION. #1460 stays open. The credential is still outside this repository, but it is

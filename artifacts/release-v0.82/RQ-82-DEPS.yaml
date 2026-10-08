@@ -70,7 +70,7 @@ artifacts:
       issue: "#965"
       verification-track: manual
       disposition: partial
-      landed: "#965 — four wasm-tools bumps to 0.261.0 and the rivet action to v0.40.0 applied in ONE change on a fresh base; whole-lock duplicate copies 13 -> 10; the compile is CI's to answer and the five dependabot PRs close only once it is green."
+      landed: "PR #1492 — #965 — four wasm-tools bumps to 0.261.0 and the rivet action to v0.40.0 applied in ONE change on a fresh base; whole-lock duplicate copies 13 -> 10; the compile is CI's to answer and the five dependabot PRs close only once it is green."
       verified-by: >
         PARTIAL — THE CHANGE IS APPLIED AND THE COMPILE IS UNVERIFIED HERE BY CONSTRUCTION.
         The hold's own exit condition is "merge a held bump BY HAND once the FULL suite is
