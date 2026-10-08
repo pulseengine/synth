@@ -60,9 +60,15 @@ register-relative (that is the whole point of the relocatable path).
   base: the object carries **no data relocations** for memory-0 accesses.
 - **R10 is the memory-0 size in bytes.** Read by exactly three emission
   classes:
-  1. `memory.size` — `LSR rd, R10, #16` (Thumb-2:
-     `crates/synth-backend/src/arm_encoder.rs:3810-3831`; A32: `:1772-1778`),
-     i.e. bytes → 64 KiB pages;
+  1. `memory.size` — a right shift by **log2 of the memory's DECLARED page
+     size** (Thumb-2: `crates/synth-backend/src/arm_encoder.rs:3849-3894`;
+     A32: `:1756-1782`), i.e. bytes → declared pages. For the default 64 KiB
+     page that is `LSR rd, R10, #16`, byte-identical to every release before
+     v0.83. For `(pagesize 1)` (#1441, honoured on `--relocatable` only) the
+     byte count IS the page count, so it emits `MOV rd, R10` — a shift of zero
+     is NOT an LSR in either encoding (A32 `shift5=0, type=01` means shift BY
+     32), and the encoder refuses any shift it cannot encode rather than
+     emitting a wrong word;
   2. the bulk-memory bounds guards (`memory.copy`/`memory.fill`,
      `select_with_stack.rs:7282-7295` — "addresses are R11-relative; R10 =
      size in bytes");
@@ -107,9 +113,11 @@ Per-call re-establishment is therefore unnecessary but harmless.
 ## Region requirements
 
 - **Linear memory (at R11):** the embedder must reserve at least the module's
-  declared initial memory, `initial_pages x 65536` bytes, and R10 must state
-  the reserved size in bytes. R10 should be a whole multiple of 65536 — the
-  `memory.size` lowering truncates (`LSR #16`), so a non-multiple
+  declared initial memory, `initial_pages x page_bytes` where `page_bytes` is
+  the memory's DECLARED page size (65536 unless the module says
+  `(pagesize 1)`, #1441), and R10 must state the reserved size in bytes. R10
+  should be a whole multiple of that page size — the `memory.size` lowering
+  truncates toward it, so a non-multiple
   under-reports and, worse, the software/mask guards would permit accesses
   into the fractional tail that `memory.size`-based module logic believes
   does not exist. With the default `--safety-bounds none`, nothing checks
@@ -317,8 +325,9 @@ pre-#1145 output; pinned by `region_table_absent_on_single_memory_1145`).
 | Symbol | Encoding | Meaning |
 |---|---|---|
 | `__synth_mem_count` | `SHN_ABS`, `st_value` = N | Total memory count, memory 0 included. |
-| `__synth_mem_size_0` | `SHN_ABS`, `st_value` = bytes | Memory 0's declared initial size (`initial_pages x 65536`). |
-| `__synth_mem_size_k` (k ≥ 1) | `SHN_ABS`, `st_value` = bytes | Memory k's declared initial size. |
+| `__synth_mem_size_0` | `SHN_ABS`, `st_value` = bytes | Memory 0's declared initial size (`initial_pages x` its DECLARED page size — 65536 unless the module says `(pagesize 1)`, #1441). |
+| `__synth_mem_size_k` (k ≥ 1) | `SHN_ABS`, `st_value` = bytes | Memory k's declared initial size, on the same rule. |
+| `__synth_mem_region_k` (all k) | `SHN_ABS`, `st_value` = bytes | **The MPU-legal extent covering that memory** (#1441): the smallest power of two ≥ 32 that is ≥ `__synth_mem_size_k`. PROGRAM YOUR REGION FROM THIS, not from the size. Two symbols because one number cannot be true about both the declaration and the region: reporting only the rounded extent re-creates #1315's over-grant in miniature, and reporting only the declaration moves an unstated rounding obligation onto you — the class #1145 exists to prevent. Under the default page size the two already differ for any page count that is not itself a power of two, so this is emitted unconditionally rather than only under a custom page size. |
 | `__synth_mem_base_k` (k ≥ 1) | offset 0 of `.synth.wasm_mem_k`, `st_size` = region bytes | Its **linked address** is memory k's region base, wherever your linker script places the section. |
 
 `SHN_ABS` symbols are link-invariant values, not placed addresses — read one

@@ -1851,9 +1851,40 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 19782
+        value: 19805
         baseline: 17897
         waivers:
+          - to: 19805
+            reason: >-
+              RQ-83-PAGESIZE5 (#1441): 19782 -> 19805, a RISE of 23 that adds
+              ZERO lowering decisions. No new arm, no new match site, no new op
+              handled — `memory.size` was already lowered at both sites and both
+              already existed.
+
+              DERIVED with this checker's own `--metric` for the totals and a
+              `git diff --unified=0` over THIS FIELD'S OWN GLOB FAMILY for the
+              split, because the waiver above records a hand-rolled classifier
+              getting exactly this wrong: 25 lines added (10 comment, 15 code),
+              2 removed (both code), net +23. The code lines are one struct
+              field (`memory0_page_log2`), its two constructor defaults, a
+              three-line setter, and the two EXISTING `ArmOp::MemorySize`
+              literals which rustfmt expanded from one line each to four when
+              they gained the field.
+
+              WHY THE FIELD EXISTS AT ALL, since the ratchet's question is
+              whether the growth bought anything: R10 holds memory 0's size in
+              BYTES while `memory.size` must answer in DECLARED pages, so the
+              shift amount is a property of the MODULE and has to reach the
+              encoder. Hardcoding 16 there is what made `(pagesize 1)` return 0
+              from every `memory.size` — #1315's silent over-grant with its sign
+              flipped. Memory k > 0 needed no equivalent: its `memory.size`
+              materializes the declared PAGE COUNT as a constant, which is
+              page-size-independent.
+
+              NOT PAID FOR BY A DELETION, and that is stated rather than
+              glossed: nothing in the selector became redundant, so this is a
+              genuine net rise against a must-fall ceiling. The subtraction this
+              release owes the metric is elsewhere or still owed.
           - to: 19782
             reason: >-
               RQ-77-FALCON2 (#1318/#1426): 19763 -> 19782, a RISE of 19 that
@@ -2744,7 +2775,7 @@ claims:
         # selector_lines_code (17 comment + 2 diagnostic-string lines);
         # the new both-directions test lives in synth-backend, outside
         # this population. `direction: track` — no waiver, by design.
-        value: 30375
+        value: 30398
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4295,10 +4326,21 @@ claims:
         pattern: 'MemAddr::imm\(Reg::R9'     # i64 pair halves)
         glob: ['crates/synth-synthesis/src/instruction_selector/select_with_stack.rs']
         min: 6
-      - kind: count-eq                       # memory.size derives pages from
-        pattern: 'memory size in bytes / 65536 = pages'   # R10 bytes in BOTH
-        glob: ['crates/synth-backend/src/arm_encoder.rs'] # encoders (Thumb-2 +
-        expect: 2                                         # A32)
+      # RQ-83-PAGESIZE5 (#1441) RE-POINTED this pin rather than restoring it.
+      # It used to pin the phrase `memory size in bytes / 65536 = pages`, twice.
+      # That phrase is now FALSE as documentation: `memory.size` shifts by the
+      # memory's DECLARED page size, which is 16 by default and 0 under
+      # `(pagesize 1)`. Restoring the old string to turn the gate green would
+      # have pinned a wrong claim — the exact "fix the gate, keep the error"
+      # shape this ledger exists to prevent.
+      - kind: count-eq                       # R10 is BYTES in BOTH encoders and
+        pattern: 'memory\.size` answers in DECLARED'      # memory.size answers
+        glob: ['crates/synth-backend/src/arm_encoder.rs'] # in DECLARED pages
+        expect: 2                                         # (Thumb-2 + A32)
+      - kind: count-eq                       # and an unencodable shift REFUSES
+        pattern: 'not encodable as'          # rather than emitting a wrong word
+        glob: ['crates/synth-backend/src/arm_encoder.rs'] # (#180/#185 Ok-or-Err)
+        expect: 2                                         # once per encoder
       - kind: count-min                      # ...and the Thumb-2 encoding reads
         pattern: 'reg_to_bits\(&Reg::R10\)'  # R10 itself, not a copy
         glob: ['crates/synth-backend/src/arm_encoder.rs']

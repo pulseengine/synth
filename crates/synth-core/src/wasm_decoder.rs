@@ -113,14 +113,47 @@ pub struct WasmGlobal {
 }
 
 impl WasmMemory {
-    /// Get initial size in bytes
-    pub fn initial_bytes(&self) -> u32 {
-        self.initial_pages * 65536
+    /// #1441: this memory's DECLARED page size in bytes.
+    ///
+    /// The custom-page-sizes proposal permits EXACTLY two values — the vendored
+    /// `custom-page-sizes-invalid.wast` asserts `(pagesize 32)` invalid BY NAME
+    /// under its own "Power-of-two page sizes that are not 1 or 64KiB" heading —
+    /// so on any module that validates `page_size_log2` is 0 or 16.
+    ///
+    /// `checked_shl` rather than `<<`, and this is deliberate rather than
+    /// defensive habit: `synth-core` is a PUBLISHED library and gale asked on
+    /// #1145 that the refusal NOT be relocated into it ("refusing in the library
+    /// closes a door gale wants open"; v0.81 built that relocation anyway and
+    /// reverted it). So a library caller can hand this a malformed `log2` that
+    /// no CLI refusal has seen, and `1u32 << 40` is a debug panic and a release
+    /// wrap. A getter must be TOTAL.
+    pub fn page_bytes(&self) -> u32 {
+        match self.page_size_log2 {
+            Some(l) => 1u32.checked_shl(l).unwrap_or(u32::MAX),
+            None => 65536,
+        }
     }
 
-    /// Get maximum size in bytes (or initial if not specified)
+    /// Get initial size in bytes.
+    ///
+    /// TWIN with [`Self::max_bytes`] (#1441): both read `page_bytes()` and both
+    /// saturate. They are listed together because fixing one and not the other
+    /// is this repo's recorded twin shape — v0.70 narrowed the integer allocator
+    /// check and v0.71 found its VFP twin still wrong — and because a memory
+    /// whose INITIAL honours the declaration while its MAX does not reserves the
+    /// over-granted extent anyway, which is #1315's silent over-grant wearing
+    /// the fix's clothes.
+    pub fn initial_bytes(&self) -> u32 {
+        self.initial_pages.saturating_mul(self.page_bytes())
+    }
+
+    /// Get maximum size in bytes (or initial if not specified).
+    ///
+    /// TWIN with [`Self::initial_bytes`] — see the note there.
     pub fn max_bytes(&self) -> u32 {
-        self.max_pages.unwrap_or(self.initial_pages) * 65536
+        self.max_pages
+            .unwrap_or(self.initial_pages)
+            .saturating_mul(self.page_bytes())
     }
 }
 
@@ -2636,6 +2669,88 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- #1441: the declared page size, and the TWIN (initial/max) ----------
+    //
+    // Both getters had ZERO assertions before this lane, which is how a twin
+    // diverges silently. Every case below asserts BOTH, over the same memory,
+    // so a change to one of them cannot stay invisible.
+
+    fn mem(pages: u32, max: Option<u32>, log2: Option<u32>) -> WasmMemory {
+        WasmMemory {
+            index: 0,
+            initial_pages: pages,
+            max_pages: max,
+            shared: false,
+            memory64: false,
+            page_size_log2: log2,
+        }
+    }
+
+    #[test]
+    fn undeclared_page_size_is_64_kib_on_both_twins() {
+        let m = mem(3, Some(5), None);
+        assert_eq!(m.page_bytes(), 65536);
+        assert_eq!(m.initial_bytes(), 3 * 65536);
+        assert_eq!(m.max_bytes(), 5 * 65536);
+    }
+
+    #[test]
+    fn pagesize_65536_is_identical_to_undeclared_on_both_twins() {
+        // The proposal's other legal value equals the default, so declaring it
+        // must be byte-identical to not declaring it — that equality is what
+        // proves the field is READ rather than merely branched on.
+        let declared = mem(3, Some(5), Some(16));
+        let implied = mem(3, Some(5), None);
+        assert_eq!(declared.page_bytes(), implied.page_bytes());
+        assert_eq!(declared.initial_bytes(), implied.initial_bytes());
+        assert_eq!(declared.max_bytes(), implied.max_bytes());
+    }
+
+    #[test]
+    fn pagesize_1_is_byte_granular_on_both_twins() {
+        // THE CAPABILITY (#1441). gale's board: two ~20 KiB tenants in a
+        // G474's 96 KiB, which 64 KiB-page granularity cannot express at all.
+        let m = mem(20000, Some(20000), Some(0));
+        assert_eq!(m.page_bytes(), 1);
+        assert_eq!(m.initial_bytes(), 20000, "initial must be the BYTE count");
+        assert_eq!(m.max_bytes(), 20000, "max must be the BYTE count too");
+        // And the pre-fix answer must no longer be produced by either twin.
+        assert_ne!(m.initial_bytes(), 20000 * 65536);
+        assert_ne!(m.max_bytes(), 20000 * 65536);
+    }
+
+    #[test]
+    fn max_defaults_to_initial_under_a_custom_page_size() {
+        // `max_pages: None` is the branch unique to `max_bytes`, so it is the
+        // one place the twins legitimately differ in CODE and must still agree
+        // in ANSWER.
+        let m = mem(777, None, Some(0));
+        assert_eq!(m.initial_bytes(), 777);
+        assert_eq!(m.max_bytes(), 777, "max falls back to initial, in BYTES");
+    }
+
+    #[test]
+    fn a_malformed_page_size_log2_saturates_rather_than_panicking() {
+        // synth-core is PUBLISHED and the refusal deliberately lives in the CLI
+        // (gale, #1145), so a library caller can reach these getters with a
+        // log2 no refusal has filtered. `1u32 << 40` would panic in debug and
+        // wrap in release; both are worse answers than a saturated one.
+        let m = mem(2, Some(2), Some(40));
+        assert_eq!(m.page_bytes(), u32::MAX);
+        assert_eq!(m.initial_bytes(), u32::MAX, "saturates, does not wrap");
+        assert_eq!(m.max_bytes(), u32::MAX);
+    }
+
+    #[test]
+    fn a_page_count_that_would_overflow_saturates_on_both_twins() {
+        // Pre-existing hazard, not introduced here: `initial_pages * 65536`
+        // wrapped in release for any count above 65535. Saturating is a strictly
+        // better answer and it is asserted so it cannot regress to wrapping.
+        let m = mem(70000, Some(70000), None);
+        assert_eq!(m.initial_bytes(), u32::MAX);
+        assert_eq!(m.max_bytes(), u32::MAX);
+    }
 
     #[test]
     fn test_decode_simple_add() {

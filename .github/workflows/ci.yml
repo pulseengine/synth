@@ -4119,8 +4119,22 @@ jobs:
           # the new fixture carried_float_branch_1318.wat entering the corpus.
           # The audit does not enumerate per module, so the 14 are counted and
           # NOT named here. `hits: 0` on all three runs.
-          grep -Eq '^functions audited: 7305$' haa1189.txt
-          grep -Eq '^homes watched: 8368$' haa1189.txt
+          # RQ-83-PAGESIZE5 (#1441): 7305 -> 7307, 8368 -> 8370, attributed
+          # 235455 -> 235457. This lane HONOURS `(pagesize 1)` on
+          # `--relocatable`, and the audit's corpus() globs `scripts/repro/*.wat`
+          # — so `custom_page_size_1315.wat`, which previously DECLINED on the
+          # relocatable legs, now COMPILES and enters the audited population.
+          # One exported function on the two relocatable legs = +2 functions,
+          # +2 homes, +2 attributed.
+          #
+          # PROVEN CORPUS GROWTH, NOT A CODEGEN CHANGE, by the isolation the
+          # #1321 and #1341 notes above established: holding that ONE fixture
+          # aside and re-running THIS binary over the rest of the corpus
+          # reproduces 7305 / 8368 / 235455 EXACTLY. `hits: 0` is unchanged
+          # throughout, and a codegen change would not have been confined to
+          # the one fixture whose acceptance changed.
+          grep -Eq '^functions audited: 7307$' haa1189.txt
+          grep -Eq '^homes watched: 8370$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -4128,7 +4142,7 @@ jobs:
           # 217081 could not still hold. Nothing caught it because no grep ever
           # read it: exactly the "a ratchet fixes the number and cannot fix the
           # prose" shape this project keeps paying for. Derived here: 217291.
-          grep -Eq '^attributed instructions: 235455 ' haa1189.txt
+          grep -Eq '^attributed instructions: 235457 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

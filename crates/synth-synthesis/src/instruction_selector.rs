@@ -6164,6 +6164,14 @@ pub struct InstructionSelector {
     /// legacy caller) means "no multi-memory context" — any multi-memory op
     /// then declines loudly.
     memory_pages: Vec<u32>,
+    /// #1441: log2 of memory 0's DECLARED page size — 16 for the default
+    /// 64 KiB page, 0 for `(pagesize 1)`. R10 holds memory 0's size in BYTES
+    /// and `memory.size` must answer in DECLARED pages, so this is the shift.
+    /// Defaults to 16, which is correct for every module that declares no page
+    /// size AND for every legacy caller; `(pagesize 1)` is accepted only on
+    /// `--relocatable`, which forces this selector (#197), so no other lowering
+    /// path can observe a non-default value.
+    memory0_page_log2: u32,
     /// #237: wasm linear-memory minimum size in bytes — the static-data extent
     /// (initialized `(data)` + zero-init/BSS). A const address below this is a
     /// static (symbol-relative under the flag).
@@ -6466,6 +6474,7 @@ impl InstructionSelector {
             self_contained_funcref_table: false,
             native_pointer_abi: false,
             memory_pages: Vec::new(),
+            memory0_page_log2: 16,
             linear_memory_bytes: 0,
             wasm_data_base: 0,
             sp_global: None,
@@ -6521,6 +6530,7 @@ impl InstructionSelector {
             self_contained_funcref_table: false,
             native_pointer_abi: false,
             memory_pages: Vec::new(),
+            memory0_page_log2: 16,
             linear_memory_bytes: 0,
             wasm_data_base: 0,
             sp_global: None,
@@ -7093,6 +7103,13 @@ impl InstructionSelector {
     /// multi-memory op loudly.
     pub fn set_memory_pages(&mut self, memory_pages: Vec<u32>) {
         self.memory_pages = memory_pages;
+    }
+
+    /// #1441: set log2 of memory 0's declared page size (0 or 16). Memory
+    /// k > 0 needs no equivalent: its `memory.size` materializes the declared
+    /// PAGE COUNT as a constant, which is page-size-independent.
+    pub fn set_memory0_page_log2(&mut self, page_log2: u32) {
+        self.memory0_page_log2 = page_log2;
     }
 
     /// #406: the per-memory base symbol the ELF/link layer defines for memory

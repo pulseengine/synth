@@ -679,6 +679,7 @@ fn compile_wasm_to_arm(
         // the multi-memory arms (memory-0 lowering never reads it; empty ⇒
         // every multi-memory op declines loudly).
         selector.set_memory_pages(config.memory_pages.clone());
+        selector.set_memory0_page_log2(config.memory0_page_log2);
         // #311: i64 call results are register PAIRS — tag them.
         selector.set_result_types(config.func_ret_i64.clone(), config.type_ret_i64.clone());
         // #1210: per-function result COUNT (0 = void) — `func_ret_i64` alone

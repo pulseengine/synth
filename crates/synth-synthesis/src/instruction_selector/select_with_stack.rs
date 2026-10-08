@@ -3541,7 +3541,10 @@ impl InstructionSelector {
                         // Memory 0: runtime size register (R10 >> 16 = pages),
                         // byte-identical to the pre-#406 lowering.
                         instructions.push(ArmInstruction {
-                            op: ArmOp::MemorySize { rd: dst },
+                            op: ArmOp::MemorySize {
+                                rd: dst,
+                                page_log2: self.memory0_page_log2,
+                            },
                             source_line: Some(idx),
                         });
                     } else {

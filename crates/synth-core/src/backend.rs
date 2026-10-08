@@ -196,6 +196,15 @@ pub struct CompileConfig {
     /// multi-memory op then declines loudly.
     pub memory_pages: Vec<u32>,
 
+    /// #1441: log2 of memory 0's DECLARED page size — 16 for the default
+    /// 64 KiB page, 0 for `(pagesize 1)` (the custom-page-sizes proposal
+    /// permits exactly those two). R10 holds memory 0's size in BYTES while
+    /// `memory.size` must answer in DECLARED pages, so this is the shift the
+    /// ARM lowering applies. Memory k > 0 needs no equivalent: its
+    /// `memory.size` materializes the declared PAGE COUNT as a constant, which
+    /// is page-size-independent.
+    pub memory0_page_log2: u32,
+
     /// #237: the wasm stack-pointer global as `(index, init_value)`, if the
     /// module has one. Under `native_pointer_abi` the backend register-promotes
     /// it: `global.get` materializes `__synth_wasm_data + init` (the real stack
@@ -556,6 +565,9 @@ impl Default for CompileConfig {
             // #406: empty ⇒ no multi-memory context ⇒ multi-memory ops decline
             // loudly; memory-0 lowering never reads it.
             memory_pages: Vec::new(),
+            // #1441: 16 = the default 64 KiB page, correct for every module
+            // that declares no page size and for every legacy caller.
+            memory0_page_log2: 16,
             stack_pointer_global: None,
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),

@@ -2085,7 +2085,7 @@ fn compile_command(
             // RQ-66-BOTHWRONG (#1209): same for memory64 — this path shares
             // the module-path #1046 lineage.
             refuse_memory64_module(&module.memories)?;
-            refuse_custom_page_size(&module.memories)?;
+            refuse_custom_page_size(&module.memories, relocatable)?;
             refuse_shared_memory(&module.memories)?;
             // #642: compute the call_indirect guard inputs BEFORE the
             // module's vectors are moved out below.
@@ -3698,26 +3698,87 @@ fn refuse_memory64_module(memories: &[synth_core::wasm_decoder::WasmMemory]) -> 
 /// declaration, then decline loudly. Honouring the declared size is capability
 /// work with its own oracle and is NOT what this does — gale asked for the
 /// refusal first, in that order.
-fn refuse_custom_page_size(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Result<()> {
-    if let Some(mem) = memories
-        .iter()
-        .find(|m| m.page_size_log2.is_some_and(|l| l != 16))
-    {
-        let log2 = mem.page_size_log2.unwrap_or(16);
-        let declared = 1u64 << log2;
-        let would_report = (mem.initial_pages as u64) * 65536;
+/// #1441: the ARMv7-M PMSA-legal extent covering `declared_bytes` — the
+/// smallest power of two that is at least 32 bytes and at least the declaration.
+///
+/// TWO SYMBOLS, NOT ONE, and the reason is the whole point of the pair. Once
+/// `__synth_mem_size_k` carries the DECLARED byte count (`(pagesize 1)` makes
+/// declaration and reservation diverge for the first time), reporting only the
+/// rounded extent re-creates #1315's over-grant in miniature, and reporting
+/// only the declaration moves an unstated rounding obligation onto the
+/// embedder — which is the class #1145 exists to prevent. So synth states both
+/// and the embedder programs the region from `__synth_mem_region_k`.
+fn mpu_region_bytes(declared_bytes: u32) -> u32 {
+    const PMSA_MIN_REGION: u32 = 32;
+    if declared_bytes <= PMSA_MIN_REGION {
+        return PMSA_MIN_REGION;
+    }
+    // `next_power_of_two` is exact for every value that HAS one; a declaration
+    // above 2^31 has none in u32, and saturating there is honest — the region
+    // cannot be programmed and the embedder sees an extent it must reject,
+    // rather than a wrapped zero.
+    declared_bytes
+        .checked_next_power_of_two()
+        .unwrap_or(u32::MAX)
+}
+
+fn refuse_custom_page_size(
+    memories: &[synth_core::wasm_decoder::WasmMemory],
+    relocatable: bool,
+) -> Result<()> {
+    // #1441 NARROWS #1315's blanket refusal, and the narrowing is deliberately
+    // REACH-SHAPED rather than total. `(pagesize 1)` is now HONOURED on
+    // `--relocatable`: the decoder sizes memory k by its own declared page
+    // (`WasmMemory::page_bytes`, both twins), `__synth_mem_size_k` carries the
+    // declared BYTE count, `__synth_mem_region_k` carries the PMSA-legal extent
+    // beside it, and the ARM `memory.size` lowering shifts by the declared
+    // log2 instead of a literal 16.
+    //
+    // It stays REFUSED everywhere else, and that is what makes the acceptance
+    // sound rather than merely permissive: `--relocatable` forces the DIRECT
+    // selector (#197), so the optimized path — whose `memory.size` lowering
+    // hardcodes a 16-bit shift — cannot observe a byte-paged memory, and the
+    // self-contained ROM packer's own page arithmetic is never reached. A
+    // widened acceptance without those two lowerings would return 0 from every
+    // `memory.size` on a byte-paged memory: #1315's silent over-grant with its
+    // sign flipped, which is strictly worse than refusing.
+    for mem in memories {
+        let Some(log2) = mem.page_size_log2 else {
+            continue;
+        };
+        if log2 == 16 {
+            continue; // the proposal's other legal value IS the default
+        }
+        let declared = 1u64 << log2.min(63);
+        if log2 == 0 && relocatable {
+            continue; // THE CAPABILITY (#1441)
+        }
+        if log2 == 0 {
+            let would_report = (mem.initial_pages as u64) * 65536;
+            anyhow::bail!(
+                "module declares memory {idx} with a custom page size of 1 \
+                 byte(s) (`(pagesize 1)`), which synth honours only on \
+                 `--relocatable` (#1441; the over-grant measurement is in \
+                 #1315). On this path the image is sized and reserved in 64 KiB \
+                 pages and the optimized `memory.size` lowering shifts by a \
+                 literal 16, so accepting it would report \
+                 `__synth_mem_size_{idx}` as {would_report} for a memory the \
+                 module says is 1 byte(s) — the figure an embedder programs one \
+                 MPU region from (#1145) — and return 0 from `memory.size`. \
+                 Add --relocatable, where the object carries \
+                 `__synth_mem_size_{idx}` as the declared byte count and \
+                 `__synth_mem_region_{idx}` as the PMSA-legal extent beside it, \
+                 or declare the memory with the default 64 KiB page size.",
+                idx = mem.index,
+            );
+        }
         anyhow::bail!(
-            "module declares memory {idx} with a custom page size of {declared} \
-             byte(s) (`(pagesize {declared})`, the custom-page-sizes proposal, \
-             log2 = {log2}), but no synth backend reads the declared page size \
-             — every memory is sized, reported and reserved in 64 KiB pages. \
-             Accepting it would report `__synth_mem_size_{idx}` as \
-             {would_report} for a memory the module says is {declared} \
-             byte(s), and that symbol is what an embedder programs one MPU \
-             region from (#1145), so the region would over-grant by the \
-             page-size ratio. Refusing rather than silently ignoring the \
-             declaration (#1315). Workaround: declare the memory with the \
-             default 64 KiB page size and size it in whole pages.",
+            "module declares memory {idx} with a page size of {declared} \
+             byte(s) (`(pagesize {declared})`, log2 = {log2}). The \
+             custom-page-sizes proposal permits EXACTLY 1 and 65536 — the \
+             vendored `custom-page-sizes-invalid.wast` asserts `(pagesize 32)` \
+             invalid by name — so this declaration is not valid wasm and synth \
+             refuses it rather than choosing an interpretation (#1441/#1315).",
             idx = mem.index,
         );
     }
@@ -3972,7 +4033,7 @@ fn compile_all_exports(
                     refuse_dropped_start_function(module.start_function)?;
                     // RQ-66-BOTHWRONG (#1209): same for memory64.
                     refuse_memory64_module(&module.memories)?;
-                    refuse_custom_page_size(&module.memories)?;
+                    refuse_custom_page_size(&module.memories, relocatable)?;
                     refuse_shared_memory(&module.memories)?;
                     let export_count = module
                         .functions
@@ -4206,7 +4267,7 @@ fn compile_all_exports(
         // start-function decision below — memory64 is refused on every
         // compile mode this path serves.
         refuse_memory64_module(&module.memories)?;
-        refuse_custom_page_size(&module.memories)?;
+        refuse_custom_page_size(&module.memories, relocatable)?;
         refuse_shared_memory(&module.memories)?;
         // RQ-59-STARTFN (#1046) / RQ-65-MVPCORE (#1017): a `(start ...)`
         // module is ACCEPTED on exactly one path — the self-contained ARM
@@ -4747,6 +4808,15 @@ fn compile_all_exports(
         // become __synth_wasm_data-relative across the whole linear memory.
         native_pointer_abi,
         linear_memory_bytes: all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0),
+        // #1441: memory 0's DECLARED page size as a shift. R10 holds its size
+        // in BYTES while `memory.size` must answer in DECLARED pages, so the
+        // ARM lowering shifts by this instead of a literal 16. Absent
+        // declaration ⇒ 16, which keeps every default-paged object
+        // byte-identical.
+        memory0_page_log2: all_memories
+            .first()
+            .and_then(|m| m.page_size_log2)
+            .unwrap_or(16),
         // VCR-MEM-002 phase 1 (#406): per-memory initial page counts, indexed
         // by memory index. Consulted ONLY by the multi-memory lowering arms —
         // memory-0 lowering never reads it, so single-memory output is
@@ -7599,6 +7669,21 @@ fn build_relocatable_elf(
         for &(mem_idx, mem_bytes) in extra_memories {
             abs_syms.push((format!("__synth_mem_size_{mem_idx}"), mem_bytes));
         }
+        // #1441: the MPU-legal extent BESIDE the declaration, per memory. Under
+        // the default 64 KiB page the two already differ for any page count
+        // that is not itself a power of two, so this is emitted unconditionally
+        // rather than only under a custom page size — the embedder's rounding
+        // obligation did not begin with `(pagesize 1)`, it only became visible.
+        abs_syms.push((
+            "__synth_mem_region_0".to_string(),
+            mpu_region_bytes(linear_memory_bytes),
+        ));
+        for &(mem_idx, mem_bytes) in extra_memories {
+            abs_syms.push((
+                format!("__synth_mem_region_{mem_idx}"),
+                mpu_region_bytes(mem_bytes),
+            ));
+        }
         for (name, value) in abs_syms {
             let sym = Symbol::new(&name)
                 .with_value(value)
@@ -8097,7 +8182,11 @@ fn build_multi_func_cortex_m_elf(
     // Calculate linear memory size from WASM memory declarations
     // Default to 1 page (64KB) if no memory declared (for backwards compatibility)
     let linear_memory_pages = memories.first().map(|m| m.initial_pages).unwrap_or(1);
-    let linear_memory_size = linear_memory_pages * 64 * 1024; // 64KB per page
+    // #1441: `initial_bytes()` honours the DECLARED page size; the previous
+    // `linear_memory_pages * 64 * 1024` did not — and that spelling is why the
+    // lane's own recorded site census missed it, since the census pattern
+    // matched `65536|0x10000|WASM_PAGE_SIZE` and this site says `64 * 1024`.
+    let linear_memory_size = memories.first().map(|m| m.initial_bytes()).unwrap_or(65536);
 
     // #649: the R9 globals table lives immediately above linear memory.
     refuse_partial_globals_table(globals_words.len())?;
