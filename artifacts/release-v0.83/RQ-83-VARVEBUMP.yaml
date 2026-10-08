@@ -1,0 +1,115 @@
+artifacts:
+  - id: RQ-83-VARVEBUMP
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "The varve layer moves 2026.09.2 -> 2026.10.9, and the advisory job's 'flake' is a deterministic anti-rollback refusal"
+    description: >
+      MAINTAINER-REQUESTED mid-release, and it REVERSES a recorded non-action. The VARVE
+      standing instruction carried into this release was explicit: do NOT bump the pin, do NOT
+      clear any runner cache, do NOT ask infra to route around the failing runners — report the
+      layer identity and move on. The maintainer asked for the upgrade directly, so it is taken,
+      and the reversal is recorded here rather than left implicit.
+
+      THE PIN HAD EXPIRED. `varve status` on 2026.09.2: "supported until 2026-10-09", which is
+      the day this lane ran. Not a near-miss — the window closed.
+
+      THE ADVISORY JOB WAS NOT FLAKING. #1422 records "refuses the pinned layer on 2 of 5 runs
+      with an identical message". The message, read from the failing job's log rather than
+      inferred:
+
+        error: rollback refused: layer presents counter 3 but the 2026.09 line's high-water
+        mark is 4 — a stale, validly-signed layer cannot be passed off as current
+
+      That is DETERMINISTIC, and the per-run variance has a cause: the high-water mark is
+      CACHED LINE-STATUS, local to each runner, so whether a given runner refuses depends on
+      whether its own store has yet seen the newer document. A deterministic refusal observed
+      through per-runner state looks exactly like a flake.
+
+      WHICH LAYER, DERIVED RATHER THAN GUESSED — and the first attempt WAS a guess. A probe
+      searching DOWNWARD from a hand-chosen ceiling of 2026.10.3 took the first success and
+      stopped; `varve install` then printed "realm 'pulseengine' signed index for line 2026.10:
+      greatest counter 10; this install accepted counter 4", so the probe's upper bound came
+      from the operator and not from the realm — six layers short. Re-derived from the SIGNED
+      INDEX: greatest counter 10, 2026.10.9 IS counter 10, and 2026.10.10 returns "source has
+      no layer matching". Bounded at BOTH ends.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact:
+      `~/.varve/bin/varve status` must NOT say the pinned layer is supported past its window,
+      or there was nothing to bump; and `varve install` with CI's OWN pinned client version
+      must exit 0, or the bump breaks the job it was meant to fix.
+    tags:
+      - feature-loop
+      - process
+      - varve
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1422"
+      verification-track: manual
+      disposition: partial
+      landed: "PR #1500 — #1422 — the varve pin moves 2026.09.2 -> 2026.10.9, the line's HIGH-WATER derived from the realm's signed index (greatest counter 10; 2026.10.9 IS counter 10; 2026.10.10 absent) with the digest re-derived from `varve install` rather than copied; the 2026.09.2 window had ENDED 2026-10-09 and the advisory job's '2 of 5' refusal is a DETERMINISTIC anti-rollback mark read through per-runner cached line-status. CI's own pinned client v0.33.0 installs and verifies it (16 tools match). Required contexts unaffected: `Rivet Validation` takes rivet from tag v0.37.0 via cargo, not the layer. Also fixed: R15's failures were appended AFTER the print loop, so a red was counted and never named."
+      verified-by: >
+        PARTIAL — the layer moves and the refusal is DIAGNOSED, but #1422's underlying design
+        tension is not resolved and this artifact does not claim it is.
+
+        DELIVERED: `varve.toml` 2026.09.2 -> 2026.10.9 with the digest RE-DERIVED from `varve
+        install`'s own output rather than copied from any human-readable source (an external
+        reporter quoted a digest for a different layer in a neighbouring thread; it was
+        deliberately not used). `varve-realms.toml` replaced with the PUBLISHED asset from the
+        varve v0.41.0 release rather than hand-edited — its only change is an ADDED realm,
+        `pulseengine-wasm`, carrying the bytecodealliance component-model tools; the
+        `pulseengine` realm's `trust-root` and the `retired-roots` list are byte-identical.
+
+        THE BUMP IS SAFE FOR EVERY REQUIRED CHECK, and that is measured rather than assumed.
+        The layer carries rivet 0.35.0 -> 0.40.0, and `Rivet Validation` is one of the nine
+        REQUIRED contexts — but it installs rivet from release tag v0.37.0 via cargo (its cache
+        key is `rivet-cli-v0.37.0`), never from the layer. The layer's only consumer is
+        `Rivet Federated Graph (advisory)`, advisory BY NAME. `varve diff 2026.09.2 2026.10.9`:
+        25 changed, 10 added, **0 REMOVED** — the finding varve surfaces separately because no
+        version number shows it — and every payload retains `cosign-sums` proof.
+
+        TESTED WITH CI'S OWN CLIENT, NOT THE NEWEST ONE. The job pins varve v0.33.0; the local
+        probe used 0.41.0, and "it works at 0.41.0" is a claim about the wrong binary. varve
+        0.33.0 was downloaded, its tarball digest checked against the signed `SHA256SUMS.txt`,
+        and run against the NEW pin and the NEW realms file: `install` rc=0, and the layer
+        verifies "signature OK, 16 tool(s) match their signed digests". The added realm table
+        does not trip it, so the client pin STAYS at 0.33.0 — the smallest change that works.
+        This mattered because the repo's own history records 0.32.0 HARD-REFUSING this file over
+        an unknown field (#1236).
+
+        AND THE BUMP SURFACED A LATENT DEFECT THAT PREDATES IT. Under rivet 0.40.0 this repo's
+        rivet graph FAILS. Measured as a PAIRED CONTROL on the SAME TREE:
+
+          rivet 0.37.0 (required job)      PASS (863 warnings), 0 errors    common@0.3.0
+          rivet 0.40.0 (layer 2026.10.9)   FAIL (29 errors, 950 warnings)   common@0.3.1
+
+        so the delta is the VERSION, not the tree — the embedded schema moved 0.3.0 -> 0.3.1 and
+        promoted coverage gaps to errors, the #229 WARN->ERROR class. Eight of the 29 print, over
+        exactly four artifacts (the v0.64 deferrals RQ-64-ARCHMODEL / -CFOBLIG / -MACHO /
+        -MVLOWER). THE CAUSE IS NOT DIAGNOSED AND IS NOT GUESSED AT: all four DO carry
+        `links: [{type: derives-from, target: BR-001}]`, BR-001 IS a `stakeholder-req`, 315 other
+        sites target it across 241 files without erroring, the indentation matches a passing
+        artifact and the file has no duplicate keys — and `rivet get RQ-64-MACHO` prints NO Links
+        section under 0.37.0 EITHER, while 0.40.0 prints `derives-from -> BR-001` for a v0.83
+        artifact. So those four links are unresolved under BOTH versions and 0.40.0 only promoted
+        an existing SILENCE to an error. A latent traceability hole, found by a toolchain bump
+        rather than by the gate that exists to find it, and owed its own lane.
+
+        CONSEQUENCE STATED PLAINLY: the advisory job stays RED after this lane, with its failure
+        MOVING from `varve install` to `rivet validate`. That is not the bump failing — it is the
+        bump getting far enough to reach the next finding.
+
+        WHAT IS NOT RESOLVED, which is why #1422 stays OPEN and this is `partial`. A digest pin
+        exists to be STABLE; varve's anti-rollback mark requires it to be CURRENT. Those pull in
+        opposite directions, so any pin below its line's high-water mark will eventually be
+        refused again and this bump is a palliative, not a fix. #1422 now has a named root cause
+        where it had "an identical message and no diagnosis", which is progress on it, and the
+        design question is the reporter's and the maintainer's to settle rather than mine.
+        Also observed and NOT actioned, per the standing instruction: `varve verify` exits 1
+        locally on REQ-SHADOW-001 PATH shadowing for 5 tools (#1308). No VARVE_ROOT was set and
+        no runner cache was cleared.
+      done-when: "manual:2026-12-31 the varve pin names a layer whose support window is open AND which sits at its line's high-water mark derived from the realm's signed index, CI's own pinned varve client installs and verifies it, every REQUIRED context is unaffected with that independence measured rather than assumed, and any behaviour change the new layer's tools introduce is reported with a paired control on the same tree"

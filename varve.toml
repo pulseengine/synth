@@ -15,10 +15,20 @@ manifest-version = 1
 [toolchain]
 realm   = "pulseengine"
 channel = "rolling"
-layer   = "2026.09.2"
+layer   = "2026.10.9"
 # Digest-pinned as `varve docs pins` recommends: byte-exact freezing, and
-# constant-time resolution (~37us regardless of how many layers the local core
-# holds, vs ~2.5ms for a name-only pin at 200 layers). Re-derived (never
-# copied) via `varve install` against the rotated realm below — see
-# RQ-66-VARVE / #1236.
-digest  = "sha256:67d585476be898dcd6c7f0e31fb8abe9c6548f708b3cb44804ad61cc5d999025"
+# constant-time resolution. Re-derived (NEVER copied) from `varve install`'s own
+# output — see RQ-66-VARVE / #1236.
+#
+# v0.83: 2026.09.2 -> 2026.10.9. 2026.09.2's support window ENDED 2026-10-09 and
+# the 2026.09 line's anti-rollback mark had advanced past it, which is exactly
+# what the advisory federated-graph job reported: "layer presents counter 3 but
+# the 2026.09 line's high-water mark is 4". Deterministic refusal, not flake —
+# the per-runner variance in #1422 is each runner's own cached line-status.
+#
+# 2026.10.9 is the line's HIGH-WATER, bounded at both ends rather than guessed:
+# the realm's SIGNED INDEX states greatest counter 10, 2026.10.9 IS counter 10,
+# and 2026.10.10 returns "source has no layer". A first probe that searched
+# DOWNWARD from a guessed ceiling of 2026.10.3 stopped at the first success and
+# would have pinned six layers short.
+digest  = "sha256:65b8c9dd4c64bb01c3123a037e7c35aa502d97955ce9df1821aa43fb4e289e77"

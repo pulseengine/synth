@@ -2445,10 +2445,6 @@ def main() -> int:
             f"planning PR. The population count cannot see this: it is "
             f"`max()` over the same set it counts, so it stays >= 1 either way."
         )
-    for w in warnings:
-        print(w)
-    for f in failures:
-        print(f"FAIL {f}")
     files = len({a[0] for a in artifacts})
     # Scoped to the release being CUT — that is the set the exit-condition
     # step consumes. An all-history set would be 96 issues and read as noise.
@@ -2456,8 +2452,20 @@ def main() -> int:
     # R15 (RQ-83-LANDEDBOTH, #1484) — scoped to `_cut`, which is cross-checked
     # against `anchor + 1` above, so the scope is not derived from the artifacts
     # it judges.
+    #
+    # COMPUTED BEFORE THE PRINT LOOP, and that placement is the whole point.
+    # When R15 landed (#1497) this sat AFTER it, so an R15 failure was COUNTED
+    # in the summary and in the exit code but NEVER NAMED: the operator saw
+    # "1 failures", exit 1, and not one word about which rule or which
+    # artifact. A gate that refuses without saying why sends the reader to
+    # the one place the answer is not. Found in v0.83 by an unrelated lane
+    # tripping it.
     _r15 = landed_two_context(artifacts, _cut)
     failures.extend(_r15)
+    for w in warnings:
+        print(w)
+    for f in failures:
+        print(f"FAIL {f}")
     # The POPULATION the close-set was derived over. Printed because the
     # authorised count alone cannot distinguish "nothing is authorised yet"
     # (the legitimate plan-time state: the AUTHORISED count is 0 at v0.72's

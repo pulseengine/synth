@@ -10,6 +10,23 @@
 registry   = "oci://ghcr.io/pulseengine/layers"
 trust-root = "7d3b892e6a33c70043becc708e08042e1cef0d54dd5ae6f23d7d4c68de1da1a0"
 
+# The realm that carries the bytecodealliance component-model tools —
+# wasm-tools, wac, wkg, wit-bindgen-wrpc.
+#
+# NAMED `pulseengine-wasm` AND NOT `bytecodealliance`, deliberately: a realm
+# name is a claim about WHO VOUCHES, and the key signing this layer is
+# PulseEngine's. The payloads are upstream's; the signature is ours. Naming the
+# realm after the upstream would imply an endorsement nobody gave.
+#
+# Three of its four payloads are ingested with NO proof of origin — those
+# releases publish neither cosign-signed sums nor build provenance (measured
+# 2026-09-18) — and each carries the operator's recorded reason INSIDE the
+# signed layer, where `varve inspect` shows it as proof = unverified. Read them
+# before pinning this realm: they are the whole of what you are trusting.
+[realm.pulseengine-wasm]
+registry   = "oci://ghcr.io/pulseengine/wasm-layers"
+trust-root = "f1300acb791d330da9b81951d4137f5b1fb0c5efc50213deee4d7a981be28745"
+
 # Roots this realm has retired (REQ-ROTATE-002). DIAGNOSTIC ONLY — nothing
 # verifies against these, ever. They exist so that a consumer whose pin was
 # signed by an old root is told WHICH root and WHEN, instead of getting
