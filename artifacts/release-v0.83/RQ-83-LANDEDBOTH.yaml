@@ -10,11 +10,28 @@ artifacts:
       says so — v0.82 hit the R4-lane red on exactly this and fixed it by hand. This lane makes the
       two-context requirement enforced rather than remembered.
 
-      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
-      legitimate outcome, reported with numbers:
-      Write an artifact naming only the PR, run `status_evidence_check.py` on the branch and then under
-      a squash simulation — if BOTH pass, the two-context requirement does not exist and the premise
-      holds; if either reds, it is already enforced and this lane is moot.
+      REFUTING COMMAND. Run BEFORE building on this artifact; a refutation is a legitimate
+      outcome, reported with numbers. The premise is read off the two functions rather than
+      from a synthetic artifact, because the question is which NUMBER `_acknowledge` asks for,
+      not whether a given artifact happens to satisfy it:
+      `grep -n -E 'landed_prs|PR_NUMBER|prs\[-1\]' scripts/status_evidence_check.py`
+      — if `PR_NUMBER` does not require parentheses, or `_acknowledge` takes something other
+      than `prs[-1]`, the two-context asymmetry does not exist and this lane is moot.
+
+      MEASURED, AND THE PREMISE HELD: `PR_NUMBER = re.compile(r"\(#(\d+)\)")` requires
+      PARENTHESES, and `_acknowledge` takes `PR_NUMBER.findall(subject)[-1]`. So on a lane
+      branch, whose subject this programme writes as `... lane (#<issue>): ...`, `prs[-1]` is
+      the ISSUE; after the squash GitHub appends ` (#<pr>)` and `prs[-1]` becomes the PR. The
+      acknowledgment asks `landed:` for a DIFFERENT number before and after the merge.
+
+      AND A SECOND REFUTING MEASUREMENT REFUTED THE RULE AS FIRST SCOPED, which is the more
+      useful result. Over ALL releases the rule's population is 48 and its day-one red count is
+      TWENTY-FIVE: historical `landed:` entries name the PR ALONE, which was the older
+      convention, and they never red today because `_acknowledge` only runs over artifacts
+      matched by a delivery commit in the CURRENT window. A rule reddening 25 shipped artifacts
+      on the day it lands is one people route around — RQ-74-STALEMSG set out to build exactly
+      such a rule and its own census refuted it. SCOPED to the release being cut the count is
+      ZERO, and v0.82's twelve already satisfy it.
     tags:
       - feature-loop
       - process
@@ -26,4 +43,48 @@ artifacts:
       priority: should
       issue: "#1484"
       verification-track: manual
+      disposition: partial
+      landed: "PENDING-PR-STAMP"
+      verified-by: >
+        PARTIAL — THE ASYMMETRY IS NOW ENFORCED, THE SUBJECT CONVENTION IS NOT. R15
+        (`landed_two_context`) reds an artifact in the release being cut whose `landed:` names
+        the PR without its own `issue:`, or its own issue without a delivering PR. What it does
+        NOT do is verify that the LANE SUBJECT actually names the issue in parentheses — the
+        asymmetry's other half. A subject naming no issue makes `prs[-1]` the PR in both shapes,
+        and then only the PR is needed; R15 would still demand both. That residual is named
+        rather than closed, because closing it means parsing commit subjects the artifact cannot
+        see at authoring time.
+
+        THE SCOPE IS A MEASUREMENT AND NOT A CONVENIENCE, and it is the finding worth keeping.
+        Over ALL releases: population 48, DAY-ONE REDS 25. Scoped to the cut: population 1,
+        DAY-ONE REDS 0 — and v0.82's twelve artifacts all pass, which is what shows the
+        convention is the practice rather than an aspiration. The 25 are not defects: they name
+        the PR alone under the older convention and are never acknowledgment-checked, because
+        `_acknowledge` runs only over the current window.
+
+        `only_version` COMES FROM AN INDEPENDENT SOURCE, which is this release's theme applied to
+        the new rule itself. The caller passes `_cut`, which is `max()` over the artifact-bearing
+        release files AND cross-checked against `anchor + 1` before use. Had R15 derived its own
+        scope from the artifacts it judges, the check's reference would have come from its
+        subject — the exact shape v0.83 exists to find.
+
+        POTENCY: FIVE OF FIVE MUTANTS CAUGHT, each against the failure mode it exists for —
+        the rule returning nothing (4 tests red), the issue-missing half dropped (3), the
+        PR-missing half dropped (2), the CLAIMING skip removed (2), and the SCOPE dropped (3,
+        including the live-tree zero-day-one-reds assertion). The scope mutant needed a UNIQUE
+        anchor: `if only_version is not None and version != only_version:` occurs TWICE in the
+        module — here and in `authorised_close_set` — so the first attempt SKIPPED rather than
+        ran, which is not the same as surviving and is recorded as such.
+
+        GREEN CONTROLS ARE ASSERTED BESIDE THE RED ONES, because without them the red assertions
+        are satisfied by a rule that refuses unconditionally: both-named passes, a CLAIMING
+        status passes (its status acknowledges it, not `landed:`), either field absent passes
+        (R4/R11 police presence), and a violating artifact from an OLDER release passes while
+        THE SAME artifact reds when it IS the cut — so that control is about the scope rather
+        than about the artifact.
+
+        Gates: status_evidence rc=0 with ZERO R15 failures over 283 artifacts,
+        test_status_evidence_check 141 tests OK (134 before), verdict_prose rc=0, claim_check
+        75/75, merge_gate --self-test rc=0, test_tag_release rc=0, check_version_pins rc=0,
+        cargo fmt rc=0.
       done-when: "manual:2026-12-31 `landed:` must satisfy two `prs[-1]` derivations and nothing enforces naming both — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
