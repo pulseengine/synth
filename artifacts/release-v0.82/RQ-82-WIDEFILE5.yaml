@@ -41,6 +41,54 @@ artifacts:
       THE REACH ON OFFER IS SIX LOCALS, wall 60 -> 66 — not twelve. Stating the real figure
       is part of the lane, because an inflated one is how a silent miscompile gets justified.
 
+      REFUTING COMMAND RUN, PREMISE INTACT: the tripwire is present
+      (`vfp_local_pressure_1069.rs:278`, `wide60_declines_and_the_ladder_dies_on_the_wide_file_rung_1426`),
+      `git log -S"pool grow retry" -- crates/synth-backend/` returns ZERO commits so the
+      retry is still out, and `0xEEB00AC0` still has exactly THREE occurrences in
+      `arm_encoder.rs`.
+
+      THE SIGN SURFACE IS WIDER THAN THREE VABS EMITTERS — enumerated, and the enumeration
+      was previously defined by INSTRUCTION NAME rather than by EFFECT. An abs does not
+      require a VABS: clearing bit 31 in a GPR does the same thing. All FIVE sign-editing
+      sites in the backend, with what reaches each:
+
+        arm_encoder.rs:1992   VABS from `ArmOp::F32Abs`, A32 path     | the F32Abs|F32Neg selector arm
+        arm_encoder.rs:6322   VABS from `ArmOp::F32Abs`, Thumb path   | the same arm
+        arm_encoder.rs:7310   VABS hand-assembled                     | the copysign expansion
+        arm_encoder.rs:2450   AND #0x80000000 / BIC #0x80000000        | `encode_arm_f32_copysign`
+        arm_encoder.rs:2691   the same splice on the hi word          | `encode_arm_f64_copysign`
+
+      EVERY ONE requires a wasm `f32.abs`, `f32.neg` or `f32.copysign` operator, and the
+      fixture contains ZERO of all three. The two GPR-masking sites are NEW to this
+      enumeration; the carried claim counted only the VABS emitters.
+
+      TWO MECHANISMS REFUTED THIS LANE, both with numbers.
+      (1) THE SHARED SELECTOR ARM IS CLEAN. `instruction_selector.rs:3588` handles
+      `F32Abs | F32Neg` in ONE arm, which is the shape that would let an abs be emitted for
+      a neg. It does not: `if matches!(op, F32Abs) { ArmOp::F32Abs } else { ArmOp::F32Neg }`
+      — no crossover.
+      (2) `movt` IMMEDIATE TRUNCATION IS REFUTED, and it was the most seductive hypothesis
+      this lane has had. synth materializes f32 constants as `movw`/`movt` pairs, and the
+      f32 SIGN BIT IS BIT 15 OF THE `movt` IMMEDIATE — every negative has it set, every
+      positive clear — so a 15-bit immediate field would clear exactly the sign, on
+      CONSTANTS ONLY, failing precisely v0.78's six negatives and no positive, with no abs
+      instruction anywhere. It predicted the observed failing set exactly. ALL FOUR `MOVT`
+      paths nevertheless preserve bit 15: `encode_thumb32_movt_raw` (imm4=15..12, i=11,
+      imm3=10..8, imm8=7..0), the A32 helper, the A32 inline site, and the `ArmOp::Movt`
+      arm — each decomposing `((v >> 12) & 0xF) << 16 | (v & 0xFFF)`. A theory that explains
+      the data perfectly is still wrong if the code does not do it.
+
+      AND ONE INSTRUMENT ERROR WORTH THE RECORD: a first pass reported FOUR materializations
+      of `9.81f` because the grep was truncated by `head -8`. There are NINE lines containing
+      `0xf5c3`. Count before truncating.
+
+      WHAT REMAINS is the step this artifact already names and this lane did not reach: build
+      with v0.78's retry applied LOCALLY (it stays out of the tree) and disassemble the
+      newly-accepted function. Not attempted here: RE-MEASURED at this commit the data volume
+      is at 99% with 5.1 GiB available against a ~12 GiB workspace build, and it FELL from
+      7.3 GiB during this session. An earlier draft said 27 GiB free, which was true when
+      written and is not now.
+
       REFUTING COMMAND: `grep -n "wide60_declines" -r scripts/ tests/ crates/` and
       `git log --oneline -S"pool grow retry" -- crates/synth-backend/`. If the tripwire is
       gone or a retry has landed, this premise is dead. Then
@@ -58,5 +106,37 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1439"
+      disposition: partial
+      landed: "#1439 — PR #1490: the five-site sign enumeration and two refutations recorded in this artifact; the emitter is still not named. (#1439 is the ISSUE, not a PR; an earlier draft of this field called it 'PR #1439'.)"
+      verified-by: >
+        PARTIAL — TWO MECHANISMS REFUTED, THE SEARCH SPACE NARROWED, AND #1439's CAUSE IS
+        STILL NOT NAMED. The refuting command held first: the wide60 tripwire is present,
+        `git log -S"pool grow retry"` returns ZERO commits so the retry is still out, and
+        `0xEEB00AC0` still has exactly three occurrences.
+
+        THE ENUMERATION WAS SCOPED BY INSTRUCTION NAME RATHER THAN BY EFFECT, and that is the
+        finding. An abs needs no VABS — clearing bit 31 in a GPR does the same job. All FIVE
+        sign-editing sites are now enumerated with what reaches each, and the two
+        `AND`/`BIC #0x80000000` splices in `encode_arm_f32_copysign` / `encode_arm_f64_copysign`
+        are NEW to the enumeration; the carried claim counted only the VABS emitters. Every one
+        of the five still requires a wasm `f32.abs`, `f32.neg` or `f32.copysign` operator, and
+        the fixture contains ZERO of all three.
+
+        REFUTED (1): the shared `F32Abs | F32Neg` selector arm is CLEAN — no crossover.
+        REFUTED (2): `movt` immediate truncation, which was the best hypothesis this lane has
+        had. The f32 sign bit IS bit 15 of the `movt` immediate, so a truncated field would
+        clear exactly the sign on CONSTANTS ONLY and fail precisely v0.78's six negatives with
+        no abs instruction anywhere — it predicted the observed failing set exactly. All four
+        MOVT paths nevertheless preserve bit 15. A theory that explains the data perfectly is
+        still wrong if the code does not do it.
+
+        WHAT WAS NOT REACHED: the diagnostic build with v0.78's retry applied locally and the
+        disassembly of the newly-accepted function — the step this artifact itself names. The
+        release machine CANNOT do it: RE-MEASURED at this commit the data volume is at 99% with
+        5.1 GiB available against a ~12 GiB workspace build, and it FELL from 7.3 GiB during
+        this session. An earlier draft of this sentence said 27 GiB free, which was true when
+        written and is not now — a stale figure in a shipping artifact is the defect this
+        release keeps correcting. The retry stays OUT of the tree and the tripwire stays armed,
+        exactly as the carried decision requires.
       verification-track: manual
       done-when: "manual:2026-12-31 the newly-accepted wide60 function is DISASSEMBLED with v0.78's retry applied and the instruction that loses the sign is NAMED with its emitter site, or the lane states plainly that it did not reach it and what it tried; the retry remains ABSENT and the wide60 tripwire still armed unless the cause is named AND an execution differential covers the newly-accepted function"
