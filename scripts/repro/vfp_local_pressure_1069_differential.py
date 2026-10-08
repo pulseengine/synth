@@ -223,6 +223,52 @@ assert not _missing, (
     f"those rows failing while every POSITIVE row passed. Removing one deletes "
     f"the evidence rather than the test")
 
+# RQ-82-PINBYVALUE (#1439): AND THE NON-FINITE ROWS, WHICH NOTHING PINNED AT ALL.
+# The two guards above cover the sign span and v0.78's failing set; MEASURED, both
+# stayed green when `float("nan")` was deleted from VALS. That row is in the
+# fixture for a stated reason -- the header comment above says NaN exercises the
+# spilled paths, because each local's round-tripped value feeds the product, so a
+# wrong-slot reload flips result bits -- and it was protected by nothing.
+#
+# It is the SAME FAMILY as the `-0.0` escape and the OPPOSITE failure mode.
+# `-0.0` was pinned VACUOUSLY TRUE, because `-0.0 == 0.0`, so membership was
+# satisfied by the wrong row. NaN cannot be pinned by membership AT ALL, because
+# `nan != nan` makes `nan in [nan]` False -- a membership guard over it would be
+# vacuously FALSE and would red on a correct fixture. `struct.pack` settles both:
+# it compares the BITS, where `-0.0` and `+0.0` differ and `nan` equals itself.
+# The infinities ride along; they are cheap and they are the other rows whose
+# content is not a magnitude.
+#
+# Deliberately a SEPARATE set from _FAILING_SET_1439, which means exactly "the six
+# values v0.78 recorded as failing". Adding rows to that tuple would falsify its
+# own name and the conclusion drawn from it.
+# AND THE POSITIVE ROWS, FOR THE SAME REASON ONE TIER OVER. The comment above
+# states the conclusion's shape: "the positive rows are the discriminator -- a
+# `neg` would corrupt them too, an `abs` leaves them alone". So the conclusion
+# rests on BOTH halves: the six negatives failing AND no positive one failing.
+# The negative half is pinned by bits; the positive half was pinned only by
+# `len(_POS) >= 4` against SEVEN present, so MEASURED, any single positive row
+# could be deleted in silence -- deleting `0.0`, `1.0`, `0.5`, `1.5`, `0.001` or
+# `1e-30` reddened nothing. Half an argument pinned is the asymmetry this lane
+# exists to remove, not a smaller version of it.
+_POSITIVE_SPAN_1439 = (0.0, 1.0, 0.5, 1.5, 0.001, 1e-30)
+_NONFINITE_1069 = (float("inf"), float("-inf"), float("nan"))
+_missing_nonfinite = [v for v in _NONFINITE_1069
+                      if _struct.pack("<f", v) not in _bits]
+assert not _missing_nonfinite, (
+    f"VALS is missing {_missing_nonfinite} -- the non-finite rows exercise the "
+    f"spilled reload paths this differential exists to check, and a membership "
+    f"guard could never have pinned the NaN one. Re-derive the coverage claim "
+    f"before removing a row rather than trimming to 'the interesting cases'")
+_missing_positive = [v for v in _POSITIVE_SPAN_1439
+                     if _struct.pack("<f", v) not in _bits]
+assert not _missing_positive, (
+    f"VALS is missing {_missing_positive} -- the POSITIVE rows are the "
+    f"abs-vs-neg discriminator for #1439 (an `abs` leaves them alone, a `neg` "
+    f"would corrupt them), so they are evidence exactly as the negative rows "
+    f"are. `len(_POS) >= 4` does not pin them: seven are present, so the floor "
+    f"permits deleting three in silence")
+
 
 def main():
     tmp = tempfile.mkdtemp(prefix="vfp1069_")
