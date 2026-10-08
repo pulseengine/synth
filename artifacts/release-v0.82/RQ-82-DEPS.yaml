@@ -3,60 +3,74 @@ artifacts:
     type: system-req
     release: v0.82
     status: proposed
-    title: "Five held dependabot PRs consolidated into one, because four of them are the SAME upstream release train"
+    title: "The four wasm-tools bumps are REFUTED by the suite that was named as their oracle; the action bump stands"
     description: >
       MAINTAINER-REQUESTED, added to v0.82's scope after the plan was cut: land the open
-      dependabot bumps in ONE change and close the individual PRs.
+      dependabot bumps in ONE change and dispose of the individual PRs.
 
-      WHY ONE PR IS THE RIGHT SHAPE AND NOT MERELY CONVENIENT. Four of the five are
-      `wasmparser`, `wasm-encoder`, `wit-parser` and `wit-component`, all moving to
-      **0.261.0** — one upstream wasm-tools release train that is versioned in lockstep.
-      Bumping them one PR at a time asks cargo to resolve a graph where half the family is
-      new and half is old, which is both slower and less likely to resolve than moving them
-      together. The fifth, the `pulseengine/rivet` compliance ACTION 0.39.0 -> 0.40.0, is a
-      different surface and carries its own evaluation below.
+      THE OUTCOME IS A REFUTATION, AND IT IS THE ONE THIS ARTIFACT ASKED FOR. The lane
+      shipped with an explicit non-claim — "whether synth's own source compiles against the
+      newer API" was named as unanswerable locally (99% disk, ~5 GiB against a ~12 GiB
+      workspace build) and THE FULL SUITE WAS NAMED AS THE ORACLE. The suite ran and said
+      no. That is the hold's exit condition working, not a lane failing to meet it.
 
-      THE HOLD'S OWN EXIT CONDITION IS WHAT THIS FOLLOWS, not an exception to it.
-      RQ-64-DEPS recorded it: "merge a held bump BY HAND once the FULL suite is green", with
-      base freshness part of "green", and a bump nobody evaluates needing a disposition
-      because "still open" is not one. Three of these have been open since well before
-      v0.82. This change is the hand merge, raised on a FRESH base off `origin/main` rather
-      than by merging main into a dependabot branch — which RQ-64-DEPS names as the move
-      that destroys the ability to freshen those branches at all.
+      WHAT THE SUITE SAID, exactly. On PR #1492 at bfed8c29, run 37790630310:
+      **50 of 54 completed jobs failed**, and the failure is UNIVERSAL rather than
+      leg-specific — 46 `ubuntu-latest` (x86) jobs failed alongside 2 `ubuntu-24.04-arm`
+      and 2 `macos-latest`, while the only 3 green jobs were `self-hosted,linux,x64,light`
+      ones that compile nothing. `synth-core` does not build:
 
-      WHAT THE LOCK ACTUALLY SAID, measured rather than assumed, and it corrected a first
-      reading. `0.261.0` is ALREADY IN THE LOCK for `wasmparser`, `wasm-encoder` and `wat` —
-      pulled transitively — while synth's own `workspace.dependencies` declared the older
-      floors 0.256/0.258/0.259/0.259. So these bumps raise synth's DECLARED floor to meet
-      what the graph already builds, and they UNIFY it: whole-lock duplicate copies fall
-      **13 -> 10**, with `wasmparser` collapsing from FIVE concurrent copies to three and
-      `wasm-encoder` from three to two. A first pass read the lock with `head -1` and
-      reported `wasmparser 0.252.0` as "the" version, which is a transitive copy and not
-      the resolved one — the truncated-view trap.
+        error[E0277]: the type `[u8]` cannot be indexed by `std::ops::Range<u64>`
 
-      THE ACTION BUMP WAS EVALUATED AT ITS INTERFACE, not by its version number, because a
-      renamed input would break `compliance.yml` silently at the `with:` level. Fetched
-      `action.yml` at v0.40.0: it declares FOURTEEN inputs, and all SIX that
-      `compliance.yml` passes (`theme`, `rivet-version`, `include-data-formats`,
-      `report-label`, `archive`, `archive-name`) are among them; the `archive-path` OUTPUT
-      that the Upload step reads is still declared. The precedent is RQ-64-DEPS's own #1107
-      disposition: the action version is NOT the tool version — the rivet BINARY is pinned
-      separately (`rivet-version: v0.37.0` in the `with:`, and `--tag v0.37.0` in ci.yml),
-      and `compliance.yml` is NOT one of the nine required contexts.
+      FOUR SITES, all in `crates/synth-core/src/arena_bind.rs`, all the same shape — slicing
+      the original wasm buffer by a wasmparser-supplied section range:
 
-      WHAT THIS LANE CANNOT ANSWER, stated plainly: whether synth's own source compiles
-      against the newer API. The release machine is at 99% with ~5 GiB available against a
-      ~12 GiB workspace build, so no local compile is possible. THE FULL SUITE IS THE
-      ORACLE and that is exactly what the hold's exit condition requires. This change is
-      merged only on green, by name, through the usual ritual.
+        493  let contents = &wasm[reader.range()];     FunctionSection
+        501  let contents = &wasm[reader.range()];     GlobalSection
+        520  let contents = &wasm[range.clone()];      CodeSectionStart
+        554  data: &wasm[range],                       copy_raw, via payload.as_section()
+
+      THE CAUSE IS AN API WIDENING, not a synth defect: wasmparser 0.261.0 changed the
+      section-range types from `Range<usize>` to `Range<u64>`, the 64-bit-memory /
+      large-module change. synth's four consumers index a `&[u8]` with them directly.
+
+      FOUR IS A FLOOR, NOT A MEASUREMENT — and this is why the lane is REFUTED rather than
+      fixed in place. `synth-core` is the base crate, so the compiler stopped there; the
+      consumer surface in `wit-parser`, `wit-component` and `wasm-encoder`'s downstream
+      crates was never reached and is therefore UNMEASURED. At 99% disk no local compile can
+      measure it either, so a fix-forward would be N blind CI round-trips of unknown N, at
+      the release tail, with seven unrelated lanes held hostage behind it. The seven are
+      split out and land; the bump does not.
+
+      THIS IS THE RECORDED 0.x-MINOR SHAPE. A 0.256 -> 0.261 move is a 0.x MINOR bump, and
+      the standing rule from the ordeal incident is that 0.x-minor is BREAKING and such
+      bumps are HELD. The lane's premise — that the declared floor was merely being raised
+      to meet a graph the lock already built transitively — was measured and true about the
+      LOCK, and still says nothing about the SOURCE. A transitive copy is linked, not
+      compiled against.
+
+      THE ACTION BUMP IS NOT REFUTED AND STAYS. `pulseengine/rivet/.github/actions/compliance`
+      0.39.0 -> v0.40.0 (#1472) is a different surface: it was evaluated AT ITS INTERFACE
+      (fourteen declared inputs at v0.40.0; all six `compliance.yml` passes are among them;
+      the `archive-path` output the Upload step reads is still declared), it touches no Rust
+      source, and `compliance.yml` is not one of the nine required contexts. It is retained
+      in the wave.
+
+      WHAT THE v0.83 LANE INHERITS, so it is cheap: the four sites above, the cause, and the
+      shape the fix must take. The conversion wants a CHECKED `u64` -> `usize` narrowing that
+      REFUSES loudly on overflow and on a range past the buffer end — not `as usize`, which
+      silently truncates and would turn a malformed 4 GiB-plus section offset into a
+      wrong-bytes read, the silent-miscompile class this project exists to prevent. One
+      helper, four call sites, and then the full suite re-run to measure what lies behind
+      `synth-core`.
 
       REFUTING COMMAND:
-      `gh pr list --repo pulseengine/synth --state open --json number,author --jq '[.[]|select(.author.login|test("dependabot";"i"))]|length'`
-      — if it returns 0 the PRs are already disposed and this lane has nothing to
-      consolidate. Then `python3 -c "import re;print(sorted(set(re.findall(r'name = \"wasmparser\"\nversion = \"([^\"]+)\"', open('Cargo.lock').read()))))"`:
-      if one version remains the unification already happened. And
-      `cargo metadata --locked --format-version 1` must exit 0, or the lock does not match
-      the manifest and nothing else here is meaningful.
+      `gh api repos/pulseengine/synth/actions/runs/37790630310/jobs --paginate --jq '[.jobs[]|select(.conclusion=="failure")]|length'`
+      — if it returns 0 the build did not fail and this refutation is wrong. Then
+      `gh api --allow-escape-sequences repos/pulseengine/synth/actions/jobs/113356761024/logs | grep -c 'cannot be indexed by .std::ops::Range<u64>'`
+      must be non-zero, or the named cause is not the observed one. And
+      `git diff --quiet origin/main -- Cargo.toml Cargo.lock` must exit 0 on the delivering
+      branch, or the bump was not actually withdrawn.
     tags:
       - process
       - deps
@@ -69,48 +83,58 @@ artifacts:
       priority: should
       issue: "#965"
       verification-track: manual
-      disposition: partial
-      landed: "PR #1492 — #965 — four wasm-tools bumps to 0.261.0 and the rivet action to v0.40.0 applied in ONE change on a fresh base; whole-lock duplicate copies 13 -> 10; the compile is CI's to answer and the five dependabot PRs close only once it is green."
+      disposition: refuted
+      landed: "PR #1492 — #965 — the four wasm-tools 0.261.0 bumps are WITHDRAWN after the suite refuted them (synth-core fails to build, 4 sites in arena_bind.rs, Range<usize> -> Range<u64>); the rivet compliance ACTION bump to v0.40.0 is retained; the four cargo dependabot PRs stay OPEN with the measured reason."
       verified-by: >
-        PARTIAL — THE CHANGE IS APPLIED AND THE COMPILE IS UNVERIFIED HERE BY CONSTRUCTION.
-        The hold's own exit condition is "merge a held bump BY HAND once the FULL suite is
-        green", so the suite is the oracle and this artifact does not pre-empt it.
+        REFUTED BY THE NAMED ORACLE, which is the outcome this lane's own exit condition
+        asked for. It shipped saying "THE FULL SUITE IS THE ORACLE" and explicitly not
+        claiming the source compiles. The suite ran and said no.
 
-        THE REFUTING COMMAND RAN FIRST AND DID NOT REFUTE: five dependabot PRs are open
-        (#1472, #1471, #1468, #1346, #1344), `wasmparser` had FIVE concurrent versions in the
-        lock, and `cargo metadata --locked` exits 0 on the result.
+        THE EVIDENCE IS UNIVERSAL, NOT LEG-SPECIFIC, and that distinction is what settled
+        the cause. Run 37790630310 on #1492 at bfed8c29: 50 of 54 completed jobs failed —
+        46 `ubuntu-latest` (x86), 2 `ubuntu-24.04-arm`, 2 `macos-latest`. The only 3 green
+        jobs were `self-hosted,linux,x64,light` ones that compile nothing. An earlier reading
+        of this run saw only the 4 arm64/macOS failures and hypothesised a leg-specific
+        break; grouping the jobs BY LABEL refuted that hypothesis, because an API break would
+        fail every leg and a leg-specific fault would spare x86. It spared nothing.
 
-        THE FOUR CARGO BUMPS ARE ONE UPSTREAM TRAIN, which is why one PR is correct rather
-        than merely convenient: `wasmparser`, `wasm-encoder`, `wit-parser` and `wit-component`
-        all move to 0.261.0 in lockstep. Raised on a FRESH base off `origin/main`, never by
-        merging main INTO a dependabot branch — the move RQ-64-DEPS names as destroying those
-        branches' freshenability.
+        `synth-core` (lib) fails with four instances of
+        `error[E0277]: the type [u8] cannot be indexed by std::ops::Range<u64>` at
+        `crates/synth-core/src/arena_bind.rs` lines 493, 501, 520 and 554. Cause: wasmparser
+        0.261.0 widened its section-range types from `Range<usize>` to `Range<u64>`; synth
+        indexes a `&[u8]` with them directly at all four sites.
 
-        MEASURED, AND IT CORRECTED A FIRST READING: 0.261.0 was ALREADY in the lock
-        transitively for `wasmparser`, `wasm-encoder` and `wat`, while synth's own declared
-        floors sat at 0.256/0.258/0.259/0.259. So the bumps raise the declaration to meet a
-        graph that already builds, and they UNIFY it — whole-lock duplicate copies fall
-        13 -> 10, `wasmparser` five copies -> three, `wasm-encoder` three -> two. The first
-        pass read the lock with `head -1` and reported 0.252.0 as "the" version; that is a
-        transitive copy, and the truncated view would have made the whole premise wrong.
+        FOUR IS A FLOOR AND I AM NOT REPORTING IT AS A SIZE. `synth-core` is the base crate,
+        so compilation stopped there and the `wit-parser` / `wit-component` / `wasm-encoder`
+        consumer surface downstream of it was never reached. It is UNMEASURED, and at 99%
+        disk it cannot be measured locally either. That is the reason this is a withdrawal
+        rather than a fix-forward: the job's size is unknown, every probe costs a full CI
+        round-trip, and seven unrelated lanes were held behind it at the release tail.
 
-        THE ACTION BUMP WAS EVALUATED AT ITS INTERFACE, not by its version number. Fetched
-        `action.yml` at v0.40.0: FOURTEEN declared inputs, and all SIX `compliance.yml` passes
-        are among them, with the `archive-path` output the Upload step reads still declared.
-        So no silent `with:`-level break. Per RQ-64-DEPS's #1107 precedent the action version
-        is NOT the tool version — the rivet binary is pinned separately at v0.37.0 in two
-        places — and `compliance.yml` is not one of the nine required contexts.
+        THE WITHDRAWAL IS PROVEN TOTAL BY EQUALITY, NOT BY A VERSION GREP. Both `Cargo.toml`
+        and `Cargo.lock` are byte-identical to `origin/main` on the delivering branch
+        (`git diff --quiet origin/main -- <file>` exits 0 for each). A grep for `0.261` would
+        have been the WRONG check and would have read as a half-revert: 0.261.0 was already
+        in the lock transitively for `wasmparser`, `wasm-encoder` and `wat` before this lane
+        existed. The equality check was paired with a positive control — appending a comment
+        line to `Cargo.toml` made it correctly report DIFFERS — so it is not vacuous.
 
-        ONE INTERACTION NAMED RATHER THAN DISCOVERED LATER: RQ-82-COMPLIANCE2 adds an
-        externals-sync step to the same workflow and has not merged yet. v0.40.0 declares an
-        `offline` input that 0.39.0's interface did not expose to this caller, so a later lane
-        may find the sync unnecessary. Nothing here depends on that; the two changes are
-        independent and both are tested only at the next release's tag.
+        WHAT IS RETAINED, and why it is a different surface: the `pulseengine/rivet` compliance
+        ACTION bump 0.39.0 -> v0.40.0 (#1472). It was evaluated at its INTERFACE rather than
+        by its version number — fourteen declared inputs at v0.40.0, all six `compliance.yml`
+        passes present, the `archive-path` output still declared — it touches no Rust source,
+        and `compliance.yml` is not one of the nine required contexts. Nothing in the build
+        failure implicates it.
 
-        WHAT IS NOT CLAIMED: that synth's source compiles against the newer API. The data
-        volume is at 99% with ~5 GiB available against a ~12 GiB workspace build, so no local
-        compile was possible, and a green `cargo fmt`/`claim_check`/`status_evidence`/
-        `cargo metadata --locked` says nothing about `cargo build`. The five dependabot PRs
-        stay OPEN until the suite is green, because closing them first would leave the bumps
-        nowhere if it is not.
-      done-when: "manual:2026-12-31 the four wasm-tools bumps and the rivet action bump are applied in ONE change on a fresh base, the FULL suite is green by name on that change, the five dependabot PRs are CLOSED with a reason naming the consolidating PR, and the lock's duplicate-copy reduction is reported as a measured number"
+        THE FOUR CARGO DEPENDABOT PRs STAY OPEN: #1344 (wasmparser), #1346 (wasm-encoder),
+        #1468 (wit-component), #1471 (wit-parser). Each gets a comment carrying the measured
+        reason. They are deliberately NOT disposed of, because dependabot does not re-raise a
+        manually dismissed version — dismissing them now would drop the bumps silently with
+        the work still owed. #1472's action bump IS delivered here, so that PR is the only
+        one of the five whose premise held.
+
+        STANDING RULE CONFIRMED RATHER THAN DISCOVERED: 0.x-minor is BREAKING, so such bumps
+        are held. 0.256 -> 0.261 is a 0.x minor move. The lane's lock-level premise was true
+        and insufficient: a transitive copy in the lock is LINKED, never compiled against,
+        so it cannot witness source compatibility.
+      done-when: "manual:2026-12-31 the four wasm-tools bumps are applied together with a CHECKED u64->usize narrowing at the four arena_bind.rs sites that refuses loudly rather than truncating, the FULL suite is green by name on that change, the downstream consumer surface behind synth-core is reported as a MEASURED number rather than the compiler's first-crate floor, and the four cargo dependabot PRs are disposed of with a reason naming the delivering PR"
