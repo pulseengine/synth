@@ -78,6 +78,41 @@ python3 scripts/artifact_citation_check.py      > "$SCR/g_cite.log"   2>&1 || { 
 python3 scripts/ci_pool_tripwire.py             > "$SCR/g_pool.log"   2>&1 || { echo "    FAIL ci_pool_tripwire"; G2=1; }
 echo "  GATE2 pre-push battery rc=$G2"
 
+# GATE 2b (RQ-83-CANCELGAP, #1484) — NO UNVERIFIED CHECK-RUN ON THE COMMIT BEING
+# TAGGED. A `cancelled` or `timed_out` check is neither a failure nor pending, so
+# until v0.83 it answered NO to every question this programme's gates asked and
+# read as a pass. MEASURED on v0.82's own release commit: the REQUIRED context
+# `Claim Check` reported `cancelled` with no runner and `steps=0` — a runner
+# no-show — and nothing in this script or in merge_ritual.sh looked for it
+# (`grep -i -E 'cancel|timed_out'` returned rc=1 with ZERO hits in both). Only a
+# hand-run guard outside the repo refused it.
+#
+# The classification is NOT duplicated here. It lives in `merge_gate.py`, which
+# the merge path already uses, and this calls the same module — a second
+# hand-written list of bad states is the drift the North Star forbids, and v0.72
+# measured that cost when a literal `9` turned out to be a FOURTH copy of the
+# required-context contract.
+#
+# Exit codes are distinguishable, verified against real commits: 0 clean, 1 an
+# unverified check present, 2 the scan could not JUDGE (bad sha, API failure, or
+# a ZERO population — which is a refusal, not a pass).
+python3 scripts/merge_gate.py --unverified-on "$HEAD_SHA" > "$SCR/g_unver.log" 2>&1
+G2B=$?
+sed 's/^/    /' "$SCR/g_unver.log"
+if [ "$G2B" = "2" ]; then
+  echo "  GATE2b REFUSED: the unverified-check scan could not JUDGE (exit 2)."
+  echo "          That is not a clean result — do not tag past it."
+  G2=1
+elif [ "$G2B" != "0" ]; then
+  echo "  GATE2b REFUSE: an UNVERIFIED check-run is present on $HEAD_SHA."
+  echo "          A NO-SHOW (steps=0, no runner) is remedied by"
+  echo "          'gh run rerun <id> --failed' once the run reports completed —"
+  echo "          re-run rather than tag past it. A genuine cancellation needs a"
+  echo "          reason before this gate is waived."
+  G2=1
+fi
+echo "  GATE2b unverified-check scan rc=$G2B"
+
 # GATE 4 — the tagged commit must carry SOME signature, never `G`. GitHub
 # re-signs squash merges with web-flow key B5690EEEBB952194, which is not in
 # this keyring, so every correct release commit reports E. A gate demanding G

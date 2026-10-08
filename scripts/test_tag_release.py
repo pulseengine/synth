@@ -61,7 +61,14 @@ def git(repo, *args, check=True):
 
 GATES = ["loop_conformance_check.py", "claim_check.py", "status_evidence_check.py",
          "check_version_pins.py", "oracle_wiring_check.py", "artifact_citation_check.py",
-         "ci_pool_tripwire.py", "issue_closure_check.py"]
+         "ci_pool_tripwire.py", "issue_closure_check.py",
+         # RQ-83-CANCELGAP (#1484): GATE2b calls `merge_gate.py --unverified-on`
+         # so the TAG path and the MERGE path share ONE state classification
+         # rather than two hand-written copies. Without a stub here the sandbox
+         # has no such file, GATE2b correctly reports rc=2 ("could not JUDGE"),
+         # and the happy path reds — which is how this entry was found rather
+         # than assumed.
+         "merge_gate.py"]
 
 
 def make_repo(tmp, *, gate_rc=0, conformance_rc=0):
@@ -195,11 +202,40 @@ else:
         ok("happy path: GATE5's rc is REPORTED, not discarded",
            re.search(r"GATE5 closure gate \(advisory\) rc=\d", r.stdout) is not None,
            r.stdout[-300:])
+        # RQ-83-CANCELGAP (#1484): GATE2b must RUN and report, not be skipped.
+        # A gate that never executes is the shape this whole lane is about.
+        ok("happy path: GATE2b's unverified-check scan RAN and reported its rc",
+           re.search(r"GATE2b unverified-check scan rc=\d", r.stdout) is not None,
+           r.stdout[-300:])
 
 print("\nPART 2 — STRUCTURE, each assertion proven non-vacuous")
 TEXT = SCRIPT.read_text()
 
 STATIC = [
+    # RQ-83-CANCELGAP (#1484). Proven non-vacuous by the harness below, which
+    # re-runs each assertion against a copy with the construct removed.
+    ("GATE2b refuses on an UNVERIFIED check-run, and sets G2 rather than only printing",
+     # Anchored on the REFUSAL branch, not on the --unverified-on call. The first
+     # version anchored on the call and matched NON-GREEDILY to the first `G2=1`
+     # after it — which is the rc=2 branch's, not the refusal branch's — so the
+     # mutation removed one instance while the regex was satisfied by another.
+     # The harness caught it as vacuous twice before this anchor was right.
+     re.compile(r'elif \[ "\$G2B" != "0" \][\s\S]{0,700}?G2=1'),
+     # The mutation must remove the property the REGEX depends on. A first version
+     # of this entry mutated `G2B=$?`, which the regex never looks at, so the
+     # harness correctly reported the assertion VACUOUS — a check that passes with
+     # its own subject deleted. The target is the G2=1 that makes the refusal
+     # BINDING rather than merely printed.
+     # And the replacement must remove the literal `G2=1`, not comment it out:
+     # `: # G2=1` still CONTAINS the substring the regex looks for, so the
+     # harness reported vacuous a third time. Verified before writing.
+     '  G2=1\nfi\necho "  GATE2b', '  true\nfi\necho "  GATE2b'),
+    ("GATE2b distinguishes 'could not JUDGE' (rc=2) from 'the answer is no'",
+     re.compile(r'\[ "\$G2B" = "2" \]'),
+     '[ "$G2B" = "2" ]', '[ "$G2B" = "999" ]'),
+    ("GATE2b calls merge_gate rather than carrying a SECOND list of bad states",
+     re.compile(r'merge_gate\.py --unverified-on'),
+     'merge_gate.py --unverified-on', 'merge_gate.py --no-such-mode'),
     ("the fetch's rc is checked",
      re.compile(r"git fetch -q origin main \|\|"),
      "git fetch -q origin main ||", "git fetch -q origin main #"),

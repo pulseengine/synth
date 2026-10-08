@@ -41,6 +41,96 @@ from pathlib import Path
 
 ADVISORY = ("codecov", "advisory")
 
+# THE CHECK-STATE DOMAIN, CLASSIFIED EXHAUSTIVELY (RQ-83-CANCELGAP, #1484).
+#
+# Until v0.83 this module classified only three states — FAILURE/ERROR as red,
+# PENDING as pending, SUCCESS as the required-context target — and every OTHER
+# state fell through all of them and read as a pass. MEASURED by driving
+# `decide()` offline, which is what its docstring says it exists for:
+#
+#   all nine required SUCCESS                        -> GATEOK   (baseline)
+#   + a CANCELLED NON-REQUIRED check                 -> GATEOK   <- the gap
+#   + a TIMED_OUT NON-REQUIRED check                 -> GATEOK   <- also the gap
+#   a CANCELLED REQUIRED check                       -> GATEFAIL (CHECK1 `missing`)
+#   + a FAILED NON-REQUIRED check                    -> GATEFAIL (CHECK3)
+#
+# So the hole was precisely the NON-REQUIRED half: a required context in any
+# non-SUCCESS state is already caught by CHECK1, because `missing` tests
+# `!= "SUCCESS"` rather than listing bad states. v0.82 hit both halves — a
+# cancelled non-required oracle on PR #1493, where the ritual printed GATEOK and
+# merged, and a cancelled REQUIRED `Claim Check` on the release commit, where
+# only a hand-run tag guard refused it.
+#
+# THE FIX IS NOT A LONGER BLACKLIST. A gate written as "zero X plus zero Y" has
+# a third answer it never names, and GitHub's own vocabulary has nine conclusion
+# states and five status states. So the classification below is TOTAL: every
+# state lands in exactly one bucket, and anything NOT in `KNOWN_STATES` is
+# refused as UNCLASSIFIED. A state GitHub adds tomorrow therefore reds this gate
+# instead of passing it silently — which is the difference between a check whose
+# reference is independent of its subject and one that inherits it.
+#
+# Each bucket's membership is a judgement, so each is stated:
+PASSING_STATES = frozenset({
+    "SUCCESS",
+    # GitHub's deliberate "no opinion". Refusing it would red legitimate checks.
+    "NEUTRAL",
+    # A paths-filter skip. For a REQUIRED context `skipped` is still unverified —
+    # but CHECK1 already catches that, because skipped is not SUCCESS. Treating it
+    # as red here would refuse every PR whose paths-filters legitimately skip.
+    "SKIPPED",
+})
+RED_STATES = frozenset({
+    "FAILURE", "ERROR",
+    # The job could not start. That is a failure and belongs in the loud bucket,
+    # not the unverified one.
+    "STARTUP_FAILURE",
+})
+PENDING_STATES = frozenset({
+    "PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED",
+    # A status context that has not reported yet.
+    "EXPECTED",
+})
+UNVERIFIED_STATES = frozenset({
+    # Ran no steps, or was abandoned. NOT a failure and NOT pending, which is
+    # exactly why both older checks let it through.
+    "CANCELLED", "TIMED_OUT", "STALE",
+    # Blocked on a human. No evidence either way.
+    "ACTION_REQUIRED",
+})
+KNOWN_STATES = (PASSING_STATES | RED_STATES | PENDING_STATES | UNVERIFIED_STATES)
+
+# A DECLARED FLOOR over the domain, and it exists because the mutation survey for
+# this very change found the hole it closes. Moving `CANCELLED` out of
+# `UNVERIFIED_STATES` — the pre-v0.83 behaviour, exactly the regression this lane
+# prevents — left every assertion GREEN: the catch-all reclassified it as
+# UNCLASSIFIED, so CHECK3c still refused and nothing noticed. The partition
+# assertion could not see it either, because deleting a state from the domain
+# entirely leaves the buckets partitioning a SMALLER union.
+#
+# That is v0.82's R13 shape recurring one tier in: an anti-vacuity guard that
+# tests EMPTINESS rather than SHRINKAGE. The remedy is the same one v0.82 used for
+# `FIELD_KEYS_FLOOR` — declare the set, and REFUSE AT IMPORT naming what was lost.
+# Adding a state stays free; losing one is loud.
+STATES_FLOOR = frozenset({
+    # CheckConclusionState
+    "ACTION_REQUIRED", "TIMED_OUT", "CANCELLED", "FAILURE", "SUCCESS",
+    "NEUTRAL", "SKIPPED", "STARTUP_FAILURE", "STALE",
+    # StatusState adds these two
+    "EXPECTED", "ERROR",
+    # and the roll builder's own fallback
+    "PENDING",
+})
+_lost = STATES_FLOOR - KNOWN_STATES
+if _lost:
+    raise SystemExit(
+        f"merge_gate: the check-state classification has STOPPED covering "
+        f"{sorted(_lost)}. These are states GitHub documents, so a check in one "
+        f"of them would now fall through every bucket. If a state was moved "
+        f"deliberately, move it to another bucket rather than out of the domain; "
+        f"if GitHub retired it, drop it from STATES_FLOOR in the same commit and "
+        f"say why. (RQ-83-CANCELGAP, #1484)"
+    )
+
 
 class CommandFailed(Exception):
     """A subprocess this gate's verdict depends on did not succeed.
@@ -236,8 +326,16 @@ def decide(roll: dict, required: list[str], current: bool, behind: int,
     """
     missing = [r for r in required if roll.get(r) != "SUCCESS"]
     red = [n for n, s in roll.items()
-           if s in ("FAILURE", "ERROR") and not is_advisory(n)]
-    pend = [n for n, s in roll.items() if s == "PENDING" and not is_advisory(n)]
+           if s in RED_STATES and not is_advisory(n)]
+    pend = [n for n, s in roll.items() if s in PENDING_STATES and not is_advisory(n)]
+    # RQ-83-CANCELGAP (#1484): neither red nor pending, and no evidence either.
+    unver = [n for n, s in roll.items()
+             if s in UNVERIFIED_STATES and not is_advisory(n)]
+    # And the catch-all that makes the classification TOTAL: a state this module
+    # does not know is refused, not passed. Without this clause the fix above is
+    # just a longer list, and the next vocabulary GitHub adds walks through it.
+    unclass = sorted(f"{n}={s}" for n, s in roll.items()
+                     if s not in KNOWN_STATES and not is_advisory(n))
     return {
         # (v0.72 cold review, F5) The literal `9` was a FOURTH hand-written
         # copy of a contract that already exists in
@@ -273,7 +371,51 @@ def decide(roll: dict, required: list[str], current: bool, behind: int,
                              "baseRefOid_agrees": base_agrees}),
         "CHECK3": (not red, red),
         "CHECK3b": (not pend, pend),
+        # CHECK3c — zero non-advisory UNVERIFIED, and zero UNCLASSIFIED. A
+        # cancelled or timed-out check ran no steps, so it is not evidence; an
+        # unrecognised state is not evidence either, and defaulting it to "fine"
+        # is how the first two checks came to share a blind spot.
+        "CHECK3c": (not unver and not unclass,
+                    {"unverified": unver, "unclassified": unclass}),
     }
+
+
+def unverified_on(sha: str, repo: str) -> tuple[int, list[str], list[str]]:
+    """Check-runs on SHA in an UNVERIFIED or UNCLASSIFIED state.
+
+    RQ-83-CANCELGAP (#1484). The TAG path needs the same refusal the merge path
+    now has, and it gets it by CALLING THIS rather than by growing a second
+    hand-written list of bad states. A second copy is the drift this repo's North
+    Star forbids, and v0.72 already measured the cost: a literal `9` was a FOURTH
+    copy of the required-context contract.
+
+    ONE NORMALISATION IS LOAD-BEARING. The REST `check-runs` endpoint returns
+    LOWERCASE conclusions (`"cancelled"`, `"timed_out"`) while the GraphQL rollup
+    `decide()` consumes returns UPPERCASE (`"CANCELLED"`). Comparing REST output
+    against the uppercase sets without `.upper()` matches NOTHING, and the check
+    would pass over every cancelled run while looking correct — the same silent
+    shape this whole lane is about. Measured before writing this.
+    """
+    raw = sh("gh", "api", "--paginate",
+             f"repos/{repo}/commits/{sha}/check-runs?per_page=100",
+             "--jq", '.check_runs[]|[(.conclusion // .status // "pending"),.name]|@tsv')
+    rows = [ln.split("\t", 1) for ln in raw.splitlines() if "\t" in ln]
+    if not rows:
+        # A population of zero is a refusal, not a pass (and an API failure
+        # already raised through `sh`).
+        raise GateRefusal(
+            f"ZERO check-runs derived for {sha[:8]} — a population of zero is a "
+            f"refusal, not a pass")
+    unver, unclass = [], []
+    for state, name in rows:
+        s = state.strip().upper()
+        if is_advisory(name):
+            continue
+        if s in UNVERIFIED_STATES:
+            unver.append(f"{name}={s}")
+        elif s not in KNOWN_STATES:
+            unclass.append(f"{name}={s}")
+    return len(rows), sorted(unver), sorted(unclass)
 
 
 class GateRefusal(Exception):
@@ -668,6 +810,72 @@ def self_test() -> int:
     r = decide(dict(green, **{"Some Job": "PENDING"}), real, True, 0, True)
     check("CHECK3b: a non-advisory PENDING -> REFUSED", not r["CHECK3b"][0])
 
+    # ---- RQ-83-CANCELGAP (#1484): the states that answered NO to both --------
+    #
+    # Each case below was GATEOK before CHECK3c existed, measured by driving
+    # `decide()` offline. The baseline and the two LEGITIMATE states are asserted
+    # beside them, because a check that refuses everything is not a working gate:
+    # without the green half these assertions would pass against a CHECK3c that
+    # simply always says no.
+    r = decide(dict(green, **{"Some Job": "CANCELLED"}), real, True, 0, True)
+    check("CHECK3c: a non-advisory CANCELLED -> REFUSED", not r["CHECK3c"][0])
+    check("CHECK3c: CANCELLED is NOT reported as red", r["CHECK3"][0],
+          "it is not a failure, which is why CHECK3 alone let it through")
+    check("CHECK3c: CANCELLED is NOT reported as pending", r["CHECK3b"][0],
+          "it is completed, which is why CHECK3b alone let it through")
+    r = decide(dict(green, **{"Some Job": "TIMED_OUT"}), real, True, 0, True)
+    check("CHECK3c: a non-advisory TIMED_OUT -> REFUSED", not r["CHECK3c"][0])
+    r = decide(dict(green, **{"Some Job": "STALE"}), real, True, 0, True)
+    check("CHECK3c: a non-advisory STALE -> REFUSED", not r["CHECK3c"][0])
+    r = decide(dict(green, **{"Some Job": "ACTION_REQUIRED"}), real, True, 0, True)
+    check("CHECK3c: a non-advisory ACTION_REQUIRED -> REFUSED", not r["CHECK3c"][0])
+    # The catch-all is what makes the classification TOTAL rather than a longer
+    # blacklist. A state GitHub adds after this was written must RED the gate.
+    r = decide(dict(green, **{"Some Job": "A_STATE_NOT_YET_INVENTED"}),
+               real, True, 0, True)
+    check("CHECK3c: an UNRECOGNISED state -> REFUSED as unclassified",
+          not r["CHECK3c"][0] and r["CHECK3c"][1]["unclassified"])
+    # GREEN HALF — without these the suite cannot tell a working CHECK3c from
+    # one that refuses unconditionally.
+    check("CHECK3c: all-green does NOT refuse",
+          decide(green, real, True, 0, True)["CHECK3c"][0])
+    r = decide(dict(green, **{"Some Job": "SKIPPED"}), real, True, 0, True)
+    check("CHECK3c: a SKIPPED non-required check does NOT refuse", r["CHECK3c"][0],
+          "paths-filters skip legitimately; a skipped REQUIRED context is caught "
+          "by CHECK1, which tests != SUCCESS rather than listing bad states")
+    r = decide(dict(green, **{"Some Job": "NEUTRAL"}), real, True, 0, True)
+    check("CHECK3c: a NEUTRAL non-required check does NOT refuse", r["CHECK3c"][0])
+    r = decide(dict(green, **{"codecov/patch": "CANCELLED"}), real, True, 0, True)
+    check("CHECK3c: a CANCELLED ADVISORY is tolerated BY NAME", r["CHECK3c"][0])
+    # And the half the gap did NOT have: a required context in any non-SUCCESS
+    # state was ALREADY refused, by CHECK1. Asserted so the artifact's scope
+    # claim stays honest rather than overstated.
+    r = decide(dict(green, **{real[0]: "CANCELLED"}), real, True, 0, True)
+    check("CHECK1 already caught a CANCELLED REQUIRED context",
+          not r["CHECK1"][0] and real[0] in r["CHECK1"][1]["missing"])
+    # STARTUP_FAILURE is deliberately RED, not merely unverified: the job could
+    # not start, and that belongs in the loud bucket.
+    r = decide(dict(green, **{"Some Job": "STARTUP_FAILURE"}), real, True, 0, True)
+    check("STARTUP_FAILURE is classified RED, not unverified",
+          not r["CHECK3"][0] and r["CHECK3c"][0])
+    # The buckets must PARTITION: no state in two, and KNOWN is their union.
+    _buckets = (PASSING_STATES, RED_STATES, PENDING_STATES, UNVERIFIED_STATES)
+    _overlap = [s for s in KNOWN_STATES
+                if sum(1 for b in _buckets if s in b) != 1]
+    check("the state buckets PARTITION (no state in two, none in none)",
+          not _overlap, f"ambiguous: {_overlap}")
+    check("KNOWN_STATES is exactly the union of the buckets",
+          KNOWN_STATES == set().union(*_buckets))
+    # The FLOOR is what catches a state leaving the domain ALTOGETHER — the
+    # partition check above cannot, because a smaller union still partitions.
+    check("every STATES_FLOOR member is classified",
+          not (STATES_FLOOR - KNOWN_STATES),
+          f"lost: {sorted(STATES_FLOOR - KNOWN_STATES)}")
+    check("CANCELLED and TIMED_OUT are specifically UNVERIFIED, not merely known",
+          {"CANCELLED", "TIMED_OUT"} <= UNVERIFIED_STATES,
+          "if either moves out, the catch-all still refuses it and every other "
+          "assertion stays green — which is why this names them directly")
+
     # ---- RQ-77-SUBJECT (#1418): the gate must REFUSE a wrong subject -----
     #
     # These are pure and need no repository, which is the point: the failures
@@ -718,6 +926,11 @@ def main() -> int:
                     help="post-merge: record whether the squash altered "
                          "content (#1269 ask 2). Requires --pr.")
     ap.add_argument("--repo", default="pulseengine/synth")
+    ap.add_argument("--unverified-on", default=None, metavar="SHA",
+                    help="RQ-83-CANCELGAP (#1484): refuse if any non-advisory "
+                         "check-run on SHA is CANCELLED/TIMED_OUT/STALE/"
+                         "ACTION_REQUIRED or in an unrecognised state. Shared "
+                         "with the tag path so one classification serves both.")
     ap.add_argument("--expect-head", default=None,
                     help="RQ-77-SUBJECT (#1418): the head SHA this gate is "
                          "being asked about. A mismatch REFUSES (exit 2) "
@@ -726,6 +939,23 @@ def main() -> int:
 
     if args.self_test:
         return self_test()
+    if args.unverified_on:
+        try:
+            n, unver, unclass = unverified_on(args.unverified_on, args.repo)
+        except (GateRefusal, CommandFailed) as why:
+            print(f"UNVERIFIED-REFUSED {why}")
+            return 2
+        print(f"  unverified-check-scan: {n} check-run(s) on "
+              f"{args.unverified_on[:8]}")
+        for x in unver:
+            print(f"    UNVERIFIED (ran no steps, or abandoned): {x}")
+        for x in unclass:
+            print(f"    UNCLASSIFIED (state this gate does not know): {x}")
+        if unver or unclass:
+            print("UNVERIFIEDFAIL")
+            return 1
+        print("UNVERIFIEDOK")
+        return 0
     if not args.pr:
         ap.error("--pr is required unless --self-test")
 
