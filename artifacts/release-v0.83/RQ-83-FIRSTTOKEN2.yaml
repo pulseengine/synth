@@ -3,20 +3,40 @@ artifacts:
     type: system-req
     release: v0.83
     status: proposed
-    title: "The leading-token hole stays NAMED; #1476 is the record of why no wider rule is adoptable"
+    title: "The widening is refused again, and this time because the hole it would close is EMPTY"
     description: >
-      v0.82 implemented THREE widenings and REFUSED all three with numbers. The bare-sentence scan
-      INVERTS negation (5 of 6 negated forms), adjacent-negator still inverts at distance, and the
-      any-negator rule drops 27 of 78 in population at afa59b5d — a drop count that MOVES WITH THE
-      SENTENCE SCOPE, which is itself a reason it is not adoptable: a population that changes with a
-      parsing choice is not a population. #1476 stays OPEN as the record. This lane re-measures whether
-      the trade has changed and does NOT widen the rule without it.
+      v0.82 REFUSED three widenings by weighing a cost against a benefit. v0.83 re-measured the
+      trade the refuting command asks about and found the BENEFIT SIDE IS ZERO, which is a
+      stronger refusal than v0.82's rather than a repeat of it.
 
-      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
-      legitimate outcome, reported with numbers:
-      `python3 scripts/verdict_prose_check.py --self-test` (rc=0) and re-derive the variant-3 drop
-      count at this tree — if it has fallen below the hole it would close, the trade has inverted and
-      the refusal must be revisited.
+      THE HOLE HAS NO INSTANCES AT THIS TREE. `unclassified_lead` — the function that makes
+      #1476's hole nameable — returns a token for ZERO artifacts across the whole programme.
+      Its own docstring records the measured escapes as `NOT LANDED`, `DONE`, `NOT-DELIVERED`
+      and `CLOSED`; none of the four is present any more.
+
+      A DERIVED ZERO IS A REFUSAL AND NOT A PASS, so the detector was PAIRED-CONTROLLED before
+      the zero was believed. POSITIVE: fed the four openings its docstring names, it returns
+      `NOT LANDED`, `DONE`, `NOT-DELIVERED`, `CLOSED` — 4 of 4. NEGATIVE: fed four legitimate
+      openings (`PARTIAL,`, `DELIVERED,`, `THE MEASUREMENT`, `MEASURED`) it returns None for all
+      four. The instrument can see an escape and does not invent one, so the zero is real.
+
+      SO THE TRADE IS 33 DROPPED TO CLOSE 0. The variant-3 rule, stated precisely because the
+      count depends on the statement: drop from population any artifact whose FIRST SENTENCE of
+      `verified-by` contains a negator (`NOT|NO|NEVER|WITHOUT|CANNOT|NEITHER|NOR`). Over the
+      population the checker itself derives, plus this release's five delivered artifacts, that
+      is 33 of 85. No widening can be justified by a hole that is empty.
+
+      AND THE DROP COUNT MOVED, which is the artifact's OWN stated reason for non-adoptability
+      confirmed from a second direction. v0.82 measured 27 of 78 at afa59b5d; this tree gives 33
+      of 85. v0.82 observed the count moving with the SENTENCE SCOPE; it also moves with the
+      TREE. A population that changes with a parsing choice and with the commit is not a
+      population, so the rule cannot be pinned even if someone wanted it.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate
+      outcome, reported with numbers: `python3 scripts/verdict_prose_check.py --self-test`
+      (rc=0), and re-derive the escape population with `unclassified_lead` over
+      `verdict_prose_check.artifacts(".")` — if it is NON-ZERO the hole is live again and this
+      lane's central finding is wrong.
     tags:
       - feature-loop
       - process
@@ -28,4 +48,79 @@ artifacts:
       priority: should
       issue: "#1476"
       verification-track: manual
-      done-when: "manual:2026-12-31 the leading-token hole stays named; #1476 is the record of why no wider rule is adoptable — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
+      disposition: refuted
+      landed: "PENDING-PR-STAMP"
+      verified-by: >
+        REFUTED — the widening is refused for the third release running, and the reason is new:
+        the hole it exists to close has ZERO instances, so there is no benefit to weigh a cost
+        against.
+
+        MEASURED, and the population figure is QUOTED FROM THE GATE'S OWN PRINTED LINE rather
+        than from a reimplementation. The self-test is rc=0, and
+        `python3 scripts/verdict_prose_check.py` prints:
+
+          verdict-prose: 81 artifacts in the population, 0 disagree with their own structured fields
+
+        The ESCAPE count has no printed equivalent, so it is derived by calling the shipped
+        `unclassified_lead` over `verdict_prose_check.artifacts(".")`: it returns a token for
+        ZERO artifacts, and the derivation agrees with the gate on the population size (81),
+        which is the cross-check that the derivation walks the same set the gate does.
+
+        WHY THE POPULATION FIGURE IS QUOTED AND NOT COMPUTED. A first write of this paragraph
+        gave three hand-derived numbers — "577 loaded, 201 with prose, 80 in population". All
+        three were unstable for reasons that had nothing to do with the tree: 80 became 81 the
+        moment THIS artifact gained its own `verified-by` (a count of the artifact the count
+        lives in), and 577 became 575 under a one-line change to the helper's own type filter.
+        Numbers a correction introduces have had zero review passes, so the fix was not to
+        refresh them but to stop producing them and read the instrument's output instead.
+
+        THE ZERO IS PAIRED-CONTROLLED, because a derived zero is a refusal and not a pass.
+        POSITIVE, 4 of 4: the four openings the function's own docstring names as the measured
+        escapes are each detected (`NOT LANDED`, `DONE`, `NOT-DELIVERED`, `CLOSED`). NEGATIVE,
+        4 of 4: `PARTIAL,`, `DELIVERED,`, `THE MEASUREMENT` and `MEASURED` all return None. The
+        instrument can see an escape and does not manufacture one.
+
+        AND A FIRST ATTEMPT AT THIS MEASUREMENT WAS WRONG IN THIS REPO'S RECORDED WAY. It
+        reimplemented the lookup as "LEAD matched but the phrase is in no set" and reported
+        THIRTEEN escapes — `IMPLEMENTED PER`, `DEFERRED AGAIN`, `THE ORACLE` and ten more. Every
+        one was a FALSE POSITIVE: `LEAD` prefers a TWO-WORD run, and `unclassified_lead` falls
+        back to the FIRST word, so `IMPLEMENTED PER` is correctly out of scope because
+        `IMPLEMENTED` is in COMPLETE. The hand-rolled version measured the regex; the script's
+        function measures the rule. Thirteen became zero when the right instrument was called.
+
+        THE TRADE, with the rule stated because the number depends on the statement. Variant 3 =
+        drop any artifact whose FIRST SENTENCE of `verified-by` contains a negator
+        (`NOT|NO|NEVER|WITHOUT|CANNOT|NEITHER|NOR`). Over the checker's own population plus this
+        release's five delivered artifacts: 85 in population, 33 dropped — again as-of the tree
+        BEFORE this artifact gained its own `verified-by`, which would make it 86. Against a
+        hole of 0.
+        This figure is NOT claimed identical to v0.82's 27-of-78, because that measurement's
+        exact sentence scope is not restated here and a differently-scoped count is a different
+        number — which is itself the point below.
+
+        THE NON-ADOPTABILITY ARGUMENT IS NOW CONFIRMED FROM A SECOND DIRECTION. v0.82 observed
+        the drop count moving with the SENTENCE SCOPE and said that a population which changes
+        with a parsing choice is not a population. It also moves with the TREE: 78 then, 85 now;
+        27 dropped then, 33 now. A pin over such a count would need updating on essentially
+        every artifact-bearing PR, and a gate people cannot move honestly is one they route
+        around.
+
+        AND THIS RELEASE'S OWN FIVE DELIVERED ARTIFACTS WERE PUT THROUGH THE GATE, which is the
+        check this lane could most easily have skipped. Classified with `classify()`:
+        RQ-83-RANGEWIDEN (PARTIAL / proposed / partial), RQ-83-PAGESIZE5 (DELIVERED /
+        implemented / no disposition), RQ-83-VARVEBUMP, RQ-83-WIDEFILE6 and RQ-83-JESSDIVERGE5
+        (PARTIAL / proposed / partial) — all five IN population, ZERO red verdicts, ZERO escapes.
+
+        ONE SELF-INFLICTED SCARE RECORDED, because it would have been a false finding about this
+        release's own work. Run from a branch cut off `origin/main`, the same scan reported
+        `lead=None` for four of those five and they looked OUT OF POPULATION — the condition
+        #1476 names as indistinguishable from compliant. The cause was the branch, not the
+        artifacts: on `origin/main` those files are still the PLAN versions and carry no
+        `verified-by` at all. Re-reading each one from the branch where the work actually lives
+        gave the table above. A gate measured against the wrong tree says nothing about the
+        right one.
+
+        #1476 STAYS OPEN as the record of why no wider rule is adoptable, which is what this
+        artifact is for. `issue-scope` is omitted and the disposition is `refuted`, so the
+        closure gate cannot read this as claiming it.
+      done-when: "manual:2026-12-31 the leading-token hole is either closed by a rule whose population does NOT move with the sentence scope or the tree, or #1476 carries the re-measured trade that refuses it again — with the escape population PAIRED-CONTROLLED, because a zero hole is the whole argument and a vacuous zero would invert it"
