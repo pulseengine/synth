@@ -44,4 +44,48 @@ artifacts:
       priority: should
       issue: "#1136"
       verification-track: manual
+      disposition: deferred
+      landed: "#1136 — the TWENTIETH filing, ordinal DERIVED BY ARTIFACT IDENTITY and stated with its commit; spar issue 445 re-checked STATE-first and still OPEN; the filing shown SEEN by RUNNING the step 1-2 matcher, which reports NA-FILED."
+      verified-by: >
+        DEFERRED — STEPS 1-2 ARE SKIPPED AGAIN AND THE BLOCKER IS UNMOVED. This is the
+        recurring N/A, filed so the skip stays VISIBLE rather than becoming the silent
+        default, and it records an outcome rather than being silent itself.
+
+        THE ORDINAL IS DERIVED BY ARTIFACT IDENTITY AND STATED WITH ITS COMMIT, because the
+        next filing invalidates it and v0.81's artifact had to be corrected for omitting the
+        commit: `ls artifacts/release-v*/RQ-*ARCHMODEL*.yaml | wc -l` returns TWENTY at
+        6034b224, an unbroken run from RQ-63-ARCHMODEL through this one. It is NOT derived by
+        counting releases.
+
+        spar#445 WAS RE-CHECKED STATE-FIRST, which is the #345 lesson — a body is written once
+        and never updated, so the state is the fact: `gh issue view 445 --repo pulseengine/spar`
+        reports STATE=OPEN with no `closedAt`. The blocker stands, so steps 1-2 remain N/A
+        rather than merely unattempted.
+
+        AND THE FILING IS SHOWN SEEN BY RUNNING THE MATCHER, NOT BY READING THE TAGS, which is
+        what the done-when asks for and what RQ-69-ARCHMODEL failed: it lost the `feature-loop`
+        tag, so the filing that exists to keep a deferral visible became invisible to the gate
+        that reads it. `python3 scripts/loop_conformance_check.py v0.82.0` prints
+
+          step 1-2 spar AADL->WIT  filed decision  NA-FILED  decided, artifact scoped, not yet
+          built: RQ-82-ARCHMODEL (#1136, status proposed) [scoped to v0.82, evaluated at checkout]
+
+        Reading the tags would have said the same thing and proved nothing; the matcher
+        requires `feature-loop` AND one of `{aadl, spar}` AND a `fields.issue`, and this
+        artifact carries `process, feature-loop, spar, aadl` and `issue: "#1136"`.
+
+        ONE MEASUREMENT TAKEN WHILE THE MATCHER WAS RUN, recorded because it is about THIS
+        release's tail rather than about #1136: the same gate reports step 3 "reported outcome"
+        as DERIVED-FAIL with 10 of 12 artifacts recording no outcome. That is a TRANSIENT
+        state, not a defect — the gate evaluates at HEAD, and ten of this release's artifacts
+        carry their `disposition`/`verified-by`/`landed` on lane branches that have not merged
+        yet. It clears as the lanes land, and if it does NOT clear by the tag it is a real
+        finding. Step 0 (workspace still 0.81.0), step 7 (no cold-review record yet) and step 8
+        (changelog topmost section still [0.81.0]) are DERIVED-FAIL for the same pre-tag reason.
+
+        WHAT WOULD END THE RECURRENCE, unchanged and not re-litigated: a synth-owned `.aadl`
+        architecture model tracked in-repo, which is what makes the matcher take branch (a)
+        instead of branch (b). The maintainer's recorded decision on #1136 is "not permanently
+        N/A; timing first", so this filing is a deferral with a named blocker rather than an
+        exemption.
       done-when: "manual:2026-12-31 the twentieth filing exists with BOTH the feature-loop tag and a spar/aadl tag, shown SEEN by running the step 1-2 matcher rather than by reading the tags; the ordinal derived by ARTIFACT IDENTITY and stated with the commit it is true at; spar#445's STATE re-checked before its body; and an outcome recorded rather than the artifact being silent"
