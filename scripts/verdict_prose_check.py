@@ -84,6 +84,41 @@ NOT_A_VERDICT = {"FULL", "DONE-WHEN", "RED-FIRST", "THE", "BOTH", "MEASURED",
                  # nobody can move honestly is a gate they route around.
                  # The DANGEROUS escapes are deliberately NOT here, so they red:
                  # NOT LANDED, DONE, NOT-DELIVERED, CLOSED.
+                 #
+                 # RQ-82-FIRSTTOKEN (#1476): SENTENCE SCOPE WAS MEASURED AND
+                 # REFUSED. Reading the first SENTENCE instead of its first token
+                 # would close the generic-opener hole this set creates — a word
+                 # above standing in front of a delivery claim leaves BOTH the
+                 # field-vs-prose comparison AND `unclassified_lead`. Three
+                 # variants were implemented against the live tree (188 artifacts
+                 # carry a `verified-by`; 67 are in population):
+                 #
+                 #   bare sentence scan   +3 in population, 0 day-one reds, but it
+                 #                        INVERTS negation: "NOT LANDED yet" yields
+                 #                        LANDED, a COMPLETE verdict, because the
+                 #                        greedy two-word match consumes `NOT
+                 #                        LANDED`, rejects it, and discards the
+                 #                        LANDED with it. 5 of 6 negated forms
+                 #                        invert. A VISIBLE escape becomes a
+                 #                        CONFIDENT WRONG verdict, which is worse.
+                 #   adjacent-negator     fixes those 6; still inverts "no work was
+                 #                        SHIPPED", and unbounded-distance negation
+                 #                        in prose is not decidable by a token rule.
+                 #   decline on any       never inverts, but drops 13 artifacts OUT
+                 #   negator in the       of population — RQ-60-A64IMPORT,
+                 #   sentence             RQ-62-MEMISOLATE, RQ-65-PARITY,
+                 #                        RQ-80-CLOSEGATE and RQ-82-CLOSEARM among
+                 #                        them. Losing coverage on 13 to close a
+                 #                        hole on 3 is a bad trade.
+                 #
+                 # Adding the negated forms to INCOMPLETE was also tried: 0 live
+                 # effect (0 enter, 0 leave, 0 newly red), but it converts an
+                 # UNCONDITIONAL tag-time FAIL in `loop_conformance_check` slot 3
+                 # into a per-PR comparison that PASSES on a non-claiming artifact.
+                 # That is a weakening, and `NOT LANDED` is the canonical escape
+                 # example in THREE test suites — evidence the current shape is
+                 # deliberate. So the leading-token rule stays, and the hole stays
+                 # NAMED rather than closed by a worse rule.
                  "CLASSIFICATION", "TRIAGE", "EVERY", "ADDED", "BYTE", "RULE"}
 # See THE CARVE-OUT above (#1430).
 LEGAL_BESIDE_CLAIMING = {"REFUTED"}
