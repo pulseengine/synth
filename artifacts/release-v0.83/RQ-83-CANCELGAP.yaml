@@ -55,7 +55,7 @@ artifacts:
       issue: "#1484"
       verification-track: manual
       disposition: partial
-      landed: "PENDING-PR-STAMP"
+      landed: "PR #1496 — #1484 — CHECK3c added to `merge_gate.decide()` with a TOTAL state classification (PASSING/RED/PENDING/UNVERIFIED plus an UNCLASSIFIED catch-all), `STATES_FLOOR` refusing at import, and `tag_release.sh` GATE2b calling the SAME module rather than copying the list; 6/6 mutants caught, exit codes 0/1/2 verified against real commits."
       verified-by: >
         PARTIAL — THE REFUSAL IS DELIVERED, THE NO-SHOW DISCRIMINATION IS NOT, and the verdict
         says so rather than rounding up. This artifact's done-when asks the gate to DISTINGUISH a
