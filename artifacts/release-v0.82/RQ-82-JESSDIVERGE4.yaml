@@ -22,8 +22,12 @@ artifacts:
 
       SO THE EXPRESSION IS RIGHT AND AN OPERAND IS WRONG. The multiplicands are read from
       `[sp,#152]`, `[sp,#208]` and `[sp,#232]`. A static comparison cannot see what a slot
-      HOLDS at run time; the reporter's existing QEMU memtrace plugin can, windowed to
-      those three words. That is the next measurement and it is the whole lane.
+      HOLDS at run time; the reporter's existing QEMU memtrace plugin can. BUT THREE WORDS
+      ARE HALF THE MEASUREMENT — each block also reads an ADDEND, a wrong addend is
+      indistinguishable from a wrong multiplicand in the stored result, and these slots are
+      reused spill homes rather than dedicated operands, so each word must be sampled AT THE
+      PC OF ITS OWN LOAD. The six-word, six-PC form is derived below and supersedes the
+      three-slot framing carried in from v0.81.
 
       A LIVENESS PASS CAME BACK EMPTY AND THAT IS REPORTED AS SUCH: all six operand slots
       are both written and read, so "a slot read but never written" is refuted too. The
@@ -34,6 +38,46 @@ artifacts:
       a few sentences, and detail only on request. v0.81 did NOT comment, because
       eliminating mechanisms narrows a search without moving a blocker — rule 4 — and the
       artifact says so. If this lane produces the slot values, THAT is something for them.
+
+      MEASUREMENT REFINED BEFORE ASKING FOR IT — the named triple was HALF a
+      measurement. Derived from the module's own disassembly (digests verified against the
+      thread: c.wasm d854e5bb…, c.loom.wasm 791ab6b5…), each gravity block reads TWO
+      operands, not one, and the three slots named so far are only the MULTIPLICANDS:
+
+        block pc 0x2498 -> linear-memory offset 940
+          ADDEND       loaded at pc 0x2490:  s8 <- [sp,#200]
+          MULTIPLICAND loaded at pc 0x2494:  s9 <- [sp,#152]
+        block pc 0x24c4 -> linear-memory offset 936
+          ADDEND       loaded at pc 0x24bc:  s8 <- [sp,#216]
+          MULTIPLICAND loaded at pc 0x24c0:  s9 <- [sp,#232]
+        block pc 0x24f0 -> linear-memory offset 944
+          ADDEND       loaded at pc 0x24e8:  s8 <- [sp,#192]
+          MULTIPLICAND loaded at pc 0x24ec:  s9 <- [sp,#208]
+
+      SO THE ASK IS SIX WORDS AT SIX NAMED PCs, NOT THREE SLOTS, FOR TWO REASONS. First, a
+      wrong ADDEND and a wrong MULTIPLICAND are INDISTINGUISHABLE in the stored result, so
+      sampling only {152, 208, 232} could not identify which operand is wrong — the very
+      question this lane exists to answer. Second, THESE ARE GENERAL-PURPOSE SPILL SLOTS,
+      not dedicated operand homes: `[sp,#152]` is referenced 130 times in this object,
+      `[sp,#208]` 34 and `[sp,#232]` 20, so "the value of [sp,#152]" names no single value.
+      The sample point must be the PC of the load.
+
+      WHAT THIS LANE DID NOT OBTAIN, STATED PLAINLY. The RUNTIME values were NOT measured.
+      QEMU is not installed on the release machine (`qemu-system-arm` and `qemu-arm` both
+      absent) and the reporter's repository is not cloned here, so the lane cannot execute
+      the image; the static half is all that was reachable from the bytes in hand. A request
+      naming the six PCs above was DRAFTED and deliberately NOT SENT: it is correspondence
+      with an external reporter, which is surfaced to the maintainer rather than posted by
+      the loop. The thread stands at ten comments and this release added none.
+
+      AND THE COUNT THAT NEEDED CORRECTING: a first pass reported FOUR materializations of
+      `9.81f` because the grep was truncated by `head -8`. There are NINE sites containing
+      `0xf5c3`; of those, the three with the full vldr/vldr/movw+movt/vmov/vmul/vadd/str
+      shape AND a resolvable store are the gravity terms, and their offsets are 940, 936 and
+      944 — CONFIRMING the carried claim. An intermediate derivation of {932, 940, 936} was
+      an INSTRUMENT error: the scan window began before its own anchor, so it attributed the
+      PRECEDING block's `addw`. Forward-only scanning fixes it. The brief was right and the
+      first measurement was not.
 
       REFUTING COMMAND: re-read the thread before building anything —
       `gh issue view 1436 --json comments --jq '.comments[-6:][].body'` — and attribute by
@@ -54,5 +98,35 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1436"
+      disposition: partial
+      landed: "PR #1487 — the six-word/six-PC measurement derived and recorded; the runtime values were NOT obtained (#1436 stays open)."
+      verified-by: >
+        PARTIAL — THE MEASUREMENT WAS REFINED, THE DEFECT IS NOT NAMED, AND #1436 REMAINS
+        OPEN AND UNEXPLAINED. What this lane delivered is a change to WHAT must be measured:
+        the carried ask named three stack slots, and each gravity block reads TWO operands,
+        so the three named were only the MULTIPLICANDS. The six words and the six PCs that
+        load them are derived in this artifact from the module's own disassembly, digests
+        verified against the thread.
+
+        TWO INDEPENDENT REASONS THREE WORDS COULD NOT HAVE ANSWERED IT: a wrong ADDEND and a
+        wrong MULTIPLICAND are indistinguishable in the stored result, and these are reused
+        general-purpose spill homes — `[sp,#152]` is referenced 130 times in this object — so
+        a slot name identifies no single value and each word must be sampled AT ITS OWN LOAD
+        PC.
+
+        WHAT WAS NOT OBTAINED, PLAINLY: the runtime values were not measured. `qemu-system-arm`
+        and `qemu-arm` are both absent on the release machine and the reporter's repository is
+        not cloned here, so the image cannot be executed. A request naming the six PCs was
+        DRAFTED AND NOT SENT — correspondence with an external reporter is surfaced to the
+        maintainer, not posted by the loop. The thread stands at ten comments and this release
+        added none.
+
+        THE REFUTING COMMAND HELD: the shipped oracle still reports the lowering FAITHFUL
+        (9 assertions, 0 failures) with every refuted mechanism injectable, so v0.81's
+        refutation stands.
+
+        PER CONDUCT RULE 4 THIS IS NOT CLAIMED AS PROGRESS ON THE DEFECT. Hardening an oracle
+        around an open external report does not count; refining the measurement does, because
+        it changes what to ask for — and the artifact says which of the two this was.
       verification-track: manual
-      done-when: "manual:2026-12-31 the RUNTIME value of `[sp,#152]`, `[sp,#208]` and `[sp,#232]` at the gravity-compensation site is measured on at least one tick and compared against what the wasm semantics require, naming which operand is wrong and why — or the lane states plainly that it did not obtain them and what it tried; and any comment to the thread LEADS with what changed for the reporter"
+      done-when: "manual:2026-12-31 the RUNTIME value of ALL SIX operand words at the gravity-compensation site — the ADDENDS `[sp,#200]`/`[sp,#216]`/`[sp,#192]` loaded at pcs 0x2490/0x24bc/0x24e8 AND the MULTIPLICANDS `[sp,#152]`/`[sp,#232]`/`[sp,#208]` loaded at pcs 0x2494/0x24c0/0x24ec, each sampled AT ITS OWN LOAD PC because these are general-purpose spill slots reused 130/20/34 times — is measured on at least one tick and compared against what the wasm semantics require, naming which operand is wrong and why — or the lane states plainly that it did not obtain them and what it tried; and any comment to the thread LEADS with what changed for the reporter"
