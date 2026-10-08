@@ -5,6 +5,130 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.82.0] - 2026-10-08
+
+### "Satisfying one gate can arm another"
+
+v0.81's theme was that a case OUT OF POPULATION is indistinguishable from a compliant one.
+This release is that one level up: a case that SATISFIES TWO RULES WHOSE CONJUNCTION IS FALSE.
+The motivating instance was v0.81's own near-miss, and **neither gate was wrong**. R3 reds a
+non-claiming status whose done-when evidence exists; `authorised_close_set` reads a CLAIMING
+status as permission to close the issue. Two artifacts that delivered a refutation and a
+narrowing were therefore set `implemented` for R3's sake, which silently placed an externally
+reported live blocker in the authorised close set. An operator caught it by running the closure
+gate before tagging. No gate did.
+
+**The release was scoped from one instance of that shape and found three more that were live.**
+That is the finding, and none of the three was predicted:
+
+1. **R14, the rule written to stop conjunction defects, was one.** As first shipped it keyed on
+   the whole `INCOMPLETE` set — seven tokens — while its sibling `verdict_prose_check` accepts
+   exactly one, `REFUTED`. R11 forbids the `disposition:` that would satisfy verdict_prose beside
+   a claiming status, so for the other six tokens there is no legal claiming shape at all, and
+   R14 told authors to add a declaration when the only correct answer was to stop claiming. It
+   reddened `Claim Check`, a required context, on this release's own PR.
+2. **Removing a defective idiom DISARMED a different gate.** `status_evidence_check` derives
+   R13's enforced field-key set by ast-walking its consumers for `fields.get("literal")`.
+   Replacing that idiom with a normalising accessor silently dropped `issue-scope`, `landed` and
+   `disposition` from R13's population. Three of R13's four unit tests went red while the
+   module's own anti-vacuity guard stayed GREEN, because it tests only emptiness — the exact
+   defect that function's docstring already named, reached through the fix for a different one.
+3. **The compliance fix stopped the npm publish.** `release-npm.yml` gates its only job on
+   `workflow_run.conclusion == 'success'`, and v0.81 deliberately gave `compliance.yml` the
+   power to fail the release path. At v0.81.0 the Release run concluded FAILURE for the first
+   time in four releases — its only failing job being compliance — so the npm job SKIPPED with
+   zero steps and never reached its preflight. A credential blocker that announced itself loudly
+   every release now announces nothing.
+
+And a fourth was **measured and refused** rather than shipped: widening the verdict rule from
+its first token to its opening sentence would have closed a real hole on 3 artifacts with a
+day-one red count of zero — and INVERTED negation, reading `NOT LANDED yet` as the COMPLETE
+verdict `LANDED`, because the only negated phrase in the vocabulary is `NOT DELIVERED`. Three
+variants were implemented and measured; the safest drops 13 artifacts out of population.
+
+**A maintainer-requested lane was REFUTED by the suite it named as its own oracle**, and the
+refutation is the lane working rather than failing. Five held dependabot PRs were consolidated
+into one change — four of them one upstream wasm-tools train to 0.261.0 — and the lane shipped
+saying plainly that it did NOT claim synth's source compiles against the newer API, because no
+local build is possible at 99% disk. THE FULL SUITE WAS NAMED AS THE ORACLE. It refused: 0.261.0
+widened wasmparser's section ranges from `Range<usize>` to `Range<u64>`, and `synth-core` indexes
+a `&[u8]` with them directly at four sites in `arena_bind.rs`. The four cargo bumps were withdrawn
+and the seven unrelated lanes landed; the rivet compliance ACTION bump, a surface touching no Rust
+source, was retained.
+
+**Two instrument lessons came out of diagnosing it, and both corrected a first reading of mine.**
+The first failures visible on the run were four, on `ubuntu-24.04-arm` and `macos-latest`, and I
+hypothesised a leg-specific fault — then declined to assert it and named the decisive test:
+whether an x86 leg also fails. Grouping the jobs BY LABEL answered it — the run finally failed
+**63 of its 68 non-cancelled jobs across FOUR labels**, 46 of them `ubuntu-latest` and 13
+`self-hosted … rust-cpu`. The five survivors are all metadata-level and NOT ONE compiles synth
+(Format, Version Pin Sweep, Claim Check, Rivet Validation, Advisories), two of them on the same
+`rust-cpu` pool as 13 of the failures — so the discriminator is what a job DOES, not which pool
+it runs on. An API break
+fails every leg; a leg-specific fault spares x86. The second: the log's **4 errors** are not the
+size of the job. `synth-core` is the base crate, so the compiler stopped there and the consumer
+surface downstream of it never compiled and is UNMEASURED. An error count measures where
+compilation stopped, which is why the bump was withdrawn rather than fixed in place — a
+fix-forward had no measurable budget, and seven lanes were queued behind it.
+
+### What landed
+
+- **RQ-82-CLOSEARM** (#1484) — R14 added, and the safer non-claiming shape identified: a
+  `proposed` status with a `disposition:` and a `landed:` naming the delivering PR places the
+  issue in no close set at all. The `str(None)` population derived at 32 sites.
+- **R14NARROW follow-up** (#1484) — R14 narrowed to the carve-out, its vocabulary IMPORTED and
+  asserted by object identity rather than equality, and the safer shape pinned by a test because
+  nothing in the repo pointed at it.
+- **RQ-82-JESSDIVERGE4** (#1436) — the carried ask named three stack slots; each gravity block
+  reads TWO operands, so the three named were only the multiplicands. Six words and the six PCs
+  that load them are now derived from the module's own disassembly. The runtime values were NOT
+  obtained — no emulator on the release machine — and #1436 remains open and unexplained.
+- **RQ-82-WIDEFILE5** (#1439) — the sign surface was scoped by instruction NAME rather than by
+  EFFECT: an abs needs no `VABS`, and two `AND`/`BIC #0x80000000` splices inside the copysign
+  expansions were new to the enumeration. Two mechanisms refuted, including `movt` immediate
+  truncation, which predicted the observed failing set exactly and is nonetheless not what the
+  code does. The emitter is still not named.
+- **RQ-82-VALUELESSKEY** (#1458) — one shared accessor, 26 call sites across four gates, and a
+  declared-subset shrinkage floor so R13's population cannot narrow silently again. v0.81's own
+  remedy, `str(x.get(k) or "")`, is wrong in the other direction — it reads a legitimate `0` or
+  `False` as absent — and a `claims.yaml` waiver with a bare `reason:` read as JUSTIFIED.
+- **RQ-82-PINBYVALUE** (#1439) — the premise said SEVERAL oracles assert over float tables;
+  measured, it is ONE. Every row of the #1439 fixture is now pinned by bit pattern: 8 of 14 were
+  unpinned, now 0 of 14, each proven by its own firing mutation. The NaN row was protected by
+  nothing, and membership could never have pinned it.
+- **RQ-82-FIRSTTOKEN** (#1476) — REFUTED with numbers. Three variants implemented and measured
+  against the live tree; the refusal ships with three guard tests proven potent by mutation.
+- **RQ-82-LADDER4** (#1432) — four releases recorded that the corpus host "refused every offered
+  auth method". It does not: sshd OFFERS publickey, so this is an `authorized_keys` problem and
+  not a server-configuration one, and the remedy differs. The action is now specific enough for
+  someone else to execute.
+- **RQ-82-COMPLIANCE2** (#1453) — v0.81's wiring worked and the job now runs and fails. Its
+  externals are gitignored clones of seven sibling repos that one `actions/checkout` cannot
+  supply; a runtime-derived sync step was added, using the proven authenticate-for-quota pattern.
+  Proven end to end on the same tree with the same rivet: resolution gives 1032 cross-repo
+  backlinks where absent externals give none.
+- **RQ-82-BAZELPOTENCY** (#1456) — the gate stays UNPROVEN, and the gap is narrower: the
+  artifact's cost model was wrong by an order of magnitude. The job runs in 2.0-2.3 minutes on a
+  GitHub-hosted runner, so the control is cheap and the blocker is scheduling.
+- **RQ-82-ARCHMODEL** (#1136) — the twentieth filing, ordinal derived by ARTIFACT IDENTITY and
+  stated with its commit, spar#445 re-checked STATE-first, and the filing shown SEEN by running
+  the step 1-2 matcher rather than by reading its tags.
+- **RQ-82-PAGESIZE4** (#1441) — the mandated pre-read ran BEFORE any code was considered, and
+  the relocation a downstream refused in writing was not attempted a third time. The capability
+  is declined on its own done-when, which demands execution evidence no build on this machine
+  can produce.
+- **RQ-82-NPM** (#1460) — the registry gap re-derived against the live registry, the credential
+  action named exactly, and the second blocker above found. Rotating the token alone would have
+  changed nothing.
+- **RQ-82-DEPS** (#965) — maintainer-requested and **REFUTED**. The four wasm-tools 0.261.0 bumps
+  are withdrawn: `synth-core` does not build against the widened `Range<u64>` section ranges, at
+  four sites in `arena_bind.rs` (493, 501, 520, 554). The withdrawal is proven by EQUALITY —
+  `Cargo.toml` and `Cargo.lock` byte-identical to main — and not by a `0.261` grep, which would
+  have read as a half-revert because that version was already in the lock transitively. The rivet
+  compliance action bump to v0.40.0 is retained, evaluated at its interface. The four cargo
+  dependabot PRs stay OPEN with the measured reason, because dependabot does not re-raise a
+  manually dismissed version.
+
 ## [0.81.0] - 2026-10-07
 
 ### "Out of population is indistinguishable from compliant"
