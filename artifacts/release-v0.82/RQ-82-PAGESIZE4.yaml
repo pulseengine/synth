@@ -49,4 +49,68 @@ artifacts:
       priority: should
       issue: "#1441"
       verification-track: manual
+      disposition: deferred
+      landed: "#1441 — the mandated pre-read RUN and the relocation left off the table; scope RE-DERIVED at this commit (5 page_size_log2 sites, 4 memory.size lowering sites, max_bytes still ZERO callers); the capability DEFERRED because its own done-when demands execution evidence that cannot be obtained on this machine."
+      verified-by: >
+        DEFERRED — THE CAPABILITY IS NOT BUILT, AND THE REASON IS ITS OWN DONE-WHEN. #1441
+        stays open. This lane ran the mandated pre-read, re-derived the scope, and declined to
+        ship the capability on evidence it could not produce.
+
+        THE MANDATED PRE-READ WAS RUN BEFORE ANY CODE WAS CONSIDERED, which is the rule v0.81
+        violated by building first. `git grep -n -F 'refuse_custom_page_size' -- artifacts/`
+        returns SIX files spanning v0.69, v0.70, v0.71, v0.80 and v0.82 — a carried family five
+        releases deep, which is itself the signal that a decision already exists. gale's words
+        are at `artifacts/release-v0.81/RQ-81-PAGESIZE3.yaml:72`: "Refused or honoured?
+        HONOURED — and please do not spend the effort on relocating the refusal. Refusing in the
+        library closes a door gale wants open." THE RELOCATION STAYS OFF THE TABLE and was not
+        attempted a third time.
+
+        THE REFUTING COMMAND COULD NOT RUN, AND IT FAILED CLOSED — which is the right outcome
+        for an oracle and must not be read as a pass. `python3
+        scripts/repro/pagesize_oracle_1441.py` exits 1 with "REFUSE: no synth binary at
+        target/{debug,release}/synth — build it first; an oracle that silently skips because its
+        subject is missing is the 'checker reports success about work it never did' class". So
+        the premise is NEITHER confirmed NOR refuted by execution: the oracle is unrunnable
+        here. NOTE THE CAUSE IS A DIFFERENT ONE FROM v0.81's: that release misreported an
+        uninitialised `tests/spec-testsuite` as the oracle refusing, and on this checkout the
+        submodule IS initialised — `git submodule status` reports 345367358 and the directory
+        carries 265 entries. The blocker is the absent binary, not the submodule.
+
+        SCOPE RE-DERIVED AT THIS COMMIT RATHER THAN CARRIED, because this artifact's figures are
+        marked "measured at the v0.80 cut" and a number is invalidated by the edit that writes
+        it:
+
+          page_size_log2 sites            5   two in the CLI refusal, two in
+                                              synth-core/wasm_decoder (the struct field and its
+                                              propagation), one a comment. The DECLARATION
+                                              reaches the decoder and is ignored thereafter.
+          memory.size lowering sites      4   arm_encoder.rs:1758 and :3830,
+                                              select_default.rs:398, cortex_m.rs:152/155 —
+                                              each a hardcoded LSR #16 / >>16 on R10
+          max_bytes                       1   mention in the whole crate tree: the DEFINITION.
+                                              ZERO callers, confirming the carried measurement
+          initial_bytes                  13   mentions, so the twin shape is real and both must
+                                              move together or it is the #1096 class again
+
+        WHY DEFERRED, AND IT IS NOT MERELY "NO TIME". The done-when requires TWO pieces of
+        EXECUTION evidence — "the CI-wired pagesize oracle flipping to its capability mode" and
+        "an execution differential over a non-default page size" — and both need a built
+        `synth`. The release machine cannot build one: the data volume is at 99% with 5.1 GiB
+        available, and it FELL from 7.3 GiB during this session. The dominant consumers are
+        other projects' — a loom scratchpad at 29 GiB, a witness one at 10 GiB, and a sibling
+        `rivet/target` at 18 GiB which grew 2 GiB while this was measured — none of which is
+        this lane's to purge. A full workspace debug build measured 12 GiB when last taken.
+
+        AND THE PRINCIPLED REASON, which stands even if the disk were free: shipping this
+        capability WITHOUT execution evidence is precisely the v0.78 shape, where a lane built a
+        reach gain, its own execution oracle then showed sign-wrong code, and the gain was
+        REVERTED. A reach increment owes execution evidence, so the honest move is to decline
+        the increment rather than to ship it unexecuted and claim the done-when.
+
+        WHAT THIS LANE DID CLEAN UP, recorded because it was this release's own residue: an idle
+        `bazel(synth)` server that THIS session started with a `bazel info` query was shut down,
+        and the three v0.81 worktrees under the scratchpad were removed after confirming each
+        branch's content SHIPPED by merged PR head — 1482, 1483 and 1481. Their
+        `git log origin/main..HEAD` counts read 5, 6 and 2 "unpushed", which is the squash-merge
+        trap rather than lost work.
       done-when: "manual:2026-12-31 either (pagesize 1) compiles with the declared page size honoured at the decoder, all four memory.size lowering sites and both byte-size accessors, with the CI-wired pagesize oracle flipping to its capability mode and an execution differential over a non-default page size; or the lane states with numbers why not — and in neither case is the refusal relocated into synth-core"
