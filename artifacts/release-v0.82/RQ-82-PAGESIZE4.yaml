@@ -56,6 +56,20 @@ artifacts:
         stays open. This lane ran the mandated pre-read, re-derived the scope, and declined to
         ship the capability on evidence it could not produce.
 
+        AND #1441 IS EXTERNALLY REPORTED, which an earlier draft of this artifact did not say.
+        DERIVED with BOTH signals, because either alone is blind: `author.login` is `avrabe`,
+        the shared account, so an author filter reads it as internal — but the body carries a
+        `**[fathom` relay prefix, so the reporter is fathom. (The converse blindness is real
+        too: #1318's `author.login` is `cpetig` with NO relay prefix, so a prefix-only filter
+        reads THAT as internal. Attribution needs `login != avrabe` OR a relay prefix.)
+
+        SO CONDUCT RULE 4 APPLIES AND IS NOT SATISFIED HERE: "for an externally reported defect
+        that is STILL OPEN, a release whose only work on it was HARDENING THE ORACLE around it
+        does not count as progress on it." This lane hardened nothing and built nothing — it
+        priced the capability and declined it. That is honest, and it is explicitly NOT progress
+        for fathom. Stated here so the next release scopes it as an owed capability rather than
+        as a lane that was already worked.
+
         THE MANDATED PRE-READ WAS RUN BEFORE ANY CODE WAS CONSIDERED, which is the rule v0.81
         violated by building first. `git grep -n -F 'refuse_custom_page_size' -- artifacts/`
         returns SIX files spanning v0.69, v0.70, v0.71, v0.80 and v0.82 — a carried family five
