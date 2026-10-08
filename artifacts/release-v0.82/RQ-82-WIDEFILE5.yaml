@@ -49,10 +49,15 @@ artifacts:
 
       THE SIGN SURFACE IS WIDER THAN THREE VABS EMITTERS — enumerated, and the enumeration
       was previously defined by INSTRUCTION NAME rather than by EFFECT. An abs does not
-      require a VABS: clearing bit 31 in a GPR does the same thing. The five sites below are
-      the ABS-CAPABLE f32 sites ON THE ARM BACKEND — that scope is stated because the
-      enumeration does not cover sign-editing as a whole, and the prose above treats `neg`
-      as a candidate. NOT in the five, and sign-editing: `VNEG.F32` (`0xEEB10A40`) at
+      require a VABS: clearing bit 31 in a GPR does the same thing. THE SCOPE OF THE FIVE
+      SITES BELOW, corrected by a round-2 review that caught the first attempt stating it
+      WRONGLY: they are the sites reachable from an `abs`-or-`copysign` SIGN-MASKING shape on
+      the ARM backend, and they are NOT all f32 — row five, `arm_encoder.rs:2691`, is the hi-word
+      splice inside `encode_arm_f64_copysign`, whose only call site is the `F64Copysign` arm and
+      is therefore reachable only from a wasm `f64.copysign`. A first correction here said "the
+      ABS-CAPABLE f32 sites", which EXCLUDED a row it was scoping and RATIFIED the pre-existing
+      sentence below rather than fixing it. Stating a scope is only useful if the scope contains
+      the enumeration. NOT in the five, and sign-editing: `VNEG.F32` (`0xEEB10A40`) at
       `arm_encoder.rs:1993`, `:6325`, `:7314`; `VABS.F64` (`0xEEB00BC0`) at `:2086`,
       `:6389`, `:7661`; `VNEG.F64` (`0xEEB10B40`) at `:2087`, `:6392`, `:7665`. The five,
       with what reaches each:
@@ -63,7 +68,8 @@ artifacts:
         arm_encoder.rs:2450   AND #0x80000000 / BIC #0x80000000        | `encode_arm_f32_copysign`
         arm_encoder.rs:2691   the same splice on the hi word          | `encode_arm_f64_copysign`
 
-      EVERY ONE requires a wasm `f32.abs`, `f32.neg` or `f32.copysign` operator, and the
+      EVERY ONE requires a wasm sign-editing operator — `f32.abs`, `f32.neg` or `f32.copysign`
+      for the first four, and `f64.copysign` for the fifth — and the
       fixture contains ZERO of all three. The two GPR-masking sites are NEW to this
       enumeration; the carried claim counted only the VABS emitters.
 

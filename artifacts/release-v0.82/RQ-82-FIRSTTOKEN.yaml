@@ -90,7 +90,12 @@ artifacts:
         v0.82's cold review and RE-DERIVED with the gate's own `artifacts()`/`classify()`:
         with "the sentence" pinned as the FIRST sentence of `verified-by` and negators
         {NOT, NO, NEVER, CANNOT, WITHOUT, NEITHER, NOR}, it drops TWENTY-SEVEN of the 78 in
-        population — not thirteen. And SIX of the thirteen previously named cannot be
+        population AT afa59b5d — not thirteen. The commit is stated because this artifact's own
+        neighbouring correction exists to require exactly that, and a round-2 review caught this
+        number arriving without one. Derived at four trees: 67/23 at 39fd8226, 68/23 at
+        8ef921eb, 78/27 at afa59b5d and unchanged at 9a8b3e22 — and the POPULATION and DROP SETS
+        are IDENTICAL between those last two, so the corrections added no negator to any first
+        sentence. And SIX of the thirteen previously named cannot be
         dropped by ANY negator rule, because their first sentence contains no negator at
         all: RQ-78-RITUAL ("DELIVERED."), RQ-79-ORDEAL ("LANDED."), RQ-80-CLOSEGATE,
         RQ-80-STEP7 and RQ-81-PINSWEEP ("DELIVERED.") and RQ-82-CLOSEARM ("DELIVERED, AND

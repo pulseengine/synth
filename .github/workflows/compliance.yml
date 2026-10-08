@@ -130,7 +130,12 @@ jobs:
               exact condition this step exists to refuse. A real clone carries a
               git dir AND at least one artifact-bearing file.
               """
-              return (dest / ".git").exists() and any(dest.rglob("*.yaml"))
+              # A round-2 review got rc=0 "synced 1 of 1" from a `.git` FILE beside a
+              # stray yaml, and again from an EMPTY `.git` DIRECTORY with a yaml nested
+              # three levels down. `.exists()` was too weak twice over, so require the
+              # shape a real clone actually has: a `.git` DIRECTORY carrying HEAD.
+              return ((dest / ".git").is_dir() and (dest / ".git" / "HEAD").is_file()
+                      and any(dest.rglob("*.yaml")))
 
           for name, cfg in sorted(ext.items()):
               dest = root / (cfg.get("prefix") or name)
@@ -139,6 +144,13 @@ jobs:
               if dest.exists():
                   # present but unresolved: `git clone` would fail "already exists",
                   # so the stale tree is removed rather than silently accepted.
+                  # CONTAINED: `prefix` comes from rivet.yaml, and pathlib absorbs an
+                  # absolute component (`root / "/tmp/victim"` is `/tmp/victim`), so the
+                  # delete is refused unless it is genuinely under root. The pre-fix step
+                  # deleted nothing at all, which is why this check did not exist.
+                  if root.resolve() not in dest.resolve().parents:
+                      sys.exit(f"REFUSE: external {name}'s prefix escapes "
+                               f"{root} -> {dest} — refusing to delete outside the tree")
                   shutil.rmtree(dest)
               r = subprocess.run(["git", "clone", "--depth", "1", "--branch",
                                   cfg.get("ref") or "main", cfg["git"], str(dest)],
