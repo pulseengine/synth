@@ -44,4 +44,75 @@ artifacts:
       priority: should
       issue: "#1460"
       verification-track: manual
+      disposition: deferred
+      landed: "#1460 — the registry gap RE-DERIVED against the live registry (latest 0.69.0 vs shipped 0.81.0, TWELVE minor releases), the credential action named exactly, and a SECOND blocker FOUND: v0.81's compliance wiring made the Release run conclude failure, which SKIPS the npm job entirely."
+      verified-by: >
+        DEFERRED — AND THIS LANE FOUND A SECOND BLOCKER THAT WOULD HAVE SURVIVED THE TOKEN
+        ROTATION. #1460 stays open. The credential is still outside this repository, but it is
+        no longer the only thing in the way, and the new obstacle is this release's own theme.
+
+        THE REGISTRY GAP, RE-DERIVED AGAINST THE LIVE REGISTRY WITH THE REQUEST SHAPE STATED,
+        because a 403 or a missing User-Agent is not evidence of "not published":
+        `curl -s -H "User-Agent: synth-release/0.82"
+        https://registry.npmjs.org/@pulseengine%2fsynth` returns `dist-tags {'latest':
+        '0.69.0'}` over 39 published versions, newest 0.69.0, against a shipped workspace
+        version of 0.81.0. The gap is TWELVE minor releases (0.70 through 0.81), re-derived
+        rather than restated.
+
+        THE SECOND BLOCKER, AND IT IS A CONJUNCTION NOBODY READ TOGETHER. `release-npm.yml`
+        gates its only job on
+
+          if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+
+        and v0.81's RQ-81-COMPLIANCE deliberately gave `compliance.yml` the ability to FAIL THE
+        RELEASE PATH — its own comment says so, because "a gate that cannot fail is this
+        programme's recurring defect". Those two facts are each correct and their conjunction
+        is not. DERIVED per tag:
+
+          v0.78.0   Release run success   compliance jobs 0
+          v0.79.0   Release run success   compliance jobs 0
+          v0.80.0   Release run success   compliance jobs 0
+          v0.81.0   Release run FAILURE   compliance jobs 1, and the ONLY failing job in the
+                                          whole run is `Compliance report / Generate
+                                          compliance report`
+
+        So the npm job's condition evaluated FALSE for the first time, and the job SKIPPED with
+        ZERO steps (run 37655372920, 1 second). It never reached its preflight.
+
+        AND THE FAILURE GOT QUIETER, which is the part that matters. Before v0.81 the npm job
+        RAN and failed loudly at "Preflight — verify npm auth" with ELEVEN steps and a
+        diagnostic naming the token type (run 37560641837). Now it reports `skipped` with no
+        steps and names nothing. A credential blocker that used to announce itself every
+        release now announces nothing — the same "a workflow that never starts has no
+        conclusion to be red" shape that RQ-81-COMPLIANCE was written to remove, reappearing
+        one workflow over as a consequence of that very fix.
+
+        THEREFORE THIS ARTIFACT'S OWN DESCRIPTION IS STALE AND IS CORRECTED HERE, not quietly:
+        it says "`Release NPM` fails at its 'Preflight — verify npm auth' step with the publish
+        steps SKIPPED — which means the preflight is doing its job". At v0.81.0 the preflight
+        did not run at all.
+
+        AND RQ-82-COMPLIANCE2 IS NOW A PREREQUISITE FOR THIS LANE, which was not known when
+        either was scoped. If the externals sync lands and compliance succeeds, the Release run
+        concludes success, the npm job's condition becomes true again, and the preflight runs —
+        at which point the credential is once more the only blocker. Rotating the token WITHOUT
+        that fix would change nothing at all.
+
+        THE UNBLOCKING ACTION, NAMED PRECISELY ENOUGH FOR SOMEONE ELSE TO EXECUTE, as the
+        done-when requires: the repository secret is **NPM_TOKEN**, set in this repository's
+        Settings -> Secrets and variables -> Actions, and it must be a CLASSIC AUTOMATION token
+        (or a granular token with read-write on `@pulseengine/*`), regenerated at npmjs.com ->
+        Access Tokens. A classic PUBLISH token is NOT sufficient: the org enforces 2FA on
+        publish and that token type fails in CI with EOTP. The workflow's own preflight says
+        exactly this in its error message — it is quoted here so the action does not require
+        reading CI to find.
+
+        WHY `issue-scope: outlives` IS NOT CARRIED, against this artifact's own done-when,
+        which asks for it "either way". It is FORBIDDEN beside a non-claiming status and the
+        gate says why: probed on this tree, `issue-scope: outlives` with `status: proposed`
+        gives `FAIL R12 RQ-82-NPM: ... the issue of an undelivered artifact stays open anyway,
+        so this declaration` is redundant. The non-claiming shape achieves what `outlives`
+        achieves and more strongly — the issue is never placed in the authorised close set at
+        all — so the done-when's intent is met and its letter is not. Said out loud rather than
+        silently dropped.
       done-when: "manual:2026-12-31 the registry gap is RE-DERIVED against the live registry with the request shape stated, and the unblocking action is named as a specific secret of a specific type in a specific place — or the package resolves at the shipped version and the clause is satisfied; `issue-scope: outlives` retained either way until both clauses hold"
