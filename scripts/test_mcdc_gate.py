@@ -348,6 +348,15 @@ class RestatementLedger(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             gate_copy = pathlib.Path(td) / "mcdc_gate.py"
             gate_copy.write_text(mutated)
+            # RQ-82-VALUELESSKEY (#1458): the gate now imports its field
+            # normaliser from a SIBLING module, so the mutated copy needs that
+            # sibling beside it. Staging it keeps this test's actual subject —
+            # the MUTATED floor constant — while leaving the normalisation
+            # single-sourced. Copying it (rather than adding the real scripts/
+            # dir to the child's path) preserves the isolation that makes the
+            # mutation meaningful: only the mutated gate can be imported.
+            (pathlib.Path(td) / "artifact_fields.py").write_text(
+                (SCRIPTS / "artifact_fields.py").read_text())
             empty = pathlib.Path(td) / "empty"
             empty.mkdir()
             r = subprocess.run(
