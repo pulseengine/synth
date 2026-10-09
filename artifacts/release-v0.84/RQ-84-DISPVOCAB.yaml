@@ -54,6 +54,17 @@ artifacts:
         IMPORTS the verdict classifier from `verdict_prose_check` rather than mirroring it,
         which makes a single-source fix in the other direction CIRCULAR. Unifying them would
         either loosen the strict gate or LOSE the "complete prose beside a non-delivery
-        disposition" check. The residual finding is that the two extra members are UNREACHABLE
-        on any tree that passes R11 — dead rather than dangerous.
+        disposition" check.
+
+        AND THAT RESIDUAL WAS ITSELF FALSE — the cold review refuted it, in this release's own
+        shape. It said the two extra members are UNREACHABLE on any tree passing R11, dead
+        rather than dangerous. MEASURED: R11's population is 300 artifacts across 245 release
+        files and is version-gated `>= (0, 67)`, while `NON_DELIVERY_DISPOSITION` is consulted
+        over ALL 594 artifacts in 270 files. `blocked` therefore lands GREEN on 294 of the 594
+        and on every pre-v0.67 release file, and where it lands it is consequential: planted on
+        `RQ-60-A64IMPORT` (v0.60), `status_evidence_check` is rc=0 while `verdict_prose_check`
+        is rc=1 — `prose claims VERIFIED beside disposition 'blocked'`. REACHABLE AND LIVE. The
+        denial compared R11's population with the classifier's as though they were one, which is
+        the defect this release is named after. What survives: `blocked`/`superseded` have zero
+        sites TODAY.
       done-when: "manual:2027-03-31 two gates, two legal vocabularies for one field, and the stricter one wins silently — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

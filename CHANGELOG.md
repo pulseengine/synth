@@ -17,8 +17,16 @@ you ship. It is that the **check and the thing checked need independent populati
 that independence is a property to be proven rather than assumed.**
 
 The theme was not asserted. As of this cut v0.84 produced **seven measured instances**,
-none predicted when the release was scoped, and two of them were found *inside this
-release's own machinery while it was being used*.
+and the cold review then corrected that claim: **five of the seven were already named in
+the scoped artifacts at the plan commit `0c84a3b9`** — NOTESPOP's "the two sides do not
+share a population definition", TWOSOURCE's `Path("Cargo.toml")`/`tree_read` split,
+DISPVOCAB's "three values ... another five", PINDEBT9's paired-controlled name scope,
+and RUNNERSHAPE's two-shape measurement. **Two were not**: the wiring hole behind
+instance 5, whose lane was scoped as a DECISION about refusing a fourth time, and
+instance 6, since nothing in the plan reads an issue's state. What was genuinely new in
+the other five is the DETAIL, not the defect: instance 2's recurrence on this release's
+own commit, instance 1's `schemas/` leg, instance 3's refutation of its own harm claim,
+instance 7's cluster brittleness. The release did not need the stronger sentence.
 
 **1. The notes generator is bounded by what the diff compares, not by what rivet needs to
 load — and its anti-vacuity guard is one-sided.** Both figures below were measured at the
@@ -61,11 +69,18 @@ operator can only err in one direction. But the sets were never meant to be equa
 first is used in exactly one place — R11, an allow-list of what may be **written** — while
 the second is a semantic test of what **means** non-delivery. Controlled: planting
 `disposition: blocked` yields `FAIL R11 … is not one of ['deferred', 'partial',
-'refuted']`, so the gate that refuses an operator **names the legal set**. What survives is
-smaller than the issue claimed: the two extra members are **unreachable** on any tree that
-passes R11 — dead rather than dangerous — and `blocked`/`superseded` have zero sites in any
-`disposition:` or `outcome:` field across every tracked artifact YAML — a sweep whose
-positive control found 594 artifacts carrying an id.
+'refuted']`, so the gate that refuses an operator **names the legal set**. AND THEN THAT CONCLUSION WAS ITSELF WRONG, in exactly this release's shape. A first
+version of this paragraph said the two extra members are unreachable on any tree passing
+R11 — dead rather than dangerous. The cold review measured the two populations: R11's is
+**300 artifacts across 245 release files** and is version-gated `>= (0, 67)`, while the
+classifier is consulted over **all 594** artifacts in 270 files. So `blocked` lands
+green on 294 of the 594 and on every pre-v0.67 release file, and where it lands it is
+consequential — planted on `RQ-60-A64IMPORT` (v0.60), `status_evidence_check` is rc=0
+while `verdict_prose_check` is rc=1 with `prose claims VERIFIED beside disposition
+'blocked'`. Reachable, and live. The denial compared R11's population against the
+classifier's as though they were one population: the theme, inside the sentence denying
+it. What is true is narrower — `blocked`/`superseded` have zero sites TODAY, in a sweep
+whose positive control found 594 artifacts carrying an id.
 
 **4. The pin tripwire is name-scoped while the ratchet is list-derived.** Paired control in
 a detached worktree, destroyed after and verified absent: baseline `75/75`; a
@@ -83,12 +98,19 @@ verdict-shaped lead in no set left the population of the very module that names 
 The enforcement that did catch one lived in `loop_conformance_check` step 3 — which imports
 the shipped function rather than mirroring it, and fails closed on a failing import, but is
 scoped to the **release being cut**, so at plan time it ran over an empty population and
-refused instead of checking. Three populations for one check: 216 tree-wide `verified-by`
-strings, the gate's own 95, and step 3's 14-scanned-0-eligible. Wiring it in is this
-release's delivery, with a three-way control: wired-and-clean `95/0/rc=0`,
-wired-with-escape `95/1/rc=1`, **unwired**-with-escape `94/0/rc=0`. That last reading is
-the defect's whole signature — the escaping artifact *leaves* the population, and the only
-trace is a count decrementing from 95 to 94 that nothing watches.
+refused instead of checking. Three populations for one check, **each stated with its commit** because this gate's
+printed figure rises as lanes record outcomes: at `v0.83.0` and at the plan commit
+`0c84a3b9` it was 216 tree-wide `verified-by` strings against the gate's own 95; at
+`2123f729` — the commit that wrote the fourteen outcomes, and therefore BEFORE the lane
+reporting them landed — it became **230 against 109**; and step 3's population was
+14-scanned-0-eligible. Wiring it in is this release's delivery, with a three-way control
+re-run at this cut: wired-and-clean `109/0/rc=0`, wired-with-escape `109/1/rc=1`,
+**unwired**-with-escape `108/0/rc=0`. That last reading is the defect's whole signature
+— the escaping artifact *leaves* the population, and the only trace is a count
+decrementing from 109 to 108 that nothing watches. A first version of this paragraph
+quoted the `v0.83.0`-era 216/95 and a 95/95/94 control as though they were this cut's,
+nine paragraphs after instance 2 quotes the live 109 for the same gate: two readings of
+one gate at two commits, presented side by side.
 
 **6. Four of fourteen lanes named an already-retired issue, two of them MUSTs.** Derived by
 reading each artifact's `issue:` **state before its body**: #1259 retired 2026-09-16,
@@ -109,11 +131,19 @@ sampled window of the 30 most recent runs and 676 jobs, 26 jobs carry `steps == 
 **zero** have a runner assigned. In that same window the field is `None` for one queued
 advisory job, `''` for the other queued and cancelled jobs, and a real name when assigned.
 A null test and an empty-string test are each wrong on a different subset, and `jq`'s `//`
-catches only the null. Relatedly, the documented no-show discriminator does not classify
-the one cancellation available: `completed_at` is 12 jobs at `09:57:26Z` plus 1 at
-`09:57:58Z` — a 32-second spread **inside** a single cancellation — so an exact-equality
-cluster test reports `mixed` and a naive reading would call the straggler a lone no-show.
-Cluster by a time window, not by equality.
+catches only the null. A SECOND CLAIM IN THIS INSTANCE WAS REFUTED BY THE COLD REVIEW, and the refutation is
+the better finding. A first version said the no-show discriminator fails because
+`completed_at` spreads 12 jobs at `09:57:26Z` plus 1 at `09:57:58Z` — "a 32-second
+spread inside a single cancellation" — and concluded "cluster by a time window, not by
+equality". Measured: run 37907716195 has 71 jobs and 13 cancelled, but only **12** carry
+`steps == 0`. The thirteenth, `fact-spec elision oracle (#494 ...)`, carries `steps=33`,
+`runner_name='pulseengine-ci-01-9'`, `runner_id=10495` and `started_at != created_at` —
+a job that RAN on a named runner and was cancelled mid-flight. It is the sole job at
+`09:57:58Z`. So the `steps == 0` population is **uniform**, 12 of 12 at one timestamp,
+and the spread was manufactured by admitting a 33-step job into a population defined by
+`steps == 0`. A no-show test keyed on `steps == 0` with an empty `runner_name` excludes
+it before any clustering. The remedy this instance claimed was justified by a mis-
+specified population — the theme once more, and this time against us.
 
 ## [0.83.0] - 2026-10-09
 

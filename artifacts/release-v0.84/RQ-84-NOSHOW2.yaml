@@ -38,15 +38,23 @@ artifacts:
         diffed field by field. The window holds 13 cancelled jobs ALL IN ONE RUN and ZERO lone
         cancelled jobs, so the no-show population is ZERO and the diff is UNRUN rather than
         reported as "no fields differ" — a derived population of zero is a refusal, not a pass.
-        The premise itself is confirmed: all 13 carry `steps=0`, `runner_name=''`, `runner_id=0`
-        and `started_at == created_at`.
-        AND THE DISCRIMINATOR DOES NOT CLASSIFY THE ONE INSTANCE AVAILABLE. `completed_at` is 12
-        jobs at 09:57:26Z plus 1 at 09:57:58Z — a 32-second spread INSIDE a single cancellation
-        — so an exact-equality cluster test reports `mixed` and classifies nothing, and a naive
-        reading would call the straggler a lone no-show, inventing the very thing the rule
-        exists to detect. CLUSTER BY A TIME WINDOW, not by equality; that is this lane's
-        concrete deliverable and it was found by running the probe rather than by reasoning
-        about it.
+        THE PREMISE AS FIRST WRITTEN WAS FALSE, and the cold review's refutation is the better
+        finding. It said "all 13 carry `steps=0`, `runner_name=''`, `runner_id=0` and
+        `started_at == created_at`", and derived from the `completed_at` spread (12 jobs at
+        09:57:26Z plus 1 at 09:57:58Z) that an exact-equality cluster test fails and the remedy
+        is to CLUSTER BY A TIME WINDOW.
+        MEASURED: run 37907716195 has 71 jobs, 13 cancelled, and only TWELVE with `steps == 0`.
+        The thirteenth — `fact-spec elision oracle (#494 ...)` — carries `steps=33`,
+        `runner_name='pulseengine-ci-01-9'`, `runner_id=10495` and `started_at != created_at`: a
+        job that RAN on a named runner and was cancelled mid-flight. It is the sole job at
+        09:57:58Z.
+        So the `steps == 0` population is UNIFORM — 12 of 12 at one timestamp — and the
+        "32-second spread inside a single cancellation" was manufactured by admitting a 33-step
+        job into a population defined by `steps == 0`. A no-show test keyed on `steps == 0` with
+        an empty `runner_name` EXCLUDES it before any clustering, so the `mixed` reading came
+        from the population and not from equality-versus-window. The lane's stated deliverable
+        was justified by a mis-specified population, which is the defect this release is named
+        after, found against us.
         Provenance established rather than assumed: run 37907716195 was `CI` on head 4398fb0b of
         the same branch, created 08:53:00Z and cancelled 09:57:26..59Z while the run for the
         amended head was created 09:57:25Z, so it is a CONCURRENCY SUPERSEDE cancel — automatic

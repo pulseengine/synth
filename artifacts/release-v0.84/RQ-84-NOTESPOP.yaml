@@ -34,10 +34,16 @@ artifacts:
       verified-by: >
         PARTIAL — the defect is REPRODUCED at the v0.84 base and no remedy ships, AND THE ISSUE
         THIS ARTIFACT NAMES WAS ALREADY CLOSED ON 2026-09-16, before this measurement. Refuting
-        command: the generator reports 3214 added artifacts where a SYMMETRIC extraction gives
-        13/0/0, so the asymmetry is live, and `rivet list --format json` totals 3936 = 735 own +
-        3201 external. Use the JSON form — the text output is INDENTED and a first-column parser
-        reads an EMPTY population.
+        command: the generator reports thousands of added artifacts where a SYMMETRIC extraction
+        gives a handful, so the asymmetry is live. Use the JSON form — the text output is
+        INDENTED and a first-column parser reads an EMPTY population.
+        THE FIGURES FIRST WRITTEN HERE WERE 3214 / 13/0/0 / 3936 = 735 + 3201, AND THEY HOLD AT
+        NO COMMIT OF RECORD. The cold review re-derived the own-artifact delta v0.83.0 -> head
+        two independent ways at `v0.83.0`, `0c84a3b9`, `2123f729`, `e1dcaf93`, `4785e61c` and
+        HEAD, and it is **14** at every one of them; a 13-delta exists at none, so it was
+        measured on an intermediate UNCOMMITTED tree. The self-consistent trio, measured at
+        `4785e61c`, is generator 3215 added / 722 unchanged against symmetric 722 base, 736
+        head, 14 added, 0 removed, 722 unchanged, with `3215 - 14 = 3201` foreign.
         The issue's STATE was read before its body, which is how the closure was found. The
         lane's subject is a live defect and its citation is a retired issue: two different
         populations, and nothing in the plan checked the second.
