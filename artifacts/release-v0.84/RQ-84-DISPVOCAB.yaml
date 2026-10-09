@@ -59,9 +59,16 @@ artifacts:
         AND THAT RESIDUAL WAS ITSELF FALSE — the cold review refuted it, in this release's own
         shape. It said the two extra members are UNREACHABLE on any tree passing R11, dead
         rather than dangerous. MEASURED: R11's population is 300 artifacts across 245 release
-        files and is version-gated `>= (0, 67)`, while `NON_DELIVERY_DISPOSITION` is consulted
-        over ALL 594 artifacts in 270 files. `blocked` therefore lands GREEN on 294 of the 594
-        and on every pre-v0.67 release file, and where it lands it is consequential: planted on
+        files and is version-gated `>= (0, 67)`, while `NON_DELIVERY_DISPOSITION`'s
+        loader ITERATES all 594 artifacts in 270 files, though its membership test is reached by
+        only 109. AND THIS CORRECTION MIXED POPULATIONS IN ITS TURN, caught by round 2: it
+        computed the green set as `594 - 300 = 294`, subtracting ALL 300 release artifacts while
+        naming the version gate that exempts most of them. Only 177 of the 300 are R11-active,
+        so the green set is 417, and the clause "and on every pre-v0.67 release file" double-
+        counted `RQ-60-A64IMPORT`, which is among the artifacts already subtracted away.
+        `blocked` therefore lands GREEN on 417 of the 594 — a set that ALREADY CONTAINS every
+        pre-v0.67 release file, so adding them again was the double count. Where it lands it is
+        consequential: planted on
         `RQ-60-A64IMPORT` (v0.60), `status_evidence_check` is rc=0 while `verdict_prose_check`
         is rc=1 — `prose claims VERIFIED beside disposition 'blocked'`. REACHABLE AND LIVE. The
         denial compared R11's population with the classifier's as though they were one, which is

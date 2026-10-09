@@ -23,14 +23,22 @@ share a population definition", TWOSOURCE's `Path("Cargo.toml")`/`tree_read` spl
 DISPVOCAB's "three values ... another five", PINDEBT9's paired-controlled name scope,
 and RUNNERSHAPE's two-shape measurement. **Two were not**: the wiring hole behind
 instance 5, whose lane was scoped as a DECISION about refusing a fourth time, and
-instance 6, since nothing in the plan reads an issue's state. What was genuinely new in
-the other five is the DETAIL, not the defect: instance 2's recurrence on this release's
-own commit, instance 1's `schemas/` leg, instance 3's refutation of its own harm claim,
-instance 7's cluster brittleness. The release did not need the stronger sentence.
+and instance 6. Round 2 then refuted the REASON first given for instance 6 — "nothing in
+the plan reads an issue's state" is false: `RQ-84-ARCHMODEL3.yaml:16` at `0c84a3b9` says
+"check the upstream issue's STATE before its BODY. If it is CLOSED this is a DELIVERY
+lane", which is the exact read instance 6 was credited with inventing. The five-of-seven
+BOUNDARY still holds — all five quoted plan strings are present at `0c84a3b9` and
+FIRSTTOKEN3's genuinely does not name the wiring hole — but the justification was wrong.
+What was genuinely new in the predicted five is the DETAIL, not the defect: instance 2's
+recurrence on this release's own commit, instance 1's `schemas/` leg, and instance 3's
+refutation of its own harm claim. Instance 7's cluster brittleness is NOT in that list:
+it was retracted in the same commit that first claimed it, 107 lines below.
 
 **1. The notes generator is bounded by what the diff compares, not by what rivet needs to
-load — and its anti-vacuity guard is one-sided.** Both figures below were measured at the
-SAME commit, `4785e61c`. The generator reports `3215 added, 0 removed, 0 modified, 722
+load — and its anti-vacuity guard is one-sided.** Both figures below were measured at the SAME commit, `b0395b69`, which is an ancestor of
+`main`. They were first pinned to `4785e61c` — the pre-squash lane head, which SQUASH
+MERGING leaves OUT of main's history, so a reader on main could not check them. Same
+figures, checkable provenance. The generator reports `3215 added, 0 removed, 0 modified, 722
 unchanged`, and the entries it lists carry `loom:`, `scry:` and `meld:` prefixes. A
 symmetric extraction — both sides from `git archive` over the declared sources *plus*
 `schemas/` and `rivet.yaml`, with rivet run **inside** each tree — gives base **722**,
@@ -73,9 +81,14 @@ the second is a semantic test of what **means** non-delivery. Controlled: planti
 version of this paragraph said the two extra members are unreachable on any tree passing
 R11 — dead rather than dangerous. The cold review measured the two populations: R11's is
 **300 artifacts across 245 release files** and is version-gated `>= (0, 67)`, while the
-classifier is consulted over **all 594** artifacts in 270 files. So `blocked` lands
-green on 294 of the 594 and on every pre-v0.67 release file, and where it lands it is
-consequential — planted on `RQ-60-A64IMPORT` (v0.60), `status_evidence_check` is rc=0
+classifier's loader ITERATES all 594 artifacts in 270 files, though its membership test
+is actually reached by **109** — so the contrast is real but smaller than first written.
+AND THE FIRST CORRECTION MIXED POPULATIONS IN ITS TURN, which round 2 caught: it
+computed the green set as `594 - 300 = 294`, subtracting ALL 300 release artifacts while
+the same sentence states the version gate that exempts most of them. Only **177** of the
+300 are R11-active, so the green set is **417**, and the additive clause "and on every
+pre-v0.67 release file" then DOUBLE-COUNTED — `RQ-60-A64IMPORT` is one of the artifacts
+subtracted away. Where `blocked` lands it is consequential — planted on `RQ-60-A64IMPORT` (v0.60), `status_evidence_check` is rc=0
 while `verdict_prose_check` is rc=1 with `prose claims VERIFIED beside disposition
 'blocked'`. Reachable, and live. The denial compared R11's population against the
 classifier's as though they were one population: the theme, inside the sentence denying
@@ -119,8 +132,13 @@ release measured its defect, and all four defects are live on evidence of four d
 shapes: TWOSOURCE and PINDEBT9 by genuine paired controls, DISPVOCAB by a plant-and-restore
 of `disposition: blocked`, and NOTESPOP by the symmetric-versus-asymmetric comparison in
 instance 1. NOSHOW2 is the exception and is recorded as one: its refuting command is **not
-runnable** — the no-show population in the window is zero — so what is confirmed there is
-the field-identity premise plus the brittleness of the cluster test, not a control. The
+runnable** — the no-show population in the window is zero — so what is confirmed there is NEITHER of the two things first written here. Round 2
+found this sentence SURVIVING after the F2 correction fixed only the other site: the
+"field-identity premise" is false for one of the 13 jobs, and the "brittleness of the
+cluster test" was itself retracted. What NOSHOW2 actually establishes is that the no-
+show population in the window is EMPTY, so its refuting command is unrunnable — and
+nothing more. Exactly two assertion sites existed and the first pass corrected one: the
+rule is to sweep for the FACT, not the cited site. The
 closer-keyword audit found zero adjacency in all three vectors and the timelines show
 `commit=none`, so nothing in this release retired them. "The issue is retired" and "the
 defect is fixed" are different claims about different populations, and nothing in the plan
