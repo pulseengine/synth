@@ -28,4 +28,28 @@ artifacts:
       priority: should
       issue: "#1136"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        DEFERRED — the filing is made and the BUILD stays blocked, and the refuting command decided which kind of lane this is. `gh issue
+        view 445 --repo pulseengine/spar` reports state=OPEN, closedAt=null, so the
+        block is NOT gone and this is a FILING lane rather than a delivery lane.
+
+        THE ORDINAL IS DERIVED BY ARTIFACT IDENTITY, not by counting releases and not
+        carried from the brief. The predicate is the one the step 1-2 matcher itself
+        uses: tags contain `feature-loop` AND one of {aadl, spar}, with a non-empty
+        fields.issue. Read out of the git tree at origin/main 1027a50a (283 artifact
+        files), that yields TWENTY-ONE artifacts, first v0.63 RQ-63-ARCHMODEL and last
+        v0.83 RQ-83-ARCHMODEL2, with 21 distinct ids. The derivation REFUSES on a
+        duplicate id, because identity must be unique for an ordinal to mean anything,
+        and refuses on an empty population. Positive control: the predicate rejects a
+        `feature-loop` plus `process` artifact that carries an issue.
+
+        STATED WITH THE COMMIT, as the done-when demands: ordinal 21 at 1027a50a.
+
+        AND THE FILING IS SEEN RATHER THAN ASSUMED, which is the half of the refuting
+        command that reads the gate instead of the tags. `loop_conformance_check.py
+        v0.83.0` prints `step 1-2 spar AADL->WIT filed decision NA-FILED decided,
+        artifact scoped, not yet built: RQ-83-ARCHMODEL2 (#1136, status proposed)`.
+        Both tags survived into a slot the gate can see; v0.69 lost the `feature-loop`
+        tag and the filing that exists to be seen went invisible.
       done-when: "manual:2026-12-31 the twenty-first recurring n/a filing, ordinal derived by artifact identity and stated with its commit — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

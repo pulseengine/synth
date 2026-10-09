@@ -48,7 +48,7 @@ artifacts:
       issue: "#465"
       verification-track: manual
       disposition: partial
-      landed: "PENDING-PR-STAMP"
+      landed: "PR #1504 — #465 — the wasm-tools graph collapses from THREE upstream trains to TWO: wasmparser 0.252.0/0.259.0/0.261.0 -> 0.252.0/0.261.0, wasm-encoder 0.259.0/0.261.0 -> 0.261.0, wast 259.0.0/261.0.0 -> 261.0.0. The SURVIVOR is a sibling's pin rather than synth's declaration: `cargo tree -i wasmparser@0.252.0` gives `scry-sai-core v3.3.0 [dev-dependencies]`, so synth declares nothing at 0.252. Suite under the bump rc=0, 3159 passed, 0 failed; fmt rc=0; CI's exact clippy rc=0 with zero warning lines. #465 is CLOSED and settled, so this finding goes in the release notes and not in the reporter's inbox."
       verified-by: >
         PARTIAL — the collapse is delivered and measured, and the residual is NAMED rather than
         left as "some duplication remains".

@@ -31,4 +31,38 @@ artifacts:
       priority: should
       issue: "#1484"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the gap is CONFIRMED with a PAIRED CONTROL the earlier record did not carry. Refuting
+        command first: `claim_check.py claims.yaml --metric` reports known_open_pins
+        84 against baseline 27, direction down, 6 waivers, and known_open_pinned_cases
+        157 tracked. The ratchet has not fallen unwaived, so the premise stands.
+
+        THE NAME-SCOPING GAP IS LIVE AT THE v0.83 CUT. In a detached worktree off
+        main, the 12-entry `KNOWN` table in
+        `scripts/repro/false_reject_1229_differential.py` was EXTRACTED verbatim
+        rather than retyped and cloned with its body asserted BYTE-IDENTICAL, changing
+        only the name. Planted as `SUPPRESSED_CASES` the tripwire regex does not match
+        and claim_check stays 75/75 rc=0 with known_open_pins unmoved at 84. Planted
+        as `KNOWN_EXTRA` the regex matches and claim_check goes 74/75 rc=1 with `count
+        drifted: derived 13 != documented 12`. Twelve suppression entries entered the
+        tree with BOTH layers silent, and the same bytes under a matching name red the
+        gate, so the gap is purely the NAME.
+
+        THE TWO LAYERS FAIL FOR DIFFERENT REASONS, which the paired control separates.
+        The ratchet derives from an explicit `tables:` LIST in claims.yaml, so any
+        unlisted table is invisible to it whatever its name. The tripwire is the layer
+        that exists to catch an unlisted table, and it counts by
+        `^(?:KNOWN|PINNED)[A-Z0-9_]*`, so a differently-named table is outside its
+        population too. The tripwire counts TABLES and the ratchet counts ENTRIES,
+        which is why the regex finds 12 declarations while the ratchet's list names 10
+        — the two extra are the deliberately EXCLUDED PINNED_WRONG and EXPECTED_*
+        kinds.
+
+        NOT FIXED, with the reason recorded rather than a longer regex shipped.
+        Widening the pattern to every top-level dict would sweep every unrelated table
+        in `scripts/repro/` into the pinned population. The honest remedy is an
+        explicit inclusion criterion the operator satisfies when adding a suppression
+        table, which is a review-time obligation and not a derivable one — the same
+        shape CANCELGAP applied to its own no-show residual.
       done-when: "manual:2026-12-31 the pin-debt ratchet, re-derived, and whether a case-preserving merge still passes silently — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

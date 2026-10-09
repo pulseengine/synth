@@ -49,7 +49,7 @@ artifacts:
       issue: "#1476"
       verification-track: manual
       disposition: refuted
-      landed: "PR #1503 — #1476 — the widening is REFUSED for the third release running, and the reason is new: the hole it would close has ZERO instances. `verdict_prose_check.py` prints `81 artifacts in the population, 0 disagree with their own structured fields`, and calling the shipped `unclassified_lead` over that same population returns a token for ZERO artifacts, agreeing with the gate on the population size. The zero is PAIRED-CONTROLLED 4-of-4 positive and 4-of-4 negative, because a derived zero is a refusal and not a pass. No widening ships and #1476 stays OPEN."
+      landed: "PR #1503 — #1476 — the widening is REFUSED for the third release running, and the reason is new: the hole it would close has ZERO instances. `verdict_prose_check.py` PRINTED `81 artifacts in the population, 0 disagree with their own structured fields` at the commit where this was measured — that denominator counts artifacts whose `verified-by` OPENS WITH A CLASSIFIED VERDICT, so it RISES as lanes record outcomes, and it reads 95 once v0.83's seven SHOULD outcomes landed; the refutation rests on the ZERO and not on the denominator. Calling the shipped `unclassified_lead` over that same population returns a token for ZERO artifacts, agreeing with the gate on the population size. The zero is PAIRED-CONTROLLED 4-of-4 positive and 4-of-4 negative, because a derived zero is a refusal and not a pass. No widening ships and #1476 stays OPEN."
       verified-by: >
         REFUTED — the widening is refused for the third release running, and the reason is new:
         the hole it exists to close has ZERO instances, so there is no benefit to weigh a cost
@@ -57,14 +57,26 @@ artifacts:
 
         MEASURED, and the population figure is QUOTED FROM THE GATE'S OWN PRINTED LINE rather
         than from a reimplementation. The self-test is rc=0, and
-        `python3 scripts/verdict_prose_check.py` prints:
+        `python3 scripts/verdict_prose_check.py` PRINTED, at the commit where this was
+        measured:
 
           verdict-prose: 81 artifacts in the population, 0 disagree with their own structured fields
 
         The ESCAPE count has no printed equivalent, so it is derived by calling the shipped
         `unclassified_lead` over `verdict_prose_check.artifacts(".")`: it returns a token for
-        ZERO artifacts, and the derivation agrees with the gate on the population size (81),
-        which is the cross-check that the derivation walks the same set the gate does.
+        ZERO artifacts, and the derivation agreed with the gate on the population size (81 at
+        that commit), which is the cross-check that the derivation walks the same set the gate
+        does.
+
+        AND THE DENOMINATOR IS NOT STABLE, which is why it is now bound to a moment rather than
+        refreshed. The population counts artifacts whose `verified-by` opens with a CLASSIFIED
+        verdict, so every lane that records an outcome raises it: 81 here, 92 once v0.83's seven
+        SHOULD outcomes were written with the unclassified leads FILED and CONFIRMED, and 95 once
+        those leads were remapped into the gate's INCOMPLETE set. Refreshing the figure would
+        just re-arm the same staleness for the next lane. Note also a SECOND denominator, so this
+        correction does not create a third wrong number: the gate's printed "in the population"
+        is the CLASSIFIED subset, while artifacts carrying a non-empty `verified-by` number 216,
+        and the ZERO-escape derivation ran over the 216.
 
         WHY THE POPULATION FIGURE IS QUOTED AND NOT COMPUTED. A first write of this paragraph
         gave three hand-derived numbers — "577 loaded, 201 with prose, 80 in population". All

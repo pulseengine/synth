@@ -28,4 +28,30 @@ artifacts:
       priority: should
       issue: "#1432"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        BLOCKED OUTSIDE THIS REPOSITORY. Measured from the file rather than from the
+        issue: `docs/status/ACCEPTANCE_LADDER.md` opens `# Acceptance ladder — v0.63`
+        and `**Measured 2026-09-06** on synth at e3a09ac2`. Derived from the tag list,
+        NINETEEN minor versions are tagged after v0.63.
+
+        WHY THERE IS NO OUTCOME: re-measuring needs the named 243-module corpus, whose
+        last known location is `/Volumes/Work/corpora/wasm-243` on host
+        `mac.fritz.box`. `/Volumes/Work` is measured NOT MOUNTED on this machine, the
+        host refuses the offered keys, and ATTEMPTING PASSWORDS STAYS DECLINED. The
+        real blocker is a one-line `authorized_keys` append on that host, a maintainer
+        action outside this repository.
+
+        AND THE DIRECTION OF THE KNOWN NEAR-MISS IS RECORDED CORRECTLY, because a
+        first draft of this paragraph INVERTED it. The ladder's own text says a v0.78
+        lane "nearly produced a published claim that the corpus was unobtainable; it
+        is not lost, it is unmounted" — the near-miss was declaring the corpus LOST,
+        not declaring it present. The inversion would have ratified exactly the
+        reading that paragraph exists to prevent, and it was caught by reading the
+        line rather than citing a paraphrase of it.
+
+        NO SUBSTITUTE MEASUREMENT IS PUBLISHED. A ladder measured over a DIFFERENT
+        corpus set beside the old one as if it were a trend is the #1286 defect. So
+        the ladder keeps its v0.63 date and its stated staleness, which is a true
+        statement, rather than gaining a false freshness.
       done-when: "manual:2026-12-31 the acceptance ladder, or the auth blocker stated as the human action it is — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -28,4 +28,33 @@ artifacts:
       priority: should
       issue: "#1484"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the premise survives its refuting command and four blind directions
+        are NAMED with measurements, but not all nine required contexts.
+
+        Refuting command first: `git grep -n 'or ""' -- scripts/` returns 45 sites
+        across 20 files, so the surface of silent-default coercions is large and the
+        premise is not dead. Each such site is a place where an absent value and an
+        empty value become indistinguishable.
+
+        FOUR BLIND DIRECTIONS, MEASURED THIS RELEASE rather than surveyed. jq's `//`
+        operator misses the EMPTY STRING, and a runner no-show's `runner_name` is `""`
+        rather than null, so `// "?"` never fires. `merge_gate.decide()` is PURE over
+        the ROLLUP, which carries no job-level `steps` or `runner_name`, so the no-
+        show direction is structurally outside its inputs — recorded by CANCELGAP's
+        own partial disposition. The status-evidence gate COUNTED four failures while
+        PRINTING two, because `failures.extend(_r15)` sat after the print loop;
+        verified both ways on ONE tree, 2 printed of 4 counted before #1500 and 4 of 4
+        after. And known_open_pins cannot see a suppression table under a non-matching
+        name, paired-controlled under PINDEBT8.
+
+        THE COMMON SHAPE, which is the lane's actual finding: in every one of the
+        four, the silence is INDISTINGUISHABLE FROM A PASS at the point an operator
+        reads it.
+
+        NOT DELIVERED: a per-gate declaration of the blind direction for each of the
+        nine required contexts. This lane names four mechanisms, not nine gates, and
+        generalising from four to nine is exactly the move the disposition refuses to
+        make.
       done-when: "manual:2026-12-31 for every required gate, the direction it cannot see — and whether that silence is distinguishable from a pass — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

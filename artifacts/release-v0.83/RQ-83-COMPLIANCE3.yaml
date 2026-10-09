@@ -29,4 +29,20 @@ artifacts:
       priority: should
       issue: "#1453"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL by construction: the first half is resolved and VERIFIED LIVE, the
+        second half is a maintainer decision.
+
+        FIRST HALF, verified rather than carried: `gh release view v0.82.0` shows
+        FOURTEEN assets including `synth-v0.82.0-compliance-report.tar.gz` at
+        4,583,609 bytes. The report job runs INSIDE the `Release` run as a
+        `workflow_call`, which raises no run of its own — which is why searching for a
+        "Compliance" RUN returns nothing even when it ran, and that measurement is
+        what resolved the first half rather than any change to the workflow.
+
+        WHY THERE IS NO OUTCOME FOR THE SECOND HALF: the 130-of-149 report backlog is
+        a decision about which historical releases receive a retroactive report. That
+        is a MAINTAINER DECISION, it was deliberately not actioned unasked, and this
+        sentence is the stated reason rather than an omission the gate had to infer.
       done-when: "manual:2026-12-31 verify the externals-sync step fired at the v0.82.0 tag, and act on the backlog decision — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
