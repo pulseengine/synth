@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-84-FIRSTTOKEN3
     type: system-req
     release: v0.84
-    status: proposed
+    status: implemented
     title: "Whether an empty hole for three releases is grounds to decline the issue rather than refuse a fourth time"
     description: >
         The verdict-prose widening has now been refused three releases running, the last time
@@ -29,26 +29,32 @@ artifacts:
       priority: should
       issue: "#1476"
       verification-track: manual
-      disposition: partial
+      issue-scope: outlives
+      landed: "PR #1510 — #1476 — `verdict_prose_check.classify()` now calls `unclassified_lead` when `leading_verdict` returns None, so a verdict-shaped lead that no set classifies is a FAILURE of this gate rather than an exit from its population; proven by a three-way control (95/0/rc=0 clean, 95/1/rc=1 with an escape, 94/0/rc=0 unwired) and 17 red subtests that go green. Parts two and three of the issue are not delivered, so it stays OPEN by `issue-scope: outlives`."
       verified-by: >
-        PARTIAL — the DECISION this artifact asks for is MADE and the wiring is NOT landed.
-        Refuting command with the gate's OWN function: `unclassified_lead` over every non-empty
-        `verified-by` in the tree returns ZERO escapes across a population of 216, with four
-        documented escape phrases each returned by the function as a POSITIVE CONTROL. So the
-        hole is EMPTY OF CONTENT and a widening has no live justification from current content.
-        BUT EMPTY IS NOT THE SAME CLAIM AS CLOSED, and the previous three refusals conflated
-        them. `verdict_prose_check.classify()` calls `leading_verdict` and NEVER
-        `unclassified_lead`, so a verdict-shaped lead in no set still leaves the population of
-        the very module the issue names. The enforcement that does catch one lives in
-        `scripts/loop_conformance_check.py` step 3, whose design is right — it IMPORTS the
-        shipped function rather than mirroring it, and an import failure is NOT-DERIVED rather
-        than a pass — but it is scoped to the RELEASE's artifacts, so for this release it ran
-        over a population of ZERO and refused. Three populations for one check: 216 tree-wide,
-        the gate's own 95, and step 3's 14-scanned.
-        THE DECISION: do NOT decline the issue and do NOT widen the vocabulary. Widening would
-        make the escape phrases legal verdicts and thereby DELETE the escape report, which
-        reduces information; wiring `unclassified_lead` into verdict_prose_check's own verdict
-        path adds no vocabulary and makes the module that names the hole also refuse on it. Zero
-        escapes over 216 means that wiring reds nothing today. It is a code change and is NOT in
-        this artifact batch.
+        DELIVERED — the module that NAMES an escape now REFUSES on it. `classify()` called
+        `leading_verdict` and never `unclassified_lead`, so a verdict-SHAPED lead in no set left
+        the population of the very module this issue names; it now returns that phrase as a
+        FAILURE.
+        THE DECISION THIS ARTIFACT ASKED FOR, and it is neither a fourth refusal nor a widening.
+        Measured BEFORE the change with the gate's own function: ZERO escapes over a population
+        of 216, with the four documented escape phrases each returned as a POSITIVE CONTROL, so
+        the hole is EMPTY OF CONTENT and a widening has no live justification from current
+        content. Widening would also make those phrases LEGAL verdicts and thereby DELETE the
+        escape report; wiring adds no vocabulary, so it cannot make an escape legal by
+        classifying it.
+        THREE-WAY CONTROL on live data rather than unit tests alone: wired with no escape is 95
+        in population, 0 disagree, rc=0; wired with one planted escape is 95 in population, 1
+        disagree, rc=1; the SAME escape against the UNWIRED module is 94 in population, 0
+        disagree, rc=0. The third reading is the defect's whole signature — the escaping
+        artifact LEAVES the population, so the only trace is a count decrementing from 95 to 94,
+        and nothing watches that number for a decrement. Red-first: 17 subtest failures before
+        the change and zero after, and the paired control in the same test class asserts that
+        NOT_A_VERDICT members and non-all-caps prose still LEAVE the population, so this is an
+        escape detector and not a blanket catch.
+        ISSUE-SCOPE IS `outlives` BECAUSE THE ISSUE NAMES THREE THINGS AND THIS DELIVERS ONE.
+        The allow-list escapes are closed here. The second — `NOT_A_VERDICT` being inert — was
+        already addressed when `unclassified_lead` made that set load-bearing. The third, the
+        disposition branch, belongs to RQ-84-DISPVOCAB and is NOT delivered here, so the issue
+        is HELD OPEN.
       done-when: "manual:2027-03-31 whether an empty hole for three releases is grounds to decline the issue rather than refuse a fourth time — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
