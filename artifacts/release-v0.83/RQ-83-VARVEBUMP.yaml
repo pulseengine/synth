@@ -91,11 +91,15 @@ artifacts:
         promoted coverage gaps to errors, the #229 WARN->ERROR class. Eight of the 29 print, over
         exactly four artifacts (the v0.64 deferrals RQ-64-ARCHMODEL / -CFOBLIG / -MACHO /
         -MVLOWER). THE CAUSE IS NOT DIAGNOSED AND IS NOT GUESSED AT: all four DO carry
-        `links: [{type: derives-from, target: BR-001}]`, BR-001 IS a `stakeholder-req`, 315 sites target it IN TOTAL — CORRECTED by cold review
-        round 1: that figure is the total at this lane's parent 4be2aeff and INCLUDES the four
-        erroring artifacts, each carrying exactly one such link, so the number of OTHER
-        sites target it across 241 files without erroring, the indentation matches a passing
-        artifact and the file has no duplicate keys — and `rivet get RQ-64-MACHO` prints NO Links
+        `links: [{type: derives-from, target: BR-001}]`, BR-001 IS a `stakeholder-req`, and 311 OTHER sites across 237 files target it without
+        erroring. CORRECTED TWICE. The original read "315 other sites across 241 files"; 315/241
+        is the TOTAL at this lane's parent 4be2aeff and INCLUDES the four erroring artifacts,
+        each carrying exactly one such link, so OTHER is 311/237. Round 1 caught the
+        denominator. ROUND 2 THEN CAUGHT THAT ROUND 1'S OWN SPLICE RE-STATED IT: the replacement
+        text ended mid-sentence and left "sites target it across 241 files" as its tail, so the
+        artifact ANNOUNCED the correction while still carrying the error, and neither 311 nor
+        237 appeared anywhere in the file. A correction that replaces a PREFIX must be read
+        against the TAIL it leaves behind. The indentation matches a passing artifact and the file has no duplicate keys — and `rivet get RQ-64-MACHO` prints NO Links
         section under 0.37.0 EITHER, while 0.40.0 prints `derives-from -> BR-001` for a v0.83
         artifact. So those four links are unresolved under BOTH versions and 0.40.0 only promoted
         an existing SILENCE to an error. A latent traceability hole, found by a toolchain bump
