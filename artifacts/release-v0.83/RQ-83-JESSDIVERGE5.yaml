@@ -55,7 +55,7 @@ artifacts:
       issue: "#1436"
       verification-track: differential
       disposition: partial
-      landed: "PR #1502 — #1436 — the three slots this artifact planned to ask about are the `x 9.81` MULTIPLICANDS (the gravity direction), read from the object; the discriminating operands are the accumulators [sp,#200]/[sp,#216]/[sp,#192], paired with [sp,#152]/[sp,#232]/[sp,#208] and stored to linmem +940/+936/+944. If the accumulators read zero, one mechanism fits FOUR of four published tick-1 words, with vel-d bit-identical to f32(9.81*0.001) = 0x3C20BA20. Recorded as hypothesis three in FALSIFIABLE form; no runtime value is measured. The reply was DRAFTED AND SURFACED for approval, not posted."
+      landed: "PR #1503 — #1436 — the three slots this artifact planned to ask about are the `x 9.81` MULTIPLICANDS (the gravity direction), read from the object; the discriminating operands are the accumulators [sp,#200]/[sp,#216]/[sp,#192], paired with [sp,#152]/[sp,#232]/[sp,#208] and stored to linmem +940/+936/+944. If the accumulators read zero, one mechanism fits FOUR of four published tick-1 words, with vel-d bit-identical to f32(9.81*0.001) = 0x3C20BA20. Recorded as hypothesis three in FALSIFIABLE form; no runtime value is measured. The reply was DRAFTED AND SURFACED for approval, not posted."
       verified-by: >
         PARTIAL — the mechanism is NAMED as a falsifiable prediction with a bit-exact arithmetic
         fit, and NO runtime value is measured, so the defect is not yet proven and this artifact

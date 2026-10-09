@@ -63,7 +63,7 @@ artifacts:
       issue: "#1439"
       verification-track: differential
       disposition: partial
-      landed: "PR #1501 — #1439 — v0.78's stage-3 pool-grow retry applied LOCALLY and reverted byte-identically: the rung LANDS (1956 bytes, tripwire fired) and the newly-accepted function emits ZERO VABS.F32/VMOV.F32/VNEG.F32 over 1956 bytes with a positive control finding VABS twice in a 74-byte abs module; sign is PROVEN order-invariant (XOR of signs) so reassociation is refuted; VMUL.F32 119 == 119 f32.mul so the multiply multiset is intact; the surviving class is a wrong operand from a spill/reload. The named differential is VACUOUS for this shape (F32_EXPORTS tops out at live24). The retry STAYS OUT and #1439 stays OPEN until the cause is named."
+      landed: "PR #1503 — #1439 — v0.78's stage-3 pool-grow retry applied LOCALLY and reverted byte-identically: the rung LANDS (1956 bytes, tripwire fired) and the newly-accepted function emits ZERO VABS.F32/VMOV.F32/VNEG.F32 over 1956 bytes with a positive control finding VABS twice in a 74-byte abs module; sign is PROVEN order-invariant (XOR of signs) so reassociation is refuted; VMUL.F32 119 == 119 f32.mul so the multiply multiset is intact; the surviving class is a wrong operand from a spill/reload. The named differential is VACUOUS for this shape (F32_EXPORTS tops out at live24). The retry STAYS OUT and #1439 stays OPEN until the cause is named."
       verified-by: >
         PARTIAL — the cause is NOT named, so the retry STAYS OUT and the tripwire STAYS ARMED,
         which is this lane's own stated order. What is delivered is a bounded elimination and one

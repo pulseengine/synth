@@ -49,7 +49,7 @@ artifacts:
       issue: "#1476"
       verification-track: manual
       disposition: refuted
-      landed: "PENDING-PR-STAMP"
+      landed: "PR #1503 — #1476 — the widening is REFUSED for the third release running, and the reason is new: the hole it would close has ZERO instances. `verdict_prose_check.py` prints `81 artifacts in the population, 0 disagree with their own structured fields`, and calling the shipped `unclassified_lead` over that same population returns a token for ZERO artifacts, agreeing with the gate on the population size. The zero is PAIRED-CONTROLLED 4-of-4 positive and 4-of-4 negative, because a derived zero is a refusal and not a pass. No widening ships and #1476 stays OPEN."
       verified-by: >
         REFUTED — the widening is refused for the third release running, and the reason is new:
         the hole it exists to close has ZERO instances, so there is no benefit to weigh a cost

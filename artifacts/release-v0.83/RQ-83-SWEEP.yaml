@@ -55,7 +55,7 @@ artifacts:
       issue: "#1373"
       verification-track: manual
       disposition: partial
-      landed: "PENDING-PR-STAMP"
+      landed: "PR #1503 — #1373 — verify-and-close is REFUTED as a strategy, with numbers. Four pinned differentials were executed against this release's binary and all four PASS, which under #1428's both-directions property means the defects are LIVE: 130 false-rejections (#1229), 38 wrongly-accepted invalid modules (#1207), 4 operand-class confusions (#1231), 3 remaining declines (#1230). #1447 re-runs and reproduces exactly. #1085 is VERIFIED CLOSEABLE and recorded rather than closed, because closure cites a TAGGED release. Issue reduction has to come from fixes, from the unpinned remainder, and from capability lanes — never from re-verification."
       verified-by: >
         PARTIAL — the strategy question is ANSWERED with numbers and one closure is evidenced,
         but the count is not materially reduced and this artifact does not pretend otherwise.
