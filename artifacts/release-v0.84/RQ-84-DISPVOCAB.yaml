@@ -40,6 +40,20 @@ artifacts:
         `superseded` have ZERO sites across 293 artifact files and 594 artifacts, so narrowing
         the permissive gate reds nothing today.
         CAVEAT against overclaiming: the v0.83 incident cited here used a value in NEITHER set,
-        so the vocabulary fix does NOT address that incident. Naming the legal set where an
-        operator reads it is a different remedy, and both belong in this lane stated separately.
+        so the vocabulary fix does NOT address that incident.
+        AND THE HARM CLAIM IS REFUTED, which a first draft of this paragraph got wrong by
+        implying the legal set is named nowhere. `DISPOSITIONS` has exactly ONE use — R11, an
+        allow-list of what may be WRITTEN — and its refusal NAMES the set. Controlled by
+        planting and restoring one field: `FAIL R11 RQ-83-LADDER5: disposition: blocked is not
+        one of ['deferred', 'partial', 'refuted']`, and removing the plant clears the line. So
+        an operator who writes a value the permissive gate accepts is TOLD the landable
+        vocabulary by the gate that refuses them.
+        What survives is smaller and differently shaped. The two sets answer DIFFERENT QUESTIONS
+        — an allow-list of what may be written, versus a semantic test of what MEANS non-
+        delivery — so they were never meant to be equal, and `status_evidence_check` already
+        IMPORTS the verdict classifier from `verdict_prose_check` rather than mirroring it,
+        which makes a single-source fix in the other direction CIRCULAR. Unifying them would
+        either loosen the strict gate or LOSE the "complete prose beside a non-delivery
+        disposition" check. The residual finding is that the two extra members are UNREACHABLE
+        on any tree that passes R11 — dead rather than dangerous.
       done-when: "manual:2027-03-31 two gates, two legal vocabularies for one field, and the stricter one wins silently — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

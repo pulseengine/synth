@@ -5,6 +5,116 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.84.0] - 2026-10-09
+
+### "A check and its subject drawn from different populations — neither side wrong about its own set, and the comparison between them meaningless"
+
+v0.83's theme was an instrument taking its reference *from* its own subject, so the
+comparison was decided before it ran. This release narrows to the form that produced most
+of those instances: two populations, each correctly measured, compared anyway. The rule is
+not "stop deriving" — the North Star says derive what you check against from the artifact
+you ship. It is that the **check and the thing checked need independent populations, and
+that independence is a property to be proven rather than assumed.**
+
+The theme was not asserted. As of this cut v0.84 produced **seven measured instances**,
+none predicted when the release was scoped, and two of them were found *inside this
+release's own machinery while it was being used*.
+
+**1. The notes generator is bounded by what the diff compares, not by what rivet needs to
+load — and its anti-vacuity guard is one-sided.** Both figures below were measured at the
+SAME commit, `4785e61c`. The generator reports `3215 added, 0 removed, 0 modified, 722
+unchanged`, and the entries it lists carry `loom:`, `scry:` and `meld:` prefixes. A
+symmetric extraction — both sides from `git archive` over the declared sources *plus*
+`schemas/` and `rivet.yaml`, with rivet run **inside** each tree — gives base **722**,
+head **736**, added **14**, removed **0**, unchanged **722**, the 14 being exactly this
+release's lanes. `3215 − 14 = 3201`, which is the untracked externals cache: 535 MB,
+seven entries, zero tracked files. And the two instruments **agree exactly on
+`unchanged`** — 722 either way — because that field is an intersection, which externals
+cannot inflate since they are absent from the base, while `added` is head-minus-base and
+they inflate it entirely. The disagreement is structurally confined to one field. Two legs, not one. The
+recorded leg: `rivet diff --base <extracted> --head <live root>` lets the head resolve
+`externals:` out of `.rivet/repos` while the base cannot. The new leg: `schemas/` is absent
+from rivet.yaml's `sources:`, so the extracted base **cannot be loaded standalone** — a
+symmetric attempt fails on both sides with `Schema error: schema 'stpa-aspice.bridge' not
+found on disk` — and the generator only survives this because it invokes rivet with no
+`cwd=`, resolving `./schemas/` from the live repo for both sides. And the guard is
+one-sided: it refuses an **empty** population with a written reason, and has nothing in the
+other direction, so 3215 where 14 are expected prints under the banner *"do not hand-edit
+the lists"*. **Zero is refused; bloat is published.**
+
+**2. One gate, two sources of truth — and it demonstrated itself on this release's own
+commit.** `loop_conformance_check.py` reads step 0 from `Path("Cargo.toml")` (the working
+tree) and step 8 from `tree_read(self.ref, ...)` (the git ref). Paired control in a
+detached worktree: with an uncommitted bump and CHANGELOG section, step 0 reports
+`DERIVED-PASS workspace version 0.84.0 matches` while step 8 reports `DERIVED-FAIL topmost
+section is [0.83.0]`; committing the **same bytes** flips step 8 alone. **Committedness is
+the sole discriminator.** It then recurred unprompted: after writing the fourteen artifact
+outcomes, `verdict_prose_check` reported 109 artifacts with 0 disagreements while step 3
+reported `14/14 artifacts record NO outcome`, because one reads the worktree and the other
+the ref. Committing — changing nothing else — flipped step 3's two slots to `DERIVED-PASS`.
+
+**3. The two disposition vocabularies answer different questions, and the harm claim was
+refuted.** `status_evidence_check.DISPOSITIONS` is `{partial, refuted, deferred}`;
+`verdict_prose_check.NON_DELIVERY_DISPOSITION` is that set plus `{blocked, superseded}`.
+`A − B` is **empty**, so this is strict containment rather than partial overlap, and an
+operator can only err in one direction. But the sets were never meant to be equal: the
+first is used in exactly one place — R11, an allow-list of what may be **written** — while
+the second is a semantic test of what **means** non-delivery. Controlled: planting
+`disposition: blocked` yields `FAIL R11 … is not one of ['deferred', 'partial',
+'refuted']`, so the gate that refuses an operator **names the legal set**. What survives is
+smaller than the issue claimed: the two extra members are **unreachable** on any tree that
+passes R11 — dead rather than dangerous — and `blocked`/`superseded` have zero sites in any
+`disposition:` or `outcome:` field across every tracked artifact YAML — a sweep whose
+positive control found 594 artifacts carrying an id.
+
+**4. The pin tripwire is name-scoped while the ratchet is list-derived.** Paired control in
+a detached worktree, destroyed after and verified absent: baseline `75/75`; a
+byte-identical suppression table planted as `SUPPRESSED_CASES` leaves both pin claims `ok`
+with `known_open_pins` at 84; the **same bytes** renamed `KNOWN_EXTRA` flips
+`SYNTH-KNOWN-OPEN-PINS-RQ66` to `FAIL`. Only the name changed. The ratchet stayed blind in
+**both** runs, so the two layers are blind for different reasons rather than being one
+guard spelled twice. Confound named: planting by duplicating a 9,964-char live body also
+moved an unrelated claim, so the pin claims were read **by name** and not off the `x/75`
+total — which would have read as the gap having closed.
+
+**5. A gate defined its own escape detector and never called it.** `unclassified_lead`
+exists to name the #1476 hole, and `classify()` called `leading_verdict` instead, so a
+verdict-shaped lead in no set left the population of the very module that names the defect.
+The enforcement that did catch one lived in `loop_conformance_check` step 3 — which imports
+the shipped function rather than mirroring it, and fails closed on a failing import, but is
+scoped to the **release being cut**, so at plan time it ran over an empty population and
+refused instead of checking. Three populations for one check: 216 tree-wide `verified-by`
+strings, the gate's own 95, and step 3's 14-scanned-0-eligible. Wiring it in is this
+release's delivery, with a three-way control: wired-and-clean `95/0/rc=0`,
+wired-with-escape `95/1/rc=1`, **unwired**-with-escape `94/0/rc=0`. That last reading is
+the defect's whole signature — the escaping artifact *leaves* the population, and the only
+trace is a count decrementing from 95 to 94 that nothing watches.
+
+**6. Four of fourteen lanes named an already-retired issue, two of them MUSTs.** Derived by
+reading each artifact's `issue:` **state before its body**: #1259 retired 2026-09-16,
+#1183 2026-09-09, #1458 2026-10-07, #1484 2026-10-08 — every one of them *before* this
+release measured its defect, and all four defects are live on evidence of four different
+shapes: TWOSOURCE and PINDEBT9 by genuine paired controls, DISPVOCAB by a plant-and-restore
+of `disposition: blocked`, and NOTESPOP by the symmetric-versus-asymmetric comparison in
+instance 1. NOSHOW2 is the exception and is recorded as one: its refuting command is **not
+runnable** — the no-show population in the window is zero — so what is confirmed there is
+the field-identity premise plus the brittleness of the cluster test, not a control. The
+closer-keyword audit found zero adjacency in all three vectors and the timelines show
+`commit=none`, so nothing in this release retired them. "The issue is retired" and "the
+defect is fixed" are different claims about different populations, and nothing in the plan
+checked the second.
+
+**7. `runner_name` has three states, so a two-valued test is wrong either way.** Over a
+sampled window of the 30 most recent runs and 676 jobs, 26 jobs carry `steps == 0` and
+**zero** have a runner assigned. In that same window the field is `None` for one queued
+advisory job, `''` for the other queued and cancelled jobs, and a real name when assigned.
+A null test and an empty-string test are each wrong on a different subset, and `jq`'s `//`
+catches only the null. Relatedly, the documented no-show discriminator does not classify
+the one cancellation available: `completed_at` is 12 jobs at `09:57:26Z` plus 1 at
+`09:57:58Z` — a 32-second spread **inside** a single cancellation — so an exact-equality
+cluster test reports `mixed` and a naive reading would call the straggler a lone no-show.
+Cluster by a time window, not by equality.
+
 ## [0.83.0] - 2026-10-09
 
 ### "An instrument that takes its reference from what it measures is blind in exactly the direction that matters"
