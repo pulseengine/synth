@@ -30,4 +30,18 @@ artifacts:
       priority: should
       issue: "#1428"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — both blind spots are CONFIRMED by a paired control and no inclusion criterion
+        ships. In a DETACHED worktree, destroyed after the measurement and verified absent from
+        the tree: baseline 75/75; a byte-identical suppression table planted as
+        `SUPPRESSED_CASES` leaves `SYNTH-KNOWN-OPEN-PINS-RQ66` and `SYNTH-SUBTRACTION-PINS-
+        DECLARED` both ok with `known_open_pins` at 84; the SAME BYTES renamed `KNOWN_EXTRA`
+        flips the first to FAIL. ONLY THE NAME CHANGED — same bytes, same file, same position.
+        The ratchet stayed blind in BOTH runs, so the two layers are blind for DIFFERENT reasons
+        rather than being one guard spelled twice.
+        CONFOUND NAMED: planting by duplicating a 9,964-char live body also moved an UNRELATED
+        claim (`SYNTH-ARCH-LOUD-DECLINE`, derived 2 != documented 1), so the planted run is
+        74/75 and not the 75/75 recorded at the v0.83 cut. The pin claims were therefore read BY
+        NAME and not off the x/75 total, which would have read as the gap having closed.
       done-when: "manual:2027-03-31 an explicit inclusion criterion for a suppression table, because the tripwire is name-scoped — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

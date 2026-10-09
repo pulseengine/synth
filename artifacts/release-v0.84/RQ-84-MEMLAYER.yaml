@@ -48,4 +48,23 @@ artifacts:
       priority: must
       issue: "#1145"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the refusal is CONFIRMED LIVE and the gap is SIZED, and no layering ships.
+        Refuting command first: `multi_memory_pages()` in `crates/synth-
+        synthesis/src/instruction_selector.rs` still returns Err under `if
+        self.native_pointer_abi`, so the two-memory case does NOT compile and phase 2 did not
+        land elsewhere. MEASURED: the emitter ALREADY emits `__synth_wasm_data_<k>` per memory
+        from `crates/synth-cli/src/main.rs`, while the selector's `static_data_addend(&self,
+        addr: u32)` takes NO memory index and has NINE call sites, all in
+        `instruction_selector/select_with_stack.rs`. BOUNDING CONSTRAINT, asserted in
+        `crates/synth-cli/tests/multi_memory_406.rs`: memory 0 deliberately has NO
+        `__synth_wasm_data_0` alias, so any fix is per-memory for k>0 and historical for k==0,
+        never uniform.
+        THE COMPILE HALF IS UNPROVEN rather than inferred. The only binary present reported
+        `synth 0.82.0` against a 0.83.0 workspace — the exact version mismatch this artifact
+        calls unanswerable — and a matching build needs ~12 GiB against 3.6 GiB free measured at
+        the release commit. A single-line grep for the refusal message returns ZERO because it
+        is a multi-line Rust string continuation: the check's population was LINES and the
+        subject spans lines.
       done-when: "manual:2027-03-31 per-memory layering in the static-data region classification, because `--native-pointer-abi` is the path the downstream actually uses — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

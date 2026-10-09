@@ -30,4 +30,15 @@ artifacts:
       priority: must
       issue: "#1259"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the defect is REPRODUCED at the v0.84 base and no remedy ships, AND THE ISSUE
+        THIS ARTIFACT NAMES WAS ALREADY CLOSED ON 2026-09-16, before this measurement. Refuting
+        command: the generator reports 3214 added artifacts where a SYMMETRIC extraction gives
+        13/0/0, so the asymmetry is live, and `rivet list --format json` totals 3936 = 735 own +
+        3201 external. Use the JSON form — the text output is INDENTED and a first-column parser
+        reads an EMPTY population.
+        The issue's STATE was read before its body, which is how the closure was found. The
+        lane's subject is a live defect and its citation is a retired issue: two different
+        populations, and nothing in the plan checked the second.
       done-when: "manual:2027-03-31 the release-notes generator states its population or refuses — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

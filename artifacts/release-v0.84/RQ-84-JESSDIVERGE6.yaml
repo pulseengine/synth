@@ -29,4 +29,21 @@ artifacts:
       priority: must
       issue: "#1436"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the words to sample are NAMED and nothing is posted. The refuting command
+        FIRED in the direction this artifact predicted: `git grep -nF 'sp,#' -- artifacts/`
+        returns hits in ELEVEN files across v0.69..v0.83 recording that the object-level work is
+        finished, so a lane that re-derives the object repeats it.
+        v0.83's hypothesis three was then CONFIRMED OUT-OF-SAMPLE by the reporter's own 64x
+        extended run, published AFTER that prediction was recorded. Re-derived independently
+        rather than quoted: the `x 9.81` constant is f32 9.8100004, `g*dt` is bits 0x3C20BA20
+        exactly as predicted, and vel-d/(n*g*dt) at n=1024 computes to 1.00862 against the
+        reporter's stated 1.0086. The quaternion is bit-identical at tick 1024, which places the
+        defect downstream of the rotation.
+        THE WORDS STILL OWED ARE THE ACCUMULATORS — `[sp,#200]`, `[sp,#216]` and `[sp,#192]` at
+        load pcs 0x2490, 0x24bc and 0x24e8 — each sampled AT ITS OWN LOAD PC, because the paired
+        multiplicand slots alone are referenced 130, 20 and 34 times in the object. A reply
+        naming them is DRAFTED AND SURFACED FOR APPROVAL, NOT POSTED. The residual GROWS with n
+        (1.0000 at n=1) and is recorded UNEXPLAINED rather than attributed.
       done-when: "manual:2027-03-31 the three runtime words, or a precise statement of what the reporter must run — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

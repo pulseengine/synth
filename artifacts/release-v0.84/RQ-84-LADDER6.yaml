@@ -30,4 +30,16 @@ artifacts:
       priority: should
       issue: "#1432"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        BLOCKED OUTSIDE THIS REPOSITORY. Refuting command: `/Volumes/Work/corpora/wasm-243`
+        reports No such file or directory, and `/Volumes` holds only `Macintosh HD`, `Data`,
+        `Recovery` and the Time Machine local snapshots — there is no `Work` volume at all, so
+        the corpus is unreachable and this lane remains a statement of a blocker rather than a
+        measurement.
+        Measured from the file rather than from the issue: `docs/status/ACCEPTANCE_LADDER.md`
+        opens `# Acceptance ladder — v0.63` and declares `**Measured 2026-09-06** on synth at
+        e3a09ac2` over the 243-module reachable corpus (131 core + 112 components). ATTEMPTING
+        PASSWORDS ON THAT HOST STAYS DECLINED; the real blocker is a one-line `authorized_keys`
+        append, a maintainer action outside this repository.
       done-when: "manual:2027-03-31 the acceptance ladder, or the auth blocker stated as the human action it is — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -30,4 +30,21 @@ artifacts:
       priority: should
       issue: "#1136"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        DEFERRED — the filing is made, the BUILD stays blocked, and the ordinal is DERIVED
+        rather than tallied. Refuting command in its stated order: `gh issue view 445 --repo
+        pulseengine/spar` reports state=OPEN with closedAt null, so the architecture step stays
+        blocked upstream and this remains a FILING lane rather than a delivery lane. The
+        matcher's own filed-decision line then reads NA-FILED `decided, artifact scoped, not yet
+        built: RQ-84-ARCHMODEL3 (#1136, status proposed)`, so the matcher SEES this artifact and
+        the tag-blindness hazard is not live; note its own bracket `evaluated at checkout`,
+        which reads the WORKING TREE and not the ref.
+        ORDINAL BY ARTIFACT IDENTITY, read out of git with the matcher's own predicate — a
+        `feature-loop` tag AND a spar-or-aadl tag AND a non-empty issue: this is the 22nd of 22
+        at `0c84a3b9`, unbroken across v0.63..v0.84, with no duplicate id and a non-empty
+        population, so neither refusal fires. The loop skill's filing threshold is THREE
+        releases running and this is the 22nd, which is a maintainer question about the step's
+        status rather than something a lane can take, and it is surfaced rather than decided
+        here.
       done-when: "manual:2027-03-31 the next recurring N/A filing, ordinal DERIVED by artifact identity and stated WITH its commit — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

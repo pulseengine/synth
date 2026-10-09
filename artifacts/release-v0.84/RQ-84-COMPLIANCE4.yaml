@@ -27,4 +27,13 @@ artifacts:
       priority: should
       issue: "#1453"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL by construction: the first half is VERIFIED LIVE and the second half is a
+        maintainer decision. Refuting command, with the most recent release DERIVED rather than
+        assumed: `v0.83.0`, published 2026-10-09T08:53:07Z, carries FOURTEEN assets including
+        `synth-v0.83.0-compliance-report.tar.gz` at 4,686,843 bytes. So the first half has NOT
+        regressed — the conditional finding carried into this release is answered NO — and this
+        lane's work is the BACKLOG rather than a regression, which is this artifact's own
+        branch.
       done-when: "manual:2027-03-31 the report backlog decision, which is the maintainer's and not the loop's — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

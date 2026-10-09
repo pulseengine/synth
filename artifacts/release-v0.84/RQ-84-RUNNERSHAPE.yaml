@@ -27,4 +27,15 @@ artifacts:
       priority: should
       issue: "#1451"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the short-window explanation FAILS and no classifier ships. Over a SAMPLED
+        WINDOW rather than a point reading — the 30 most recent runs, 676 jobs, 05:47Z..09:57Z —
+        26 jobs carry `steps==0` and ZERO of them have a runner assigned, so the runner-ASSIGNED
+        shape did not reappear and the original framing is not rescued by a longer window.
+        AND A THIRD STATE THE FRAMING DOES NOT NAME: `runner_name` is `None` for the advisory
+        queued job, `''` for the other queued and cancelled `steps==0` jobs, and a real name
+        when assigned. A null test and an empty-string test are each wrong on a DIFFERENT
+        subset, and `jq`'s `//` catches only the null, so the predicate must be `(runner_name or
+        '').strip()`.
       done-when: "manual:2027-03-31 re-point the runner issue at the SHAPE, because its stated shape does not occur — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
