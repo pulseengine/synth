@@ -45,7 +45,10 @@ artifacts:
       `git grep -c -F 0xEEB00AC0 -- 'crates/*/src/*'` summed must be 3 — the SHIPPED emitters,
       excluding the test-file match which asserts the constant rather than emitting it. THE
       PATHSPEC IS PART OF THE COMMAND: `crates/*/src/*` gives 3, while both
-      `:(glob)crates/*/src/**` and `crates/ :!crates/*/tests/*` give 0, so a wrong pathspec looks
+      `:(glob)crates/*/src/**` and `crates/ :!crates/*/tests/*` ALSO give 3 — CORRECTED by cold review round 1 and re-measured: all three print
+      `arm_encoder.rs:3` with rc=0, so the two examples AGREE with the first rather than
+      contrasting with it, and the hazard below is not demonstrated by them. A wrong pathspec
+      can still look
       exactly like a passing refutation. And `git grep -c -F "pool grow retry" -- crates/ scripts/`
       must return 0 (rc=1 — `grep -c` exits 1 on zero), or the retry is in the tree and this
       lane's premise is gone. The previous revision used `git log -S"pool grow retry" | wc -l`

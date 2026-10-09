@@ -27,7 +27,23 @@ artifacts:
       THE BOUNDARY WAS CHECKED BEFORE THE EDIT, not after: `wat` and `wast` are real
       dependencies of `synth-test` ALONE, and `synth-test` is NOT among the twelve crates in
       `CRATES_TO_PUBLISH` (read ARRAY-BOUNDED from `= &[` to the matching `];`). So a `wast`
-      major move touches no published crate boundary.
+      major move touches no published crate boundary. CORRECTED BY COLD REVIEW ROUND 1 — THE
+      PRECEDING TWO SENTENCES ARE FALSE AND THE BOUNDARY IS TOUCHED. Re-measured with `tomllib`
+      over every `crates/*/Cargo.toml`: FOUR manifests declare one or both — `synth-cli`
+      [dependencies] wat + wast, `synth-test` [dependencies] wat + wast, `synth-core` [dev-
+      dependencies] wat, `synth-synthesis` [dev-dependencies] wat — and `synth-cli` IS in
+      `CRATES_TO_PUBLISH`, entry 12 of 12 by a bracket-depth walk from `= &[` to the MATCHING
+      `];`. So a PUBLISHED crate's manifest carries this major bump.
+      AND ROUND 1'S OWN MITIGATION WAS FALSE TOO, recorded because it is this release's second
+      theme landing on the review itself. It reported "zero `wast::` uses in `synth-cli/src`, so
+      nothing breaks". `crates/synth-cli/src/main.rs` uses both: `use wast::parser::{self,
+      ParseBuffer};` and `use wast::{Wast, WastDirective};` at lines 27-28, plus
+      `wat::parse_bytes`/`parse_file` at 2066, 4216, 9178 and 10667.
+      WHAT IS TRUE IS THE EXECUTION EVIDENCE RATHER THAN THE MANIFEST READING: the bump compiles
+      and passes against real use of the new major. `cargo test --workspace` under the bump is
+      rc=0 with 3159 passed and 0 failed, `cargo fmt --check` rc=0, CI's exact clippy rc=0 with
+      zero warning lines, and `Test` is SUCCESS among the nine required contexts on the release
+      candidate. The boundary claim was wrong; the safety of the bump rests on execution.
 
       #465 IS cpetig's AND IS CLOSED AND SETTLED, so conduct rule 1 binds: this finding belongs
       in the release notes and NOT on that thread. It is recorded here for the notes to draw on.

@@ -91,7 +91,9 @@ artifacts:
         promoted coverage gaps to errors, the #229 WARN->ERROR class. Eight of the 29 print, over
         exactly four artifacts (the v0.64 deferrals RQ-64-ARCHMODEL / -CFOBLIG / -MACHO /
         -MVLOWER). THE CAUSE IS NOT DIAGNOSED AND IS NOT GUESSED AT: all four DO carry
-        `links: [{type: derives-from, target: BR-001}]`, BR-001 IS a `stakeholder-req`, 315 other
+        `links: [{type: derives-from, target: BR-001}]`, BR-001 IS a `stakeholder-req`, 315 sites target it IN TOTAL — CORRECTED by cold review
+        round 1: that figure is the total at this lane's parent 4be2aeff and INCLUDES the four
+        erroring artifacts, each carrying exactly one such link, so the number of OTHER
         sites target it across 241 files without erroring, the indentation matches a passing
         artifact and the file has no duplicate keys — and `rivet get RQ-64-MACHO` prints NO Links
         section under 0.37.0 EITHER, while 0.40.0 prints `derives-from -> BR-001` for a v0.83

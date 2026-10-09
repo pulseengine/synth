@@ -56,7 +56,13 @@ artifacts:
         `^(?:KNOWN|PINNED)[A-Z0-9_]*`, so a differently-named table is outside its
         population too. The tripwire counts TABLES and the ratchet counts ENTRIES,
         which is why the regex finds 12 declarations while the ratchet's list names 10
-        — the two extra are the deliberately EXCLUDED PINNED_WRONG and EXPECTED_*
+        — and CORRECTED by cold review round 1: BOTH extras are `PINNED_WRONG`, and NO
+        `EXPECTED_*` table is in the tripwire's population at all. Re-measured over
+        `scripts/repro/**/*.py` the regex matches `KNOWN` x7, `KNOWN_ARM_MISMATCHES`,
+        `KNOWN_OPEN`, `KNOWN_OPEN_HITS` and `PINNED_WRONG` x2; the 12 `EXPECTED_*` declaration
+        sites across 9 distinct names match it ZERO times, because `^(?:KNOWN|PINNED)` cannot
+        match `EXPECTED`. Calling them EXCLUDED implied they were in the population and filtered
+        out when they were never in it — an ABSENT key read as a FILTERED
         kinds.
 
         NOT FIXED, with the reason recorded rather than a longer regex shipped.
