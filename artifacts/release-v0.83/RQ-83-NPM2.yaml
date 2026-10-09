@@ -29,4 +29,19 @@ artifacts:
       priority: should
       issue: "#1460"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        BLOCKED OUTSIDE THIS REPOSITORY, with the state MEASURED rather than assumed.
+        `registry.npmjs.org/@pulseengine%2Fsynth` returns HTTP 200 with `dist-
+        tags.latest` = 0.69.0, so the package is LIVE and the failure is publication
+        lag, not absence.
+
+        THE DRIFT IS DERIVED FROM THE TAG LIST and not from arithmetic on the issue
+        title: THIRTEEN minor versions are tagged after 0.69 — v0.70 through v0.82 —
+        and v0.83 is excluded because it is in progress and not yet tagged.
+
+        WHY THERE IS NO FURTHER OUTCOME: `Release NPM` fails at its npm auth preflight
+        and is not among the workflows a tag raises. The remedy is an NPM_TOKEN
+        rotation, which lives outside this repository and is a maintainer action.
+        Recorded and deliberately not actioned unasked.
       done-when: "manual:2026-12-31 the npm gap, after the compliance conclusion stops skipping the publish job — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

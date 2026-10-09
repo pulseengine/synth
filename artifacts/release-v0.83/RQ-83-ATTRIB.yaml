@@ -30,4 +30,26 @@ artifacts:
       priority: should
       issue: "#1484"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the premise is CONFIRMED rather than refuted by its own refuting command, and no gate ships. The author.login
+        census returns 3 hits at `--limit 200` with the window reaching only down to
+        issue #849, and 6 hits at `--limit 2000` reaching #5, over a 410-issue repo.
+        Only the second window is complete, so the truncation hazard reproduces at the
+        v0.83 cut and the premise is not dead.
+
+        WHAT IS DELIVERED: the two-signal derivation USED rather than described.
+        Attribution is taken on BOTH signals — `login != avrabe` OR a `**[name]` body
+        prefix — with a positive control over the bounded-complete reporter set, and
+        it REFUSES when the window floor sits above the lowest known thread instead of
+        returning a smaller set. Run this release it separated both directions on real
+        threads: #1308 carries a `**[fathom (gale)]` relay that a login-only filter
+        cannot see, and #1062's prefixes are this loop's own `synth coordinator` and
+        `synth maintainer loop`, which a prefix-only filter would have mis-attributed
+        to an external reporter.
+
+        WHAT IS NOT DELIVERED, and the disposition says so: NO CI GATE enforces two-
+        signal attribution. The derivation is run by the coordinator and by the cold
+        review's third question, which is an operator obligation rather than a
+        mechanical one. Claiming otherwise would be the shape this release is about.
       done-when: "manual:2026-12-31 no gate enforces two-signal attribution, and a prefix-only sweep is blind in both directions — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
