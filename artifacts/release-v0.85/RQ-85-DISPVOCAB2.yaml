@@ -1,0 +1,35 @@
+artifacts:
+  - id: RQ-85-DISPVOCAB2
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "The two disposition gates name their question, and the intersection is written down"
+    description: >
+        Two gates carry DIFFERENT legal vocabularies for the same artifact field, and the stricter
+        one wins SILENTLY, so a value legal to the permissive gate simply cannot land and nothing
+        names the intersection. v0.84 established that these are TWO DIFFERENT QUESTIONS rather than
+        one inconsistency: an allow-list of recognised dispositions, and a semantic test of whether
+        a disposition claims delivery. Naming them separately is the deliverable; forcing one list
+        onto both would answer the wrong question in one of the two places.
+
+        The population figures v0.84 measured here — how many release artifacts are active under the
+        version gate, the size of the green set, the gap between what the classifier ITERATES and
+        what its classifier function REACHES — are all LIVE and move as lanes record outcomes.
+        Re-derive each one; a figure quoted from the previous release is stale by construction.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: run both gates over the same artifact set with a disposition legal to one and illegal to the
+        other, and confirm the asymmetry. If both now accept it the vocabularies have converged and
+        this lane is moot. Re-derive the four population figures at the commit under test and state
+        them WITH that commit, never carried.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1458"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the two disposition gates name their question, and the intersection is written down — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

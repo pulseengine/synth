@@ -1,0 +1,39 @@
+artifacts:
+  - id: RQ-85-JESSDIVERGE7
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "The reporter has the three accumulator words, or a precise statement of what they must run"
+    description: >
+        Relayed through the shared account by body prefix, so an author-login filter is blind to it
+        in both directions. The analysis is FINISHED and the reply is DRAFTED AND UNPOSTED pending
+        the maintainer's word: the three translational accumulator slots are named with their own
+        load program counters, the matchable instruction shape is given for an object laid out
+        differently, and a refutable prediction is attached — all three read zero at every tick, and
+        a non-zero accumulator kills the hypothesis.
+
+        WHAT THIS LANE MUST NOT DO: re-derive the object. The expression is PROVEN FAITHFUL and
+        everything addressable from the object alone is ELIMINATED, so re-deriving repeats finished
+        work and produces a status update rather than something the reporter can act on.
+
+        THE HONEST RESIDUAL, to be carried as unexplained rather than guessed at: the excess over
+        the pure-gravity integral GROWS with tick count rather than staying constant, and the
+        constant is correct to single precision, so the growth is not explained by the constant.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: re-run the slot-reference census on the shipped object and confirm the three accumulator
+        addresses still pair with the same multiplicands at the same load program counters. If the
+        pairing has moved, the drafted reply names the wrong words and must not go out. Carry a
+        POSITIVE CONTROL — a slot address known to be present — because a census that finds nothing
+        and whose control also finds nothing is an instrument failure, not a measurement.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1436"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the reporter has the three accumulator words, or a precise statement of what they must run — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -1,0 +1,32 @@
+artifacts:
+  - id: RQ-85-COMPLIANCE5
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "The compliance report's coverage backlog has a maintainer decision, or stays reported as blocked"
+    description: >
+        The report SHIPS and its first half did not regress — v0.84's release run settled with the
+        compliance archive present and slightly larger than the previous release's. The open half is
+        a coverage backlog whose resolution is a maintainer decision about scope, not a code change
+        this loop can make.
+
+        So the deliverable is the decision surfaced, or the blocker reported as blocked. Measure the
+        shipped archive at the SETTLED run rather than at a queued one — v0.83 carried a figure from
+        a queued run and had to re-measure.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: re-read the release run's asset list at the SETTLED run and confirm the compliance archive
+        is present with its size; then re-derive the backlog ratio from the report itself rather
+        than from any previous release's note. If the archive is absent, the first half HAS regressed
+        and that outranks the backlog question.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1453"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the compliance report's coverage backlog has a maintainer decision, or stays reported as blocked — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

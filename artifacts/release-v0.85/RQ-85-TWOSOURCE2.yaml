@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-85-TWOSOURCE2
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "The conformance gate names its source per slot"
+    description: >
+        v0.84 PROVED the split is PER SLOT and not per step, which is a stronger and more awkward
+        finding than the one this lane inherited: within a single step, one slot reads the WORKING
+        TREE while another reads the GIT REF, so a report can contradict itself inside one step's
+        output. Four demonstrations were recorded, each resolving on commit alone — uncommitted, the
+        pair disagrees; committed, both agree — which is exactly why the defect survives review.
+
+        DO NOT FORCE ONE CONVENTION. The first step's docstring DELIBERATELY makes the pre-tag
+        assertion a statement about the WORKING TREE, which is the right reading for a gate whose
+        job is to refuse an unclean checkout. The deliverable is that each slot NAMES its source in
+        the printed line, so a reader can tell which question was answered.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: run the gate on a checkout with a deliberate uncommitted difference in a file both slots
+        read, and confirm the pair disagrees; then commit and confirm it agrees. If the pair agrees
+        in BOTH states the split has already been fixed and this lane is moot. The paired control is
+        the whole evidence — a single state proves nothing about which source was read.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1183"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the conformance gate names its source per slot — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

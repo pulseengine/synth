@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-85-NOSHOW3
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "Decide whether an empty no-show population across two releases is grounds to decline"
+    description: >
+        THE DELIVERABLE IS A DECISION, not another measurement. The no-show population has been
+        EMPTY in the sampled window for two consecutive releases. An empty derived population is a
+        REFUSAL rather than a pass by this programme's own rule, so measuring it a third time and
+        reporting the same emptiness is not progress — it is the instrument reporting that it cannot
+        answer the question.
+
+        Either the window is wrong and must be widened until the population is non-empty, or the
+        condition no longer occurs and the issue should be declined on that basis with the window
+        stated. Both are acceptable outcomes. Carrying it unresolved a third release is not.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: widen the sampled window until the population is NON-EMPTY or until the widening exhausts
+        the available history, and state the window with the result. If a non-empty population
+        appears, the decline is refuted and the lane has real work; if the history is exhausted, the
+        decline is grounded and must say over what window.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1484"
+      verification-track: manual
+      done-when: "manual:2027-03-31 decide whether an empty no-show population across two releases is grounds to decline — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

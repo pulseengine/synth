@@ -1,0 +1,32 @@
+artifacts:
+  - id: RQ-85-NPM4
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "The npm package is live, or the blocker is reported as outside this repository"
+    description: >
+        BLOCKED OUTSIDE THIS REPOSITORY on a credential rotation the maintainer must perform. The
+        package is live at a version many minors behind the current tag, and the retro conformance
+        slot has failed on it every release since — the publishing workflow fails at its
+        authentication preflight and is not among the release workflows that succeed.
+
+        THIS LANE MUST REPORT BLOCKED RATHER THAN RE-MEASURE THE SAME 404 AS PROGRESS. Re-measuring
+        an unchanged external blocker and recording it as an outcome is the shape the conduct rule
+        about oracle-only progress forbids, applied to machinery instead of a reporter.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: derive the number of minors tagged after the live npm version FROM THE TAG LIST rather than
+        carrying it, and re-read the publishing workflow's failure point. If the preflight now
+        passes the blocker is gone; if the gap has not widened by exactly one since the last
+        release, the derivation is wrong.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1460"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the npm package is live, or the blocker is reported as outside this repository — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

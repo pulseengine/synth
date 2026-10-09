@@ -1,0 +1,35 @@
+artifacts:
+  - id: RQ-85-ARCHMODEL4
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "File the recurring architecture-step non-applicability with its ordinal derived from the tree"
+    description: >
+        The upstream blocker remains OPEN, so the architecture step is non-applicable again and the
+        recurring non-applicability is filed rather than waived — a recurring N/A is a backlog item,
+        not an exemption.
+
+        THE ORDINAL IS DERIVED BY ARTIFACT IDENTITY from the git tree, never counted by hand and
+        never incremented from the previous release's number: refuse on a duplicate identifier and
+        refuse on an EMPTY population, and state the ordinal WITH the commit it was derived at. This
+        artifact must carry BOTH the loop tag AND an architecture tag, because the step matcher reads
+        the architecture tag and goes blind without it — a lane that drops it reports the step as
+        unscoped rather than as deliberately non-applicable.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: derive the ordinal from the tree and assert the population is non-empty and free of
+        duplicate identifiers before writing it anywhere. A population of zero here is a REFUSAL,
+        not a first filing. Then confirm the step matcher sees this artifact by running the
+        conformance gate and reading the step's printed line, not by inspecting the tags.
+    tags:
+      - feature-loop
+      - aadl
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1136"
+      verification-track: manual
+      done-when: "manual:2027-03-31 file the recurring architecture-step non-applicability with its ordinal derived from the tree — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
