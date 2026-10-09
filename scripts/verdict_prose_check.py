@@ -213,7 +213,26 @@ def classify(a):
         return None
     tok = leading_verdict(vb)
     if tok is None:
-        return None                      # not a verdict word; out of population
+        # RQ-84-FIRSTTOKEN3 (#1476). `leading_verdict` returns None for TWO
+        # situations and the conflation is the hole: a DECLARED non-verdict
+        # (nothing to check) and a verdict-SHAPED lead that no set classifies
+        # (an ESCAPE — out of population, and out of population is
+        # indistinguishable from compliant). `unclassified_lead` has separated
+        # them since v0.81, but THIS function never called it, so the module
+        # that NAMES the escape did not refuse on it. Enforcement lived only in
+        # `loop_conformance_check` step 3, which is scoped to the RELEASE being
+        # cut and therefore runs over an EMPTY population at plan time. Wiring
+        # it here is not a widening: it adds no vocabulary, so it cannot make
+        # an escape legal by classifying it. Measured at the v0.84 base before
+        # this branch existed: ZERO escapes over a population of 216.
+        escape = unclassified_lead(vb)
+        if escape is not None:
+            return escape, True, (
+                f"opening '{escape}' LOOKS LIKE a verdict but no set "
+                f"classifies it, so this artifact was never compared against "
+                f"its own fields. Use a classified verdict, or add the opening "
+                f"to NOT_A_VERDICT as a MEASURED exclusion (#1476)")
+        return None                      # a DECLARED non-verdict; out of population
     kind = "complete" if tok in COMPLETE else "incomplete"
     status = field_str(a, "status").strip().lower()
     disp = field_text(fl, "disposition").lower()

@@ -205,5 +205,44 @@ class SentenceScopeHazard1476(unittest.TestCase):
                                   "still outside BOTH populations — the #1476 hole")
 
 
+class EscapeIsEnforcedByThisModule(unittest.TestCase):
+    """RQ-84-FIRSTTOKEN3 (#1476). `unclassified_lead` NAMED the hole, but
+    `classify` never called it — so the module that DEFINES the escape did not
+    refuse on it. Enforcement lived only in `loop_conformance_check` step 3,
+    which is scoped to the release being cut and therefore ran over an EMPTY
+    population at plan time: 14 artifacts scanned, none carrying a
+    `verified-by`, reported NOT-DERIVED. Measured at the v0.84 base before
+    wiring: ZERO escapes over a population of 216, so this reds nothing that
+    exists today.
+    """
+
+    def test_an_escape_is_IN_the_population_and_BAD(self):
+        got = V.classify(art("implemented", "NOT LANDED. nothing in this lane moved"))
+        self.assertIsNotNone(got, "an escape must NOT be out of population")
+        tok, bad, why = got
+        self.assertEqual(tok, "NOT LANDED")
+        self.assertTrue(bad)
+        self.assertIn("1476", why, "the message must name the issue to act on")
+
+    def test_every_measured_escape_is_caught_whatever_the_status(self):
+        for vb in ("NOT LANDED. nothing moved", "DONE. shipped and measured",
+                   "NOT-DELIVERED. the hyphen makes it one unlisted token",
+                   "CLOSED. the work is finished"):
+            for status in ("proposed", "implemented", "verified", "accepted"):
+                with self.subTest(vb=vb, status=status):
+                    got = V.classify(art(status, vb))
+                    self.assertIsNotNone(got)
+                    self.assertTrue(got[1])
+
+    def test_CONTROL_a_declared_non_verdict_stays_OUT_of_population(self):
+        """The paired control: without this, the wiring would be a blanket
+        catch rather than an escape detector. `NOT_A_VERDICT` members and
+        non-all-caps prose must still leave the population."""
+        for vb in ("MEASURED over 26 runs", "THE census says",
+                   "ORACLE landed", "The work shipped."):
+            with self.subTest(vb=vb):
+                self.assertIsNone(V.classify(art("implemented", vb)))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
