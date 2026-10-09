@@ -33,8 +33,13 @@ artifacts:
       verified-by: >
         PARTIAL — the words to sample are NAMED and nothing is posted. The refuting command
         FIRED in the direction this artifact predicted: `git grep -nF 'sp,#' -- artifacts/`
-        returns hits in ELEVEN files across v0.69..v0.83 recording that the object-level work is
-        finished, so a lane that re-derives the object repeats it.
+        returns hits in ELEVEN files — a count the cold review confirmed and a POPULATION it
+        refuted. They span v0.69..**v0.84**, not v0.69..v0.83; two of the eleven
+        (`artifacts/size_attribution_390.md`, `artifacts/verified-codegen-roadmap.yaml`) are not
+        release artifacts at all; and one of the eleven is THIS ARTIFACT, which was already true
+        when the sweep was first run. Removing the two non-release files and the self-inclusion,
+        the set supporting "the object-level work is finished, so a lane that re-derives the
+        object repeats it" is EIGHT prior lane records.
         v0.83's hypothesis three was then CONFIRMED OUT-OF-SAMPLE by the reporter's own 64x
         extended run, published AFTER that prediction was recorded. Re-derived independently
         rather than quoted: the `x 9.81` constant is f32 9.8100004, `g*dt` is bits 0x3C20BA20

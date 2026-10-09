@@ -30,7 +30,7 @@ artifacts:
       issue: "#1476"
       verification-track: manual
       issue-scope: outlives
-      landed: "PR #1510 — #1476 — `verdict_prose_check.classify()` now calls `unclassified_lead` when `leading_verdict` returns None, so a verdict-shaped lead that no set classifies is a FAILURE of this gate rather than an exit from its population; proven by a three-way control (95/0/rc=0 clean, 95/1/rc=1 with an escape, 94/0/rc=0 unwired) and 17 red subtests that go green. Parts two and three of the issue are not delivered, so it stays OPEN by `issue-scope: outlives`."
+      landed: "PR #1510 — #1476 — `verdict_prose_check.classify()` now calls `unclassified_lead` when `leading_verdict` returns None, so a verdict-shaped lead that no set classifies is a FAILURE of this gate rather than an exit from its population; proven by a three-way control, re-run at the review commit and stated with it: 109/0/rc=0 clean, 109/1/rc=1 with an escape, 108/0/rc=0 unwired — the 95/95/94 first written here was the v0.83.0-era population, superseded at `2123f729` before this lane landed — plus 17 red subtests that go green. PART THREE is not delivered, so it stays OPEN by `issue-scope: outlives`. A first version of this field said parts two AND three were undelivered, contradicting this artifact's own `verified-by`, which says the second was already addressed when `unclassified_lead` made `NOT_A_VERDICT` load-bearing. The `verified-by` is the one that holds: replacing that set with `set()` moves the population 109 -> 140 and produces 31 failures, which is what load-bearing means. No gate compares two prose fields of one artifact, so the contradiction was invisible by construction."
       verified-by: >
         DELIVERED — the module that NAMES an escape now REFUSES on it. `classify()` called
         `leading_verdict` and never `unclassified_lead`, so a verdict-SHAPED lead in no set left
@@ -38,7 +38,10 @@ artifacts:
         FAILURE.
         THE DECISION THIS ARTIFACT ASKED FOR, and it is neither a fourth refusal nor a widening.
         Measured BEFORE the change with the gate's own function: ZERO escapes over a population
-        of 216, with the four documented escape phrases each returned as a POSITIVE CONTROL, so
+        of 216 AT `v0.83.0` AND AT THE PLAN COMMIT `0c84a3b9` — the figure became 230 against the
+        gate's own 109 at `2123f729`, before this lane landed, so it is stated with its commit
+        rather than refreshed — with the four documented escape phrases each returned as a
+        POSITIVE CONTROL, so
         the hole is EMPTY OF CONTENT and a widening has no live justification from current
         content. Widening would also make those phrases LEGAL verdicts and thereby DELETE the
         escape report; wiring adds no vocabulary, so it cannot make an escape legal by
