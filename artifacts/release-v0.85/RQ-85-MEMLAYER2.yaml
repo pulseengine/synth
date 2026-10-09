@@ -1,0 +1,40 @@
+artifacts:
+  - id: RQ-85-MEMLAYER2
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "An op on a non-zero memory lowers under the native-pointer ABI, or the layering gap is named"
+    description: >
+        The relayed reporter's ONLY remaining blocker, third release running. The conduct rule binds
+        without qualification: v0.84 SIZED this gap and did not close it, and sizing is not progress
+        the reporter can observe.
+
+        MEASURED AT v0.84, so the lane starts from evidence rather than a survey: the refusal is
+        live in the multi-memory page path; the emitter already carries a per-memory data symbol;
+        the selector's static-data addend is address-only across nine call sites; and the bounding
+        constraint is that memory zero has NO index-suffixed alias BY DESIGN, asserted in the
+        multi-memory test. The binding flag is the native-pointer ABI and NOT the bounds-check mode
+        the issue is framed around, and the refusal lives in the SELECTOR, so a CLI-level probe
+        misses it entirely.
+
+        THE HALF THE REPORTER THOUGHT DECISIVE ALREADY SHIPPED in v0.83 — per-memory extent sizing,
+        with a region symbol emitted for every memory rather than memory zero alone. So this lane
+        scopes ONLY the layering, and the reply that says so is drafted and awaiting release.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: grep the selector for the addend's call sites and re-read the design assertion in the
+        multi-memory test before writing any code, then attempt the lowering on a two-domain module.
+        If the assertion that memory zero has no suffixed alias has been removed since v0.84, the
+        bounding constraint is gone and the scope is wrong. The compile half needs a matching
+        binary; if the build is not possible at the available disk, record UNPROVEN with the figure.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1145"
+      verification-track: manual
+      done-when: "manual:2027-03-31 an op on a non-zero memory lowers under the native-pointer abi, or the layering gap is named — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -1,0 +1,32 @@
+artifacts:
+  - id: RQ-85-PINDEBT10
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "The pin-debt ratchet's inclusion criterion is derived, not named"
+    description: >
+        The ratchet derives its population from an explicit list of tables while the tripwire meant
+        to catch an unlisted table derives from a NAME-SCOPED pattern. A suppression table named
+        outside that pattern is in NEITHER population, which was demonstrated by entering a
+        byte-identical table under a non-matching name and watching both layers stay silent.
+
+        The deliverable is an inclusion criterion derived from what the oracles actually CONSULT
+        rather than from what the tables are CALLED, so a rename cannot move a table out of the
+        population. Note the known silent-undercount shape as well: a table built by update calls
+        after an empty literal matches the pattern and is read as zero entries without raising, so
+        it sits inside the pinned population contributing nothing.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: add a byte-identical suppression table under a name outside the pattern and run the ledger
+        check; it must go RED. If it already reds, the escape is closed and this lane is moot.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1428"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the pin-debt ratchet's inclusion criterion is derived, not named — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

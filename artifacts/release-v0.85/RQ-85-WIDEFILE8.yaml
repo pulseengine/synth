@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-85-WIDEFILE8
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "The wide-file sign error has a named cause, or the retry stays out a fifth release"
+    description: >
+        Fifth release. Everything cheap has been eliminated and the eliminations are durable: sign is
+        PROVEN order-invariant as the exclusive-or of the operand signs, so reassociation is refuted;
+        the multiply multiset is intact; and the encoding hypothesis that survived two releases is
+        DEAD, because the bit it required is unreachable from any two-register floating-point field.
+        The surviving class is a WRONG OPERAND reaching the multiply from a spill or a reload.
+
+        The refuting command has gone UNRUN for want of a build at the available disk across two
+        releases. That is a measured blocker and not a stall, and the artifact's own default — the
+        retry stays out of the suite, the tripwire stays armed — is the correct outcome until a
+        build is possible rather than something to be relaxed for throughput.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: build the compiler and run the retry against the wide-file fixture, reading the EMITTED
+        STREAM rather than the selector arms, because a fix can make a new defect visible. If the
+        full build is not possible at the available free disk, record UNRUN with the measured figure
+        and the retry stays out — do NOT substitute a cheaper probe and report it as this one.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1439"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the wide-file sign error has a named cause, or the retry stays out a fifth release — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-85-RUNNERSHAPE2
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "The no-show and cancellation classifier states what the job object cannot decide"
+    description: >
+        The split between an operator cancellation and a runner no-show is NOT DERIVABLE from the
+        job object: both are identical on conclusion, runner name, runner identifier, runner group,
+        labels, step count, and the equality of started and created timestamps. What separates them
+        is the SHAPE across a run — a CLUSTER of unstarted jobs sharing one completion timestamp is
+        an operator cancel, a LONE unstarted job in an otherwise progressing run is a no-show.
+
+        The deliverable is a classifier that says which of the two it is AND says when it cannot
+        tell, including the three states the runner-name field actually takes — a real name, the
+        EMPTY STRING for a job that never got a runner, and absent. The empty string is the one that
+        breaks naive defaulting, because a null-coalescing default never fires on it.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: feed the classifier one historical cluster and one historical lone unstarted job and confirm
+        it separates them; then feed it a job whose runner name is the empty string and confirm it
+        does not silently read as a named runner. If the population of either shape is EMPTY in the
+        window, that emptiness is the finding and must be reported rather than worked around.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1451"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the no-show and cancellation classifier states what the job object cannot decide — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

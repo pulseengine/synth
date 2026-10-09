@@ -1,0 +1,40 @@
+artifacts:
+  - id: RQ-85-FALCON2
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "An op the falcon-cascade binary needs is lowered, or the gap is named with a live measurement"
+    description: >
+        The reporter's own still-open synth blocker, and a v0.85 MUST on the maintainer's explicit
+        direction of 2026-10-09. It is the synth link in a toolchain chain that a public write-up
+        would showcase, and the loop carried it for two releases with no work on it at all — not
+        even oracle hardening, so the conduct rule about oracle-only progress does not even apply,
+        which is a worse position than if it did.
+
+        THE SCOPE IS DELIBERATELY NOT INHERITED. The last reading — the reporter's optimized module
+        skipping one function of seventeen, down from seven, the six that moved being the FPU
+        decoder class — was taken at the v0.83 cut and is a LIVE NUMBER against a compiler that has
+        shipped twice since. Re-measure it before scoping, and scope from the re-measurement.
+
+        THE CHAIN CONTEXT, WHICH THIS LANE MUST NOT RE-DERIVE: the two sibling-repo defects filed
+        beside this one are a fusion-time address-rebase aliasing bug and an arena-reset bug in a
+        runtime, neither of which is synth codegen. The maintainer directed STAYING SYNTH-SIDE, so
+        this lane opens no work in those repositories and does not re-litigate their causes.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: re-run the acceptance measurement on the reporter's attached module with the SHIPPED
+        v0.84.0 binary and compare the skipped-function count against the v0.83 reading. If the
+        count is now ZERO the blocker has already moved and this lane is moot; if the binary's
+        reported version does not match the workspace, record UNPROVEN rather than inferring —
+        v0.83 met exactly that condition and inferring would have invented a result.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1318"
+      verification-track: manual
+      done-when: "manual:2027-03-31 an op the falcon-cascade binary needs is lowered, or the gap is named with a live measurement — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

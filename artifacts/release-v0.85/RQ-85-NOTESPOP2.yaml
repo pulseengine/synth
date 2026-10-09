@@ -1,0 +1,37 @@
+artifacts:
+  - id: RQ-85-NOTESPOP2
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "The release-notes generator states its population or refuses, and its guard can actually fire"
+    description: >
+        The remedy is now THREE parts, all derived at v0.84 rather than proposed: bound the extract
+        by what the traceability tool needs to LOAD, because the schema directory is ABSENT from the
+        declared source paths and a naive symmetric extract therefore cannot load either side; run
+        each side in its OWN working directory so the manifest is present to both; and MAKE THE
+        GUARD REACHABLE.
+
+        THE THIRD PART IS NEW AND DECISIVE, and it is a gate-potency finding rather than a feature
+        request: the anti-vacuity guard is INERT in the only environment where the generator is ever
+        actually run. No workflow invokes the generator — CI runs its unit test alone — while the
+        external sync DOES run in CI, so the operator's synced checkout is the generator's sole
+        venue, and in that venue the foreign-artifact count dominates and the guard never fires. A
+        guard that is potent only in an environment nobody runs is not a guard.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: run the generator and a SYMMETRIC diff with each side in its own working directory and
+        compare the added counts; then grep every workflow for an invocation of the generator
+        itself, not of its unit test. If a workflow does invoke it, the inertness finding is wrong
+        and the third part of the remedy is unnecessary. Use the JSON output form — the text form is
+        INDENTED and a first-column parser reads an EMPTY population, which is a refusal.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1259"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the release-notes generator states its population or refuses, and its guard can actually fire — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

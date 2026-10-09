@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-85-PROVENANCE
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "A figure in a shipped record is pinned to an ancestor of the default branch"
+    description: >
+        NEW, from v0.84, where it cost a correction. Figures in the cold-review record were pinned to
+        a lane head that is NOT an ancestor of the default branch, because the lane was squash-merged
+        and the pre-squash head survives only as an unreferenced object. A reader cannot check such a
+        figure at all: the commit is not reachable from anything shipped.
+
+        SQUASH MERGING GUARANTEES THIS FOR EVERY LANE HEAD, which makes it a structural property of
+        this repository's merge strategy rather than one lane's mistake. The deliverable is a check
+        that any commit cited in a shipped record is PROVEN an ancestor of the default branch, and
+        that proof is run rather than assumed — the same discipline the theme demands of populations.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: take every commit cited in the last two cold-review records and test ancestry mechanically.
+        If all of them are already ancestors the defect is not live and this lane is moot. Carry a
+        POSITIVE CONTROL — a known non-ancestor, such as the v0.84 lane head — because an ancestry
+        check that passes everything is indistinguishable from one that tests nothing.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1516"
+      verification-track: manual
+      done-when: "manual:2027-03-31 a figure in a shipped record is pinned to an ancestor of the default branch — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-85-SELFTEST
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "A self-test that cannot see its own capability removed is not a self-test"
+    description: >
+        NEW, from v0.84's own cold review, and it is the gate-potency problem one tier in. The
+        verdict-prose checker advertises a self-test that proves potency against real repository
+        history. With the escape-detector wiring that the previous release delivered REMOVED, that
+        self-test still exits zero. The red-first coverage that would have caught the removal lives
+        in a SIBLING unit test instead — so the capability is covered, but the thing that CLAIMS to
+        cover it does not.
+
+        This matters beyond one script because the self-test's advertised claim is what a reader
+        trusts when deciding whether the gate is real. A self-test is itself a gate, and an inert
+        gate that announces its own potency is worse than an absent one.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: remove the wiring and run the self-test; it must go RED. If it already goes red, the finding
+        is wrong and this lane is moot. Then restore and confirm green — the pair is the evidence,
+        because a red alone may come from the environment rather than from the property.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1515"
+      verification-track: manual
+      done-when: "manual:2027-03-31 a self-test that cannot see its own capability removed is not a self-test — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

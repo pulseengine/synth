@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-85-LADDER7
+    type: system-req
+    release: v0.85
+    status: proposed
+    title: "The acceptance ladder is re-measured, or its staleness is reported with the blocker named"
+    description: >
+        BLOCKED OUTSIDE THIS REPOSITORY. The ladder's live figures date from a release many cuts ago
+        and the corpus volume they were measured over is NOT MOUNTED. The real blocker is a one-line
+        authorized-keys append on the host, which the maintainer must make; ATTEMPTING PASSWORDS
+        STAYS DECLINED and that refusal is not to be revisited by this lane.
+
+        The ladder matters beyond its own staleness because the compliance envelope requires the
+        acceptance rate be published as the denominator of every performance comparison, cited from
+        the ladder with its measurement date and commit. A stale ladder therefore constrains what
+        may be published, which is the honest consequence to report.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome, reported with numbers: test whether the corpus volume is reachable, and report the ladder's measurement date and
+        commit as they actually read rather than as remembered. If the volume is reachable the
+        blocker is gone and the re-measurement is in scope; if not, the lane reports blocked and
+        names the one-line append as the blocker. Do NOT attempt a password.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1432"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the acceptance ladder is re-measured, or its staleness is reported with the blocker named — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
