@@ -1364,18 +1364,51 @@ jobs:
   # stays quiet long enough to earn it (and then only with a lock-pinned sync).
   #
   # RQ-66-VARVE (#1236, v0.66): rivet now comes from the checked-in varve pin
-  # (`varve.toml` + `varve-realms.toml`, layer 2026.09.2, rivet 0.35.0)
+  # (`varve.toml` + `varve-realms.toml`, layer 2026.10.9, rivet 0.40.0)
   # instead of a hand-typed `cargo install --git --tag`. This was the FIRST CI
   # job converted — chosen because it is advisory: a real `ghcr.io` reachability
   # or version-drift surprise from switching toolchain source lands here as
-  # visible red, not a merge-blocking one. Before wiring this, `varve install`
-  # (layer 2026.09.2, digest `sha256:67d585…999025`) plus the SAME filters the
-  # required job above applies were run locally against this repo's rivet.yaml
-  # under the resulting rivet 0.35.0: non-cross-repo errors = 0, artifacts
-  # loaded = 551 (floor 526), and a full `sync` + federated `validate` passed
-  # clean (Cross-repo backlinks: 1032, matching the count at #1012's authoring)
-  # — so a red result here should read as a CI-environment finding (network,
-  # runner state), not an unvetted version jump. The former "own --root, never
+  # visible red, not a merge-blocking one. When this was wired (v0.66), `varve
+  # install` of layer 2026.09.2 plus the SAME filters the required job above
+  # applies were run locally against this repo's rivet.yaml under the
+  # resulting RIVET 0.35.0: non-cross-repo errors = 0, artifacts loaded = 551
+  # (floor 526), and a full `sync` + federated `validate` passed clean
+  # (Cross-repo backlinks: 1032, matching the count at #1012's authoring).
+  #
+  # THOSE NUMBERS BELONG TO RIVET 0.35.0 AND DO NOT HOLD AT THE v0.83 PIN.
+  # Measured on the SAME TREE, as a paired control, before bumping the layer:
+  #
+  #   rivet 0.37.0 (required job, cargo-installed)  PASS (863 warnings), 0 errors   common@0.3.0
+  #   rivet 0.40.0 (layer 2026.10.9)                FAIL (29 errors, 950 warnings)  common@0.3.1
+  #
+  # So the delta is the VERSION, not the tree. The embedded `common` schema
+  # moved 0.3.0 -> 0.3.1 and promoted coverage gaps to errors — the #229
+  # WARN->ERROR class this very comment block warns about. Eight of the 29 are
+  # printed, over exactly four artifacts — the v0.64 deferrals RQ-64-ARCHMODEL,
+  # -CFOBLIG, -MACHO and -MVLOWER — each failing twice: "link 'derives-from'
+  # requires at least 1 target, found 0", and the derived rule that a system
+  # requirement must derive from a stakeholder-req.
+  #
+  # THE CAUSE IS NOT DIAGNOSED AND IS DELIBERATELY NOT GUESSED AT HERE. What is
+  # MEASURED: all four DO carry `links: [{type: derives-from, target: BR-001}]`
+  # (PyYAML reads it; indentation matches a passing artifact; the file has no
+  # duplicate keys), BR-001 IS a `stakeholder-req`, and 315 other sites target
+  # it across 241 files without erroring. And `rivet get RQ-64-MACHO` prints NO
+  # Links section under 0.37.0 EITHER, while it prints
+  # `derives-from -> BR-001` for a v0.83 artifact under 0.40.0. So the link is
+  # unresolved under BOTH versions and 0.40.0 only promoted the existing
+  # silence to an error — which makes this a latent traceability hole in those
+  # four artifacts that predates the bump, not a regression the bump caused.
+  # Its own lane.
+  #
+  # THIS JOB IS THEREFORE EXPECTED RED AT `validate` UNDER THE v0.83 PIN, and
+  # that is a real finding about this repo's artifacts rather than a CI-
+  # environment one. It is advisory BY NAME and blocks no merge. The REQUIRED
+  # `Rivet Validation` job is UNAFFECTED: it installs rivet from release tag
+  # v0.37.0 via cargo (see its cache key), never from the varve layer, so the
+  # two jobs deliberately run different rivets and only the advisory one sees
+  # 0.40.0. Clearing those four artifacts is what would let the required
+  # rivet-cli pin move to 0.40.0 later. The former "own --root, never
   # clobbers ~/.cargo/bin/rivet" concern is now moot: varve's core is
   # content-addressed under `~/.varve/realms/<realm-hash>/core/sha256-<digest>/`,
   # distinct per pinned layer by construction, so two jobs pinning different

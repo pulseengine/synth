@@ -2441,5 +2441,60 @@ class ValuelessKeyClass1458(unittest.TestCase):
         self.assertIn("field_text", sec.FIELD_ACCESSORS)
 
 
+class EveryCountedFailureIsNamed(unittest.TestCase):
+    """v0.83 — the summary's failure COUNT and the printed `FAIL` lines must agree.
+
+    R15 landed in #1497 with `failures.extend(_r15)` placed AFTER the loop that
+    prints them. The consequence was not a wrong answer, it was a SILENT one:
+    the summary said `1 failures`, the exit code was 1, and the operator was
+    told nothing about which rule or which artifact. Found in v0.83 when an
+    unrelated lane tripped R15 and the output named nothing.
+
+    No existing test could have caught it — `LandedTwoContextR15` exercises the
+    FUNCTION `landed_two_context`, and the defect was in `main`'s wiring, not in
+    the rule. So this asserts the property that spans every rule rather than one
+    more rule-specific case: whatever the gate COUNTS, it must NAME. A future
+    rule appended after the print loop reds here regardless of what it checks.
+    """
+
+    def test_counted_equals_printed_on_the_live_tree(self):
+        root = Path(__file__).resolve().parent.parent
+        r = subprocess.run(
+            [sys.executable, "scripts/status_evidence_check.py"],
+            cwd=str(root), capture_output=True, text=True,
+        )
+        out = r.stdout + r.stderr
+        m = re.search(r"(\d+) failures", out)
+        self.assertIsNotNone(
+            m, f"the summary line must state a failure count; got:\n{out[:400]}"
+        )
+        counted = int(m.group(1))
+        printed = len([l for l in out.splitlines() if l.startswith("FAIL ")])
+        self.assertEqual(
+            counted, printed,
+            f"the gate COUNTED {counted} failure(s) but PRINTED {printed}. A "
+            f"refusal the operator cannot read sends them to the one place the "
+            f"answer is not — check for a rule whose `failures.extend(...)` "
+            f"sits AFTER the print loop in `main`.",
+        )
+
+    def test_the_exit_code_agrees_with_the_count(self):
+        """A non-zero count must mean a non-zero exit, and vice versa — the
+        other half of the same contract, and the half CI actually gates on."""
+        root = Path(__file__).resolve().parent.parent
+        r = subprocess.run(
+            [sys.executable, "scripts/status_evidence_check.py"],
+            cwd=str(root), capture_output=True, text=True,
+        )
+        out = r.stdout + r.stderr
+        m = re.search(r"(\d+) failures", out)
+        self.assertIsNotNone(m)
+        counted = int(m.group(1))
+        self.assertEqual(
+            r.returncode != 0, counted > 0,
+            f"exit={r.returncode} disagrees with the stated count {counted}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
