@@ -1,0 +1,85 @@
+artifacts:
+  - id: RQ-83-WASTTRAIN
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "The wasm-tools graph collapses from THREE upstream trains to TWO, and the survivor is a sibling's pin rather than synth's declaration"
+    description: >
+      THIS LANE EXISTS BECAUSE A RELEASE NOTE WAS ABOUT TO BE HALF TRUE. RQ-83-RANGEWIDEN moved
+      wasmparser, wasm-encoder, wit-parser and wit-component to 0.261 together, and the obvious
+      note was "that addresses #465". Measuring first showed #465 names SIX crates, not four:
+      its body lists `wat` and `wast` beside the other four, and both were still behind —
+      `wat = "1.252"` and `wast = "259.0"` on main after RANGEWIDEN landed.
+
+      SO THE REAL SUBJECT IS THE GRAPH, NOT THE FLOOR LIST. #465's ask is "cutting down on
+      duplicated internal dependencies (see cargo tree)", and the lock carried THREE upstream
+      trains: 261, 259 and 252.
+
+      MEASURED, with the bump applied: `wat` -> 1.261 and `wast` -> 261.0 collapses the graph to
+      TWO trains and eliminates train 259 ENTIRELY — `wasm-encoder 0.259.0`, `wasmparser 0.259.0`
+      and `wast 259.0.0` all leave the lock.
+
+      AND THE SURVIVOR IS NOT SYNTH'S TO FIX BY DECLARATION. Train 252 persists as a single
+      `wasmparser 0.252.0`, pulled by `scry-sai-core 3.3.0`, which pins it in its OWN manifest.
+      After this lane every crate synth DECLARES is on train 261; the remaining duplicate lives
+      outside synth's Cargo.toml and is a scry matter.
+
+      THE BOUNDARY WAS CHECKED BEFORE THE EDIT, not after: `wat` and `wast` are real
+      dependencies of `synth-test` ALONE, and `synth-test` is NOT among the twelve crates in
+      `CRATES_TO_PUBLISH` (read ARRAY-BOUNDED from `= &[` to the matching `];`). So a `wast`
+      major move touches no published crate boundary.
+
+      #465 IS cpetig's AND IS CLOSED AND SETTLED, so conduct rule 1 binds: this finding belongs
+      in the release notes and NOT on that thread. It is recorded here for the notes to draw on.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact:
+      `git show origin/main:Cargo.toml | grep -E '^(wat|wast) *='` — if both already read 1.261
+      and 261.0 the bump landed elsewhere and this lane is moot; and a train census over
+      `Cargo.lock` must find MORE THAN ONE train, or there is nothing left to collapse.
+    tags:
+      - feature-loop
+      - deps
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#465"
+      verification-track: manual
+      disposition: partial
+      landed: "PENDING-PR-STAMP"
+      verified-by: >
+        PARTIAL — the collapse is delivered and measured, and the residual is NAMED rather than
+        left as "some duplication remains".
+
+        DELIVERED, with the census run over `Cargo.lock` rather than reasoned about. BEFORE:
+        train 261 (the six direct deps), train 259 (`wasm-encoder 0.259.0`, `wasmparser 0.259.0`,
+        `wast 259.0.0`), train 252 (`wasmparser 0.252.0`). AFTER: train 261 and train 252 only.
+        Train 259 is gone — three duplicate crate copies removed.
+
+        THE RESIDUAL, named by its consumer: `scry-sai-core 3.3.0` depends on
+        `wasmparser 0.252.0` and pins it itself. Derived by walking the lock's dependency lists
+        for every package naming wasmparser, not by assuming. Every crate synth DECLARES is on
+        train 261 after this lane, so the remaining duplicate is not reachable from synth's own
+        manifest.
+
+        MEASURED CLEAN, by the commands CI runs: `cargo check --workspace --all-targets` rc=0
+        with 0 error lines; `cargo test --workspace` rc=0 with 3159 passed and 0 failed;
+        `cargo clippy --workspace --all-targets -- -D warnings` rc=0; `cargo fmt --check` rc=0;
+        `claim_check` 75/75; `status_evidence_check` 0 failures; `verdict_prose_check` clean; and
+        `check_version_pins.py` rc=0 (path-dep pins, MODULE.bazel, Cargo.lock and npm all at the
+        release version). A `git grep` for the old floors across `claims.yaml`, `.github/`,
+        `scripts/` and `docs/` finds NO ledger pin on them, so no mirror had to move with this.
+
+        WHY THIS IS NOT THE 0.x-MINOR HOLD. The standing rule holds 0.x-MINOR bumps because they
+        are breaking. `wat` 1.252 -> 1.261 is a 1.x minor and `wast` 259.0 -> 261.0 is a MAJOR by
+        semver — neither is the held shape, and both were measured by the full suite rather than
+        taken on the release notes. The crate-boundary question was settled first:
+        `synth-test` is the only consumer and it is unpublished.
+
+        AND THE ORDER OF OPERATIONS IS THE POINT. The note "RANGEWIDEN addresses #465" would
+        have been publishable, plausible and WRONG about two of the six crates the issue names.
+        Reading the reporter's own body before writing the claim is what produced a complete
+        answer instead of a flattering one.
+      done-when: "manual:2026-12-31 every wasm-tools crate synth DECLARES sits on ONE upstream train, the lock's remaining trains are each attributed to a named external consumer rather than to synth's own manifest, and the finding reaches the release notes rather than the reporter's thread because the issue is closed"
