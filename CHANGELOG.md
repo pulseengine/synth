@@ -5,6 +5,130 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.83.0] - 2026-10-09
+
+### "An instrument that takes its reference from what it measures is blind in exactly the direction that matters"
+
+v0.82's theme was two rules whose conjunction is false — satisfying one armed the
+other. This release turns that coupling **inward**, onto a single instrument: not
+two gates disagreeing, but one gate whose reference point comes from its own
+subject, so the comparison is already decided before it runs. The rule is not
+"stop deriving" — the North Star says derive what you check against from the
+artifact you ship. It is that the **check and the thing checked need independent
+sources, and that independence is a property to be proven rather than assumed.**
+
+The theme was not asserted. v0.83 produced **five measured instances**, and none
+was predicted when the release was scoped.
+
+**1. The release-notes generator's population comes from untracked local state.**
+`release_notes_from_rivet.py` exists so that nobody re-types which artifacts
+landed, and its output carries the banner *"do not hand-edit the lists"*. At the
+v0.83 cut it reported `3218 added, 705 unchanged`. Measured composition: gale
+1052, meld 505, sigil 485, kiln 429, jess 266, loom 242, scry 222, and **17**
+belonging to this release — 99.5% foreign. `rivet.yaml` declares `sources:` as
+`artifacts` and `safety/stpa` only; the script extracts the BASE from
+`git archive` over those paths and diffs it against the LIVE root, which
+additionally resolves `externals:` out of `.rivet/repos` — 535 MB with **zero
+tracked files**, gitignored. Base and head therefore do not share a population
+definition. The arithmetic closes exactly: `rivet list` totals 3923, of which 722
+are own (705 unchanged + 17 added) and 3201 are `repo:`-prefixed externals.
+Extracting BOTH sides from tracked sources gives 17 added, 0 removed, 0 foreign.
+Same commit, two answers, decided by whether the operator ever synced externals.
+
+**2. A scope audit took its sentinel from the vocabulary of its own subject.** An
+audit classifying artifacts as landed tested `"PENDING" not in landed` and
+reported the MUST artifact `RQ-83-CANCELGAP` as unlanded. CANCELGAP had landed;
+its `landed:` names the four check-run states its own remedy enumerates —
+`PASSING/RED/PENDING/UNVERIFIED`. The only artifact in the population whose
+subject matter *is* check-run states was the only one misread.
+
+**3. The status-evidence gate counted more failures than it printed.** On the
+pre-fix base, `failures.extend(_r15)` sat AFTER the print loop, so a tree with
+four failures printed two. Both orderings agree whenever the list is empty, which
+is why every green run hid it. Verified on one tree either side of the fix: 2
+printed / 4 counted before, 4 / 4 after.
+
+**4. The pin-debt tripwire is scoped by NAME, paired-controlled.** A 12-entry
+suppression table whose body is byte-identical to a live `KNOWN` table enters the
+tree silently as `SUPPRESSED_CASES` — `claim_check` stays 75/75 rc=0 and
+`known_open_pins` stays 84. The same bytes as `KNOWN_EXTRA` red it 74/75 rc=1
+with `count drifted: derived 13 != documented 12`. The two layers fail for
+different reasons: the ratchet derives from an explicit `tables:` list, so any
+unlisted table is invisible to it; the tripwire exists to catch exactly that and
+is name-scoped.
+
+**5. A no-show is field-identical to an operator cancellation.** The standing
+instruction to "distinguish a NO-SHOW (`steps=0`, no runner) from a genuine
+cancellation" is not executable on the job object: `conclusion`, `runner_name`,
+`runner_id`, `runner_group_name`, `labels`, `steps` and `started_at ==
+created_at` all match across both. What separates them is the SHAPE — an operator
+cancel produces a cluster of unstarted jobs sharing one `completed_at` to the
+second; a no-show is a single unstarted job inside a run whose other jobs ran to
+completion.
+
+### And a correction is itself an unreviewed claim
+
+This release logged **four** corrections that introduced or nearly introduced a
+false statement, three of them caught before shipping:
+
+- A triage note asserted that `steps=0` implies no attributable runner, and
+  concluded an issue's attribution was unfounded. `steps=0` is **two** shapes —
+  runner assigned (attributable) and never assigned (not) — and the issue was
+  filed on the first. Corrected publicly. What caught it was reading the durable
+  record, not any measurement: the window contained no instance of the shape.
+- A draft inverted the direction of a near-miss it was citing, having the corpus
+  nearly declared present when the source says it was nearly declared
+  *unobtainable*. Caught by reading the line instead of a paraphrase.
+- Seven artifact outcomes were first written with the lead words `FILED` and
+  `CONFIRMED`, which the verdict-prose gate's own `unclassified_lead` reports as
+  escapes. That would have taken `RQ-83-FIRSTTOKEN2`'s refutation — merged hours
+  earlier, and resting on the hole it declined to widen being **empty** — from
+  zero escapes to three, in the same release.
+- A commit subject `v0.83 OUTCOMES:` made the gate derive artifact id
+  `RQ-83-OUTCOMES`, which no release file defines. Measured against the real
+  `lane_artifact_id` rather than guessed.
+
+### Also measured
+
+- Two gates carry **different vocabularies for the same field** and the stricter
+  one wins silently: `DISPOSITIONS = {partial, refuted, deferred}` against
+  `NON_DELIVERY_DISPOSITION = {deferred, partial, blocked, superseded, refuted}`.
+- The `rust-cpu` pool is shared across the **org**, not with one sibling. Sampled
+  at 04:26Z its occupants were rivet, relay, spar and varve; meld held nothing.
+  A sequential scan over the 54 org repos also takes longer than the pool's churn
+  interval, so a point reading reports a state that existed at no instant — two
+  samples 90 seconds apart disagreed, and that disagreement is the evidence.
+- cpetig's #465 ("Many versions of wasm-tools mixed") is **closed and settled**,
+  so by the conduct rules its finding belongs here: the wasm-tools graph now
+  collapses from three upstream trains to two, and the surviving 0.252 pin is a
+  sibling's dev-dependency (`scry-sai-core v3.3.0`), not synth's declaration.
+
+### What landed
+
+<!-- DERIVED at 6f0bcd7e from a SYMMETRIC `rivet diff`: BOTH sides extracted from
+     the tracked `sources:` paths (`git archive v0.82.0` and `git archive HEAD` over
+     artifacts, safety/stpa, rivet.yaml), so locally-resolved `externals:` cannot
+     inflate it. The asymmetric run of release_notes_from_rivet.py reports 3218 added,
+     3201 of them foreign; this is 17, with zero foreign. -->
+
+- **RQ-83-ARCHMODEL2** — The twenty-first recurring N/A filing, ordinal DERIVED by artifact identity and stated WITH its commit
+- **RQ-83-ATTRIB** — No gate enforces TWO-SIGNAL attribution, and a prefix-only sweep is blind in both directions
+- **RQ-83-BLINDSIDE** — For every required gate, the direction it CANNOT see — and whether that silence is distinguishable from a pass
+- **RQ-83-CANCELGAP** — A CANCELLED check-run satisfies BOTH merge gates while providing no evidence
+- **RQ-83-COMPLIANCE3** — Verify the externals-sync step fired at the v0.82.0 tag, and act on the backlog decision
+- **RQ-83-FIRSTTOKEN2** — The widening is refused again, and this time because the hole it would close is EMPTY
+- **RQ-83-JESSDIVERGE5** — The gravity triple READ OUT OF THE OBJECT: three slots are the DIRECTION, the discriminating operands are the ACCUMULATORS, and vel-d is a bit-exact fit
+- **RQ-83-LADDER5** — The acceptance ladder, or the auth blocker stated as the human action it is
+- **RQ-83-LANDEDBOTH** — `landed:` must satisfy TWO `prs[-1]` derivations and nothing enforces naming both
+- **RQ-83-NPM2** — The npm gap, after the compliance conclusion stops skipping the publish job
+- **RQ-83-PAGESIZE5** — (pagesize 1) is HONOURED on --relocatable: the declared extent, the PMSA region beside it, and memory.size shifting by the declaration (EXTERNAL/fathom)
+- **RQ-83-PINDEBT8** — The pin-debt ratchet, re-derived, and whether a case-preserving merge still passes silently
+- **RQ-83-RANGEWIDEN** — The wasm-tools 0.261 bump lands behind a checked narrowing, and the downstream surface MEASURED is ZERO
+- **RQ-83-SWEEP** — The board CAN answer 'is this still broken?' — and the answer for the pinned set is YES, which refutes verify-and-close as a strategy
+- **RQ-83-VARVEBUMP** — The varve layer moves 2026.09.2 -> 2026.10.9, and the advisory job's 'flake' is a deterministic anti-rollback refusal
+- **RQ-83-WASTTRAIN** — The wasm-tools graph collapses from THREE upstream trains to TWO, and the survivor is a sibling's pin rather than synth's declaration
+- **RQ-83-WIDEFILE6** — The newly-accepted function DISASSEMBLED: no VABS is emitted, sign cannot come from reassociation, and the named oracle never ran the shape
+
 ## [0.82.0] - 2026-10-08
 
 ### "Satisfying one gate can arm another"
