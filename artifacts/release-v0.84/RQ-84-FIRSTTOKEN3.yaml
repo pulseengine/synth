@@ -29,4 +29,26 @@ artifacts:
       priority: should
       issue: "#1476"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the DECISION this artifact asks for is MADE and the wiring is NOT landed.
+        Refuting command with the gate's OWN function: `unclassified_lead` over every non-empty
+        `verified-by` in the tree returns ZERO escapes across a population of 216, with four
+        documented escape phrases each returned by the function as a POSITIVE CONTROL. So the
+        hole is EMPTY OF CONTENT and a widening has no live justification from current content.
+        BUT EMPTY IS NOT THE SAME CLAIM AS CLOSED, and the previous three refusals conflated
+        them. `verdict_prose_check.classify()` calls `leading_verdict` and NEVER
+        `unclassified_lead`, so a verdict-shaped lead in no set still leaves the population of
+        the very module the issue names. The enforcement that does catch one lives in
+        `scripts/loop_conformance_check.py` step 3, whose design is right — it IMPORTS the
+        shipped function rather than mirroring it, and an import failure is NOT-DERIVED rather
+        than a pass — but it is scoped to the RELEASE's artifacts, so for this release it ran
+        over a population of ZERO and refused. Three populations for one check: 216 tree-wide,
+        the gate's own 95, and step 3's 14-scanned.
+        THE DECISION: do NOT decline the issue and do NOT widen the vocabulary. Widening would
+        make the escape phrases legal verdicts and thereby DELETE the escape report, which
+        reduces information; wiring `unclassified_lead` into verdict_prose_check's own verdict
+        path adds no vocabulary and makes the module that names the hole also refuse on it. Zero
+        escapes over 216 means that wiring reds nothing today. It is a code change and is NOT in
+        this artifact batch.
       done-when: "manual:2027-03-31 whether an empty hole for three releases is grounds to decline the issue rather than refuse a fourth time — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

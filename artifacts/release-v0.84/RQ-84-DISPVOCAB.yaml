@@ -26,4 +26,20 @@ artifacts:
       priority: should
       issue: "#1458"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the divergence is MEASURED and its shape is sharper than recorded, no fix
+        ships, AND THE ISSUE THIS ARTIFACT NAMES WAS ALREADY CLOSED ON 2026-10-07, before this
+        measurement. By IMPORT rather than grep: `status_evidence_check.DISPOSITIONS` is
+        {deferred, partial, refuted} and `verdict_prose_check.NON_DELIVERY_DISPOSITION` is that
+        set plus {blocked, superseded}.
+        `A - B` is EMPTY, so this is STRICT CONTAINMENT and not partial overlap. The safe
+        vocabulary therefore EQUALS the stricter set and an operator can only err in ONE
+        direction, which makes the remedy a one-way guard rather than a reconciliation of two
+        vocabularies — a distinction this artifact's own framing did not draw. `blocked` and
+        `superseded` have ZERO sites across 293 artifact files and 594 artifacts, so narrowing
+        the permissive gate reds nothing today.
+        CAVEAT against overclaiming: the v0.83 incident cited here used a value in NEITHER set,
+        so the vocabulary fix does NOT address that incident. Naming the legal set where an
+        operator reads it is a different remedy, and both belong in this lane stated separately.
       done-when: "manual:2027-03-31 two gates, two legal vocabularies for one field, and the stricter one wins silently — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

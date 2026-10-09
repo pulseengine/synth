@@ -31,4 +31,17 @@ artifacts:
       priority: must
       issue: "#1183"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the split is ISOLATED by a paired control and no remedy ships, AND THE ISSUE
+        THIS ARTIFACT NAMES WAS ALREADY CLOSED ON 2026-09-09, before this measurement. In a
+        DETACHED worktree, never the main checkout: with an uncommitted bump and CHANGELOG
+        section, step 0 reports DERIVED-PASS `workspace version 0.84.0 matches` while step 8
+        reports DERIVED-FAIL `topmost section is [0.83.0]`. Committing the SAME BYTES flips step
+        8 to DERIVED-PASS with 155 sections parsed and leaves step 0 unchanged. COMMITTEDNESS IS
+        THE SOLE DISCRIMINATOR, which rules out content, parsing and ordering as the cause.
+        CONFOUND NAMED rather than hidden: that run reports failures=5, and the other four are
+        independent of this split — notably the pin sweep, because only the workspace version
+        was bumped. The verdict rests on the step-0/step-8 PAIR, which is why it was run both
+        ways.
       done-when: "manual:2027-03-31 the conformance gate reads one slot from the worktree and another from the ref — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

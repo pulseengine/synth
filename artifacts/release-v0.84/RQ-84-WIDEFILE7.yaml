@@ -29,4 +29,14 @@ artifacts:
       priority: must
       issue: "#1439"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        DEFERRED — the refuting command is NOT RUN and the retry stays OUT, which is this
+        artifact's own default. It requires re-running the disassembly with the retry applied
+        locally and confirming the abs-encoding count is still zero and the multiply multiset
+        intact, which needs a `synth` matching the workspace. MEASURED at the release commit:
+        3.6 GiB free against a ~12 GiB full build, so it is not attemptable, and no recorded
+        disassembly exists in the tree to re-read instead — there is no `scripts/repro/*1439*`
+        and the #1439 hits under `docs/` are review records rather than a disassembly artifact.
+        UNPROVEN rather than inferred, and the tripwire stays armed.
       done-when: "manual:2027-03-31 the cause is NAMED, or the retry stays out for a fourth release — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

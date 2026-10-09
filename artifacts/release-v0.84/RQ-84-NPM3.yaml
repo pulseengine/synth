@@ -27,4 +27,14 @@ artifacts:
       priority: should
       issue: "#1460"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        BLOCKED OUTSIDE THIS REPOSITORY — the gap is OPEN and the credential is not ours to
+        rotate. Refuting command, queried WITH a User-Agent because a 403 without one is not a
+        "not published" result: the registry reports `dist-tags.latest` 0.69.0 across 39
+        published versions, while the tag list holds 152 tags with v0.83.0 newest and FOURTEEN
+        tags after 0.69.0 spanning fourteen minors. The gap has NOT closed, so the lane stands
+        and the remedy is an `NPM_TOKEN` rotation outside this repository. The fourteen is
+        DERIVED here rather than carried, because the figure was thirteen before v0.83.0 was
+        pushed.
       done-when: "manual:2027-03-31 the npm gap, with its blocker stated as the human action it is — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
