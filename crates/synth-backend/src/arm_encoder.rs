@@ -1753,12 +1753,32 @@ impl ArmEncoder {
             }
 
             // Memory management (ARM32 encoding)
-            ArmOp::MemorySize { rd } => {
+            ArmOp::MemorySize { rd, page_log2 } => {
                 let rd_bits = reg_to_bits(rd);
-                // MOV rd, R10, LSR #16  (memory size in bytes / 65536 = pages)
-                // cond|000|1101|S|0000|Rd|shift5|type|0|Rm
-                // LSR #16: shift5=10000, type=01
-                0xE1A00820 | (rd_bits << 12) | 0x0A // Rm=R10, shift=16, LSR
+                let r10_bits = reg_to_bits(&Reg::R10);
+                // R10 holds the size in BYTES; `memory.size` answers in DECLARED
+                // pages, so shift right by log2(page size) (#1441).
+                //
+                // SHIFT 0 IS NOT AN LSR, and this is the trap the fix had to
+                // avoid: in `cond|000|1101|S|0000|Rd|shift5|type|0|Rm` an
+                // `shift5` of 0 with `type=01` (LSR) means SHIFT BY 32, not by
+                // zero. `(pagesize 1)` therefore encodes as LSL #0 — the
+                // canonical `MOV rd, R10` — and a naive "shift by page_log2"
+                // would have emitted a shift of 32 and returned 0. The #180/#185
+                // encoder rule applies: Ok-or-Err, never a silent wrong word.
+                if *page_log2 == 0 {
+                    // LSL #0 == MOV rd, R10
+                    0xE1A00000 | (rd_bits << 12) | r10_bits
+                } else if *page_log2 < 32 {
+                    // LSR #page_log2: shift5=page_log2, type=01
+                    0xE1A00000 | (rd_bits << 12) | (page_log2 << 7) | (0b01 << 5) | r10_bits
+                } else {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "#1441 internal: memory.size page_log2 = {page_log2} is \
+                         not encodable as an ARM32 shift (0..=31) — refusing \
+                         rather than emitting a shift of 32"
+                    )));
+                }
             }
 
             ArmOp::MemoryGrow { rd, .. } => {
@@ -3826,23 +3846,47 @@ impl ArmEncoder {
             }
 
             // MemorySize (Thumb-2)
-            ArmOp::MemorySize { rd } => {
-                // LSR rd, R10, #16 — memory size in bytes / 65536 = pages
-                // Thumb-2 16-bit: LSRS Rd, Rm, #imm5 — 0000 1 imm5 Rm Rd
+            ArmOp::MemorySize { rd, page_log2 } => {
+                // R10 holds the size in BYTES; `memory.size` answers in DECLARED
+                // pages, so shift right by log2(page size) (#1441). 16 for the
+                // default 64 KiB page, 0 for `(pagesize 1)`.
                 let rd_bits = reg_to_bits(rd);
                 let r10_bits = reg_to_bits(&Reg::R10);
-                if rd_bits < 8 && r10_bits < 8 {
-                    let instr: u16 =
-                        0x0800 | (16u16 << 6) | ((r10_bits as u16) << 3) | (rd_bits as u16);
+                if *page_log2 >= 32 {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "#1441 internal: memory.size page_log2 = {page_log2} is \
+                         not encodable as a Thumb-2 shift (0..=31) — refusing \
+                         rather than emitting a shift of 32"
+                    )));
+                }
+                // SHIFT 0 IS NOT AN LSR. In the 16-bit form `0000 1 imm5 Rm Rd`
+                // an `imm5` of 0 is not "LSR #0" at all, and in the 32-bit form
+                // `type=01` with a zero immediate means SHIFT BY 32. So
+                // `(pagesize 1)` must encode as a MOV. Emitting the shift
+                // unconditionally would have returned 0 for every
+                // `memory.size` on a byte-paged memory — a silent wrong answer
+                // produced by the fix itself.
+                if rd_bits < 8 && r10_bits < 8 && *page_log2 != 0 {
+                    // 16-bit LSRS Rd, Rm, #imm5 (unreachable for R10, which is
+                    // a high register — kept because the guard, not the
+                    // register allocation, is what makes it safe).
+                    let instr: u16 = 0x0800
+                        | ((*page_log2 as u16) << 6)
+                        | ((r10_bits as u16) << 3)
+                        | (rd_bits as u16);
                     Ok(instr.to_le_bytes().to_vec())
                 } else {
-                    // Thumb-2 32-bit LSR: 1110 1010 010 0 1111 | 0 imm3 Rd imm2 01 Rm
-                    let imm5: u32 = 16;
+                    // Thumb-2 32-bit: 1110 1010 010 0 1111 | 0 imm3 Rd imm2 tt Rm
+                    // `tt` = 01 for LSR, 00 for LSL. LSL #0 is the canonical
+                    // MOV.W Rd, Rm.
+                    let imm5: u32 = *page_log2;
                     let imm3 = (imm5 >> 2) & 0x7;
                     let imm2 = imm5 & 0x3;
+                    let shift_type: u32 = if imm5 == 0 { 0x00 } else { 0x10 };
                     let hw1: u16 = 0xEA4F;
                     let hw2: u16 =
-                        ((imm3 << 12) | (rd_bits << 8) | (imm2 << 6) | 0x10 | r10_bits) as u16;
+                        ((imm3 << 12) | (rd_bits << 8) | (imm2 << 6) | shift_type | r10_bits)
+                            as u16;
                     let mut bytes = hw1.to_le_bytes().to_vec();
                     bytes.extend_from_slice(&hw2.to_le_bytes());
                     Ok(bytes)
@@ -12892,11 +12936,53 @@ mod tests {
 
     #[test]
     fn test_encode_memory_size_thumb2() {
+        // #1441: EXACT BYTES, both page sizes. The previous assertion was
+        // `!code.is_empty()`, which passes for ANY encoding — including the
+        // shift-of-32 this lane's whole risk is about.
         let encoder = ArmEncoder::new_thumb2();
-        let op = ArmOp::MemorySize { rd: Reg::R0 };
-        let code = encoder.encode(&op).unwrap();
-        // R0 and R10 are not both low registers, so this needs careful handling
-        assert!(!code.is_empty(), "MemorySize should produce code");
+
+        // Default 64 KiB page: LSR.W R0, R10, #16.
+        // 1110 1010 010 0 1111 | 0 imm3=100 Rd=0000 imm2=00 01 Rm=1010
+        let dflt = encoder
+            .encode(&ArmOp::MemorySize {
+                rd: Reg::R0,
+                page_log2: 16,
+            })
+            .unwrap();
+        assert_eq!(
+            dflt,
+            vec![0x4F, 0xEA, 0x1A, 0x40],
+            "the DEFAULT page must stay BYTE-IDENTICAL to the pre-#1441 \
+             encoding — every frozen fixture depends on it"
+        );
+
+        // `(pagesize 1)`: the byte count IS the page count, so MOV.W R0, R10.
+        // NOT an LSR with a zero immediate, which encodes a shift BY 32 and
+        // would make `memory.size` return 0 for every byte-paged memory.
+        let ps1 = encoder
+            .encode(&ArmOp::MemorySize {
+                rd: Reg::R0,
+                page_log2: 0,
+            })
+            .unwrap();
+        assert_eq!(
+            ps1,
+            vec![0x4F, 0xEA, 0x0A, 0x00],
+            "(pagesize 1) must encode MOV.W R0, R10 — a shift of 0 is not an LSR"
+        );
+        assert_ne!(ps1, dflt, "the two page sizes must not emit the same word");
+
+        // An unencodable shift REFUSES rather than emitting a wrong word
+        // (#180/#185: the encoder is Ok-or-Err, never silently wrong).
+        assert!(
+            encoder
+                .encode(&ArmOp::MemorySize {
+                    rd: Reg::R0,
+                    page_log2: 32,
+                })
+                .is_err(),
+            "page_log2 = 32 is not an encodable shift and must be refused"
+        );
     }
 
     #[test]

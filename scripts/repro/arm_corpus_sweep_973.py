@@ -270,7 +270,22 @@ EXPECTED_DECLINES = {
 # appear in the refusal, so an entry cannot silently start matching some OTHER
 # failure.
 REFUSED_BY_DESIGN = {
-    "custom_page_size_1315.wat": "#1315",
+    # RQ-83-PAGESIZE5 (#1441) REMOVED `custom_page_size_1315.wat` from this table,
+    # and the removal is the honest move rather than reshaping the sweep to pass.
+    # This sweep compiles `--relocatable --embedder-data-init --embedder-global-init`,
+    # which is EXACTLY the path where `(pagesize 1)` is now HONOURED. The ratchet
+    # fired with the right message — "the refusal regressed, or the entry is stale" —
+    # and it is the entry: the refusal was narrowed deliberately, so a fixture that
+    # must refuse here no longer must.
+    #
+    # COVERAGE MOVED, NOT LOST, which is the only thing that makes a removal legitimate:
+    #   * `crates/synth-cli/tests/refuses_custom_page_size_1315.rs` still pins the
+    #     refusal on the SELF-CONTAINED and RV32 paths (both still refuse), and its
+    #     relocatable case flipped to asserting a successful compile in the same change;
+    #   * `scripts/repro/pagesize_oracle_1441.py` pins the ACCEPTANCE — both
+    #     `__synth_mem_size_k` (the declared byte count) and `__synth_mem_region_k`
+    #     (the PMSA-legal extent) — plus all 17 spec-INVALID page sizes still refusing.
+    # `shared_memory_1315.wat` is untouched and still refuses by design.
     "shared_memory_1315.wat": "#1315",
 }
 

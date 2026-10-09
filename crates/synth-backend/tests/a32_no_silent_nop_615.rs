@@ -542,7 +542,10 @@ fn representatives() -> Vec<ArmOp> {
             rd: Reg::R1,
             addr: m.clone(),
         },
-        MemorySize { rd: Reg::R1 },
+        MemorySize {
+            rd: Reg::R1,
+            page_log2: 16,
+        },
         MemoryGrow {
             rd: Reg::R1,
             rn: Reg::R2,

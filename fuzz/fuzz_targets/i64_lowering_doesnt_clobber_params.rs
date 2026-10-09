@@ -266,7 +266,7 @@ fn writes(op: &ArmOp) -> Vec<Reg> {
         | ArmOp::Select { rd, .. }
         | ArmOp::LocalGet { rd, .. }
         | ArmOp::GlobalGet { rd, .. }
-        | ArmOp::MemorySize { rd }
+        | ArmOp::MemorySize { rd, .. }
         | ArmOp::MemoryGrow { rd, .. } => vec![*rd],
 
         // #1055: the i64 unary / comparison pseudo-ops were missing from

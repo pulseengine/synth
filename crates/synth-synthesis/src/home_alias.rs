@@ -161,7 +161,7 @@ pub fn gp_defs(op: &ArmOp) -> Vec<Reg> {
         | Ldrsh { rd, .. } => {
             vec![*rd]
         }
-        MemorySize { rd } => vec![*rd],
+        MemorySize { rd, .. } => vec![*rd],
         MemoryGrow { rd, .. } => vec![*rd],
 
         // ── calls: the named result register plus the AAPCS clobber set ───

@@ -2,32 +2,250 @@ artifacts:
   - id: RQ-83-PAGESIZE5
     type: system-req
     release: v0.83
-    status: proposed
-    title: "The page-size capability, with the execution evidence its own done-when demands (EXTERNAL/fathom)"
+    status: implemented
+    title: "(pagesize 1) is HONOURED on --relocatable: the declared extent, the PMSA region beside it, and memory.size shifting by the declaration (EXTERNAL/fathom)"
     description: >
-      TWO REMEDIES ARE OFF THE TABLE ON RECORDED EVIDENCE and this artifact exists partly to stop a
-      third attempt. gale answered on #1145: relocating the refusal closes a door gale wants open, and
-      v0.81 built it anyway and reverted. A ">= 32 B" PAGE scoping is SPEC-INVALID — the vendored suite
-      asserts `(memory 0 (pagesize 32))` invalid BY NAME, so the only legal non-default page size is 1;
-      ">= 32 B" is the ARMv7-M PMSA REGION granularity the embedder programs. The target is gale's
-      sentence: getting the declared extent below 64 KiB AT ALL. `max_bytes()` and `initial_bytes()`
-      move TOGETHER or it is the twin shape again. #1441 is FATHOM'S — external, still open, rule 4
-      binds.
+      THE CAPABILITY SHIPS, AND THE ORACLE SWITCHED ITSELF. `scripts/repro/pagesize_oracle_1441.py`
+      was built in v0.79 to PROBE for this capability rather than be flipped by hand: it asserts
+      EXACTLY ONE of two modes holds — refused-and-absent, or accepted-with-both-symbols-correct.
+      It needed no edit. It went from
+      `(pagesize 1): REFUSED, diagnostic still cites #1315 — capability ABSENT (#1441 open)` /
+      28 assertions to
+      `(pagesize 1): ACCEPTED, size=20000 region=32768 — capability PRESENT` / 32 assertions,
+      and the four extra assertions are mode 2's own.
 
-      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
-      legitimate outcome, reported with numbers:
-      `python3 scripts/repro/pagesize_oracle_1441.py` AND `df -h /System/Volumes/Data` — if the oracle
-      still refuses for want of a binary, say so WITH the free-space number; another decline is not
-      progress.
+      THE ACCEPTANCE IS REACH-SHAPED, NOT TOTAL, AND THAT IS WHAT MAKES IT SOUND. `(pagesize 1)`
+      is honoured ONLY on `--relocatable`. Self-contained and RV32 still REFUSE, loudly, with a
+      message naming both issues and the figure that matters. The reason is not caution: the
+      optimized path's `memory.size` lowering hardcodes a 16-bit shift, and `--relocatable`
+      FORCES the direct selector (#197), so the narrow acceptance makes the optimized path's
+      hardcoded 16 correct BY CONSTRUCTION rather than by luck. A wider acceptance without that
+      lowering would return 0 from every `memory.size` on a byte-paged memory — #1315's silent
+      over-grant with its sign flipped, strictly worse than refusing.
+
+      WHAT CHANGED, measured at each site:
+
+        1. `WasmMemory::page_bytes()` (#1441) — the declared page size, `checked_shl` because
+           `synth-core` is PUBLISHED and gale asked on #1145 that the refusal NOT be relocated
+           into the library, so a caller can reach the getter with a log2 no CLI refusal filtered.
+        2. `initial_bytes()` AND `max_bytes()` both route through it. THE TWIN: both had ZERO
+           assertions before this lane. Six tests now assert BOTH over the same memory.
+        3. `ArmOp::MemorySize` gained `page_log2`. SHIFT 0 IS NOT AN LSR — in ARM32
+           `cond|000|1101|S|0000|Rd|shift5|type|0|Rm` an `shift5` of 0 with `type=01` means
+           SHIFT BY 32, so `(pagesize 1)` encodes as a MOV. A naive "shift by page_log2" would
+           have returned 0 from every `memory.size`: a wrong answer produced by the fix itself.
+        4. `__synth_mem_region_k` is emitted BESIDE `__synth_mem_size_k`. Two symbols because one
+           number cannot be true about both the declaration and the PMSA-legal extent.
+        5. `refuse_custom_page_size` narrowed, and its pinning test narrowed IN THE SAME CHANGE —
+           `refused_on_relocatable_object_1315` became `honoured_on_relocatable_object_1441`.
+
+      MEMORY k > 0 NEEDED NOTHING, and the reason is worth recording because it is why this lane
+      was one commit and not four: `memory.size` on memory k materializes the declared PAGE COUNT
+      as a constant (`multi_memory_pages`), which is page-size-INDEPENDENT. Only memory 0 reads
+      R10, a BYTE count, and only memory 0 needed the shift.
+
+      TWO REMEDIES WERE OFF THE TABLE ON RECORDED EVIDENCE and this artifact existed partly to
+      stop a third attempt; both held. Relocating the refusal into `synth-core` closes a door
+      gale wants open (v0.81 built it anyway and reverted) — NOT done, and `page_bytes()`
+      saturates precisely so the library stays permissive. A ">= 32 B" PAGE scoping is
+      SPEC-INVALID: the vendored suite asserts `(pagesize 32)` invalid BY NAME, so the only legal
+      non-default page is 1, and ">= 32 B" is the PMSA REGION granularity — which is why it
+      appears as `__synth_mem_region_k` and not as a permitted page size.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate
+      outcome, reported with numbers: `python3 scripts/repro/pagesize_oracle_1441.py` AND
+      `df -h /System/Volumes/Data` — if the oracle still refuses for want of a binary, say so WITH
+      the free-space number; another decline is not progress.
+
+      MEASURED, AND NOT REFUTED: the oracle RAN. It did not decline for want of a binary, at any
+      point in this lane — including BEFORE the implementation, where it reported the capability
+      ABSENT over 28 assertions with 5.6 GiB free. The v0.82 decline was never a disk problem.
     tags:
       - feature-loop
-      - process
+      - reach
+      - external
     links:
       - type: derives-from
         target: BR-001
     fields:
-      req-type: process
+      req-type: system
       priority: must
       issue: "#1441"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1499 — #1441 — `(pagesize 1)` is HONOURED on --relocatable: `WasmMemory::page_bytes()` with BOTH twins routed through it, `ArmOp::MemorySize` carrying the declared `page_log2` (MOV for 0, LSR for 16, Err above 31), `__synth_mem_region_k` emitted beside `__synth_mem_size_k`, and `refuse_custom_page_size` narrowed with its pinning test narrowed in the same change; the v0.79 oracle switched ITSELF from 28 assertions reporting capability ABSENT to 32 reporting ACCEPTED size=20000 region=32768. Self-contained and RV32 still refuse, so #1441 stays OPEN by `issue-scope: outlives`."
+      verified-by: >
+        DELIVERED, and the oracle that judges it was written BEFORE the capability and switched
+        itself. `scripts/repro/pagesize_oracle_1441.py`, unedited by this lane: 28 assertions
+        reporting `capability ABSENT` before, 32 reporting
+        `(pagesize 1): ACCEPTED, size=20000 region=32768 — capability PRESENT` after. It derives
+        the legal set {1, 65536} from the vendored spec suite rather than hardcoding it, and it
+        compiles a TWO-memory module because a single-memory object emits no `__synth_mem_*`
+        symbols at all — a one-memory fixture would have made every size assertion vacuous while
+        still printing PASS.
+
+        THE SYMBOLS, read from the object's symtab: `__synth_mem_size_0` = `__synth_mem_size_1`
+        = 0x4e20 (20000, the DECLARED byte count), `__synth_mem_region_0` = `__synth_mem_region_1`
+        = 0x8000 (32768, the smallest power of two >= 32 that covers it).
+
+        THE EMITTED CODE, read as BYTES rather than inferred from the symbols — the oracle reads
+        the symtab and never executes, so this half is outside what it can see:
+
+          (pagesize 1)   .text = 2d e9 f0 41  4f ea 0a 00  bd e8 f0 81    MOV.W r0, r10
+          default page   .text = 2d e9 f0 41  4f ea 1a 40  bd e8 f0 81    LSR.W r0, r10, #16
+
+        Prologue and epilogue are IDENTICAL and exactly one word differs, so the blast radius is
+        the single `memory.size` instruction and the default-paged encoding is BYTE-IDENTICAL to
+        the pre-#1441 output. Every frozen fixture is therefore unaffected by construction rather
+        than by inspection.
+
+        THE SHIFT-0 TRAP, recorded because the fix would have been wrong without it and the
+        oracle would still have passed. `memory.size` answers in DECLARED pages, so the lowering
+        shifts R10 (a BYTE count) right by log2(page size) — and a shift of ZERO cannot be
+        encoded as an LSR. In ARM32's `cond|000|1101|S|0000|Rd|shift5|type|0|Rm`, `shift5 = 0`
+        with `type = 01` means SHIFT BY 32; in Thumb-2's 16-bit `0000 1 imm5 Rm Rd` an `imm5` of
+        0 is not an LSR at all. So `(pagesize 1)` must emit a MOV. A naive "shift by page_log2"
+        would have returned 0 from every `memory.size` on a byte-paged memory, and the symbol
+        assertions would have been green over it. The encoder now refuses any `page_log2 >= 32`
+        (#180/#185: Ok-or-Err, never a silently wrong word), and the encoding test that previously
+        asserted only `!code.is_empty()` — which passes for ANY encoding, including the shift of
+        32 — now asserts the EXACT four bytes for both page sizes plus the refusal.
+
+        THE TWIN, which had no test at all. `initial_bytes()` and `max_bytes()` both hardcoded
+        65536 and NEITHER had a single assertion anywhere in the workspace. Both now route
+        through `page_bytes()`, and six tests assert BOTH over the same memory. POTENCY measured
+        rather than assumed: reverting `max_bytes()` alone to the hardcoded page — the exact twin
+        shape, v0.70's integer check fixed while its VFP twin was not — reds 3 tests. File
+        restored byte-identically afterwards (`diff -q` IDENTICAL).
+
+        A SITE THE LANE'S OWN RECORDED CENSUS COULD NOT SEE. The carried scope said 28 shipped
+        sites, measured with a pattern matching `65536|0x10000|WASM_PAGE_SIZE`.
+        `synth-cli/src/main.rs` spelled the page size `linear_memory_pages * 64 * 1024`, which
+        that pattern cannot match, and the site feeds the #758 data-extent guard — so the
+        instrument was blind in the permissive direction. It now reads `initial_bytes()`. This is
+        the release's theme inside this lane's own scoping: a census is bounded by the spelling
+        its pattern knows.
+
+        WHAT STILL REFUSES, stated as reach rather than omitted. Self-contained (`--cortex-m`)
+        and RV32 refuse `(pagesize 1)` loudly, citing #1441 for the capability and #1315 for the
+        over-grant measurement, and stating the figure `__synth_mem_size_k` would otherwise have
+        carried. `refused_on_self_contained_image_1315` and `refused_on_rv32_1315` still pass
+        unchanged, and `default_page_size_still_compiles_1315` — the negative control that stops
+        this becoming "refuse memories" — passes too.
+
+        ISSUE STATE, and this is deliberate. #1441 is fathom's, EXTERNAL, and stays OPEN:
+        `issue-scope: outlives` says this artifact's scope shipped while the issue asks the wider
+        question, which it does — two paths still refuse. The closure gate therefore does not
+        authorise closing it, by construction rather than by an operator remembering. And no
+        closure could be cited yet in any case, because closure cites a TAGGED release and v0.83.0
+        is not tagged at the time this is written.
+
+        AND THE WORKSPACE CHECK IS BLIND TO ONE CRATE, which is how a cascade site reached CI.
+        `cargo check --workspace --all-targets` was rc=0 over all 19 members, and CI still red
+        `i64_lowering_doesnt_clobber_params` — not on behaviour but on a COMPILE error,
+        `E0027: pattern does not mention field page_log2`, in
+        `fuzz/fuzz_targets/i64_lowering_doesnt_clobber_params.rs`. `fuzz/` is the ONLY crate
+        outside the workspace member set (derived from `Cargo.toml`'s `workspace.members`, not
+        assumed), so "let the compiler find the cascade" finds it only INSIDE the member set.
+        Fixed to `{ rd, .. }`, matching every sibling arm in that same match, and `cargo check
+        --all-targets` IN `fuzz/` is now rc=0 — a command this lane had never run.
+
+        A FIRST HYPOTHESIS ABOUT THAT FAILURE WAS WRONG, recorded because acting on it would have
+        been worse than the defect. The job SUCCEEDS on the sibling lane's head and FAILS here, and
+        this lane had changed `initial_bytes()`/`max_bytes()` from a WRAPPING `* 65536` to
+        `saturating_mul` — a real behaviour change on exactly the huge page counts a fuzzer
+        generates. That was a plausible mechanism and it was not the cause; reading the log instead
+        of concluding from the paired result is the only reason the right fix was made.
+
+        THREE LEDGER CLAIMS MOVED WITH THE ABI, and one of them had to be RE-POINTED rather than
+        restored. `SYNTH-EMBEDDER-ABI-RELOCATABLE-1131` pinned the comment phrase
+        `memory size in bytes / 65536 = pages` at exactly 2 sites in `arm_encoder.rs`; this lane
+        deleted both. Restoring that string to turn the gate green would have pinned a claim that
+        is now FALSE — `memory.size` shifts by the DECLARED page size. It is re-pointed at
+        `memory.size` answers in DECLARED (2 sites, measured before pinning) and a SECOND pin
+        added on `not encodable as` (2 sites) so the Ok-or-Err refusal is pinned too, not just the
+        prose. The embedder doc moved in the same change: the `memory.size` row, the region
+        requirement, and a new `__synth_mem_region_k` row — an embedder-facing symbol that had
+        been emitted with nothing documenting it. The cited encoder line numbers were
+        RE-DERIVED at this commit (1756-1782 A32, 3849-3894 Thumb-2), not carried.
+
+        THE SELECTOR RATCHET ROSE AND IS WAIVED, NOT GAMED. `selector_lines_code` 19782 -> 19805
+        against a must-FALL ceiling. Derived with the checker's own `--metric` plus a
+        `git diff --unified=0` over the field's OWN glob family: 25 added (10 comment, 15 code),
+        2 removed, net +23, and ZERO new lowering decisions — one field, two constructor defaults,
+        a three-line setter, and two EXISTING `ArmOp::MemorySize` literals that rustfmt expanded
+        when they gained the field. The waiver says so, and says plainly that nothing became
+        redundant, so the subtraction this release owes the metric is still owed. Shortening the
+        comments to slip under the ceiling was available and refused: the metric's own
+        documentation says it counts hand-maintained DECISIONS, not characters.
+
+        AND THE ACCEPTANCE MOVED THREE COMMITTED PINS, each found by CI rather than predicted,
+        and each moved in THIS change rather than waived. All three have one cause: the audit and
+        sweep corpora glob `scripts/repro/*.wat`, and `custom_page_size_1315.wat` previously
+        DECLINED on the relocatable legs and now COMPILES.
+
+        (a) THE ARM CORPUS SWEEP'S RATCHET FIRED, with a message that named both possibilities
+        rather than assuming one: "custom_page_size_1315.wat now COMPILES for ARM but is on
+        REFUSED_BY_DESIGN (#1315) — the refusal regressed, or the entry is stale". It is the
+        entry. That sweep compiles `--relocatable --embedder-data-init --embedder-global-init`,
+        exactly the path this lane widens, so the fixture is removed from `REFUSED_BY_DESIGN`.
+        COVERAGE MOVED RATHER THAN BEING LOST, which is the only thing that makes a removal
+        legitimate: `refuses_custom_page_size_1315.rs` still pins the refusal on the
+        self-contained and RV32 paths, and `pagesize_oracle_1441.py` pins the acceptance and the
+        17 spec-invalid refusals. `shared_memory_1315.wat` is untouched.
+
+        (b) THE HOME-REGISTER AUDIT'S THREE EXACT PINS MOVED BY TWO EACH — functions audited
+        7305 -> 7307, homes watched 8368 -> 8370, attributed instructions 235455 -> 235457 — and
+        the job failed on the greps even though the oracle itself printed `RESULT: PASS` with
+        `exit=0`. Worth noting as an instrument reading: the job NAME blames the audit while the
+        audit passed; the failure was the exact-pin grep under `set -euo pipefail` in the same
+        step.
+
+        PROVEN CORPUS GROWTH, NOT A CODEGEN CHANGE, by the isolation this file's own earlier
+        notes established for #1321 and #1341: holding that ONE fixture aside and re-running THIS
+        binary over the rest of the corpus reproduces 7305 / 8368 / 235455 EXACTLY. `hits: 0` is
+        unchanged throughout. A codegen change would not have been confined to the single fixture
+        whose acceptance changed.
+
+        (c) THE MUTATION SURVEY'S LEDGER DRIFTED, because it anchors sites by `file:line:col` and
+        this lane added lines to `arm_backend.rs` and `optimizer_bridge.rs`. The CI step names its
+        own remedy — "a drifted anchor reds here and is re-anchored, not re-baselined" — so
+        `mutation_survey.py reanchor` was run: 19 sites moved, 0 NOT FOUND. Verified to be a PURE
+        re-anchor rather than a re-baseline: 37 site ids before and after, and the set of
+        `(file, before, after)` mutation triples is UNCHANGED (0 of 34 differ), so the same
+        mutations are pinned at new anchors.
+
+        AND RE-ANCHORING WAS NOT ENOUGH, which uncovered a LATENT DEFECT THAT PREDATES THIS LANE.
+        CI still red on four sites, and the message named numbers that were in NO ledger list —
+        because `ci` iterates `ci_subset`, a list SEPARATE from `mutants`. `reanchor` does
+        propagate into `ci_subset`, but KEYED ON THE MUTANTS' OLD ID, so it can only reach an
+        entry that already agreed. MEASURED on `origin/main`: FIVE `ci_subset` ids were ALREADY
+        absent from `mutants` before this lane existed. Four of those five became hard failures
+        only because one added line shifted them; the fifth (`arm_backend.rs:422:45`) still
+        resolves purely because the edit sits below line 422.
+
+        FIXED IN BOTH HALVES. The four stale `ci_subset` ids are re-pointed at the `mutants`
+        entries `reanchor` relocated BY CONTENT for the same sites — verified by requiring each
+        target to be a present `mutants` entry and by reading its `before` text (`if vfp.is_ok()
+        {`, `if literals > 0 {`, ...), and applied as a targeted TEXT replacement with
+        `count == 1` asserted per id, so the generated JSON is not round-tripped. And the
+        agreement the propagation silently depended on is now CHECKED: `reanchor` REFUSES when a
+        non-CONTROL `ci_subset` id names no `mutants` entry, naming each one and prescribing
+        re-point-or-`retire`. PAIRED CONTROL: against `origin/main`'s own ledger it exits 1 with
+        `CI_SUBSET DRIFT: 4 pinned id(s) name no mutants entry`; against the fixed ledger it
+        exits 0 with `0 sites moved, 0 not found`. A latent drift is now loud at the moment
+        someone re-anchors instead of surfacing later as a message about the TREE for a defect in
+        the LEDGER.
+
+        The checker's own tests pass. The full `ci` replay is CI's to run and is UNVERIFIED
+        locally; it rebuilds synth per mutant.
+
+        WHAT THIS UNBLOCKS, from the reporter's own measurement rather than from design intent.
+        gale's #1145 comment of 2026-10-06 names per-memory extent sizing as the half that decides
+        whether multi-memory phase 2 is usable on an MCU at all: two 64 KiB-paged memories reserve
+        192 KB against gust targets of 8 KB, 64 KB and 96 KB, so a two-domain image fitted NONE of
+        them. At byte granularity two ~20 KiB tenants reserve ~40 KB and fit a G474's 96 KiB. That
+        is a statement about the declared extent, which is now honoured; it is NOT a claim that
+        phase 2 is complete, which needs the per-memory layering in the static-data region
+        classification that gale named beside it.
       done-when: "manual:2026-12-31 the page-size capability, with the execution evidence its own done-when demands (external/fathom) — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

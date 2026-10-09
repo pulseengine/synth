@@ -334,6 +334,12 @@ pub enum ArmOp {
     // Memory management
     MemorySize {
         rd: Reg,
+        /// #1441: log2 of memory 0's DECLARED page size. R10 holds the size in
+        /// BYTES and `memory.size` must answer in DECLARED pages, so this is
+        /// the right-shift amount. 16 for the default 64 KiB page; 0 for
+        /// `(pagesize 1)`, where the byte count IS the page count and the
+        /// encoder must emit a MOV rather than a shift.
+        page_log2: u32,
     }, // Return current memory size in pages
     MemoryGrow {
         rd: Reg,

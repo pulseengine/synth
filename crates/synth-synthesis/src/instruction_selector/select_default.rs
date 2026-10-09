@@ -407,7 +407,10 @@ impl InstructionSelector {
                          select_with_stack on --relocatable (#406)"
                     )));
                 }
-                vec![ArmOp::MemorySize { rd }]
+                vec![ArmOp::MemorySize {
+                    rd,
+                    page_log2: self.memory0_page_log2,
+                }]
             }
             MemoryGrow(mem_idx) => {
                 // On embedded with fixed memory, always return -1 (cannot grow).

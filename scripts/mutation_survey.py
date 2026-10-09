@@ -1594,6 +1594,29 @@ def cmd_reanchor(args):
     for e in ledger.get("ci_subset", []):
         if e["id"] in renamed:
             e["id"] = renamed[e["id"]]
+    # RQ-83-PAGESIZE5 (#1441): THE PROPAGATION ABOVE IS KEYED ON THE MUTANTS'
+    # OLD ID, so it can only reach a `ci_subset` entry that AGREED with
+    # `mutants` to begin with. Nothing compared the two lists, and on v0.83's
+    # main FIVE `ci_subset` ids were already absent from `mutants` — a LATENT
+    # divergence that reached nobody until a one-line edit to
+    # `arm_backend.rs` shifted four of them, at which point `ci` failed with
+    # "site no longer exists on this tree", a message about the TREE for a
+    # defect in the LEDGER.
+    #
+    # So the agreement is now CHECKED rather than assumed: it is the property
+    # the propagation silently depends on, and an instrument whose reference
+    # comes from the thing it is reconciling is blind exactly where they differ.
+    known = {m["id"] for m in ledger["mutants"]} | {c["id"] for c in ledger.get("controls", [])}
+    drift = [e["id"] for e in ledger.get("ci_subset", [])
+             if not e["id"].startswith("CONTROL/") and e["id"] not in known]
+    if drift:
+        log(f"  CI_SUBSET DRIFT: {len(drift)} pinned id(s) name no `mutants` entry:")
+        for d in drift:
+            log(f"    {d}")
+        log("    These cannot be re-anchored by the loop above (it keys on the")
+        log("    mutants' OLD id), so they rot silently until the file moves.")
+        log("    Re-point each at the `mutants` id for the SAME site, or `retire` it.")
+        sys.exit("REFUSE: ci_subset names sites the ledger does not carry")
     problems = validate_retired(ledger)
     if problems:
         sys.exit("REFUSE: the retired list is malformed: " + "; ".join(problems))

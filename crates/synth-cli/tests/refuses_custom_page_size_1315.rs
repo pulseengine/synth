@@ -69,11 +69,35 @@ fn refused_on_self_contained_image_1315() {
     assert_refused("self", &["--cortex-m"]);
 }
 
+/// #1441 REVERSES this path's refusal, with evidence, and the test narrows in
+/// the same change rather than being deleted.
+///
+/// `(pagesize 1)` is now HONOURED on `--relocatable`: the decoder sizes each
+/// memory by its own declared page, `__synth_mem_size_k` carries the declared
+/// BYTE count, `__synth_mem_region_k` carries the PMSA-legal extent beside it,
+/// and the ARM `memory.size` lowering shifts by the declared log2 — measured at
+/// the byte level as `4f ea 0a 00` (`MOV.W r0, r10`) where the default page
+/// still emits `4f ea 1a 40` (`LSR.W r0, r10, #16`).
+///
+/// The SYMBOL assertions live in `scripts/repro/pagesize_oracle_1441.py`, which
+/// compiles a TWO-memory module — a single-memory object emits no
+/// `__synth_mem_*` symbols at all, so asserting them on this one-memory fixture
+/// would be vacuous. What this test pins is narrower and still load-bearing:
+/// the path ACCEPTS, and no longer emits the refusal.
 #[test]
-fn refused_on_relocatable_object_1315() {
-    assert_refused(
+fn honoured_on_relocatable_object_1441() {
+    let (ok, text) = run(
         "reloc",
+        "custom_page_size_1315.wat",
         &["--target", "cortex-m3", "--all-exports", "--relocatable"],
+    );
+    assert!(
+        ok,
+        "(pagesize 1) must now COMPILE on --relocatable (#1441):\n{text}"
+    );
+    assert!(
+        !text.contains("#1315"),
+        "the refusal still fires on the path #1441 widened:\n{text}"
     );
 }
 

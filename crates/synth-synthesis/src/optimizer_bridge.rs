@@ -6491,7 +6491,13 @@ impl OptimizerBridge {
                     // R10` returned the size in BYTES, not pages, so `memory.size`
                     // (and the `memory.grow(0)` fold that lowers to it) was 65536×
                     // too large on the optimized path.
-                    arm_instrs.push(ArmOp::MemorySize { rd });
+                    // #1441: 16 is correct BY CONSTRUCTION on this path, not by
+                    // luck. A custom page size is accepted only on
+                    // `--relocatable`, which forces the DIRECT selector (#197),
+                    // so the optimized path cannot observe one — and the
+                    // optimized path already declines every multi-memory op.
+                    // If that acceptance ever widens, this is a site to fix.
+                    arm_instrs.push(ArmOp::MemorySize { rd, page_log2: 16 });
                     last_result_vreg = Some(dest.0);
                 }
 
