@@ -2244,7 +2244,9 @@ class LandedTwoContextR15(unittest.TestCase):
     must therefore carry BOTH, and until v0.83 nothing required it — v0.82 hit the
     R4-lane red on exactly this and fixed it by hand.
 
-    THE SCOPE IS A MEASUREMENT. Over ALL releases the rule's population is 48 and
+    THE SCOPE IS A MEASUREMENT. Over ALL releases the rule's population is 49 at
+    d011ced7 where it landed (48 at the commit before, 56 at v0.83's cut — the
+    population grows with every lane, so it is stated WITH a commit) and
     its day-one red count is TWENTY-FIVE, because historical `landed:` entries name
     the PR ALONE and never reach `_acknowledge` (it only runs over the current
     window). Scoped to the release being cut the count is ZERO and v0.82's twelve

@@ -64,8 +64,11 @@ artifacts:
         tree and the v0.83 red count is genuinely 0, so the argument stands — only the two
         populations were wrong, and wrong in the project's own named way: a count invalidated by
         the edit that writes it. The remedy the repo already uses is to state the commit, which
-        RQ-83-ARCHMODEL2 does two files away and this artifact did not. The stale 48 was also
-        pinned into shipped source and is corrected there in the same commit. DAY-ONE REDS 0 — and v0.82's twelve artifacts all pass, which is what shows the
+        RQ-83-ARCHMODEL2 does two files away and this artifact did not. The stale 48 was also pinned into shipped source at TWO sites. Round 1 corrected one and
+        this sentence claimed the sweep was complete; ROUND 2 found the second surviving in
+        `scripts/test_status_evidence_check.py`, swept the whole tree, and confirmed exactly one
+        live site remained. Both are corrected now. "Corrected there in the same commit" read as
+        COMPLETE and was not — the fact, not the cited site. DAY-ONE REDS 0 — and v0.82's twelve artifacts all pass, which is what shows the
         convention is the practice rather than an aspiration. The 25 are not defects: they name
         the PR alone under the older convention and are never acknowledgment-checked, because
         `_acknowledge` runs only over the current window.
