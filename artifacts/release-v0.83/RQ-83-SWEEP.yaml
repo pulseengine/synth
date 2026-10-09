@@ -1,0 +1,107 @@
+artifacts:
+  - id: RQ-83-SWEEP
+    type: system-req
+    release: v0.83
+    status: proposed
+    title: "The board CAN answer 'is this still broken?' — and the answer for the pinned set is YES, which refutes verify-and-close as a strategy"
+    description: >
+      MAINTAINER-REQUESTED mid-release: reduce the open-issue count as far as evidence allows.
+      The plan was a verify-and-close sweep over the 54 open issues. THAT PLAN IS REFUTED AS A
+      STRATEGY, with numbers, and the refutation is the deliverable.
+
+      THE PINS ANSWER THE QUESTION #1373 SAYS THE BOARD CANNOT. #1428's audit established that
+      all six non-empty `KNOWN*`/`PINNED*` tables are exact in BOTH directions — they go RED
+      when a pinned defect is FIXED. So a PASSING differential is positive evidence the defect
+      is STILL LIVE, not evidence it is stale. Re-measured against this release's binary rather
+      than taken from the issue:
+
+        false_reject_1229_differential      PASS — 130 false-rejections of valid WASM
+        invalid_accept_1207_differential    PASS — 38 wrongly-accepted invalid modules
+        aarch64_operand_class_1231_diff     PASS — 4 operand-class confusions
+        ra003_join_1230_differential        PASS — 3 remaining declines
+
+      Closing any of those as "verified fixed" would be a FALSE closure of a CI-proven live
+      defect. So issue reduction on this board comes from FIXING, from the unpinned remainder,
+      and from capability lanes — never from re-verification.
+
+      AND ONE ISSUE WAS RE-RUN DIRECTLY AND REPRODUCES EXACTLY. #1447: a float-typed `if`-result
+      at minimum complexity. On this release's binary, `(if (result T))` with no parameters and
+      two constant arms gives i32 COMPILES, i64 COMPILES, f32 DECLINED, f64 DECLINED — the same
+      split the issue reports, with the same message, including the part that blames
+      "function too complex" for a zero-parameter two-constant function.
+
+      ONE ISSUE IS VERIFIED CLOSEABLE, pending the tag. #1085 ("an artifact can be 'implemented'
+      in vX.Y on evidence that shipped in vX.Y-1") has a CI-wired gate: R7, labelled
+      `# ---- R7 git archaeology (#1085)` in `scripts/status_evidence_check.py`. It landed in
+      commit b2abf951, whose FIRST tag is v0.61.0, it carries `class R7EvidenceRelease` whose
+      module docstring records that disabling R7 kills at least one test, and the live gate
+      prints 84 release-scope archaeology checks with 0 skipped and 0 failures. Closure cites a
+      TAGGED release, so this is recorded here and acted on at v0.83.0, not at a merge.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate
+      outcome: run any two of the four differentials above; if either FAILS in the direction of
+      "a pinned divergence VANISHED", that defect was fixed and the strategy claim here is wrong
+      for it. And `python3 scripts/status_evidence_check.py` must print `(0 skipped)` on the
+      archaeology line, or #1085's gate is loud-skipping and the closure evidence is vacuous.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1373"
+      verification-track: manual
+      disposition: partial
+      landed: "PR #1503 — #1373 — verify-and-close is REFUTED as a strategy, with numbers. Four pinned differentials were executed against this release's binary and all four PASS, which under #1428's both-directions property means the defects are LIVE: 130 false-rejections (#1229), 38 wrongly-accepted invalid modules (#1207), 4 operand-class confusions (#1231), 3 remaining declines (#1230). #1447 re-runs and reproduces exactly. #1085 is VERIFIED CLOSEABLE and recorded rather than closed, because closure cites a TAGGED release. Issue reduction has to come from fixes, from the unpinned remainder, and from capability lanes — never from re-verification."
+      verified-by: >
+        PARTIAL — the strategy question is ANSWERED with numbers and one closure is evidenced,
+        but the count is not materially reduced and this artifact does not pretend otherwise.
+
+        THE STRATEGY IS REFUTED, which was the point of running it rather than assuming it. Four
+        pinned differentials were executed against this release's binary and all four PASS,
+        which under #1428's both-directions property means the defects are LIVE: 130
+        false-rejections (#1229), 38 wrongly-accepted invalid modules (#1207), 4 operand-class
+        confusions (#1231), 3 remaining declines (#1230). A verify-and-close sweep over the
+        pinned set would have produced FALSE closures of CI-proven defects, which is strictly
+        worse than leaving the count where it is.
+
+        #1447 RE-RUN AND REPRODUCING: i32 compiles, i64 compiles, f32 declines, f64 declines, on
+        `-t cortex-m7dp --relocatable --all-exports`, with the diagnostic unchanged — including
+        "function too complex" about a module with zero parameters and two constant arms. Stays
+        open. The misleading clause is a cheap separate fix and is NOT done here, because a
+        diagnostic correction is not progress on the capability gap (the rule-4 shape applied
+        internally).
+
+        #1085 VERIFIED CLOSEABLE and recorded rather than closed: R7 exists, is named for it in
+        the source, first shipped in v0.61.0 (first tag containing b2abf951), is mutation-potent
+        by its own test module's record, and runs live at 84 checks / 0 skipped / 0 failures.
+        Closure cites a tagged release, so it waits for v0.83.0.
+
+        #1448 IS A HONEST NON-RESULT, recorded because the temptation was to report it as a
+        finding. A hand-written approximation of its bisection DECLINED IN BOTH ARMS — the
+        1-local case as well as the 2-local case — where the issue reports 1 compiling and 2
+        declining. That does not refute the issue and is not evidence about it: the module is
+        mine, not the reporter's, and a disagreement between my approximation and a measured
+        bisection means MY MODULE is wrong. #1448 has no committed repro, which is exactly why
+        it cannot be cheaply re-verified, and that is its precise remaining note.
+
+        THE UNPINNED REMAINDER, stated as the real reduction surface, WITH THE GLOB THAT
+        PRODUCED EACH FIGURE — because one of them moved while this artifact was being written.
+        Of 54 open issues, 16 have a NAME-MATCHED dedicated repro script under
+        `scripts/repro/*`. The "named anywhere" figure is 30 over
+        `scripts/repro/* + crates/*/tests/*.rs + crates/*/src/*.rs`, and a first pass over a
+        WIDER set (`scripts/**/*` recursive) gave 29 — the two differ because the population is
+        a property of the glob, not of the board. The directional claim is unaffected: roughly
+        two in five open issues carry no executable at all, and issue reduction has to come from
+        that remainder, from fixes, and from capability lanes — this release's PAGESIZE5 being
+        the capability case.
+
+        AND AN INSTRUMENT USED FOR THIS TRIAGE WAS TOO CRUDE TO TRUST, recorded so it is not
+        re-used. A census that mapped each issue to "the first release tag containing the newest
+        commit mentioning it" reported #1085 as v0.64.0; reading the IMPLEMENTING commit gives
+        v0.61.0. The newest mention of an issue is not the commit that fixed it, and a census
+        built on that equivalence will mis-date every closure it proposes.
+      done-when: "manual:2026-12-31 the open-issue board carries, for every open issue, either a closure citing a TAGGED release or a precise remaining note — and the pin debt is falling rather than the count being reduced by closures the pins contradict"
