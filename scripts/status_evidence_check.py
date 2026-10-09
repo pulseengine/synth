@@ -620,7 +620,9 @@ def landed_two_context(artifacts, only_version: tuple | None = None):
     fixed it BY HAND.
 
     SCOPED TO THE RELEASE BEING CUT, and the scoping is a MEASUREMENT, not a
-    convenience. Over ALL releases the population is 48 and the day-one red count
+    convenience. Over ALL releases the population is 49 at d011ced7, where this rule
+    landed (48 at the commit before it, 56 at v0.83's cut: the population grows
+    with every lane, so it is stated WITH a commit). The day-one red count
     is TWENTY-FIVE: historical `landed:` entries name the PR ALONE, which was the
     older convention, and they do not red today because `_acknowledge` only runs
     for artifacts matched by a delivery commit in the CURRENT window. A rule that

@@ -93,7 +93,12 @@ artifacts:
         Of 54 open issues, 16 have a NAME-MATCHED dedicated repro script under
         `scripts/repro/*`. The "named anywhere" figure is 30 over
         `scripts/repro/* + crates/*/tests/*.rs + crates/*/src/*.rs`, and a first pass over a
-        WIDER set (`scripts/**/*` recursive) gave 29 — the two differ because the population is
+        WIDER set (`scripts/**/*` recursive) gave 29. CORRECTED by cold review round 1: that
+        glob gives 41, not 29. Re-measured over the live 54 open issues, `scripts/**/*` matches
+        41 while `scripts/*` NON-recursive matches 29 by bare number, so 29 came from a NARROWER
+        glob and not a wider one — and the incoherence was visible with no measurement at all,
+        because a strictly WIDER set cannot return a SMALLER count. 16 and 30 reproduce exactly.
+        The population is
         a property of the glob, not of the board. The directional claim is unaffected: roughly
         two in five open issues carry no executable at all, and issue reduction has to come from
         that remainder, from fixes, and from capability lanes — this release's PAGESIZE5 being

@@ -25,7 +25,7 @@ artifacts:
       acknowledgment asks `landed:` for a DIFFERENT number before and after the merge.
 
       AND A SECOND REFUTING MEASUREMENT REFUTED THE RULE AS FIRST SCOPED, which is the more
-      useful result. Over ALL releases the rule's population is 48 and its day-one red count is
+      useful result. Over ALL releases the rule's population is 49 AT THIS ARTIFACT'S OWN COMMIT d011ced7 (it was 48 at the commit BEFORE, and reads 56 at the reviewed 6f0bcd7e — the population GROWS with every lane, so the figure is stated WITH its commit rather than refreshed) and its day-one red count is
       TWENTY-FIVE: historical `landed:` entries name the PR ALONE, which was the older
       convention, and they never red today because `_acknowledge` only runs over artifacts
       matched by a delivery commit in the CURRENT window. A rule reddening 25 shipped artifacts
@@ -56,8 +56,16 @@ artifacts:
         see at authoring time.
 
         THE SCOPE IS A MEASUREMENT AND NOT A CONVENIENCE, and it is the finding worth keeping.
-        Over ALL releases: population 48, DAY-ONE REDS 25. Scoped to the cut: population 1,
-        DAY-ONE REDS 0 — and v0.82's twelve artifacts all pass, which is what shows the
+        Over ALL releases, AT THIS ARTIFACT'S OWN COMMIT d011ced7: population 49, DAY-ONE REDS
+        25. Scoped to the cut: population 2, DAY-ONE REDS 0. CORRECTED by cold review round 1,
+        which replayed the SHIPPED predicate at every commit in the release window: 48 and 1 are
+        the values at da00e699, the commit immediately BEFORE the one that wrote them, and the
+        reviewed commit 6f0bcd7e reads 56 and 9. The DAY-ONE RED count 25 is correct at every
+        tree and the v0.83 red count is genuinely 0, so the argument stands — only the two
+        populations were wrong, and wrong in the project's own named way: a count invalidated by
+        the edit that writes it. The remedy the repo already uses is to state the commit, which
+        RQ-83-ARCHMODEL2 does two files away and this artifact did not. The stale 48 was also
+        pinned into shipped source and is corrected there in the same commit. DAY-ONE REDS 0 — and v0.82's twelve artifacts all pass, which is what shows the
         convention is the practice rather than an aspiration. The 25 are not defects: they name
         the PR alone under the older convention and are never acknowledgment-checked, because
         `_acknowledge` runs only over the current window.
@@ -69,9 +77,17 @@ artifacts:
         subject — the exact shape v0.83 exists to find.
 
         POTENCY: FIVE OF FIVE MUTANTS CAUGHT, each against the failure mode it exists for —
-        the rule returning nothing (4 tests red), the issue-missing half dropped (3), the
-        PR-missing half dropped (2), the CLAIMING skip removed (2), and the SCOPE dropped (3,
-        including the live-tree zero-day-one-reds assertion). The scope mutant needed a UNIQUE
+        the rule returning nothing (3 tests red), the issue-missing half dropped (2), the PR-
+        missing half dropped (1), the CLAIMING skip removed (1), and the SCOPE dropped (2,
+        including the live-tree zero-day-one-reds assertion). CORRECTED by cold review round 1,
+        which re-applied each named mutant and counted reds against a test class it first proved
+        AST-IDENTICAL to the one here: the measured figures are 3/2/1/1/2, each exactly ONE
+        LOWER than originally written. "Five of five caught" remains TRUE — every mutant reds at
+        least one test and the clean tree is 143 tests OK. The cause of the systematic +1 is NOT
+        determined, and round 1 refuted its own first explanation: under the return-nothing
+        mutant the live-tree assertion passes VACUOUSLY, so a placeholder `landed:` cannot
+        supply the missing red to the very mutant that explanation was invoked for. These five
+        figures were not re-run by the coordinator; they are round 1's measurement. The scope mutant needed a UNIQUE
         anchor: `if only_version is not None and version != only_version:` occurs TWICE in the
         module — here and in `authorised_close_set` — so the first attempt SKIPPED rather than
         ran, which is not the same as surviving and is recorded as such.
