@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-84-LADDER6
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "The acceptance ladder, or the auth blocker stated as the human action it is"
+    description: >
+        The ladder's measurement predates the current compiler by many minor versions, derived
+        from the tag list. Re-measuring needs the named corpus, whose last known location is a
+        volume that is NOT mounted on the release host; the host holding it refuses the offered
+        keys and ATTEMPTING PASSWORDS STAYS DECLINED. The real blocker is a one-line authorized-
+        keys append, which is a maintainer action outside this repository. NO SUBSTITUTE
+        MEASUREMENT IS TO BE PUBLISHED: a ladder measured over a DIFFERENT corpus, set beside
+        the old one as if it were a trend, is the defect a previous release named. The ladder
+        keeps its date and its stated staleness, which is a true statement, rather than gaining
+        a false freshness.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: check whether the corpus volume is mounted.
+        If it IS, the blocker has cleared and this lane is a measurement rather than a statement
+        of a blocker.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1432"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the acceptance ladder, or the auth blocker stated as the human action it is — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

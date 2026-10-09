@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-84-TWOSOURCE
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "The conformance gate reads one slot from the worktree and another from the ref"
+    description: >
+        `loop_conformance_check.py` reads the release-identity slot from `Path("Cargo.toml")` —
+        the WORKING TREE — and the changelog slot via `tree_read(self.ref, ...)` — the GIT REF.
+        So one report can say the checkout IS the release being cut while simultaneously saying
+        the notes do not describe it, with both statements true about their own source. Observed
+        at the v0.83 cut with the version bump and the notes written but uncommitted, and
+        resolved by the commit, which is the paired control. The failure message blames the
+        CONTENT when the cause is the SOURCE, so an operator who has just written the section
+        correctly reads it as an error in their own edit. The identity slot's docstring
+        deliberately makes pretag a statement about the worktree, so the remedy is to make the
+        SOURCE EXPLICIT PER SLOT rather than to force one convention on both.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: with a version bump and a CHANGELOG section
+        written and NOT committed, run the conformance checker for the release being cut. If the
+        two slots AGREE, the split is gone and this lane is moot.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1183"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the conformance gate reads one slot from the worktree and another from the ref — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

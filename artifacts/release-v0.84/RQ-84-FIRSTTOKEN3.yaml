@@ -1,0 +1,32 @@
+artifacts:
+  - id: RQ-84-FIRSTTOKEN3
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "Whether an empty hole for three releases is grounds to decline the issue rather than refuse a fourth time"
+    description: >
+        The verdict-prose widening has now been refused three releases running, the last time
+        because the hole it would close is EMPTY — the gate's own escape derivation returns a
+        token for no artifact at all. A fourth refusal on the same ground is an accumulation of
+        the shape this programme measures elsewhere. The deliverable is a DECISION: either the
+        issue is declined with the empty-hole measurement as the reason, or a cost is named that
+        the empty hole does not already answer.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: derive the escape count with the gate's OWN
+        function over the gate's OWN population. If it is NON-ZERO the hole is no longer empty
+        and the widening has a live justification — v0.83 nearly created exactly that condition
+        with the lead words of its own outcome prose, which is why this command reads the gate
+        rather than the artifacts.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1476"
+      verification-track: manual
+      done-when: "manual:2027-03-31 whether an empty hole for three releases is grounds to decline the issue rather than refuse a fourth time — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

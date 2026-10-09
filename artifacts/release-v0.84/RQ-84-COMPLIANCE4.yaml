@@ -1,0 +1,30 @@
+artifacts:
+  - id: RQ-84-COMPLIANCE4
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "The report backlog decision, which is the maintainer's and not the loop's"
+    description: >
+        The first half is resolved and was verified live: the report job runs INSIDE the release
+        run as a called workflow, which raises no run of its own, and the most recent release
+        carries the report as an asset. What remains is the historical report backlog — which
+        past releases receive a retroactive report — and that is a MAINTAINER DECISION. It was
+        deliberately not actioned unasked, and this lane states that as the reason rather than
+        leaving the gate to infer an omission.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: read the most recent release's asset list and
+        confirm the report is present. If it is ABSENT the first half has regressed and that,
+        not the backlog, is this lane's work.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1453"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the report backlog decision, which is the maintainer's and not the loop's — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

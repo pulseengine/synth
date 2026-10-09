@@ -1,0 +1,30 @@
+artifacts:
+  - id: RQ-84-NPM3
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "The npm gap, with its blocker stated as the human action it is"
+    description: >
+        The package is LIVE on the registry and the failure is publication lag: the published
+        version trails the tagged releases by more than a dozen minor versions, derived from the
+        tag list rather than from arithmetic on the issue title. The publish job fails at its
+        authentication preflight. The remedy is a credential rotation, which lives OUTSIDE this
+        repository and is a maintainer action, so this lane records the measurement and the ask
+        and does not pretend to be able to deliver it.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: query the registry for the published version
+        and compare it against the tag list. If the gap has CLOSED the credential was rotated
+        and this lane is moot.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1460"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the npm gap, with its blocker stated as the human action it is — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

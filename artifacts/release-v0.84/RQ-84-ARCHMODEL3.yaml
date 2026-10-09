@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-84-ARCHMODEL3
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "The next recurring N/A filing, ordinal DERIVED by artifact identity and stated WITH its commit"
+    description: >
+        The architecture step stays blocked upstream. Derive the ordinal from the SAME predicate
+        the step one-to-two matcher uses — the feature-loop tag together with a spar or aadl tag
+        and a non-empty issue — over the artifact tree read out of git, refusing on a duplicate
+        identity or an empty population, and state it WITH the commit it was derived at. Keep
+        BOTH the feature-loop tag AND a spar or aadl tag, or the matcher goes blind: a previous
+        release lost one of them and the filing that exists to be seen became invisible.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: check the upstream issue's STATE before its
+        BODY. If it is CLOSED this is a DELIVERY lane and not a filing, which changes the whole
+        shape of the work. Then run the matcher and read its own filed-decision line rather than
+        reading the tags.
+    tags:
+      - feature-loop
+      - spar
+      - aadl
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1136"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the next recurring N/A filing, ordinal DERIVED by artifact identity and stated WITH its commit — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -1,0 +1,32 @@
+artifacts:
+  - id: RQ-84-JESSDIVERGE6
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "The three runtime words, or a precise statement of what the reporter must run"
+    description: >
+        STILL OPEN and externally relayed. v0.83 read the gravity triple out of the object and
+        recorded a FALSIFIABLE prediction about which slots discriminate; no runtime value was
+        measured, and the drafted reply was surfaced for approval rather than posted. Conduct
+        rule four binds: a release whose only work on an externally reported, still-open defect
+        was hardening the oracle around it does not count as progress on it. The deliverable is
+        the three runtime words, or a precise statement of what the reporter must run to produce
+        them.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: `git grep -n "sp,#" -- artifacts/` and re-
+        read the recorded operand analysis BEFORE writing code. The expression is already PROVEN
+        FAITHFUL and everything addressable from the object is eliminated, so a lane that re-
+        derives the object is repeating finished work rather than advancing it.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1436"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the three runtime words, or a precise statement of what the reporter must run — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

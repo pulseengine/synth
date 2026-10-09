@@ -1,0 +1,29 @@
+artifacts:
+  - id: RQ-84-DISPVOCAB
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "Two gates, two legal vocabularies for one field, and the stricter one wins silently"
+    description: >
+        One gate accepts three disposition values; another accepts five, including two the first
+        refuses. A value legal to the permissive gate therefore cannot land, and nothing names
+        the intersection, so an operator reading only the permissive vocabulary writes a value
+        that reds a different gate. Met in practice at the v0.83 cut: a first write used a value
+        in NEITHER set and the stricter gate is the one that refused.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: import both constants and compare the sets.
+        If they are EQUAL the divergence is gone and this lane is moot; if not, the intersection
+        is the only safe vocabulary and that is what the fix must name.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1458"
+      verification-track: manual
+      done-when: "manual:2027-03-31 two gates, two legal vocabularies for one field, and the stricter one wins silently — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
