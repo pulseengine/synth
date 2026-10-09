@@ -1,0 +1,32 @@
+artifacts:
+  - id: RQ-84-WIDEFILE7
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "The cause is NAMED, or the retry stays out for a fourth release"
+    description: >
+        STILL OPEN. v0.83 disassembled the newly-accepted function with the retry applied
+        locally and measured ZERO abs, move and negate instructions across the whole function,
+        with a positive control finding the abs encoding twice in a tiny abs-only module. Sign
+        was proven ORDER-INVARIANT as the exclusive-or of signs, which refutes reassociation as
+        the mechanism, and the multiply multiset was shown intact. The surviving class is a
+        wrong OPERAND from a spill or reload. The tripwire stays armed and the retry stays OUT
+        until the cause is named.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: re-run the disassembly with the retry applied
+        locally and confirm the abs-encoding count is still zero and the multiply multiset still
+        intact. If an abs encoding APPEARS, the emitter hypothesis is live again and the
+        mechanism class is not settled after all.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1439"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the cause is NAMED, or the retry stays out for a fourth release — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

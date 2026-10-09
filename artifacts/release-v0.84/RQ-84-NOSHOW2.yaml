@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-84-NOSHOW2
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "The no-show split is an operator judgement with evidence, not a derivation that cannot run"
+    description: >
+        The standing instruction is to distinguish a runner no-show from a genuine cancellation
+        by the absent runner and the zero step count. v0.83 measured that those fields do not
+        separate them: a no-show and an operator cancellation are IDENTICAL on conclusion,
+        runner name, runner id, runner group, labels, step count, and on the start time
+        equalling the creation time. What DOES separate them is the SHAPE — an operator cancel
+        produces a CLUSTER of unstarted jobs sharing one completion instant, while a no-show is
+        a LONE unstarted job inside a run whose other jobs ran to completion. The deliverable is
+        to correct the standing instruction and give the operator that evidence, rather than a
+        decision procedure the data cannot support.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: pull one known no-show and one known operator
+        cancellation and diff their job objects field by field. If ANY field differs, the
+        discrimination IS derivable and this lane is moot.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1484"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the no-show split is an operator judgement with evidence, not a derivation that cannot run — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

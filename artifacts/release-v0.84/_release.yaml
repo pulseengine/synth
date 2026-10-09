@@ -1,0 +1,67 @@
+# v0.84 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS by rule. Every number about this release lives
+# in the artifact that derives it, or in the CHANGELOG at the cut. A figure here
+# would be a second copy with no derivation behind it.
+#
+# THEME — "The population is part of the claim."
+#
+# v0.83's theme was an instrument taking its reference FROM its own subject, so the
+# comparison was decided before it ran. This release narrows to the specific form
+# that produced most of those instances: a check and its subject drawn from
+# DIFFERENT POPULATIONS, where neither side is wrong about its own set and the
+# comparison between them is nevertheless meaningless.
+#
+# THE THEME IS NOT ASSERTED. v0.83 produced six instances, each measured, and none
+# was predicted when that release was scoped. Five of the six were population
+# mismatches rather than reference loops:
+#
+#   - The release-notes generator diffed a base extracted from the TRACKED source
+#     paths against a head that additionally resolves externals out of an untracked,
+#     gitignored store. Almost every artifact it reported as added belonged to a
+#     sibling repository. Same commit, two answers, decided by whether the operator
+#     had ever synced externals — and the output tells the operator not to hand-edit
+#     the lists, which turns a population defect into a published one.
+#
+#   - The conformance gate reads one slot from the WORKING TREE and another from the
+#     GIT REF, so a single report can say the checkout IS the release being cut while
+#     saying the notes do not describe it. Both true about their own source.
+#
+#   - Two gates carry DIFFERENT LEGAL VOCABULARIES for the same artifact field, and
+#     the stricter one wins silently. A value legal to the permissive gate cannot
+#     land, and nothing names the intersection.
+#
+#   - The pin-debt ratchet derives from an explicit list of tables while the tripwire
+#     meant to catch an unlisted table derives from a NAME-SCOPED regex. A suppression
+#     table named anything else is in neither population, and a byte-identical one
+#     entered the tree with both layers silent.
+#
+#   - A scope audit took its sentinel word from a vocabulary that also appears as
+#     legitimate CONTENT, and the one artifact whose subject matter is that word was
+#     the only one it misread.
+#
+# The sixth is the same shape in TIME rather than in space: a gate's printed
+# population RISES as lanes record outcomes, so a figure quoted from it goes stale
+# without anything being edited. The remedy used was to bind the figure to its
+# commit rather than refresh it, because refreshing re-arms the staleness for the
+# next lane.
+#
+# AND A CORRECTION IS STILL AN UNREVIEWED CLAIM. v0.83 logged four corrections that
+# introduced or nearly introduced a false statement, three caught before shipping —
+# including one inside the cold review's own finding, where a correction's mitigating
+# clause was false in the direction that made the finding look smaller. The numbers a
+# correction introduces have had zero review passes, and round two is briefed to
+# attack them first, derived from the round-one record rather than listed from memory.
+#
+# CARRIED, AND WHY EACH IS CARRIED RATHER THAN CLOSED: three external or
+# externally-relayed defects remain open because the work done on them was analysis
+# and oracle-hardening rather than a change the reporter would notice, which does not
+# count as progress on them. Three more are blocked OUTSIDE this repository on
+# maintainer actions — a credential rotation, a report-backlog decision, and a
+# one-line authorized-keys append so a corpus volume can be mounted. Attempting
+# passwords stays declined.
+#
+# EVERY ARTIFACT CARRIES A REFUTING COMMAND, to be RUN BEFORE the artifact is built
+# on. A refutation is a legitimate outcome reported with numbers: v0.83's own
+# verify-and-close strategy was refuted by the pins it named as its oracle, and that
+# is the lane working rather than failing.

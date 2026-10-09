@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-84-NOTESPOP
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "The release-notes generator states its population or refuses"
+    description: >
+        It diffs a base extracted from the paths `rivet.yaml` declares as `sources:` against the
+        LIVE project root, which additionally resolves `externals:` out of an untracked,
+        gitignored store. The two sides do not share a population definition, so every external
+        artifact reads as ADDED: at the v0.83 cut the generator reported over three thousand
+        additions of which all but seventeen belonged to sibling repositories. Its own banner
+        says the lists must not be hand-edited, which turns a population defect into a published
+        one. Options to WEIGH rather than assume: extract BOTH sides from the declared source
+        paths, or REFUSE when the head resolves externals the base cannot.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: run the generator and a SYMMETRIC diff (both
+        sides extracted from the declared `sources:` paths, passing the project roots so
+        `rivet.yaml` is present on each) and compare the added counts. If they AGREE, the defect
+        is already gone and this lane is moot.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1259"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the release-notes generator states its population or refuses — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -1,0 +1,30 @@
+artifacts:
+  - id: RQ-84-RUNNERSHAPE
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "Re-point the runner issue at the SHAPE, because its stated shape does not occur"
+    description: >
+        The issue names one runner and the condition of failing every job with no steps.
+        Measured over three hundred runs across three and a half days, that shape — a runner
+        ASSIGNED with a zero step count — occurs ZERO times, while a DIFFERENT shape, never
+        assigned at all, occurs hundreds of times. The two real no-shows in the window landed on
+        DIFFERENT pools two minutes apart, which one bad runner cannot produce. The issue as
+        written is not verifiable; re-pointed at the shape it is.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: re-run the two-shape probe over a fresh
+        window. If the runner-assigned shape REAPPEARS and is attributable to a single machine,
+        the original framing was right and only the window was short.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1451"
+      verification-track: manual
+      done-when: "manual:2027-03-31 re-point the runner issue at the SHAPE, because its stated shape does not occur — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

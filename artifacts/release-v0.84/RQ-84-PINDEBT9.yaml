@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-84-PINDEBT9
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "An explicit inclusion criterion for a suppression table, because the tripwire is name-scoped"
+    description: >
+        CONFIRMED live and paired-controlled at the v0.83 cut: a suppression table whose body is
+        asserted BYTE-IDENTICAL to a live one enters the tree silently under a name the
+        tripwire's regex does not match, leaving both the ratchet and the gate unmoved, while
+        the same bytes under a matching name red the gate. The two layers fail for different
+        reasons — the ratchet derives from an explicit list, so any unlisted table is invisible
+        to it whatever its name, and the tripwire that exists to catch an unlisted table is
+        scoped BY NAME. Widening the regex to every top-level dictionary would sweep unrelated
+        tables into the pinned population, so the deliverable is an explicit INCLUSION CRITERION
+        the operator satisfies when adding a suppression table.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: re-plant a byte-identical suppression table
+        under a non-matching name and run the claim checker. If it now REDS, the gap has closed
+        and this lane is moot.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1428"
+      verification-track: manual
+      done-when: "manual:2027-03-31 an explicit inclusion criterion for a suppression table, because the tripwire is name-scoped — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -1,0 +1,51 @@
+artifacts:
+  - id: RQ-84-MEMLAYER
+    type: system-req
+    release: v0.84
+    status: proposed
+    title: "Per-memory layering in the static-data region classification, because `--native-pointer-abi` is the path the downstream actually uses"
+    description: >
+      EXTERNAL, and the reporter calls it their ONLY REMAINING BLOCKER. The meld half shipped, so a
+      two-domain fuse now produces two memories and the cross-tenant addressing hazard is retired by
+      construction upstream. synth is where the chain stops. The issue is framed around
+      `--safety-bounds mpu` having a path disjoint from multi-memory, but the reporter measured a
+      SECOND disjoint path and it is the one every downstream MCU image passes:
+      `--native-pointer-abi`. The refusal is explicit in the shipped selector — an op on memory k is
+      not lowered under that flag because the static-data region classification is memory-0-only in
+      phase 1 — and their negative control is clean: the same pipeline with a single domain compiles,
+      so the only difference between compiling and refusing is the domain split.
+
+      THE SECOND HALF OF WHAT THEY ASKED HAS ALREADY SHIPPED, which is why this lane is scoped to the
+      first. They reported that two memories reserve 64 KiB-granular extents that fit none of their
+      targets, and asked for a judgement on which half to do first. v0.83's PAGESIZE5 honours a
+      one-byte declared page on `--relocatable` and emits `__synth_mem_size_k` and
+      `__synth_mem_region_k` PER MEMORY rather than for memory 0 alone, so extent sizing is no longer
+      the binding constraint on the flag combination they use. The layering is.
+
+      THIS LANE IS NOT AN ORACLE. Hardening a check around a still-open externally reported defect
+      does not count as progress on it, and the previous release's only work here was a capability on
+      the OTHER half plus the measurement above. The deliverable is that an op on memory k lowers
+      under `--native-pointer-abi`, or a stated reason why the region classification cannot carry
+      per-memory layering in this phase — reported with the reporter's own pipeline, not a synthetic
+      module.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate
+      outcome, reported with numbers: compile a TWO-memory module with `--relocatable
+      --native-pointer-abi` and confirm the memory-0-only refusal still fires, with a SINGLE-memory
+      negative control through the same pipeline that compiles. If the two-memory case now COMPILES,
+      phase 2 landed elsewhere and this lane is moot. Note that the refusal lives in the selector and
+      not the CLI, so a CLI-level probe can miss it; and a binary whose reported version does not
+      match the workspace cannot answer this at all — the previous release met exactly that and
+      recorded the attempt as UNPROVEN rather than inferring a result.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1145"
+      verification-track: manual
+      done-when: "manual:2027-03-31 per-memory layering in the static-data region classification, because `--native-pointer-abi` is the path the downstream actually uses — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
