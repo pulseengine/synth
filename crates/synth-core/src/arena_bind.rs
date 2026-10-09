@@ -490,7 +490,7 @@ pub fn bind_cabi_arena_realloc(wasm: &[u8]) -> Result<ArenaBind> {
             Payload::FunctionSection(reader) => {
                 let mut entry = Vec::new();
                 write_uleb(arena_type_idx, &mut entry);
-                let contents = &wasm[reader.range()];
+                let contents = &wasm[section_span(reader.range(), wasm)?];
                 module.section(&wasm_encoder::RawSection {
                     id: wasm_encoder::SectionId::Function as u8,
                     data: &prepend_entry(contents, &entry)?,
@@ -498,7 +498,7 @@ pub fn bind_cabi_arena_realloc(wasm: &[u8]) -> Result<ArenaBind> {
                 function_emitted = true;
             }
             Payload::GlobalSection(reader) => {
-                let contents = &wasm[reader.range()];
+                let contents = &wasm[section_span(reader.range(), wasm)?];
                 module.section(&wasm_encoder::RawSection {
                     id: wasm_encoder::SectionId::Global as u8,
                     data: &append_entry(contents, &cursor_global_entry(arena_base))?,
@@ -517,7 +517,7 @@ pub fn bind_cabi_arena_realloc(wasm: &[u8]) -> Result<ArenaBind> {
                 ensure_globals(&mut module, &mut global_emitted);
                 // `range` spans the full section contents (count + bodies);
                 // `size` would EXCLUDE the count leb — do not use it here.
-                let contents = &wasm[range.clone()];
+                let contents = &wasm[section_span(range.clone(), wasm)?];
                 module.section(&wasm_encoder::RawSection {
                     id: wasm_encoder::SectionId::Code as u8,
                     data: &prepend_entry(contents, &body)?,
@@ -544,6 +544,45 @@ pub fn bind_cabi_arena_realloc(wasm: &[u8]) -> Result<ArenaBind> {
     }))
 }
 
+/// A wasmparser section range, narrowed to a slice range PROVEN to lie inside
+/// `wasm` — or a loud refusal (#965, RQ-83-RANGEWIDEN).
+///
+/// wasm-tools 0.261 widened `Payload`'s section ranges from `Range<usize>` to
+/// `Range<u64>` for the 64-bit-memory story. `as usize` would compile and
+/// SILENTLY TRUNCATE a malformed 4 GiB-plus offset into a wrong-bytes read,
+/// which is the silent-miscompile class this crate exists to prevent — and it is
+/// invisible to the compiler, because `as` accepts both widths. So the conversion
+/// REFUSES instead.
+///
+/// It checks the END against the buffer too, not just the width: a range that
+/// converts cleanly can still point past the input, and `&wasm[range]` would then
+/// panic rather than return an error. On a 64-bit host the `try_from` arms are
+/// unreachable today; they are the half that stays correct on a 32-bit one.
+fn section_span(range: core::ops::Range<u64>, wasm: &[u8]) -> Result<core::ops::Range<usize>> {
+    let Ok(start) = usize::try_from(range.start) else {
+        bail!(
+            "#965: section range start {} exceeds this platform's usize — \
+             refusing rather than truncating",
+            range.start
+        );
+    };
+    let Ok(end) = usize::try_from(range.end) else {
+        bail!(
+            "#965: section range end {} exceeds this platform's usize — \
+             refusing rather than truncating",
+            range.end
+        );
+    };
+    if start > end || end > wasm.len() {
+        bail!(
+            "#965: section range {start}..{end} does not lie inside a {}-byte \
+             module — refusing rather than indexing out of bounds",
+            wasm.len()
+        );
+    }
+    Ok(start..end)
+}
+
 /// Byte-copy one section verbatim.
 fn copy_raw(module: &mut wasm_encoder::Module, payload: &Payload<'_>, wasm: &[u8]) -> Result<()> {
     let Some((id, range)) = payload.as_section() else {
@@ -551,7 +590,7 @@ fn copy_raw(module: &mut wasm_encoder::Module, payload: &Payload<'_>, wasm: &[u8
     };
     module.section(&wasm_encoder::RawSection {
         id,
-        data: &wasm[range],
+        data: &wasm[section_span(range, wasm)?],
     });
     Ok(())
 }
@@ -559,6 +598,91 @@ fn copy_raw(module: &mut wasm_encoder::Module, payload: &Payload<'_>, wasm: &[u8
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- section_span: the REFUSAL is the deliverable (#965, RQ-83-RANGEWIDEN) ----
+    //
+    // REACH, stated because it is not uniform across the three arms. The
+    // `end > wasm.len()` / `start > end` arm is reachable and tested below. The two
+    // `usize::try_from` arms are NOT reachable on any 64-bit target, where
+    // `u64 -> usize` is infallible; they exist for a 32-bit host and are UNPROVEN
+    // here. A test cannot be written for them on this platform, and asserting
+    // otherwise would be the vacuous-green class this file's own lane exists to catch.
+
+    #[test]
+    fn section_span_refuses_a_range_past_the_module_end() {
+        let wasm = [0u8; 10];
+        let err = section_span(0..100, &wasm).expect_err("a 0..100 range in 10 bytes must refuse");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("does not lie inside") && msg.contains("10-byte"),
+            "the refusal must name the overrun and the real module size, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn section_span_refuses_an_inverted_range() {
+        let wasm = [0u8; 10];
+        // The bounds come from locals rather than literals: clippy's
+        // `reversed_empty_ranges` correctly flags a literal `8..4` as an empty
+        // range, and its suggested `(4..8).rev()` is a DIFFERENT subject — this
+        // test is about an inverted range reaching the helper, not about
+        // iteration.
+        let (start, end) = (8u64, 4u64);
+        let err = section_span(start..end, &wasm).expect_err("start > end must refuse");
+        assert!(
+            format!("{err}").contains("does not lie inside"),
+            "an inverted range must refuse rather than panic or wrap"
+        );
+    }
+
+    #[test]
+    fn section_span_refuses_one_byte_past_the_end() {
+        // The off-by-one is the interesting boundary: `end == len` is legal,
+        // `end == len + 1` is not. A `<` instead of `<=` here would pass the
+        // 0..100 case above and still index out of bounds.
+        let wasm = [0u8; 10];
+        assert!(
+            section_span(0..10, &wasm).is_ok(),
+            "end == len must be accepted"
+        );
+        assert!(
+            section_span(0..11, &wasm).is_err(),
+            "end == len + 1 must refuse"
+        );
+    }
+
+    #[test]
+    fn section_span_accepts_an_in_bounds_range_and_preserves_its_bounds() {
+        let wasm = [0u8; 10];
+        let span = section_span(2..7, &wasm).expect("an in-bounds range must be accepted");
+        assert_eq!(
+            span,
+            2usize..7usize,
+            "the narrowing must not move the bounds"
+        );
+        // An empty span inside the buffer is legal and must stay empty.
+        assert_eq!(section_span(5..5, &wasm).unwrap(), 5usize..5usize);
+        assert!(
+            wasm[span].len() == 5,
+            "the returned span must actually index"
+        );
+    }
+
+    #[test]
+    fn section_span_refuses_rather_than_truncating_the_value_an_as_cast_would_discard() {
+        // POSITIVE CONTROL for the whole point of the helper. `0x1_0000_0003 as usize`
+        // is lossless on a 64-bit host, so the danger here is not the cast but the
+        // BOUNDS: an offset far past a small module must refuse, where
+        // `&wasm[start..end]` would have panicked and `as u32` would have silently
+        // read byte 3. Both wrong answers are excluded by one check.
+        let wasm = [0u8; 10];
+        let err = section_span(0x1_0000_0003..0x1_0000_0007, &wasm)
+            .expect_err("a 4 GiB-plus offset into a 10-byte module must refuse");
+        assert!(
+            format!("{err}").contains("#965"),
+            "the refusal must cite its analysis"
+        );
+    }
 
     fn fixture() -> Vec<u8> {
         wat::parse_str(

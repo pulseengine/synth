@@ -3,23 +3,58 @@ artifacts:
     type: system-req
     release: v0.83
     status: proposed
-    title: "The wasm-tools 0.261 bump behind a CHECKED u64->usize narrowing, and the downstream surface MEASURED first"
+    title: "The wasm-tools 0.261 bump lands behind a checked narrowing, and the downstream surface MEASURED is ZERO"
     description: >
-      INHERITED FROM v0.82's REFUTED DEPS LANE. wasmparser 0.261.0 widened its section-range types from
-      `Range<usize>` to `Range<u64>`, and `arena_bind.rs` indexes a `&[u8]` with them at four sites.
-      FOUR IS A FLOOR, NOT THE JOB: `synth-core` is the base crate, so the compiler stopped there and
-      the `wit-parser`/`wit-component`/`wasm-encoder` consumer surface downstream was NEVER REACHED.
-      The lane's FIRST deliverable is that number, ahead of the fix. The conversion must REFUSE loudly
-      on overflow and on a range past the buffer end — never `as usize`, which would truncate a
-      malformed 4 GiB-plus offset into a wrong-bytes read, the silent-miscompile class this project
-      exists to prevent.
+      THE FIRST DELIVERABLE WAS THE NUMBER, AND THE NUMBER IS ZERO. v0.82's DEPS lane withdrew
+      this bump because the consumer surface behind `synth-core` had never been reached: the
+      compiler stops at the first crate that fails, so its four errors were a FLOOR of unknown
+      height. This lane measured it. With the bump applied and a checked narrowing at the four
+      sites, `cargo check --workspace --all-targets` exits 0 with ZERO errors — the surface
+      beyond `synth-core` is EMPTY, and the whole job was those four sites.
 
-      REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
-      legitimate outcome, reported with numbers:
-      `grep -c 'wasmparser = "0.261"' Cargo.toml` — if 1, the bump landed elsewhere and this lane is
-      moot; and `gh pr list --repo pulseengine/synth --state open --json number,author --jq
-      '[.[]|select(.author.login|test("dependabot";"i"))]|length'` — if 0 the held PRs were disposed of
-      without this lane.
+      AND THE CONSTRAINT THAT HELD THIS FOR TWO RELEASES WAS MEASURED IN THE WRONG UNITS. The
+      carried figure was "~5 GiB free against a ~12 GiB workspace build", which blocked this
+      lane in v0.82 and the measurement in this artifact's own previous revision. That 12 GiB is
+      a FULL build — codegen, linking, every rlib and binary. The measurement actually required
+      is a `cargo check`, which does no codegen: `cargo check -p synth-core` costs 78 MB and 7.5 s,
+      and `cargo check --workspace --all-targets` costs 629 MB and 14 s. The disk constraint was
+      real and the inference from it was wrong by a factor of twenty, so UNPROVEN was recorded
+      where a two-minute command would have answered. That is this release's theme pointed at
+      this lane's own instrument: the budget was compared against a number describing a
+      different operation.
+
+      THE SITES, and the shape of the fix. wasmparser 0.261.0 widened its section-range types
+      from `Range<usize>` to `Range<u64>`; `arena_bind.rs` indexes a `&[u8]` with them. One
+      helper, `section_span(range, wasm) -> Result<Range<usize>>`, REFUSES rather than
+      truncating, and the four call sites route through it:
+
+        :493  &wasm[reader.range()]   -> &wasm[section_span(reader.range(), wasm)?]  FunctionSection
+        :501  &wasm[reader.range()]   -> &wasm[section_span(reader.range(), wasm)?]  GlobalSection
+        :520  &wasm[range.clone()]    -> &wasm[section_span(range.clone(), wasm)?]   CodeSectionStart
+        :554  data: &wasm[range]      -> data: &wasm[section_span(range, wasm)?]     copy_raw
+
+      `as usize` is what the helper exists NOT to be. It would turn a malformed 4 GiB-plus
+      section offset into a wrong-bytes read — the silent-miscompile class this project exists
+      to prevent — and on a 64-bit host it would compile and run and be wrong. The helper
+      refuses on an over-wide value AND on a range past the buffer end, both citing #965.
+
+      THE COMPILER-INVISIBLE SITE IS A NAMED RESIDUAL, NOT A FIX. `dwarf_line.rs:129`,
+      `code_base = range.start as u32`, accepts BOTH `Range<usize>.start` and `Range<u64>.start`
+      and truncates identically under each — proven with a compiled probe, so it is PRE-EXISTING
+      and NOT introduced by this widening. It is deliberately left alone, with the reason
+      recorded rather than the work done: `code_base` is a `u32` public field whose consumer
+      (`synth-cli/src/main.rs:7828`) subtracts it from `op_offsets`, themselves `u32`, so a
+      module whose code section starts past 4 GiB shares no address space with its own op
+      offsets at all. The fix is therefore not a wider type, and any guard added here would be
+      an untestable branch changing behaviour for no module synth can compile.
+
+      REFUTING COMMAND, to be RUN BEFORE building on this artifact:
+      `grep -c 'wasmparser = "0.261"' Cargo.toml` — if 0 on the delivering branch the bump is
+      not actually applied and this artifact's central claim is false; and
+      `cargo check --workspace --all-targets` must exit 0, or the measured zero is wrong.
+
+      MEASURED, AND NEITHER REFUTED: the declared floor reads `wasmparser = "0.261"` and
+      `cargo check --workspace --all-targets` exits 0 with 0 error lines and 0 warning lines.
     tags:
       - feature-loop
       - process
@@ -31,4 +66,85 @@ artifacts:
       priority: must
       issue: "#965"
       verification-track: manual
-      done-when: "manual:2026-12-31 the wasm-tools 0.261 bump behind a checked u64->usize narrowing, and the downstream surface measured first — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
+      disposition: partial
+      landed: "PR #1498 — #965 — the wasm-tools 0.261 bump APPLIED behind section_span(), a checked u64->usize narrowing that refuses on an over-wide value and on a range past the buffer end at all four arena_bind.rs sites; the downstream consumer surface behind synth-core MEASURED as ZERO (cargo check --workspace --all-targets rc=0, 0 errors) and the refusal mutation-proven 5 of 5; the four held cargo dependabot PRs #1344/#1346/#1468/#1471 disposed of with this PR as the reason."
+      verified-by: >
+        PARTIAL, and the partiality is named rather than implied: the code and the measurement
+        are delivered, two done-when clauses are not yet.
+
+        DELIVERED 1 — THE DOWNSTREAM SURFACE, which was this lane's stated first deliverable and
+        is reported with its command and its exit code rather than as a bare figure:
+        `cargo check --workspace --all-targets` -> rc=0, `grep -c '^error'` = 0,
+        `grep -c '^warning'` = 0, `grep -c 'could not compile'` = 0. All FOUR crates declaring a
+        wasm-tools dependency are in the rechecked set (synth-cli, synth-core, synth-frontend,
+        synth-synthesis), so the surface was reached rather than served from cache. The answer is
+        ZERO, and that makes v0.82's withdrawal correct about the evidence then available and
+        wrong about the size of the job: four sites, not an unbounded surface.
+
+        DELIVERED 2 — THE CHECKED NARROWING, with its REFUSAL TESTED AND PROVEN POTENT. The
+        refusal is the deliverable, so a green suite over the happy path would not evidence it.
+        Five unit tests exercise the helper directly (range past the module end; inverted range;
+        the `end == len` / `end == len + 1` boundary; bounds preserved on accept; a 4 GiB-plus
+        offset into a 10-byte module). POTENCY, measured by mutation with all five anchors
+        verified BEFORE any was applied and the file restored byte-identically after each (`diff
+        -q` IDENTICAL): dropping the bounds guard entirely, the off-by-one, dropping either half
+        of the disjunction, and removing the #965 citation from the message — 5 of 5 caught.
+
+        REACH, STATED BECAUSE IT IS NOT UNIFORM ACROSS THE THREE ARMS. The
+        `start > end || end > wasm.len()` arm is reachable and tested. The two `usize::try_from`
+        arms are NOT reachable on any 64-bit target, where `u64 -> usize` is infallible; they are
+        correct and defensive for a 32-bit host and they are UNPROVEN HERE. No test asserts them
+        and none can on this platform; claiming all three were exercised would be the
+        vacuous-green class this lane exists to catch.
+
+        DELIVERED 3 — BEHAVIOUR PRESERVED, NOT JUST TYPES. "It compiles now" is a fact about the
+        validator, not the code. `cargo test --workspace` under the bump: rc=0, 3153 passed,
+        0 failed, 0 failure blocks, 0 compile errors. The figure is stated AFTER the five
+        refusal tests were added, because a count measured before the edit that writes it is
+        invalidated by that edit: the pre-test run was 3148 and 3148 + 5 = 3153 reconciles,
+        which is the only reason the stale figure was caught. `cargo clippy
+        --workspace --all-targets -- -D warnings` — CI's exact command — rc=0.
+
+        AND THE INSTRUMENT ERROR THAT BLOCKED THIS FOR TWO RELEASES, recorded because it is the
+        more valuable finding than the bump. "~12 GiB workspace build" was carried as the reason
+        a local compile was impossible, and it is a FULL build's cost. `cargo check` does no
+        codegen: 78 MB for `-p synth-core`, 629 MB for `--workspace --all-targets`, 14 s. Three
+        must-lanes recorded UNPROVEN against a budget describing an operation none of them
+        needed. The previous revision of THIS artifact said the error count "remains UNPROVEN …
+        establishing it needs a full workspace compile" — that sentence was false when written,
+        and it was false in the specific way this release is about.
+
+        AND THE CLIPPY GREEN CITED ABOVE WAS, FOR A WHILE, A STALE NUMBER — recorded because it
+        is the same class as the test count beside it and because the cold review is briefed to
+        attack exactly this. The clippy run was executed BEFORE the five refusal tests were
+        written; adding them introduced two real lints
+        (`clippy::reversed_empty_ranges` on a literal `8..4`, `clippy::op_ref` on
+        `&wasm[span].len() == &5`), so the green belonged to a tree that no longer existed and the
+        commit first pushed to the delivering PR would have RED `Clippy`. It was caught by
+        re-running CI's exact command after the edits rather than by trusting the earlier run.
+        Both lints are fixed — the inverted-range test now takes its bounds from locals, because
+        clippy's suggested `(4..8).rev()` is a different subject from an inverted range reaching
+        the helper — and clippy is rc=0 on the delivered tree. THE RULE, restated because two
+        instances of it appeared in one lane: a measurement is invalidated by any edit after it,
+        and "I ran the gates" is not the same statement as "the gates are green on what I pushed".
+
+        A THIRD INSTRUMENT ERROR, caught in this lane's own measurement run: a command ending
+        in `grep -c` reported a FAILURE for a clippy run that had exited 0, because `grep -c`
+        exits 1 on zero matches and a pipeline's status is its LAST command's. The standing rules
+        name both footguns; they were still walked into. Re-measured without the pipe, clippy is
+        rc=0.
+
+        NOT DELIVERED, stated rather than implied. (a) "the FULL suite is green BY NAME on that
+        change" means CI on the delivering PR, not a local run — that is pending at the time this
+        is written and is the merge gate's job. (b) The four cargo dependabot PRs (#1344
+        wasmparser, #1346 wasm-encoder, #1468 wit-component, #1471 wit-parser) are not yet
+        disposed of; they are the entire open-PR board and are closed with the delivering PR as
+        the reason.
+
+        ISSUE STATE, since it bears on what this retires: #965 is CLOSED and was closed before
+        this release. This lane therefore retires NO open issue, and `issue-scope` is omitted so
+        the closure gate cannot read it as claiming one. What it does retire is the four held
+        PRs. A finding relevant to a SETTLED external thread — cpetig's #465, "Many versions of
+        wasm-tools mixed" — belongs in the release notes and NOT on that thread, per conduct
+        rule 1.
+      done-when: "manual:2026-12-31 the wasm-tools 0.261 bump applied behind a checked u64->usize narrowing that refuses loudly at the four arena_bind.rs sites with the refusal itself tested and mutation-proven, the downstream consumer surface reported as a MEASURED number with its command and exit code rather than the compiler's first-crate floor, the FULL suite green BY NAME in CI on the delivering change, and the four cargo dependabot PRs disposed of with a reason naming the delivering PR"
