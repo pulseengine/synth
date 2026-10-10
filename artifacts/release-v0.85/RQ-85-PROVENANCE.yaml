@@ -30,4 +30,24 @@ artifacts:
       priority: should
       issue: "#1516"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the defect is CONFIRMED on the SHIPPED record and no check ships. Of the
+        sha-shaped tokens in the previous release's review record, most resolve and are ancestors
+        of the default branch, ONE resolves and is NOT an ancestor — the pre-squash lane head — and
+        is therefore uncheckable by any reader, and one does not resolve at all. Positive control
+        required and passed: the known-bad commit reads non-ancestor while its squash-merged
+        replacement reads ancestor, so the check is not passing everything.
+
+        AND THE MEASUREMENT EXPOSED A FALSE-POSITIVE CLASS IN THE CHECK ITSELF, which is this
+        lane's real content. The token that "does not resolve" is a WORKFLOW RUN IDENTIFIER, not a
+        commit. Decimal digits are valid hexadecimal, so a hex-shaped pattern swallows a run id and
+        a naive provenance check reports a perfectly correct run reference as a broken commit
+        citation. The census is bounded by its pattern's spellings, in the check written to catch
+        that very class.
+
+        The obvious narrowing has its own trap: requiring the token to resolve to a commit before
+        judging ancestry makes the check SILENT on a genuinely mistyped identifier. So
+        out-of-population must be REPORTED rather than dropped, which is the same rule as a derived
+        population of zero being a refusal.
       done-when: "manual:2027-03-31 a figure in a shipped record is pinned to an ancestor of the default branch — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

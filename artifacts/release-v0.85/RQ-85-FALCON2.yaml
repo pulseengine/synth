@@ -37,4 +37,32 @@ artifacts:
       priority: must
       issue: "#1318"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the gap is NAMED WITH A LIVE MEASUREMENT and no lowering ships. The figure the
+        plan was told to re-measure HELD. Refuting command run at synth 0.84.0, built from the
+        release commit of the planning PR, using the REPORTER'S OWN command line taken from the
+        issue body rather than one invented here (`--target cortex-m7 --relocatable --all-exports
+        --embedder-data-init --embedder-global-init`):
+
+          his optimized module  rc=1  ONE of seventeen functions skipped
+                                      the single skip is the `controller@0.10.0#step` export
+          his fused module      rc=0  CLEAN
+
+        So "one of seventeen, down from seven" survives re-measurement two releases later, and the
+        residual is now identified BY NAME as the frame-home export rather than left as a count.
+        It is NOT a float decline: the class oracle passes every cell it pins, and within it the
+        f32 value-carrying branch on ARM now COMPILES while the f64 one still declines — which is
+        what "the six that moved were the float ones" means, measured rather than asserted.
+
+        THE MODULE WAS ALREADY OBTAINABLE AND THE PLAN SHOULD NOT HAVE TREATED IT OTHERWISE. The
+        reduced shape is committed in this repository, but the reporter's own module lives in the
+        issue attachment; a test file in this tree has recorded since an earlier release that the
+        attachment contains the modules themselves rather than only logs. Fetched on the
+        maintainer's explicit approval, listed and traversal-checked before extraction, and
+        treated as untrusted input: compiled, never executed.
+
+        ALSO MEASURED, and it corrects the oracle's own prose rather than its pins: that script's
+        header still describes the float value-carrying branch as a loud ARM decline, which its
+        own pinned matrix now contradicts. Doc rot behind a green gate, in the gate's own file.
       done-when: "manual:2027-03-31 an op the falcon-cascade binary needs is lowered, or the gap is named with a live measurement — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

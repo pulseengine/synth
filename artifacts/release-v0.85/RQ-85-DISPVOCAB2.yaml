@@ -32,4 +32,34 @@ artifacts:
       priority: should
       issue: "#1458"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the two questions are NAMED and the asymmetry is DEMONSTRATED on one tree with a
+        paired control; no change ships.
+
+        The two questions are distinct and must stay distinct: an ALLOW-LIST of recognised
+        dispositions, and a SEMANTIC TEST of whether a disposition claims delivery. Forcing one
+        list onto both would answer the wrong question in one of the two places.
+
+        DEMONSTRATED, by setting a disposition legal to the permissive gate and absent from the
+        strict gate's list, in a detached worktree:
+
+          that value      the strict gate FAILS, naming the value and its legal set
+                          the permissive gate passes, reporting no disagreement
+          a shared value  BOTH gates pass                                   (CONTROL)
+
+        Same tree, same field, two gates, OPPOSITE verdicts. The stricter one wins and the
+        permissive one's extra values are unusable in practice — which is exactly why the tree uses
+        only the intersection and nothing has ever surfaced it.
+
+        THE FOUR FIGURES THE PLAN LISTED WERE RE-DERIVED AT THE COMMIT UNDER TEST rather than
+        carried, and they have moved, which is why the plan said they are live. Stated here as
+        relationships rather than as a count of a live object: the classifier ITERATES far more
+        artifacts than its classifying function REACHES, and most of the iterated set is out of
+        population as declared non-verdicts.
+
+        AND THE DEMONSTRATION LANDED ON THE ARTIFACT ABOUT THIS DEFECT. The target was chosen
+        mechanically by a listing, not picked — and it selected the previous release's
+        disposition-vocabulary artifact. Same shape as the release before, where the one artifact
+        whose subject matter was check-run states was the only one an audit misread.
       done-when: "manual:2027-03-31 the two disposition gates name their question, and the intersection is written down — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

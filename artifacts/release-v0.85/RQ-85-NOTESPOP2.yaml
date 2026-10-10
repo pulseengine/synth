@@ -34,4 +34,22 @@ artifacts:
       priority: must
       issue: "#1259"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — all three parts of the remedy are CONFIRMED and none ships. The decisive third
+        part is a gate-potency finding rather than a feature gap.
+
+        Measured at the commit under test: the traceability manifest's declared source paths do
+        NOT include the schema directory, so a naive symmetric extract cannot LOAD either side —
+        part one's bound is real. Several external repositories are declared, which is what makes
+        the two sides disagree at all.
+
+        PART THREE, AND THE POSITIVE CONTROL IS WHAT MAKES IT EVIDENCE: the only occurrence of the
+        generator's name in any workflow is its UNIT TEST, never the generator. The same search
+        DOES find a wired script when one exists — a sibling gate appears both as the script itself
+        and as its unit test — so the search is not blind. Meanwhile the external sync DOES run in
+        CI. Externals are therefore populated in CI while the generator only ever runs in the
+        operator's synced checkout, which is the single venue where the foreign artifacts dominate
+        and the anti-vacuity guard cannot fire. A guard potent only where nobody runs it is not a
+        guard.
       done-when: "manual:2027-03-31 the release-notes generator states its population or refuses, and its guard can actually fire — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
