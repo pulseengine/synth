@@ -29,4 +29,17 @@ artifacts:
       priority: should
       issue: "#1453"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        DEFERRED — the first half did NOT regress, measured at the SETTLED run, and the open half is
+        a maintainer decision this lane cannot make.
+
+        Re-read from the previous release's settled publication rather than from a queued one: the
+        compliance archive IS present among the release assets, and its size is slightly larger than
+        the release before it. So the shipping half holds.
+
+        The open half is a coverage backlog whose resolution is a scope decision, not a code change.
+        Reported as blocked. The measurement discipline is the part worth keeping: an earlier release
+        carried this figure from a QUEUED run and had to re-measure, so the asset list is read at the
+        settled run every time.
       done-when: "manual:2027-03-31 the compliance report's coverage backlog has a maintainer decision, or stays reported as blocked — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

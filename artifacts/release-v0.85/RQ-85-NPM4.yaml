@@ -29,4 +29,18 @@ artifacts:
       priority: should
       issue: "#1460"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        DEFERRED — BLOCKED OUTSIDE THIS REPOSITORY, reported as blocked rather than re-measured as
+        progress, and the one figure it owns was DERIVED rather than carried.
+
+        The registry's latest published version is unchanged, and the number of distinct MINORS
+        tagged after it was derived from the git tag list at this commit. It has WIDENED BY EXACTLY
+        ONE since the previous release's derivation — which is the only legitimate reason it could
+        move, and is why this lane derives it instead of carrying it. The publishing workflow still
+        fails at its authentication preflight and is not among the release workflows that succeed.
+
+        The blocker is a credential rotation only the maintainer can perform. Nothing in this
+        repository changes that, and re-measuring the same refusal is the shape conduct rule four
+        forbids, applied to machinery instead of a reporter.
       done-when: "manual:2027-03-31 the npm package is live, or the blocker is reported as outside this repository — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

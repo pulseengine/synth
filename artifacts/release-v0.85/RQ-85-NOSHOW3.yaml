@@ -30,4 +30,35 @@ artifacts:
       priority: should
       issue: "#1484"
       verification-track: manual
+      disposition: refuted
+      verified-by: >
+        REFUTED — the decline this lane was asked to consider is NOT available: the population is
+        NON-EMPTY once the window is widened and the classifier stops splitting cancel waves.
+
+        WINDOW STATED WITH THE RESULT, because a window is part of a population claim: two hundred
+        workflow runs spanning a day and a half, jobs fetched for ninety-five of them. Whole-run
+        cancellations are their own class and excluded. TWO GENUINE LONE NO-SHOWS remain, each a
+        single unstarted job inside a run that FAILED rather than was cancelled — a provenance
+        reconciliation gate, and a register-allocation validator.
+
+        So "an empty no-show population across two releases" was a WINDOW-AND-CLASSIFIER ARTIFACT
+        rather than a property of the system, and declining on that basis would have been wrong.
+        THE DECISION: do not decline; the condition occurs.
+
+        ### THE FIRST TALLY WAS RIGHT BY ACCIDENT AND IS RECORDED AS A DEFECT
+
+        The first classifier grouped unstarted cancelled jobs by EXACT completion timestamp. In one
+        run, fifteen such jobs share a timestamp and a coverage job sits fifty-five seconds later;
+        exact grouping put it alone and reported it as a no-show, when that run's own conclusion is
+        CANCELLED with thirty-two jobs cancelled — one operator action whose teardown is not
+        atomic. The classifier's population was "jobs sharing an exact timestamp"; its subject was
+        "jobs cancelled by one action". TWO POPULATIONS, inside a classifier written FOR a lane
+        about classifying. Fixed by clustering on PROXIMITY and giving whole-run cancellation its
+        own class. The corrected total is unchanged, but NEITHER instance is one the broken version
+        named — a right answer for wrong reasons is not a measurement.
+
+        AN EMPTY SUBCLASS, REPORTED RATHER THAN HIDDEN: "operator-cancel cluster inside a run that
+        is not itself cancelled" is ZERO in this window. Legitimately empty given that every
+        cluster observed belonged to a cancelled run — stated so a later tick does not read the
+        zero as potency.
       done-when: "manual:2027-03-31 decide whether an empty no-show population across two releases is grounds to decline — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

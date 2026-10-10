@@ -29,4 +29,28 @@ artifacts:
       priority: should
       issue: "#1428"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the escape is CONFIRMED LIVE with a byte-identical paired control, and no
+        inclusion criterion ships.
+
+        Refuting command run in a detached worktree, three readings:
+
+          baseline, no extra table                                 ledger GREEN
+          a twelve-entry suppression table under a name OUTSIDE
+            the tripwire's name pattern                            ledger STILL GREEN  <<<
+          THE SAME BYTES under a name the pattern MATCHES          ledger RED, and the
+                                                                   failing claim is the
+                                                                   pin-debt entry itself
+
+        Identical bytes, identical entry count; only the NAME differs. So the name-scoped tripwire
+        is the only thing standing between an unlisted suppression table and the ratchet, and a
+        rename defeats both layers at once — the explicit table list does not see it because the
+        list is by name, and the tripwire does not see it because the pattern is by name too.
+
+        The deliverable is therefore an inclusion criterion derived from what the oracles actually
+        CONSULT rather than from what the tables are CALLED. Also noted for whoever builds it: the
+        ratchet's own list carries a per-table index for case-weighting, and one entry deliberately
+        omits it because that table's value tuple is ordered the other way round — so a criterion
+        derived from structure must not assume a uniform tuple shape.
       done-when: "manual:2027-03-31 the pin-debt ratchet's inclusion criterion is derived, not named — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

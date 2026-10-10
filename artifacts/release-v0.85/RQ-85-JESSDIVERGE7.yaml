@@ -36,4 +36,24 @@ artifacts:
       priority: must
       issue: "#1436"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        PENDING — the analysis is FINISHED, the reply is DRAFTED, and it is HELD for the
+        maintainer's word. Nothing was posted.
+
+        What is ready, and deliberately not re-derived because re-deriving repeats finished work:
+        the three translational ACCUMULATOR slots are named with their OWN load program counters,
+        the matchable instruction shape is given for an object laid out differently, and a
+        REFUTABLE prediction is attached — all three read zero at every tick, and a non-zero
+        accumulator kills the hypothesis. The paired multiplicand slots are referenced many times
+        each in the object, which is why a slot address alone does not name a value and the load
+        program counter is part of the ask.
+
+        THE HONEST RESIDUAL IS CARRIED AS UNEXPLAINED: the excess over the pure-gravity integral
+        GROWS with tick count rather than staying constant, and the constant is correct to single
+        precision, so the growth is not explained by the constant. It is not guessed at here.
+
+        This lane is gated on correspondence approval rather than on measurement, which is the
+        correct gate — the conduct rules override throughput, and an unapproved reply to an
+        external reporter is exactly what they forbid.
       done-when: "manual:2027-03-31 the reporter has the three accumulator words, or a precise statement of what they must run — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

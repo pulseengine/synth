@@ -31,4 +31,21 @@ artifacts:
       priority: should
       issue: "#1451"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the three states are CONFIRMED WITH A DISTRIBUTION and no classifier ships.
+
+        Measured over every job in the same widened window, more than two thousand of them: the
+        runner-name field is a real name in the overwhelming majority, the EMPTY STRING in a
+        double-digit minority, and null-or-absent in a smaller double-digit minority. ALL THREE
+        STATES ARE POPULATED.
+
+        That is why a null-coalescing default is the wrong shape here: it never fires on the empty
+        string, so a classifier must test all three explicitly rather than defaulting.
+
+        THE SHAPE HALF IS ALSO MEASURED, as a by-product of the no-show lane: the cancellation
+        classifier must cluster on PROXIMITY, not on an exact completion timestamp, because a
+        cancel wave's teardown is NOT atomic — one observed wave spread its members across
+        fifty-five seconds. An exact-equality classifier reports the straggler as a lone no-show.
+        Whole-run cancellation must also be its own class rather than folded into either.
       done-when: "manual:2027-03-31 the no-show and cancellation classifier states what the job object cannot decide — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
