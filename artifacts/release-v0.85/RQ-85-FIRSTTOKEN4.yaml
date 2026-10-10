@@ -31,4 +31,25 @@ artifacts:
       priority: should
       issue: "#1476"
       verification-track: manual
+      disposition: refuted
+      verified-by: >
+        REFUTED — the remaining part's premise, as the plan stated it, does not hold. There is no
+        dead code branch.
+
+        Measured by wrapping the classifier over the live population at the commit under test:
+        every red branch is UNREACHED. **That is what a green tree MEANS** — a reached red branch
+        IS a defect — so "no artifact has ever reached it" is true of every working guard and
+        discriminates nothing.
+
+        SYNTHETIC REACHABILITY settles it. Every branch is reachable by a LEGAL artifact and each
+        behaves correctly: prose claiming completion against a non-claiming status reds; prose
+        claiming completion beside a non-delivery disposition reds; incomplete prose beside a
+        claiming status with no disposition reds; the previously-landed escape detector reds. Two
+        branches that must PASS do pass, as controls.
+
+        WHAT IS ACTUALLY DEAD IS A VOCABULARY, not a branch, and it makes this lane and the
+        disposition-vocabulary lane ONE DEFECT SEEN FROM TWO SIDES. The permissive gate's set of
+        non-delivery dispositions is strictly larger than the strict gate's. Counting the values the
+        tree actually uses: three values are in use, and the two the permissive gate adds are used
+        ZERO times. The tree uses exactly the INTERSECTION, which is why nothing has ever noticed.
       done-when: "manual:2027-03-31 the verdict-prose gate's remaining dead branch is wired or declined — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

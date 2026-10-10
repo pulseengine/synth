@@ -31,4 +31,34 @@ artifacts:
       priority: must
       issue: "#1439"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the root-cause step RAN for the first time in five releases, the suspect rung is
+        REACHED, and the retry stays OUT. The order is fixed by the durable record (root-cause,
+        then an execution differential for the rung's own issue, then the retry) and this lane did
+        not jump it.
+
+        WHY IT COULD NOT BE ROOT-CAUSED BEFORE, now measured rather than suspected: driving the
+        recovery-statistics flag over this repository's pressure fixture shows the ladder rescuing
+        every function BEFORE the suspect rung — the spill rung exhausts, the frame-home rung
+        succeeds, and two functions need a grown pool — so THE RUNG IS NEVER TRIED. The fixture
+        cannot exercise the path whose emitted code is the suspect, and the rung's own test file
+        records that two deliberately-constructed high-pressure shapes were also rescued earlier.
+
+        WITH THE REPORTER'S MODULE the rung IS tried, once, and rescues nothing: the one function
+        that reaches it still exhausts every rung. That is the FIRST CONFIRMED INPUT reaching the
+        suspect path.
+
+        AND THE PROBE IS GETTING RARER, which is the new argument this lane did not have before.
+        Comparing against the reading recorded in the rung's test file at an earlier release, the
+        rung's try count has HALVED while the spill rung now rescues a function it previously did
+        not. If a later release rescues that last function earlier, the defect becomes
+        UNOBSERVABLE while remaining live. That is an independent, measured reason to give the rung
+        its own execution differential now — which is exactly the middle step of the fixed order.
+
+        BASELINE, also run for the first time with a matching binary: the frame-home execution
+        differential passes, every export emitted and every emulation bit-identical to the
+        reference, comfortably above its own wired floor. The three sign-flipping encoder sites
+        were RE-DERIVED at the commit under test and have not moved since the previous release; the
+        test-exclusion distinction in their count also still holds.
       done-when: "manual:2027-03-31 the wide-file sign error has a named cause, or the retry stays out a fifth release — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

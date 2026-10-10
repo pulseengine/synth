@@ -37,4 +37,41 @@ artifacts:
       priority: must
       issue: "#1145"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the compile half is PROVEN rather than unproven, and no layering ships. THREE
+        CARRIED CLAIMS ARE CORRECTED, each measured.
+
+        FIRST, THE BLOCKER WAS PRICED AGAINST THE WRONG OPERATION. The previous release recorded
+        this half unproven because "a matching binary needs a full build" against a disk budget.
+        Building only the CLI crate produces a binary reporting the workspace version in under
+        twenty seconds and under a gigabyte of target, and it compiles a real module to a valid
+        object. The multi-gigabyte figure prices a full TEST build — all targets plus
+        dev-dependencies — and the lane needed a BINARY. The cost figure and the requirement were
+        two different populations. (The binary on PATH reports a long-superseded version, so the
+        previous release was right to refuse it; the answer was to build one.)
+
+        REFUTING COMMAND, run on this repository's own multi-memory fixture with two controls:
+
+          memory-k ops + the native-pointer flag      REFUSED, and the refusal reproduces
+          same module WITHOUT that flag               a DIFFERENT refusal — the skipped-export
+                                                      guard, several exports not in the object
+          the flag on a SINGLE-memory module          succeeds  (CONTROL)
+
+        SECOND, "the refusal lives in the selector, not the CLI, so a CLI-level probe misses it"
+        is FALSE. There are TWO refusals for this condition. A CLI pre-flight check bails BEFORE
+        any function is compiled, and that is what a CLI probe hits on the first attempt; the
+        selector's own refusal sits behind it. Whether the selector arm is reachable AT ALL through
+        the CLI once pre-flight exists is NOT measured here — if it is not, it is an inert guard,
+        which is the self-test lane's class one tier down.
+
+        THIRD, the design assertion that BOUNDS this lane is intact but was cited at the wrong
+        path. It lives under the CLI crate's own tests, not at the repository root. A wrong path
+        looks EXACTLY like a deleted assertion, and reading the abbreviation literally would have
+        concluded the bounding constraint was gone and rewritten the scope on a typo.
+
+        AND A COUNT THIS LANE ALMOST GOT WRONG THE SAME WAY: a plain grep for the addend helper
+        returns more lines than there are call sites, because the population includes the
+        definition and two comments. The carried call-site figure is correct about call sites.
+        Caught before it became a correction.
       done-when: "manual:2027-03-31 an op on a non-zero memory lowers under the native-pointer abi, or the layering gap is named — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

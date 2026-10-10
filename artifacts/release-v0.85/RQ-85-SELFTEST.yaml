@@ -30,4 +30,21 @@ artifacts:
       priority: should
       issue: "#1515"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the defect is CONFIRMED LIVE with a control matrix in both directions, and no fix
+        ships. Refuting command run in a detached worktree pinned to the commit under test; the
+        removal was a single asserted replacement of the wiring block inside the classifier.
+
+          wiring INTACT   self-test exits zero (correct)   sibling unittest green
+          wiring REMOVED  self-test STILL exits zero       sibling unittest RED
+
+        The sharpest detail is that the self-test's printed output is UNCHANGED between the two
+        runs. It is not testing a weakened version of the capability; it is testing a NEIGHBOURING
+        one. The coverage that actually bites lives in a class the advertised claim never mentions,
+        and it reds across the escape-by-status cross-product.
+
+        ENVIRONMENT STATED WITH THE VERDICT, because the previous release proved potency can depend
+        on untracked local state: pure interpreter, detached worktree, no build. This verdict is
+        environment-independent.
       done-when: "manual:2027-03-31 a self-test that cannot see its own capability removed is not a self-test — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
