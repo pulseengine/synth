@@ -30,4 +30,19 @@ artifacts:
       priority: should
       issue: "#1432"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        DEFERRED — BLOCKED OUTSIDE THIS REPOSITORY, and the refusal that blocks it STAYS IN PLACE.
+
+        Measured at this commit: the corpus volume is NOT PRESENT — only the system volumes are
+        mounted, and the corpus path does not resolve. ATTEMPTING PASSWORDS STAYS DECLINED and this
+        lane did not attempt one. The real blocker remains a one-line authorized-keys append on the
+        host, which only the maintainer can make.
+
+        The ladder's own header states its measurement date and the commit it was taken at, both
+        several releases old, and the header itself already records that those figures MUST be cited
+        with that date and commit. That obligation is what makes the staleness consequential rather
+        than cosmetic: the compliance envelope requires the acceptance rate be published as the
+        denominator of every performance comparison, cited from the ladder with its date and commit.
+        A stale ladder therefore constrains what may be published, which is the honest consequence.
       done-when: "manual:2027-03-31 the acceptance ladder is re-measured, or its staleness is reported with the blocker named — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

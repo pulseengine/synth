@@ -31,4 +31,29 @@ artifacts:
       priority: must
       issue: "#1183"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — NOT REFUTED, and the split is WIDER than this plan states. No labelling ships.
+
+        Refuting command run in a detached worktree with the paired control the artifact demands.
+        CONTROL, clean tree: the changelog slot PASSES. CASE, after ONE deliberate uncommitted
+        change (the workspace version, a single occurrence asserted), the SAME gate invocation
+        CONTRADICTS ITSELF INSIDE ONE REPORT — the release-identity slot reports the workspace
+        version matching while the changelog slot reports that the notes describe the PREVIOUS
+        release. Both true about their own source: one read the WORKING TREE, the other the REF.
+
+        THE PLAN SAYS "PER SLOT". MEASURED, IT IS PER SLOT **AND PER MODE**, ACROSS **THREE**
+        SOURCE KINDS RATHER THAN TWO. Inside the release-execution step alone: an existence check
+        against the GIT REF; in retro mode a CHECK-RUN conclusion from the GitHub API; otherwise
+        the pin sweep EXECUTED against the WORKING TREE; and the changelog read from the REF. The
+        same step answers from a ref, from an external API, and from the live worktree, and which
+        of the last two applies depends on the MODE. A two-valued source label cannot describe
+        these slots — the deliverable needs ref / worktree / external-API plus the selecting mode.
+
+        AND THE THIRD SOURCE CARRIES ITS OWN VACUITY: an absent check-run conclusion maps to
+        NOT-DERIVED rather than to a failure, so in retro mode an API outage makes the slot
+        ABSTAIN. "An API failure is not an empty population" is living inside the conformance gate.
+
+        The first step's docstring deliberately makes the pre-tag assertion a statement about the
+        WORKTREE, so the convention must NOT be forced to one value. Labelling is the deliverable.
       done-when: "manual:2027-03-31 the conformance gate names its source per slot — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

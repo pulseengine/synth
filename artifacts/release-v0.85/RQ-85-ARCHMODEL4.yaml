@@ -32,4 +32,24 @@ artifacts:
       priority: should
       issue: "#1136"
       verification-track: manual
+      disposition: deferred
+      verified-by: >
+        DEFERRED — the upstream blocker is still OPEN, so the architecture step is non-applicable
+        again and the recurring non-applicability is FILED rather than waived.
+
+        THE ORDINAL IS DERIVED BY ARTIFACT IDENTITY FROM THE GIT TREE, stated with its commit and
+        never counted by hand: the population is non-empty, carries ZERO duplicate identifiers, and
+        this is the twenty-third filing counting itself — derived at the commit this artifact ships
+        on, which is named in the release record rather than here, because a count of the artifact
+        it lives in is invalidated by the edit that writes it.
+
+        THE UPSTREAM CONDITION, read rather than remembered: the blocking issue is OPEN and is that
+        the architecture tool accepts property associations from UNDECLARED property sets silently,
+        so a typo'd or invented property is indistinguishable from a satisfied one. That is exactly
+        the class this programme refuses to build evidence on.
+
+        TAG CONJUNCTION VERIFIED BY THE GATE'S OWN OUTPUT, not by reading the tags: this artifact
+        carries both the loop tag and the architecture tag, and the conformance gate's step 1-2 line
+        NAMES it as the filed decision. A lane that drops either tag reports the step as unscoped
+        rather than as deliberately non-applicable, which is why the check is the gate's line.
       done-when: "manual:2027-03-31 file the recurring architecture-step non-applicability with its ordinal derived from the tree — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
