@@ -38,6 +38,7 @@ artifacts:
       issue: "#1318"
       verification-track: manual
       disposition: partial
+      landed: "PR #1520 - #1318 - the class oracle's header CORRECTED to agree with its own pinned matrix: on ARM the f32 value-carrying branch COMPILES and only f64 still declines, and the reporter's module skips ONE function of seventeen rather than the six of seven the header still claimed. NO PIN MOVED - twelve of twelve (export, backend) cells, five pinned declines and seven pinned compiles, with a byte-identical verdict table before and after, so the change is prose-only and behaviour-identical. A RECORD CORRECTION and not a completion: the lane stays partial and does not authorise its issue to retire."
       verified-by: >
         PARTIAL — the gap is NAMED WITH A LIVE MEASUREMENT and no lowering ships. The figure the
         plan was told to re-measure HELD. Refuting command run at synth 0.84.0, built from the
@@ -63,6 +64,16 @@ artifacts:
         treated as untrusted input: compiled, never executed.
 
         ALSO MEASURED, and it corrects the oracle's own prose rather than its pins: that script's
-        header still describes the float value-carrying branch as a loud ARM decline, which its
-        own pinned matrix now contradicts. Doc rot behind a green gate, in the gate's own file.
+        header described the float value-carrying branch as a loud ARM decline, which its own
+        pinned matrix contradicted. Doc rot behind a green gate, in the gate's own file.
+
+        AND IT IS NOW CORRECTED, as a RECORD correction and not a lowering — this lane's one
+        shipped change. The header carried TWO stale claims and this file's own matrix refuted
+        the first: `("vbr_f32", "arm")` has been pinned to COMPILE since RQ-76-FALCON, so "at
+        FLOAT type" was false at one of the two widths, and on ARM only f64 still declines. The
+        second was the count: the six GI-FPU-002 declines in the reporter's module are GONE, the
+        single remaining skip being the `controller@0.10.0#step` export, which is the #1069 cell
+        and not a float cell. NO PIN MOVED — the matrix reads 12/12 (export, backend) cells, 5
+        pinned declines and 7 pinned compiles, identically before and after, so the change is
+        prose-only and behaviour-identical, and the diff is one hunk inside the module docstring.
       done-when: "manual:2027-03-31 an op the falcon-cascade binary needs is lowered, or the gap is named with a live measurement — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

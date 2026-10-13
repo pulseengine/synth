@@ -1,9 +1,28 @@
 #!/usr/bin/env python3
 # ci-status: wired
 # ci-checks: compiles >= 6
-"""RQ-73-FALCONFIXTURE (#1318): a value-carrying branch at FLOAT type is a loud
-decline on ARM and RISC-V, and it is 6 of the 7 declines in the reporter's
-`opt.wasm`.
+"""RQ-73-FALCONFIXTURE (#1318): a value-carrying branch at FLOAT type, pinned
+per (export, backend) cell — on RISC-V a loud decline at both widths, on ARM a
+loud decline at f64 only, and on AArch64 no decline at all.
+
+WHAT THIS HEADER CLAIMED, AND WHY IT IS CORRECTED HERE (RQ-85-FALCON2). It said
+the decline was "at FLOAT type ... on ARM and RISC-V, and it is 6 of the 7
+declines in the reporter's `opt.wasm`". Both halves were true when written;
+neither is true now, and the refutation of the first had been sitting in this
+file's own pinned matrix for several releases:
+
+  * `("vbr_f32", "arm")` has been pinned to COMPILE since RQ-76-FALCON, and the
+    comment directly above that cell says so. "At FLOAT type" reads as both
+    widths; on ARM only f64 still declines, and it no longer declines through
+    the integer peek.
+  * the six `GI-FPU-002` declines in `opt.wasm` are GONE. Re-measured at synth
+    0.84.0 with the reporter's own command line: `opt.wasm` rc=1 with ONE of
+    seventeen functions skipped, and that one is the `controller@0.10.0#step`
+    export (the #1069 cell), not a float cell; `fused.wasm` rc=0, clean.
+
+The PINS were right and the PROSE was wrong — doc rot behind a green gate, in
+the gate's own file. The matrix below is the claim; this paragraph only explains
+it, and nothing checks a paragraph.
 
 WHY THIS EXISTS. #1318 has been open since 2026-09-17 with its residual living
 in an issue attachment, which v0.70's RQ-70-FALCONCORPUS already named as the
