@@ -63,6 +63,16 @@ artifacts:
         treated as untrusted input: compiled, never executed.
 
         ALSO MEASURED, and it corrects the oracle's own prose rather than its pins: that script's
-        header still describes the float value-carrying branch as a loud ARM decline, which its
-        own pinned matrix now contradicts. Doc rot behind a green gate, in the gate's own file.
+        header described the float value-carrying branch as a loud ARM decline, which its own
+        pinned matrix contradicted. Doc rot behind a green gate, in the gate's own file.
+
+        AND IT IS NOW CORRECTED, as a RECORD correction and not a lowering — this lane's one
+        shipped change. The header carried TWO stale claims and this file's own matrix refuted
+        the first: `("vbr_f32", "arm")` has been pinned to COMPILE since RQ-76-FALCON, so "at
+        FLOAT type" was false at one of the two widths, and on ARM only f64 still declines. The
+        second was the count: the six GI-FPU-002 declines in the reporter's module are GONE, the
+        single remaining skip being the `controller@0.10.0#step` export, which is the #1069 cell
+        and not a float cell. NO PIN MOVED — the matrix reads 12/12 (export, backend) cells, 5
+        pinned declines and 7 pinned compiles, identically before and after, so the change is
+        prose-only and behaviour-identical, and the diff is one hunk inside the module docstring.
       done-when: "manual:2027-03-31 an op the falcon-cascade binary needs is lowered, or the gap is named with a live measurement — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
