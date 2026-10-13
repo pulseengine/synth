@@ -5,6 +5,173 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.85.0] - 2026-10-13
+
+### The theme, and the instances this release produced about itself
+
+**"A correction is an unreviewed claim."** The theme was chosen because it is the
+only property this programme has measured identically in two consecutive
+releases: each of the last two cold reviews found twelve false statements, and in
+each case nine of the twelve were introduced by the loop's own corrections rather
+than by the original work.
+
+It did not wait for a cold review this time. Every item below was found inside
+v0.85's own working, and most of them are the loop correcting itself:
+
+- **A classifier that was right by accident.** The no-show lane's first pass
+  grouped unstarted cancelled jobs by exact completion timestamp. One cancel wave
+  spread its members across fifty-five seconds, so the straggler fell out of its
+  own cluster and read as a lone no-show — in a run whose own conclusion is
+  cancelled with dozens of jobs cancelled. The classifier's population was "jobs
+  sharing an exact timestamp"; its subject was "jobs cancelled by one action". The
+  corrected total is the same and **neither instance is one the first pass
+  named**. A right answer for wrong reasons is not a measurement.
+
+- **A grep line count read as a call-site count.** A helper's grep returns more
+  lines than there are call sites, because the population includes the definition
+  and two comments. The carried figure was right and the correction would have
+  been wrong. Caught before it was written.
+
+- **A hex pattern that swallows a decimal identifier.** The provenance check
+  reports a workflow run identifier as a broken commit citation, because decimal
+  digits are valid hexadecimal. The obvious narrowing would make the check silent
+  on a genuinely mistyped identifier, so out-of-population must be reported
+  rather than dropped.
+
+- **A wrong path that looks exactly like a deleted assertion.** A bounding design
+  assertion was cited at an abbreviated path. Reading it literally would have
+  concluded the constraint was gone and rewritten a lane's scope on a typo.
+
+- **A blocker priced against the wrong operation, and against the wrong disk.**
+  Three must-lanes had recorded unproven or unrun across multiple releases "for
+  want of a full build" against a multi-gigabyte disk budget. That figure prices a
+  full test build — all targets plus dev-dependencies — while every one of those
+  lanes needed a binary, which costs a fraction of it: measured, the
+  version-matching binary is 0.87 GiB of target and builds in seconds, and its
+  reported version was checked against the workspace rather than assumed. The
+  cost and the requirement were two different populations, inside the constraint
+  this programme repeated most often. **And the second premise was stale too**:
+  the free-space figure the blocker was argued against was itself out of date, so
+  even the operation that was priced wrong would have fitted. One `df` refutes it
+  without any argument about which build was meant — the cheaper check was never
+  run because the expensive conclusion was already written down.
+
+- **A guard that was about to fire with the wrong diagnosis.** The release
+  window's anti-vacuity guard reds when the window holds six or more commits and
+  none is recognized as delivery-shaped, and its message says, in those words,
+  that the recognizer has gone stale rather than the release. Measured here: the
+  window held three commits and zero delivery-shaped, and the tail reaches six at
+  cold-review round two, so it was going to fire mid-release. But the recognizer
+  was healthy — confirmed by running it over the previous window, where it finds
+  the single delivery commit by which that release passed the same floor. What was
+  actually true is that seventeen lanes' outcomes had all landed under subjects
+  that name no lane. So the guard would have been right to fire and wrong about
+  why; lowering the floor and "fixing" the recognizer were both available, and
+  both would have been the unreviewed correction this release is named after. The
+  guard's own message asks for the third option, and that is what shipped.
+
+- **An oracle whose prose its own pins refute.** The class oracle for the
+  reporter's float blocker is wired and green. Its header called a value-carrying
+  branch at float type a loud decline on ARM; the pinned matrix three dozen lines
+  below it has recorded that cell as compiling for several releases, and only the
+  f64 width still declines. The same header carried a count — six of seven
+  declines in the reporter's module — that re-measurement reduced to one, and the
+  one is not a float cell at all. The pins were right the whole time and nothing
+  checks the paragraph that explains them.
+
+- **The warning about noise numbers misclassified a claim as noise.** The
+  previous release's review record ends its number-derivation note by listing six
+  tokens as timestamp fragments rather than claims. Five of the six are. The sixth
+  is a job count, appearing in four separate claims in that same record, and a
+  round that trusted the note would have skipped a live number. The note was
+  written to protect the next round from unreviewed numbers and it is itself an
+  unreviewed claim about them.
+
+- **A record counted the file it was being written into.** The same note states
+  how many distinct numbers its tool found in that record. Writing the figure
+  added a numeral to the file it had just counted, so the count was false the
+  moment it was recorded — and the figure now appears in its own list.
+
+- **A shipped record cited a method nobody can run.** Two consecutive review
+  records name the script their round-2 queue was derived with. It is in no commit
+  on any branch; the earlier record's own residue note calls it a tool copied in
+  for the session. The figures in those records were checkable and the METHOD was
+  not, which is the same defect one token class over from the one a lane of this
+  release opened to measure. The script now exists, with a per-scrubber self-test
+  and a positive control proving real claim numbers survive it.
+
+- **An exit code that was silence.** Reading a gate's result through a shell array
+  that does not exist in this shell returns the empty string, which is
+  indistinguishable from success until it is checked directly.
+
+### Delivered
+
+Every artifact in the release directory records an outcome; none is silent. Two
+lanes refuted a premise the plan shipped with, which is the lane working rather
+than failing.
+
+**The verdict-prose lane's remaining part is refuted.** There is no dead code
+branch: every red branch is unreached over the live population, *which is what a
+green tree means* — a reached red branch is a defect, so "never reached" is true
+of every working guard and discriminates nothing. Synthetic reachability shows
+every branch reachable by a legal artifact and behaving correctly, with passing
+controls. What is actually dead is a **vocabulary**: one gate admits two
+non-delivery dispositions the stricter gate forbids, and the tree uses neither.
+That makes two separately-scoped lanes one defect seen from two sides.
+
+**The no-show decline is refused.** The population is non-empty once the window is
+widened and the classifier stops splitting cancel waves. "Empty across two
+releases" was a window-and-classifier artifact rather than a property of the
+system.
+
+**The suppression-table escape is confirmed with a byte-identical control.** A
+twelve-entry table under a non-matching name leaves the ledger green; the same
+bytes under a matching name red it. Only the name differs, and both layers are
+name-scoped, so one rename defeats the explicit list and the tripwire together.
+
+**The conformance gate's source split is wider than previously recorded.** One
+step answers from three source kinds — the git ref, an external check-run API,
+and the live working tree — and which of the last two applies depends on the
+mode. A two-valued source label cannot describe those slots. An absent check-run
+conclusion maps to not-derived rather than to a failure, so an API outage makes
+that slot abstain.
+
+**A recovery rung was reached for the first time.** The lane that had stalled for
+five releases could not be root-caused from repository fixtures because the
+ladder rescues every function before the suspect rung is tried. With a real
+reporter module the rung is reached, and its reach has halved since an earlier
+release while a lower rung now rescues a function it did not before. If a later
+release rescues that last function earlier, the defect becomes unobservable while
+remaining live — which is an independent argument for giving the rung its own
+execution differential.
+
+**The one shipped change is a record correction.** The float class oracle's
+header was corrected to agree with its own matrix and with the re-measurement:
+on ARM only f64 still declines, on AArch64 nothing does, on RISC-V both widths
+do, and the reporter's module now skips one function of seventeen rather than
+seven. No pin moved — twelve of twelve cells, five pinned declines and seven
+pinned compiles, identical before and after, with a byte-identical verdict
+table — so the change narrows nothing and lowers nothing. The lane's artifact
+stays at its partial disposition: a correction is not a completion.
+
+### Not delivered, and why
+
+Three lanes are blocked outside this repository on actions only the maintainer can
+take: a registry credential rotation, a coverage-backlog scope decision, and a
+one-line key append so a corpus volume can be mounted. Attempting passwords stays
+declined and was not attempted. Each is reported as blocked rather than
+re-measured as progress.
+
+One lane is gated on correspondence approval rather than on measurement: its
+analysis is finished and its reply is drafted and held. The conduct rules override
+throughput, and an unapproved reply to an external reporter is what they forbid.
+
+The recurring architecture-step non-applicability is filed again rather than
+waived, with its ordinal derived by artifact identity from the git tree and stated
+with its commit. The upstream blocker is open and is itself a defect of this
+class: the tool accepts property associations from undeclared property sets
+silently, so a mistyped property is indistinguishable from a satisfied one.
+
 ## [0.84.0] - 2026-10-09
 
 ### "A check and its subject drawn from different populations — neither side wrong about its own set, and the comparison between them meaningless"

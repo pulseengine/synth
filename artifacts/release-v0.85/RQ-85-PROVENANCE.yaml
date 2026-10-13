@@ -50,4 +50,33 @@ artifacts:
         judging ancestry makes the check SILENT on a genuinely mistyped identifier. So
         out-of-population must be REPORTED rather than dropped, which is the same rule as a derived
         population of zero being a refusal.
+
+        AND THE DEFECT HAS A SECOND TOKEN CLASS, found while preparing this release's own cold
+        review and measured rather than argued: A RECORD'S METHOD CAN BE AS UNCHECKABLE AS ITS
+        FIGURES. The last two review records both name the script their round-2 number queue was
+        derived with. That script is in NO COMMIT ON ANY BRANCH - searched in the worktree and
+        across all refs, with a POSITIVE CONTROL confirming the same two methods find a script
+        that does exist - and the earlier record's own residue note calls it a tool copied in for
+        the session. Two shipped records therefore cite a method a reader cannot run, which is
+        this lane's defect one token class over from a commit citation.
+
+        IT NOW EXISTS, tracked, with a per-scrubber self-test and a positive control proving that
+        real claim numbers survive the scrubbing. Writing it against the REAL record rather than
+        synthetic samples is what exposed three further things, each measured:
+
+          * THE SCRUBBING THE PLAN DESCRIBED DID NOT EXIST. The form actually carried is a BARE
+            CLOCK with seconds and no date, which both a seconds-less clock pattern and a
+            date-anchored ISO pattern miss, so the whole class leaked. Adding a bare-clock
+            scrubber takes one fragment from nine occurrences down to one.
+          * THE PREVIOUS RECORD'S OWN NOTE MISCLASSIFIED A CLAIM AS NOISE. It lists six tokens as
+            timestamp fragments. Five are. The sixth is a job count appearing in four separate
+            claims in that same record, so a round trusting the note would have skipped a live
+            number - a note written to protect the next round from unreviewed numbers, and itself
+            an unreviewed claim about them.
+          * THAT NOTE COUNTED THE FILE IT WAS WRITTEN INTO. It states how many distinct numbers
+            its tool found in that record; writing the figure added a numeral to the file it had
+            just counted, and the figure now appears in its own list.
+
+        RECORDED AS THIS LANE'S OWN INSTANCE: the self-test passed while the tool was still
+        incomplete on real input. Synthetic samples prove only what the author already imagined.
       done-when: "manual:2027-03-31 a figure in a shipped record is pinned to an ancestor of the default branch — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
