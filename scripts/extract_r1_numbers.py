@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Extract the NUMBERS a cold-review record introduces, frequency-ordered.
 
-WHY THIS IS A TRACKED SCRIPT. v0.83's and v0.84's review records both cite
+WHY THIS IS A TRACKED SCRIPT. v0.84's review record cites
 `extract_r1_numbers.py` as the method by which round 2's queue was derived, and
-v0.84's record says in its own residue note that the file was "the tool copied in
-for me" — untracked. It is in no commit on any branch. So two shipped records
-name a method a reader cannot run: the same defect RQ-85-PROVENANCE measured for
-commit citations, one token class over. A record's method must be as checkable as
-its figures.
+says in its own residue note that the file was "the tool copied in for me" —
+untracked. (An earlier version of this paragraph said v0.83's record cited it
+too; it does not — it mentions the name once, in a list of untracked paths, and
+its round 2 worked from round 1's own "what round 2 should attack" section.
+Corrected after this release's round 1 found the same error at two other sites,
+which is why it is fixed here as a FACT rather than at the site that was flagged.)
+It was in no commit on any branch until this one: the commit that adds this file
+is the repair, so the sentence above is in the past tense on purpose. So ONE
+shipped record names a method a reader cannot run: the same defect
+RQ-85-PROVENANCE measured for commit citations, one token class over. A record's
+method must be as checkable as its figures.
 
 WHAT IT IS FOR. "A correction is an unreviewed claim": the numbers a round-1
 correction introduces have had zero review passes. Round 2 attacks them BY NAME,
@@ -17,7 +23,11 @@ reading for importance is how the loop re-reviews what it already believes.
 WHAT IT SCRUBS, and why each class is noise rather than a claim: identifiers
 carry digits that are not quantities. v0.84's record notes its own run left ISO
 fragments (`09`, `57`, `26`, `58`, `51`, `53`) in the list, and an unscrubbed run
-reported `01` nineteen times from runner names. Order matters — the longest,
+reported a two-digit runner fragment repeatedly from runner names. THE FIGURE THIS
+DOCSTRING FIRST CARRIED FOR THAT — nineteen — IS NOT REPRODUCIBLE and was corrected
+here: the record the sentence is about yields 2, and no tracked file in this
+repository yields more than 8. The scrubber is justified by the class existing,
+which is measurable, not by that count. Order matters — the longest,
 most specific forms are removed first, or a shorter pattern eats part of a longer
 token and leaves a digit behind.
 
@@ -125,7 +135,10 @@ def self_test() -> int:
             print(f"  FAIL {f}")
         print(f"self-test: {len(failures)} failure(s)")
         return 1
-    print(f"self-test: {len(cases)} scrubbers + 1 positive control, 0 failures")
+    # `len(cases)` is NOT the scrubber count: bare-clock carries three cases. The
+    # shipped line said "11 scrubbers" against 9, found by this release's round 1.
+    print(f"self-test: {len(SCRUBBERS)} scrubbers over {len(cases)} cases "
+          f"+ 2 mechanism checks, 0 failures")
     return 0
 
 

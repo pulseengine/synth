@@ -11,9 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **"A correction is an unreviewed claim."** The theme was chosen because it is the
 only property this programme has measured identically in two consecutive
-releases: each of the last two cold reviews found twelve false statements, and in
-each case nine of the twelve were introduced by the loop's own corrections rather
-than by the original work.
+releases: each of the last two cold reviews found twelve false statements.
+
+**The attribution figure this paragraph first carried was itself false, and this
+release's own round 1 found it.** It said "nine of the twelve" in each case. Neither
+source record publishes that figure in any form: both state twelve as seven plus
+five, and the only attribution count either one gives is FOUR OF FIVE, in its round
+two; round one's seven findings carry no attribution count in either record. The
+"nine" is traceable to v0.84's round-one line *"if each site were counted separately
+the total would be 9"* — a per-SITE total read as an attribution count. Two
+populations compared, in the sentence naming that exact failure as this release's
+theme. What is measured identically in both releases is the TWELVE.
 
 It did not wait for a cold review this time. Every item below was found inside
 v0.85's own working, and most of them are the loop correcting itself:
@@ -68,7 +76,11 @@ v0.85's own working, and most of them are the loop correcting itself:
   that name no lane. So the guard would have been right to fire and wrong about
   why; lowering the floor and "fixing" the recognizer were both available, and
   both would have been the unreviewed correction this release is named after. The
-  guard's own message asks for the third option, and that is what shipped.
+  guard's own message does NOT ask for the third option, and saying it did put
+  words in the guard's mouth: its only imperative is "teach the new shape rather
+  than lowering this floor", which is the recognizer fix — the very option this
+  paragraph rejects as an unreviewed correction. A real delivery is what shipped,
+  and it is the right answer for reasons the message does not state.
 
 - **An oracle whose prose its own pins refute.** The class oracle for the
   reporter's float blocker is wired and green. Its header called a value-carrying
@@ -92,11 +104,14 @@ v0.85's own working, and most of them are the loop correcting itself:
   added a numeral to the file it had just counted, so the count was false the
   moment it was recorded — and the figure now appears in its own list.
 
-- **A shipped record cited a method nobody can run.** Two consecutive review
-  records name the script their round-2 queue was derived with. It is in no commit
-  on any branch; the earlier record's own residue note calls it a tool copied in
-  for the session. The figures in those records were checkable and the METHOD was
-  not, which is the same defect one token class over from the one a lane of this
+- **A shipped record cited a method nobody can run.** ONE review record (v0.84)
+  names the script as the method its round-2 queue was derived with; the claim that
+  two did is this entry's own error, found by round 1 — v0.83 mentions the script
+  only in a list of untracked paths, and its round 2 worked from round 1's "what
+  round 2 should attack" section instead. It was in no commit on any branch until
+  the commit that added it; the LATER record's residue note, not the earlier's,
+  calls it a tool copied in for the session. That record's figures were checkable
+  and its METHOD was not, which is the same defect one token class over from the one a lane of this
   release opened to measure. The script now exists, with a per-scrubber self-test
   and a positive control proving real claim numbers survive it.
 

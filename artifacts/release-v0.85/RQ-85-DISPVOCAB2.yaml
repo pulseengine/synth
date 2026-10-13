@@ -55,8 +55,11 @@ artifacts:
         THE FOUR FIGURES THE PLAN LISTED WERE RE-DERIVED AT THE COMMIT UNDER TEST rather than
         carried, and they have moved, which is why the plan said they are live. Stated here as
         relationships rather than as a count of a live object: the classifier ITERATES far more
-        artifacts than its classifying function REACHES, and most of the iterated set is out of
-        population as declared non-verdicts.
+        artifacts than its classifying function REACHES, and the out-of-population remainder is
+        dominated NOT by declared non-verdicts but by artifacts carrying NO verdict field at all.
+        The declared-non-verdict share is a small minority of that remainder. The earlier wording
+        here said most of it was declared non-verdicts and was wrong by more than a factor of ten,
+        found and measured by this release's round 1.
 
         AND THE DEMONSTRATION LANDED ON THE ARTIFACT ABOUT THIS DEFECT. The target was chosen
         mechanically by a listing, not picked — and it selected the previous release's

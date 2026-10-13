@@ -53,11 +53,15 @@ artifacts:
 
         AND THE DEFECT HAS A SECOND TOKEN CLASS, found while preparing this release's own cold
         review and measured rather than argued: A RECORD'S METHOD CAN BE AS UNCHECKABLE AS ITS
-        FIGURES. The last two review records both name the script their round-2 number queue was
-        derived with. That script is in NO COMMIT ON ANY BRANCH - searched in the worktree and
+        FIGURES. ONE review record - v0.84 - names the script as the method its round-2 number
+        queue was derived with. THE CLAIM THAT BOTH OF THE LAST TWO DID IS CORRECTED HERE: this
+        release's round 1 established that v0.83 mentions the script only in a list of untracked
+        paths in its residue note, and that v0.83's round 2 derived its queue by name from round
+        1's own "what round 2 should attack" section instead. The residue wording calling it a
+        tool copied in for the session is in the LATER record, not the earlier one. The script was
+        in no commit on any branch until the commit that added it - searched in the worktree and
         across all refs, with a POSITIVE CONTROL confirming the same two methods find a script
-        that does exist - and the earlier record's own residue note calls it a tool copied in for
-        the session. Two shipped records therefore cite a method a reader cannot run, which is
+        that does exist. So ONE shipped record cites a method a reader cannot run, which is still
         this lane's defect one token class over from a commit citation.
 
         IT NOW EXISTS, tracked, with a per-scrubber self-test and a positive control proving that
