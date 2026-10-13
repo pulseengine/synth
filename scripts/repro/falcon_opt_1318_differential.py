@@ -67,18 +67,28 @@ would have made this lane pay a ratchet waiver for evidence of a decline, and
 would have overstated the silent-miscompile count the v0.73 headline rests on.
 
 THE DIAGNOSTIC IS THE SECOND FINDING. ARM compiles the i32 form, and declines
-the i64 form with a message that says exactly what is unsupported. The f32/f64
-form yields "an integer operation peeked an f32 (VFP) stack value — invalid
-wasm or an unlowered float op reached the integer path", which names the wrong
-subsystem and reads as though the input might be malformed. It is not: every
+the i64 form with a message that says exactly what is unsupported. The f64 form
+declines with "an f64 value carried over a br/br_if/br_table". The f32 form
+COMPILES on ARM and has since RQ-76-FALCON, which is what the matrix below pins.
+
+UNTIL v0.85 THIS PARAGRAPH SAID the f32/f64 form yields "an integer operation
+peeked an f32 (VFP) stack value — invalid wasm or an unlowered float op reached
+the integer path", naming the wrong subsystem and reading as though the input
+might be malformed. That was true when written. The v0.85 correction replaced
+this docstring's HEAD and never read its TAIL, so the sentence outlived the very
+fix it describes — and a splice must be read against both sides it leaves
+behind. The input is not malformed: every
 export in the fixture is validated and executed by wasmtime. That mismatch is
 why six declines in a real flight-control module were never connected to a
 known limitation. AArch64 compiles all four, so the capability exists here.
 
 Stated as measured and no further: the SAME shape declines at i64 with the
-`#509` message and at f32 with an integer-path message. Whether both raise
-sites reduce to one underlying limitation is NOT shown, and no such claim is
-made.
+`#509` message and at f64 with the carried-value message. At f32 on ARM it does
+NOT decline at all. The earlier wording here said "at f32 with an integer-path
+message" and was left standing by the same v0.85 splice that fixed the head —
+the second of two tail sentences the correction missed. Whether the two
+surviving raise sites reduce to one underlying limitation is NOT shown, and no
+such claim is made.
 
 A pin that moves in EITHER direction is red. A fix that makes `vbr_f32`
 compile must move this table in the same PR that lands it.

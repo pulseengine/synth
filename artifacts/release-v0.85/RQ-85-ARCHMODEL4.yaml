@@ -39,9 +39,14 @@ artifacts:
 
         THE ORDINAL IS DERIVED BY ARTIFACT IDENTITY FROM THE GIT TREE, stated with its commit and
         never counted by hand: the population is non-empty, carries ZERO duplicate identifiers, and
-        this is the twenty-third filing counting itself — derived at the commit this artifact ships
-        on, which is named in the release record rather than here, because a count of the artifact
-        it lives in is invalidated by the edit that writes it.
+        this is the twenty-third filing counting itself, DERIVED AT COMMIT
+        74c5e0f9be2cd55493728ac3b9cc14477db3c561 and stated with it here. The earlier wording
+        deferred the commit to the release record while the release record deferred it back, so
+        the ordinal was stated with its commit in NEITHER document - found by this release's round
+        1. The deferral's reasoning was sound about the COUNT and wrong about the COMMIT: a count
+        of the artifact it lives in is invalidated by the edit that writes it, but a commit that is
+        an ANCESTOR of the default branch can be named, and re-deriving at that commit reproduces
+        23 over a population with zero duplicate identifiers.
 
         THE UPSTREAM CONDITION, read rather than remembered: the blocking issue is OPEN and is that
         the architecture tool accepts property associations from UNDECLARED property sets silently,

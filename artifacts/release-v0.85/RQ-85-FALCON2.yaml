@@ -38,7 +38,7 @@ artifacts:
       issue: "#1318"
       verification-track: manual
       disposition: partial
-      landed: "PR #1520 - #1318 - the class oracle's header CORRECTED to agree with its own pinned matrix: on ARM the f32 value-carrying branch COMPILES and only f64 still declines, and the reporter's module skips ONE function of seventeen rather than the six of seven the header still claimed. NO PIN MOVED - twelve of twelve (export, backend) cells, five pinned declines and seven pinned compiles, with a byte-identical verdict table before and after, so the change is prose-only and behaviour-identical. A RECORD CORRECTION and not a completion: the lane stays partial and does not authorise its issue to retire."
+      landed: "PR #1520 - #1318 - the class oracle's header's FIRST NINE LINES corrected to agree with its own pinned matrix (its tail was NOT, and this release's round 1 found two surviving claims there): on ARM the f32 value-carrying branch COMPILES and only f64 still declines, and the reporter's module skips ONE function of seventeen rather than the six of seven the header still claimed. NO PIN MOVED - twelve of twelve (export, backend) cells, five pinned declines and seven pinned compiles, with a byte-identical verdict table before and after, so the change is prose-only and behaviour-identical. A RECORD CORRECTION and not a completion: the lane stays partial and does not authorise its issue to retire."
       verified-by: >
         PARTIAL — the gap is NAMED WITH A LIVE MEASUREMENT and no lowering ships. The figure the
         plan was told to re-measure HELD. Refuting command run at synth 0.84.0, built from the
@@ -68,7 +68,10 @@ artifacts:
         pinned matrix contradicted. Doc rot behind a green gate, in the gate's own file.
 
         AND IT IS NOW CORRECTED, as a RECORD correction and not a lowering — this lane's one
-        shipped change. The header carried TWO stale claims and this file's own matrix refuted
+        shipped change. The header carried AT LEAST FOUR stale claims, not two, and this
+        correction fixed only the two in its first nine lines: this release's round 1 found two
+        more standing in the docstring's TAIL, which is recorded with the splice finding below.
+        Of the two fixed, this file's own matrix refuted
         the first: `("vbr_f32", "arm")` has been pinned to COMPILE since RQ-76-FALCON, so "at
         FLOAT type" was false at one of the two widths, and on ARM only f64 still declines. The
         second was the count: the six GI-FPU-002 declines in the reporter's module are GONE, the
