@@ -839,6 +839,24 @@ jobs:
       - name: Unit-test the changelog-structure slot — real-commit red/green (1259)
         run: python3 scripts/test_loop_conformance_changelog.py
 
+      # RQ-86-PROVENANCE2 (#1516): a shipped record's METHOD is as checkable as
+      # its figures. A cold-review record cites COMMITS and TOOL PATHS as its
+      # evidence and nothing tested either. Measured over the last three records:
+      # the ABSENT-TOOL half is clean (the earlier defect, two records citing a
+      # script that was in no commit on any branch, is fixed by tracking it),
+      # while the ANCESTRY half is not -- v0.83's record cites SEVEN pre-squash
+      # branch shas, v0.84's one, v0.85's two. This repo squash-merges, so a
+      # branch head never becomes an ancestor of main.
+      #
+      # CI gates the SELF-TEST, not the report. The gating form defaults to the
+      # NEWEST record, which today is v0.85's and carries two of those shas, so
+      # wiring it to gate would red on day one over history it cannot change --
+      # the RQ-74-STALEMSG trap this repo has already measured. The obligation is
+      # FORWARD-ONLY: the record being written cites merged shas, and the gating
+      # form is run against it by hand at review time.
+      - name: "Self-test the review-record provenance check (RQ-86-PROVENANCE2, #1516)"
+        run: python3 scripts/review_record_provenance_check.py --self-test
+
       # RQ-62-CLAIMCHECK (#1062): the runner-redundancy invariant, enforced
       # rather than remembered. On 2026-09-02 the `light` pool had exactly
       # one runner, it went offline, and NOTHING IN THE REPO COULD MERGE —

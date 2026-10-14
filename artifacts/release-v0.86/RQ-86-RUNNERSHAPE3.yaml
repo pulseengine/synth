@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-RUNNERSHAPE3
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "The no-show classifier is stated over every shape the job object presents, including the one found live in v0.85"
     description: >
         Carried, and v0.85 added a shape its predecessor's wording did not cover. That lane had
@@ -31,4 +31,42 @@ artifacts:
       priority: should
       issue: "#1451"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1531 - #1451 - DELIVERED: the classifier is shown to admit a lone no-show in a progressing run, and the three runner-name states are enumerated over a STATED window. The admission is tested against a REAL instance created this tick rather than a fixture - cancelling superseded runs left genuinely cancelled check-runs on commits whose runs had been progressing - and the classifier reports them as unverified and exits non-zero, while a released commit exits zero with a clean verdict. The three states are a real name, the EMPTY STRING and null; the empty string is the majority and a cancelled unstarted job appears under BOTH it and null, so a classifier keying on null alone misses the common case - which is the shape that makes a jq default silently wrong. THE SPLIT REMAINS NON-DERIVABLE: in the sampled window every unstarted job whose start equals its run creation was an ordinary queued job, so that field combination does not identify a no-show by itself."
+      verified-by: >
+        DELIVERED — the classifier admits a lone no-show in a progressing run, and the three
+        runner-name states are enumerated with the window stated.
+
+        THE ADMISSION IS TESTED AGAINST A REAL INSTANCE, not a fixture. Cancelling superseded
+        runs earlier in this tick left genuinely cancelled check-runs on commits whose runs had
+        been QUEUED or IN PROGRESS — exactly the shape the previous release found live, a
+        cancelled unstarted job inside a run that was neither failed nor cancelled. Run against
+        such a commit the classifier exits NON-ZERO and reports sixty-five check-runs as
+        unverified, naming each; run against the previous release's own release commit it exits
+        ZERO with a clean verdict over eighty-three check-runs. Red case and inert case, so the
+        red came from the property and not from the environment. The exit codes were captured
+        DIRECTLY rather than through a pipe, because a pipeline reports its last command's status
+        and this programme has already misread a gate that way.
+
+        WHY IT ADMITS THE INSTANCE, stated as a mechanism: the classifier keys on the CHECK-RUN's
+        own conclusion rather than on the enclosing run's state, so a cancelled check inside a
+        progressing run is still a cancelled check on the commit. One normalisation is
+        load-bearing and documented in the classifier itself — the REST endpoint returns
+        lowercase conclusions while the rollup returns uppercase, and comparing without folding
+        case matches nothing while looking correct.
+
+        THE THREE RUNNER-NAME STATES, over a STATED window because a window is part of a
+        population claim. Sampling the ten most recent COMPLETED runs: a real name, the EMPTY
+        STRING, and null all occur, with the empty string the majority. An earlier sample over
+        the most recent runs regardless of status found only TWO of the three, and the reason was
+        the sample rather than the field — every job in it was unstarted, so none had been
+        assigned a runner. A population of one state short was worth asking about rather than
+        reporting.
+
+        AND THE SPLIT REMAINS NON-DERIVABLE, which is the honest residual. A cancelled unstarted
+        job appears under BOTH the empty string and null, so a classifier keying on null alone
+        misses the common case — the shape that makes a default-on-null silently wrong. And in
+        the sampled window every unstarted job whose start time equalled its run's creation time
+        was an ORDINARY QUEUED job, so that field combination does not identify a no-show by
+        itself. The issue outlives the lane and says so.
       done-when: "manual:2027-03-31 the classifier admits a lone no-show in a progressing run and its three runner-name states are enumerated — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

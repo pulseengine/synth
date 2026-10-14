@@ -281,7 +281,20 @@ def main():
             bad.append((a["id"], f, tok, why, " ".join(str(vb).split())[:110]))
 
     if args.census:
-        print(f"verdict-prose census: {pop} artifacts in the population")
+        # RQ-86-DISPVOCAB3 (#1458): the two questions are SEPARATED and every
+        # ratio NAMES its denominator. This line used to read "{pop} artifacts in
+        # the population" above a table whose rows sum to the number of artifacts
+        # carrying a `verified-by` AT ALL -- a larger number. One word,
+        # "population", answered two different questions:
+        #   * ALLOW-LIST MEMBERSHIP  -- is this artifact's lead a verdict token?
+        #   * FIELD OCCUPANCY        -- does this artifact state an outcome at all?
+        # Measured at authoring: 128 classified against 249 carrying the field,
+        # over 335 iterated. Printing the smaller number above the larger table is
+        # how a reader infers a denominator that was never stated.
+        _carrying = sum(lead_all.values())
+        print(f"verdict-prose census: REACH {pop} classified of {_carrying} "
+              f"artifact(s) carrying `verified-by` (the table below sums to "
+              f"{_carrying}); the reach is a RELATIONSHIP, not a rate")
         for k, v in lead_all.most_common():
             mark = ("COMPLETE" if k in COMPLETE else
                     "INCOMPLETE" if k in INCOMPLETE else "-")
@@ -298,8 +311,9 @@ def main():
     for i, f, tok, why, snip in bad:
         print(f"FAIL verdict-prose {i} ({f}): {why}")
         print(f"     verified-by opens: {snip}...")
-    print(f"verdict-prose: {pop} artifacts in the population, {len(bad)} "
-          f"disagree with their own structured fields")
+    print(f"verdict-prose: {pop} artifact(s) with a CLASSIFIED leading verdict "
+          f"(the gate's own population; not every artifact carrying the field), "
+          f"{len(bad)} disagree with their own structured fields")
     return 1 if bad else 0
 
 
