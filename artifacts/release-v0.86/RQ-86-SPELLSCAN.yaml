@@ -33,15 +33,26 @@ artifacts:
       issue: "#1515"
       issue-scope: outlives
       verification-track: manual
-      landed: "PR #1537 - #1515 - DELIVERED: the release-file statistics scan now covers BOTH spellings, it is committed rather than typed into a commit message, and its judgement step is explicit in its own output. The refuting command ran first over every release file in the tree: the digit scan returns ZERO hits in all thirty files while the word-number scan returns FIVE HUNDRED AND SIXTY across twenty-nine of them, so the two disagree almost everywhere. The POSITIVE CONTROL is satisfied at the commits where the escaped figure was live: it is present at planning, at release prep and at cold-review round one, with the digit scan reading CLEAN at every one of the three, and round two removed it. The scan is deliberately NOT an oracle - the overwhelming majority of those five hundred and sixty are idioms, and this release's own file carries five, all idioms by hand classification - so it REPORTS and the operator records the judgement, which is what the artifact asks for. THREE NEGATIVE CONTROLS were executed and ONE OF THEM FOUND A VACUOUS CASE IN THIS VERY SELF-TEST: the live-figure case asserted on the probe LINE rather than on the matched TOKEN, and stayed GREEN with the word removed from the pattern, because that same line also contains another number word. Fixed by asserting on what the instrument matched; the control now reds. CI gates the self-test, not the report."
+      landed: "PR #1537 - #1515 - DELIVERED: the release-file statistics scan now covers BOTH spellings, it is committed rather than typed into a commit message, and its judgement step is explicit in its own output. The refuting command ran first over every release file in the tree, and round two gave it a COMMITTED tree-wide mode so the figure can be re-derived: --all states its own population of TWENTY-SIX release directories, TWENTY-FIVE carrying a release file, and over it the word half returns THREE HUNDRED AND TWO across TWENTY-FOUR and the digit half TWO HUNDRED AND THIRTY-FOUR across TWENTY. THREE different figures for this measurement circulated before that mode existed and no two agree, because the scan could only ever scan ONE file and every tree-wide number came from an uncommitted loop; there is no population of thirty. The POSITIVE CONTROL is satisfied at the commits where the escaped figure was live: it is present at planning, at release prep and at cold-review round one, with the digit scan reading CLEAN at every one of the three, and round two removed it. The scan is deliberately NOT an oracle - the overwhelming majority of the word hits are idioms - so it REPORTS and the operator records the judgement. That judgement was WRONG for two of the five hits in this release's own file: they were classified by part of speech, and on the test the scan's own output states they are unsourced counts of a shipped release's outcomes. Per the report's own instruction a statistic is REMOVED rather than reworded, so both are gone and the file now carries THREE idioms. THREE NEGATIVE CONTROLS were executed and ONE OF THEM FOUND A VACUOUS CASE IN THIS VERY SELF-TEST: the live-figure case asserted on the probe LINE rather than on the matched TOKEN, and stayed GREEN with the word removed from the pattern, because that same line also contains another number word. Fixed by asserting on what the instrument matched; the control now reds. CI gates the self-test, not the report."
       verified-by: >
         DELIVERED — the scan covers both spellings, it is committed and CI-gated, and its
         judgement step is stated in its own output rather than assumed.
 
-        THE REFUTING COMMAND, run first over every release file in the tree. The digit scan
-        returns ZERO hits in all THIRTY files; the word-number scan returns FIVE HUNDRED AND
-        SIXTY across TWENTY-NINE of them. They disagree in all but one file, so the blindness is
-        not a one-off and the lane is not moot.
+        THE REFUTING COMMAND, run first over every release file in the tree — and the figure is
+        now DERIVED BY A COMMITTED MODE, which is the whole correction. `--all` reports its own
+        POPULATION: TWENTY-SIX release directories, TWENTY-FIVE carrying a release file, v0.70
+        without one. Over that population the word-number scan returns THREE HUNDRED AND TWO hits
+        across TWENTY-FOUR files and the digit scan TWO HUNDRED AND THIRTY-FOUR across TWENTY,
+        both non-zero in NINETEEN. THREE FIGURES FOR THIS ONE MEASUREMENT CIRCULATED BEFORE THE
+        MODE EXISTED and no two agree: this record first said the digit half returns ZERO in all
+        THIRTY files, cold review re-measured ONE THOUSAND ONE HUNDRED AND SIXTY-TWO across
+        TWENTY-FIVE, and a loop over the files that actually exist gives a third answer again.
+        NONE of the three was re-derivable and there is no population of thirty, because
+        `release_file` returns ONE path and the scan had no tree-wide mode at all — every
+        tree-wide figure this lane ever reported came from an uncommitted ad-hoc loop. That is
+        the lane's own subject landing on the lane: an instrument that cannot produce the number
+        its record quotes. The blindness itself is undisputed and is the PER-FILE escape the
+        previous release measured; what was never measurable is the population-wide claim.
 
         THE POSITIVE CONTROL IS SATISFIED, and getting there took two corrections of this lane's
         own instruments. Measured across the previous release's window, the escaped figure is
@@ -64,10 +75,20 @@ artifacts:
         IDENTIFIERS, not statistics, and the shipped pattern now accepts both shapes.
 
         THE SCAN IS DELIBERATELY NOT AN ORACLE, which the artifact requires it to say. The
-        overwhelming majority of those five hundred and sixty hits are IDIOMS, not figures, and
-        this release's own file carries FIVE — every one an idiom by hand classification: a
-        universal quantifier, a repetition count in prose, a demonstrative, a determiner, and a
-        hyphenated adjective. A gate that red on a token match would be refused the day it landed
+        overwhelming majority of the word hits are IDIOMS, not figures. THIS RELEASE'S OWN FILE
+        CARRIED FIVE AND NOW CARRIES THREE, because TWO OF THE FIVE WERE NOT IDIOMS. The earlier
+        classification was BY PART OF SPEECH — "a repetition count in prose", "a determiner" —
+        and a word class is not an argument about the test the scan's own output states, which is
+        whether the token is a figure standing in for a measured number. Judged on THAT test, the
+        hit reading "it fired twice inside a single anchor derivation" IS a count of a shipped
+        release's measured findings, and the hit reading "a single lane carried that release's
+        only delivery" IS a count of its deliveries; cold review found NO first copy of either
+        anywhere in the tree, so they were not second copies but FIRST and only ones — an
+        unsourced figure about a past release, in the file the rule exists to keep figure-free.
+        The report's own instruction is that "a statistic must be REMOVED, not reworded", so both
+        were removed from the file rather than relabelled, and the scan now reports THREE: a
+        universal quantifier, a demonstrative, and a hyphenated adjective, each an idiom on the
+        stated test and not merely by its word class. A gate that red on a token match would be refused the day it landed
         and routed around, which this repository has already measured once. So the scan REPORTS
         the population and tells the reader in as many words that a token match is not a
         statistic and that the classification is theirs to record.
@@ -86,6 +107,8 @@ artifacts:
         WHAT CI GATES is the SELF-TEST and not the report, because the report is a judgement aid
         with a five-hundred-strong idiom population. The self-test asserts that the blindness is
         still reproduced, that an idiom still fires so the reporter cannot quietly become an
-        oracle, and that identifiers are not counted — eight cases, each shown to fail under
-        removal of its own subject.
+        oracle, that identifiers are not counted, and that the tree-wide mode REFUSES an empty
+        population instead of reporting a clean zero over nothing — TWELVE cases. THREE negative
+        controls were executed, named above; the claim that every case was shown to fail under
+        removal of its own subject was broader than what was run, and is withdrawn.
       done-when: "manual:2027-03-31 the release-file statistics scan covers both spellings with its judgement step recorded, or the blindness is shown absent — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

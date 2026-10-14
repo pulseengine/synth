@@ -44,9 +44,13 @@ artifacts:
         HOW the layering must be built, one correction withdraws this lane's own first reading of
         the premise, and no layering ships.
 
-        THE REFUTING COMMAND. `git grep -n "static_data_addend" -- artifacts/` returns two hits
-        and the load-bearing one is the v0.84 answer itself, so the downstream design assertion
-        has NOT been removed. The bounding constraint holds: the multi-memory test still asserts
+        THE REFUTING COMMAND. `git grep -n "static_data_addend" -- artifacts/` returned TWO hits
+        at the planning commit, and the load-bearing one is the v0.84 answer itself, so the
+        downstream design assertion has NOT been removed. The figure is pinned to that commit
+        deliberately: at the shipped commit the same command returns THREE, because the sentence
+        asserting the count is itself the third hit and the needle is quoted again in this file's
+        own description. A live count of a needle this file contains moves every time the file
+        mentions it, so what is recorded is the reading at a named ref. The bounding constraint holds: the multi-memory test still asserts
         memory 0 has no suffixed alias. The call sites still number nine, exactly as v0.84
         recorded. On its own terms the scope was intact.
 

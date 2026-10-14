@@ -35,7 +35,7 @@ artifacts:
       priority: should
       issue: "#1454"
       verification-track: manual
-      landed: "PR #1537 - #1454 - DELIVERED on the done-when's SECOND branch: the gate's demand is SHOWN UNMEETABLE by a partial-only release, enumerated from the shipped derivation and then CHECKED BY EXPERIMENT, which is what caught the part reading alone got wrong. Four combinations produce a non-empty set and only ONE of them is open to a non-claiming artifact: a refuting disposition that also declares it closes its issue. A partial or deferred disposition has NO legal route, so a release whose lanes are honestly all partial cannot be non-vacuous - the gate asks for something such a release does not have, and the thing to change is the release's shape, not the gate's demand. THE EXPERIMENT MATTERED: declaring that an issue outlives a non-claiming artifact DOES enter the held-open set, the count moving from zero to one, so reading the derivation function alone says the route is open - but the enforcing rule REDS it, saying the issue of an undelivered artifact stays open anyway and declares nothing. Two places, and the enforcement wins. This release is NOT partial-only and escapes the vacuity its predecessor hit: simulated at the merged state it reports TWO issues authorised and ZERO failures, against its predecessor's empty set. Both authorised issues are ALREADY CLOSED, so the authorisation is a no-op, and that is stated rather than counted as progress. The gate's own potency controls were re-run and both fire."
+      landed: "PR #1537 - #1454 - DELIVERED on the done-when's SECOND branch: the gate's demand is SHOWN UNMEETABLE by a partial-only release, enumerated from the shipped derivation and then CHECKED BY EXPERIMENT, which is what caught the part reading alone got wrong. Four combinations produce a non-empty set and only ONE of them is open to a non-claiming artifact: a refuting disposition that also declares it closes its issue. A partial or deferred disposition has NO legal route, so a release whose lanes are honestly all partial cannot be non-vacuous - the gate asks for something such a release does not have, and the thing to change is the release's shape, not the gate's demand. THE EXPERIMENT MATTERED: declaring that an issue outlives a non-claiming artifact DOES enter the held-open set, the count moving from zero to one, so reading the derivation function alone says the route is open - but the enforcing rule REDS it, saying the issue of an undelivered artifact stays open anyway and declares nothing. Two places, and the enforcement wins. This release is NOT partial-only and escapes the vacuity its predecessor hit: run at this lane's OWN commit the gate reports THREE authorised, TEN held open, zero closed and ONE failure; later in the same pull request, after RQ-86-DISPVOCAB3 stopped declaring an already-closed issue held open, it reports FOUR authorised, NINE held open, zero closed and ZERO failures. TWO-AND-ZERO WAS NEVER THE READING AT ANY COMMIT - an earlier version of this record stated it, and the correction that moved the real figure amended the pull-request body without reopening this artifact, which is a correction failing to propagate rather than a figure gone stale. All four authorised issues are ALREADY CLOSED, so the authorisation is a no-op, and that is stated rather than counted as progress. The gate's own potency controls were re-run and both fire."
       verified-by: >
         DELIVERED — the done-when's SECOND branch: the gate's demand is shown unmeetable by a
         partial-only release, with the enumeration and an experiment that corrects it.
@@ -67,9 +67,13 @@ artifacts:
         would have reported the vacuity as avoidable, which is the opposite of the truth.
 
         THIS RELEASE IS NOT PARTIAL-ONLY AND ESCAPES THE VACUITY, measured by simulating the
-        merged state rather than predicting it: TWO issues authorised for closure, zero held
-        open, zero closed, ZERO failures, against the previous release's empty authorised set and
-        its hard failure. The escape is not a fix to the gate — it is that two lanes this release
+        merged state rather than predicting it. At this lane's OWN commit the gate reports THREE
+        authorised, TEN held open, zero closed and ONE failure; after a later commit in the same
+        pull request stopped RQ-86-DISPVOCAB3 declaring an already-closed issue held open, it
+        reports FOUR authorised, NINE held open, zero closed and ZERO failures - against the
+        previous release's empty authorised set and its hard failure. TWO-AND-ZERO was never the
+        reading at any commit: an earlier version of this record said so, and the commit that
+        moved the real figure amended the pull-request body and never reopened this file. The escape is not a fix to the gate — it is that two lanes this release
         genuinely reached a claiming status, which is exactly the shape the enumeration says is
         required.
 

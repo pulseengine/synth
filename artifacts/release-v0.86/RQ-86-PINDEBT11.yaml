@@ -28,7 +28,7 @@ artifacts:
       issue: "#1428"
       verification-track: manual
       issue-scope: outlives
-      landed: "PR #1537 - #1428 - DELIVERED, and a THREE-WAY paired control both satisfies the done-when and CORRECTS A STANDING CLAIM in this repository's own context file. Renaming a LISTED table out of the name pattern - in the oracle AND in the ledger's name field, so the explicit list still resolves and ONLY THE NAME differs - REDS the ledger: the population tripwire falls below its pinned count and the ledger drops a claim. So a renamed table is shown TO COUNT, which is one of the two outcomes the done-when accepts. But the escape is real for ADDITION: a new suppression table under a non-matching name leaves the ledger fully green with the pin count and the summed case count both UNCHANGED, while the byte-identical table under a matching name reds. The standing claim says a rename escapes entirely and cites a demonstration leaving the ledger green; measured here, the rename is CAUGHT and only addition escapes."
+      landed: "PR #1537 - #1428 - DELIVERED, and a THREE-WAY paired control both satisfies the done-when and CORRECTS A STANDING CLAIM in this repository's own context file. Renaming a LISTED table out of the name pattern - in the oracle AND in the ledger's name field, so the explicit list still resolves and ONLY THE NAME differs - REDS the ledger: the population tripwire falls below its pinned count and the ledger drops a claim. So a renamed table is shown TO COUNT, which is one of the two outcomes the done-when accepts. But the escape is real for ADDITION: a new suppression table under a non-matching name leaves the ledger fully green with the pin count and the summed case count both UNCHANGED, while the byte-identical table under a matching name reds. The standing claim SAID a rename escapes entirely and cited a demonstration leaving the ledger green; measured here, the rename is CAUGHT and only addition escapes, and the context file was corrected in this same release rather than left to be re-measured."
       verified-by: >
         DELIVERED — the inclusion criterion is stated, and a renamed table is shown TO COUNT,
         which is one of the two outcomes the done-when accepts. A three-way paired control also
@@ -46,10 +46,13 @@ artifacts:
         the population half by a count-equality pin over the name pattern: moving a listed table
         out of the pattern drops that count below its pinned value and the ledger loses a claim.
 
-        AND THE STANDING CLAIM IS WRONG ABOUT THAT. This repository's context file says a
-        suppression table under a non-matching name escapes the tripwire AND the ratchet
-        ENTIRELY, and cites a demonstration in which a byte-identical table under a non-matching
-        name left the ledger fully green. Measured here, a RENAME of a listed table does not
+        AND THE STANDING CLAIM WAS WRONG ABOUT THAT — past tense, because the correction landed
+        in this same release and the context file no longer says it. What it SAID, until this
+        lane measured it, was that a suppression table under a non-matching name escapes the
+        tripwire AND the ratchet ENTIRELY, citing a demonstration in which a byte-identical table
+        under a non-matching name left the ledger fully green. This artifact is now the only
+        remaining site of that wording, and it is quoted here to record what was refuted, not as
+        a live reading of the file. Measured here, a RENAME of a listed table does not
         leave it green — it reds. The escape that IS real is narrower and differently shaped:
         ADDING a new table under a non-matching name leaves the ledger green with BOTH the pin
         count and the summed case count unchanged, even though the added table pins real cases.

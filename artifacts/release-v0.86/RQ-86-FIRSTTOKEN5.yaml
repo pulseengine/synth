@@ -34,10 +34,17 @@ artifacts:
         REFUTED AS SCOPED — the branch is not dead, and the measurement replaces the lane's
         subject with a sharper finding.
 
-        DRIVEN OVER THE LIVE POPULATION, as the refuting command asks. Of the artifacts carrying
-        a `verified-by`, the DISPOSITION branch is reached a hundred and one times and the status
-        branch a hundred and forty-one, with a handful reaching neither. So the branch is
-        REACHED, repeatedly, and the lane is moot on its stated reading.
+        DRIVEN OVER THE LIVE POPULATION, as the refuting command asks. At the SHIPPED commit, of
+        the two hundred and sixty-five artifacts carrying a `verified-by`, the DISPOSITION
+        vocabulary matches a hundred and five and the CLAIMING status a hundred and fifty-four,
+        with SIX reaching neither — all six long-standing `proposed` artifacts from earlier
+        releases that this one never touched. An earlier version of this record said a hundred
+        and one and a hundred and forty-one: that is the reading at an intermediate commit of
+        this same release, before the eighteen artifacts it ships were given their own status and
+        disposition fields, and it is this file's own stated rule failing on the file that states
+        it — a count is invalidated by the edit that writes it. The figure above is therefore
+        PINNED to the commit it was taken at. So the branch is REACHED, repeatedly, and the lane
+        is moot on its stated reading.
 
         THE GREEN-POPULATION CAVEAT IS ADDRESSED BY EXECUTION, which the artifact specifically
         warns is necessary: a branch never reached over a green population is not evidence of
@@ -53,8 +60,13 @@ artifacts:
         — while the looser gate passes the same tree. So an author who reached for an ADVERTISED
         word would red CI without any document telling them why.
 
-        AND THAT WORD IS THE ONE THIS RELEASE WOULD HAVE REACHED FOR, which is how the mismatch
-        surfaced rather than by auditing vocabularies: three of this release's lanes are blocked
+        AND THAT WORD IS THE ONE THIS RELEASE WOULD HAVE REACHED FOR, which is why the mismatch
+        BINDS here rather than how it was found — it was found by auditing vocabularies, two
+        releases earlier, in `RQ-84-DISPVOCAB`, which already carried the two vocabularies, the
+        zero-site measurement and the same plant with the same message. That artifact also
+        measured something this lane did not re-derive: the refused word lands GREEN on most of
+        the artifact population, because the stricter gate is version-gated. What is new here is
+        the consequence: three of this release's lanes are blocked
         outside the repository, and the natural disposition for them is the very word the
         stricter gate refuses. They carry an accepted disposition and an explicit issue scope
         instead. The issue outlives the lane.
