@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-NPM5
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "The npm publish is unblocked, or reported blocked outside this repository"
     description: >
         BLOCKED OUTSIDE THIS REPOSITORY, and this lane's correct outcome may be to report that
@@ -33,4 +33,26 @@ artifacts:
       priority: should
       issue: "#1460"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1536 - #1460 - REPORTED BLOCKED with its state re-read AT THE SOURCE, which is the done-when's second branch and the only honest one here. The registry was queried directly, piping the response into the parser rather than through a shell variable: thirty-nine versions published, the highest is 0.69.0, and neither this release's version nor the previous one is present. Git tags after that highest published version: SIXTEEN, derived from the tag list against the registry rather than carried from any record - the figure in the brief was fifteen, measured before the previous release was tagged. The blocker is a credential rotation only the maintainer can perform. ATTEMPTING PASSWORDS STAYS DECLINED. Nothing around the blocker was re-measured and reported as progress."
+      verified-by: >
+        DELIVERED on the done-when's SECOND branch — reported blocked with its state re-read at
+        the source — and nothing else, because nothing else here would be honest.
+
+        RE-READ AT THE SOURCE, not from any record of it. The registry was queried directly and
+        its response piped STRAIGHT into the parser, because a shell variable interprets
+        backslash escapes and has already turned a valid registry response into something that
+        looked like an absence in this programme. Measured: THIRTY-NINE versions published, the
+        highest is 0.69.0, and neither this release's version nor the previous one resolves.
+
+        THE TAG COUNT RE-DERIVED RATHER THAN CARRIED: SIXTEEN git tags sit after the highest
+        published version, derived from the tag list against the registry. The figure carried
+        into this release was fifteen — correct when it was measured, before the previous release
+        was tagged. A carried count is a stale count, and this one had already drifted.
+
+        THE BLOCKER IS A CREDENTIAL ROTATION only the maintainer can perform, outside this
+        repository. ATTEMPTING PASSWORDS STAYS DECLINED. This lane deliberately did NOT measure
+        the machinery around the blocker and present that as movement: that is the shape conduct
+        rule four names, and it applies to the maintainer's queue as much as to a reporter's.
+        The issue outlives the lane and says so, so no claiming status authorises its closure.
       done-when: "manual:2027-03-31 the blocker is actioned and the lane delivered, or it is reported blocked with its state re-read at the source — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

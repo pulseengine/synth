@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-LADDER8
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "The acceptance ladder is re-measured, or reported blocked outside this repository"
     description: >
         BLOCKED OUTSIDE THIS REPOSITORY, and this lane's correct outcome may be to report that
@@ -33,4 +33,21 @@ artifacts:
       priority: should
       issue: "#1432"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1536 - #1432 - REPORTED BLOCKED with its state re-read AT THE SOURCE. The issue is OPEN and its own title states the staleness in releases rather than in a rate. The blocker is a one-line key append so the corpus volume can be mounted, which only the maintainer can perform, and the corpus host is not reachable from here. ATTEMPTING PASSWORDS STAYS DECLINED. No rung was re-derived from a different corpus and presented as a trend, which is the failure this programme already corrected once."
+      verified-by: >
+        DELIVERED on the done-when's SECOND branch — reported blocked with its state re-read at
+        the source.
+
+        RE-READ AT THE SOURCE: the issue is OPEN, and its own title states the staleness in
+        RELEASES rather than as a rate — which is the right shape, because a single summed rate
+        over a different corpus is the comparison this programme has already had to mark
+        superseded once.
+
+        THE BLOCKER is a one-line key append so the corpus volume can be mounted, which only the
+        maintainer can perform; the corpus host is not reachable from here. ATTEMPTING PASSWORDS
+        STAYS DECLINED, and that refusal is restated rather than quietly re-tested.
+
+        WHAT THIS LANE REFUSED TO DO: re-derive any rung from a corpus that IS reachable and set
+        it beside the ladder as though it were a trend. The issue outlives the lane and says so.
       done-when: "manual:2027-03-31 the blocker is actioned and the lane delivered, or it is reported blocked with its state re-read at the source — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

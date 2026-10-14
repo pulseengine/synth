@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-FIRSTTOKEN5
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "The dead disposition branch is reached or removed"
     description: >
         Carried, and narrowed to one part. Its first two parts are done and load-bearing. v0.85
@@ -28,4 +28,34 @@ artifacts:
       priority: should
       issue: "#1476"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1536 - #1476 - REFUTED AS SCOPED, and the measurement replaces the lane's subject with a sharper one. Driven over the live artifact population, the disposition branch is REACHED a hundred and one times against a hundred and forty-one for the status branch, so it is not dead and the lane is moot on that reading. The green-population caveat is addressed by EXECUTION rather than by argument: what IS dead is two members of the disposition vocabulary, and they are UNUSABLE rather than merely unused. One gate advertises five dispositions while the other accepts three, and planting one of the two extras reds the stricter gate by name while the looser one passes - so an author who reached for the advertised word would red CI. That word is precisely the one this release's three outside-the-repo lanes would reach for, which is how the mismatch was found."
+      verified-by: >
+        REFUTED AS SCOPED — the branch is not dead, and the measurement replaces the lane's
+        subject with a sharper finding.
+
+        DRIVEN OVER THE LIVE POPULATION, as the refuting command asks. Of the artifacts carrying
+        a `verified-by`, the DISPOSITION branch is reached a hundred and one times and the status
+        branch a hundred and forty-one, with a handful reaching neither. So the branch is
+        REACHED, repeatedly, and the lane is moot on its stated reading.
+
+        THE GREEN-POPULATION CAVEAT IS ADDRESSED BY EXECUTION, which the artifact specifically
+        warns is necessary: a branch never reached over a green population is not evidence of
+        deadness, because every working guard's red branch is unreached. So deadness was not
+        inferred from absence. What IS dead is narrower and provable: TWO MEMBERS of the
+        disposition vocabulary are never used anywhere in the tree, and they are UNUSABLE rather
+        than merely unused.
+
+        TWO GATES, TWO VOCABULARIES. The prose classifier advertises FIVE non-delivery
+        dispositions; the structured-field gate accepts THREE. The two extras are accepted by the
+        first and REFUSED by the second. Planted on a live artifact, one of them reds the
+        stricter gate by name — reporting that the disposition is not one of the three it allows
+        — while the looser gate passes the same tree. So an author who reached for an ADVERTISED
+        word would red CI without any document telling them why.
+
+        AND THAT WORD IS THE ONE THIS RELEASE WOULD HAVE REACHED FOR, which is how the mismatch
+        surfaced rather than by auditing vocabularies: three of this release's lanes are blocked
+        outside the repository, and the natural disposition for them is the very word the
+        stricter gate refuses. They carry an accepted disposition and an explicit issue scope
+        instead. The issue outlives the lane.
       done-when: "manual:2027-03-31 the disposition branch is shown reachable by a legal artifact or removed, with the green-population caveat addressed — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

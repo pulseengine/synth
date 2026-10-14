@@ -41,4 +41,57 @@ artifacts:
       priority: must
       issue: "#1439"
       verification-track: manual
+      disposition: partial
+      landed: "PR #1529 - #1439 - NOT LANDED, and the done-when's SECOND branch - record the disappearance with the counts - is the one delivered. The refuting command RAN FIRST at a version-matched binary over every local fixture this repository holds, and the suspect rung's try count is ZERO on all four - against a frozen reading of TWO taken from the reporter's full module two releases before the frozen reading was written. The rung is still IN the ladder, confirmed in the backend source, so a zero means NOT REACHED rather than REMOVED; and its own test drives the flag directly and passes, which is the positive control separating those two readings. THE NEW FINDING is that the committed reduction of the reporter's declines - which exists precisely so this class has a local input - reaches NONE of the float rungs: its two declines are PRE-LADDER SELECTOR declines of a carried value over a branch, a different class entirely, so the recovery ladder never runs at all. That refutes the hope that this rung's differential can be built from local inputs. The reporter's full module is not retained in this session and was not re-fetched, so the second half of the comparison is HONESTLY UNMEASURED rather than assumed. Conduct rule four binds: nothing here changes what the reporter can compile."
+      verified-by: >
+        PARTIAL — the done-when's SECOND branch is delivered: the rung's disappearance from the
+        observable path is recorded with the counts that show it. The differential itself is NOT
+        built, and the measurement says no input this repository holds could drive one.
+
+        THE REFUTING COMMAND, run first, at a binary whose reported version was checked against
+        the workspace before anything was measured. Driving the recovery-statistics flag over
+        every local fixture, under the reporter's own target and relocatable flags:
+
+          fixture                    exhausted  wide-file tries  rungs actually tried
+          vfp_local_pressure_1069        0             0          spill, frame-locals, two pool-grows
+          falcon_opt_1318                2             0          NONE - pre-ladder selector decline
+          vfp_spill_881                  0             0          spill, spill+pool-grow
+          vfp_home_redef_881             0             0          spill, frame-locals, pool-grow
+
+        ZERO on all four, against the reading frozen in the rung's own test file, which records
+        the rung reached TWICE on the reporter's full module.
+
+        A ZERO HERE HAS TWO POSSIBLE MEANINGS AND THE CONTROLS SEPARATE THEM. The rung is still
+        present in the ladder — the backend source still notes it and still selects between its
+        plain and integer-combined forms — so the zero is NOT REACHED, not REMOVED. And its own
+        test, which drives the flag directly and asserts the emitted stream rather than compiling
+        a module, passes on this tree. So the rung works; nothing routes to it.
+
+        THE NEW FINDING, and it is the one that decides the lane. The committed reduction of the
+        reporter's declines exists precisely so this class has a LOCAL input, and the rung's test
+        file cites it as the reduced shape behind six of the seven declines. Measured, it reaches
+        NONE of the float rungs: its two declines are a carried i64 and a carried f64 over a
+        branch, refused by the direct selector BEFORE any register-allocation recovery runs — the
+        statistics line reads a null rung and an exhausted result because the ladder never
+        started. Those are a different defect class from register pressure. So the reduction
+        reproduces the declines but NOT the rung-reaching behaviour, and the artifact's hope that
+        the differential could be built from local inputs is REFUTED.
+
+        WHAT IS HONESTLY UNMEASURED, rather than assumed: the reporter's full module is not
+        retained in this session and was deliberately not re-fetched, so the second half of the
+        artifact's comparison was not run. The artifact's refutation branch asks for the count on
+        BOTH; this release has it on one. The half measured is zero, and the half missing cannot
+        make the local half non-zero.
+
+        WHY PARTIAL AND NOT REFUTED. The done-when offers two delivery branches and the second one
+        — record the disappearance with the counts — IS delivered here. What is refuted is the
+        narrower hope that the differential could be built from LOCAL inputs. The disposition that
+        would read as refutation is also the only one this programme's gate accepts beside an
+        issue-closure authorisation, which is the wrong signal to attach to an externally reported
+        defect that is still open. The direct-flag stream assertion the test already performs
+        remains the only available route, which is what it was built to be. The retry stays OUT
+        and the tripwire stays armed, the artifact's own default.
+
+        CONDUCT RULE 4 IS STATED AGAINST THIS LANE: measuring a rung's reachability is not
+        progress on an externally reported defect that is still open.
       done-when: "manual:2027-03-31 the suspect rung has its own execution differential, or its disappearance from the observable path is recorded with the counts that show it — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

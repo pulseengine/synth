@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-PINDEBT11
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "The pin-debt inclusion criterion is stated so a reader can predict which tables count"
     description: >
         Carried. v0.85 reproduced the three readings exactly: the ledger green, still green
@@ -27,4 +27,37 @@ artifacts:
       priority: should
       issue: "#1428"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1536 - #1428 - DELIVERED, and a THREE-WAY paired control both satisfies the done-when and CORRECTS A STANDING CLAIM in this repository's own context file. Renaming a LISTED table out of the name pattern - in the oracle AND in the ledger's name field, so the explicit list still resolves and ONLY THE NAME differs - REDS the ledger: the population tripwire falls below its pinned count and the ledger drops a claim. So a renamed table is shown TO COUNT, which is one of the two outcomes the done-when accepts. But the escape is real for ADDITION: a new suppression table under a non-matching name leaves the ledger fully green with the pin count and the summed case count both UNCHANGED, while the byte-identical table under a matching name reds. The standing claim says a rename escapes entirely and cites a demonstration leaving the ledger green; measured here, the rename is CAUGHT and only addition escapes."
+      verified-by: >
+        DELIVERED — the inclusion criterion is stated, and a renamed table is shown TO COUNT,
+        which is one of the two outcomes the done-when accepts. A three-way paired control also
+        corrects a standing claim in this repository's own context file.
+
+        THE CONTROL, with only the NAME differing between runs as the artifact requires, and with
+        every anchor verified BEFORE any file was written — the first two attempts asserted
+        mid-edit and left a mixture, which is why the third verified both files up front:
+
+          rename a LISTED table out of the pattern   tripwire falls below its pin   LEDGER REDS
+          add a NEW table under a non-matching name  tripwire unchanged at its pin  LEDGER GREEN
+          add the SAME table under a matching name   tripwire rises above its pin   LEDGER REDS
+
+        SO THE RENAME IS CAUGHT. The listed-table half is held by the explicit table list, and
+        the population half by a count-equality pin over the name pattern: moving a listed table
+        out of the pattern drops that count below its pinned value and the ledger loses a claim.
+
+        AND THE STANDING CLAIM IS WRONG ABOUT THAT. This repository's context file says a
+        suppression table under a non-matching name escapes the tripwire AND the ratchet
+        ENTIRELY, and cites a demonstration in which a byte-identical table under a non-matching
+        name left the ledger fully green. Measured here, a RENAME of a listed table does not
+        leave it green — it reds. The escape that IS real is narrower and differently shaped:
+        ADDING a new table under a non-matching name leaves the ledger green with BOTH the pin
+        count and the summed case count unchanged, even though the added table pins real cases.
+
+        THE INCLUSION CRITERION A READER CAN PREDICT FROM, which is what this lane is for: a
+        table counts when its NAME matches the pinned pattern AND it is enumerated in the
+        ledger's table list. A table that is enumerated but renamed out of the pattern REDS. A
+        table that is neither enumerated nor named to match is invisible to both halves, and
+        nothing forces a NEW table to be enumerated — so addition remains a review-time
+        obligation. The issue outlives the lane, which is why its scope says so.
       done-when: "manual:2027-03-31 the inclusion criterion is stated and a renamed table is shown either to count or to be deliberately excluded — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

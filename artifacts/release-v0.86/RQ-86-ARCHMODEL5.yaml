@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-ARCHMODEL5
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "The recurring architecture-step non-applicability is filed again, with its ordinal and its commit"
     description: >
         Carried. The upstream blocker is open and is itself a defect of the class this programme
@@ -22,6 +22,7 @@ artifacts:
         architecture tag, or the step matcher goes blind to the filing.
     tags:
       - feature-loop
+      - aadl
       - process
     links:
       - type: derives-from
@@ -31,4 +32,30 @@ artifacts:
       priority: should
       issue: "#1136"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1536 - #1136 - DELIVERED, and the refuting command found a REAL DEFECT rather than confirming the filing. Derived BY ARTIFACT IDENTITY over the whole tree with both refusals armed - refuse on a duplicate identifier, refuse on an empty population - the series runs unbroken from v0.63 to this release with no duplicate, making this filing ORDINAL TWENTY-FOUR, stated with ancestor commit 479982ea. BUT THE FILING WAS INVISIBLE TO THE STEP MATCHER: it carried only two tags where the matcher requires feature-loop AND aadl-or-spar, so the matcher reported this release's step as a FAILURE naming a filing from v0.63 - a PREVIOUS release's artifact, which is exactly the lapse the matcher's own docstring records from v0.65 and exactly what #1136 exists to prevent. Adding the missing tag flips the slot from DERIVED-FAIL to NA-FILED naming this release's own artifact, measured before and after. The upstream blocker is unchanged and the issue outlives this filing."
+      verified-by: >
+        DELIVERED — the filing exists with both tags, is SEEN by the step matcher, and its ordinal
+        is stated with an ancestor commit. The refuting command found a real defect on the way.
+
+        THE ORDINAL, DERIVED BY ARTIFACT IDENTITY with both refusals armed as the artifact
+        demands. Walking every release artifact and keying on the identifier rather than on a
+        name pattern: the series runs unbroken from v0.63 through this release, NO duplicate
+        identifier, and the population is non-empty — so neither refusal fires and the derivation
+        is not vacuous. This filing is ORDINAL TWENTY-FOUR, stated here with ancestor commit
+        479982ea rather than deferred to another document, which is the failure v0.85's own
+        review found when each document deferred the commit to the other.
+
+        AND THE FILING WAS INVISIBLE TO THE STEP MATCHER, which is this lane's finding and not a
+        formality. The matcher requires an artifact tagged feature-loop AND either aadl or spar;
+        this release's filing carried feature-loop and process only. So the matcher reported the
+        step as a FAILURE naming a filing scoped to v0.63 — a PREVIOUS release's artifact — which
+        is precisely the lapse its own docstring records from v0.65, where that release's own
+        filing lacked a required tag and the slot would have stayed green on someone else's work
+        forever. Measured before and after adding the tag: DERIVED-FAIL naming v0.63, then
+        NA-FILED naming this release's own artifact, scoped to this release and evaluated at the
+        checkout.
+
+        THE UPSTREAM BLOCKER IS UNCHANGED and the issue outlives this filing, which is why the
+        issue scope says so explicitly rather than letting a claiming status authorise a closure.
       done-when: "manual:2027-03-31 the filing exists with both tags, shown SEEN by running the step matcher, and its ordinal stated with an ancestor commit — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

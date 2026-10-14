@@ -154,13 +154,47 @@ def main() -> int:
             )
         subprocess.run(["tar", "-x", "-C", str(base)], input=archive.stdout, check=True)
 
+        # RQ-86-NOTESPOP3 (#1259): the HEAD side is bounded THE SAME WAY as the
+        # base side, and this is what makes the anti-vacuity guard reachable.
+        #
+        # The base is a `git archive` of the configured source roots, so it can
+        # NEVER contain `.rivet/repos/` — the federated sibling checkouts. Diffing
+        # it against the whole working tree therefore reported every FOREIGN
+        # artifact as "added": measured 3219 added against v0.85.0 where only 18
+        # are this repo's, the other 3201 being gale/jess/kiln/loom/meld/scry/
+        # sigil. That is not merely a wrong count. It made the guard below
+        # UNREACHABLE in the only environment the generator ever runs: with
+        # `--base HEAD`, where NOTHING of this repo's own is added, the synced
+        # checkout still reported 3201 added, exited 0, and emitted a notes
+        # section containing ZERO of this repo's artifacts. The same breakage in a
+        # checkout WITHOUT the cache fires the guard and exits 1. A guard potent
+        # only where it never runs has not been demonstrated at all.
+        #
+        # Copied from the WORKING TREE rather than archived from HEAD, because
+        # notes are written before the release commit exists and must describe the
+        # tree being cut. Each side gets its own directory (the #1259 remedy's
+        # second part) so neither can read the other's siblings.
+        head = Path(td) / "head"
+        head.mkdir()
+        bundle = subprocess.run(
+            ["tar", "-c", "-f", "-", *roots, CONFIG],
+            cwd=a.root,
+            capture_output=True,
+        )
+        if bundle.returncode != 0:
+            sys.exit(
+                f"FAIL: could not bound the head extract to {roots + [CONFIG]} — "
+                f"{bundle.stderr.decode()[:200]}"
+            )
+        subprocess.run(["tar", "-x", "-C", str(head)], input=bundle.stdout, check=True)
+
         text = subprocess.run(
-            [a.rivet, "diff", "--base", str(base), "--head", str(a.root)],
+            [a.rivet, "diff", "--base", str(base), "--head", str(head)],
             capture_output=True,
             text=True,
         ).stdout
         js = subprocess.run(
-            [a.rivet, "diff", "--base", str(base), "--head", str(a.root), "--format", "json"],
+            [a.rivet, "diff", "--base", str(base), "--head", str(head), "--format", "json"],
             capture_output=True,
             text=True,
         ).stdout

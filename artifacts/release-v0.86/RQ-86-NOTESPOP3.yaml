@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-NOTESPOP3
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "The notes generator's anti-vacuity guard becomes reachable in the environment where the generator runs"
     description: >
         The remedy has been derived for two releases and is three parts: bound the extract by
@@ -35,4 +35,57 @@ artifacts:
       priority: must
       issue: "#1259"
       verification-track: manual
+      landed: "PR #1528 - #1259 - DELIVERED, and the paired controls found the guard inert in BOTH environments rather than in one, which is sharper than the claim the lane was built on. The guard fires only on a TOTALLY EMPTY added set; against the previous release the synced checkout reported three thousand two hundred and nineteen added and the clean one eighteen, of which only the eighteen are this repository's. The positive control settles it: simulating a total breakage of our own extract, the clean checkout FIRES and exits non-zero while the synced checkout stays SILENT, exits zero, and emits a notes section claiming three thousand two hundred and one added artifacts of which NONE are ours. Same breakage, opposite verdicts, and the inert venue is the only one the generator ever runs in. Root cause is an ASYMMETRY and not a missing check: the base side is an archive of the configured source roots and can never hold the sibling cache, while the head side was the whole working tree. Bounding the head side the same way, from the working tree because notes precede the release commit, delivers all three parts of the derived remedy at once. After the fix both environments emit IDENTICAL added lists and the breakage case FIRES in both. The negative control reds the new test with its own message AND reverts the live generator, and the test asserts the property rather than the count, recording the head's contents at call time because the extract directory is temporary."
+      verified-by: >
+        DELIVERED — the anti-vacuity guard is now reachable in the environment where the generator
+        actually runs, proven red-first in both the unit test and the live generator.
+
+        THE REFUTING COMMAND RAN FIRST, in both environments, with the paired controls the
+        artifact demands — and its result is SHARPER than the lane's own premise. The guard fires
+        only on a TOTALLY EMPTY added set. Against the previous release the synced checkout
+        reported three thousand two hundred and nineteen added artifacts and the clean checkout
+        eighteen; only the eighteen are this repository's, the rest being seven federated sibling
+        checkouts. The guard was silent in BOTH, so the lane's implied contrast — inert in one
+        venue, potent in the other — was not demonstrated by that pair alone.
+
+        THE POSITIVE CONTROL IS WHAT MAKES IT A POTENCY FINDING, and it is the measurement the
+        artifact says a zero population would require. Simulating a TOTAL breakage of this
+        repository's own extract, so that nothing of ours is added: the clean checkout FIRES and
+        exits non-zero with zero added, while the synced checkout stays SILENT, exits ZERO, and
+        emits a notes section claiming three thousand two hundred and one added artifacts of
+        which NONE are ours. Same breakage, opposite verdicts. So the guard was potent in an
+        environment where the generator never runs and inert in the only one where it does — and
+        the inert case does not merely fail to warn, it publishes a confident wrong answer. No
+        workflow invokes the generator; continuous integration runs its unit test alone.
+
+        ROOT CAUSE IS AN ASYMMETRY, NOT A MISSING CHECK. The base side is an archive of the
+        configured source roots, so it can NEVER contain the sibling cache. The head side was the
+        whole working tree. Every foreign artifact therefore read as added, which is also why the
+        count was wrong rather than merely large.
+
+        THE FIX bounds the head side exactly as the base side is bounded, taken from the WORKING
+        TREE rather than archived from the last commit, because notes are written before the
+        release commit exists and must describe the tree being cut. Each side gets its own
+        directory so neither can read the other's siblings. That single change delivers all three
+        parts of the remedy this lane derived two releases ago: bound the extract, separate the
+        directories, and make the guard reachable.
+
+        AFTER, THE WHOLE MATRIX. Against the previous release both environments report eighteen
+        and stay silent, which is correct because eighteen did ship. Under the breakage both
+        exit non-zero with zero added and the guard FIRES. And both environments now emit
+        IDENTICAL added lists, so the foreign contamination is gone from the output as well as
+        from the guard.
+
+        THE NEGATIVE CONTROL, EXECUTED: restoring the head side to the raw repository root reds
+        the new test with its own message AND reverts the live generator to exit zero, three
+        thousand two hundred and one added, guard silent, on the breakage case. Restored, both
+        green again — so the red came from the property and not from the environment.
+
+        THE TEST ASSERTS THE PROPERTY RATHER THAN THE COUNT, because a pinned count would have to
+        move every release. It checks that the path handed to the diff is not the repository root
+        and that what it contains is the source roots WITHOUT the sibling cache. It records the
+        head's contents at CALL time, because the generator builds its extracts in a temporary
+        directory that is deleted on exit — a test that inspected it afterwards would pass
+        vacuously, which is the exact failure class this release is themed on. The suite goes
+        from eleven to twelve tests and is already wired into the existing job.
       done-when: "manual:2027-03-31 the guard is reachable in the environment the generator actually runs in, shown by paired controls that fire there — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
