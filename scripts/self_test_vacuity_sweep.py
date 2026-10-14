@@ -19,9 +19,16 @@ a hand-written population is the mirror class this repository's North Star names
 first. It is kept as-is because the shipped figures were measured over it and
 changing it would invalidate them in the same breath as the correction; instead
 the sweep DERIVES the self-test-bearing population and prints the drift, so the
-omission is visible in its own output. At the time of writing the drift is two
-files each way, and the two it MISSES are precisely the two self-test-bearing
-scripts this release ADDED.
+omission is visible in its own output.
+
+DO NOT QUOTE THE DRIFT HERE -- READ `report()`'s OWN TWO LINES. An earlier version
+of this docstring said "the drift is two files each way", which the function below
+contradicts in the same file and the same commit: it prints ONE swept-but-not-
+defining and FIVE defining-but-not-swept. "Two each way" was the drift against a
+NON-RECURSIVE population (`scripts/*.py`); `derived_population()` is RECURSIVE
+(`scripts/**/*.py`), so the docstring described a set the script does not compute.
+Among the unswept are the THREE self-test-bearing scripts this release added --
+three, not two, the third being this file.
 
 NOT a CI gate. It mutates files in the working tree and restores them, so it is
 run deliberately, in a disposable checkout, and never against uncommitted work.
@@ -149,10 +156,16 @@ def self_test() -> int:
     pop = derived_population()
     ok(len(pop) > 0, "the derived self-test population is non-empty")
     ok(all((ROOT / f).exists() for f in FILES), "every hand-listed file exists")
-    ok(__file__.endswith("self_test_vacuity_sweep.py") and
-       str(Path(__file__).relative_to(ROOT)) in pop,
-       "THIS file is in the derived population and NOT in the hand list — the "
-       "drift the report prints is real, not a formatting artefact")
+    # BOTH halves are asserted. Round two fired the mutant that put this file
+    # INTO `FILES` and the case stayed GREEN -- it tested membership of the
+    # DERIVED population and never tested absence from the HAND LIST, so it was
+    # green under exactly the state its own message forbids. The half carrying
+    # the finding was the unasserted one.
+    me = str(Path(__file__).resolve().relative_to(ROOT))
+    ok(me in pop, "THIS file is in the derived population")
+    ok(me not in FILES,
+       "and NOT in the hand list — so the drift the report prints is real, not a "
+       "formatting artefact")
     return 0 if fails == 0 else 1
 
 

@@ -50,9 +50,13 @@ artifacts:
         in this same release and the context file no longer says it. What it SAID, until this
         lane measured it, was that a suppression table under a non-matching name escapes the
         tripwire AND the ratchet ENTIRELY, citing a demonstration in which a byte-identical table
-        under a non-matching name left the ledger fully green. This artifact is now the only
-        remaining site of that wording, and it is quoted here to record what was refuted, not as
-        a live reading of the file. Measured here, a RENAME of a listed table does not
+        under a non-matching name left the ledger fully green. It is quoted here to record what was
+        refuted, not as a live reading of the file. An earlier version of this sentence claimed
+        this artifact was the ONLY remaining site of that wording. It was true when written and
+        FALSE one commit later, in the same change-set: round one's review record quotes the
+        refuted wording verbatim in order to refute it, so the tree holds it twice. A population
+        claim about the tree, invalidated by a later commit of the change-set that makes it -
+        which is the class this release's own corrections keep landing on. Measured here, a RENAME of a listed table does not
         leave it green — it reds. The escape that IS real is narrower and differently shaped:
         ADDING a new table under a non-matching name leaves the ledger green with BOTH the pin
         count and the summed case count unchanged, even though the added table pins real cases.

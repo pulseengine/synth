@@ -33,7 +33,7 @@ artifacts:
       issue: "#1515"
       issue-scope: outlives
       verification-track: manual
-      landed: "PR #1537 - #1515 - DELIVERED: the release-file statistics scan now covers BOTH spellings, it is committed rather than typed into a commit message, and its judgement step is explicit in its own output. The refuting command ran first over every release file in the tree, and round two gave it a COMMITTED tree-wide mode so the figure can be re-derived: --all states its own population of TWENTY-SIX release directories, TWENTY-FIVE carrying a release file, and over it the word half returns THREE HUNDRED across TWENTY-FOUR and the digit half TWO HUNDRED AND THIRTY-FOUR across TWENTY - the word figure moving from three hundred and two as this same change-set removed two statistics, which is why it is stated against a commit and derived by the mode. THREE different figures for this measurement circulated before that mode existed and no two agree, because the scan could only ever scan ONE file and every tree-wide number came from an uncommitted loop; there is no population of thirty. The POSITIVE CONTROL is satisfied at the commits where the escaped figure was live: it is present at planning, at release prep and at cold-review round one, with the digit scan reading CLEAN at every one of the three, and round two removed it. The scan is deliberately NOT an oracle - the overwhelming majority of the word hits are idioms - so it REPORTS and the operator records the judgement. That judgement was WRONG for two of the five hits in this release's own file: they were classified by part of speech, and on the test the scan's own output states they are unsourced counts of a shipped release's outcomes. Per the report's own instruction a statistic is REMOVED rather than reworded, so both are gone and the file now carries THREE idioms. THREE NEGATIVE CONTROLS were executed and ONE OF THEM FOUND A VACUOUS CASE IN THIS VERY SELF-TEST: the live-figure case asserted on the probe LINE rather than on the matched TOKEN, and stayed GREEN with the word removed from the pattern, because that same line also contains another number word. Fixed by asserting on what the instrument matched; the control now reds. CI gates the self-test, not the report."
+      landed: "PR #1537 - #1515 - DELIVERED: the release-file statistics scan now covers BOTH spellings, it is committed rather than typed into a commit message, and its judgement step is explicit in its own output. The refuting command ran first over every release file in the tree, and round two gave it a COMMITTED tree-wide mode so the figure can be re-derived: --all states its own population of TWENTY-SIX release directories, TWENTY-FIVE carrying a release file, and over it the word half returns THREE HUNDRED across TWENTY-FOUR and the digit half TWO HUNDRED AND THIRTY-FOUR across TWENTY - the word figure moving from three hundred and two as this same change-set removed two statistics, which is why it is stated against a commit and derived by the mode. The scan could only ever read ONE file, so every tree-wide number this lane reported came from an uncommitted loop until that mode existed. What round two then refuted was this record's own over-claim: a THIRTY-file set DOES exist - five flat release files plus the twenty-five nested ones - cold review's eleven-hundred-and-sixty-two across twenty-five re-derives on it to the digit, and the original word figure was right at the commit that wrote it. The only false half was ever the digit half's ZERO. Thirty is the wrong DENOMINATOR for a rule about a comments-only file, because the five flat files carry artifact bodies; it is not a population that fails to exist. The POSITIVE CONTROL is satisfied at the commits where the escaped figure was live: it is present at planning, at release prep and at cold-review round one, with the digit scan reading CLEAN at every one of the three, and round two removed it. The scan is deliberately NOT an oracle - the overwhelming majority of the word hits are idioms - so it REPORTS and the operator records the judgement. That judgement was WRONG for two of the five hits in this release's own file: they were classified by part of speech, and on the test the scan's own output states they are unsourced counts of a shipped release's outcomes. Per the report's own instruction a statistic is REMOVED rather than reworded, so both are gone and the file now carries THREE idioms - though a first attempt only REWORDED them, which round two caught: one count was weakened to a bound and the other became a singular definite still asserting exactly one, in a spelling the pattern cannot see. Relabelled into invisibility is the opposite of removed. Both facts also turned out to HAVE first copies in the previous release's own files, so cold review's stated ground for the removal was false even though the removal was right. THREE NEGATIVE CONTROLS were executed and ONE OF THEM FOUND A VACUOUS CASE IN THIS VERY SELF-TEST: the live-figure case asserted on the probe LINE rather than on the matched TOKEN, and stayed GREEN with the word removed from the pattern, because that same line also contains another number word. Fixed by asserting on what the instrument matched; the control now reds. CI gates the self-test, not the report."
       verified-by: >
         DELIVERED — the scan covers both spellings, it is committed and CI-gated, and its
         judgement step is stated in its own output rather than assumed.
@@ -48,16 +48,27 @@ artifacts:
         and the removal of the two statistics described below — in the same change-set — moved
         it by two before the sentence was committed. THAT IS THIS RELEASE'S OWN CLASS CAUGHT A
         THIRD TIME, in the act of correcting the second instance of it, which is the argument
-        for deriving the figure from a committed mode rather than quoting it anywhere at all. THREE FIGURES FOR THIS ONE MEASUREMENT CIRCULATED BEFORE THE
-        MODE EXISTED and no two agree: this record first said the digit half returns ZERO in all
-        THIRTY files, cold review re-measured ONE THOUSAND ONE HUNDRED AND SIXTY-TWO across
-        TWENTY-FIVE, and a loop over the files that actually exist gives a third answer again.
-        NONE of the three was re-derivable and there is no population of thirty, because
-        `release_file` returns ONE path and the scan had no tree-wide mode at all — every
-        tree-wide figure this lane ever reported came from an uncommitted ad-hoc loop. That is
-        the lane's own subject landing on the lane: an instrument that cannot produce the number
-        its record quotes. The blindness itself is undisputed and is the PER-FILE escape the
-        previous release measured; what was never measurable is the population-wide claim.
+        for deriving the figure from a committed mode rather than quoting it anywhere at all. THE DENOMINATOR, NOT THE RE-DERIVABILITY, IS WHAT WAS WRONG — and an earlier
+        version of this record got that backwards in both directions, which round two refuted.
+        It said there is NO POPULATION OF THIRTY and that NONE of the circulating figures was
+        re-derivable. Both are false. The thirty-file set EXISTS and is the one the original
+        sentence was measured over: FIVE flat `artifacts/release-v0.5*.yaml` plus the TWENTY-FIVE
+        nested release files. Driving the shipped `scan()` over it re-derives cold review's
+        figure TO THE DIGIT — ONE THOUSAND ONE HUNDRED AND SIXTY-TWO digit hits across
+        TWENTY-FIVE of the thirty — and the word half reads FIVE HUNDRED AND FIFTY-EIGHT across
+        TWENTY-NINE, which is the original FIVE HUNDRED AND SIXTY less exactly the two hits this
+        change-set removed. So the original's word figure was RIGHT at the commit that wrote it,
+        and the only false half was ever "the digit scan returns ZERO in all thirty files" — the
+        digit half is zero in exactly FIVE of the thirty, all of them nested files.
+        RE-DERIVABILITY IS A PROPERTY OF A COMPUTATION, not a verdict on its denominator.
+        WHAT IS ACTUALLY WRONG WITH THIRTY is that the five flat files are NOT comments-only —
+        they carry artifact bodies, hundreds of non-comment lines each — so a rule about a
+        comments-only release file does not reach them, and `--all`'s TWENTY-FIVE is the
+        population the RULE targets. The two counts answer different questions rather than
+        disagreeing. What was never derivable from the SHIPPED scan was any tree-wide figure at
+        all: `release_file` returns ONE path, so every tree-wide number this lane reported came
+        from an uncommitted ad-hoc loop until the mode above existed. The blindness itself is
+        undisputed and is the PER-FILE escape the previous release measured.
 
         THE POSITIVE CONTROL IS SATISFIED, and getting there took two corrections of this lane's
         own instruments. Measured across the previous release's window, the escaped figure is
@@ -87,13 +98,23 @@ artifacts:
         whether the token is a figure standing in for a measured number. Judged on THAT test, the
         hit reading "it fired twice inside a single anchor derivation" IS a count of a shipped
         release's measured findings, and the hit reading "a single lane carried that release's
-        only delivery" IS a count of its deliveries; cold review found NO first copy of either
-        anywhere in the tree, so they were not second copies but FIRST and only ones — an
-        unsourced figure about a past release, in the file the rule exists to keep figure-free.
-        The report's own instruction is that "a statistic must be REMOVED, not reworded", so both
-        were removed from the file rather than relabelled, and the scan now reports THREE: a
-        universal quantifier, a demonstrative, and a hyphenated adjective, each an idiom on the
-        stated test and not merely by its word class. A gate that red on a token match would be refused the day it landed
+        only delivery" IS a count of its deliveries. BOTH ARE SECOND COPIES, AND THE GROUND
+        FIRST GIVEN FOR SAYING SO WAS FALSE: cold review reported NO first copy of either in the
+        tree, but its needles were three spellings of THIS release's own sentence rather than of
+        the facts, so the census was bounded by the very text it was testing. Widened to the
+        facts, both have a first copy — the previous release's own release file ENUMERATES the
+        classifier firing, and its review record carries the delivery count in the window gate's
+        own printed line. That makes the removal right for a better reason than the one recorded,
+        and it also shows the sentence UNDERCOUNTED: the earlier file enumerates THREE firings of
+        that class where this one named two.
+        A FIRST ATTEMPT AT THE REMOVAL ONLY REWORDED THEM, which round two caught. "Twice"
+        became "more than once" — a count weakened to a bound, defensible — but the delivery
+        sentence became "the delivery that release carried", a singular definite still asserting
+        exactly one, in a spelling `WORD_NUMBERS` cannot see. Relabelled into invisibility is the
+        opposite of removed, and it is this lane's own named class applied by its author to their
+        own gate. BOTH ARE NOW GENUINELY GONE, replaced by pointers to where the measurement
+        lives, and the scan reports THREE: a universal quantifier, a demonstrative, and a
+        hyphenated adjective, each an idiom on the stated test and not merely by its word class. A gate that red on a token match would be refused the day it landed
         and routed around, which this repository has already measured once. So the scan REPORTS
         the population and tells the reader in as many words that a token match is not a
         statistic and that the classification is theirs to record.

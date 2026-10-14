@@ -50,7 +50,9 @@ artifacts:
         that drift in its own output rather than leaving it to be re-measured. Derived over the
         whole scripts tree, THIRTEEN files define a runnable self-test; the hand-written list
         sweeps nine of them, one swept file defines none, and FIVE self-test-bearing files are
-        NOT SWEPT — including BOTH of the self-test-bearing scripts this release itself added.
+        NOT SWEPT — including all THREE of the self-test-bearing scripts this release itself
+        added. An earlier version of this sentence said BOTH, counting two; the third is the
+        sweep itself, which does not sweep its own self-test.
         A hand-written population standing in for a derived one is the mirror class this
         repository's own North Star names first, and this instrument was carrying it. The list is
         left as measured, because changing it in the same breath would invalidate every figure
@@ -62,9 +64,11 @@ artifacts:
         one of its subjects removed does not cover that subject, which is the vacuity signal.
         SIXTY-THREE subjects: eighteen go cleanly RED, twenty-eight red by CRASHING, and
         SEVENTEEN STAY GREEN. An earlier version of this record said sixty-two and twenty-seven.
-        That reading was taken before a LATER COMMIT OF THIS SAME RELEASE added a function to one
-        of the swept files, which is a subject appearing under the instrument after it had been
-        run — the population moved under the figure, from inside the release that reported it.
+        Round two located the move exactly: the subject count is SIXTY-TWO at the planning commit
+        and at the lane-wave's own first commit, and SIXTY-THREE from the squash onward, the
+        increment being one function added to `extract_r1_numbers.py`. SO IT MOVED INSIDE THE
+        SQUASH, and NO FIRST-PARENT COMMIT OF THIS RELEASE EVER READ SIXTY-TWO — the figure was
+        already stale at the commit that shipped it, rather than overtaken by a later one.
         The load-bearing number is unchanged by that: SEVENTEEN still stay green.
 
         NINE OF THE SEVENTEEN ARE AN ARTEFACT OF THE MUTATION AND ARE REPORTED AS SUCH. Each is

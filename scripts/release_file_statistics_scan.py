@@ -28,9 +28,16 @@ across 20, of a population of 26 release directories, 25 of which carry a
 `_release.yaml` -- and the overwhelming majority of the word hits are IDIOMS
 ("every one of", "including this one", "the one-line key append"), not
 statistics. An earlier version of this docstring said the word scan returns 560
-across 29 of 30 files while the digit scan returns ZERO; NEITHER figure
-reproduces, and neither could be checked, because until round two there was no
-tree-wide mode to derive them from -- `release_file` returns ONE path. Two of
+across 29 of 30 files while the digit scan returns ZERO. Only the ZERO was wrong.
+Round two refuted the retraction: driving `scan()` over that thirty-file set --
+five flat `artifacts/release-v0.5*.yaml` plus the twenty-five nested ones -- gives
+1162 digit hits across 25 and 558 word hits across 29, the 558 being 560 less the
+two hits this change-set removed. So the word figure REPRODUCES, and the digit
+half is zero in exactly 5 of the 30, not all of them. What no tree-wide mode could
+be derived from was the SHIPPED scan: `release_file` returns ONE path. Thirty is
+the wrong DENOMINATOR for a rule about comments-only files -- the five flat ones
+carry artifact bodies -- which is a different objection from the figures being
+unreproducible, and this docstring previously conflated them. Two of
 the four idioms this paragraph used to cite ("fired twice", "a single lane")
 were not idioms: cold review showed both were unsourced counts of a shipped
 release's outcomes, and they have been removed from the file rather than

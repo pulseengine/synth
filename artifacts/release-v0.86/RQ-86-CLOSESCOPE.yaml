@@ -73,9 +73,13 @@ artifacts:
         reports FOUR authorised, NINE held open, zero closed and ZERO failures - against the
         previous release's empty authorised set and its hard failure. TWO-AND-ZERO was never the
         reading at any commit: an earlier version of this record said so, and the commit that
-        moved the real figure amended the pull-request body and never reopened this file. The escape is not a fix to the gate — it is that two lanes this release
+        moved the real figure amended the pull-request body and never reopened this file. The escape is not a fix to the gate — it is that lanes this release
         genuinely reached a claiming status, which is exactly the shape the enumeration says is
-        required.
+        required. THE COUNT IN THAT SENTENCE WAS AN INFERENCE DRAWN FROM THE REFUTED FIGURE and
+        survived the correction of it: derived at the shipped commit, THIRTEEN of the eighteen
+        lanes reach a claiming status and FOUR of those carry no `issue-scope: outlives`, which
+        is the authorised set the gate reports. Two was neither figure, and it was not the
+        pre-correction reading either.
 
         AND THE HONEST CAVEAT, stated rather than counted as progress: BOTH authorised issues are
         ALREADY CLOSED, so the authorisation they carry is a no-op. The release is non-vacuous in

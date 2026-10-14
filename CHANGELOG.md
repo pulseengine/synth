@@ -75,12 +75,19 @@ the word scan returns **300** hits across 24 files and the digit scan **234** ac
 20, at this commit — and that figure moves with any edit to any release file, which
 is why it is re-derived by the mode rather than quoted from memory.
 
-Two earlier figures in this entry are withdrawn. It said the digit scan returns
-**0** across 29 of 30 files, which was never re-derivable at all: the scan could
-read only ONE file and had no tree-wide mode, so no population of thirty ever
-existed. And it then said **302** word hits, which went stale inside its own
-change-set — removing two unsourced counts from this release's `_release.yaml`
-moved it to 300 before the sentence was committed.
+One earlier figure in this entry is withdrawn, and precisely. It read "the digit
+scan returns **0** hits and the word scan **560** across 29 of 30 files" — so the
+file count belonged to the WORD half, and that half was RIGHT: driving the shipped
+scan over that thirty-file set (five flat release files plus the twenty-five
+nested ones) gives **558** across 29, which is 560 less exactly the two hits this
+change-set removed. Only the digit **0** was false; the digit half is non-zero in
+25 of the 30 and zero in 5. Thirty is the wrong DENOMINATOR for a rule about
+comments-only files, since the five flat ones carry artifact bodies — a different
+objection from the figure being unreproducible, and an earlier draft of this
+paragraph conflated the two, moved the file count onto the digit half, and so
+retracted a sentence nobody had written. The **302** that draft also retracted
+was never in this entry at any commit: it was an uncommitted working value,
+narrated as a shipped past state of a file that never held it.
 
 The word hits are overwhelmingly idioms, which is why the scan **reports and the
 operator records the judgement** rather than pretending a token match is a

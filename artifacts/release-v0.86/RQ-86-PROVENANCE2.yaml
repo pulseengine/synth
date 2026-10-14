@@ -35,7 +35,7 @@ artifacts:
       issue: "#1516"
       verification-track: manual
       issue-scope: outlives
-      landed: "PR #1537 - #1516 - DELIVERED: a check now proves, for a shipped record, that every commit it cites is an ancestor and every tool it names exists, with a POSITIVE CONTROL in BOTH halves because a check that passes everything is indistinguishable from one that tests nothing. Measured over the last three records before writing it: the ABSENT-TOOL half is CLEAN everywhere - the earlier defect of records citing a script that was in no commit on any branch is fixed by tracking it - while the ANCESTRY half is not, and the pattern is systemic: the third-most-recent record cites SEVEN pre-squash branch shas, the next ONE, the newest TWO. This repository squash-merges, so a branch head never becomes an ancestor and its content ships under a different sha; one of those citations is already flagged as a provenance caveat in its own record and the rest are not. CI gates the SELF-TEST and not the report, because the gating form defaults to the newest record and would red on day one over history it cannot change."
+      landed: "PR #1537 - #1516 - DELIVERED: a check now proves, for a shipped record, that every commit it cites is an ancestor and every tool it names exists, with a POSITIVE CONTROL in BOTH halves because a check that passes everything is indistinguishable from one that tests nothing. Measured over the last three records before writing it: the ABSENT-TOOL half is CLEAN everywhere - the earlier defect of records citing a script that was in no commit on any branch is fixed by tracking it - while the ANCESTRY half is not, and the ANCESTRY half is not clean - but HOW unclean is VENUE-DEPENDENT BY CONSTRUCTION, because the check gates each sha on whether the LOCAL object store resolves it and silently SKIPS one it cannot. Measured both ways: in a checkout still holding the deleted branch heads the three records before this one flag TWELVE, ONE and TWO; in a fresh clone they flag ZERO, ZERO and ONE. An earlier version of this field said SEVEN, ONE and TWO, which matches NEITHER venue. This repository squash-merges, so a branch head never becomes an ancestor and its content ships under a different sha; one of those citations is already flagged as a provenance caveat in its own record and the rest are not. CI gates the SELF-TEST and not the report, because the gating form defaults to the newest record and would red on day one over history it cannot change."
       verified-by: >
         DELIVERED AS NARROWED — a check proves both halves for a shipped record, each half
         carries a positive control, and the ancestry half is scoped to EVERY CITED SHA THE LOCAL
@@ -57,7 +57,13 @@ artifacts:
         and flags ONE, the newest twelve and flags TWO; in a fresh `git clone --no-local` — which
         is what CI checks out and what any reader following the record would have — the same
         three records test twenty-three, eight and eleven and flag ZERO, ZERO and ONE. An earlier
-        version of this record said SEVEN, ONE and TWO, and SEVEN matches NEITHER venue. SO THE
+        version of this record said SEVEN, ONE and TWO, and SEVEN matches NEITHER venue. TWO
+        CAVEATS ON THE VENUE NAMES, both from round two. A `git clone --no-local` of a WORKTREE
+        inherits the parent's local branches as remote-tracking refs, so it is a THIRD venue and
+        not the remote's. And "what CI checks out" was ASSERTED rather than measured: parsing the
+        workflow shows `claim-check` is the ONLY job with `fetch-depth: 0`, so CI holds the full
+        history of what the REMOTE has - which excludes deleted branch heads, putting CI closest
+        to the fresh-clone column but by a different mechanism than depth. SO THE
         ANCESTRY HALF GOES BLIND EXACTLY WHEN A CITATION BECOMES MOST UNFOLLOWABLE: once the
         branch is deleted and the object is gone, the token is skipped and the record reads
         CLEAN. The record's own sentence — that once a branch is deleted a reader cannot follow

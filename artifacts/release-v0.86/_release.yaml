@@ -36,18 +36,20 @@
 # fragment across the whole repository. A SPLICE MUST BE READ AGAINST BOTH SIDES IT
 # LEAVES BEHIND.
 #
-# AND THE POPULATION IS PART OF THE CLAIM, still. It fired more than once inside the
-# same anchor derivation during v0.85: once when a classifier grouped a constant that
-# resets at every anchor with the patterns that move, because it CONTAINS a digit;
-# and again when every pattern was applied to the same file although a pattern there
-# declares a different source, producing a zero that was an artefact of the check.
+# AND THE POPULATION IS PART OF THE CLAIM, still. It kept firing after it was named,
+# inside an anchor derivation written FOR the previous release's theme: a classifier
+# grouped a constant that resets at every anchor with the patterns that move because
+# it CONTAINS a digit, and every pattern was applied to the same file although a pattern
+# there declares a different source, producing a zero that was an artefact of the
+# check. That release's own file ENUMERATES the class's firings; this file does not
+# re-count them, because a count here would be a second copy of its measurement.
 #
 # SCOPE is the artifacts in this directory. RE-DERIVE the set by LISTING the
 # directory; do not trust any summary of it, including this one.
 #
 # WHAT v0.85 LEFT, in words rather than numbers: most lanes recorded a partial
-# outcome, others deferred, a few were refuted, and the delivery that release
-# carried came from a lane its own record names. It retired no issues and its authorised-closure set was
+# outcome, others deferred, a few were refuted, and WHAT it delivered is recorded in
+# its own release file and review record rather than counted here. It retired no issues and its authorised-closure set was
 # vacuous — no artifact both
 # named an issue and claimed completion, so nothing in it authorised any closure
 # and nothing was held open either. That is reported here as the state to improve,
