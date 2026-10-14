@@ -95,15 +95,18 @@ step in a required context.
 
 The audit then went both ways, which is the part worth recording. **Refuted:** the
 worry that the sha scrubber swallows an uncommaed seven-digit byte count. Every
-all-digit token it removes across the records shipped before this one is an
-identifier — run ids, a comment id, and two genuine all-digit eight-character git
-shas — so the obvious narrowing, requiring a hex letter, would have leaked two real
-shas into the queue as quantities. The blind spot is real and has no observed
+all-digit token it removes across the six records shipped before this one is an
+identifier, with every one of the eight read in context — GitHub run ids, two job
+ids, a comment id, and two genuine all-digit eight-character git shas — so the
+obvious narrowing, requiring a hex letter, would have leaked two real shas into the
+queue as quantities. Not one is a quantity. The blind spot is real and has no observed
 instance; the previous release's repair of that scrubber stands.
 
 **Confirmed:** the version scrubber necessarily eats a bare two-component decimal,
 because a ratio and a crate version share that shape exactly. One record carries
-**23** such removals and the newest **15**, and reading them in context settles that
+**23** such removals over **17** distinct tokens and the newest **15** over **13** —
+occurrence and distinct counts are different numbers and this programme has confused
+them before, so both are stated — and reading them in context settles that
 the class is mixed rather than noise: durations, percentages and a ratio on one
 side, crate and operating-system versions, a section number and an IEEE literal
 quoted in prose on the other. No pattern separates them, so widening trades one
@@ -112,23 +115,33 @@ round one rounded up to produce a headline word — the number the word came fro
 invisible to the tool whose whole job is to queue round one's numbers for attack.
 
 Auditing the extraction itself then found three more defects, all measurable on
-those same records and all in the direction that matters. Its regex absorbed any
-comma, so `92,11` became ONE token — **22** distinct such tokens, from lists,
-tuples and quoted diff coordinates — meaning round two would attack a figure that
-was never claimed while missing the two that were; it also left a trailing comma
-on a token, so one quantity counted in two buckets. A comma is now absorbed only
-as a proper thousands separator, which is a paired assertion in both directions:
-a thousands-separated byte count must stay whole, and a comma that is not a
-separator must split. Quoted **git diff hunk headers** leaked their four
-coordinates as numbers and are now scrubbed as the tool output they are. And the
-extraction pattern was written out twice, in the shipped path and in the
-leave-one-out primitive, so the thing measuring the scrubbers could drift from the
-thing using them; there is now one. After the change the merged-token count over
-those records is **0**, with the three legitimate thousands-separated figures
-preserved.
+those same six records and all in the direction that matters. Its regex absorbed
+any comma, which broke two different ways that an earlier draft of this section
+summed into one figure: **15** distinct tokens were MERGES, where `92,11` became a
+single token naming a figure nobody claimed while hiding the two that were; and
+**7** more carried a TRAILING COMMA, so one quantity counted in two buckets. That
+is the **22** the draft reported as merges alone, and the split matters because the
+two halves are fixed by different changes. Quoted **git diff hunk headers** leaked
+their four coordinates as numbers — tool output, not claims — and account for
+**10** of the 15 merges; they are now scrubbed. The remaining **12** are fixed by
+absorbing a comma only as a proper thousands separator, asserted in both
+directions, because either half alone permits the opposite error: a
+thousands-separated byte count must stay WHOLE, and a comma that is not a separator
+must SPLIT. And the extraction pattern was written out twice, in the shipped path
+and in the leave-one-out primitive, so the thing measuring the scrubbers could
+drift from the thing using them; there is now one. After both changes the count of
+merged and trailing-comma tokens over those records is **0**, with the three
+legitimate thousands-separated figures preserved.
 
 So they are neither dropped nor asserted: the withheld decimals are printed in
-their own labelled bucket for hand triage. A false positive costs round two one
+their own labelled bucket for hand triage — and that bucket is now ENUMERATED FROM
+THE SCRUBBER'S OWN MATCHES rather than from a second pattern beside it. The first
+version did mirror the scrubber by hand, and the mirror was already wrong in the
+one way that mattered: it rejected a decimal that ENDS A SENTENCE, so the ratio
+behind the headline word — the exact case the bucket exists for — yielded nothing,
+and the positive sample happened to end without a period, so it was shaped around
+the blind spot. Restoring that mirror now reds the sample, which is what makes the
+replacement worth gating. A false positive costs round two one
 glance; a false negative means an unreviewed figure is never reviewed. Both halves
 of the new bucket are negative-controlled — an inert bucket reds the positive half,
 a bucket widened to eat prefixed versions reds the negative half — and an empty

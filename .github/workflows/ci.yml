@@ -894,7 +894,7 @@ jobs:
       # to eat `v`-prefixed versions reds the negative half. The REPORT form needs
       # a record path and the record under review may not exist yet, so only
       # `--self-test` is a gate.
-      - name: "Self-test the round-2 number extractor (RQ-86-R1NUMBERS, #1516)"
+      - name: "Self-test the round-2 number extractor (#1516)"
         run: python3 scripts/extract_r1_numbers.py --self-test
 
       # RQ-62-CLAIMCHECK (#1062): the runner-redundancy invariant, enforced

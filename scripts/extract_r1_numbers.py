@@ -112,20 +112,29 @@ SCRUBBERS: list[tuple[str, str]] = [
 ]
 
 
-# A bare two-component decimal: no leading word character (so `v0.85` and the
-# `85.0` inside it are both excluded) and no trailing digit or dot (so `0.85.0`
-# and the layer string `2026.10.9` are excluded). What is left is the shape that
-# a ratio, a duration, a percentage and a two-component crate version all share.
-WITHHELD_DECIMAL = r"(?<![\w.])\d+\.\d+(?![\d.])"
-
-
 def withheld_decimals(text: str) -> collections.Counter:
-    """The bare two-component decimals `version` removes, for HAND triage.
+    r"""The bare two-component decimals the `version` scrubber removes, for HAND
+    triage. Not a claim that these are quantities --- a claim that the pipeline
+    cannot tell, which is why they are reported instead of dropped.
 
-    Not a claim that these are quantities --- a claim that the pipeline cannot
-    tell, which is why they are reported separately instead of being dropped.
+    DERIVED FROM THE SCRUBBER ITSELF, never from a second pattern beside it: this
+    enumerates `version`'s OWN matches and keeps the bare two-component ones, so
+    the label "withheld by the `version` scrubber" is true by construction and
+    cannot drift from what the shipped path actually removes. The first version of
+    this function DID mirror the scrubber with a hand-written regex, and the
+    mirror was already wrong: its trailing `(?![\d.])` rejected a
+    SENTENCE-FINAL decimal, so `rounded up from 11.74.` yielded nothing --- and
+    that sentence is the exact case the bucket was built for, the ratio a round 1
+    rounded to produce a headline word. The positive sample ended without a period,
+    so it was shaped around the blind spot and "nothing is hidden" was false.
     """
-    return collections.Counter(re.findall(WITHHELD_DECIMAL, text))
+    version = dict(SCRUBBERS)["version"]
+    held: collections.Counter = collections.Counter()
+    for m in re.finditer(version, text):
+        tok = m.group(0)
+        if re.fullmatch(r"\d+\.\d+", tok):
+            held[tok] += 1
+    return held
 
 
 # THE EXTRACTION REGEX, in ONE place: it was duplicated across `numbers()` and
@@ -265,7 +274,10 @@ def self_test() -> int:
     # proves little: without the positive case the bucket may be inert, and
     # without the negative one its hits may be coming from the environment rather
     # than from the property.
-    w_pos = withheld_decimals("fitted in 552 MB / 16.3 s and the 364/31 ratio is 11.74")
+    # The sample ENDS THE SENTENCE on a decimal on purpose: the hand-written
+    # mirror this replaced rejected exactly that, and a sample without a final
+    # period cannot tell the two implementations apart.
+    w_pos = withheld_decimals("fitted in 552 MB / 16.3 s; rounded up from 11.74.")
     if sorted(w_pos) != ["11.74", "16.3"]:
         failures.append(f"WITHHELD positive: expected the two quantities, got {dict(w_pos)}")
     else:
