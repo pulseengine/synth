@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-CLOSESCOPE
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "A release of only-partial lanes can either authorise a closure or says plainly that it cannot"
     description: >
         NEW, from v0.85's own tag. The strict closure gate failed on a VACUOUS AUTHORISED SET:
@@ -35,4 +35,57 @@ artifacts:
       priority: should
       issue: "#1454"
       verification-track: manual
+      landed: "PR #1529 - #1454 - DELIVERED on the done-when's SECOND branch: the gate's demand is SHOWN UNMEETABLE by a partial-only release, enumerated from the shipped derivation and then CHECKED BY EXPERIMENT, which is what caught the part reading alone got wrong. Four combinations produce a non-empty set and only ONE of them is open to a non-claiming artifact: a refuting disposition that also declares it closes its issue. A partial or deferred disposition has NO legal route, so a release whose lanes are honestly all partial cannot be non-vacuous - the gate asks for something such a release does not have, and the thing to change is the release's shape, not the gate's demand. THE EXPERIMENT MATTERED: declaring that an issue outlives a non-claiming artifact DOES enter the held-open set, the count moving from zero to one, so reading the derivation function alone says the route is open - but the enforcing rule REDS it, saying the issue of an undelivered artifact stays open anyway and declares nothing. Two places, and the enforcement wins. This release is NOT partial-only and escapes the vacuity its predecessor hit: simulated at the merged state it reports TWO issues authorised and ZERO failures, against its predecessor's empty set. Both authorised issues are ALREADY CLOSED, so the authorisation is a no-op, and that is stated rather than counted as progress. The gate's own potency controls were re-run and both fire."
+      verified-by: >
+        DELIVERED — the done-when's SECOND branch: the gate's demand is shown unmeetable by a
+        partial-only release, with the enumeration and an experiment that corrects it.
+
+        THE REFUTING COMMAND, run first: the authorised-and-held-open derivation was read and
+        every status-and-disposition combination enumerated. FOUR produce a non-empty set:
+        a CLAIMING status authorises its issue by default; a claiming status that declares the
+        issue OUTLIVES it holds it open instead; a NON-claiming artifact whose disposition is a
+        REFUTATION and which also declares it closes its issue authorises the closure; and
+        nothing else qualifies.
+
+        SO EXACTLY ONE ROUTE IS OPEN TO A NON-CLAIMING ARTIFACT, and it is scoped to a
+        REFUTATION on purpose — only a refutation says the question itself was answered, where a
+        partial or deferred disposition says the scope did not ship. A release whose lanes are
+        honestly ALL partial or deferred therefore has NO legal way to be non-vacuous. That is
+        the artifact's second branch: the gate demands something such a release cannot supply.
+        And the conclusion that follows is about the RELEASE's shape, not the gate's demand —
+        flipping a status to green the gate would claim a completion no lane reached, which is
+        the ledger-loosening this programme refuses, and the artifact says so itself.
+
+        THE EXPERIMENT IS WHAT CAUGHT THE PART READING GOT WRONG, and it is worth recording as a
+        method point rather than only as a result. Declaring that an issue OUTLIVES a
+        NON-CLAIMING artifact DOES enter the held-open set — the gate's own printed count moved
+        from zero to one — so reading the derivation function alone says that route is open to a
+        partial lane. It is not: the ENFORCING rule reds it, on the ground that the issue of an
+        undelivered artifact stays open anyway and the declaration therefore states nothing, and
+        that the disposition field is where a non-landing is recorded. Two places answer the same
+        question and the enforcement is the one that binds. A reading of the derivation alone
+        would have reported the vacuity as avoidable, which is the opposite of the truth.
+
+        THIS RELEASE IS NOT PARTIAL-ONLY AND ESCAPES THE VACUITY, measured by simulating the
+        merged state rather than predicting it: TWO issues authorised for closure, zero held
+        open, zero closed, ZERO failures, against the previous release's empty authorised set and
+        its hard failure. The escape is not a fix to the gate — it is that two lanes this release
+        genuinely reached a claiming status, which is exactly the shape the enumeration says is
+        required.
+
+        AND THE HONEST CAVEAT, stated rather than counted as progress: BOTH authorised issues are
+        ALREADY CLOSED, so the authorisation they carry is a no-op. The release is non-vacuous in
+        the gate's terms without actually closing anything. One of the two is also the stale
+        attribution recorded against its own lane, so its authorisation would be semantically
+        wrong if the issue were open — it is left in place rather than relabelled, because the
+        field vocabulary has no term for a mis-attribution and inventing one would be worse.
+
+        THE GATE'S OWN POTENCY CONTROLS WERE RE-RUN AND BOTH FIRE. An issue nobody authorised,
+        presented as closed, reds with the closed-but-not-authorised verdict naming it and citing
+        the shape that once auto-closed an external reporter's live blocker. And the vacuous
+        authorised set reds on its own, loudly, in both the nothing-closed and the
+        allow-unclosed forms. The per-issue verdicts are no longer collapsed into one
+        undifferentiated message — the gate says in as many words that they are still derived
+        from earlier releases' attributions — so the defect this artifact's issue describes is
+        itself already fixed.
       done-when: "manual:2027-03-31 a partial-only release either authorises or holds open at least one issue legally, or the gate's demand is shown unmeetable by such a release — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
