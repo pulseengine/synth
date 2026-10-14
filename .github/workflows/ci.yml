@@ -1065,7 +1065,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-coverage-
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2.87.22
+        uses: taiki-e/install-action@v2.87.27
         with:
           tool: cargo-llvm-cov
       - name: Generate coverage (LCOV)
