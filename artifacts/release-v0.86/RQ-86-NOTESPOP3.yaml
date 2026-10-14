@@ -1,0 +1,38 @@
+artifacts:
+  - id: RQ-86-NOTESPOP3
+    type: system-req
+    release: v0.86
+    status: proposed
+    title: "The notes generator's anti-vacuity guard becomes reachable in the environment where the generator runs"
+    description: >
+        The remedy has been derived for two releases and is three parts: bound the extract by
+        what the traceability tool needs to LOAD, run each side in its own working directory,
+        and MAKE THE GUARD REACHABLE.
+
+        THE THIRD PART IS THE DECISIVE ONE AND IT IS A GATE-POTENCY FINDING: the anti-vacuity
+        guard is INERT in the only environment where the generator ever runs. No workflow
+        invokes the generator; continuous integration runs its unit test alone, while the sync
+        step that populates foreign artifacts DOES run there. So the operator's synced checkout
+        is the guard's sole venue, and in that venue the foreign-artifact count dominates and
+        the guard cannot fire. A guard that is potent only where it never runs has not been
+        demonstrated at all.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: run the generator in BOTH environments — a
+        checkout with the foreign-artifact cache present and one without — and record whether
+        the guard fires in each. PAIRED CONTROLS ARE REQUIRED: a reading that is potent in one
+        environment and inert in the other is the finding, and both readings are correct about
+        their own environment. If the guard fires in the synced checkout too, the third part of
+        the remedy is refuted and the lane narrows to the first two.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1259"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the guard is reachable in the environment the generator actually runs in, shown by paired controls that fire there — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

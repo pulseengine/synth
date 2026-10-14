@@ -1,0 +1,30 @@
+artifacts:
+  - id: RQ-86-PINDEBT11
+    type: system-req
+    release: v0.86
+    status: proposed
+    title: "The pin-debt inclusion criterion is stated so a reader can predict which tables count"
+    description: >
+        Carried. v0.85 reproduced the three readings exactly: the ledger green, still green
+        under a byte-identical table renamed outside the matching pattern, and red under the
+        same bytes renamed back — so the population is name-scoped, and a suppression table
+        called anything else escapes both the explicit list and the tripwire.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: re-derive the pinned population and the
+        summed case count from the oracle sources, then rename one table out of the pattern and
+        confirm the ledger stays green. If it reds, the name-scoping is already fixed and this
+        lane is moot. Keep the byte-identical control: only the NAME may differ between the two
+        runs, or the comparison is between two different things.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1428"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the inclusion criterion is stated and a renamed table is shown either to count or to be deliberately excluded — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

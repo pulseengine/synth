@@ -1,0 +1,35 @@
+artifacts:
+  - id: RQ-86-SPELLSCAN
+    type: system-req
+    release: v0.86
+    status: proposed
+    title: "A gate that scans for statistics catches them in BOTH spellings"
+    description: >
+        NEW, from v0.85's second round, and it is the recorded rule about spelling realised in a
+        release gate. The scan that re-verifies the release file free of statistics reads
+        DIGITS. The figure that round one had already proven false survived in that file spelled
+        as a WORD, and the commit that fixed its twin reported the file re-verified clean —
+        truthfully, by a scan that could not see it.
+
+        A CENSUS IS BOUNDED BY ITS PATTERN'S SPELLINGS. And the widened scan is NOT an oracle:
+        v0.86's own release file trips it on idioms, so the remedy must include the JUDGEMENT
+        step and record it, rather than pretend a token match is a statistic.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: run a word-number scan over every release
+        file in the tree and count the survivors, then classify each by hand. If the digit-only
+        scan and the widened scan agree everywhere, the blindness is not live and this lane is
+        moot — but they already disagreed once, so a zero disagreement needs a positive control
+        showing the widened scan fires on the figure that escaped.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1515"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the release-file statistics scan covers both spellings with its judgement step recorded, or the blindness is shown absent — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

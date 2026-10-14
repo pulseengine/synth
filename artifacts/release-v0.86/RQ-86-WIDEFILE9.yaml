@@ -1,0 +1,44 @@
+artifacts:
+  - id: RQ-86-WIDEFILE9
+    type: system-req
+    release: v0.86
+    status: proposed
+    title: "The wide-file sign error gets its execution differential, or the rung's disappearance is recorded as the finding"
+    description: >
+        A sixth release. v0.85 ran the root-cause step for the first time and the result
+        reframes the lane: the suspect recovery rung is NEVER TRIED on this repository's own
+        pressure fixture, because the ladder rescues every function before reaching it. With the
+        reporter's module the rung IS reached, once, and rescues nothing.
+
+        AND THE PROBE IS GETTING RARER, which is the argument this lane did not have before: the
+        rung's try count has fallen against the reading frozen in its own test file, while a
+        lower rung now rescues a function it previously did not. If a later release rescues that
+        last function earlier, the defect becomes UNOBSERVABLE WHILE REMAINING LIVE. That is a
+        measured reason to give the rung its own execution differential now rather than a reason
+        to wait.
+
+        WHAT IS SETTLED, so this lane does not re-litigate it: sign is order-invariant as the
+        XOR of signs, so reassociation is refuted; the multiply multiset is intact; the encoding
+        hypothesis is dead because the bit it needs is unreachable from any two-register field.
+        The surviving class is a WRONG OPERAND from a spill or a reload. The retry stays OUT and
+        the tripwire stays armed — the artifact's own default, not a stall.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: drive the recovery-statistics flag over this
+        repository's fixture and the reporter's module and compare the rung's try count against
+        the reading frozen in its test file. If the rung is now reached on the repository
+        fixture, the observability argument is refuted and the differential can be built from
+        local inputs. If the try count has fallen to zero on both, the defect is already
+        unobservable and THAT is the finding.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1439"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the suspect rung has its own execution differential, or its disappearance from the observable path is recorded with the counts that show it — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

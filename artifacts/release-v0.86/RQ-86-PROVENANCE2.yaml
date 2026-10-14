@@ -1,0 +1,37 @@
+artifacts:
+  - id: RQ-86-PROVENANCE2
+    type: system-req
+    release: v0.86
+    status: proposed
+    title: "A shipped record's METHOD is as checkable as its figures"
+    description: >
+        v0.85 established the defect in both directions. Its figures: a figure pinned to a pre-
+        squash lane head is uncheckable, because squash merging guarantees the head is not an
+        ancestor of the default branch, and the census that measures this must REPORT out-of-
+        population tokens rather than drop them — a workflow-run identifier is valid hexadecimal
+        and a naive check reports it as a broken commit citation.
+
+        ITS METHODS: two shipped records cited a derivation script that was in no commit on any
+        branch. v0.85 wrote and tracked that script, and its second round then found the
+        correction's own claim about which records cited it was wrong. So the class is real at
+        both the figure and the method level, and the fix at the method level introduced a new
+        false claim while landing.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: take every commit AND every tool path cited
+        in the last two review records and test each mechanically: ancestry for the commits,
+        existence in the tree for the tools. Carry a POSITIVE CONTROL in both halves — a known
+        non-ancestor and a known-absent path — because a check that passes everything is
+        indistinguishable from one that tests nothing.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1516"
+      verification-track: manual
+      done-when: "manual:2027-03-31 a check proves, for a shipped record, that every commit it cites is an ancestor and every tool it names exists — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

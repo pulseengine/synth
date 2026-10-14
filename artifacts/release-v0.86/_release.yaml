@@ -1,0 +1,59 @@
+# v0.86 — THE RELEASE SCOPE. COMMENTS ONLY, AND NO STATISTICS.
+#
+# This file deliberately carries no counts. Every number about this release is
+# derived from the artifacts beside it or from the tree, at the commit that reads
+# it, because a count written here is invalidated by the edit that writes it.
+#
+# THEME: "THE INSTRUMENT IS PART OF THE EVIDENCE."
+#
+# v0.85's theme was that a correction is an unreviewed claim, and it held: both of
+# its cold-review rounds found false statements, and the later round found
+# EVERY ONE of its own findings inside the review cycle rather than in the release's
+# original work. But the sharpest ones were not prose slips. They were instruments
+# that could not fail:
+#
+#   * a self-test case whose sample yielded nothing even with every scrubber
+#     removed, so its "fully scrubbed" line could never go red;
+#   * a statistics scan that reads digits, in a file whose refuted figure was
+#     spelled as a word, so the scan passed over the very claim it existed to catch;
+#   * a repository-wide ceiling supported by a sweep silently restricted to a few
+#     file extensions, in the correction of a figure whose defect was that it could
+#     not be reproduced;
+#   * a red control that would have fired on an EMPTY table, so it never exercised
+#     the pin it named.
+#
+# Each was green. Each was green about the wrong thing, or about nothing. So the
+# obligation this release carries forward is not "check harder" — it is that a
+# check's own potency, population and spelling are part of what it claims, and that
+# a check which cannot be shown to fail has not yet said anything.
+#
+# CARRIED FORWARD AS A STANDING OBLIGATION, because it kept firing after it was
+# named: A CORRECTION IS AN UNREVIEWED CLAIM. v0.85's second round attributed every
+# finding to the review cycle itself, and the coordinator's corrections introduced
+# further defects while applying the ones before them — a dangling article, a
+# plural whose noun the splice removed, a fact corrected at some of its sites while
+# another went on asserting it, and a sweep whose pattern matched a wrapping
+# fragment across the whole repository. A SPLICE MUST BE READ AGAINST BOTH SIDES IT
+# LEAVES BEHIND.
+#
+# AND THE POPULATION IS PART OF THE CLAIM, still. It fired twice inside a single
+# anchor derivation during v0.85: once when a classifier grouped a constant that
+# resets at every anchor with the patterns that move, because it CONTAINS a digit;
+# and once when every pattern was applied to the same file although a pattern there
+# declares a different source, producing a zero that was an artefact of the check.
+#
+# SCOPE is the artifacts in this directory. RE-DERIVE the set by LISTING the
+# directory; do not trust any summary of it, including this one.
+#
+# WHAT v0.85 LEFT, in words rather than numbers: most lanes recorded a partial
+# outcome, others deferred, a few were refuted, and a single lane carried that
+# release's only delivery. It retired no issues and its authorised-closure set was
+# vacuous — no artifact both
+# named an issue and claimed completion, so nothing in it authorised any closure
+# and nothing was held open either. That is reported here as the state to improve,
+# not as a shortfall to explain away.
+#
+# SEVERAL LANES REMAIN BLOCKED OUTSIDE THIS REPOSITORY and must be reported as
+# blocked rather than re-measured as progress: the npm credential rotation, the
+# compliance backlog decision, and the one-line key append that would mount the
+# acceptance corpus. Attempting passwords stays declined.
