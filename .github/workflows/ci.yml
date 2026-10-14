@@ -839,6 +839,23 @@ jobs:
       - name: Unit-test the changelog-structure slot — real-commit red/green (1259)
         run: python3 scripts/test_loop_conformance_changelog.py
 
+      # RQ-86-SPELLSCAN (#1515): the release file's statistics scan, in BOTH
+      # spellings. v0.85 shipped a figure its own round-1 review had proven
+      # false, spelled as a WORD, through three commits where the digit-only
+      # check read CLEAN at every one -- and the commit that fixed its twin
+      # reported the file "re-verified free of statistics", truthfully, by a
+      # scan that could not see it. A census is bounded by its pattern's
+      # spellings. The scan itself is a REPORTER, not an oracle (560 word-number
+      # hits across the tree's release files are overwhelmingly idioms), so what
+      # CI gates is its SELF-TEST: that the blindness is still reproduced and
+      # that each case still fails under removal of its own subject. Three
+      # negative controls were executed at authoring; one of them found a
+      # VACUOUS case in this very self-test, which asserted on the probe LINE
+      # instead of the matched TOKEN and stayed green with `nineteen` removed
+      # from the pattern -- the line also contains `two`.
+      - name: "Self-test the release-file statistics scan (RQ-86-SPELLSCAN, #1515)"
+        run: python3 scripts/release_file_statistics_scan.py --self-test
+
       # RQ-62-CLAIMCHECK (#1062): the runner-redundancy invariant, enforced
       # rather than remembered. On 2026-09-02 the `light` pool had exactly
       # one runner, it went offline, and NOTHING IN THE REPO COULD MERGE —
