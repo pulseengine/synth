@@ -1,38 +1,36 @@
 artifacts:
-- id: RQ-86-SELFTEST2
-  type: system-req
-  release: v0.86
-  status: proposed
-  title: No self-test in the tree contains a case that cannot fail
-  description: 'v0.85 opened this lane because a self-test advertised proving potency against real history
-    and stayed green with the capability it tests REMOVED. v0.85''s second round then found the same class
-    in the self-test the release itself had just written: one case''s sample yielded NOTHING even with
-    every scrubber removed, so its line could never go red. A vacuous case inside a self-test is the gate-potency
-    problem one tier in, and it is now measured twice in two different files.
+  - id: RQ-86-SELFTEST2
+    type: system-req
+    release: v0.86
+    status: proposed
+    title: "No self-test in the tree contains a case that cannot fail"
+    description: >
+        v0.85 opened this lane because a self-test advertised proving potency against real
+        history and stayed green with the capability it tests REMOVED. v0.85's second round then
+        found the same class in the self-test the release itself had just written: one case's
+        sample yielded NOTHING even with every scrubber removed, so its line could never go red.
+        A vacuous case inside a self-test is the gate-potency problem one tier in, and it is now
+        measured twice in two different files.
 
+        THE REMEDY IS A CLASS SWEEP, not another fix at one site: every self-test in the tree,
+        asked whether each of its cases can fail.
 
-    THE REMEDY IS A CLASS SWEEP, not another fix at one site: every self-test in the tree, asked whether
-    each of its cases can fail.
-
-
-    REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome,
-    reported with numbers: for each self-test, run it with the capability each case claims to cover REMOVED,
-    one at a time, and record which cases go red. A case that stays green under removal of its own subject
-    is vacuous. If every case in every self-test reds, the class is already absent and this lane is moot
-    — but a sweep that finds ZERO vacuous cases must carry a positive control showing it would have found
-    the one v0.85 fixed.'
-  tags:
-  - feature-loop
-  - process
-  links:
-  - type: derives-from
-    target: BR-001
-  fields:
-    req-type: process
-    priority: should
-    issue: '#1515'
-    verification-track: manual
-    done-when: manual:2027-03-31 every self-test case in the tree is shown to fail under removal of its
-      own subject, or the vacuous ones are named — delivered with measured numbers, or REFUTED with the
-      measurement that refutes it; and the refuting command above is RUN FIRST and its result reported
-      either way
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: for each self-test, run it with the
+        capability each case claims to cover REMOVED, one at a time, and record which cases go
+        red. A case that stays green under removal of its own subject is vacuous. If every case
+        in every self-test reds, the class is already absent and this lane is moot — but a sweep
+        that finds ZERO vacuous cases must carry a positive control showing it would have found
+        the one v0.85 fixed.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1515"
+      verification-track: manual
+      done-when: "manual:2027-03-31 every self-test case in the tree is shown to fail under removal of its own subject, or the vacuous ones are named — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

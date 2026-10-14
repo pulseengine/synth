@@ -1,39 +1,38 @@
 artifacts:
-- id: RQ-86-CLOSESCOPE
-  type: system-req
-  release: v0.86
-  status: proposed
-  title: A release of only-partial lanes can either authorise a closure or says plainly that it cannot
-  description: 'NEW, from v0.85''s own tag. The strict closure gate failed on a VACUOUS AUTHORISED SET:
-    no artifact both named an issue and claimed completion, so nothing in the release authorised any closure
-    — and nothing was held open either, because holding open also requires a claiming status. The previous
-    release at least held one issue open. This one holds none.
+  - id: RQ-86-CLOSESCOPE
+    type: system-req
+    release: v0.86
+    status: proposed
+    title: "A release of only-partial lanes can either authorise a closure or says plainly that it cannot"
+    description: >
+        NEW, from v0.85's own tag. The strict closure gate failed on a VACUOUS AUTHORISED SET:
+        no artifact both named an issue and claimed completion, so nothing in the release
+        authorised any closure — and nothing was held open either, because holding open also
+        requires a claiming status. The previous release at least held one issue open. This one
+        holds none.
 
+        THE QUESTION IS NOT HOW TO GREEN THE GATE. Flipping a status to satisfy it would claim a
+        completion no lane reached, which is the ledger-loosening this programme refuses. The
+        question is whether a release whose lanes are honestly all partial has any legal way to
+        be non-vacuous, and if it does not, whether the gate's demand or the release's shape is
+        the thing to change.
 
-    THE QUESTION IS NOT HOW TO GREEN THE GATE. Flipping a status to satisfy it would claim a completion
-    no lane reached, which is the ledger-loosening this programme refuses. The question is whether a release
-    whose lanes are honestly all partial has any legal way to be non-vacuous, and if it does not, whether
-    the gate''s demand or the release''s shape is the thing to change.
-
-
-    REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome,
-    reported with numbers: read the authorised-and-held-open derivation and enumerate every status and
-    disposition combination that produces a non-empty set. If a non-claiming disposition can authorise
-    or hold open, the vacuity was avoidable and this lane is a fix; if none can, the gate demands something
-    a partial-only release cannot supply and THAT is the finding. Carry the gate''s own potency controls,
-    which v0.85 confirmed fire.'
-  tags:
-  - feature-loop
-  - process
-  links:
-  - type: derives-from
-    target: BR-001
-  fields:
-    req-type: process
-    priority: should
-    issue: '#1454'
-    verification-track: manual
-    done-when: manual:2027-03-31 a partial-only release either authorises or holds open at least one issue
-      legally, or the gate's demand is shown unmeetable by such a release — delivered with measured numbers,
-      or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and
-      its result reported either way
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: read the authorised-and-held-open derivation
+        and enumerate every status and disposition combination that produces a non-empty set. If
+        a non-claiming disposition can authorise or hold open, the vacuity was avoidable and
+        this lane is a fix; if none can, the gate demands something a partial-only release
+        cannot supply and THAT is the finding. Carry the gate's own potency controls, which
+        v0.85 confirmed fire.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1454"
+      verification-track: manual
+      done-when: "manual:2027-03-31 a partial-only release either authorises or holds open at least one issue legally, or the gate's demand is shown unmeetable by such a release — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

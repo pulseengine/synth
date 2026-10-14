@@ -1,43 +1,40 @@
 artifacts:
-- id: RQ-86-MEMLAYER3
-  type: system-req
-  release: v0.86
-  status: proposed
-  title: The multi-memory layering ships, or the blocker is re-scoped against a re-read of the downstream
-    answer
-  description: 'fathom''s only remaining blocker, carried into a fourth release. Conduct rule 4 BINDS
-    and has bound for three releases: each one sized the gap and none closed it.
+  - id: RQ-86-MEMLAYER3
+    type: system-req
+    release: v0.86
+    status: proposed
+    title: "The multi-memory layering ships, or the blocker is re-scoped against a re-read of the downstream answer"
+    description: >
+        fathom's only remaining blocker, carried into a fourth release. Conduct rule 4 BINDS and
+        has bound for three releases: each one sized the gap and none closed it.
 
+        WHAT IS ALREADY PROVEN, so this lane does not re-derive it: the compile half is PROVEN,
+        not unproven — v0.85 built a version-matching binary and reproduced the refusal with
+        controls on both sides, including a single-memory control that succeeds. The refusal
+        exists at TWO levels, a CLI pre-flight and the selector's own arm, so a CLI probe hits
+        the outer one first. The binding path is the native-pointer flag, not the safety-bounds
+        mode the issue is framed around. The half the reporter thought decisive shipped two
+        releases ago.
 
-    WHAT IS ALREADY PROVEN, so this lane does not re-derive it: the compile half is PROVEN, not unproven
-    — v0.85 built a version-matching binary and reproduced the refusal with controls on both sides, including
-    a single-memory control that succeeds. The refusal exists at TWO levels, a CLI pre-flight and the
-    selector''s own arm, so a CLI probe hits the outer one first. The binding path is the native-pointer
-    flag, not the safety-bounds mode the issue is framed around. The half the reporter thought decisive
-    shipped two releases ago.
+        SO THE WHOLE REMAINING BLOCKER IS THE LAYERING, and this lane scopes only that.
 
-
-    SO THE WHOLE REMAINING BLOCKER IS THE LAYERING, and this lane scopes only that.
-
-
-    REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome,
-    reported with numbers: before writing any code, re-read the downstream consumer''s own answer with
-    `git grep -n "static_data_addend" -- artifacts/` and re-count its call sites in the selector. If the
-    bounding design assertion that memory zero carries no suffixed alias has been removed since v0.85,
-    the constraint this scope rests on is gone and the scope is wrong. A refuting command that only re-measures
-    the code is NOT enough here, because this lane touches a refusal''s location that a downstream consumer
-    was consulted about.'
-  tags:
-  - feature-loop
-  - process
-  links:
-  - type: derives-from
-    target: BR-001
-  fields:
-    req-type: process
-    priority: must
-    issue: '#1145'
-    verification-track: manual
-    done-when: manual:2027-03-31 the layering ships with its oracle, or the blocker is re-scoped against
-      a re-read of the downstream answer — delivered with measured numbers, or REFUTED with the measurement
-      that refutes it; and the refuting command above is RUN FIRST and its result reported either way
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: before writing any code, re-read the
+        downstream consumer's own answer with `git grep -n "static_data_addend" -- artifacts/`
+        and re-count its call sites in the selector. If the bounding design assertion that
+        memory zero carries no suffixed alias has been removed since v0.85, the constraint this
+        scope rests on is gone and the scope is wrong. A refuting command that only re-measures
+        the code is NOT enough here, because this lane touches a refusal's location that a
+        downstream consumer was consulted about.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1145"
+      verification-track: manual
+      done-when: "manual:2027-03-31 the layering ships with its oracle, or the blocker is re-scoped against a re-read of the downstream answer — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
