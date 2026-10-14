@@ -181,7 +181,11 @@ VALS = [0.0, -0.0, 1.0, -1.0, 0.5, -0.25, 1.5, 0.001, -3.14159265,
         1e-30, -1e30, float("inf"), float("-inf"), float("nan")]
 
 # RQ-81-WIDEFILE4 (#1439): BOTH SIGNS ARE LOAD-BEARING, and until v0.81 nothing
-# said so. The wide-file sign error (#1426) shows as `got ^ want == 0x8000_0000`
+# said so. The wide-file sign error (#1439 — the number in this sentence read
+# #1426 until v0.86, which is a DIFFERENT open defect: the frame-home spill-slot
+# pool exhaustion on the reporter's last declining export. Two adjacent sentences
+# in this block cited two issues for one subject, and the section header above has
+# always had it right) shows as `got ^ want == 0x8000_0000`
 # with magnitudes BIT-IDENTICAL, so exactly one factor's sign is wrong and only
 # an `abs` or a `neg` can do that. For a NEGATIVE input the two are
 # indistinguishable -- abs(-x) and neg(-x) both give +x -- so the positive rows
