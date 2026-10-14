@@ -1,0 +1,35 @@
+artifacts:
+- id: RQ-86-ARCHMODEL5
+  type: system-req
+  release: v0.86
+  status: proposed
+  title: The recurring architecture-step non-applicability is filed again, with its ordinal and its commit
+  description: 'Carried. The upstream blocker is open and is itself a defect of the class this programme
+    keeps finding: the architecture tool accepts property associations from UNDECLARED property sets silently,
+    so a mistyped property is indistinguishable from a satisfied one.
+
+
+    v0.85''s filing was found by its own review to state the ordinal with its commit in NEITHER the artifact
+    nor the release record — each document deferred the commit to the other. It is now stated with an
+    ancestor commit, and this lane must do the same rather than defer again.
+
+
+    REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome,
+    reported with numbers: derive the ordinal BY ARTIFACT IDENTITY from the tree, refuse on a duplicate
+    identifier or an empty population, and state it WITH a commit that is an ANCESTOR of the default branch.
+    Keep both the feature-loop tag and an architecture tag, or the step matcher goes blind to the filing.'
+  tags:
+  - feature-loop
+  - process
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: should
+    issue: '#1136'
+    verification-track: manual
+    done-when: manual:2027-03-31 the filing exists with both tags, shown SEEN by running the step matcher,
+      and its ordinal stated with an ancestor commit — delivered with measured numbers, or REFUTED with
+      the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported
+      either way

@@ -1,0 +1,32 @@
+artifacts:
+- id: RQ-86-FIRSTTOKEN5
+  type: system-req
+  release: v0.86
+  status: proposed
+  title: The dead disposition branch is reached or removed
+  description: 'Carried, and narrowed to one part. Its first two parts are done and load-bearing. v0.85
+    recorded the lane as refuted, which is true of the question it was asked and NOT true of the work
+    remaining: the third part, the dead disposition branch, is still there. A disposition recorded as
+    refuted is a statement about a question, not a statement that nothing is left.
+
+
+    REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome,
+    reported with numbers: drive the classifier over the live artifact population and record whether the
+    disposition branch is ever reached. If it is reached, it is not dead and this lane is moot. If it
+    is never reached, decide between wiring it and deleting it, and note that a branch never reached over
+    a GREEN population is not evidence of deadness — every working guard''s red branch is unreached.'
+  tags:
+  - feature-loop
+  - process
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: should
+    issue: '#1476'
+    verification-track: manual
+    done-when: manual:2027-03-31 the disposition branch is shown reachable by a legal artifact or removed,
+      with the green-population caveat addressed — delivered with measured numbers, or REFUTED with the
+      measurement that refutes it; and the refuting command above is RUN FIRST and its result reported
+      either way

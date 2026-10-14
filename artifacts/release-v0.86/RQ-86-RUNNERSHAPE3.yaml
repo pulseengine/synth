@@ -1,0 +1,35 @@
+artifacts:
+- id: RQ-86-RUNNERSHAPE3
+  type: system-req
+  release: v0.86
+  status: proposed
+  title: The no-show classifier is stated over every shape the job object presents, including the one
+    found live in v0.85
+  description: 'Carried, and v0.85 added a shape its predecessor''s wording did not cover. That lane had
+    defined a genuine lone no-show as one inside a run that FAILED rather than was cancelled. During v0.85
+    a no-show occurred on the loop''s own pull request inside a run that was NEITHER failed NOR cancelled
+    — it was progressing, with every other job succeeding — and it was identified by the job object alone:
+    no steps, no runner assigned, its start equal to the run''s creation, and alone in that state while
+    every other unstarted job was still queued. The same job had succeeded on three prior commits in a
+    minute or two, which is what ruled out the diff as the cause.
+
+
+    REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome,
+    reported with numbers: sample a window of workflow runs and classify every unstarted job by shape,
+    then check whether the classifier''s own definition admits the v0.85 instance. If the definition already
+    covers a no-show in a progressing run, the gap is closed and this lane is moot. State the WINDOW with
+    the result: a window is part of a population claim.'
+  tags:
+  - feature-loop
+  - process
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: should
+    issue: '#1451'
+    verification-track: manual
+    done-when: manual:2027-03-31 the classifier admits a lone no-show in a progressing run and its three
+      runner-name states are enumerated — delivered with measured numbers, or REFUTED with the measurement
+      that refutes it; and the refuting command above is RUN FIRST and its result reported either way

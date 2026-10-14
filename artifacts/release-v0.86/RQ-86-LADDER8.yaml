@@ -1,0 +1,39 @@
+artifacts:
+- id: RQ-86-LADDER8
+  type: system-req
+  release: v0.86
+  status: proposed
+  title: The acceptance ladder is re-measured, or reported blocked outside this repository
+  description: 'BLOCKED OUTSIDE THIS REPOSITORY, and this lane''s correct outcome may be to report that
+    rather than to show progress. The blocker is a one-line key append so the corpus volume can be mounted,
+    which only the maintainer can act on.
+
+
+    WHAT THIS LANE MUST NOT DO: re-measure the machinery around the blocker and report the re-measurement
+    as progress. That is the shape conduct rule four names for external defects, and it applies to the
+    maintainer''s queue as well — a release that re-derives a blocked lane''s surroundings has not moved
+    it.
+
+
+    ATTEMPTING PASSWORDS STAYS DECLINED.
+
+
+    REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome,
+    reported with numbers: re-read the blocker''s current state at the source rather than from any record
+    of it, and confirm it is still outside this repository. If it has been actioned, the lane is live
+    and should be worked; if not, report it blocked with the state observed and move on. A lane reported
+    blocked on a STALE reading of the blocker is the same defect as a figure carried instead of derived.'
+  tags:
+  - feature-loop
+  - process
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: should
+    issue: '#1432'
+    verification-track: manual
+    done-when: manual:2027-03-31 the blocker is actioned and the lane delivered, or it is reported blocked
+      with its state re-read at the source — delivered with measured numbers, or REFUTED with the measurement
+      that refutes it; and the refuting command above is RUN FIRST and its result reported either way

@@ -1,0 +1,43 @@
+artifacts:
+- id: RQ-86-JESSDIVERGE8
+  type: system-req
+  release: v0.86
+  status: proposed
+  title: The held reply to the divergence reporter goes out, or the residual is explained rather than
+    guessed
+  description: 'jess''s divergence, carried with its analysis FINISHED and its reply DRAFTED AND UNPOSTED
+    awaiting the maintainer''s word. That is the whole of what is blocked: not measurement, correspondence
+    approval.
+
+
+    DO NOT RE-DERIVE THE OBJECT. The expression is proven faithful and everything addressable from the
+    object is eliminated; re-deriving it repeats finished work and would read as progress while changing
+    nothing for the reporter. The accumulator words and their load program counters are named in the draft.
+
+
+    THE RESIDUAL IS UNEXPLAINED AND MUST STAY THAT WAY UNTIL IT IS MEASURED: the excess over the pure-gravity
+    integral GROWS with the iteration count. A mechanism for that growth has not been established, and
+    proposing one in the reply would put a guess in a reporter''s inbox in the register of a finding.
+
+
+    REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome,
+    reported with numbers: check whether the drafted reply is still accurate against this release''s tree
+    before asking for it to go out: re-read the draft''s own claims about what is eliminated, and confirm
+    the version stamp it carries matches the release it would be posted during. v0.85 found a held draft
+    still stamped with the PREVIOUS release''s version, which would have mis-stated the state to an external
+    reporter.'
+  tags:
+  - feature-loop
+  - process
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: must
+    issue: '#1436'
+    verification-track: manual
+    done-when: manual:2027-03-31 the held reply goes out with the maintainer's word and an accurate version
+      stamp, or the growing residual is explained with a measurement — delivered with measured numbers,
+      or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and
+      its result reported either way

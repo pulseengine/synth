@@ -1,0 +1,38 @@
+artifacts:
+- id: RQ-86-TWOSOURCE3
+  type: system-req
+  release: v0.86
+  status: proposed
+  title: Every conformance slot states its own source explicitly, per slot rather than per step
+  description: 'v0.85 carried the proof that the split is PER SLOT and not per step: within one step,
+    one slot reads the working tree while another reads the committed ref, and the pair can contradict
+    each other on the same invocation. Four demonstrations each resolve on the commit alone.
+
+
+    DO NOT FORCE ONE CONVENTION. The pre-tag step''s own documentation makes it DELIBERATELY a statement
+    about the working tree, so collapsing every slot onto the ref would break a deliberate design rather
+    than fix a defect. The remedy is to make the SOURCE EXPLICIT PER SLOT, so a reader can tell which
+    of the two a verdict describes without reading the implementation.
+
+
+    REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome,
+    reported with numbers: run the conformance checker once and look for a slot pair within a single step
+    that disagrees, then resolve the disagreement on the commit alone. If no such pair exists at this
+    release''s tree the defect is not live here and this lane is moot — but a population of ZERO contradicting
+    pairs is a REFUSAL rather than a pass unless a positive control shows the comparison would have detected
+    one.'
+  tags:
+  - feature-loop
+  - process
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: must
+    issue: '#1183'
+    verification-track: manual
+    done-when: manual:2027-03-31 every conformance slot states which source it read, verified by a reader-level
+      check rather than by inspection of the implementation — delivered with measured numbers, or REFUTED
+      with the measurement that refutes it; and the refuting command above is RUN FIRST and its result
+      reported either way

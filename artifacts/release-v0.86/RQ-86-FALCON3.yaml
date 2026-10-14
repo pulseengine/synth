@@ -1,0 +1,44 @@
+artifacts:
+- id: RQ-86-FALCON3
+  type: system-req
+  release: v0.86
+  status: proposed
+  title: The falcon blocker's remaining gap is lowered, or re-named with a measurement taken at this release's
+    binary
+  description: 'cpetig''s own still-open synth blocker, carried into a third release. v0.85 did work on
+    it for the first time: it re-measured the reporter''s module at a version-matching binary and the
+    figure HELD — one function of seventeen skipped, the single skip identified BY NAME as the frame-home
+    export rather than left as a count — and it corrected the class oracle''s docstring, which had gone
+    on describing a decline the oracle''s own matrix records as compiling.
+
+
+    WHAT v0.85 DID NOT DO: lower anything. The gap is named, not closed, so conduct rule 4 still binds
+    — a release whose only work on an open external defect was hardening the oracle around it does not
+    count as progress on it. v0.85''s work was a RECORD correction, which is one step better than nothing
+    and still not progress on the defect.
+
+
+    THE CHAIN CONTEXT HAS MOVED AND MUST NOT BE RE-DERIVED HERE: the meld-side defect in that chain was
+    closed during v0.85 by the maintainer''s own fix. The synth link is what remains. STAY SYNTH-SIDE.
+
+
+    REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a legitimate outcome,
+    reported with numbers: re-measure the reporter''s module with THIS release''s binary, after checking
+    the binary''s reported version against the workspace. If the skipped-function count is now zero the
+    blocker has moved and this lane is moot. If the binary''s version does not match, record UNPROVEN
+    rather than inferring — and note that the cost of building one is a measured fraction of a test build,
+    so UNPROVEN for want of disk is not available as an answer.'
+  tags:
+  - feature-loop
+  - process
+  links:
+  - type: derives-from
+    target: BR-001
+  fields:
+    req-type: process
+    priority: must
+    issue: '#1318'
+    verification-track: manual
+    done-when: manual:2027-03-31 the remaining falcon gap is lowered, or re-named with a measurement taken
+      at this release's own binary — delivered with measured numbers, or REFUTED with the measurement
+      that refutes it; and the refuting command above is RUN FIRST and its result reported either way
