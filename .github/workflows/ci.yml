@@ -874,6 +874,29 @@ jobs:
       - name: "Self-test the review-record provenance check (RQ-86-PROVENANCE2, #1516)"
         run: python3 scripts/review_record_provenance_check.py --self-test
 
+      # The cold review's round 2 derives its attack queue from the numbers round
+      # 1 introduced, using `extract_r1_numbers.py` -- and that script was in NO
+      # WORKFLOW at all until this step. Its self-test existed, carried a vacuity
+      # guard and a leave-one-out derivation, and nothing ever ran it: defined but
+      # not enforced, which is not a gate. Measured in the v0.86 audit, in both
+      # directions. REFUTED: the worry that the `sha` scrubber eats an uncommaed
+      # seven-digit byte count -- every all-digit token it removes across the six
+      # shipped records is an identifier, two of them genuine all-digit git shas,
+      # so the obvious narrowing would have leaked real shas as quantities.
+      # CONFIRMED: the `version` scrubber necessarily eats a bare two-component
+      # decimal, and that class is MIXED (a ratio and a crate version share the
+      # shape), so those tokens are now PRINTED in their own hand-triage bucket
+      # rather than dropped. The case that forced it: v0.85 round 1's "twelve" was
+      # rounded from a ratio the tool could not see.
+      #
+      # Both halves of the new bucket are negative-controlled, which is why they
+      # are worth gating: an INERT bucket reds the positive half, a bucket widened
+      # to eat `v`-prefixed versions reds the negative half. The REPORT form needs
+      # a record path and the record under review may not exist yet, so only
+      # `--self-test` is a gate.
+      - name: "Self-test the round-2 number extractor (RQ-86-R1NUMBERS, #1516)"
+        run: python3 scripts/extract_r1_numbers.py --self-test
+
       # RQ-62-CLAIMCHECK (#1062): the runner-redundancy invariant, enforced
       # rather than remembered. On 2026-09-02 the `light` pool had exactly
       # one runner, it went offline, and NOTHING IN THE REPO COULD MERGE —

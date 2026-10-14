@@ -84,6 +84,41 @@ next, two in the newest. This repository squash-merges, so a branch head never
 becomes an ancestor. Both halves carry a positive control, because a check that
 passes everything is indistinguishable from one that tests nothing.
 
+### The tool that derives round two's queue ran in no workflow
+
+Round two of the cold review attacks the numbers round one introduced, and it
+derives that queue with a script rather than reading for importance. That script
+was in **no workflow at all**. Its self-test existed, carried a vacuity guard and
+a leave-one-out derivation of which scrubbers are individually necessary, and
+nothing ever ran it — defined but not enforced, which is not a gate. It is now a
+step in a required context.
+
+The audit then went both ways, which is the part worth recording. **Refuted:** the
+worry that the sha scrubber swallows an uncommaed seven-digit byte count. Every
+all-digit token it removes across the records shipped before this one is an
+identifier — run ids, a comment id, and two genuine all-digit eight-character git
+shas — so the obvious narrowing, requiring a hex letter, would have leaked two real
+shas into the queue as quantities. The blind spot is real and has no observed
+instance; the previous release's repair of that scrubber stands.
+
+**Confirmed:** the version scrubber necessarily eats a bare two-component decimal,
+because a ratio and a crate version share that shape exactly. One record carries
+**23** such removals and the newest **15**, and reading them in context settles that
+the class is mixed rather than noise: durations, percentages and a ratio on one
+side, crate and operating-system versions, a section number and an IEEE literal
+quoted in prose on the other. No pattern separates them, so widening trades one
+error for the other. The case that forced the decision is a ratio the previous
+round one rounded up to produce a headline word — the number the word came from was
+invisible to the tool whose whole job is to queue round one's numbers for attack.
+
+So they are neither dropped nor asserted: the withheld decimals are printed in
+their own labelled bucket for hand triage. A false positive costs round two one
+glance; a false negative means an unreviewed figure is never reviewed. Both halves
+of the new bucket are negative-controlled — an inert bucket reds the positive half,
+a bucket widened to eat prefixed versions reds the negative half — and an empty
+bucket is a legitimate observation here rather than a refusal, which is measured
+too: two of those records carry no bare decimal at all.
+
 ### Measurements that corrected this programme's own records
 
 - **The multi-memory re-scope was withdrawn before merge.** The reporter's fit
