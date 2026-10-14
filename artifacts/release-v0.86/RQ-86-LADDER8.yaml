@@ -34,7 +34,7 @@ artifacts:
       issue: "#1432"
       verification-track: manual
       issue-scope: outlives
-      landed: "PR #1536 - #1432 - REPORTED BLOCKED with its state re-read AT THE SOURCE. The issue is OPEN and its own title states the staleness in releases rather than in a rate. The blocker is a one-line key append so the corpus volume can be mounted, which only the maintainer can perform, and the corpus host is not reachable from here. ATTEMPTING PASSWORDS STAYS DECLINED. No rung was re-derived from a different corpus and presented as a trend, which is the failure this programme already corrected once."
+      landed: "PR #1537 - #1432 - REPORTED BLOCKED with its state re-read AT THE SOURCE. The issue is OPEN and its own title states the staleness in releases rather than in a rate. The blocker is a one-line key append so the corpus volume can be mounted, which only the maintainer can perform, and the corpus host is not reachable from here. ATTEMPTING PASSWORDS STAYS DECLINED. No rung was re-derived from a different corpus and presented as a trend, which is the failure this programme already corrected once."
       verified-by: >
         DELIVERED on the done-when's SECOND branch — reported blocked with its state re-read at
         the source.
