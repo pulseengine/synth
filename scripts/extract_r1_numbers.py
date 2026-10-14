@@ -23,11 +23,20 @@ reading for importance is how the loop re-reviews what it already believes.
 WHAT IT SCRUBS, and why each class is noise rather than a claim: identifiers
 carry digits that are not quantities. v0.84's record notes its own run left ISO
 fragments (`09`, `57`, `26`, `58`, `51`, `53`) in the list, and an unscrubbed run
-reported a two-digit runner fragment repeatedly from runner names. THE FIGURE THIS
-DOCSTRING FIRST CARRIED FOR THAT — nineteen — IS NOT REPRODUCIBLE and was corrected
-here: the record the sentence is about yields 2, and no tracked file in this
-repository yields more than 8. The scrubber is justified by the class existing,
-which is measurable, not by that count. Order matters — the longest,
+reported a two-digit runner fragment repeatedly from runner names. NO COUNT IS
+CLAIMED FOR THAT, and the two earlier attempts to claim one were both wrong. The
+first said nineteen. The correction said "the record the sentence is about yields 2,
+and no tracked file in this repository yields more than 8" — and round 2 refuted the
+ceiling under EVERY scrubber configuration: `crates/synth-backend/src/arm_encoder.rs`
+yields 23 (ordinary Rust, real ARM bit-field comments `| 01 |`) and a `.wat` fixture
+yields 101. The sweep behind the 8 was silently restricted to `.py`/`.yaml`/`.md`,
+so its population was not the repository — the standing obligation failed inside the
+correction of a figure whose defect was that it was unreproducible. And because 23
+and 101 both exceed nineteen, "nineteen is not reproducible" did not follow from that
+ceiling either; the honest statement is that nineteen was not reproduced on the
+record the sentence describes, which yields 2, and that no repository-wide ceiling
+has been established. The scrubber is justified by the class EXISTING, which is
+measurable here, and not by any count. Order matters — the longest,
 most specific forms are removed first, or a shorter pattern eats part of a longer
 token and leaves a digit behind.
 
@@ -79,8 +88,28 @@ def numbers(text: str) -> collections.Counter:
     return collections.Counter(re.findall(r"\b\d[\d,]*\b", scrub(text)))
 
 
+def numbers_with(scrubbers, text: str) -> collections.Counter:
+    """`numbers()` under an ARBITRARY scrubber list — the leave-one-out primitive."""
+    for _name, pat in scrubbers:
+        text = re.sub(pat, " ", text)
+    return collections.Counter(re.findall(r"\b\d[\d,]*\b", text))
+
+
 def self_test() -> int:
-    """Each scrubber must remove its OWN class, and a real claim must SURVIVE."""
+    r"""Each sample must be scrubbed, NO sample may be vacuous, and the per-scrubber
+    claim is DERIVED by leave-one-out rather than asserted.
+
+    ROUND 2 OF v0.85 FOUND THREE DEFECTS HERE, and the structure below is the repair:
+      * the `sha` sample yielded nothing even with ZERO scrubbers, so `ok sha fully
+        scrubbed` was a vacuous assertion inside a self-test and could never fail.
+        Hex shas have letters beside their digits, so `\b\d[\d,]*\b` cannot reach
+        them — an ALL-DIGIT sha is needed to make the case discriminating.
+      * leave-one-out showed only 7 of 9 scrubbers were individually proven; the
+        printed line claimed all of them. The count is now derived and labelled.
+      * the by-construction sample contained `VCR-SEL-005`, which the `artifact-id`
+        SCRUBBER removes — so dropping that scrubber leaked `005` and the failure was
+        reported under the BY-CONSTRUCTION label, a misattributed diagnosis.
+    """
     cases = [
         ("iso-datetime", "settled at 2026-10-13T17:42:09Z with"),
         ("iso-date", "measured 2026-10-09 and"),
@@ -92,7 +121,9 @@ def self_test() -> int:
         ("file-line", "ARCHMODEL3.yaml:16 says exactly that"),
         ("version", "the layer 2026.10.9 pin at v0.85.0 and 0.84.0"),
         ("ref", "see #1318 and #1520"),
-        ("sha", "declared 5a4092dac4bb68aa68acb9572475a4f268191e2a and b0395b69"),
+        # An ALL-DIGIT sha: a mixed hex sha yields no bare number even unscrubbed,
+        # which is what made this case vacuous before v0.85's round 2.
+        ("sha", "declared 1234567890abcdef and 9876543"),
     ]
     failures = []
     for name, sample in cases:
@@ -120,11 +151,34 @@ def self_test() -> int:
     # counting rule numbers as quantities. (The authoring run of this file got
     # this wrong first: the control expected `11` from `R11-active`, the
     # self-test refused, and the EXPECTATION was what was wrong.)
-    embedded = numbers("R11-active and x11y and VCR-SEL-005")
+    # `VCR-SEL-005` was removed from this sample in v0.85: the `artifact-id`
+    # SCRUBBER strips it, so it was never a by-construction case, and dropping that
+    # scrubber leaked `005` under this label — a misattributed diagnosis, found by
+    # round 2. Both survivors have no word boundary before their digits.
+    embedded = numbers("R11-active and x11y")
     if embedded:
         failures.append(f"BY-CONSTRUCTION: identifier digits leaked: {dict(embedded)}")
     else:
         print("  ok  by-construction  identifier-embedded digits are unreachable")
+
+    # VACUITY GUARD: a sample that yields nothing with ZERO scrubbers proves nothing.
+    for label, sample in cases:
+        if not numbers_with([], sample):
+            failures.append(
+                f"VACUOUS CASE {label}: the sample yields no number even with NO "
+                f"scrubbers, so 'fully scrubbed' cannot fail — fix the sample")
+
+    # LEAVE-ONE-OUT: derive which scrubbers are INDIVIDUALLY necessary. Overlap is
+    # legitimate (a date is also caught by the clock pattern); claiming coverage the
+    # pipeline does not individually owe is not.
+    necessary = []
+    for name, _pat in SCRUBBERS:
+        others = [(n, p) for n, p in SCRUBBERS if n != name]
+        if any(numbers_with(others, s) for _l, s in cases):
+            necessary.append(name)
+    redundant = [n for n, _ in SCRUBBERS if n not in necessary]
+    print(f"  ok  leave-one-out   {len(necessary)} of {len(SCRUBBERS)} scrubbers are "
+          f"individually necessary; {len(redundant)} covered redundantly: {redundant}")
 
     # A derived population of zero is a refusal, not a pass.
     if not cases:
@@ -137,8 +191,9 @@ def self_test() -> int:
         return 1
     # `len(cases)` is NOT the scrubber count: bare-clock carries three cases. The
     # shipped line said "11 scrubbers" against 9, found by this release's round 1.
-    print(f"self-test: {len(SCRUBBERS)} scrubbers over {len(cases)} cases "
-          f"+ 2 mechanism checks, 0 failures")
+    print(f"self-test: {len(SCRUBBERS)} scrubbers over {len(cases)} cases, "
+          f"{len(necessary)} individually necessary by leave-one-out, "
+          f"+ positive control + by-construction + vacuity guard, 0 failures")
     return 0
 
 

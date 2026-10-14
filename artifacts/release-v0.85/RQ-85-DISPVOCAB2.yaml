@@ -58,8 +58,11 @@ artifacts:
         artifacts than its classifying function REACHES, and the out-of-population remainder is
         dominated NOT by declared non-verdicts but by artifacts carrying NO verdict field at all.
         The declared-non-verdict share is a small minority of that remainder. The earlier wording
-        here said most of it was declared non-verdicts and was wrong by more than a factor of ten,
-        found and measured by this release's round 1.
+        here said most of it was declared non-verdicts, which is false. NO FACTOR IS STATED for how
+        false: the cold review's second round showed the factor is unstateable as written because
+        no denominator was given, and that several defensible denominators refute the factor this
+        artifact had claimed. The RELATIONSHIP is the finding; the multiplier was an unreviewed
+        number attached to it.
 
         AND THE DEMONSTRATION LANDED ON THE ARTIFACT ABOUT THIS DEFECT. The target was chosen
         mechanically by a listing, not picked — and it selected the previous release's
