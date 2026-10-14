@@ -27,7 +27,9 @@ Stdlib unittest only:  python3 scripts/test_loop_conformance_check.py
 import os
 import pathlib
 import sys
+import ast
 import unittest
+from pathlib import Path
 
 import yaml
 from unittest import mock
@@ -241,10 +243,105 @@ class PureHelpers(unittest.TestCase):
         self.assertEqual(lcc.review_record_shas("no shas here, v0.62 only"), [])
 
 
+class SlotSourceDeclared(unittest.TestCase):
+    """RQ-86-TWOSOURCE3 (#1183): every slot SAYS which tree it read.
+
+    The defect this pins: within ONE step, one slot reads the working tree
+    while another reads the committed ref, and the pair can contradict on the
+    same invocation -- `status-evidence gate: ... at ref` DERIVED-PASS beside
+    `status-evidence live run: exit 1` DERIVED-FAIL, one subject, opposite
+    verdicts, and nothing in either detail telling the reader why. Demonstrated
+    with a paired control: one UNCOMMITTED edit flips the live-run slot and
+    leaves the ref-reading slot untouched.
+
+    This is a READER-LEVEL check, not an inspection of the implementation: it
+    reads the shipped source for the population and the emitted verdict for the
+    declaration, so a new slot that forgets to say reds here.
+    """
+
+    SRC = Path(__file__).resolve().parent / "loop_conformance_check.py"
+
+    def _add_calls(self):
+        tree = ast.parse(self.SRC.read_text())
+        return [
+            c
+            for c in ast.walk(tree)
+            if isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Attribute)
+            and c.func.attr == "add"
+            and isinstance(c.func.value, ast.Name)
+            and c.func.value.id == "self"
+        ]
+
+    def test_every_slot_site_declares_a_source(self):
+        """Static half: no `self.add` may omit `source`.
+
+        Enforced statically because an output-only check sees only the slots
+        that FIRED in one mode, and most of the population is rarely-taken
+        FAIL branches.
+        """
+        calls = self._add_calls()
+        self.assertGreaterEqual(len(calls), 60, "slot population shrank -- re-derive")
+        missing = [
+            c.lineno
+            for c in calls
+            if not any(k.arg == "source" for k in c.keywords) and len(c.args) < 5
+        ]
+        self.assertEqual(missing, [], f"self.add without a source at lines {missing}")
+
+    def test_declared_sources_are_in_the_vocabulary(self):
+        """Every literal source names a defined tree -- no free-text sources."""
+        seen = set()
+        for c in self._add_calls():
+            node = next((k.value for k in c.keywords if k.arg == "source"), None)
+            if node is None and len(c.args) >= 5:
+                node = c.args[4]
+            if isinstance(node, ast.Tuple):
+                for e in node.elts:
+                    if isinstance(e, ast.Constant):
+                        seen.add(e.value)
+        self.assertTrue(seen, "no literal sources parsed -- the check went vacuous")
+        self.assertEqual(seen - set(lcc.SOURCES), set())
+
+    def test_a_source_is_mandatory_and_validated(self):
+        """NEGATIVE CONTROL. Omitting it RAISES; so does an invented tree.
+
+        Without this pair the requirement could be satisfied by a default, and
+        a slot that silently claimed the wrong tree is worse than one that says
+        nothing -- a reader would believe it.
+        """
+        c = mk_check()
+        with self.assertRaises(TypeError):
+            c.add("3", "x", lcc.DERIVED_PASS, "d")  # no source at all
+        for bad in ((), ("the-vibes",), ("release-ref", "nope")):
+            with self.assertRaises(ValueError):
+                c.add("3", "x", lcc.DERIVED_PASS, "d", source=bad)
+        self.assertEqual(c.findings, [], "a refused slot must not be recorded")
+
+    def test_the_worktree_readers_are_labelled_as_such(self):
+        """The three `exit {rc}` slots are the worktree readers, and the step-0
+        identity slot is the fourth. These are the slots whose verdict can
+        contradict a ref-reading sibling in the same step, so they are exactly
+        the ones that had to stop being silent."""
+        c = mk_check()
+        c.add("3", "status-evidence live run", lcc.DERIVED_FAIL, "exit 1",
+              source=("worktree",))
+        c.add("3", "status-evidence gate", lcc.DERIVED_PASS,
+              "present and wired in ci.yml at ref", source=("release-ref",))
+        out = lcc.render(c.verdict())
+        self.assertIn("[worktree", out)
+        self.assertIn("[release-ref", out)
+        # the contradicting pair is now readable AS a pair of different trees
+        self.assertEqual(
+            {f["step"] for f in c.verdict()["findings"]}, {"3"},
+            "the demonstration pair must sit in ONE step",
+        )
+
+
 class VerdictAggregation(unittest.TestCase):
     def all_green(self, c):
         for step, _ in lcc.STEP_NAMES:
-            c.add(step, "x", lcc.DERIVED_PASS, "fixture")
+            c.add(step, "x", lcc.DERIVED_PASS, "fixture", source=("release-ref",))
 
     def test_all_derived_green_conforms(self):
         c = mk_check()
@@ -257,7 +354,7 @@ class VerdictAggregation(unittest.TestCase):
     def test_one_fail_reds(self):
         c = mk_check()
         self.all_green(c)
-        c.add("5", "mcdc gate", lcc.DERIVED_FAIL, "no pin")
+        c.add("5", "mcdc gate", lcc.DERIVED_FAIL, "no pin", source=("release-ref",))
         v = c.verdict()
         self.assertFalse(v["conforms"])
         # A failing sub-check disqualifies its slot from the derived count.
@@ -266,14 +363,14 @@ class VerdictAggregation(unittest.TestCase):
     def test_not_derived_reds(self):
         c = mk_check()
         self.all_green(c)
-        c.add("6", "signing", lcc.NOT_DERIVED, "API unavailable")
+        c.add("6", "signing", lcc.NOT_DERIVED, "API unavailable", source=("github-api",))
         self.assertFalse(c.verdict()["conforms"])
 
     def test_attestations_alone_are_vacuous_not_conforming(self):
         # THE non-vacuity red: zero failures, nothing derived -> refused.
         c = mk_check()
         for step, _ in lcc.STEP_NAMES:
-            c.add(step, "x", lcc.ATTESTED, "someone said so")
+            c.add(step, "x", lcc.ATTESTED, "someone said so", source=("none",))
         v = c.verdict()
         self.assertEqual(v["failures"], 0)
         self.assertTrue(v["vacuous"])
@@ -283,7 +380,7 @@ class VerdictAggregation(unittest.TestCase):
         c = mk_check()
         self.all_green(c)
         c.findings = [f for f in c.findings if f[0] != "1-2"]
-        c.add("1-2", "filed decision", lcc.NA_FILED, "RQ-62-ARCHMODEL (#1136)")
+        c.add("1-2", "filed decision", lcc.NA_FILED, "RQ-62-ARCHMODEL (#1136)", source=("worktree",))
         v = c.verdict()
         self.assertTrue(v["conforms"])
         self.assertEqual(v["derived_slots"], 6)
@@ -301,7 +398,7 @@ class Step7Regime(unittest.TestCase):
         c = mk_check("v0.62.0")
         with mock.patch.object(lcc, "tree_ls", return_value=[]):
             c.step_7()
-        (_, _, status, detail) = c.findings[0]
+        (_, _, status, detail, _source) = c.findings[0]
         self.assertEqual(status, lcc.DERIVED_FAIL)
         self.assertIn("docs/reviews/v0.62-cold-review.md", detail)
 
