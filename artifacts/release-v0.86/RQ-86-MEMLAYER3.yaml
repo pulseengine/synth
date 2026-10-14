@@ -37,4 +37,69 @@ artifacts:
       priority: must
       issue: "#1145"
       verification-track: manual
+      disposition: refuted
+      landed: "NOT LANDED as scoped, and no layering ships. The refuting command RAN FIRST and did not refute on its own terms - the downstream design answer survives in the artifact tree and the call-site count still reads nine - but a re-read of the downstream's OWN latest comment refutes this lane's scoping premise. Three measurements: the sizing this lane inherited points at a path memory k never reaches, because the memory-k arm relocates through its own per-memory region symbol and never consults the classifier whose call sites were counted; the reporter measured that the layering ALONE would leave him exactly as blocked, since two domains reserve more memory than ANY of his three targets has; and the deciding half he names is already tracked as its own open issue, whose scope this programme measured a release ago. The phase-one reach is also narrower than the premise assumed - the memory-k arm covers the i32 access family only. Conduct rule four is stated against this lane rather than around it: a corrected scope is NOT progress on an externally reported defect that is still open, and the reporter still cannot compile."
+      verified-by: >
+        REFUTED — the refuting command ran first and did NOT refute on its own terms, but the
+        re-read it demanded refutes this lane's SCOPING PREMISE, which is the stronger finding and
+        the reason no layering ships.
+
+        THE REFUTING COMMAND, run before anything was written. `git grep -n "static_data_addend"
+        -- artifacts/` returns two hits and the load-bearing one is the v0.84 answer itself, so
+        the downstream design assertion has NOT been removed. The bounding constraint also holds:
+        the multi-memory test still asserts memory 0 has no suffixed alias. The call sites still
+        number nine, exactly as v0.84 recorded. On its own terms the scope was intact.
+
+        BUT THE NINE CALL SITES ARE THE WRONG TARGET, and that is measurable without building
+        anything. The index-carrying envelope is a WRAPPER, not a field: no load/store variant in
+        the op enum carries a memory index, and the decoder wraps a load/store only when its
+        memarg names a non-default memory — so memory 0 keeps the bare variants and single-memory
+        streams stay bit-identical by construction. The selector's envelope arm spans one hundred
+        and fifty-two lines and contains ZERO references to the classifier; it relocates through
+        the per-memory region symbol instead, and neither helper it calls reaches the classifier
+        either. Every one of the nine sites lies BEFORE that arm begins. So threading a memory
+        index through them would unblock nothing: they are all on the memory-0 path, which the
+        decoder's own invariant guarantees never carries memory k. Memory k ALREADY has its own
+        relocation.
+
+        AND THE CLASSIFICATION WINDOW IS ALREADY MEMORY-0-SCOPED, so the feared widening does not
+        exist: the upper bound is taken from the FIRST declared memory, and the lower bound is the
+        stack-pointer global's initializer. Both are memory-0 quantities, so declaring a second
+        memory cannot widen the window or misclassify a memory-k address as a memory-0 static.
+        Every place the region symbol is matched in shipped code compares it for EQUALITY, not by
+        prefix, so a suffixed region symbol is invisible to those passes rather than mis-handled
+        by them.
+
+        THE REFUTATION ITSELF comes from the downstream's own latest comment, which is what this
+        lane's refuting command exists to force a reader to open. This artifact asserts that the
+        whole remaining blocker is the layering. The reporter measured otherwise: granting the
+        layering, his two domains reserve sixty-four and one hundred and twenty-eight kilobytes,
+        and his three targets have eight, sixty-four and ninety-six. The two-domain image fits
+        NONE of them, so phase two would land and he still could not ship it. He names per-memory
+        extent sizing as plausibly the deciding half and asks for a judgement on the order rather
+        than guessing it.
+
+        THAT HALF IS ALREADY TRACKED, which settles the order. It is an OPEN issue of its own —
+        "no backend reads the declared page size, so a per-domain tenant costs 64 KiB minimum" —
+        and this programme measured its scope one release ago at twenty-eight shipped sites. So
+        the ordering answer is that the extent sizing goes FIRST: it is independent of the
+        layering, already scoped, and by the reporter's own numbers it is what decides whether
+        phase two is usable on hardware at all.
+
+        A FOURTH MEASUREMENT bounds the layering even where it would apply. The envelope arm
+        covers the i32 access family only — eight variants, load and store, byte and halfword and
+        word — so an i64, f32, f64 or v128 access on memory k still declines loudly. Lifting the
+        two refusals would therefore move the blocker rather than remove it for any module whose
+        memory k is touched at another width.
+
+        WHAT THIS LANE DELIBERATELY DID NOT DO. It did not lift either refusal. Both were located
+        — a command-line pre-flight and the selector's own arm — and the pre-flight is the one the
+        reporter's transcript shows him hitting. Lifting them is gated on an execution
+        differential under his exact flags, and per this repository's own rule that oracle lands
+        FIRST; building it now would be building the oracle for the half the measurement says to
+        do SECOND.
+
+        CONDUCT RULE 4 IS STATED AGAINST THIS LANE: correcting a scope is not progress on an
+        externally reported defect that is still open. Nothing the reporter runs behaves
+        differently after this release than before it.
       done-when: "manual:2027-03-31 the layering ships with its oracle, or the blocker is re-scoped against a re-read of the downstream answer — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
