@@ -37,12 +37,12 @@ artifacts:
       priority: must
       issue: "#1145"
       verification-track: manual
-      disposition: refuted
-      landed: "PR #1526 - #1145 - NOT LANDED as scoped, and no layering ships. The refuting command RAN FIRST and did not refute on its own terms - the downstream design answer survives in the artifact tree and the call-site count still reads nine - but a re-read of the downstream's OWN latest comment refutes this lane's scoping premise. Three measurements: the sizing this lane inherited points at a path memory k never reaches, because the memory-k arm relocates through its own per-memory region symbol and never consults the classifier whose call sites were counted; the reporter measured that the layering ALONE would leave him exactly as blocked, since two domains reserve more memory than ANY of his three targets has; and the deciding half he names is already tracked as its own open issue #1441, whose scope this programme measured a release ago. The phase-one reach is also narrower than the premise assumed - the memory-k arm covers the i32 access family only. Conduct rule four is stated against this lane rather than around it: a corrected scope is NOT progress on an externally reported defect that is still open, and the reporter still cannot compile."
+      disposition: partial
+      landed: "PR #1526 - #1145 - NOT LANDED as scoped, and no layering ships. The refuting command RAN FIRST and did NOT refute on its own terms - the downstream design answer survives in the artifact tree, the bounding assertion holds, and the call-site count still reads nine - but the re-read it demanded lands on the done-when's SECOND branch: the blocker is re-scoped against the downstream's own latest comment. Four measurements: the sizing this lane inherited points at a path memory k never reaches, because the memory-k arm relocates through its own per-memory region symbol and never consults the classifier whose call sites were counted; the classification window is already memory-0-scoped at both bounds, so a second memory cannot widen it; the reporter measured that the layering ALONE would leave them exactly as blocked, since two domains reserve more memory than any of their three boards has; and the phase-one reach is narrower than the premise assumed, covering the i32 access family only. Neither refusal is lifted. A RECOMMENDATION on the order the reporter asked for, and a TENSION between two of their own asks, are recorded for the maintainer rather than answered on the thread. Conduct rule four is stated against this lane: a corrected scope is NOT progress on an externally reported defect that is still open, and the reporter still cannot compile."
       verified-by: >
-        REFUTED — the refuting command ran first and did NOT refute on its own terms, but the
-        re-read it demanded refutes this lane's SCOPING PREMISE, which is the stronger finding and
-        the reason no layering ships.
+        PARTIAL — the refuting command ran first and did NOT refute on its own terms, but the
+        re-read it demanded re-scopes the blocker, which is this lane's deliverable and the reason
+        no layering ships. The done-when's second branch is the one met.
 
         THE REFUTING COMMAND, run before anything was written. `git grep -n "static_data_addend"
         -- artifacts/` returns two hits and the load-bearing one is the v0.84 answer itself, so
@@ -63,28 +63,45 @@ artifacts:
         relocation.
 
         AND THE CLASSIFICATION WINDOW IS ALREADY MEMORY-0-SCOPED, so the feared widening does not
-        exist: the upper bound is taken from the FIRST declared memory, and the lower bound is the
-        stack-pointer global's initializer. Both are memory-0 quantities, so declaring a second
-        memory cannot widen the window or misclassify a memory-k address as a memory-0 static.
-        Every place the region symbol is matched in shipped code compares it for EQUALITY, not by
-        prefix, so a suffixed region symbol is invisible to those passes rather than mis-handled
-        by them.
+        exist. The upper bound is the FIRST declared memory's initial size — the backend config
+        field is assigned `all_memories.first()` in the compile driver, and that is the value
+        handed to the selector's native-pointer setter — and the lower bound is the stack-pointer
+        global's initializer. Both are memory-0 quantities, so declaring a second memory cannot
+        widen the window or misclassify a memory-k address as a memory-0 static.
 
-        THE REFUTATION ITSELF comes from the downstream's own latest comment, which is what this
-        lane's refuting command exists to force a reader to open. This artifact asserts that the
-        whole remaining blocker is the layering. The reporter measured otherwise: granting the
-        layering, his two domains reserve sixty-four and one hundred and twenty-eight kilobytes,
-        and his three targets have eight, sixty-four and ninety-six. The two-domain image fits
-        NONE of them, so phase two would land and he still could not ship it. He names per-memory
-        extent sizing as plausibly the deciding half and asks for a judgement on the order rather
-        than guessing it.
+        A NARROWED SYMBOL CLAIM, because the first search could not have found its own
+        counter-example: searching for the full region-symbol name cannot contain a prefix test
+        spelled with a shorter one. Re-run over the short spellings, every match on the region
+        symbol in shipped crate code compares for EQUALITY and a prefix or substring form appears
+        for NO suffixed-symbol name at all. POSITIVE CONTROL for the search form: the same
+        prefix-test spellings return eleven real matches elsewhere in the same crates, so the zero
+        is a measurement and not a broken needle. The claim is scoped to shipped crate code; this
+        lane did NOT locate the post-link in-range oracle the region doc names, and asserts
+        nothing about it.
 
-        THAT HALF IS ALREADY TRACKED, which settles the order. It is an OPEN issue of its own —
-        "no backend reads the declared page size, so a per-domain tenant costs 64 KiB minimum" —
-        and this programme measured its scope one release ago at twenty-eight shipped sites. So
-        the ordering answer is that the extent sizing goes FIRST: it is independent of the
-        layering, already scoped, and by the reporter's own numbers it is what decides whether
-        phase two is usable on hardware at all.
+        THE RE-SCOPE comes from the downstream's own latest comment, which is what this lane's
+        refuting command exists to force a reader to open. This artifact asserts that the whole
+        remaining blocker is the layering. The reporter measured otherwise: granting the layering,
+        their two domains reserve sixty-four and one hundred and twenty-eight kilobytes, and their
+        three boards have eight, sixty-four and ninety-six. The two-domain image fits NONE of
+        them, so phase two would land and they still could not ship it.
+
+        THE ORDER THE REPORTER ASKED FOR IS A RECOMMENDATION, NOT A RULING. They asked for the
+        maintainer's judgement rather than guessing it, and the held reply is where that answer
+        belongs. The measured recommendation is that the SIZING half goes first: it is independent
+        of the layering, it is already filed as its own OPEN issue — #1441, "no backend reads the
+        declared page size, so a per-domain tenant costs 64 KiB minimum" — and by the reporter's
+        own numbers it is what decides whether phase two is usable on hardware at all. The
+        layering, delivered alone, changes nothing they can run.
+
+        AND A TENSION BETWEEN TWO OF THE REPORTER'S OWN ASKS, recorded because resolving it is
+        not this lane's call. #1441 explicitly DECLINES a derived used-extent symbol — "strictly
+        better for fitting and strictly worse for trust", because an embedder must believe a
+        derivation where a declared page size needs none — and asks for the DECLARED size instead.
+        The later #1145 comment asks for each memory to be "sized to its used extent". Those are
+        the two options #1441 weighed against each other, and the reporter chose the other one
+        there. The maintainer should settle which before either is built; it is added to the held
+        draft as a question rather than answered on the thread.
 
         A FOURTH MEASUREMENT bounds the layering even where it would apply. The envelope arm
         covers the i32 access family only — eight variants, load and store, byte and halfword and
@@ -93,9 +110,9 @@ artifacts:
         memory k is touched at another width.
 
         WHAT THIS LANE DELIBERATELY DID NOT DO. It did not lift either refusal. Both were located
-        — a command-line pre-flight and the selector's own arm — and the pre-flight is the one the
-        reporter's transcript shows him hitting. Lifting them is gated on an execution
-        differential under his exact flags, and per this repository's own rule that oracle lands
+        — a command-line pre-flight and the selector's own arm, the pre-flight being the one the
+        reporter's transcript shows them hitting. Lifting them is gated on an execution
+        differential under their exact flags, and per this repository's own rule that oracle lands
         FIRST; building it now would be building the oracle for the half the measurement says to
         do SECOND.
 
