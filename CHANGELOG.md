@@ -72,23 +72,41 @@ in that file spelled as a word, through three commits where the digit scan read
 clean at every one. Over every release file — a population of **26** release
 directories, **25** carrying one, stated by the new `--all` mode in its own output —
 the word scan returns **300** hits across 24 files and the digit scan **234** across
-20, at this commit — and the figure moves with any edit to any release file, which
-is why it is re-derived by the mode rather than quoted from memory. This entry said
-**302** until the two statistics below were removed from this release's own file. An earlier draft of this entry said the digit scan returns **0** across 29 of 30
-files; that figure was never re-derivable, because the scan could only read ONE file
-and had no tree-wide mode at all. The word hits are overwhelmingly idioms, which is why
-the scan **reports and the operator records the judgement** rather than pretending a
-token match is a statistic. CI gates its self-test.
+20, at this commit — and that figure moves with any edit to any release file, which
+is why it is re-derived by the mode rather than quoted from memory.
+
+Two earlier figures in this entry are withdrawn. It said the digit scan returns
+**0** across 29 of 30 files, which was never re-derivable at all: the scan could
+read only ONE file and had no tree-wide mode, so no population of thirty ever
+existed. And it then said **302** word hits, which went stale inside its own
+change-set — removing two unsourced counts from this release's `_release.yaml`
+moved it to 300 before the sentence was committed.
+
+The word hits are overwhelmingly idioms, which is why the scan **reports and the
+operator records the judgement** rather than pretending a token match is a
+statistic. Two of the five in this release's own file were NOT idioms, though:
+they were classified by part of speech, and on the test the scan's own output
+states they are unsourced counts of a shipped release's outcomes. The report's
+instruction is that a statistic is REMOVED, not reworded, so both are gone and
+the file now reports three. CI gates the self-test.
 
 ### A shipped record's method is as checkable as its figures
 
 A cold-review record cites commits and tool paths as evidence and nothing tested
 either. The absent-tool half is clean everywhere — the earlier defect of records
 citing a script that was in no commit on any branch is fixed by tracking it — while
-ancestry is systemic: **seven** pre-squash branch shas in one record, one in the
-next, two in the newest. This repository squash-merges, so a branch head never
-becomes an ancestor. Both halves carry a positive control, because a check that
-passes everything is indistinguishable from one that tests nothing.
+the ancestry half is not clean. **How unclean is VENUE-DEPENDENT BY
+CONSTRUCTION, and that is the sharper finding.** The check gates each sha on
+whether the LOCAL object store resolves it, so a citation whose object is gone is
+SKIPPED rather than failed — and this repository squash-merges and deletes
+branches, which is exactly what removes those objects. Measured in both venues:
+in a checkout still holding the deleted branch heads the three records before
+this one flag **12**, **1** and **2**; in a fresh `git clone --no-local`, which
+is what CI checks out and what a reader following the record would have, they
+flag **0**, **0** and **1**. This entry first said **seven**, **one** and
+**two**, and seven matches neither venue. So the half goes blind precisely when a
+citation becomes unfollowable. Both halves carry a positive control, because a
+check that passes everything is indistinguishable from one that tests nothing.
 
 ### The tool that derives round two's queue ran in no workflow
 
