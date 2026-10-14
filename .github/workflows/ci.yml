@@ -856,6 +856,18 @@ jobs:
       - name: "Self-test the release-file statistics scan (RQ-86-SPELLSCAN, #1515)"
         run: python3 scripts/release_file_statistics_scan.py --self-test
 
+      # RQ-86-SELFTEST2 (#1515). The vacuity sweep is the instrument whose ABSENCE
+      # cold review found: the artifact's figures came from a script in no commit.
+      # It is committed now, so its own self-test is wired here -- an instrument
+      # whose self-test nothing runs is the same gap one layer in. Derived at the
+      # v0.86 cut: 13 scripts define a self-test and CI wired 11; this was one of
+      # the two it missed, and it was the one this release ADDED.
+      # ONLY `--self-test` runs in CI. The report form MUTATES scripts in the tree
+      # (it neutralises one function at a time and restores it), so it is run
+      # deliberately, by hand, in a disposable checkout -- never in a job.
+      - name: "Self-test the self-test vacuity sweep (RQ-86-SELFTEST2, #1515)"
+        run: python3 scripts/self_test_vacuity_sweep.py --self-test
+
       # RQ-86-PROVENANCE2 (#1516): a shipped record's METHOD is as checkable as
       # its figures. A cold-review record cites COMMITS and TOOL PATHS as its
       # evidence and nothing tested either. Measured over the last three records:
