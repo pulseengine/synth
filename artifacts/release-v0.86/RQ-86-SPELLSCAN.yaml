@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-SPELLSCAN
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "A gate that scans for statistics catches them in BOTH spellings"
     description: >
         NEW, from v0.85's second round, and it is the recorded rule about spelling realised in a
@@ -31,5 +31,61 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1515"
+      issue-scope: outlives
       verification-track: manual
+      landed: "PR #1537 - #1515 - DELIVERED: the release-file statistics scan now covers BOTH spellings, it is committed rather than typed into a commit message, and its judgement step is explicit in its own output. The refuting command ran first over every release file in the tree: the digit scan returns ZERO hits in all thirty files while the word-number scan returns FIVE HUNDRED AND SIXTY across twenty-nine of them, so the two disagree almost everywhere. The POSITIVE CONTROL is satisfied at the commits where the escaped figure was live: it is present at planning, at release prep and at cold-review round one, with the digit scan reading CLEAN at every one of the three, and round two removed it. The scan is deliberately NOT an oracle - the overwhelming majority of those five hundred and sixty are idioms, and this release's own file carries five, all idioms by hand classification - so it REPORTS and the operator records the judgement, which is what the artifact asks for. THREE NEGATIVE CONTROLS were executed and ONE OF THEM FOUND A VACUOUS CASE IN THIS VERY SELF-TEST: the live-figure case asserted on the probe LINE rather than on the matched TOKEN, and stayed GREEN with the word removed from the pattern, because that same line also contains another number word. Fixed by asserting on what the instrument matched; the control now reds. CI gates the self-test, not the report."
+      verified-by: >
+        DELIVERED — the scan covers both spellings, it is committed and CI-gated, and its
+        judgement step is stated in its own output rather than assumed.
+
+        THE REFUTING COMMAND, run first over every release file in the tree. The digit scan
+        returns ZERO hits in all THIRTY files; the word-number scan returns FIVE HUNDRED AND
+        SIXTY across TWENTY-NINE of them. They disagree in all but one file, so the blindness is
+        not a one-off and the lane is not moot.
+
+        THE POSITIVE CONTROL IS SATISFIED, and getting there took two corrections of this lane's
+        own instruments. Measured across the previous release's window, the escaped figure is
+        present in the release file at planning, at release prep and at cold-review round ONE —
+        three commits — and absent after round two, while the digit scan reads CLEAN at every one
+        of those commits. So the word scan sees exactly what the digit scan could not, at the
+        commits where it mattered.
+
+        THE FIRST CORRECTION: THIS LANE'S OWN POSITIVE CONTROL WAS VACUOUS AND SAID SO. The first
+        run reported zero occurrences at every commit in the window, which would have read as
+        "the figure was never there". The cause was the shell: an unbraced variable followed by a
+        colon had its colon read as a parameter MODIFIER, so the revision-and-path argument
+        became a mangled absolute path, the command failed, and a redirect of standard error hid
+        it while the count came back zero. An empty positive control is the finding, so it was
+        debugged rather than reported. Braced, the control fires.
+
+        THE SECOND CORRECTION: THE DIGIT SCAN'S OWN IDENTIFIER STRIPPER HAD A FALSE POSITIVE. It
+        matched only three-component versions, so a release file's own title line — carrying a
+        two-component version — read as a digit survivor. Versions and issue references are
+        IDENTIFIERS, not statistics, and the shipped pattern now accepts both shapes.
+
+        THE SCAN IS DELIBERATELY NOT AN ORACLE, which the artifact requires it to say. The
+        overwhelming majority of those five hundred and sixty hits are IDIOMS, not figures, and
+        this release's own file carries FIVE — every one an idiom by hand classification: a
+        universal quantifier, a repetition count in prose, a demonstrative, a determiner, and a
+        hyphenated adjective. A gate that red on a token match would be refused the day it landed
+        and routed around, which this repository has already measured once. So the scan REPORTS
+        the population and tells the reader in as many words that a token match is not a
+        statistic and that the classification is theirs to record.
+
+        THREE NEGATIVE CONTROLS WERE EXECUTED, AND ONE FOUND A VACUOUS CASE IN THIS VERY
+        SELF-TEST — which is the release's theme landing on the release's own work. Disabling the
+        identifier stripper reds two cases; narrowing the identifier pattern back to
+        three-component versions reds one. But narrowing the WORD LIST to drop the escaped figure
+        left the self-test GREEN at zero failures: the live-figure case asserted that the word
+        appeared in the reported LINE, and that same probe line contains ANOTHER number word, so
+        the scan still matched once and the word was still present in the text being inspected.
+        The case was true about the wrong subject. It now asserts on the TOKENS THE INSTRUMENT
+        MATCHED, exposed for exactly that purpose, and the control reds. Found by negative-
+        controlling a self-test rather than by reading it.
+
+        WHAT CI GATES is the SELF-TEST and not the report, because the report is a judgement aid
+        with a five-hundred-strong idiom population. The self-test asserts that the blindness is
+        still reproduced, that an idiom still fires so the reporter cannot quietly become an
+        oracle, and that identifiers are not counted — eight cases, each shown to fail under
+        removal of its own subject.
       done-when: "manual:2027-03-31 the release-file statistics scan covers both spellings with its judgement step recorded, or the blindness is shown absent — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

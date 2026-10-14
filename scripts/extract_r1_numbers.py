@@ -40,6 +40,35 @@ measurable here, and not by any count. Order matters — the longest,
 most specific forms are removed first, or a shorter pattern eats part of a longer
 token and leaves a digit behind.
 
+WHAT IT WITHHOLDS, and why that is a SECOND SECTION rather than a wider regex.
+The `version` scrubber necessarily eats a bare two-component decimal, because a
+crate version looks exactly like a ratio. Measured over the six `v0.8*` records
+present at the v0.86 cut, that class is not noise and not signal but MIXED, and
+reading the matches in context settles which is which: quantities `16.3` (a
+`cargo check` duration in seconds), `99.1` and `0.7` (percentages of a job
+census), `3.6` (GiB free) and `11.74` (a 364/31 ratio) against versions `1.252`
+and `259.0` (crate deps), `27.0` (macOS), `0.69` (npm), plus `4.1` (a section
+number) and `0.0` (an IEEE literal quoted in prose about `-0.0 == 0.0`). No
+pattern separates a ratio from a crate version, so widening the scrubber trades
+one error for the other. `11.74` is the case that forces the issue: v0.85's round
+1 wrote "twelve", rounded up FROM that ratio, and the tool whose whole job is to
+queue round 1's numbers for attack could not see the number the word came from.
+A false positive costs round 2 one glance; a false negative means an unreviewed
+figure is never reviewed, which is the defect this file exists to prevent. So the
+withheld decimals are PRINTED, in their own labelled bucket, triaged by hand ---
+nothing hidden and nothing asserted. An EMPTY bucket is a legitimate observation
+here rather than a refusal, and that is measured too: two of the six records
+carry no bare decimal at all.
+
+WHAT WAS REFUTED, recorded so it is not re-attempted. The `sha` scrubber also
+removes all-digit runs, which raised the same worry one class over: an uncommaed
+seven-digit byte count would be eaten as a sha. Every all-digit token the
+scrubber removes across those six records is an IDENTIFIER --- GitHub run and
+comment ids, and two genuine all-digit eight-character git shas (`67217468`,
+`00462031`). Requiring a hex letter, the obvious narrowing, would have leaked
+those two real shas into the queue as quantities. The blind spot is real and has
+no observed instance; v0.85's round-2 repair of this scrubber stands.
+
 Run:
   python3 scripts/extract_r1_numbers.py docs/reviews/v0.85-cold-review.md
   python3 scripts/extract_r1_numbers.py --self-test
@@ -51,6 +80,11 @@ import sys
 
 # ORDER IS LOAD-BEARING: longest/most-specific first.
 SCRUBBERS: list[tuple[str, str]] = [
+    # git diff HUNK HEADERS. A record that quotes `git show`/`git diff` output
+    # carries `@@ -92,11 +104,14 @@`, whose four coordinates are tool output, not
+    # claims -- the same noise class as a timestamp or a runner name. MEASURED:
+    # six such headers in the newest of the records shipped before this release.
+    ("diff-hunk", r"@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@"),
     # ISO timestamps, full form, with or without a trailing Z/offset
     ("iso-datetime", r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?"),
     # ISO dates alone
@@ -78,6 +112,43 @@ SCRUBBERS: list[tuple[str, str]] = [
 ]
 
 
+def withheld_decimals(text: str) -> collections.Counter:
+    r"""The bare two-component decimals the `version` scrubber removes, for HAND
+    triage. Not a claim that these are quantities --- a claim that the pipeline
+    cannot tell, which is why they are reported instead of dropped.
+
+    DERIVED FROM THE SCRUBBER ITSELF, never from a second pattern beside it: this
+    enumerates `version`'s OWN matches and keeps the bare two-component ones, so
+    the label "withheld by the `version` scrubber" is true by construction and
+    cannot drift from what the shipped path actually removes. The first version of
+    this function DID mirror the scrubber with a hand-written regex, and the
+    mirror was already wrong: its trailing `(?![\d.])` rejected a
+    SENTENCE-FINAL decimal, so `rounded up from 11.74.` yielded nothing --- and
+    that sentence is the exact case the bucket was built for, the ratio a round 1
+    rounded to produce a headline word. The positive sample ended without a period,
+    so it was shaped around the blind spot and "nothing is hidden" was false.
+    """
+    version = dict(SCRUBBERS)["version"]
+    held: collections.Counter = collections.Counter()
+    for m in re.finditer(version, text):
+        tok = m.group(0)
+        if re.fullmatch(r"\d+\.\d+", tok):
+            held[tok] += 1
+    return held
+
+
+# THE EXTRACTION REGEX, in ONE place: it was duplicated across `numbers()` and
+# `numbers_with()`, so the leave-one-out primitive could silently come to measure a
+# different thing from the shipped path -- the second-source-of-truth defect this
+# programme keeps finding. A comma is absorbed ONLY as a proper thousands separator.
+# The earlier `\b\d[\d,]*\b` was wrong in two directions at once, MEASURED over the
+# records shipped before this release: it MERGED `92,11` into one token (22 distinct
+# such tokens, from lists, tuples and quoted diff coordinates), so round 2 would
+# attack a figure that does not exist while missing the two that do; and it left a
+# TRAILING COMMA on `184,`, so the same quantity counted in two buckets.
+NUMBER = re.compile(r"\b\d{1,3}(?:,\d{3})+\b|\b\d+\b")
+
+
 def scrub(text: str) -> str:
     for _name, pat in SCRUBBERS:
         text = re.sub(pat, " ", text)
@@ -85,14 +156,14 @@ def scrub(text: str) -> str:
 
 
 def numbers(text: str) -> collections.Counter:
-    return collections.Counter(re.findall(r"\b\d[\d,]*\b", scrub(text)))
+    return collections.Counter(NUMBER.findall(scrub(text)))
 
 
 def numbers_with(scrubbers, text: str) -> collections.Counter:
     """`numbers()` under an ARBITRARY scrubber list — the leave-one-out primitive."""
     for _name, pat in scrubbers:
         text = re.sub(pat, " ", text)
-    return collections.Counter(re.findall(r"\b\d[\d,]*\b", text))
+    return collections.Counter(NUMBER.findall(text))
 
 
 def self_test() -> int:
@@ -111,6 +182,7 @@ def self_test() -> int:
         reported under the BY-CONSTRUCTION label, a misattributed diagnosis.
     """
     cases = [
+        ("diff-hunk", "hunks @@ -92,11 +104,14 @@ and @@ -7 +9 @@ only"),
         ("iso-datetime", "settled at 2026-10-13T17:42:09Z with"),
         ("iso-date", "measured 2026-10-09 and"),
         ("bare-clock-hhmmz", "settled at 17:42Z with"),
@@ -180,6 +252,48 @@ def self_test() -> int:
     print(f"  ok  leave-one-out   {len(necessary)} of {len(SCRUBBERS)} scrubbers are "
           f"individually necessary; {len(redundant)} covered redundantly: {redundant}")
 
+    # THE EXTRACTION REGEX, paired. A thousands-separated figure must survive as
+    # ONE token (or a real byte count fragments), and a comma that is NOT a
+    # thousands separator must SPLIT (or two numbers merge into a third that was
+    # never claimed). Either assertion alone permits the opposite error.
+    keep = numbers("the asset is 4,770,546 bytes")
+    if dict(keep) != {"4,770,546": 1}:
+        failures.append(f"EXTRACTION keep: thousands separator not held whole: {dict(keep)}")
+    else:
+        print("  ok  extract-keep   a thousands-separated figure stays ONE token")
+    split = numbers("rows 92,11 and the pair 1,2")
+    if sorted(split) != ["1", "11", "2", "92"]:
+        failures.append(f"EXTRACTION split: comma-joined numbers not split: {dict(split)}")
+    else:
+        print(f"  ok  extract-split  comma-joined numbers split: {sorted(split)}")
+
+    # WITHHELD-DECIMAL BUCKET, asserted as a PAIRED control. The positive half
+    # proves the bucket surfaces a real quantity the `version` scrubber eats; the
+    # negative half proves the bucket is not merely "every dotted token", which
+    # is the shape a well-meaning widening would have produced. Either half alone
+    # proves little: without the positive case the bucket may be inert, and
+    # without the negative one its hits may be coming from the environment rather
+    # than from the property.
+    # The sample ENDS THE SENTENCE on a decimal on purpose: the hand-written
+    # mirror this replaced rejected exactly that, and a sample without a final
+    # period cannot tell the two implementations apart.
+    w_pos = withheld_decimals("fitted in 552 MB / 16.3 s; rounded up from 11.74.")
+    if sorted(w_pos) != ["11.74", "16.3"]:
+        failures.append(f"WITHHELD positive: expected the two quantities, got {dict(w_pos)}")
+    else:
+        print(f"  ok  withheld-pos   decimal quantities surface for triage: {sorted(w_pos)}")
+
+    w_neg = withheld_decimals("v0.85.0 and 0.85.0 on layer 2026.10.9 at v0.69")
+    if w_neg:
+        failures.append(f"WITHHELD negative: version strings leaked into the bucket: {dict(w_neg)}")
+    else:
+        print("  ok  withheld-neg   v-prefixed and 3+-component versions do NOT")
+
+    # VACUITY GUARD for the bucket: the positive sample must carry a decimal at
+    # all, or `sorted(w_pos) != [...]` would be asserting about an empty string.
+    if not re.search(r"\d+\.\d+", "fitted in 552 MB / 16.3 s and the 364/31 ratio is 11.74"):
+        failures.append("VACUOUS withheld positive: the sample carries no decimal")
+
     # A derived population of zero is a refusal, not a pass.
     if not cases:
         failures.append("REFUSE: empty self-test population")
@@ -193,7 +307,9 @@ def self_test() -> int:
     # shipped line said "11 scrubbers" against 9, found by this release's round 1.
     print(f"self-test: {len(SCRUBBERS)} scrubbers over {len(cases)} cases, "
           f"{len(necessary)} individually necessary by leave-one-out, "
-          f"+ positive control + by-construction + vacuity guard, 0 failures")
+          f"+ positive control + by-construction + vacuity guard "
+          f"+ extraction paired control + withheld-decimal paired control, "
+          f"0 failures")
     return 0
 
 
@@ -212,6 +328,14 @@ def main(argv: list[str]) -> int:
                  f"population of zero is a refusal, not a pass; check the scrubbers")
     print(f"{p}: {len(counts)} distinct number(s), frequency-ordered")
     for val, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        print(f"  {n:>4}x  {val}")
+    held = withheld_decimals(p.read_text())
+    print(f"\nWITHHELD by the `version` scrubber --- {len(held)} bare two-component "
+          f"decimal(s), MIXED class, triage by hand (a ratio and a crate version "
+          f"share this shape; zero here is legitimate, not a refusal):")
+    if not held:
+        print("  (none)")
+    for val, n in sorted(held.items(), key=lambda kv: (-kv[1], kv[0])):
         print(f"  {n:>4}x  {val}")
     return 0
 

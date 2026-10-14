@@ -37,4 +37,56 @@ artifacts:
       priority: must
       issue: "#1436"
       verification-track: manual
+      disposition: partial
+      landed: "PR #1537 - #1436 - NOT LANDED: the reply does NOT go out, because approval is the whole of what is blocked and that is not this loop's to give. The refuting command RAN FIRST and found a real defect in the held material. Both held drafts were re-read against this release's tree. The multi-memory one's TECHNICAL claims were re-verified line by line and they HOLD at this release - per-memory size and region symbols emitted for every memory, each memory sized by its own declared page through the twinned getters, and the capability reachable on exactly the flag set the reporter compiles with. But its version stamp names a release three behind, and worse, its own anti-slip sentence is now FALSIFIED THREE TIMES OVER: it promises the reporter a reason rather than a slip if the work proves unbuildable, and it has since slipped through three releases with the reason never sent, because the reply itself was never approved. Silently bumping the stamp each release IS the slip that sentence promised not to perform. The divergence draft carries NO stamp at all, which is worse than a stale one because a stale stamp can be checked; and its substance is read from a disassembly of the reporter's object, which is not in this tree, so it cannot be re-verified here - only its internal consistency. Both findings are recorded in the durable store beside the drafts, which is where the next release will read them."
+      verified-by: >
+        PARTIAL — the reply does NOT go out, and the refuting command found a real defect in the
+        held material rather than confirming it was ready.
+
+        THE REFUTING COMMAND, run first, on both held drafts rather than only this lane's.
+
+        THE MULTI-MEMORY DRAFT'S TECHNICAL CLAIMS RE-VERIFIED AND THEY HOLD at this release,
+        measured against the tree and not inferred: the per-memory size symbol AND the
+        PMSA-extent symbol are emitted for EVERY memory rather than for memory zero alone; each
+        memory is sized by its OWN declared page, through the twinned byte getters that both read
+        the per-memory page size; and the refusal that would block it continues rather than bails
+        on the relocatable path, which is exactly the flag set the reporter's transcript compiles
+        with. So the draft's lead and its conclusion are both still true.
+
+        BUT ITS OWN ANTI-SLIP PROMISE IS NOW FALSIFIED THREE TIMES OVER, and this is the finding.
+        The draft tells the reporter that if the work turns out not to be buildable in that phase,
+        they get the reason rather than a slip. It has since slipped through three releases with
+        the reason never sent — because the reply itself was never approved. Quietly bumping its
+        version stamp each release IS the slip that sentence promised not to perform. Whatever
+        eventually goes out must LEAD with the slip and its count, or drop that sentence; it
+        cannot keep the promise while breaking it. A restamp alone would make the draft read as
+        current while being three releases late on its own terms.
+
+        AND THE DIVERGENCE DRAFT CARRIES NO VERSION STAMP AT ALL, which is worse than a stale one
+        because a stale stamp can be checked and an absent one cannot. Its substance is slot
+        offsets and load program counters read from a disassembly of the reporter's own object.
+        That object is not in this tree and was not retained, so the draft's claims CANNOT be
+        re-verified here — only its internal consistency, which holds. It must not be sent
+        asserting those offsets still match a rebuilt object.
+
+        A DURABILITY FINDING FOUND BY FALLING FOR IT. The previous release's cold review recorded
+        that the held draft's content "is not in the tree and cannot be reviewed", which is TRUE
+        of the repository and FALSE of the durable store where both drafts live verbatim. This
+        lane nonetheless spent a search over a half-gigabyte session transcript recovering bodies
+        that were already held — and the transcript's copy of the divergence draft was an OLDER
+        revision carrying a lead that the durable store records as RETRACTED, so working from the
+        recovered copy would have reinstated a withdrawn claim to an external reporter. Check the
+        durable store first. The bodies are deliberately NOT committed to the repository: it is
+        public, the reporters read it, and publishing an unsent draft would route around the very
+        approval being withheld. Metadata without bodies is the most the repository may carry.
+
+        THE OBJECT IS NOT RE-DERIVED, as the artifact instructs, and THE RESIDUAL IS LEFT
+        UNEXPLAINED, as it also instructs: the excess over the pure-gravity integral still grows
+        with the iteration count, no mechanism for that growth has been established, and the draft
+        continues to say so in as many words rather than offering a guess in the register of a
+        finding.
+
+        WHAT REMAINS BLOCKED IS CORRESPONDENCE APPROVAL AND NOTHING ELSE, which is what the
+        artifact says. Conduct rule 4 binds and is stated rather than worked around: verifying a
+        held draft is not progress on the reporter's defect.
       done-when: "manual:2027-03-31 the held reply goes out with the maintainer's word and an accurate version stamp, or the growing residual is explained with a measurement — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-COMPLIANCE6
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "The compliance backlog decision is taken, or reported blocked outside this repository"
     description: >
         BLOCKED OUTSIDE THIS REPOSITORY, and this lane's correct outcome may be to report that
@@ -33,4 +33,20 @@ artifacts:
       priority: should
       issue: "#1453"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1537 - #1453 - REPORTED BLOCKED with its state re-read AT THE SOURCE. The issue is OPEN at the source and its subject is a scope decision on the compliance backlog that only the maintainer can take. The release asset itself did not regress - the previous release's compliance report shipped larger than the one before it - but that is a fact about the asset and NOT progress on this blocker, and it is recorded here rather than counted. Nothing around the blocker was re-measured and reported as progress. ATTEMPTING PASSWORDS STAYS DECLINED."
+      verified-by: >
+        DELIVERED on the done-when's SECOND branch — reported blocked with its state re-read at
+        the source.
+
+        RE-READ AT THE SOURCE: the issue is OPEN, and its subject is a scope decision on the
+        compliance backlog that only the maintainer can take. Its title names the mechanism —
+        bot-published releases do not fire the trigger the workflow listens for — which is a
+        statement about a workflow trigger and not something this lane can decide.
+
+        WHAT THIS LANE REFUSED TO DO. The compliance asset did not regress at the previous
+        release, and it would be easy to present that as movement. It is not: it is a fact about
+        an asset, recorded here rather than counted, because re-measuring the machinery around a
+        blocked lane and reporting the re-measurement as progress is exactly the shape conduct
+        rule four names. The issue outlives the lane and says so explicitly.
       done-when: "manual:2027-03-31 the blocker is actioned and the lane delivered, or it is reported blocked with its state re-read at the source — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

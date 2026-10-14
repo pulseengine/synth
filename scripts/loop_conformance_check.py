@@ -139,6 +139,33 @@ NA_FILED = "NA-FILED"  # N/A citing a filed, referenced decision
 NA_MOMENT = "NA-BY-MOMENT"  # evidence structurally postdates this moment
 FAILING = {DERIVED_FAIL, NOT_DERIVED}
 
+# RQ-86-TWOSOURCE3 (#1183): WHICH TREE a slot read, declared PER SLOT.
+#
+# The split is per SLOT and not per step, which is why this cannot be a
+# per-step default: step 3 alone draws on the release ref, the working tree AND
+# the GitHub API, and step 7's slots read the record from the ref while taking
+# the ancestry from the commit graph. Before this, a reader could not tell them
+# apart -- the three `exit {rc}` slots are the worktree readers and their entire
+# detail was the exit code, so "status-evidence live run: exit 1" beside
+# "status-evidence gate: ... at ref" read as one subject contradicting itself.
+#
+# NOT collapsed onto one convention, deliberately: the pre-tag slots are MEANT
+# to be statements about the working tree (that is what `check_release_identity`
+# documents), so forcing them onto the ref would break a deliberate design
+# rather than fix a defect. They are LABELLED, not moved.
+#
+# Only the author knows which a slot read -- the same argument R11 makes about
+# `disposition:` in status_evidence_check -- so every `self.add` SAYS, and
+# `test_loop_conformance_check` fails if one stops saying.
+SOURCES = {
+    "release-ref": "content read out of the release ref (tree_read/tree_ls/tree_has)",
+    "worktree": "the CHECKOUT: the index, a file read in place, or a gate executed here",
+    "github-api": "a check-run or workflow-run conclusion on the release commit",
+    "registry": "a live package registry (crates.io, registry.npmjs.org)",
+    "git-history": "a commit-graph relation (rev-parse, merge-base --is-ancestor)",
+    "none": "reads no evidence -- a statement about the requested version or a regime boundary",
+}
+
 STEP_NAMES = [
     ("1-2", "spar AADL->WIT"),
     ("3", "rivet artifacts"),
@@ -456,7 +483,8 @@ class Check:
         self.majmin = (int(m.group(1)), int(m.group(2)))
         self.rid = f"v{m.group(1)}.{m.group(2)}"
         self.repo = repo
-        self.findings: list[tuple[str, str, str, str]] = []  # (step, label, status, detail)
+        self.findings: list[tuple[str, str, str, str, tuple[str, ...]]] = []
+        # (step, label, status, detail, source) -- see SOURCES
 
         rc, out = git("rev-parse", "--verify", "-q", f"{version}^{{commit}}")
         if rc == 0:
@@ -469,8 +497,27 @@ class Check:
             _, out = git("rev-parse", "HEAD")
             self.sha = out.strip()
 
-    def add(self, step: str, label: str, status: str, detail: str) -> None:
-        self.findings.append((step, label, status, detail))
+    def add(
+        self,
+        step: str,
+        label: str,
+        status: str,
+        detail: str,
+        source: tuple[str, ...],
+    ) -> None:
+        """Record one slot. `source` names WHICH TREE this slot read (SOURCES).
+
+        A bad or absent source RAISES rather than defaulting: a slot that
+        silently claimed the wrong tree would be worse than one that said
+        nothing, because a reader would believe it.
+        """
+        bad = [s for s in source if s not in SOURCES]
+        if not source or bad:
+            raise ValueError(
+                f"slot {step}/{label}: source={source!r} is not a non-empty "
+                f"subset of {sorted(SOURCES)} (offending: {bad})"
+            )
+        self.findings.append((step, label, status, detail, tuple(source)))
 
     # -- evidence loading ---------------------------------------------------
 
@@ -531,7 +578,7 @@ class Check:
                 "architecture model",
                 DERIVED_PASS,
                 f"synth-owned AADL model tracked in-repo: {', '.join(aadl[:3])}",
-            )
+             source=("worktree",),)
             return
         scope = release_scope(self.version)
         decision = find_filed_steps12_decision(self.load_checkout_docs(), scope)
@@ -543,7 +590,7 @@ class Check:
                 "decided, artifact scoped, not yet built: "
                 f"{decision['id']} ({decision['issue']}, status {decision['status']}) "
                 f"in {decision['file']} [scoped to {scope}, evaluated at checkout]",
-            )
+             source=("worktree",),)
         elif decision:
             self.add(
                 "1-2",
@@ -554,7 +601,7 @@ class Check:
                 "release's filing does not discharge this one's: #1136 is a RECURRING "
                 f"N/A and must be re-filed per release. File a {scope}-scoped artifact "
                 "tagged feature-loop + aadl|spar with fields.issue.",
-            )
+             source=("worktree",),)
         else:
             self.add(
                 "1-2",
@@ -563,7 +610,7 @@ class Check:
                 "no AADL model and no filed steps-1-2 decision artifact "
                 "(tags feature-loop + aadl|spar with fields.issue) — an N/A "
                 "asserted fresh by whoever is cutting is the #1136 class",
-            )
+             source=("worktree",),)
 
     def step_3(self) -> None:
         docs = self.load_release_docs()
@@ -575,7 +622,7 @@ class Check:
                 DERIVED_FAIL,
                 f"no visible release artifacts for {self.rid} at {self.ref} "
                 "(the #1064 zero-artifact shape)",
-            )
+             source=("release-ref",),)
         elif missing:
             self.add(
                 "3",
@@ -584,7 +631,7 @@ class Check:
                 f"{len(missing)}/{total} artifacts lack fields.done-when "
                 f"(evidenced-status regime, RQ-60-FLIPCOUPLE): {', '.join(missing[:5])}"
                 + ("..." if len(missing) > 5 else ""),
-            )
+             source=("release-ref",),)
         else:
             # RQ-70-DONEWHEN (#1335): DECLARED is not EVALUATED. Naming the split
             # is the whole point — `N/N done-when` read as verification for four
@@ -596,7 +643,7 @@ class Check:
                 f"{total} artifacts, {total}/{total} done-when DECLARED — "
                 f"{evaluable} mechanically evaluable (contains:/file:), "
                 f"{manual} manual: (declared only; R3 cannot fire on these)",
-            )
+             source=("release-ref",),)
 
         # RQ-81-SILENT (#1458 + #1476): did this release SHIP an artifact that
         # reports nothing? R11 cannot ask that — see artifacts_reporting_nothing.
@@ -624,7 +671,7 @@ class Check:
                 + ". R11 is satisfied by these because its branch requires a "
                 "non-empty `landed:`; out of population is not compliance. Record "
                 "the outcome, or say why there is none (#1458)",
-            )
+             source=("release-ref",),)
         elif _silent_total:
             self.add(
                 "3",
@@ -632,7 +679,7 @@ class Check:
                 DERIVED_PASS,
                 f"{_silent_total}/{_silent_total} artifacts record an outcome "
                 "(verified-by, disposition or landed) — none is silent",
-            )
+             source=("release-ref",),)
 
         # RQ-81-SILENT (#1476), the second half of the same subject: a verdict
         # that LOOKS like a verdict and that no set classifies LEAVES THE
@@ -658,7 +705,7 @@ class Check:
         except Exception as _why:  # the import failing is NOT a pass
             self.add("3", "verdict classified", NOT_DERIVED,
                      f"verdict_prose_check unavailable ({_why}) — cannot tell a "
-                     "classified verdict from an escape")
+                     "classified verdict from an escape", source=("release-ref",))
         else:
             if _unclassified:
                 self.add(
@@ -672,7 +719,7 @@ class Check:
                     + ("..." if len(_unclassified) > 4 else "")
                     + ". Either use a classified verdict, or add the opening to "
                     "NOT_A_VERDICT as a MEASURED exclusion (#1476)",
-                )
+                 source=("release-ref",),)
             elif not _population:
                 # (v0.81 round-1 cold review, finding 3.) This arm used to assert
                 # "every `verified-by` opening is classified" over a population of
@@ -689,7 +736,7 @@ class Check:
                     f"population of zero is a refusal, not a pass — the silent "
                     f"artifacts are the finding, and the slot above is what "
                     f"reports them",
-                )
+                 source=("release-ref",),)
             else:
                 self.add(
                     "3",
@@ -698,30 +745,30 @@ class Check:
                     f"all {_population} `verified-by` opening(s) of {_total} "
                     f"artifact(s) are either a classified verdict or a declared "
                     f"non-verdict — no silent escapes",
-                )
+                 source=("release-ref",),)
 
         ci = tree_read(self.ref, ".github/workflows/ci.yml") or ""
         if tree_has(self.ref, "scripts/status_evidence_check.py") and "status_evidence_check.py" in ci:
-            self.add("3", "status-evidence gate", DERIVED_PASS, "present and wired in ci.yml at ref")
+            self.add("3", "status-evidence gate", DERIVED_PASS, "present and wired in ci.yml at ref", source=("release-ref",))
         else:
             self.add(
                 "3",
                 "status-evidence gate",
                 DERIVED_FAIL,
                 "scripts/status_evidence_check.py absent or unwired at ref",
-            )
+             source=("release-ref",),)
 
         if self.mode == "retro":
             concl = self.check_run_conclusion("Claim Check")
             if concl == "success":
-                self.add("3", "Claim Check ran", DERIVED_PASS, f"check-run success on {self.sha[:8]}")
+                self.add("3", "Claim Check ran", DERIVED_PASS, f"check-run success on {self.sha[:8]}", source=("github-api",))
             else:
                 self.add(
                     "3",
                     "Claim Check ran",
                     NOT_DERIVED if concl is None else DERIVED_FAIL,
                     f"check-run on {self.sha[:8]}: {concl or 'API unavailable'}",
-                )
+                 source=("github-api",),)
         else:
             rc, _ = run([sys.executable, "scripts/status_evidence_check.py"])
             self.add(
@@ -729,7 +776,7 @@ class Check:
                 "status-evidence live run",
                 DERIVED_PASS if rc == 0 else DERIVED_FAIL,
                 f"exit {rc}",
-            )
+             source=("worktree",),)
 
     def step_4(self) -> None:
         ci = tree_read(self.ref, ".github/workflows/ci.yml") or ""
@@ -742,7 +789,7 @@ class Check:
                 f"wired with --{form}-emulation-floor {floor} at ref"
                 + (" (equality, not a lower bound — RQ-63-FLOOREQ)"
                    if form == "exact" else ""),
-            )
+             source=("release-ref",),)
         else:
             self.add(
                 "4",
@@ -750,7 +797,7 @@ class Check:
                 DERIVED_FAIL,
                 "oracle_wiring_check.py absent, unwired, or floor-less at ref "
                 "(presence is not potency, #1113)",
-            )
+             source=("release-ref",),)
         if self.mode == "retro":
             concl = self.check_run_conclusion("Claim Check")
             status = DERIVED_PASS if concl == "success" else (NOT_DERIVED if concl is None else DERIVED_FAIL)
@@ -759,7 +806,7 @@ class Check:
                 "wiring gate ran",
                 status,
                 f"via Claim Check check-run on {self.sha[:8]}: {concl or 'API unavailable'}",
-            )
+             source=("github-api",),)
         else:
             rc, _ = run(
                 [
@@ -769,13 +816,13 @@ class Check:
                     str(floor),
                 ]
             )
-            self.add("4", "wiring gate live run", DERIVED_PASS if rc == 0 else DERIVED_FAIL, f"exit {rc}")
+            self.add("4", "wiring gate live run", DERIVED_PASS if rc == 0 else DERIVED_FAIL, f"exit {rc}", source=("worktree",))
 
     def step_5(self) -> None:
         gate = tree_read(self.ref, "scripts/mcdc_gate.py")
         ci = tree_read(self.ref, ".github/workflows/ci.yml") or ""
         if gate is None or "mcdc_gate.py" not in ci:
-            self.add("5", "mcdc gate", DERIVED_FAIL, "scripts/mcdc_gate.py absent or unwired at ref")
+            self.add("5", "mcdc gate", DERIVED_FAIL, "scripts/mcdc_gate.py absent or unwired at ref", source=("release-ref",))
         elif "BRANCH_POPULATION" not in gate:
             self.add(
                 "5",
@@ -783,13 +830,13 @@ class Check:
                 DERIVED_FAIL,
                 "gate present but carries no BRANCH_POPULATION pin at ref "
                 "(#1100 — without the pin a deleted branch is invisible)",
-            )
+             source=("release-ref",),)
         else:
-            self.add("5", "mcdc gate", DERIVED_PASS, "present, wired, BRANCH_POPULATION-pinned at ref")
+            self.add("5", "mcdc gate", DERIVED_PASS, "present, wired, BRANCH_POPULATION-pinned at ref", source=("release-ref",))
 
         concl = self.check_run_conclusion("MC/DC structural coverage")
         if concl == "success":
-            self.add("5", "mcdc ran on commit", DERIVED_PASS, f"check-run success on {self.sha[:8]}")
+            self.add("5", "mcdc ran on commit", DERIVED_PASS, f"check-run success on {self.sha[:8]}", source=("github-api",))
         else:
             self.add(
                 "5",
@@ -797,7 +844,7 @@ class Check:
                 NOT_DERIVED if concl is None else DERIVED_FAIL,
                 f"check-run on {self.sha[:8]}: {concl or 'API unavailable'}"
                 + (" — push the candidate and let CI finish" if self.mode == "pretag" else ""),
-            )
+             source=("github-api",),)
 
     def step_6(self) -> None:
         wf = tree_read(self.ref, ".github/workflows/signing-e2e.yml")
@@ -807,9 +854,9 @@ class Check:
                 "signing workflow",
                 DERIVED_FAIL,
                 "signing-e2e.yml absent or not v*-tag-triggered at ref",
-            )
+             source=("release-ref",),)
         else:
-            self.add("6", "signing workflow", DERIVED_PASS, "present with v* tag trigger at ref")
+            self.add("6", "signing workflow", DERIVED_PASS, "present with v* tag trigger at ref", source=("release-ref",))
 
         if self.mode == "retro":
             data = gh_api(
@@ -817,7 +864,7 @@ class Check:
             )
             runs = (data or {}).get("workflow_runs") if isinstance(data, dict) else None
             if runs is None:
-                self.add("6", "Signing E2E ran", NOT_DERIVED, "API unavailable")
+                self.add("6", "Signing E2E ran", NOT_DERIVED, "API unavailable", source=("github-api",))
             else:
                 ok = [r for r in runs if r.get("conclusion") == "success"]
                 if ok:
@@ -827,7 +874,7 @@ class Check:
                         "Signing E2E ran",
                         DERIVED_PASS,
                         f"success on {self.sha[:8]} (runs: {where})",
-                    )
+                     source=("github-api",),)
                 else:
                     self.add(
                         "6",
@@ -835,7 +882,7 @@ class Check:
                         DERIVED_FAIL,
                         f"no successful Signing E2E run on {self.sha[:8]} "
                         f"({len(runs)} runs found)",
-                    )
+                     source=("github-api",),)
         else:
             data = gh_api(
                 f"repos/{self.repo}/actions/workflows/signing-e2e.yml/runs"
@@ -843,7 +890,7 @@ class Check:
             )
             runs = (data or {}).get("workflow_runs") if isinstance(data, dict) else None
             if not runs:
-                self.add("6", "Signing E2E (pre-tag form)", NOT_DERIVED, "API unavailable or no runs")
+                self.add("6", "Signing E2E (pre-tag form)", NOT_DERIVED, "API unavailable or no runs", source=("github-api",))
             elif runs[0].get("conclusion") == "success":
                 self.add(
                     "6",
@@ -851,14 +898,14 @@ class Check:
                     DERIVED_PASS,
                     f"latest completed main run success ({runs[0].get('created_at')}); "
                     "the tag's own run is created by the tag push this gate precedes",
-                )
+                 source=("github-api",),)
             else:
                 self.add(
                     "6",
                     "Signing E2E (pre-tag form)",
                     DERIVED_FAIL,
                     f"latest completed main run concluded {runs[0].get('conclusion')}",
-                )
+                 source=("github-api",),)
 
     def step_7(self) -> None:
         candidates = [
@@ -907,7 +954,7 @@ class Check:
                             f"previous release tag is visible for {self.rid}, so "
                             f"the prior-release bar cannot be applied — skipped "
                             f"loudly rather than passed silently (#1456)",
-                        )
+                         source=("release-ref", "git-history"),)
                         return
                     rc_pv, prev_sha = git("rev-parse", "--verify", "-q",
                                           f"{prev}^{{commit}}")
@@ -917,7 +964,7 @@ class Check:
                             f"previous release tag {prev} does not resolve to a "
                             f"commit, so the prior-release bar could not be "
                             f"evaluated (#1456)",
-                        )
+                         source=("release-ref", "git-history"),)
                         return
                     prev_sha = prev_sha.strip()
                     rc_old, _ = git("merge-base", "--is-ancestor",
@@ -931,7 +978,7 @@ class Check:
                             f"commit that shipped before this release, not this "
                             f"release's reviewed head. A record can only review "
                             f"work this release contains (#1456)",
-                        )
+                         source=("release-ref", "git-history"),)
                         return
                     rc_anc, _ = git("merge-base", "--is-ancestor",
                                     full.strip(), self.sha)
@@ -948,7 +995,7 @@ class Check:
                         f"{candidates[0]} DECLARES reviewed commit "
                         f"{declared[:12]}; object exists, {rel}; reviewer "
                         "independence remains attested inside the record",
-                    )
+                     source=("release-ref", "git-history"),)
                     return
             for sha in review_record_shas(text):
                 rc_eq, full = git("rev-parse", "--verify", "-q", f"{sha}^{{commit}}")
@@ -964,7 +1011,7 @@ class Check:
                         f"{candidates[0]} mentions (UNDECLARED, #1161) commit "
                         f"{sha[:12]} (ancestor of release commit); add a "
                         "`Commit reviewed:` line so this is not a guess",
-                    )
+                     source=("release-ref", "git-history"),)
                     return
             self.add(
                 "7",
@@ -972,7 +1019,7 @@ class Check:
                 DERIVED_FAIL,
                 f"{candidates[0]} exists but names no commit that is an "
                 "ancestor of the release commit",
-            )
+             source=("release-ref",),)
         elif self.majmin >= REVIEW_REGIME_START:
             self.add(
                 "7",
@@ -981,7 +1028,7 @@ class Check:
                 f"no docs/reviews/ record for {self.rid} at {self.ref}; write "
                 f"docs/reviews/{self.rid}-cold-review.md naming the reviewed "
                 "commit and the findings (required from v0.62)",
-            )
+             source=("release-ref",),)
         else:
             self.add(
                 "7",
@@ -990,11 +1037,11 @@ class Check:
                 f"pre-{'.'.join(map(str, REVIEW_REGIME_START))} release: review "
                 "happened but left no machine-readable record; record regime "
                 "starts v0.62 (#1091 decided the same boundary for done-when)",
-            )
+             source=("none",),)
 
     def step_8(self) -> None:
         if not tree_has(self.ref, "scripts/check_version_pins.py"):
-            self.add("8", "pin sweep", DERIVED_FAIL, "scripts/check_version_pins.py absent at ref")
+            self.add("8", "pin sweep", DERIVED_FAIL, "scripts/check_version_pins.py absent at ref", source=("release-ref",))
         elif self.mode == "retro":
             concl = self.check_run_conclusion("Version Pin Sweep")
             status = DERIVED_PASS if concl == "success" else (NOT_DERIVED if concl is None else DERIVED_FAIL)
@@ -1003,10 +1050,10 @@ class Check:
                 "pin sweep",
                 status,
                 f"Version Pin Sweep check-run on {self.sha[:8]}: {concl or 'API unavailable'}",
-            )
+             source=("github-api",),)
         else:
             rc, _ = run([sys.executable, "scripts/check_version_pins.py"])
-            self.add("8", "pin sweep live run", DERIVED_PASS if rc == 0 else DERIVED_FAIL, f"exit {rc}")
+            self.add("8", "pin sweep live run", DERIVED_PASS if rc == 0 else DERIVED_FAIL, f"exit {rc}", source=("worktree",))
 
         # RQ-67-NOTESGATE (#1259) — THE RELEASE NOTES ARE THE ONE SURFACE WITH
         # NO GATE. Every load-bearing claim in this repo is pinned, derived or
@@ -1033,7 +1080,7 @@ class Check:
         status, detail = changelog_structure_verdict(
             tree_read(self.ref, "CHANGELOG.md"), self.bare_version
         )
-        self.add("8", "changelog structure", status, detail)
+        self.add("8", "changelog structure", status, detail, source=("release-ref",))
 
         self.add(
             "8",
@@ -1042,7 +1089,7 @@ class Check:
             "squash-merge head refs are not durably fetchable at audit time; "
             "run `git diff <PR head> <merged commit>` = 0 lines pre-tag and "
             "record the result in the step-7 review record",
-        )
+         source=("none",),)
 
         if self.mode == "pretag":
             self.add(
@@ -1051,13 +1098,13 @@ class Check:
                 NA_MOMENT,
                 "publish happens after the tag; demanding it pre-tag would "
                 "invent evidence — audited by retro mode",
-            )
+             source=("none",),)
             self.add(
                 "8",
                 "npm live",
                 NA_MOMENT,
                 "publish happens after the tag; audited by retro mode",
-            )
+             source=("none",),)
             return
 
         # RQ-80-NPM (#1460). The npm package was TEN releases behind and nothing
@@ -1087,7 +1134,7 @@ class Check:
         if not pkg_raw:
             self.add("8", "npm live", NOT_DERIVED,
                      "npm/package.json absent at ref — cannot derive the package "
-                     "name or version, so npm publication is UNCHECKED (#1460)")
+                     "name or version, so npm publication is UNCHECKED (#1460)", source=("release-ref",))
         else:
             try:
                 pkg = json.loads(pkg_raw)
@@ -1096,44 +1143,44 @@ class Check:
                 name = ver = None
                 self.add("8", "npm live", NOT_DERIVED,
                          f"npm/package.json unparseable at ref ({exc}) — npm "
-                         f"publication is UNCHECKED (#1460)")
+                         f"publication is UNCHECKED (#1460)", source=("release-ref",))
             if name and ver:
                 if ver != self.bare_version:
                     self.add("8", "npm live", DERIVED_FAIL,
                              f"npm/package.json declares {name}@{ver} but this "
                              f"release is {self.bare_version} — the manifest was "
                              f"not bumped, so even a successful publish would "
-                             f"ship the wrong version (#1460)")
+                             f"ship the wrong version (#1460)", source=("release-ref",))
                 else:
                     code = http_status(
                         f"https://registry.npmjs.org/{name}/{ver}")
                     if code == 0:
                         self.add("8", "npm live", NOT_DERIVED,
                                  f"registry.npmjs.org unreachable checking "
-                                 f"{name}@{ver}")
+                                 f"{name}@{ver}", source=("release-ref", "registry"))
                     elif code != 200:
                         self.add("8", "npm live", DERIVED_FAIL,
                                  f"{name}@{ver} does NOT resolve on npm "
                                  f"(HTTP {code}). `Release NPM` fails at its npm "
                                  f"auth preflight; the three release workflows "
                                  f"reported as successful do not include it "
-                                 f"(#1460)")
+                                 f"(#1460)", source=("release-ref", "registry"))
                     else:
                         self.add("8", "npm live", DERIVED_PASS,
-                                 f"{name}@{ver} resolves on registry.npmjs.org")
+                                 f"{name}@{ver} resolves on registry.npmjs.org", source=("release-ref", "registry"))
 
         pub = tree_read(self.ref, "scripts/publish.rs") or ""
         m = re.search(r"CRATES_TO_PUBLISH[^=]*=\s*&\[(.*?)\];", pub, re.S)
         crates = re.findall(r'"([a-z0-9-]+)"', m.group(1)) if m else []
         if not crates:
-            self.add("8", "crates live", NOT_DERIVED, "CRATES_TO_PUBLISH not parseable at ref")
+            self.add("8", "crates live", NOT_DERIVED, "CRATES_TO_PUBLISH not parseable at ref", source=("release-ref",))
             return
         dead = []
         checked = 0
         for c in crates:
             code = http_status(f"https://crates.io/api/v1/crates/{c}/{self.bare_version}")
             if code == 0:
-                self.add("8", "crates live", NOT_DERIVED, f"crates.io unreachable checking {c}")
+                self.add("8", "crates live", NOT_DERIVED, f"crates.io unreachable checking {c}", source=("release-ref", "registry"))
                 return
             checked += 1
             if code != 200:
@@ -1144,29 +1191,29 @@ class Check:
                 "crates live",
                 DERIVED_FAIL,
                 f"{len(dead)}/{checked} not live at {self.bare_version}: {', '.join(dead)}",
-            )
+             source=("release-ref", "registry"),)
         else:
             self.add(
                 "8",
                 "crates live",
                 DERIVED_PASS,
                 f"{checked}/{checked} crates resolve on crates.io at {self.bare_version}",
-            )
+             source=("release-ref", "registry"),)
 
     # -- verdict ------------------------------------------------------------
 
     def verdict(self) -> dict:
         by_step: dict[str, list] = {}
-        for step, label, status, detail in self.findings:
+        for step, label, status, detail, _source in self.findings:
             by_step.setdefault(step, []).append((label, status, detail))
-        failures = sum(1 for _, _, s, _ in self.findings if s in FAILING)
+        failures = sum(1 for _, _, s, _, _ in self.findings if s in FAILING)
         derived_slots = sum(
             1
             for step, _ in STEP_NAMES
             if any(s == DERIVED_PASS for _, s, _ in by_step.get(step, []))
             and not any(s in FAILING for _, s, _ in by_step.get(step, []))
         )
-        attested = sum(1 for _, _, s, _ in self.findings if s == ATTESTED)
+        attested = sum(1 for _, _, s, _, _ in self.findings if s == ATTESTED)
         vacuous = failures == 0 and derived_slots < MIN_DERIVED_SLOTS
         conforms = failures == 0 and not vacuous
         return {
@@ -1176,8 +1223,14 @@ class Check:
             "ref": self.ref,
             "sha": self.sha,
             "findings": [
-                {"step": s, "label": l, "status": st, "detail": d}
-                for s, l, st, d in self.findings
+                {
+                    "step": s,
+                    "label": l,
+                    "status": st,
+                    "detail": d,
+                    "source": list(sc),
+                }
+                for s, l, st, d, sc in self.findings
             ],
             "failures": failures,
             "derived_slots": derived_slots,
@@ -1201,7 +1254,7 @@ class Check:
         )
         ws = m.group(1) if m else None
         if ws == self.bare_version:
-            self.add("0", "release identity", DERIVED_PASS, f"workspace version {ws} matches")
+            self.add("0", "release identity", DERIVED_PASS, f"workspace version {ws} matches", source=("worktree",))
         else:
             self.add(
                 "0",
@@ -1209,7 +1262,7 @@ class Check:
                 DERIVED_FAIL,
                 f"workspace version {ws!r} != requested {self.bare_version!r} — "
                 "pretag mode must run on the checkout being cut",
-            )
+             source=("worktree",),)
 
     def run_all(self) -> dict:
         self.check_release_identity()
@@ -1233,7 +1286,7 @@ def render(v: dict) -> str:
         title = step_titles.get(f["step"], "?")
         lines.append(
             f"  step {f['step']:<3} {title:<18} {f['label']:<26} "
-            f"{f['status']:<12} {f['detail']}"
+            f"{f['status']:<12} [{'+'.join(f['source']):<22}] {f['detail']}"
         )
     if v["vacuous"]:
         lines.append(

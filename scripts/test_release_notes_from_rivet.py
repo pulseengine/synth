@@ -152,6 +152,85 @@ class Refusals(unittest.TestCase):
             capture_output=True, text=True,
         )
 
+    def _recording_rivet(self, td: Path, version: str, diff_json: str) -> tuple[Path, Path]:
+        """A fake rivet that RECORDS the --head it was given, and that head's
+        contents, at call time.
+
+        Recorded at call time on purpose: the generator builds its extracts in a
+        TemporaryDirectory, so by the time a test could look the directory is
+        gone. A test that inspected it afterwards would pass vacuously.
+        """
+        log = td / "rivet-head.log"
+        fake = td / "recording-rivet"
+        fake.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then echo "rivet %s"; exit 0; fi\n'
+            'if [ "$1" = "diff" ]; then\n'
+            "  h=''\n"
+            '  while [ $# -gt 0 ]; do\n'
+            '    if [ "$1" = "--head" ]; then h="$2"; fi\n'
+            "    shift\n"
+            "  done\n"
+            '  { echo "HEAD=$h"; (cd "$h" 2>/dev/null && find . -maxdepth 2 | sort); } >> %s\n'
+            "  printf '%s'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n" % (version, log, diff_json)
+        )
+        fake.chmod(0o755)
+        return fake, log
+
+    def test_the_head_extract_is_bounded_like_the_base(self):
+        """RQ-86-NOTESPOP3 (#1259): the HEAD side must be bounded to the source
+        roots, exactly as the base side is -- and that is what makes the
+        anti-vacuity guard reachable.
+
+        THE DEFECT THIS PINS, measured before the fix: the base is a
+        `git archive` of the configured source roots, so it can never contain
+        `.rivet/repos/` -- the federated sibling checkouts. Diffing it against
+        the whole working tree reported every FOREIGN artifact as "added": 3219
+        added against v0.85.0 where only 18 were this repo's. With `--base HEAD`,
+        where NOTHING of this repo's own is added, the synced checkout still
+        reported 3201 added and exited 0; the same breakage in a checkout without
+        the cache exited 1. The guard was potent ONLY where the generator never
+        runs.
+
+        So this asserts the property rather than the count: the path handed to
+        `rivet diff --head` is NOT the repo root, and what it contains is the
+        source roots WITHOUT the sibling cache.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            td = Path(d)
+            fake, log = self._recording_rivet(
+                td, "0.37.0", '{"added": ["RQ-86-X"], "removed": []}'
+            )
+            root = self._repo(td)
+            # a FOREIGN artifact, outside the configured source roots -- the
+            # shape `.rivet/repos/<sibling>` takes in a synced checkout
+            foreign = root / ".rivet" / "repos" / "sibling" / "artifacts"
+            foreign.mkdir(parents=True)
+            (foreign / "f.yaml").write_text("artifacts: []\n")
+
+            r = self._run(root, fake)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            recorded = log.read_text()
+            self.assertIn("HEAD=", recorded, "the fake was never asked to diff")
+
+            heads = [l[5:] for l in recorded.splitlines() if l.startswith("HEAD=")]
+            self.assertTrue(heads, "no --head was passed")
+            for h in heads:
+                self.assertNotEqual(
+                    Path(h).resolve(), root.resolve(),
+                    "the head side is the RAW REPO ROOT -- the sibling cache is "
+                    "back in the diff and the guard is unreachable again",
+                )
+            self.assertIn("./artifacts", recorded, "the source roots must be present")
+            self.assertNotIn(
+                "./.rivet", recorded,
+                "the sibling cache reached the head extract -- foreign artifacts "
+                "will read as 'added' and the anti-vacuity guard goes inert",
+            )
+
     def test_a_rivet_older_than_the_pin_is_refused(self):
         """0.36.0 < the 0.37.0 pin must REFUSE, and say why an old rivet lies.
 

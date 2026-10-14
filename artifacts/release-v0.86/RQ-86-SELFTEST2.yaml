@@ -33,4 +33,59 @@ artifacts:
       priority: should
       issue: "#1515"
       verification-track: manual
+      disposition: partial
+      landed: "PR #1537 - #1515 - the class sweep RAN over every self-test in the tree and the vacuous case is NAMED, which is the done-when's second branch. Population measured from the self-tests' own output rather than from a pattern: nine files carry a runnable self-test reporting two hundred and two cases; of the twelve files mentioning the flag, one rejects it as unknown and two use a different idiom and report none. The sweep neutralises one of each file's own top-level functions at a time and re-runs the self-test: sixty-two subjects, of which eighteen go cleanly red, twenty-seven red by crashing, and SEVENTEEN STAY GREEN. Nine of those seventeen are the entry point itself, where neutralising removes the TEST rather than the subject - an artefact of the mutation and reported as such, not as a finding - leaving EIGHT real uncovered subjects. The POSITIVE CONTROL the artifact demands LANDS: the exact function whose removal the previous release found undetected is among the eight, so the sweep would have found it. Classified, the eight are five that cross a process or network boundary a self-test cannot exercise, one that reaches a boundary indirectly but has a pure fixture branch that could be covered, and two that are pure or filesystem-bound and genuinely coverable - one of which is the known vacuity. The sweep's own first run returned a HUNDRED PERCENT skip rate and was debugged rather than reported."
+      verified-by: >
+        PARTIAL — the sweep ran over every self-test in the tree, the uncovered subjects are
+        named, and the positive control the artifact requires fires. No self-test is rewritten.
+
+        THE POPULATION IS MEASURED FROM THE SELF-TESTS' OWN OUTPUT, not from a pattern over the
+        source — because a pattern over the source got it wrong first. Twelve files mention the
+        flag; NINE implement a runnable self-test, together reporting two hundred and two cases.
+        Of the other three, one REJECTS the flag as unknown and exits with a usage error, and two
+        use a different reporting idiom and print no cases at all. A regular expression counting
+        assertion-like calls returned zero for most of these files, so the files were RUN instead.
+
+        THE SWEEP, which is the refuting command mechanised at function granularity. For each
+        self-test-bearing file, one of its own top-level functions is neutralised at a time — body
+        replaced by a bare return — and the self-test re-run. A self-test that stays GREEN with
+        one of its subjects removed does not cover that subject, which is the vacuity signal.
+        SIXTY-TWO subjects: eighteen go cleanly RED, twenty-seven red by CRASHING, and SEVENTEEN
+        STAY GREEN.
+
+        NINE OF THE SEVENTEEN ARE AN ARTEFACT OF THE MUTATION AND ARE REPORTED AS SUCH. Each is
+        the file's entry point, and in these files the self-test is dispatched from inside it — so
+        neutralising it removes the TEST, not the subject, and green is the expected result rather
+        than a finding. Counting them would have inflated the finding by more than double.
+
+        THAT LEAVES EIGHT REAL UNCOVERED SUBJECTS, and THE POSITIVE CONTROL LANDS: the function
+        whose removal the previous release found undetected — the one that gave this lane its
+        founding claim — is among the eight. So the sweep is not reporting a zero it could not
+        have avoided; it reproduces the known case from a different direction.
+
+        CLASSIFIED BY WHAT EACH SUBJECT ACTUALLY DOES, read rather than pattern-matched, because
+        "uncovered" and "vacuous" are not the same claim. FIVE cross a process or network boundary
+        — live pull-request state, the issue REST API, its command-line fallback, and a recorded-
+        call helper — which a self-test structurally cannot exercise, so these are honestly
+        uncovered rather than vacuous. ONE reaches a boundary INDIRECTLY through those helpers,
+        which a first pass misclassified as pure because it looked for the boundary in the
+        function's own body; it has a pure fixture-file branch that a self-test COULD cover. TWO
+        are genuinely coverable and uncovered: one reads a workflow directory and would be covered
+        by pointing it at a fixture directory, and the other is the known vacuity.
+
+        AN UNCOVERED SUBJECT IS A COVERAGE GAP; IT IS A VACUOUS CASE ONLY IF A CASE CLAIMS TO
+        COVER IT. That distinction is settled for the known one, where the previous release read
+        the claim. For the rest it is NOT settled here: matching function names against the case
+        descriptions was tried and REFUSED as an instrument — it matched a function called `gate`
+        inside the string "merge-gate-self-test", and found nothing for the others because the
+        descriptions are prose. So the eight are reported as uncovered subjects, and the single
+        proven vacuous case is reported as vacuous.
+
+        THE SWEEP'S OWN FIRST RUN WAS VACUOUS AND WAS DEBUGGED RATHER THAN REPORTED, which is the
+        same failure class one tier further out. It returned a HUNDRED PERCENT skip rate across
+        all sixty-two subjects, which would have read as "nothing could be measured". The cause
+        was in the sweep, not the tree: walking a function's syntax tree yields an argument node
+        carrying no line number, and the resulting error was swallowed by a broad handler that
+        labelled it an unparseable mutation. A sweep whose every case skips is an empty positive
+        control, and the only correct response was to fix the instrument.
       done-when: "manual:2027-03-31 every self-test case in the tree is shown to fail under removal of its own subject, or the vacuous ones are named — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-TWOSOURCE3
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "Every conformance slot states its own source explicitly, per slot rather than per step"
     description: >
         v0.85 carried the proof that the split is PER SLOT and not per step: within one step,
@@ -33,4 +33,66 @@ artifacts:
       priority: must
       issue: "#1183"
       verification-track: manual
+      landed: "PR #1537 - #1183 - DELIVERED. Every conformance slot now states WHICH TREE it read. `add()` takes a required source from a closed six-name vocabulary, the verdict renders it beside the status in both the printed line and the JSON, and all sixty-two call sites declare one. The refuting command ran FIRST and found the pair it asked for - in one step, on one invocation, a ref-reading slot passing beside a worktree-reading slot failing about the same subject, the failing one's entire detail being its exit code - with a paired control proving the comparison detects it and that only the working tree moved. Four negative controls fire, including stripping a source from a live call site, which reds naming the exact line. Behaviour is unchanged: the original four fields are IDENTICAL to the pre-change baseline in BOTH modes. The worktree readers are LABELLED, not moved, because the pre-tag slots are deliberately statements about the checkout. SEPARATELY, this artifact's issue field is a STALE ATTRIBUTION carried through three releases: the named issue is about a delivery-floor constant, was fixed and released long before this lane existed, and carries none of this lane's analysis - v0.84 recorded that and nobody corrected it, so it is recorded again here with the correction owed to v0.87 planning."
+      verified-by: >
+        DELIVERED — every conformance slot states which tree it read, and a reader-level check
+        fails when one stops saying.
+
+        THE REFUTING COMMAND RAN FIRST and found the pair it asked for, so the lane is not moot.
+        In step 3, on a SINGLE invocation: the `status-evidence gate` slot reads DERIVED-PASS
+        "present and wired in ci.yml at ref" while the `status-evidence live run` slot reads
+        DERIVED-FAIL "exit 1". One subject, opposite verdicts, and the failing slot's ENTIRE
+        detail was its exit code — so nothing told a reader that the PASS describes the committed
+        ref and the FAIL the uncommitted working tree.
+
+        THE PAIRED CONTROL, because the artifact says a population of zero would be a REFUSAL
+        rather than a pass. With a clean checkout the live-run slot reads DERIVED-PASS "exit 0";
+        with ONE uncommitted edit it reads DERIVED-FAIL "exit 1"; and the ref-reading slot is
+        UNCHANGED across both runs. So the comparison does detect a disagreement and the only
+        thing that moved was the working tree — a red case and an inert case isolating the
+        mechanism. The plant was restored and the checkout left clean.
+
+        WHAT SHIPS. `add()` takes a required `source` naming which tree the slot read, drawn from
+        a closed six-name vocabulary, and a bad or absent source RAISES rather than defaulting —
+        a slot that silently claimed the wrong tree would be worse than one that said nothing,
+        because a reader would believe it. The verdict renders the source beside the status in
+        both the printed line and the JSON. All sixty-two call sites declare one.
+
+        THE SPLIT IS PER SLOT AND NOT PER STEP, which is why there is no per-step default and why
+        a source is a TUPLE rather than one token: step 3 alone draws on the release ref, the
+        working tree AND the GitHub API, and step 7's slots read the record from the ref while
+        taking the ancestry from the commit graph.
+
+        NOT COLLAPSED ONTO ONE CONVENTION, which the artifact forbids. The pre-tag slots are MEANT
+        to be statements about the working tree — that is what the identity slot's own docstring
+        says — so forcing every slot onto the ref would break a deliberate design rather than fix
+        a defect. The four worktree readers are LABELLED, not moved.
+
+        THE CHECK IS READER-LEVEL AND STATIC, not an inspection of the implementation. Static
+        because an output-only check sees only the slots that FIRED in one mode, and most of the
+        population is rarely-taken FAIL branches. It reads the shipped source for the population
+        and the emitted verdict for the declaration, and it is already CI-wired by the existing
+        job that runs this checker's own test file.
+
+        FOUR NEGATIVE CONTROLS, all executed. Stripping `source=` from one live call site reds and
+        NAMES THE EXACT LINE. Planting an undefined tree name reds on the vocabulary difference.
+        Omitting it in a call raises, which is not hypothetical — the six pre-existing
+        synthetic-slot tests raised exactly that before being updated. And a refused slot is
+        asserted NOT to be recorded, so it cannot default silently.
+
+        BEHAVIOUR IS UNCHANGED, measured rather than asserted: the four original fields are
+        IDENTICAL to the pre-change baseline in BOTH modes, eighteen findings retro at the last
+        release and nineteen pretag at this one. The suite goes from sixty-five to sixty-nine
+        tests, green. The single consumer that unpacked a four-tuple is widened; the tag script
+        greps the status token, which is untouched.
+
+        AND A STALE ATTRIBUTION, found by reading this artifact's own issue field rather than
+        trusting it. The issue named here is about a delivery-floor constant with too much slack;
+        it was fixed and released many releases ago, and neither its body nor its single comment
+        mentions the worktree-versus-ref split this lane is about. So it does not even carry this
+        lane's analysis, which is the one thing a closed citation is legitimately for in this
+        repository. v0.84's own record SAID the named issue was already closed before its
+        measurement, and three releases carried the field forward unchanged anyway. The number is
+        left in place rather than swapped for an invented one, and correcting it is owed to v0.87
+        planning.
       done-when: "manual:2027-03-31 every conformance slot states which source it read, verified by a reader-level check rather than by inspection of the implementation — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

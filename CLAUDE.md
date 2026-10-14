@@ -275,10 +275,24 @@ ever-growing pile of locally-correct patches.**
 > **0** without raising — a silent UNDERCOUNT rather than an escape, and strictly worse,
 > because the table sits inside the pinned population contributing nothing. Both remain
 > a review-time obligation, not a caught one. **It is also scoped BY NAME**
-> (`^(?:KNOWN|PINNED)[A-Z0-9_]*`), so a suppression table called anything else
-> — `SUPPRESSED_CASES`, say — escapes the tripwire AND the ratchet entirely.
-> Demonstrated in the v0.73 round-2 gate review: a byte-identical table under a
-> non-matching name left `claim_check` at 75/75. The
+> (`^(?:KNOWN|PINNED)[A-Z0-9_]*`) — and what that scoping lets through is
+> ADDITION, not RENAMING, which is the opposite of what this paragraph said until
+> v0.86 measured it. A THREE-WAY control in which ONLY THE NAME differs between
+> runs (RQ-86-PINDEBT11, #1428): renaming a LISTED table out of the pattern
+> **REDS** — and by ONE mechanism, not two. The rename is applied in the oracle
+> AND in the ledger's name field, so the explicit table list STILL RESOLVES and
+> only the NAME differs between runs; what reds is the POPULATION half, a
+> count-equality pin over the name pattern, whose count falls below its pinned
+> value, and the ledger then drops a claim. Adding a NEW table under a non-matching
+> name — `SUPPRESSED_CASES`, say — leaves the ledger fully **GREEN** with the pin
+> count and the summed case count BOTH unchanged, although that table pins real
+> cases; and the SAME table under a MATCHING name **REDS**. So a table counts when
+> its name matches the pattern AND it is enumerated in the ledger's list; nothing
+> forces a NEW table to be enumerated, so addition is a review-time obligation
+> like the two shapes above, while a rename is caught. The v0.73 round-2 reading,
+> "a byte-identical table under a non-matching name left `claim_check` at 75/75",
+> is consistent with the ADDITION case and NOT with a rename, which moves the
+> pinned count; read as covering a rename it is false. The
 > summed pinned case count rides beside it as `known_open_pinned_cases`
 > (`direction: track`). **What that actually catches is a merge that MOVES the
 > case total** — proven potent: changing one entry's count 2 -> 9 reds with

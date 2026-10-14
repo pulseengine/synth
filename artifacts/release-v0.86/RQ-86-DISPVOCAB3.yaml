@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-86-DISPVOCAB3
     type: system-req
     release: v0.86
-    status: proposed
+    status: implemented
     title: "The disposition vocabulary's two questions are separated, and the classifier's reach is stated as a relationship"
     description: >
         Carried. v0.85 re-derived the live figures rather than trusting the plan's, and its
@@ -31,4 +31,31 @@ artifacts:
       priority: should
       issue: "#1458"
       verification-track: manual
+      landed: "PR #1537 - #1458 - DELIVERED: the two questions are separated and every stated ratio names its denominator. Re-derived at this branch rather than carried: the ITERATED set is every artifact under the release directories; of those, a smaller number carries a verdict field at all; of THOSE, a smaller number still has a lead the classifier reaches; and the remainder decomposes into declared non-verdicts, artifacts with no capitalised lead, and ZERO unclassified leads. The previous release's refutation is CONFIRMED - the out-of-population remainder is dominated by artifacts carrying no verdict field at all rather than by declared non-verdicts - and it is stated as a COMPARISON on two named denominators, never as a multiplier. AND A NEW FINDING: the census printed its REACH above a table summing to the FIELD OCCUPANCY, one word answering two questions with the smaller number above the larger table. Both printed lines now name their denominators."
+      verified-by: >
+        DELIVERED — the two questions are separated and every stated ratio names its denominator.
+
+        RE-DERIVED AT THIS BRANCH, because the figures move every release they are measured and a
+        carried figure here is a stale one. Over every artifact under the release directories:
+        the ITERATED set is the whole population; a strictly smaller subset carries a
+        `verified-by` at all; a smaller subset still has a leading token the classifier reaches;
+        and the remainder decomposes into declared non-verdicts, artifacts with no capitalised
+        lead, and ZERO unclassified leads. That last zero matters: the documented exclusions
+        cover the live tree exactly, so no lead escapes classification today.
+
+        THE PREVIOUS RELEASE'S REFUTATION IS CONFIRMED and stated the way the artifact demands.
+        The out-of-population remainder of the ITERATED set is dominated by artifacts carrying NO
+        verdict field at all rather than by declared non-verdicts. The two counts sit on
+        DIFFERENT denominators, so the honest statement is the comparison and not a factor —
+        which is exactly why the earlier wording's multiplier was unstateable.
+
+        AND A NEW FINDING, from reading the instrument rather than only its output. The census
+        printed its own REACH as "artifacts in the population" directly above a table whose rows
+        sum to the FIELD OCCUPANCY — a larger number. One word answered two different questions,
+        an allow-list membership test and a field-presence test, with the smaller number printed
+        above the larger table, which is how a reader infers a denominator nobody stated. Both
+        printed lines now name their denominators explicitly, the census calling its figure a
+        REACH against the table's own sum and the gate line saying plainly that its population is
+        the classified set and not every artifact carrying the field. The classifier's own
+        self-tests and its sibling test file are unchanged and green.
       done-when: "manual:2027-03-31 the two questions are separated and every stated ratio names its denominator — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"

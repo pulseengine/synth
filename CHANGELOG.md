@@ -5,6 +5,187 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.86.0] - 2026-10-14
+
+### The theme, and what it found inside this release's own instruments
+
+**"The instrument is part of the evidence."** A check's own potency, population and
+spelling are part of what it claims, and a check that cannot be shown to fail has
+not yet said anything. The theme was chosen from v0.85's sharpest findings, which
+were not prose slips but instruments that could not fail. It then found the same
+class three times inside v0.86's own working, each time in an instrument this
+release had just written:
+
+- **A vacuous case inside a new self-test.** The statistics scan's self-test
+  asserted that its probe line was MATCHED by the word scan — but it checked the
+  reported LINE, and that line contains a second number word. Removing the figure
+  from the pattern left the self-test green at zero failures. Found by negative-
+  controlling the self-test rather than by reading it; it now asserts on the tokens
+  the instrument matched.
+- **A sweep whose every case skipped.** The self-test class sweep returned a 100%
+  skip rate across all of its subjects, which would have read as "nothing could be
+  measured". The cause was in the sweep: walking a function's syntax tree yields an
+  argument node carrying no line number, and a broad handler swallowed the error as
+  an unparseable mutation. An empty positive control is the finding.
+- **A positive control that silently read an empty file.** A control probing a
+  figure through a release window reported zero at every commit. The shell had read
+  the colon in an unbraced variable as a parameter modifier, mangling the
+  revision-and-path argument; a redirect of standard error hid the failure and the
+  count came back zero. Braced, the control fires at three of the five commits.
+
+### A guard that was potent only where it never runs
+
+The release-notes anti-vacuity guard fires only on a totally empty added set.
+Measured against the previous release, the synced checkout reported **3219** added
+artifacts and a clean checkout **18** — only the 18 are this repository's, the other
+**3201** being the federated sibling checkouts.
+
+The positive control is what makes it a potency finding. Simulating a total breakage
+of this repository's own extract, the clean checkout **fires and exits non-zero**
+while the synced checkout stays **silent, exits zero, and emits a notes section
+claiming 3201 added artifacts of which none are ours**. Same breakage, opposite
+verdicts — and no workflow invokes the generator, so the inert venue is the only one.
+
+The cause was an asymmetry, not a missing check: the base side is an archive of the
+configured source roots and can never contain the sibling cache, while the head side
+was the whole working tree. Bounding the head the same way delivers all three parts
+of the remedy at once. Both environments now emit identical lists.
+
+### Every conformance slot states which tree it read
+
+Within one step, on one invocation, a ref-reading slot passed beside a
+worktree-reading slot failing about the same subject — the failing one's entire
+detail being its exit code. `add()` now takes a required source from a closed
+vocabulary, rendered beside the status in both the printed line and the JSON, and
+all **62** call sites declare one. The split is per slot and not per step, so a
+source is a tuple: one step alone draws on the release ref, the working tree and the
+GitHub API, and another reads its record from the ref while taking ancestry from the
+commit graph. The pre-tag slots are deliberately statements about the working tree,
+so they are **labelled, not moved**. Behaviour is unchanged: the original four
+fields are identical to the pre-change baseline in both modes.
+
+### Statistics are now caught in both spellings
+
+The release-file check was an ad-hoc digit scan typed into a commit message, and it
+was blind by spelling: a figure a previous round had already proven false survived
+in that file spelled as a word, through three commits where the digit scan read
+clean at every one. Over every release file the digit scan returns **0** hits and
+the word scan **560** across 29 of 30 files — overwhelmingly idioms, which is why
+the scan **reports and the operator records the judgement** rather than pretending a
+token match is a statistic. CI gates its self-test.
+
+### A shipped record's method is as checkable as its figures
+
+A cold-review record cites commits and tool paths as evidence and nothing tested
+either. The absent-tool half is clean everywhere — the earlier defect of records
+citing a script that was in no commit on any branch is fixed by tracking it — while
+ancestry is systemic: **seven** pre-squash branch shas in one record, one in the
+next, two in the newest. This repository squash-merges, so a branch head never
+becomes an ancestor. Both halves carry a positive control, because a check that
+passes everything is indistinguishable from one that tests nothing.
+
+### The tool that derives round two's queue ran in no workflow
+
+Round two of the cold review attacks the numbers round one introduced, and it
+derives that queue with a script rather than reading for importance. That script
+was in **no workflow at all**. Its self-test existed, carried a vacuity guard and
+a leave-one-out derivation of which scrubbers are individually necessary, and
+nothing ever ran it — defined but not enforced, which is not a gate. It is now a
+step in a required context.
+
+The audit then went both ways, which is the part worth recording. **Refuted:** the
+worry that the sha scrubber swallows an uncommaed seven-digit byte count. Every
+all-digit token it removes across the six records shipped before this one is an
+identifier, with every one of the eight read in context — GitHub run ids, two job
+ids, a comment id, and two genuine all-digit eight-character git shas — so the
+obvious narrowing, requiring a hex letter, would have leaked two real shas into the
+queue as quantities. Not one is a quantity. The blind spot is real and has no observed
+instance; the previous release's repair of that scrubber stands.
+
+**Confirmed:** the version scrubber necessarily eats a bare two-component decimal,
+because a ratio and a crate version share that shape exactly. One record carries
+**23** such removals over **17** distinct tokens and the newest **15** over **13** —
+occurrence and distinct counts are different numbers and this programme has confused
+them before, so both are stated — and reading them in context settles that
+the class is mixed rather than noise: durations, percentages and a ratio on one
+side, crate and operating-system versions, a section number and an IEEE literal
+quoted in prose on the other. No pattern separates them, so widening trades one
+error for the other. The case that forced the decision is a ratio the previous
+round one rounded up to produce a headline word — the number the word came from was
+invisible to the tool whose whole job is to queue round one's numbers for attack.
+
+Auditing the extraction itself then found three more defects, all measurable on
+those same six records and all in the direction that matters. Its regex absorbed
+any comma, which broke two different ways that an earlier draft of this section
+summed into one figure: **15** distinct tokens were MERGES, where `92,11` became a
+single token naming a figure nobody claimed while hiding the two that were; and
+**7** more carried a TRAILING COMMA, so one quantity counted in two buckets. That
+is the **22** the draft reported as merges alone, and the split matters because the
+two halves are fixed by different changes. Quoted **git diff hunk headers** leaked
+their four coordinates as numbers — tool output, not claims — and account for
+**10** of the 15 merges; they are now scrubbed. The remaining **12** are fixed by
+absorbing a comma only as a proper thousands separator, asserted in both
+directions, because either half alone permits the opposite error: a
+thousands-separated byte count must stay WHOLE, and a comma that is not a separator
+must SPLIT. And the extraction pattern was written out twice, in the shipped path
+and in the leave-one-out primitive, so the thing measuring the scrubbers could
+drift from the thing using them; there is now one. After both changes the count of
+merged and trailing-comma tokens over those records is **0**, with the three
+legitimate thousands-separated figures preserved.
+
+So they are neither dropped nor asserted: the withheld decimals are printed in
+their own labelled bucket for hand triage — and that bucket is now ENUMERATED FROM
+THE SCRUBBER'S OWN MATCHES rather than from a second pattern beside it. The first
+version did mirror the scrubber by hand, and the mirror was already wrong in the
+one way that mattered: it rejected a decimal that ENDS A SENTENCE, so the ratio
+behind the headline word — the exact case the bucket exists for — yielded nothing,
+and the positive sample happened to end without a period, so it was shaped around
+the blind spot. Restoring that mirror now reds the sample, which is what makes the
+replacement worth gating. A false positive costs round two one
+glance; a false negative means an unreviewed figure is never reviewed. Both halves
+of the new bucket are negative-controlled — an inert bucket reds the positive half,
+a bucket widened to eat prefixed versions reds the negative half — and an empty
+bucket is a legitimate observation here rather than a refusal, which is measured
+too: two of those records carry no bare decimal at all.
+
+### Measurements that corrected this programme's own records
+
+- **The multi-memory re-scope was withdrawn before merge.** The reporter's fit
+  objection was read as refuting the premise that the layering is the whole
+  remaining blocker. The dates settle it the other way: their comment names the
+  version they measured, and the release honouring a declared byte page on the
+  relocatable path was tagged three days later, credited to them. The premise holds.
+  Reading the issue state would also have misled — the sizing issue is still open
+  although its capability shipped.
+- **The pin-debt name-scoping claim is corrected.** A three-way control with only
+  the name differing: renaming a listed table out of the pattern **reds**; adding a
+  new table under a non-matching name stays **green with the pin counts unchanged**;
+  the identical table under a matching name reds. The escape is addition, not rename.
+- **Two disposition words are unusable, not merely unused.** One gate advertises five
+  non-delivery dispositions and another accepts three; planting one of the extras
+  reds the stricter gate by name while the looser one passes. That word is the one
+  this release's three blocked lanes would have reached for.
+- **A recurring filing was invisible to its own matcher.** It carried two tags where
+  the matcher requires a third, so the matcher reported a failure naming a filing
+  from twenty-three releases earlier — the exact lapse its own documentation records.
+
+### Reach and declines
+
+No lowering ships in this release. The falcon gap's remaining skip is float register
+pressure rather than a raisable constant: both terminal recovery rungs are spent.
+The wide-file rung is reached **zero** times by every local fixture, against a frozen
+reading of two from the reporter's own module — the rung is still in the ladder and
+its own test passes, so this is not reached rather than removed, and the committed
+reduction of the reporter's declines reaches no float rung at all because its
+declines are selector declines of a carried value over a branch.
+
+### Still blocked outside this repository
+
+The npm publish (the registry's highest published version is **0.69.0**, with
+**16** git tags after it), the compliance backlog decision, and the acceptance
+ladder's corpus mount. Each was re-read at the source rather than from a record, and
+none had its surroundings re-measured and presented as progress.
+
 ## [0.85.0] - 2026-10-13
 
 ### The theme, and the instances this release produced about itself
