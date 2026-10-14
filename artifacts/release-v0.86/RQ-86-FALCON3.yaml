@@ -39,4 +39,48 @@ artifacts:
       priority: must
       issue: "#1318"
       verification-track: manual
+      disposition: partial
+      verified-by: >
+        PARTIAL — the refuting command RAN at a version-matching binary and the figure HELD, so the
+        lane is NOT moot; and the remaining skip's tracking issue is CORRECTED, which is the only
+        thing this release has so far changed about it.
+
+        THE MEASUREMENT, at synth 0.85.0 built from this tree with its reported version checked
+        against the workspace before anything was measured, using the reporter's own command line:
+
+          his optimized module   rc=1   ONE of seventeen functions skipped
+                                        the skip is the `controller@0.10.0#step` export
+          his fused module       rc=0   CLEAN
+
+        So the figure survives a third release. The modules are the reporter's own, from the
+        attachment fetched earlier on the maintainer's explicit approval, and were treated as
+        untrusted input: compiled, never executed.
+
+        AND THE ATTRIBUTION WAS WRONG, which is this lane's first finding. v0.85's record said the
+        single remaining skip "is the #1069 cell". #1069 is CLOSED and is a different class — the
+        shipped diagnostic says so itself, in the failure text it prints for this very export:
+        "#1069 (closed) covered the GI-FPU-002 class that v0.76 fixed, which is a different
+        defect". The tracking issue is #1426, whose own title names this exact export as the last
+        decline in the reporter's module. The stale number is traceable to the test and oracle
+        files for the class being named after #1069, so a reader looking for the issue finds the
+        wrong one by following the filenames.
+
+        A SECOND MIS-CITATION, in a WIRED oracle, found by the same check and corrected here: that
+        oracle's comment block is headed with the wide-file rung's own issue and then calls the
+        wide-file sign error by the spill-pool issue's number in the next sentence. Two adjacent
+        sentences, one subject, two issue numbers; the header had it right. The correction is
+        comment-only and the oracle re-runs unchanged — every export emitted, seventy emulations
+        bit-identical to the reference.
+
+        WHY NO LOWERING SHIPS, measured rather than asserted. The diagnostic prints the whole
+        recovery ladder for this export and BOTH terminal rungs are spent: one grows the spill
+        pool and then fails on register-file exhaustion with every single-precision register live,
+        the other exhausts the pool while frame-homing. So this is float REGISTER PRESSURE and not
+        a pool constant that can be raised — the pool was already grown and the other rung failed
+        anyway. The class is already oracle-gated, so a future fix lands against an existing
+        execution differential rather than needing one built first.
+
+        CONDUCT RULE 4 IS STATED AGAINST THIS LANE RATHER THAN AROUND IT: correcting an
+        attribution and a citation is NOT progress on an externally reported defect that is still
+        open. The reporter's module still fails to compile exactly as it did.
       done-when: "manual:2027-03-31 the remaining falcon gap is lowered, or re-named with a measurement taken at this release's own binary — delivered with measured numbers, or REFUTED with the measurement that refutes it; and the refuting command above is RUN FIRST and its result reported either way"
