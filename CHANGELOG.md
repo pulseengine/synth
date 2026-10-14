@@ -111,6 +111,22 @@ error for the other. The case that forced the decision is a ratio the previous
 round one rounded up to produce a headline word — the number the word came from was
 invisible to the tool whose whole job is to queue round one's numbers for attack.
 
+Auditing the extraction itself then found three more defects, all measurable on
+those same records and all in the direction that matters. Its regex absorbed any
+comma, so `92,11` became ONE token — **22** distinct such tokens, from lists,
+tuples and quoted diff coordinates — meaning round two would attack a figure that
+was never claimed while missing the two that were; it also left a trailing comma
+on a token, so one quantity counted in two buckets. A comma is now absorbed only
+as a proper thousands separator, which is a paired assertion in both directions:
+a thousands-separated byte count must stay whole, and a comma that is not a
+separator must split. Quoted **git diff hunk headers** leaked their four
+coordinates as numbers and are now scrubbed as the tool output they are. And the
+extraction pattern was written out twice, in the shipped path and in the
+leave-one-out primitive, so the thing measuring the scrubbers could drift from the
+thing using them; there is now one. After the change the merged-token count over
+those records is **0**, with the three legitimate thousands-separated figures
+preserved.
+
 So they are neither dropped nor asserted: the withheld decimals are printed in
 their own labelled bucket for hand triage. A false positive costs round two one
 glance; a false negative means an unreviewed figure is never reviewed. Both halves

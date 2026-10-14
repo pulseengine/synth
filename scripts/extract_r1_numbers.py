@@ -80,6 +80,11 @@ import sys
 
 # ORDER IS LOAD-BEARING: longest/most-specific first.
 SCRUBBERS: list[tuple[str, str]] = [
+    # git diff HUNK HEADERS. A record that quotes `git show`/`git diff` output
+    # carries `@@ -92,11 +104,14 @@`, whose four coordinates are tool output, not
+    # claims -- the same noise class as a timestamp or a runner name. MEASURED:
+    # six such headers in the newest of the records shipped before this release.
+    ("diff-hunk", r"@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@"),
     # ISO timestamps, full form, with or without a trailing Z/offset
     ("iso-datetime", r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?"),
     # ISO dates alone
@@ -123,6 +128,18 @@ def withheld_decimals(text: str) -> collections.Counter:
     return collections.Counter(re.findall(WITHHELD_DECIMAL, text))
 
 
+# THE EXTRACTION REGEX, in ONE place: it was duplicated across `numbers()` and
+# `numbers_with()`, so the leave-one-out primitive could silently come to measure a
+# different thing from the shipped path -- the second-source-of-truth defect this
+# programme keeps finding. A comma is absorbed ONLY as a proper thousands separator.
+# The earlier `\b\d[\d,]*\b` was wrong in two directions at once, MEASURED over the
+# records shipped before this release: it MERGED `92,11` into one token (22 distinct
+# such tokens, from lists, tuples and quoted diff coordinates), so round 2 would
+# attack a figure that does not exist while missing the two that do; and it left a
+# TRAILING COMMA on `184,`, so the same quantity counted in two buckets.
+NUMBER = re.compile(r"\b\d{1,3}(?:,\d{3})+\b|\b\d+\b")
+
+
 def scrub(text: str) -> str:
     for _name, pat in SCRUBBERS:
         text = re.sub(pat, " ", text)
@@ -130,14 +147,14 @@ def scrub(text: str) -> str:
 
 
 def numbers(text: str) -> collections.Counter:
-    return collections.Counter(re.findall(r"\b\d[\d,]*\b", scrub(text)))
+    return collections.Counter(NUMBER.findall(scrub(text)))
 
 
 def numbers_with(scrubbers, text: str) -> collections.Counter:
     """`numbers()` under an ARBITRARY scrubber list — the leave-one-out primitive."""
     for _name, pat in scrubbers:
         text = re.sub(pat, " ", text)
-    return collections.Counter(re.findall(r"\b\d[\d,]*\b", text))
+    return collections.Counter(NUMBER.findall(text))
 
 
 def self_test() -> int:
@@ -156,6 +173,7 @@ def self_test() -> int:
         reported under the BY-CONSTRUCTION label, a misattributed diagnosis.
     """
     cases = [
+        ("diff-hunk", "hunks @@ -92,11 +104,14 @@ and @@ -7 +9 @@ only"),
         ("iso-datetime", "settled at 2026-10-13T17:42:09Z with"),
         ("iso-date", "measured 2026-10-09 and"),
         ("bare-clock-hhmmz", "settled at 17:42Z with"),
@@ -225,6 +243,21 @@ def self_test() -> int:
     print(f"  ok  leave-one-out   {len(necessary)} of {len(SCRUBBERS)} scrubbers are "
           f"individually necessary; {len(redundant)} covered redundantly: {redundant}")
 
+    # THE EXTRACTION REGEX, paired. A thousands-separated figure must survive as
+    # ONE token (or a real byte count fragments), and a comma that is NOT a
+    # thousands separator must SPLIT (or two numbers merge into a third that was
+    # never claimed). Either assertion alone permits the opposite error.
+    keep = numbers("the asset is 4,770,546 bytes")
+    if dict(keep) != {"4,770,546": 1}:
+        failures.append(f"EXTRACTION keep: thousands separator not held whole: {dict(keep)}")
+    else:
+        print("  ok  extract-keep   a thousands-separated figure stays ONE token")
+    split = numbers("rows 92,11 and the pair 1,2")
+    if sorted(split) != ["1", "11", "2", "92"]:
+        failures.append(f"EXTRACTION split: comma-joined numbers not split: {dict(split)}")
+    else:
+        print(f"  ok  extract-split  comma-joined numbers split: {sorted(split)}")
+
     # WITHHELD-DECIMAL BUCKET, asserted as a PAIRED control. The positive half
     # proves the bucket surfaces a real quantity the `version` scrubber eats; the
     # negative half proves the bucket is not merely "every dotted token", which
@@ -263,7 +296,8 @@ def self_test() -> int:
     print(f"self-test: {len(SCRUBBERS)} scrubbers over {len(cases)} cases, "
           f"{len(necessary)} individually necessary by leave-one-out, "
           f"+ positive control + by-construction + vacuity guard "
-          f"+ withheld-decimal paired control, 0 failures")
+          f"+ extraction paired control + withheld-decimal paired control, "
+          f"0 failures")
     return 0
 
 
