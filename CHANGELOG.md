@@ -5,6 +5,123 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.86.0] - 2026-10-14
+
+### The theme, and what it found inside this release's own instruments
+
+**"The instrument is part of the evidence."** A check's own potency, population and
+spelling are part of what it claims, and a check that cannot be shown to fail has
+not yet said anything. The theme was chosen from v0.85's sharpest findings, which
+were not prose slips but instruments that could not fail. It then found the same
+class three times inside v0.86's own working, each time in an instrument this
+release had just written:
+
+- **A vacuous case inside a new self-test.** The statistics scan's self-test
+  asserted that its probe line was MATCHED by the word scan — but it checked the
+  reported LINE, and that line contains a second number word. Removing the figure
+  from the pattern left the self-test green at zero failures. Found by negative-
+  controlling the self-test rather than by reading it; it now asserts on the tokens
+  the instrument matched.
+- **A sweep whose every case skipped.** The self-test class sweep returned a 100%
+  skip rate across all of its subjects, which would have read as "nothing could be
+  measured". The cause was in the sweep: walking a function's syntax tree yields an
+  argument node carrying no line number, and a broad handler swallowed the error as
+  an unparseable mutation. An empty positive control is the finding.
+- **A positive control that silently read an empty file.** A control probing a
+  figure through a release window reported zero at every commit. The shell had read
+  the colon in an unbraced variable as a parameter modifier, mangling the
+  revision-and-path argument; a redirect of standard error hid the failure and the
+  count came back zero. Braced, the control fires at three of the five commits.
+
+### A guard that was potent only where it never runs
+
+The release-notes anti-vacuity guard fires only on a totally empty added set.
+Measured against the previous release, the synced checkout reported **3219** added
+artifacts and a clean checkout **18** — only the 18 are this repository's, the other
+**3201** being the federated sibling checkouts.
+
+The positive control is what makes it a potency finding. Simulating a total breakage
+of this repository's own extract, the clean checkout **fires and exits non-zero**
+while the synced checkout stays **silent, exits zero, and emits a notes section
+claiming 3201 added artifacts of which none are ours**. Same breakage, opposite
+verdicts — and no workflow invokes the generator, so the inert venue is the only one.
+
+The cause was an asymmetry, not a missing check: the base side is an archive of the
+configured source roots and can never contain the sibling cache, while the head side
+was the whole working tree. Bounding the head the same way delivers all three parts
+of the remedy at once. Both environments now emit identical lists.
+
+### Every conformance slot states which tree it read
+
+Within one step, on one invocation, a ref-reading slot passed beside a
+worktree-reading slot failing about the same subject — the failing one's entire
+detail being its exit code. `add()` now takes a required source from a closed
+vocabulary, rendered beside the status in both the printed line and the JSON, and
+all **62** call sites declare one. The split is per slot and not per step, so a
+source is a tuple: one step alone draws on the release ref, the working tree and the
+GitHub API, and another reads its record from the ref while taking ancestry from the
+commit graph. The pre-tag slots are deliberately statements about the working tree,
+so they are **labelled, not moved**. Behaviour is unchanged: the original four
+fields are identical to the pre-change baseline in both modes.
+
+### Statistics are now caught in both spellings
+
+The release-file check was an ad-hoc digit scan typed into a commit message, and it
+was blind by spelling: a figure a previous round had already proven false survived
+in that file spelled as a word, through three commits where the digit scan read
+clean at every one. Over every release file the digit scan returns **0** hits and
+the word scan **560** across 29 of 30 files — overwhelmingly idioms, which is why
+the scan **reports and the operator records the judgement** rather than pretending a
+token match is a statistic. CI gates its self-test.
+
+### A shipped record's method is as checkable as its figures
+
+A cold-review record cites commits and tool paths as evidence and nothing tested
+either. The absent-tool half is clean everywhere — the earlier defect of records
+citing a script that was in no commit on any branch is fixed by tracking it — while
+ancestry is systemic: **seven** pre-squash branch shas in one record, one in the
+next, two in the newest. This repository squash-merges, so a branch head never
+becomes an ancestor. Both halves carry a positive control, because a check that
+passes everything is indistinguishable from one that tests nothing.
+
+### Measurements that corrected this programme's own records
+
+- **The multi-memory re-scope was withdrawn before merge.** The reporter's fit
+  objection was read as refuting the premise that the layering is the whole
+  remaining blocker. The dates settle it the other way: their comment names the
+  version they measured, and the release honouring a declared byte page on the
+  relocatable path was tagged three days later, credited to them. The premise holds.
+  Reading the issue state would also have misled — the sizing issue is still open
+  although its capability shipped.
+- **The pin-debt name-scoping claim is corrected.** A three-way control with only
+  the name differing: renaming a listed table out of the pattern **reds**; adding a
+  new table under a non-matching name stays **green with the pin counts unchanged**;
+  the identical table under a matching name reds. The escape is addition, not rename.
+- **Two disposition words are unusable, not merely unused.** One gate advertises five
+  non-delivery dispositions and another accepts three; planting one of the extras
+  reds the stricter gate by name while the looser one passes. That word is the one
+  this release's three blocked lanes would have reached for.
+- **A recurring filing was invisible to its own matcher.** It carried two tags where
+  the matcher requires a third, so the matcher reported a failure naming a filing
+  from twenty-three releases earlier — the exact lapse its own documentation records.
+
+### Reach and declines
+
+No lowering ships in this release. The falcon gap's remaining skip is float register
+pressure rather than a raisable constant: both terminal recovery rungs are spent.
+The wide-file rung is reached **zero** times by every local fixture, against a frozen
+reading of two from the reporter's own module — the rung is still in the ladder and
+its own test passes, so this is not reached rather than removed, and the committed
+reduction of the reporter's declines reaches no float rung at all because its
+declines are selector declines of a carried value over a branch.
+
+### Still blocked outside this repository
+
+The npm publish (the registry's highest published version is **0.69.0**, with
+**16** git tags after it), the compliance backlog decision, and the acceptance
+ladder's corpus mount. Each was re-read at the source rather than from a record, and
+none had its surroundings re-measured and presented as progress.
+
 ## [0.85.0] - 2026-10-13
 
 ### The theme, and the instances this release produced about itself
