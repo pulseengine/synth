@@ -23,7 +23,7 @@ file "re-verified free of statistics", truthfully, by a scan that could not see
 it. A census is bounded by its pattern's spellings.
 
 THIS IS NOT AN ORACLE, AND SAYING SO IS THE POINT. `--all` over every release
-file in the tree returns 302 word-number hits across 24 files and 234 digit hits
+file in the tree returns 300 word-number hits across 24 files and 234 digit hits
 across 20, of a population of 26 release directories, 25 of which carry a
 `_release.yaml` -- and the overwhelming majority of the word hits are IDIOMS
 ("every one of", "including this one", "the one-line key append"), not

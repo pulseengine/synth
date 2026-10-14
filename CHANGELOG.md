@@ -69,8 +69,14 @@ fields are identical to the pre-change baseline in both modes.
 The release-file check was an ad-hoc digit scan typed into a commit message, and it
 was blind by spelling: a figure a previous round had already proven false survived
 in that file spelled as a word, through three commits where the digit scan read
-clean at every one. Over every release file the digit scan returns **0** hits and
-the word scan **560** across 29 of 30 files — overwhelmingly idioms, which is why
+clean at every one. Over every release file — a population of **26** release
+directories, **25** carrying one, stated by the new `--all` mode in its own output —
+the word scan returns **300** hits across 24 files and the digit scan **234** across
+20, at this commit — and the figure moves with any edit to any release file, which
+is why it is re-derived by the mode rather than quoted from memory. This entry said
+**302** until the two statistics below were removed from this release's own file. An earlier draft of this entry said the digit scan returns **0** across 29 of 30
+files; that figure was never re-derivable, because the scan could only read ONE file
+and had no tree-wide mode at all. The word hits are overwhelmingly idioms, which is why
 the scan **reports and the operator records the judgement** rather than pretending a
 token match is a statistic. CI gates its self-test.
 
