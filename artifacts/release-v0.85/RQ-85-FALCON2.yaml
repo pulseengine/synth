@@ -38,7 +38,7 @@ artifacts:
       issue: "#1318"
       verification-track: manual
       disposition: partial
-      landed: "PR #1520 - #1318 - the class oracle's header's FIRST NINE LINES corrected to agree with its own pinned matrix (its tail was NOT, and this release's round 1 found two surviving claims there): on ARM the f32 value-carrying branch COMPILES and only f64 still declines, and the reporter's module skips ONE function of seventeen rather than the six of seven the header still claimed. NO PIN MOVED - twelve of twelve (export, backend) cells, five pinned declines and seven pinned compiles, with a byte-identical verdict table before and after, so the change is prose-only and behaviour-identical. A RECORD CORRECTION and not a completion: the lane stays partial and does not authorise its issue to retire."
+      landed: "PR #1520 - #1318 - the class oracle's header corrected to agree with its own pinned matrix - its FIRST NINE LINES in this PR, and its TAIL in the round-1 corrections, after the cold review found two claims still standing there: on ARM the f32 value-carrying branch COMPILES and only f64 still declines, and the reporter's module skips ONE function of seventeen rather than the six of seven the header still claimed. NO PIN MOVED - twelve of twelve (export, backend) cells, five pinned declines and seven pinned compiles, with a byte-identical verdict table before and after, so the change is prose-only and behaviour-identical. A RECORD CORRECTION and not a completion: the lane stays partial and does not authorise its issue to retire."
       verified-by: >
         PARTIAL — the gap is NAMED WITH A LIVE MEASUREMENT and no lowering ships. The figure the
         plan was told to re-measure HELD. Refuting command run at synth 0.84.0, built from the

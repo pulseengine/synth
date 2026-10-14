@@ -10,10 +10,13 @@
 # THIS THEME IS EARNED RATHER THAN ASSERTED, and it is the only property this
 # programme has measured identically in two consecutive releases. Each of the last
 # two cold reviews found the same number of false statements in the release it
-# reviewed, and a large share of them were introduced by the loop's OWN corrections
-# and addenda rather than by the original work. THE ATTRIBUTION SHARE IS DELIBERATELY
-# NOT RESTATED HERE: the first round of this release's cold review found that the ratio
-# this comment used to carry appears in neither source record. Measured after the fact and
+# reviewed, and each of those records attributes SOME of its findings to the loop's OWN
+# corrections and addenda rather than to the original work. NO SHARE IS STATED HERE, and
+# the earlier wording's "a large share" is withdrawn: it asserted a share in the same
+# breath as declining to state one, and the sources do not support a share over the whole
+# because each record publishes an attribution count for only part of its findings. The
+# first round of this release's cold review found that the ratio this comment used to
+# carry appears in neither source record. Measured after the fact and
 # predicted by nobody.
 #
 # The mechanism is not carelessness. A correction is written in the confident
@@ -48,7 +51,12 @@
 # with the names derived mechanically from the first round's record rather than listed
 # from memory — and the derivation scrubs commit hashes, timestamps, runner names,
 # issue references, version strings and file citations, because an unscrubbed pass
-# reported a two-digit runner fragment as a finding nineteen times.
+# reported a two-digit runner fragment as a finding repeatedly. NO COUNT IS STATED
+# for that here. Earlier attempts to state a count were refuted inside this release,
+# the later one by the cold review's own second round, and the scrubber is justified
+# by the class existing rather than by any frequency. This site survived the fix of
+# its twin because the scan that re-verified this file is DIGIT-scoped, and a number
+# spelled as a word is invisible to it: a census is bounded by its pattern's spellings.
 #
 # CARRIED FORWARD AS A STANDING OBLIGATION, because it kept firing after it was
 # named: a check and its subject drawn from DIFFERENT POPULATIONS, where neither side

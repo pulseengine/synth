@@ -77,18 +77,24 @@ the integer path", naming the wrong subsystem and reading as though the input
 might be malformed. That was true when written. The v0.85 correction replaced
 this docstring's HEAD and never read its TAIL, so the sentence outlived the very
 fix it describes — and a splice must be read against both sides it leaves
-behind. The input is not malformed: every
-export in the fixture is validated and executed by wasmtime. That mismatch is
-why six declines in a real flight-control module were never connected to a
-known limitation. AArch64 compiles all four, so the capability exists here.
+behind. The input is not malformed: every export in the fixture is validated and
+executed by wasmtime. THAT HISTORICAL mismatch — the integer-peek wording, not any
+live behaviour — is why six declines in a real flight-control module were never
+connected to a known limitation; those six are GONE, as this docstring's head
+records. The bare "That mismatch" stood here until v0.85's second round found it
+pointing at the claim the paragraph above had just retracted. AArch64 compiles all
+four, so the capability exists here.
 
 Stated as measured and no further: the SAME shape declines at i64 with the
 `#509` message and at f64 with the carried-value message. At f32 on ARM it does
 NOT decline at all. The earlier wording here said "at f32 with an integer-path
 message" and was left standing by the same v0.85 splice that fixed the head —
-the second of two tail sentences the correction missed. Whether the two
-surviving raise sites reduce to one underlying limitation is NOT shown, and no
-such claim is made.
+the second of two tail sentences the correction missed. The CURRENT pair of raise
+sites is the i64 `#509` message and the f64 carried-value message, and only the
+first of those SURVIVES from the sentence being corrected — the integer-peek site
+is precisely what this correction retracts, so "two surviving" was wrong about one
+of its two. Whether the current pair reduces to one underlying limitation is NOT
+shown, and no such claim is made.
 
 A pin that moves in EITHER direction is red. A fix that makes `vbr_f32`
 compile must move this table in the same PR that lands it.
