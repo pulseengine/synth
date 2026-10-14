@@ -34,7 +34,7 @@ artifacts:
       issue: "#1453"
       verification-track: manual
       issue-scope: outlives
-      landed: "PR #1531 - #1453 - REPORTED BLOCKED with its state re-read AT THE SOURCE. The issue is OPEN at the source and its subject is a scope decision on the compliance backlog that only the maintainer can take. The release asset itself did not regress - the previous release's compliance report shipped larger than the one before it - but that is a fact about the asset and NOT progress on this blocker, and it is recorded here rather than counted. Nothing around the blocker was re-measured and reported as progress. ATTEMPTING PASSWORDS STAYS DECLINED."
+      landed: "PR #1536 - #1453 - REPORTED BLOCKED with its state re-read AT THE SOURCE. The issue is OPEN at the source and its subject is a scope decision on the compliance backlog that only the maintainer can take. The release asset itself did not regress - the previous release's compliance report shipped larger than the one before it - but that is a fact about the asset and NOT progress on this blocker, and it is recorded here rather than counted. Nothing around the blocker was re-measured and reported as progress. ATTEMPTING PASSWORDS STAYS DECLINED."
       verified-by: >
         DELIVERED on the done-when's SECOND branch — reported blocked with its state re-read at
         the source.
