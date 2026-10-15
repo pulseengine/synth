@@ -26,11 +26,35 @@ artifacts:
       issue-scope: outlives
       landed: "PR #1548 - #1451 - DELIVERED AS A REFUTATION OF THIS LANE OWN FIRST ATTEMPT, which concluded non-derivable, PINNED and should not have. THREE THINGS WERE WRONG WITH IT, each found by re-measuring rather than re-reading. ONE, THE SAMPLE NUMBERS WERE WRONG: the helper returned None on failure and the caller turned that into an EMPTY JOB LIST, so two passes over IMMUTABLE data disagreed, 49 unserved then 41 - the tell. HTTP 502 on that endpoint was then observed live. Re-measured in one pass with retries and a raise on exhaustion: SIXTY-EIGHT cancelled jobs, SIXTY-SEVEN unserved, per-run 18/9/5/18/18 which SUMS to its own total, the consistency check the first numbers failed. TWO, A CANDIDATE SEPARATOR WAS MEASURED AND THEN LEFT OUT OF THE FIELD SET: the job own SPAN, completed minus started, was computed in the very first probe and never carried into the comparison. Every cancelled-unserved job measured spans 1246 to 14421 seconds while the no-show this repository has on record is described in ci.yml as 600s - BELOW the entire observed range of both other populations. The original conclusion was reached with the one field most likely to carry the answer excluded. THREE, THE COMPARISON HAS A THIRD ARM NOBODY COUNTED: hunting a real no-show across 52 readable runs of 60 listed, with one api failure recorded so the population states its own incompleteness, found FOUR cancelled-and-unstarted jobs inside runs concluding FAILURE - a fail-fast cascade, neither a no-show nor a superseded-run cancel, and TWO of them LONE, which per v0.85 own straggler finding means lone-ness does not identify a no-show either. A two-way framing cannot be completed when there are at least THREE causes and the question names two. AND THE NO-SHOW ARM WAS NEVER MEASURED AT ALL: the first attempt NO_SHOW fixture was HAND-TYPED FROM PROSE while its docstring claimed it was captured from the live API, which was false. No real no-show job object was obtainable in this window. So the verdict is NOT ESTABLISHED rather than pinned or refuted. WHAT IS SETTLED is the one thing the refuting command literally asked: a no-show IS separable from an ORDINARY QUEUED job by status and conclusion alone, that half is REFUTED, and it is retained as the positive control. Two measuring traps are asserted rather than described: runner_name is the EMPTY STRING on all 67, not null, and the started_at predicate is a TOLERANCE on which 62 of 67 collide where exact equality wrongly showed a separator."
       verified-by: >
-        NOT ESTABLISHED, and that verdict is a REFUTATION OF THIS LANE OWN FIRST ATTEMPT
-        rather than an absence of work. The first attempt concluded "non-derivable, PINNED".
-        It was wrong in three ways and the no-show arm was never measured at all; all four
-        facts are recorded because a pin that asserts the wrong verdict confidently is worse
-        than no pin.
+        REFUTED — and what is refuted is THIS LANE OWN FIRST ATTEMPT, not the artifact
+        premise. That attempt concluded "non-derivable, PINNED". It was wrong in three ways
+        and the arm the question turns on was never measured at all; all four facts are
+        recorded below because a pin that asserts the wrong verdict confidently is worse than
+        no pin. The split itself is left NOT ESTABLISHED: not pinned, and not refuted either.
+
+        THE LEADING VERDICT IS REFUTED RATHER THAN THE "NOT ESTABLISHED" THIS RECORD FIRST
+        OPENED WITH, and that correction is the gate own. `verdict_prose_check` refused the
+        original opening because no set classifies it, and it was right to: a negated
+        non-delivery is exactly the escape shape its NOT_A_VERDICT set deliberately excludes
+        so that such an opening reds rather than passing as prose. REFUTED is the one
+        INCOMPLETE verdict legal beside a claiming status (LEGAL_BESIDE_CLAIMING), which is
+        precisely this lane shape — work landed, own premise overturned — so the fix was to
+        use the vocabulary rather than widen it. The gate had never been run against this
+        artifact until the lanes were gated together: a lesson about gate coverage per
+        branch, not a cross-lane interaction.
+
+        AND THE ADMISSIBLE SHAPE WAS MEASURED RATHER THAN GUESSED, because the first fix
+        traded one red for another. Five combinations were probed against both gates and
+        EXACTLY ONE passes: claiming status, REFUTED lead, NO disposition. `implemented` with
+        `disposition: refuted` reds R11 ("claims the outcome holds but `disposition: refuted`
+        says it does not — pick one"); `proposed` with that disposition reds R12, because
+        `issue-scope: outlives` beside a non-claiming status declares nothing — an undelivered
+        artifact keeps its issue open anyway — and also reds R4-lane, because a delivery
+        commit for this lane is on main and `proposed` cannot acknowledge it; `partial` reds
+        under BOTH statuses, so it is unreachable here. The rules are consistent rather than
+        contradictory once read together: holding #1451 open with `outlives` REQUIRES a
+        claiming status, so the nuance has to live in the prose verdict, which is exactly what
+        LEGAL_BESIDE_CLAIMING exists for.
 
         ONE — THE SAMPLE NUMBERS WERE WRONG, by a mechanism this repository already has a
         memory about. The first passes used a helper returning None on failure and a caller
