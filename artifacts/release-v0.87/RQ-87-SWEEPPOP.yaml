@@ -1,0 +1,44 @@
+artifacts:
+  - id: RQ-87-SWEEPPOP
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "The vacuity sweep's population must be derived, not hand-written"
+    description: >
+        `scripts/self_test_vacuity_sweep.py` decides which scripts to sweep from a
+        HAND-WRITTEN `FILES` list, which is the mirror class this repository's North Star
+        names first — derive what you check against from the artifact you ship. The script
+        can already derive the population (`derived_population()` walks the scripts tree
+        for `def self_test`) and prints the drift rather than hiding it. At the v0.86 cut
+        it sweeps NINE while THIRTEEN define a self-test, and the five unswept include
+        BOTH instruments v0.86 itself added — so the release that built a vacuity sweep
+        did not sweep its own new tools. The vacuity signal it reports is therefore a
+        FLOOR and not a count.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: run the sweep and read its own drift
+        lines. If the hand list and the derived population now AGREE, the mirror is gone
+        and the lane is moot. THIS LANE BOUNDS RQ-87-SELFTEST3: its "EIGHT uncovered
+        subjects" was measured over the nine-file list, so widening the population can
+        only raise it. Derive `FILES` with an explicit `EXCLUDE` carrying a written
+        reason per entry — `test_merge_gate_callsite.py` is swept today and defines no
+        `self_test`, so it needs a decision either way — then RE-MEASURE all three
+        verdict counts. If the uncovered count rises, SELFTEST3's eight were never the
+        population.
+        CITATION: #1541 is where this was measured, filed from v0.86's round-one review.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1541"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the sweep's population is derived with every exclusion
+        reasoned, and the verdict counts re-measured over it — delivered with measured
+        numbers, or REFUTED with the measurement that refutes it; and the refuting
+        command above is RUN FIRST and its result reported either way

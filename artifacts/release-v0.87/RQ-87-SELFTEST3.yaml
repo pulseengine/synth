@@ -1,0 +1,29 @@
+artifacts:
+  - id: RQ-87-SELFTEST3
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "Every self-test subject is covered, or its non-coverage is stated with a reason"
+    description: >
+        EIGHT uncovered subjects named; SIX cross a process boundary, ONE has a pure
+        fixture branch, and TWO are genuinely coverable — one of them the known vacuity.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: Leave-one-out again; if a previously-
+        uncovered subject now reds, the sweep's own population moved.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1515"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 every self-test subject is covered, or its non-coverage is
+        stated with a reason — delivered with measured numbers, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST and its
+        result reported either way

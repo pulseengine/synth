@@ -1,0 +1,31 @@
+artifacts:
+  - id: RQ-87-PROVENANCE3
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "A shipped record's commit citations are ancestors, or the obligation is forward-only in writing"
+    description: >
+        Ancestry failures are systemic in SHIPPED records and the gating form cannot be
+        wired without redding on history. Either the historical citations are reconciled
+        or the forward-only obligation is made explicit in the review template.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: Run the check over every record; if
+        the historical non-ancestor count has fallen to zero, the reconciliation already
+        happened.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1516"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 a shipped record's commit citations are ancestors, or the
+        obligation is forward-only in writing — delivered with measured numbers, or
+        REFUTED with the measurement that refutes it; and the refuting command above is
+        RUN FIRST and its result reported either way

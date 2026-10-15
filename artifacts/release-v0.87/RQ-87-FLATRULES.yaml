@@ -1,0 +1,48 @@
+artifacts:
+  - id: RQ-87-FLATRULES
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "The verified-rule floor has not moved in twenty-one releases, and the context file understates it"
+    description: >
+        `CLAUDE.md` says "`sel_dsl_rules` flat at 80 for twelve releases", inside a
+        paragraph whose whole argument is that a comfortable pin accumulates because
+        nothing ever made it temporary. MEASURED at the v0.86 cut from
+        `claim_check.py claims.yaml --metric`: still 80, `direction: must RISE`, ZERO
+        waivers, and HELD TWENTY-ONE RELEASES. So the sentence understates by nine the
+        very accumulation it warns about — and the phrase is NOT pinned in
+        `claims.yaml`, so a green claim-check says nothing about it.
+
+        WHAT MAKES THAT ONE CONSPICUOUS is its two siblings in the same sentence, both
+        re-measured: "20 selector waivers" is now THIRTY-FIVE, and "a delivery floor at
+        28 against a live 67" was genuinely fixed — the floor is now DERIVED from the
+        anchor and reads 134. Both of those accumulations moved. `sel_dsl_rules` is the
+        one that did not, and `mutants_untested` sits at 4 on the same twenty-one-release
+        hold.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: re-run
+        `python3 scripts/claim_check.py claims.yaml --metric` and read the `held` column.
+        If `sel_dsl_rules` has risen above 80 the lane is MOOT and the sentence should say
+        so. DO NOT FIX THE FIGURE ALONE: the paragraph's claim is that nothing made the
+        pin temporary, and a twenty-one-release hold is the evidence FOR that claim, so
+        the decision this lane owes is whether a hold that long deserves a pinned claim
+        rather than a prose aside.
+        CITATION: #242 is the VCR epic the rule count belongs to — the number names where
+        the programme is tracked, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#242"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the verified-rule hold is stated at its measured length and a
+        decision is recorded on whether it should be a pinned claim — delivered with
+        measured numbers, or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported either way

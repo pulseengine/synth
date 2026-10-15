@@ -1,0 +1,40 @@
+artifacts:
+  - id: RQ-87-PROVCRASH
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "A script whose self-test CI gates while its report form crashes"
+    description: >
+        `review_record_provenance_check.py --record` raises `ValueError` on a RELATIVE
+        path, because the report site calls `path.relative_to(REPO_ROOT)` on the raw
+        argument. CI gates only `--self-test`, so the form a human runs is the ungated
+        one and nothing exercised it; the workaround used during v0.86's review was an
+        absolute path, which is the unreported-workaround anti-pattern. The one-line fix
+        is `Path(a.record).resolve()`. The lane exists for the SHARPER question behind
+        it, which is this release's theme one layer out: a self-test wired into CI says
+        nothing about the report path beside it.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: run it with a relative path; a clean
+        report means it is already fixed and that half of the lane is moot. Then DERIVE
+        the population the lane is really about — the scripts whose `--self-test` is
+        wired in ci.yml while their report form is not invoked anywhere — and COUNT it.
+        A count of zero or one where several are expected is a refusal, not a pass:
+        widen the pattern and carry a positive control.
+        CITATION: #1539 is where the crash was measured, filed from v0.86's round-one review.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1539"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the relative-path crash is fixed AND the population of
+        gated-self-test / ungated-report scripts is derived and counted — delivered with
+        measured numbers, or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported either way

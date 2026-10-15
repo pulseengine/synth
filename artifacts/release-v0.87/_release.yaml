@@ -1,0 +1,53 @@
+# v0.87 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS, in either spelling. A figure parked here is a
+# second copy of a measured number, and a second copy is how a number goes stale.
+# The release's numbers live in the artifact records that measured them and in the
+# CHANGELOG section that cites those records. Re-derive; do not read a count here.
+#
+# THEME, carried from the release before it and sharpened by what that release found
+# inside its own instruments: THE INSTRUMENT IS PART OF THE EVIDENCE. A check's
+# potency, its population and its spelling are part of what it claims, and a check
+# that cannot be shown to fail has not yet said anything. The predecessor proved the
+# theme on itself repeatedly — a self-test case that asserted on the probe line rather
+# than the matched token and stayed green with its subject removed; a class sweep whose
+# every case skipped; a positive control that silently read an empty file; an audit
+# needle that produced only false positives because it had no control; and a
+# consolidation that reverted a merged commit while a clean rebase and a green gate
+# battery both reported success about the wrong tree.
+#
+# SO THE STANDING OBLIGATIONS for this release, each earned rather than asserted:
+#
+#   * A CENSUS IS BOUNDED BY ITS PATTERN'S SPELLINGS. Widen the pattern, then carry a
+#     positive control proving the search form finds a known hit. A zero from a broken
+#     needle and a real zero are the same shape.
+#   * A DERIVED POPULATION OF ZERO IS A REFUSAL, NOT A PASS — and so is one where many
+#     are expected. When a positive control comes back empty, ask why before reporting.
+#   * A CORRECTION IS AN UNREVIEWED CLAIM. Read every splice against both sides it
+#     leaves behind, and target the fact rather than the cited site. A correction that
+#     quotes the old wrong value makes an old-string-must-reach-zero sweep false by
+#     construction.
+#   * A NUMBER IS INVALIDATED BY THE EDIT THAT WRITES IT. Never quote a count of the
+#     artifact the count lives in, and re-derive a sweep on the tree being cut rather
+#     than carrying a figure measured against a different one.
+#   * A VERSION INSIDE A MEASUREMENT IS A FACT, NOT A PIN. The predecessor's sweep
+#     nearly rewrote its own evidence by bumping a sentence that recorded what was
+#     measured at that version; the do-not-touch set is asserted in both directions
+#     for exactly that reason.
+#
+# CARRIED LANES: the residuals the predecessor recorded rather than closed, each with
+# its own refuting command in its own artifact file. The lanes blocked outside this
+# repository are named in their own records and must be reported as blocked rather
+# than re-measured as progress; re-derive which they are.
+#
+# NEW THIS RELEASE: the release flow's own exposure to a moving base. A dependency
+# auto-merge stales every open lane PR, because the merge gate tests branch currency
+# rather than the recorded base tip, and merging any one lane PR re-stales the rest.
+# The predecessor escaped it by consolidating, and the escape is worth a lane of its
+# own rather than a habit.
+#
+# The anchor moves to the predecessor's tag in a SINGLE pull request, across every
+# site the ledger pins -- re-derive them, and re-derive which patterns must NOT move by
+# simulating the move against each pattern's own declared glob. The anchored counts are
+# read off the gate's own printed anchor line, never from the programme-status line,
+# which measures a different glob.

@@ -1,0 +1,28 @@
+artifacts:
+  - id: RQ-87-COMPLIANCE7
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "The compliance backlog decision is reported at its source rather than re-measured"
+    description: >
+        Blocked outside this repository: a scope decision.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: Re-read the issue state at the
+        source.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1453"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the compliance backlog decision is reported at its source
+        rather than re-measured — delivered with measured numbers, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST and its
+        result reported either way

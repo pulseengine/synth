@@ -1,0 +1,30 @@
+artifacts:
+  - id: RQ-87-WIDEFILE10
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "The wide-file rung is either exercised by a local fixture or its unobservability is accepted"
+    description: >
+        The rung is reached ZERO times by every local fixture and the committed
+        reduction reaches no float rung at all. Either the differential comes from the
+        reporter's module or the unobservability is accepted.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: Drive the recovery-statistics flag
+        again; a non-zero local try count refutes the unobservability.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1439"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the wide-file rung is either exercised by a local fixture or
+        its unobservability is accepted — delivered with measured numbers, or REFUTED
+        with the measurement that refutes it; and the refuting command above is RUN
+        FIRST and its result reported either way
