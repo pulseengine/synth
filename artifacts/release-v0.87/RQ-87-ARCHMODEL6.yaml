@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-ARCHMODEL6
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "The recurring architecture filing is visible to the matcher that counts it"
     description: >
         Recurring N/A, now ordinal twenty-five. v0.86 found the filing INVISIBLE to its
@@ -15,6 +15,8 @@ artifacts:
     tags:
       - feature-loop
       - process
+      - aadl
+      - spar
     links:
       - type: derives-from
         target: BR-001
@@ -23,6 +25,57 @@ artifacts:
       priority: should
       issue: "#1136"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1546 - #1136 - DELIVERED, and the refuting command CONFIRMED the premise rather than refuting it. THE ORDINAL, derived by ARTIFACT IDENTITY and not by counting releases, is TWENTY-FIVE: ARCHMODEL artifacts run from v0.63 to v0.87. Of those twenty-five, exactly ONE was INVISIBLE to the matcher that counts the filing - v0.87 own, carrying feature-loop and process but NEITHER aadl NOR spar, both of which the matcher requires alongside a non-empty fields.issue. A tagging REGRESSION, since v0.85 and v0.86 both carry aadl. THE MATCHER OWN ANSWER IS THE EVIDENCE: asked for v0.87 it returned RQ-63-ARCHMODEL, a filing from TWENTY-FOUR RELEASES EARLIER, marked stale, and the conformance slot then reported DERIVED-FAIL naming the remedy in its own words. After adding the two tags the same matcher returns RQ-87-ARCHMODEL6 scoped to v0.87 with stale false, and the slot reports NA-FILED. So the filing had LAPSED and the lane is not moot. AND THE PLACEMENT IS THE SECOND HALF: that conformance slot is asked ONLY by tag_release.sh. It DOES block, because PRETAG conformance gates the tag push, so it is not a toothless gate - but it blocks at the LAST possible moment, after every lane has merged, where a one-word tagging slip costs another merge-and-revalidate cycle measured in hours on this pool. So the check now runs ON THE PR too: scripts/recurring_na_filing_check.py IMPORTS the shipped matcher rather than re-implementing visible, and derives the release under cut TWO INDEPENDENT WAYS - anchor plus one, and max over the artifact tree own release fields - REFUSING when they disagree, because picking the wrong release is precisely how a previous release filing would discharge this one. Same gate, same potency, earlier window. THREE NEGATIVE CONTROLS EXECUTED: stripping the cut release aadl tag reds and names the stale filing, an empty artifact population is REFUSED rather than reported clean, and a stray newer release makes the cut AMBIGUOUS and is refused rather than resolved by guessing."
+      verified-by: >
+        DELIVERED — the filing is matcher-VISIBLE for the release being cut, and the check
+        that establishes it now runs where it can block cheaply.
+
+        THE REFUTING COMMAND CONFIRMED THE PREMISE. Its two halves, run together: the
+        ORDINAL derived by ARTIFACT IDENTITY rather than by counting releases is
+        TWENTY-FIVE, v0.63 through v0.87; and of those twenty-five exactly ONE was
+        invisible to the matcher — v0.87 own. It carried feature-loop and process and
+        NEITHER aadl NOR spar, which the matcher requires beside a non-empty fields.issue.
+        That is a tagging REGRESSION and not a long-standing gap: v0.85 and v0.86 both
+        carry aadl.
+
+        THE MATCHER OWN ANSWER IS THE EVIDENCE, both directions. Asked for v0.87 before the
+        fix it returned RQ-63-ARCHMODEL — a filing from TWENTY-FOUR RELEASES EARLIER —
+        marked stale, and the conformance slot reported DERIVED-FAIL, naming the remedy in
+        its own words. With the two tags added the same matcher returns RQ-87-ARCHMODEL6,
+        scoped to v0.87, stale false, and the slot reports NA-FILED. A filing that is not
+        SEEN has not been filed, which is what the artifact asked to be tested.
+
+        AND THE PLACEMENT IS THE SECOND HALF, which is this release theme applied to a
+        gate OTHER than the one the theme came from. The conformance slot is asked ONLY by
+        tag_release.sh. It genuinely BLOCKS — PRETAG conformance gates the tag push — so
+        unlike v0.86 advisory post-tag case this gate was never toothless. Its problem is
+        COST: it blocks at the last possible moment, after every lane has merged, so a
+        one-word tagging slip is paid for with another merge-and-revalidate cycle, which
+        this release measured at a median of two hours on this pool. Asked on the PR the
+        same defect costs one push. SAME GATE, SAME POTENCY, EARLIER WINDOW — and the
+        distinction between can-it-block and when-does-it-block is exactly what the theme
+        names.
+
+        THE CHECK DOES NOT RE-IMPLEMENT THE MATCHER. It IMPORTS
+        find_filed_steps12_decision from the shipped conformance checker, so there is no
+        second definition of visible to drift out of agreement — the mirror class this
+        repository North Star names first. It derives the release under cut TWO
+        INDEPENDENT WAYS, from ANCHOR_TAG plus one and from max over the artifact tree own
+        release fields, and REFUSES when they disagree rather than picking one: choosing
+        the wrong release is the mechanism by which a previous release filing would
+        discharge this one, which is the entire defect #1136 names.
+
+        THREE NEGATIVE CONTROLS WERE EXECUTED. Stripping the cut release aadl and spar tags
+        reds the check and names the stale filing — the defect this lane measured,
+        reproduced on demand. An empty artifact population is REFUSED in those words rather
+        than reported as a clean zero. And a stray newer release makes the cut AMBIGUOUS
+        and is refused rather than resolved by guessing, which proves the two-source
+        derivation is load-bearing and not decoration.
+
+        #1136 IS HELD OPEN, as it was in v0.86: it is a RECURRING N/A, re-filed every
+        release until the architecture model is actually built, and the upstream blocker is
+        not ours to close.
       done-when: >
         manual:2027-03-31 the recurring architecture filing is visible to the matcher
         that counts it — delivered with measured numbers, or REFUTED with the

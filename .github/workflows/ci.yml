@@ -933,6 +933,34 @@ jobs:
       - name: Unit-test the loop-conformance gate — corpora replay (1136)
         run: python3 scripts/test_loop_conformance_check.py
 
+      # RQ-87-ARCHMODEL6 (#1136): the recurring steps-1-2 N/A filing must be
+      # VISIBLE TO THE MATCHER for the release being cut, asked HERE rather than
+      # only at the tag.
+      #
+      # The refuting command ran and CONFIRMED the premise. The ordinal derived
+      # by ARTIFACT IDENTITY is 25 (v0.63..v0.87), and exactly ONE of the 25 was
+      # matcher-invisible: v0.87's own, tagged `feature-loop` + `process` but
+      # carrying NEITHER `aadl` NOR `spar`. The matcher asked for v0.87 returned
+      # RQ-63-ARCHMODEL — a filing from TWENTY-FOUR releases earlier — marked
+      # stale, and the conformance slot reported DERIVED-FAIL. A tagging
+      # regression: v0.85 and v0.86 both carry `aadl`.
+      #
+      # PLACEMENT is why this step exists beside that slot. The slot is asked
+      # only by tag_release.sh. It DOES block (PRETAG gates the tag push), so it
+      # is not toothless — but it blocks after every lane has merged, where a
+      # one-word tag slip costs another merge-and-revalidate cycle. Asked on the
+      # PR it costs one push. Same gate, same potency, earlier window.
+      #
+      # It IMPORTS the shipped matcher rather than re-implementing "visible", and
+      # derives the release under cut TWICE — anchor+1 and max() over the artifact
+      # tree — REFUSING when they disagree, because picking the wrong release
+      # would let a previous release's filing discharge this one's.
+      - name: "Recurring steps-1-2 N/A filing is matcher-visible (RQ-87-ARCHMODEL6, #1136)"
+        run: |
+          set -euo pipefail
+          python3 scripts/recurring_na_filing_check.py --self-test
+          python3 scripts/recurring_na_filing_check.py
+
       # RQ-70-RIVETNOTES (#1337): the release-notes DERIVATION gets the same
       # treatment. Its load-bearing test re-derives the generator's own
       # `PINNED_RIVET` from THIS file rather than restating it, so the two
