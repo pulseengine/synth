@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-DISPVOCAB4
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "The two gates accept the same disposition vocabulary they advertise"
     description: >
         The two gates carry DIFFERENT disposition vocabularies — five advertised against
@@ -22,6 +22,60 @@ artifacts:
       priority: should
       issue: "#1458"
       verification-track: manual
+      landed: "PR #1547 - #1458 - DELIVERED: the two gates now accept the same disposition vocabulary they advertise, and this release three externally-blocked lanes can say so in a field a gate reads. The refuting command ran FIRST and CONFIRMED the premise: planting each extra on a proposed artifact - the only shape in which the question can be asked, since R11 forbids a non-delivery disposition beside a CLAIMING status - blocked and superseded were both REJECTED by R11 by name while all three shared words were accepted by both gates, and the mismatch was ONE-DIRECTIONAL with nothing accepted that was not advertised. BOTH extras are ADDED rather than un-advertised, measured: blocked is what NPM6, COMPLIANCE7 and LADDER9 need, all three carry the word in their own prose with no disposition, and deferred misdescribes them because a deferral is a choice and a block is not; superseded is a concept already live across eighteen artifact files. Narrowing instead would have removed a word three lanes were reaching for. The vocabulary has ONE home - R11 refusal message derives from the set - and the EQUALITY is asserted by a test that IMPORTS both sets rather than restating either, with a non-emptiness half so two empty sets cannot satisfy it. NEGATIVE CONTROL EXECUTED: dropping blocked from the accepted set reds both the equality test and the blocked-specific test, by name. After the change the refuting command reports five accepted, five advertised, and an empty difference in both directions."
+      verified-by: >
+        DELIVERED — the advertised and accepted vocabularies are now EQUAL, the
+        equality is asserted from the live sets rather than a copy, and the three
+        lanes that needed the missing word now carry it.
+
+        THE REFUTING COMMAND RAN FIRST AND CONFIRMED THE PREMISE. Each extra was
+        PLANTED on a `proposed` artifact — the only shape in which the question
+        can be asked at all, because R11 forbids a non-delivery disposition beside
+        a CLAIMING status, so a planted word on a claiming artifact would red for
+        a reason unrelated to the vocabulary. `blocked` and `superseded` were both
+        REJECTED by R11 by name (`is not one of ['deferred', 'partial',
+        'refuted']`), while `partial`, `refuted` and `deferred` were accepted by
+        BOTH gates. The mismatch was ONE-DIRECTIONAL: nothing was accepted here
+        without being advertised there.
+
+        BOTH EXTRAS ARE ADDED RATHER THAN UN-ADVERTISED, and the direction was
+        measured rather than assumed. `blocked` is exactly what this release's
+        three externally-blocked lanes need — NPM6, COMPLIANCE7 and LADDER9 each
+        carry the word in their own prose and carried NO disposition — and
+        `deferred` misdescribes them, because a deferral is a choice and a block
+        is not. `superseded` is a concept already live across eighteen artifact
+        files. Narrowing the advertised set instead would have taken away a word
+        three lanes were reaching for, which is the opposite of the repair.
+
+        ONE HOME, NO MIRROR. R11's refusal message DERIVES from the set
+        (`sorted(DISPOSITIONS)`), so the error text cannot drift from the
+        vocabulary. The equality itself is asserted by a test that IMPORTS both
+        sets rather than restating either — a test carrying its own copy of a
+        vocabulary is the mirror class this repository's North Star names first,
+        and it would stay green while the two real sets drifted apart. A
+        non-emptiness half sits beside it, because two EMPTY sets would satisfy an
+        equality assertion perfectly.
+
+        NEGATIVE CONTROL EXECUTED, not claimed: dropping `blocked` from the
+        accepted set reds BOTH the equality test and the blocked-specific test, by
+        name, and the file was restored byte-identically. After the change the
+        refuting command reports five advertised, five accepted, and an empty
+        difference in both directions.
+
+        WHAT THIS ALSO FIXES, and it is the part that matters beyond tidiness: the
+        three blocked lanes were `proposed` with a `manual:` done-when and NO
+        disposition — a shape this programme has measured as checked by NEITHER R2
+        nor R3, so their blocked-ness lived only in prose. They now declare
+        `disposition: blocked` in a field R11 reads, so a gate can see what the
+        notes assert.
+
+        RESIDUAL: a wider finding from RQ-87-JESSDIVERGE9 is NOT closed here.
+        Under a LANE-SHAPED commit subject the window gate demands a claiming
+        status, R11 forbids a non-delivery disposition beside one, and
+        verdict-prose demands a COMPLETE verdict word — so `partial` is
+        UNREACHABLE for any lane shipping that way, whatever the vocabulary says.
+        That is a constraint between three gates, not a vocabulary mismatch, and
+        this lane does not address it.
       done-when: >
         manual:2027-03-31 the two gates accept the same disposition vocabulary they
         advertise — delivered with measured numbers, or REFUTED with the measurement

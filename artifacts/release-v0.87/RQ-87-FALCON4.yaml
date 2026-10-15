@@ -24,6 +24,7 @@ artifacts:
       priority: must
       issue: "#1318"
       verification-track: manual
+      disposition: blocked
       done-when: >
         manual:2027-03-31 the remaining falcon skip is float register pressure, not a
         raisable constant — delivered with measured numbers, or REFUTED with the

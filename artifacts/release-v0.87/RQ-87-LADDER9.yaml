@@ -22,6 +22,7 @@ artifacts:
       priority: should
       issue: "#1432"
       verification-track: manual
+      disposition: blocked
       done-when: >
         manual:2027-03-31 the acceptance ladder's corpus mount is reported at its source
         rather than re-measured — delivered with measured numbers, or REFUTED with the
