@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-SWEEPPOP
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "The vacuity sweep's population must be derived, not hand-written"
     description: >
         `scripts/self_test_vacuity_sweep.py` decides which scripts to sweep from a
@@ -37,6 +37,78 @@ artifacts:
       priority: should
       issue: "#1541"
       verification-track: manual
+      landed: "PR #1547 - #1541 - DELIVERED: the sweep population is DERIVED with every exclusion reasoned, and the three verdict counts are re-measured over it. The refuting command ran FIRST and the mirror is live: hand list NINE against THIRTEEN derived, one swept-but-not-defining and FIVE defining-but-unswept. THREE of this record OWN implications were corrected by measurement. def self_test IS THE WRONG NEEDLE - thirteen define one but FIFTEEN mention --self-test. test_merge_gate_callsite.py WAS CORRECTLY SWEPT: it accepts --self-test, exits 0, carries ELEVEN subjects, so the DERIVATION was too narrow rather than the hand list too wide, which is the opposite of the decision the record asked for. And the real precondition is BEHAVIOURAL - a file belongs only if its own --self-test exits 0 unmutated, else a neutralised subject cannot be told from the pre-existing failure. Probed over the bounded candidate set: 15 candidates, 13 usable, 2 unusable, each now an EXCLUDE entry with a written reason. A DEFECT I INTRODUCED AND MEASURED: the behavioural probe ran the sweep OWN self-test, which re-derives the population and probes the sweep again - unbounded subprocess recursion, 112 live processes before it was killed, and caching cannot help because each level is a fresh process. A behavioural derivation whose population includes the deriving instrument does not terminate; the old syntactic needle could include itself harmlessly. Two guards now, self-exemption plus a nested marker on every child. RE-MEASURED: red-crash 40, GREEN-undetected 47, red-detected 21, subjects 108, and the partition SUMS. AND SELFTEST3 EIGHT DOES NOT REPRODUCE - the same nine files now give SEVENTEEN and the derived thirteen give FORTY-SEVEN, so the eight does not hold on the population it was taken over."
+      verified-by: >
+        DELIVERED — the population is derived, every exclusion carries a written
+        reason, and the three verdict counts are re-measured over it with the
+        partition shown to sum.
+
+        THE REFUTING COMMAND RAN FIRST and the mirror is live: a hand list of
+        NINE against THIRTEEN derived, with one file swept-but-not-defining and
+        FIVE defining-but-unswept — two of the five being instruments the previous
+        release had just added. Sixty-three subjects over the hand list.
+
+        THREE OF THIS RECORD'S OWN IMPLICATIONS WERE CORRECTED BY MEASUREMENT,
+        and each correction points the opposite way to the one the record asked
+        for.
+
+        FIRST, `def self_test` IS THE WRONG NEEDLE. Thirteen scripts define one;
+        FIFTEEN mention `--self-test`. The derivation the record calls adequate
+        was itself a narrower mirror of the question.
+
+        SECOND, `test_merge_gate_callsite.py` WAS CORRECTLY SWEPT. It is the one
+        file the drift line flags as "swept but NOT self-test-defining", which
+        reads like an over-inclusion, and the record asks for "a decision either
+        way". Measured: it ACCEPTS `--self-test`, exits 0, and carries ELEVEN
+        subjects. So it stays, and the finding is that the DERIVATION was too
+        narrow rather than the hand list too wide.
+
+        THIRD, THE REAL PRECONDITION IS BEHAVIOURAL, not syntactic. A file
+        belongs in the sweep only if `python3 <file> --self-test` exits 0
+        UNMUTATED; if it is already non-zero, a neutralised subject cannot be
+        distinguished from the pre-existing failure and every verdict for that
+        file is noise. Probed over the bounded candidate set rather than every
+        script in the tree: FIFTEEN candidates, THIRTEEN usable, TWO unusable —
+        `repro/home_alias_audit_corpus_1189.py` at rc=1 and
+        `test_verdict_prose_check.py` at rc=2, a unittest module whose own parser
+        rejects the flag. Both are now `EXCLUDE` entries with their measured
+        reason, and the self-test asserts that every entry names a real file and
+        carries a non-empty reason, so an exclusion cannot become a silent
+        deletion.
+
+        A DEFECT I INTRODUCED, AND IT IS THE SHARPEST THING HERE. The behavioural
+        probe ran the sweep's OWN `--self-test`, whose self-test re-derives the
+        population, which probes the sweep again. Unbounded subprocess recursion:
+        it reached ONE HUNDRED AND TWELVE live processes before being killed, and
+        caching could not help because every level is a fresh process with a
+        fresh cache. **A BEHAVIOURAL DERIVATION WHOSE POPULATION INCLUDES THE
+        DERIVING INSTRUMENT DOES NOT TERMINATE** — the old SYNTACTIC needle could
+        include itself harmlessly, which is exactly why widening it to a
+        behavioural one needed a guard the previous design did not. There are now
+        TWO, because one would be a single point of failure: self-exemption from
+        the probe, with the subjects still swept and the exemption printed; and a
+        `SYNTH_VACUITY_SWEEP_NESTED` marker set on every child, so a nested run
+        refuses to probe at all. The self-test terminates with twelve cases green
+        and ZERO leftover processes, verified with a needle built at runtime so
+        the check could not match its own command line.
+
+        THE RE-MEASURED COUNTS, over the derived population: `red-crash` 40,
+        `GREEN-undetected` 47, `red-detected` 21, subjects 108 — and 40 + 47 + 21
+        = 108, so the partition SUMS rather than being three numbers printed
+        together. A static pre-estimate said 106 subjects; the sweep's own 108 is
+        the measurement and the estimate is not quoted as the result.
+        `red-crash` at 40 is its own observation and larger than the detected
+        count: for those subjects the self-test notices, but exits on a traceback
+        instead of a verdict.
+
+        AND RQ-87-SELFTEST3's EIGHT DOES NOT REPRODUCE. This record says the lane
+        BOUNDS it and that widening "can only raise it". Measured: the same NINE
+        files now give SEVENTEEN, and the derived thirteen give FORTY-SEVEN. So
+        the eight is not a narrower reading of the same measurement — it does not
+        hold on the population it was taken over. Both of the last two releases
+        added and changed self-tests in those files, which is a plausible cause
+        and is NOT asserted as one; what is measured is that the figure does not
+        reproduce, and SELFTEST3 should restate it against a named population.
       done-when: >
         manual:2027-03-31 the sweep's population is derived with every exclusion
         reasoned, and the verdict counts re-measured over it — delivered with measured
