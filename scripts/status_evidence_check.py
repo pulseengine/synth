@@ -389,7 +389,28 @@ DECLARE_SINCE = (0, 60)
 # the structured field counts, because prose-matching is how a gate goes soft.
 DISPOSITION_SINCE = (0, 67)
 DISPOSITION_FIELD_SINCE = (0, 68)
-DISPOSITIONS = {"partial", "refuted", "deferred"}
+# RQ-87-DISPVOCAB4 (#1458): THIS SET MUST EQUAL what `verdict_prose_check.py`
+# ADVERTISES as `NON_DELIVERY_DISPOSITION`. It did not, and two advertised words
+# were therefore UNUSABLE. MEASURED by planting each extra on a `proposed`
+# artifact — the only shape in which the question can be asked, since R11 forbids
+# a non-delivery disposition beside a CLAIMING status: `blocked` and `superseded`
+# were REJECTED by R11 below, by name, while all three shared words were accepted
+# by both gates. The mismatch was one-directional; nothing was accepted here
+# without being advertised there.
+#
+# BOTH ARE ADDED rather than un-advertised, because both have a present use.
+# `blocked` is what THIS release's three externally-blocked lanes need and
+# "deferred" misdescribes them — a deferral is a choice, a block is not; all
+# three (NPM6, COMPLIANCE7, LADDER9) carry the word in their own prose and no
+# disposition. `superseded` is a concept already live across eighteen artifact
+# files. Narrowing the advertised set instead would have taken away a word three
+# lanes were reaching for.
+#
+# R11's refusal message DERIVES from this set (`sorted(DISPOSITIONS)` below), so
+# the vocabulary has one home and the error text cannot drift from it. The
+# equality itself is asserted in `test_verdict_prose_check.py`, which imports
+# both sets rather than restating either.
+DISPOSITIONS = {"partial", "refuted", "deferred", "blocked", "superseded"}
 
 # ---- issue-scope (R12, #1250 / RQ-71-ISSUESCOPE) --------------------------
 #

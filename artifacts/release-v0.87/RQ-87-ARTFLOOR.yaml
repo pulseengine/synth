@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-ARTFLOOR
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "The artifact-load floor sits 245 below the live figure, so it cannot catch what it exists to catch"
     description: >
         Rivet Validation's `ARTIFACT_FLOOR` is 526 while the live CI figure is 771, so
@@ -37,6 +37,58 @@ artifacts:
       priority: must
       issue: "#1064"
       verification-track: manual
+      landed: "PR #1546 - #1064 - DELIVERED: `ARTIFACT_FLOOR` is raised from 526 to 791, the live measured figure, and the gate is SHOWN to red when an artifact source file goes invisible. The refuting command ran FIRST and CONFIRMED the premise - measured has RISEN, not fallen toward the floor - but it nearly misled twice and both ways are recorded. The newest Rivet Validation check-run on main is QUEUED and its log fetch returns BlobNotFound HTTP 404, which is not the gate failing to print but no log existing yet; the settled reading comes from v0.86 release commit 9ce8348b. And reproducing CI derivation locally first gave 3992, because a .rivet symlink added for an earlier lane makes rivet list count the SEVEN FEDERATED SIBLINGS artifacts too while CI strips externals. In plain worktrees with no .rivet the figures are 771 at 9ce8348b, EXACTLY matching that commit own job log, and 791 at 38c8264a - a delta of exactly v0.87 twenty planning artifacts. So the slack is 265 rather than the 245 this record was written with, a figure the planning PR own twenty artifacts invalidated. The done-when second half is met by a PAIRED control: deleting ONE artifact source file takes measured from 791 to 790, which at the OLD floor of 526 passes GREEN and QUIETLY - the defect - and at 791 reds below the floor - the remedy. Either arm alone would not separate a working floor from a slack one."
+      verified-by: >
+        DELIVERED — the floor equals the live measured figure, and the gate is
+        demonstrated to red on the event it exists for rather than assumed to.
+
+        THE REFUTING COMMAND RAN FIRST AND THE PREMISE HOLDS. `measured` has
+        RISEN, not fallen toward 526, so no artifact source has gone invisible and
+        the floor is slack rather than tripped. Floor 526, live 791, slack 265.
+
+        IT NEARLY MISLED TWICE, and both readings are recorded because each is
+        easy to re-enter. First, the newest `Rivet Validation` check-run on main
+        is QUEUED, and the logs endpoint answers `BlobNotFound / HTTP 404` — which
+        is not "the gate did not print its line" but "there is no log yet". The
+        artifact warns that `gh run view --log` refuses mid-run; the REST endpoint
+        fails differently and just as misleadingly, and a 404 read as a missing
+        line would have been a finding about nothing. The settled reading comes
+        from v0.86's release commit.
+
+        Second, and worse, the LOCAL reproduction measured a different POPULATION.
+        Running CI's own derivation here first gave 3992, against CI's 771 at the
+        same commit — because a `.rivet` symlink added for an earlier lane makes
+        `rivet list` count the seven federated siblings' artifacts, while CI
+        strips externals. In plain worktrees with no `.rivet`: 771 at `9ce8348b`,
+        EXACTLY the figure that commit's own job printed, and 791 at `38c8264a`.
+        The local derivation does reproduce CI; the first two readings were simply
+        of something else. 791 − 771 = 20, exactly v0.87's planning artifacts, so
+        the delta is accounted for rather than merely plausible.
+
+        THE SLACK FIGURE IN THIS RECORD'S OWN DESCRIPTION WAS 245, and that was
+        right at the v0.86 cut and wrong by the time the lane ran: the planning PR
+        that created this artifact added the twenty artifacts that moved it to
+        265. A number invalidated by the edit that wrote it, one tier out.
+
+        THE SECOND HALF OF THE DONE-WHEN IS MET BY A PAIRED CONTROL, and the pair
+        is load-bearing. Deleting ONE artifact source file takes measured from 791
+        to 790. At the SHIPPED floor of 526 that passes GREEN and QUIETLY — which
+        is precisely the defect the floor was built against. At 791 it REDS "below
+        the floor". Either arm alone could not separate "the floor works" from
+        "the floor is slack", because a floor only ever fails BELOW itself and
+        slack is invisible until something is hidden. The tree was restored and
+        re-measured at 791 afterwards.
+
+        The step's empty-count branch is red by construction (`if [ -z
+        "$MEASURED" ]`), and the control transcribes that logic rather than
+        re-implementing it, so it cannot disagree with the step about what counts
+        as a pass.
+
+        RESIDUAL, stated: a floor equal to the live figure is only equal until the
+        next artifact lands. The convention this step documents — raise it in the
+        PR that adds artifacts — is unchanged and unenforced, and this lane does
+        not add an enforcement; it pays the debt the planning PR left and records
+        how to measure it without the two population traps above.
       done-when: >
         manual:2027-03-31 the artifact-load floor equals the live measured figure and the
         gate is shown to red when a source file goes invisible — delivered with measured

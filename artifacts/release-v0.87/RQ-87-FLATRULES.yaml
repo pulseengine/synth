@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-FLATRULES
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "The verified-rule floor has not moved in twenty-one releases, and the context file understates it"
     description: >
         `CLAUDE.md` says "`sel_dsl_rules` flat at 80 for twelve releases", inside a
@@ -41,6 +41,60 @@ artifacts:
       priority: should
       issue: "#242"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1546 - #242 - DELIVERED AS A DECISION, not a number swap, which is what the artifact asked for. The refuting command ran FIRST: --metric reports sel_dsl_rules at 80, baseline 80, delta +0, direction must RISE, ZERO waivers, HELD 21 - so the premise holds and the lane is not moot. TWO CORRECTIONS TO THIS RECORD OWN DESCRIPTION, both found by reading rather than trusting. It said the phrase is in CLAUDE.md; there were TWO live homes, the second a comment at claims.yaml line 344 carrying the same three figures. And a third candidate, the claim_check.py docstring saying the count sat flat for twelve releases, is NOT stale: it is scoped Measured v0.42.0 to v0.57.0 and describes the count at FIFTY in that window, which CLAUDE.md own re-derivation confirms is twelve releases from v0.45. So two stale homes, not one and not three. THE DECISION: do NOT pin the prose figure and do NOT swap it. The --metric table already prints every pin live value, baseline, delta, direction, waivers and HELD LENGTH on every CI run, derived from claims.yaml. So the figures are REMOVED from both live homes and the paragraphs now point at the table - the same #1286 rule this repository already applies to the acceptance ladder, applied to its own prose. Pinning a restatement would add the hand-maintained second copy the paragraph warns against. A SHARPER MEASUREMENT than the artifact claimed: FOUR pins sit at held 21, not one - sel_dsl_rules, mirror_marker_files, mirror_obligation_files and mutants_untested, all last changed at or before v0.67.0 - and FOUR pins are ABOVE their baselines while directed to FALL: selector_lines_code by 1908, known_open_pins by 57, mirror_marker_files by 3 and mirror_obligation_files by 1. Shipped historical records keep their own figures, correctly, because each was true at its release."
+      verified-by: >
+        DELIVERED AS A DECISION — the figures are removed rather than swapped,
+        and the decision the artifact asked for is recorded in the prose it
+        corrects.
+
+        THE REFUTING COMMAND RAN FIRST AND THE PREMISE HOLDS. `claim_check.py
+        claims.yaml --metric` reports `sel_dsl_rules` at 80, baseline 80, delta
+        +0, `direction: must RISE`, ZERO waivers, **held 21**. It has not risen,
+        so the lane is not moot.
+
+        TWO CORRECTIONS TO THIS RECORD'S OWN DESCRIPTION, both from reading the
+        sites rather than trusting the count. It said the phrase lives in
+        `CLAUDE.md`; there are TWO live homes, the second a COMMENT at
+        `claims.yaml:344` carrying the same three figures — so the propagation
+        was wider than the record that named it. And a third candidate is NOT
+        stale: `claim_check.py`'s docstring says the count "sat flat for twelve
+        releases", but it is scoped "Measured v0.42.0 -> v0.57.0" and describes
+        the count at FIFTY in that window, which this file's own re-derivation
+        confirms is twelve releases from v0.45. Correctly-scoped history, left
+        alone. Two stale homes — not one, and not three.
+
+        THE DECISION, which is the deliverable: do NOT pin the prose figure, and
+        do NOT swap it. `--metric` already prints every pin's live value,
+        baseline, delta, direction, waiver count and HELD LENGTH on every CI run,
+        DERIVED from `claims.yaml`. So the three figures are REMOVED from both
+        live homes and the paragraphs now point at that table — the same #1286
+        rule this repository already applies to the acceptance ladder ("cited
+        from there, never copied here"), applied to its own prose. Pinning a
+        restatement of a derived table would add exactly the hand-maintained
+        second copy the paragraph warns against, which is why a pinned claim is
+        the WRONG remedy here even though it is the obvious one.
+
+        A SHARPER MEASUREMENT THAN THE ARTIFACT CLAIMED, and it strengthens the
+        paragraph's argument rather than weakening it. FOUR pins sit at held 21,
+        not one: `sel_dsl_rules`, `mirror_marker_files`, `mirror_obligation_files`
+        and `mutants_untested`, every one last changed at or before v0.67.0. And
+        FOUR are ABOVE their baselines while directed to FALL —
+        `selector_lines_code` by 1908, `known_open_pins` by 57,
+        `mirror_marker_files` by 3, `mirror_obligation_files` by 1. The accumulation
+        the paragraph warns about is measurable in the table it now points at.
+
+        SHIPPED HISTORICAL RECORDS KEEP THEIR OWN FIGURES, deliberately: v0.66's
+        and v0.67's records say what was true at those releases (v0.67's "flat for
+        eight releases" was correct then), and this artifact quotes the stale
+        sentence because the sentence is its subject. Editing them would rewrite
+        history to make a present claim tidy.
+
+        RESIDUAL: nothing now asserts the hold length in prose, so nothing can
+        state it wrongly — but equally nothing SURFACES it except the metric
+        table, which is printed and not gated. A reader who does not run
+        `--metric` learns the shape of the problem and not its size. That is the
+        trade the decision makes, stated rather than hidden.
       done-when: >
         manual:2027-03-31 the verified-rule hold is stated at its measured length and a
         decision is recorded on whether it should be a pinned claim — delivered with

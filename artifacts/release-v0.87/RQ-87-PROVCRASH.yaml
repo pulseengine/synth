@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-PROVCRASH
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "A script whose self-test CI gates while its report form crashes"
     description: >
         `review_record_provenance_check.py --record` raises `ValueError` on a RELATIVE
@@ -33,6 +33,57 @@ artifacts:
       priority: should
       issue: "#1539"
       verification-track: manual
+      landed: "PR #1546 - #1539 - DELIVERED, and the WORRY BEHIND IT REFUTED. The refuting command ran FIRST: a relative --record raises ValueError from relative_to on the raw argument - a traceback, not a diagnostic - while an absolute path prints its report, so the crash reproduces. Fixed with Path(a.record).resolve(), and the form a human runs now has a TEST: the relative path must not traceback AND must reach the same verdict and the same record line as the absolute one, so a fix that merely swallowed the error would not pass. NEGATIVE CONTROL EXECUTED: removing .resolve() reds that case by name. THE POPULATION, derived across all NINE workflows: ELEVEN scripts have a --self-test invocation, FORTY-NINE have a non-self-test one, FIVE have BOTH, and SIX are self-test-only in a workflow - six is several, so the refusal condition does not fire, and the positive control places stale_pin_check and verdict_prose_check in BOTH. BUT THE WORRY IS REFUTED AND TWO OF MY OWN READINGS WERE WRONG FIRST. Searching only the SCRIPTS found one of six documenting the choice; the statement can live in three places, and widened to script plus ci.yml step comment plus artifacts it reads four, then direct reading found a fifth because RQ-86-SPELLSCAN states it verbatim for release_file_statistics_scan. And ungated in a workflow is NOT invoked nowhere: merge_gate.py report form runs from merge_ritual.sh and tag_release.sh, which no workflow contains, so a script the ritual exercises every merge read as unexercised. Final split: six self-test-only in a workflow, one exercised by an operator ritual, five documenting the choice, and ZERO silently ungated. The class is real - it is how this crash survived - but it is not an unnoticed accumulation here; what was missing was a TEST of the relative-path form, not a gate on the report."
+      verified-by: >
+        DELIVERED, and the worry behind the lane is REFUTED with numbers — which
+        is a legitimate outcome and is reported as one.
+
+        HALF 1, THE CRASH, REPRODUCES. `--record docs/reviews/...` raises
+        `ValueError: '...' is not in the subpath of '/Users/r/git/pulseengine/synth'`
+        from `relative_to` on the raw argument: a traceback, not a diagnostic. The
+        absolute path prints its report, which is the positive control. Fixed with
+        `Path(a.record).resolve()`, and — more to the point — the form a human runs
+        now has a TEST. Both halves are asserted: the relative path must not
+        traceback AND must reach the same return code and the same
+        `record-provenance:` line as the absolute one, so a fix that merely
+        swallowed the error would not pass. NEGATIVE CONTROL EXECUTED: removing
+        `.resolve()` reds that case by name, and the file was restored
+        byte-identically.
+
+        HALF 2, THE POPULATION, DERIVED across all NINE workflows: ELEVEN scripts
+        carry a `--self-test` invocation, FORTY-NINE a non-self-test one, FIVE
+        have BOTH, and SIX are self-test-only in a workflow. Six is "several", so
+        the refuting command's refusal condition — zero or one where several are
+        expected — does not fire, and the positive control holds:
+        `stale_pin_check.py` and `verdict_prose_check.py`, both known to have both
+        forms wired, land in BOTH.
+
+        AND THE WORRY IS REFUTED, after TWO OF MY OWN READINGS WERE WRONG. First,
+        the documentation search was bounded by where it looked: searching only
+        the SCRIPTS found ONE of six documenting the gating choice, but the
+        statement can live in three places, and widened to script + the ci.yml
+        step comment + the artifacts it read FOUR — then direct reading found a
+        fifth, because RQ-86-SPELLSCAN states it verbatim ("CI gates the
+        self-test, not the report") for `release_file_statistics_scan.py`, which
+        a proximity window had missed. Second, "ungated in a workflow" is not
+        "invoked nowhere": `merge_gate.py`'s report form runs from
+        `merge_ritual.sh:123`, `:158` and `tag_release.sh:99` — operator rituals
+        that no workflow contains — so a script exercised on every merge read as
+        unexercised by a classifier that scanned workflows only.
+
+        FINAL SPLIT: six self-test-only in a workflow; ONE of those exercised by
+        an operator ritual; FIVE of the remaining five documenting the choice;
+        **ZERO silently ungated**. The class the artifact names is genuine — a
+        CI-gated self-test says nothing about the report path beside it, and that
+        is exactly how this crash survived — but it is not an unnoticed
+        accumulation in this repository. What was missing was a TEST of the
+        relative-path form, not a gate on the report.
+
+        RESIDUAL: the report form of this script is still ungated in CI, and
+        deliberately — the gating form defaults to the newest record, which today
+        carries fifteen non-ancestors in the authoring venue, so wiring it would
+        red on day one over history it cannot change. That choice is stated in the
+        workflow, which is what moves it out of the silent column.
       done-when: >
         manual:2027-03-31 the relative-path crash is fixed AND the population of
         gated-self-test / ungated-report scripts is derived and counted — delivered with

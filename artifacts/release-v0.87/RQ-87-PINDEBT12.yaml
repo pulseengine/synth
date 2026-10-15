@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-PINDEBT12
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "A suppression table added under a non-matching name cannot escape the ledger silently"
     description: >
         The RENAME is caught; the ADDITION of a table under a non-matching name escapes
@@ -22,6 +22,69 @@ artifacts:
       priority: should
       issue: "#1428"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1546 - #1428 - DELIVERED AS A NARROWING, with the escape CONFIRMED rather than refuted. THE REFUTING COMMAND RAN FIRST and the ledger did NOT red: a real-shaped three-entry suppression table planted in a LISTED oracle as SUPPRESSED_CASES left claim_check at rc=0, 75 of 75, with known_open_pins unchanged at its pinned value and known_open_pinned_cases unchanged too. THE PAIRED CONTROL proves the mechanism discriminates on the NAME and nothing else: the SAME table under KNOWN_PROBE_CASES red immediately with count drifted, derived 13 against documented 12. CLOSING THE ESCAPE BY A NAME-INDEPENDENT POPULATION IS REFUSED WITH NUMBERS: the repro corpus carries ONE HUNDRED AND SEVENTY-NINE top-level dict or set bindings against the TWELVE pinned tables, so a pin over all of them would move on every unrelated fixture table in the tree and would be routed around, which is the trap this repository has already measured. WHAT SHIPS IS THEREFORE A NARROWING AND IS NAMED AS ONE: suppression-SHAPED bindings that do not match the ledger name pattern must each be CLASSIFIED with a written reason, and a new one is UNCLASSIFIED and reds. A name carrying NONE of the shape tokens still escapes both halves. THE CLASSIFICATION IS THE SECOND HALF OF THE ANSWER: of the THIRTEEN shaped non-matching bindings, NONE is unaccounted-for pin debt - seven are DECLINE pins which the ledger own stated rule excludes because a loud refusal is reach rather than silent wrongness, two are RED-HALF fixtures excluded by design like PINNED_WRONG, three are CONFIGURATION that suppresses no case at all, and ONE is an envelope entry that suppresses a GATING decision and is named explicitly. A DERIVED POPULATION OF ZERO IS A REFUSAL AND NOT A PASS, so the reason is stated: the convention of naming a suppression table KNOWN or PINNED has in fact been followed, so the escape is LATENT rather than EXPLOITED - a fact about today tree and not a property of the gate. AN ERROR IN THIS LANE OWN FIRST MEASUREMENT, recorded because it would have inverted the conclusion: the first walk counted only ast.Assign and read THREE matching tables against the ledger TWELVE, because the ledger regex admits an ANNOTATED binding which is an ast.AnnAssign, a different node type. Reading 3 where the shipped derivation reads 12 would have looked like the ledger over-counting by nine. Corrected, the scan reproduces the ledger figure EXACTLY, which is the independence check worth having - two different parsers over one tree agreeing - and the self-test asserts it."
+      verified-by: >
+        DELIVERED AS A NARROWING — the escape is CONFIRMED, not refuted, and what ships
+        shrinks it rather than claiming to close it.
+
+        THE REFUTING COMMAND, run first, with a PAIRED control. A real-shaped three-entry
+        suppression table planted in a LISTED oracle as SUPPRESSED_CASES left claim_check
+        at rc=0, seventy-five of seventy-five, with known_open_pins unchanged at its
+        pinned value and known_open_pinned_cases unchanged as well. The SAME table under
+        KNOWN_PROBE_CASES red at once — count drifted, derived thirteen against documented
+        twelve. Either half alone would prove little; the pair establishes that the
+        mechanism discriminates on the NAME and on nothing else, which is exactly the
+        escape the artifact names.
+
+        CLOSING IT BY A NAME-INDEPENDENT POPULATION IS REFUSED, WITH NUMBERS. The repro
+        corpus holds ONE HUNDRED AND SEVENTY-NINE top-level dict or set bindings against
+        the TWELVE that are pinned tables. A pin over all of them would carry a number
+        that moves whenever an unrelated fixture table changes — SIGS, CASES, WATS, BASES,
+        TRUNC_TABLE — so it would red on work with nothing to do with suppression, and
+        this repository has already measured what becomes of a gate nobody can move
+        honestly: it gets routed around.
+
+        SO THE DELIVERY IS A NARROWING, AND THE RESIDUAL IS NAMED. Suppression-SHAPED
+        bindings that do not match the ledger name pattern must each be CLASSIFIED with a
+        written reason; a new one is UNCLASSIFIED and reds. The escape shrinks from any
+        name at all to a name carrying none of the shape tokens — strictly smaller and
+        still real. A table called FOO still passes both halves, and saying so is the
+        point rather than a caveat.
+
+        THE CLASSIFICATION IS THE SECOND HALF OF THE ANSWER, and it is the half a reader
+        primed to expect hidden debt would have got wrong. Of the THIRTEEN shaped
+        non-matching bindings, NONE is unaccounted-for pin debt: SEVEN are DECLINE pins,
+        which the ledger own stated rule excludes because a loud refusal is reach and not
+        silent wrongness; TWO are RED-HALF fixtures, excluded by design exactly as
+        PINNED_WRONG is; THREE are CONFIGURATION and suppress no case at all, one of them
+        a single scratch register and another a set of path components; and ONE —
+        INFORMATIONAL_KINDS — suppresses a GATING decision rather than pinning a decline,
+        which is the single entry worth naming explicitly, its members being documented
+        envelope state cases.
+
+        A DERIVED POPULATION OF ZERO IS A REFUSAL AND NOT A PASS, so the reason is stated
+        rather than assumed: the convention — name a suppression table KNOWN or PINNED —
+        has in fact been FOLLOWED, so the escape is LATENT rather than EXPLOITED. That is
+        a fact about today tree and not a property of the gate, and it will stop being
+        true the first time someone names one differently, which is what the scan now
+        catches.
+
+        AN ERROR IN THIS LANE OWN FIRST MEASUREMENT, recorded because it would have
+        INVERTED the conclusion. The first walk counted only ast.Assign and read THREE
+        matching tables where the ledger reads TWELVE. The ledger regex carries an
+        optional annotation group precisely to admit a binding written NAME colon type
+        equals brace, which the parser reports as an ast.AnnAssign — a different node
+        type, silently skipped. Reading three against twelve would have looked like the
+        ledger over-counting by nine, and a lane primed to find a defective gate could
+        have written that up. Corrected, this scan reproduces the ledger figure EXACTLY,
+        and the self-test ASSERTS that equality: two different parsers over the same tree
+        agreeing is the independence check worth having.
+
+        THE NEGATIVE CONTROL WAS EXECUTED, not described: with SUPPRESSED_CASES planted,
+        claim_check stays rc=0 while this scan reds rc=1 and NAMES the planted table, and
+        its own self-test reds too. The partition is verified to SUM to the row count
+        every run, so no binding is counted twice or lost.
       done-when: >
         manual:2027-03-31 a suppression table added under a non-matching name cannot
         escape the ledger silently — delivered with measured numbers, or REFUTED with

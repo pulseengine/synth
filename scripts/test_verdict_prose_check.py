@@ -20,6 +20,35 @@ def art(status, verified_by, disposition=None):
     return {"id": "RQ-00-X", "status": status, "fields": fields}
 
 
+class DispositionVocabulary(unittest.TestCase):
+    """RQ-87-DISPVOCAB4 (#1458): the two gates must accept what they advertise.
+
+    Both sets are IMPORTED, never restated — a test carrying its own copy of a
+    vocabulary is the mirror this repository's North Star names first, and it
+    would go green while the two real sets drifted apart.
+    """
+
+    def test_advertised_equals_accepted(self):
+        import status_evidence_check as S
+        self.assertEqual(
+            V.NON_DELIVERY_DISPOSITION, S.DISPOSITIONS,
+            "verdict_prose advertises a non-delivery disposition that "
+            "status_evidence R11 rejects (or vice versa); a word that cannot be "
+            "used is worse than one that is not offered")
+
+    def test_the_shared_vocabulary_is_NON_EMPTY(self):
+        """Without this, two empty sets would satisfy the equality above."""
+        import status_evidence_check as S
+        self.assertTrue(V.NON_DELIVERY_DISPOSITION)
+        self.assertTrue(S.DISPOSITIONS)
+
+    def test_blocked_is_usable_since_three_lanes_need_it(self):
+        """The word this release's externally-blocked lanes reach for."""
+        import status_evidence_check as S
+        self.assertIn("blocked", S.DISPOSITIONS)
+        self.assertIn("blocked", V.NON_DELIVERY_DISPOSITION)
+
+
 class LeadingVerdict(unittest.TestCase):
     def test_complete_verdict_beside_non_claiming_status_is_bad(self):
         tok, bad, why = V.classify(art("proposed", "LANDED. it shipped"))

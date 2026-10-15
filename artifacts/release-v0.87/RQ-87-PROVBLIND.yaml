@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-PROVBLIND
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "The record-provenance ancestry half must not go silent on an unresolvable citation"
     description: >
         The ancestry half of `review_record_provenance_check.py` gates every hex token
@@ -37,6 +37,73 @@ artifacts:
       priority: must
       issue: "#1540"
       verification-track: manual
+      landed: "PR #1546 - #1540 - DELIVERED: an unresolvable citation is now REPORTED rather than silently skipped, and every ancestry figure the checker prints carries its VENUE. The refuting command ran FIRST over ALL TWENTY-FIVE shipped records in two named venues, not the three-record sample the previous release reported, and it CONFIRMED the premise overwhelmingly: the authoring checkout tests 243 citations and flags 105; a fresh clone of the REMOTE - what CI checks out and what a reader following a citation has - tests 139 and flags ONE. The flag count DIFFERS on 22 of the 25 records and agrees only on the three that are zero in both. The arithmetic is exact and is itself the finding: 243 minus 139 is 104 skipped, and 105 minus 1 is 104 fewer flags, so EVERY token the fresh clone skipped was one the authoring checkout had flagged - the skip is the measurement, inverted. So the half goes blind precisely where a citation has become unfollowable. The bucket is REPORTED and never failed on, because nothing local can tell a token that was never a commit from a citation this store has lost - cat-file fails identically for both - and a gate reding on 104 historical citations would be routed around the day it landed. This lane also INVALIDATES RQ-87-PROVENANCE3 refuting command, which is satisfied VACUOUSLY in a fresh clone where the count was already one and nothing was reconciled. Three negative controls were EXECUTED and all three are potent."
+      verified-by: >
+        DELIVERED — the skipped population is now a counted, printed category and
+        the venue is named in the checker's own output, so an ancestry figure
+        cannot be quoted without one.
+
+        THE REFUTING COMMAND RAN FIRST AND CONFIRMED THE PREMISE, over a
+        population twenty-five records wide rather than the three the previous
+        release measured. Venue one: the authoring checkout, which still holds the
+        deleted branch heads of every release it drove — 243 commit citations
+        tested, 105 flagged NOT an ancestor. Venue two: a fresh `git clone` of the
+        REMOTE, 180 refs — 139 tested, ONE flagged. Deliberately not a
+        `--no-local` clone of the local repository, because that inherits the
+        parent's local branches as remote-tracking refs and is a THIRD venue, the
+        caveat the previous release's round two recorded.
+
+        THE FLAG COUNT DIFFERS ON TWENTY-TWO OF THE TWENTY-FIVE, agreeing only on
+        the three that read zero in both. And the arithmetic closes exactly:
+        243 − 139 = 104 citations skipped in the fresh clone, 105 − 1 = 104 fewer
+        flags. EVERY token the fresh clone skipped was one the authoring checkout
+        had FLAGGED. The skip is not incidental to the measurement — it is the
+        measurement, inverted — and in the venue that matters the check reports a
+        single problem across the whole shipped history.
+
+        WHAT SHIPS, and what deliberately does NOT. `audit()` returns the
+        unresolvable tokens instead of dropping them at a bare `continue`; the
+        summary line carries their count; each is enumerated; and a
+        `record-provenance-venue:` line names the object store and its DERIVED ref
+        count. The bucket is REPORTED, never failed on: `cat-file -e` fails
+        IDENTICALLY for a token that was never a commit and for a citation whose
+        object this store has lost, so nothing local can classify it, and the
+        honest reading is the DELTA between two named venues. A gate reding on 104
+        historical citations would be routed around on day one — this repository
+        has already measured that once.
+
+        TWO DEFECTS IN THIS LANE'S OWN ADDITIONS, found by running them rather
+        than by reading them. The first self-test probe used a sixty-four-character
+        digest as its unresolvable token and the case failed: `HEX` is
+        `\b([0-9a-f]{8,40})\b`, and a forty-character submatch of a sixty-four
+        character run has a hex character after it, so there is no word boundary —
+        the probe was invisible to the very pattern it was testing. Sixteen
+        characters is inside the bound and word-delimited. The second was in the
+        enumeration itself: it labelled a token "digest-shaped" at length ≥ 40,
+        which `HEX` can only ever produce at exactly 40 — a FULL GIT SHA. The
+        classification was both unreachable in practice and wrong where reachable,
+        so it is gone; the length is printed as data and the reading is the
+        reader's.
+
+        THREE NEGATIVE CONTROLS EXECUTED, each reding the case that names it, with
+        the checker restored byte-identically after each: restoring the bare
+        `continue` reds "the unresolvable token IS reported, not dropped";
+        bucketing every token including real commits reds "a real commit is
+        TESTED, not bucketed"; and stubbing the venue's ref count to zero reds
+        "the ref count is derived, not a stub zero".
+
+        THIS LANE INVALIDATES RQ-87-PROVENANCE3's REFUTING COMMAND, which reads
+        "if the historical non-ancestor count has fallen to zero, the
+        reconciliation already happened". In a fresh clone that is satisfied
+        VACUOUSLY — it was already one, and nothing was reconciled. PROVENANCE3
+        must not be run in that venue without this caveat.
+
+        RESIDUAL: CI runs the self-test, not the report, and that is unchanged
+        here. The report defaults to the newest record, which today carries
+        fifteen non-ancestors in the authoring venue and zero in a fresh clone, so
+        gating it would red on day one over history it cannot change — and which
+        of those two numbers a gate would even be asserting depends on the venue
+        it runs in, which is the whole point of this lane.
       done-when: >
         manual:2027-03-31 an unresolvable citation is reported rather than skipped, or
         the skip is shown not to be load-bearing — delivered with measured numbers, or

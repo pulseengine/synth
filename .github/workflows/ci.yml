@@ -451,6 +451,31 @@ jobs:
       - name: Unit-test the citation FLOOR — arithmetic, not a digit class (#1435)
         run: python3 scripts/ci_citation_floor.py --self-test
 
+      # RQ-87-BASEMOVE (#1269): the release-lane hold window, stated with numbers.
+      # The refuting command ("count open dependabot PRs with auto-merge ENABLED;
+      # a zero means the hazard is not live") was run and REFUTED the lane for
+      # this cycle — zero across ALL authors, not just dependabot.
+      #
+      # But the criterion is NARROWER than the hazard it names. #1269 established
+      # that CHECK2 is branch CURRENCY, so a lane goes behind when its base moves
+      # by ANY mechanism — and the release's OWN serialized merges are one, with
+      # no dependabot involved at all. That route is guaranteed rather than
+      # contingent and an auto-merge census cannot see it. It is why v0.86
+      # consolidated six PRs into one.
+      #
+      # Both inputs to the window are DERIVED. The lane count partitions open PRs
+      # on `user.type == "Bot"` and NOT on a login spelling, which is load-bearing:
+      # REST reports `dependabot[bot]` while the gh CLI renders the same account
+      # `app/dependabot`, and a filter written against one spelling fails silently
+      # against the other — that exact error inflated this lane's first reading
+      # from 3 lanes to 4. The cycle cost is the MEDIAN wall-clock of completed CI
+      # runs, not a best case, and an empty run population is REFUSED as vacuous
+      # rather than reported as a clean zero.
+      #
+      # Only `--self-test` is a gate: the report samples the live API.
+      - name: "Self-test the release-lane hold window (RQ-87-BASEMOVE, #1269)"
+        run: python3 scripts/release_lane_hold_window.py --self-test
+
       # RQ-78-FEATURESET: "is the binary we deliver the full feature set, or is
       # capability hiding behind a flag?" was answerable only by reading 128
       # source files. This derives it. The CENSUS is a measurement with no
@@ -615,6 +640,34 @@ jobs:
       # head-vs-merge diff means nothing on a stale one.
       - name: "Merge-ritual gate self-test (#1269, RQ-72-RITUAL)"
         run: python3 scripts/merge_gate.py --self-test
+
+      # RQ-87-PINDEBT12 (#1428): the suppression-table ESCAPE, narrowed and named.
+      # The refuting command ran and did NOT refute: a three-entry suppression
+      # table planted as `SUPPRESSED_CASES` left `claim_check` at rc=0 with both
+      # pin numbers unchanged, while the SAME table under `KNOWN_PROBE_CASES` red
+      # at once ("derived 13 != documented 12"). A PAIRED control, so the
+      # mechanism is proven to discriminate on the NAME alone.
+      #
+      # CLOSING IT BY A NAME-INDEPENDENT POPULATION IS REFUSED WITH NUMBERS: 179
+      # top-level dict/set bindings in the repro corpus against 12 pinned tables,
+      # so pinning all of them would move on every unrelated fixture table (SIGS,
+      # CASES, WATS, BASES) — the RQ-74-STALEMSG trap of a gate nobody can move
+      # honestly. So this is a NARROWING: suppression-SHAPED non-matching
+      # bindings must each be CLASSIFIED with a reason, a new one reds, and a name
+      # carrying none of the shape tokens still escapes.
+      #
+      # The classification found NO unaccounted pin debt — 7 decline pins (the
+      # ledger's own stated exclusion), 2 red-half fixtures, 3 config, 1 envelope
+      # entry named explicitly — so the escape is LATENT rather than EXPLOITED,
+      # a fact about today's tree and not a property of the gate.
+      #
+      # The self-test carries an INDEPENDENCE CHECK: this scan's AST walk must
+      # agree with the ledger's regex on the pinned count. Making them agree
+      # exposed this lane's own first error — counting only `ast.Assign` read 3
+      # where the ledger reads 12, because an ANNOTATED binding is an `AnnAssign`
+      # and the ledger's pattern admits one deliberately.
+      - name: "Self-test the suppression-table shape scan (RQ-87-PINDEBT12, #1428)"
+        run: python3 scripts/suppression_table_shape_scan.py --self-test
       # RQ-75-CALLSITE (#1269): the step ABOVE exercises the arithmetic and
       # never reaches `gate()` or `main()` — the two functions the merge ritual
       # actually runs. Ten mutations to those two leave it green; all ten turn
@@ -880,6 +933,34 @@ jobs:
       - name: Unit-test the loop-conformance gate — corpora replay (1136)
         run: python3 scripts/test_loop_conformance_check.py
 
+      # RQ-87-ARCHMODEL6 (#1136): the recurring steps-1-2 N/A filing must be
+      # VISIBLE TO THE MATCHER for the release being cut, asked HERE rather than
+      # only at the tag.
+      #
+      # The refuting command ran and CONFIRMED the premise. The ordinal derived
+      # by ARTIFACT IDENTITY is 25 (v0.63..v0.87), and exactly ONE of the 25 was
+      # matcher-invisible: v0.87's own, tagged `feature-loop` + `process` but
+      # carrying NEITHER `aadl` NOR `spar`. The matcher asked for v0.87 returned
+      # RQ-63-ARCHMODEL — a filing from TWENTY-FOUR releases earlier — marked
+      # stale, and the conformance slot reported DERIVED-FAIL. A tagging
+      # regression: v0.85 and v0.86 both carry `aadl`.
+      #
+      # PLACEMENT is why this step exists beside that slot. The slot is asked
+      # only by tag_release.sh. It DOES block (PRETAG gates the tag push), so it
+      # is not toothless — but it blocks after every lane has merged, where a
+      # one-word tag slip costs another merge-and-revalidate cycle. Asked on the
+      # PR it costs one push. Same gate, same potency, earlier window.
+      #
+      # It IMPORTS the shipped matcher rather than re-implementing "visible", and
+      # derives the release under cut TWICE — anchor+1 and max() over the artifact
+      # tree — REFUSING when they disagree, because picking the wrong release
+      # would let a previous release's filing discharge this one's.
+      - name: "Recurring steps-1-2 N/A filing is matcher-visible (RQ-87-ARCHMODEL6, #1136)"
+        run: |
+          set -euo pipefail
+          python3 scripts/recurring_na_filing_check.py --self-test
+          python3 scripts/recurring_na_filing_check.py
+
       # RQ-70-RIVETNOTES (#1337): the release-notes DERIVATION gets the same
       # treatment. Its load-bearing test re-derives the generator's own
       # `PINNED_RIVET` from THIS file rather than restating it, so the two
@@ -920,6 +1001,31 @@ jobs:
       - name: "Self-test the release-file statistics scan (RQ-86-SPELLSCAN, #1515)"
         run: python3 scripts/release_file_statistics_scan.py --self-test
 
+      # RQ-87-WIDEFILE10 (#1439): the `vfp-wide-file` rung's unobservability,
+      # ACCEPTED with a denominator and a mechanism rather than restated. The
+      # refuting command ran over a DERIVED population -- 24 float-bearing
+      # fixtures, not the "four" the previous pass reported, which is not a number
+      # this tree can re-derive -- across three float targets, 72 invocations.
+      #
+      # THE POSITIVE CONTROL IS THE LOAD-BEARING PART, because a zero try count
+      # has two readings and only one is a finding: the sweep records 75 tries on
+      # FIVE OTHER rungs, so the ladder demonstrably runs and `vfp-wide-file` is
+      # simply never the rung it reaches. The sweep REFUSES a zero taken over an
+      # inactive ladder as VACUOUS instead of reporting it clean.
+      #
+      # AND THE MECHANISM: six purpose-built high-pressure probes (20/28/40 live
+      # f32 locals, and 12/20/30 live across a call) all compiled rc=0, rescued by
+      # pool-grow, because pool-grow's depth is DERIVED from the local-target
+      # count -- so any shape whose pressure scales with local count is always
+      # rescued and the ladder never descends. The reporter's own failure is
+      # register-file exhaustion, which local-count pressure cannot reproduce.
+      #
+      # Only `--self-test` is a gate: the sweep needs a built binary and 72
+      # compiler invocations. Its parser carries a positive control on a frozen
+      # real sample, so the live zero is a property of the tree, not of the regex.
+      - name: "Self-test the vfp-wide-file reach sweep (RQ-87-WIDEFILE10, #1439)"
+        run: python3 scripts/vfp_wide_file_reach.py --self-test
+
       # RQ-86-SELFTEST2 (#1515). The vacuity sweep is the instrument whose ABSENCE
       # cold review found: the artifact's figures came from a script in no commit.
       # It is committed now, so its own self-test is wired here -- an instrument
@@ -931,6 +1037,27 @@ jobs:
       # deliberately, by hand, in a disposable checkout -- never in a job.
       - name: "Self-test the self-test vacuity sweep (RQ-86-SELFTEST2, #1515)"
         run: python3 scripts/self_test_vacuity_sweep.py --self-test
+
+      # RQ-87-MEMLAYER4 (#1145): the multi-memory width scoping, with BOTH SIDES
+      # OF THE COMPARISON DERIVED -- the reporter's exercised widths parsed from
+      # the committed fixture (adopted verbatim from their own kill criterion),
+      # phase-one's reach parsed out of the selector's `MultiMemory` arm. Neither
+      # is a hand-written list, so widening or narrowing either moves the number.
+      #
+      # IT HALF-REFUTES ITS OWN LANE'S PREMISE, which was that phase one reaching
+      # "the i32 family ONLY" leaves a blocker for any other width. The reporter
+      # uses NO other width: `i32.load8_u` and `i32.store8`, both inside the
+      # family, so the WIDTH refusal never reaches them. The two refusals are not
+      # symmetric -- `--safety-bounds software|mask` declines ANY memory-k access
+      # regardless of width, because the guard reads R10, which is MEMORY 0's
+      # size. So the lift to cost is a per-memory size source, not width coverage.
+      #
+      # The pin reds when either side moves. Both negative controls were executed
+      # against mutated copies; one of them fired by RAISING rather than
+      # over-reading, and the file records that mechanism rather than the one it
+      # was written to expect.
+      - name: "Self-test the multi-memory width scope pin (RQ-87-MEMLAYER4, #1145)"
+        run: python3 scripts/multi_memory_width_scope.py --self-test
 
       # RQ-86-PROVENANCE2 (#1516): a shipped record's METHOD is as checkable as
       # its figures. A cold-review record cites COMMITS and TOOL PATHS as its
@@ -972,6 +1099,35 @@ jobs:
       # `--self-test` is a gate.
       - name: "Self-test the round-2 number extractor (#1516)"
         run: python3 scripts/extract_r1_numbers.py --self-test
+
+      # RQ-87-RUNNERSHAPE4 (#1451): the no-show/cancel split is NOT ESTABLISHED,
+      # and this step gates a REFUTATION OF THE LANE'S OWN FIRST ATTEMPT, which
+      # concluded "non-derivable, PINNED" and should not have.
+      #
+      # Three things were wrong with it, each found by re-measuring. The SAMPLE
+      # NUMBERS were wrong: a helper returned None on failure and the caller made
+      # that an empty job list, so two passes over IMMUTABLE data disagreed (49
+      # unserved, then 41) and HTTP 502 was later seen live on that endpoint;
+      # re-measured in one pass with retries it is 68 cancelled / 67 unserved,
+      # per-run 18/9/5/18/18 which SUMS to its total — the consistency check the
+      # original numbers could not have passed, now asserted here. A CANDIDATE
+      # SEPARATOR was measured and then left out of the field set: the job's own
+      # SPAN, which runs 1246-14421s across every cancelled-unserved job measured
+      # while the recorded no-show is "600s" in this file's own prose — BELOW the
+      # whole observed range. And the comparison has a THIRD ARM nobody counted:
+      # four cancelled-and-unstarted jobs sit in runs concluding FAILURE, a
+      # fail-fast cascade, two of them LONE — so lone-ness does not identify a
+      # no-show either, which v0.85 had already measured via the straggler.
+      #
+      # The arm the question turns on was NEVER MEASURED: the first attempt's
+      # NO_SHOW fixture was hand-typed from prose while claiming to be captured
+      # from the live API. What IS settled is the refuting command's literal
+      # question — a no-show is separable from an ordinary QUEUED job by
+      # status+conclusion — and that half is kept as the positive control.
+      #
+      # Only `--self-test` is a gate; the report is a window sample.
+      - name: "Self-test the runner no-show/cancel split (RQ-87-RUNNERSHAPE4, #1451)"
+        run: python3 scripts/runner_noshow_split.py --self-test
 
       # RQ-62-CLAIMCHECK (#1062): the runner-redundancy invariant, enforced
       # rather than remembered. On 2026-09-02 the `light` pool had exactly
@@ -1392,7 +1548,31 @@ jobs:
           # exactly the 13 ids visible in `rivet list`.
           # Measured, not computed: the live count is re-derived below and
           # this pin is the value it reports.
-          ARTIFACT_FLOOR=526
+          #
+          # 526 -> 791 (RQ-87-ARTFLOOR #1064, v0.87). The pin sat at 526 while the
+          # live figure reached 771 and then 791, so the floor that exists to
+          # catch an artifact SOURCE FILE going invisible could not catch one
+          # carrying fewer than 265 artifacts. The comment above demands the floor
+          # rise in the PR that adds artifacts and warns that slack "would have
+          # passed quietly"; v0.87's planning PR added twenty and left it, which
+          # is how the slack reached 265.
+          #
+          # MEASURED, not asserted, and the first two readings were of the WRONG
+          # POPULATION — recorded because the trap is easy to re-enter. Running
+          # this same derivation in a checkout where `.rivet` is present counts the
+          # SEVEN FEDERATED SIBLINGS' artifacts too and reads 3992; CI strips
+          # externals. In plain worktrees with no `.rivet`: 771 at v0.86's release
+          # commit 9ce8348b — EXACTLY the 771 that commit's own Rivet Validation
+          # job printed — and 791 at 38c8264a, a delta of exactly v0.87's twenty
+          # planning artifacts. So local reproduces CI once the population matches.
+          #
+          # And the gate is SHOWN TO RED, with a PAIRED control, because either arm
+          # alone proves nothing. Delete one artifact source file (one artifact,
+          # measured 791 -> 790): at the OLD floor of 526 that passes GREEN and
+          # QUIETLY, which is the defect; at 791 it REDS "below the floor", which
+          # is the remedy. A floor only fails BELOW itself, so slack is invisible
+          # until something is hidden.
+          ARTIFACT_FLOOR=791
           MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
           echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
           if [ -z "$MEASURED" ]; then

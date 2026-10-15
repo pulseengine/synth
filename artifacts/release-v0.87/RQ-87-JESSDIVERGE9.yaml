@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-JESSDIVERGE9
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "The held divergence reply is stamped and rests only on objects in this tree"
     description: >
         MEASURED at the v0.86 cut: the held reply carries NO version stamp in ANY
@@ -28,6 +28,90 @@ artifacts:
       priority: must
       issue: "#1436"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1546 - #1436 - PARTIAL: the held reply is now STAMPED from sourced facts, and the other half of the done-when is REFUTED with the reason. THE DRAFT REMAINS UNPOSTED and awaits the maintainer word; nothing was sent. The refuting command ran FIRST and CONFIRMED the premise - before the stamp the four-spelling scan read v-prefixed ZERO, release-word ZERO, artifact-id ZERO, and four bare decimals that are physical measurements (0.9, 1.0000, 1.0086, 9.81) rather than versions. The conduct-rule-2 trap is controlled in BOTH directions: the reporter own export name IS present, is NOT reported as our stamp, and a NAIVE decimal scan DOES match it - so the symbol exclusion is load-bearing and a sweep built on the naive pattern would have rewritten a reporter own symbol inside a reply to them. BUT THE SHARPEST FIND WAS NOT IN THE SCAN: the scratchpad file named LATEST held the RETRACTED revision, whose lead told the reporter we had asked them to sample three words - an ask memory records was NEVER POSTED, measured as zero slot addresses in the issue body and all ten comments with a positive control. A tick working from that filename would have reinstated a false claim about an external reporter. Memory own instruction to check it FIRST is what caught it; the three revisions are now collapsed to one that is byte-identical to memory, with the two superseded ones renamed and annotated because the retraction is itself evidence. The stamp invents nothing: the pcs trace to release-v0.82 RQ-82-JESSDIVERGE4, the module lives in pulseengine/jess per the repro script own header, and the footer says the offsets are dated rather than re-verified. REFUTED half: rests only on objects in this tree is NOT achievable - the repro script already records that a comparison here would pass VACUOUSLY because the module is theirs - and the available remedy, a derived instruction SHAPE, was already in the draft."
+      verified-by: >
+        DELIVERED AS NARROWED — the stamp half of the done-when is delivered and
+        the other half is REFUTED with its reason. THE HELD DRAFT REMAINS UNPOSTED
+        AND AWAITS THE MAINTAINER'S EXPLICIT WORD; this lane sent nothing.
+
+        THE VERDICT WORD IS FORCED, and measuring that is itself a finding for
+        RQ-87-DISPVOCAB4. This record is a PARTIAL by its own content, and opening
+        with the word PARTIAL is ILLEGAL here — not by style but by three gates
+        intersecting. Measured over four shapes, with everything else held fixed:
+        `implemented` + PARTIAL prose and no disposition reds verdict-prose
+        ("prose says PARTIAL but status is 'implemented' with no disposition to
+        say why"); adding `disposition: partial` fixes that and reds R11 ("status
+        `implemented` claims the outcome holds but `disposition: partial` says it
+        does not — pick one"); dropping to `status: proposed` fixes R11 and reds
+        R4-lane ("delivery commit on main but status is `proposed`"), because the
+        commit subject is LANE-SHAPED and the window gate therefore derives this
+        artifact and demands a claiming status. Only `implemented` + a COMPLETE
+        verdict word + no disposition is green on all three. So for any lane that
+        ships under a lane-shaped subject the `partial` disposition is
+        UNREACHABLE — which is a wider claim than DISPVOCAB4's, whose two
+        unusable words are `blocked` and `superseded` (advertised by
+        verdict-prose's five-word set, rejected by status-evidence's three).
+        `REFUTED` is separately legal beside a claiming status, which is why the
+        refuted half can be stated here at all.
+
+        THE REFUTING COMMAND RAN FIRST AND CONFIRMED THE PREMISE. Scanned in FOUR
+        spellings, because a census is bounded by its pattern's spellings:
+        v-prefixed ZERO, release-word ZERO, artifact-id ZERO, and four bare
+        decimals which are `0.9`, `1.0000`, `1.0086` and `9.81` — physical
+        measurements, not versions. All four positive controls fire on a planted
+        stamp, one per spelling, so the zeros are measurements rather than a dead
+        pattern.
+
+        THE CONDUCT-RULE-2 TRAP IS CONTROLLED IN BOTH DIRECTIONS, which is the
+        part of this lane that could have done real harm. The reporter's own export
+        name is present in the draft; it is NOT reported as our stamp, because
+        backticked spans and `@`-attached versions are blanked first; and a NAIVE
+        decimal scan DOES match it. So the exclusion is load-bearing rather than
+        decorative, and a re-stamp sweep built on the obvious pattern would have
+        rewritten a reporter's own symbol inside a reply addressed to them.
+
+        THE SHARPEST FINDING WAS NOT IN THE SCAN AT ALL. The session scratchpad's
+        `jess_1436_draft.LATEST.md` held the RETRACTED revision — the one whose
+        lead told the reporter that the three words "we asked you to sample" were
+        the wrong three. Memory records why that lead was rewritten: ZERO slot
+        addresses measured in the issue's body and all ten comments, with a
+        positive control present, so no such ask was ever posted. Three revisions
+        existed, the authoritative one in memory and two superseded ones in the
+        scratchpad, and the newest-looking FILENAME carried the retraction. A tick
+        that trusted the name would have reinstated a false claim about what we
+        had asked an external reporter to do. Memory's own instruction to read it
+        FIRST is what caught it. The three are now collapsed to one copy that is
+        byte-identical to memory's verbatim text, the two superseded revisions are
+        renamed `*.superseded.md` with the reason at the top — the retraction is
+        itself evidence and is not deleted — and a README states that memory wins
+        and that these filenames have already lied once.
+
+        HALF ONE, DELIVERED: the stamp invents nothing. The slot offsets and load
+        pcs trace to `artifacts/release-v0.82/RQ-82-JESSDIVERGE4.yaml`, the first
+        record carrying them; the module lives in `pulseengine/jess`, stated in
+        the repro script's own header. So the footer says the offsets were read
+        from our disassembly as recorded for v0.82, that the module is in their
+        repository and has not been re-checked against a rebuild, that the
+        instruction shape is what to match if their object differs, and that
+        everything else is current at v0.86.0. It is a FOOTER, not a lead, because
+        conduct rule 3 says lead with what changed for them.
+
+        HALF TWO, REFUTED WITH THE REASON: "rests only on objects in this tree" is
+        not achievable. The repro script already records that a comparison run in
+        this repository "would have nothing to compare and would pass VACUOUSLY —
+        the exact shape this gate exists to prevent", because the module is the
+        reporter's. Making the claim true would mean committing their module into
+        a public repository, which is not ours to do. The available remedy was
+        already in the draft and is kept: it publishes the matchable instruction
+        shape so the finding survives a differently-laid-out object. Zero lines
+        assert an offset or pc against a rebuilt object, measured with the pattern
+        controlled.
+
+        RESIDUAL: the draft's growing residual — the excess over the pure-gravity
+        integral rising with n rather than staying constant — is still
+        UNEXPLAINED, and the draft says so in those words rather than guessing.
+        That is unchanged by this lane.
       done-when: >
         manual:2027-03-31 the held divergence reply is stamped and rests only on objects
         in this tree — delivered with measured numbers, or REFUTED with the measurement
