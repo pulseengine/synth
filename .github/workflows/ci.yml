@@ -1098,6 +1098,7 @@ jobs:
       # status+conclusion — and that half is kept as the positive control.
       #
       # Only `--self-test` is a gate; the report is a window sample.
+      - name: "Self-test the runner no-show/cancel split (RQ-87-RUNNERSHAPE4, #1451)"
         run: python3 scripts/runner_noshow_split.py --self-test
 
       # RQ-62-CLAIMCHECK (#1062): the runner-redundancy invariant, enforced
