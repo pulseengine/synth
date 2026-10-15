@@ -1328,7 +1328,31 @@ jobs:
           # exactly the 13 ids visible in `rivet list`.
           # Measured, not computed: the live count is re-derived below and
           # this pin is the value it reports.
-          ARTIFACT_FLOOR=526
+          #
+          # 526 -> 791 (RQ-87-ARTFLOOR #1064, v0.87). The pin sat at 526 while the
+          # live figure reached 771 and then 791, so the floor that exists to
+          # catch an artifact SOURCE FILE going invisible could not catch one
+          # carrying fewer than 265 artifacts. The comment above demands the floor
+          # rise in the PR that adds artifacts and warns that slack "would have
+          # passed quietly"; v0.87's planning PR added twenty and left it, which
+          # is how the slack reached 265.
+          #
+          # MEASURED, not asserted, and the first two readings were of the WRONG
+          # POPULATION — recorded because the trap is easy to re-enter. Running
+          # this same derivation in a checkout where `.rivet` is present counts the
+          # SEVEN FEDERATED SIBLINGS' artifacts too and reads 3992; CI strips
+          # externals. In plain worktrees with no `.rivet`: 771 at v0.86's release
+          # commit 9ce8348b — EXACTLY the 771 that commit's own Rivet Validation
+          # job printed — and 791 at 38c8264a, a delta of exactly v0.87's twenty
+          # planning artifacts. So local reproduces CI once the population matches.
+          #
+          # And the gate is SHOWN TO RED, with a PAIRED control, because either arm
+          # alone proves nothing. Delete one artifact source file (one artifact,
+          # measured 791 -> 790): at the OLD floor of 526 that passes GREEN and
+          # QUIETLY, which is the defect; at 791 it REDS "below the floor", which
+          # is the remedy. A floor only fails BELOW itself, so slack is invisible
+          # until something is hidden.
+          ARTIFACT_FLOOR=791
           MEASURED=$(rivet list 2>/dev/null | grep -Eo '^[0-9]+ artifacts$' | tail -1 | cut -d' ' -f1)
           echo "artifact-load floor=$ARTIFACT_FLOOR measured=${MEASURED:-<none>}"
           if [ -z "$MEASURED" ]; then
