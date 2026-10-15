@@ -14,21 +14,29 @@ script was in no commit — so a release themed "the instrument is part of the
 evidence" shipped its vacuity figures with the instrument left out. It is
 committed here unchanged in behaviour, so the recorded figures re-derive.
 
-ITS OWN KNOWN DEFECT, printed rather than hidden. `FILES` is HAND-WRITTEN, and
-a hand-written population is the mirror class this repository's North Star names
-first. It is kept as-is because the shipped figures were measured over it and
-changing it would invalidate them in the same breath as the correction; instead
-the sweep DERIVES the self-test-bearing population and prints the drift, so the
-omission is visible in its own output.
+ITS KNOWN DEFECT IS FIXED, AND THIS PARAGRAPH USED TO SAY OTHERWISE. Until
+RQ-87-SWEEPPOP the population was a HAND-WRITTEN `FILES` list -- the mirror class
+this repository's North Star names first -- and this docstring argued for keeping
+it, on the ground that re-deriving it would invalidate the shipped figures in the
+same breath as the correction. The list is now GONE: the population is DERIVED
+(`candidates()` by either needle, minus `EXCLUDE`, each exclusion carrying a
+written reason the self-test length-checks), and `report()` states its own
+population every run.
 
-DO NOT QUOTE THE DRIFT HERE -- READ `report()`'s OWN TWO LINES. An earlier version
-of this docstring said "the drift is two files each way", which the function below
-contradicts in the same file and the same commit: it prints ONE swept-but-not-
-defining and FIVE defining-but-not-swept. "Two each way" was the drift against a
-NON-RECURSIVE population (`scripts/*.py`); `derived_population()` is RECURSIVE
-(`scripts/**/*.py`), so the docstring described a set the script does not compute.
-Among the unswept are the THREE self-test-bearing scripts this release added --
-three, not two, the third being this file.
+THE STALE PARAGRAPH IS RECORDED RATHER THAN SILENTLY REPLACED, because it is this
+release's own theme landing on this file. A reader primed by the old text would
+look for a hand list, find `FILES` named in two comments, and conclude the mirror
+was still live -- when `FILES` survives only in the HISTORY the self-test tells
+about a past round. Doc rot behind a green gate: nothing checks a paragraph, so
+the gate stayed green while the prose described a construct that had been deleted.
+
+DO NOT QUOTE THE POPULATION OR THE DRIFT HERE -- READ `report()`'s OWN LINES. An
+earlier version of this docstring said "the drift is two files each way", which
+the function below contradicted in the same file and the same commit; "two each
+way" was measured against a NON-RECURSIVE population (`scripts/*.py`) while the
+derivation is RECURSIVE (`scripts/**/*.py`), so the docstring described a set the
+script does not compute. With the hand list gone there is no drift to quote at
+all, which is the cleanest form of that lesson.
 
 NOT a CI gate. It mutates files in the working tree and restores them, so it is
 run deliberately, in a disposable checkout, and never against uncommitted work.
