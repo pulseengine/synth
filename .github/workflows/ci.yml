@@ -763,6 +763,59 @@ jobs:
       # caught the thing it was built for.
       - name: Issue-closure gate tests (#1250)
         run: python3 scripts/test_issue_closure_check.py
+      # RQ-87-CLOSEWINDOW (#1478): the step ABOVE tests the gate's RULES against
+      # synthetic artifacts and a frozen replay. Nothing ran the gate on the LIVE
+      # tree inside a context that can BLOCK — `tag_release.sh` asks it at GATE5,
+      # AFTER the tag is pushed, with `--allow-unclosed`, printing into a log
+      # nobody re-reads. A gate positioned past the last moment it could block
+      # says nothing, however potent it is.
+      #
+      # MEASURED on the v0.87 planning tree before this step existed. Plant an
+      # `issue-scope: outlives` over CLOSED #1183 on an otherwise-valid claiming
+      # artifact, with an OPEN-issue arm (#1476) as the paired control, and run
+      # every artifact-READING step of every required context — all five in this
+      # job plus `rivet validate`; the other seven required contexts contain no
+      # step touching artifacts/ at all. Every one is GREEN on both arms. Only
+      # this gate separates them, and it is not required.
+      #
+      # WHY THIS EXACT INVOCATION, each flag paid for by a measurement:
+      #   --from-anchor  the release is DERIVED from ANCHOR_TAG, so this does not
+      #                  become a seventh anchor site that nobody moves and that
+      #                  then checks the PREVIOUS release while reading green.
+      #   --closed ''    the HELD-OPEN direction only. With `--since-tag` the
+      #                  closed-but-not-authorised direction runs on every PR, so
+      #                  any unrelated issue closed mid-release would red every
+      #                  open PR for something its diff did not do. Both
+      #                  directions still run at the tag.
+      #   --allow-unclosed            a closure legitimately lags the tag.
+      #   --allow-vacuous-authorised  a PLANNING PR is legitimately vacuous —
+      #                  nothing is `implemented` yet. Unconditional, this one
+      #                  failure red all four invocation modes at plan time,
+      #                  which is why no mode could be wired before now. The TAG
+      #                  ritual does NOT pass it, so v0.85's vacuous-authorised
+      #                  finding stays a failure where it is actionable.
+      #   --require-state  FAIL CLOSED. With the state read broken the gate falls
+      #                  back to the window, and an empty window flags nothing:
+      #                  measured exit 0, no finding printed, on the planted
+      #                  falsehood. It was loud and not blocking. If this job's
+      #                  token cannot read issue state the step now exits 2 —
+      #                  visibly broken rather than falsely green, which is the
+      #                  right failure for a guard.
+      - name: "Issue-closure gate on the LIVE tree — a record cannot hold open an already-closed issue (#1478)"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/issue_closure_check.py --from-anchor --closed '' \
+            --allow-unclosed --allow-vacuous-authorised --require-state \
+            | tee /tmp/issue-closure.log
+          # Non-vacuity, in this step's seventeen siblings' idiom: the state read
+          # must have HAPPENED over a non-empty population. `--require-state`
+          # already exits 2 when it could not be read; this pin is what catches a
+          # future edit that DROPS that flag, because the fallback-to-window path
+          # is green on exactly the falsehood above.
+          grep -qE '^issue-closure-state: [1-9][0-9]* open issue\(s\) read$' \
+            /tmp/issue-closure.log
 
       # RQ-77-STDERR (#1419): `oracle_run.py` drives 206 oracles in CI and had
       # NO tests and NO wiring. The defect it shipped with: an oracle refusing

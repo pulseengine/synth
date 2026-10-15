@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-CLOSEWINDOW
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "A record cannot declare an already-closed issue held open without a gate reading it"
     description: >
         A record can declare `issue-scope: outlives` over an issue that is ALREADY
@@ -36,6 +36,87 @@ artifacts:
       priority: must
       issue: "#1478"
       verification-track: manual
+      landed: "PR #1543 - #1478 - DELIVERED: the issue-closure gate now runs on the LIVE tree inside the `Claim Check` REQUIRED context, so a record declaring `issue-scope: outlives` over an already-closed issue reds a merge instead of printing into a post-push advisory log. The refuting command ran FIRST and CONFIRMED the premise rather than refuting it: with an `outlives` planted over a CLOSED issue (#1183) against an OPEN #1476 paired control, every artifact-READING step of every required context is GREEN on both arms - all five in the claim-check job plus `rivet validate`, the other seven required contexts containing no step that touches artifacts/ at all - while the advisory gate reds and names #1183. Three flags were each paid for by a measurement: --from-anchor so a CI invocation does not become a seventh anchor site; --allow-vacuous-authorised because the VACUOUS AUTHORISED SET failure is unconditional and red all four invocation modes on the honest plan-time tree, which is why no mode could be wired before; and --require-state because with the state read broken the gate falls back to the window, an empty window flags nothing, and it exited ZERO on the planted falsehood - loud but not blocking, potent locally and inert in the venue that matters. The tag ritual still calls the gate WITHOUT --allow-vacuous-authorised, so v0.85 vacuous-authorised finding stays a failure where it is actionable. Both halves of the new self-test are asserted and both negative controls were EXECUTED: a no-op flag reds the downgrade case, an over-suppressing flag reds the held-open case."
+      verified-by: >
+        DELIVERED — the gate is wired into a REQUIRED context, so its window of
+        positions now includes one from which it can block. Measured, with the
+        refuting command run first and reported either way.
+
+        THE PREMISE WAS CONFIRMED, NOT REFUTED. Plant an `issue-scope: outlives`
+        over a CLOSED issue (#1183) on an otherwise-valid claiming artifact, with an
+        identical arm over OPEN #1476 as the paired control, so a verdict
+        difference can only come from the closed-ness. The population of gates is
+        DERIVED rather than assumed: mapping the nine required contexts to their
+        jobs by `name:`, all nine resolve and only TWO contain any step touching
+        `artifacts/` — `Claim Check` (five of its forty-five steps) and `Rivet
+        Validation` (one of six). The other seven have ZERO, so they are
+        structurally incapable of reading `issue-scope`. Every one of the six that
+        CAN was run on both arms and on the unplanted tree, and all are GREEN
+        everywhere. Only `issue_closure_check.py` separates the arms, and it was
+        not required.
+
+        ONE ROW WAS NEARLY REPORTED WRONG, which is this release's theme landing
+        on the lane's own instrument. `rivet validate` first read RED on BOTH
+        arms, which looks like "reds but is blind to the difference". It reds on
+        the UNPLANTED tree too: `.rivet/repos` holds the seven federated sibling
+        checkouts and is gitignored, so it is absent from every fresh worktree —
+        FAIL with forty errors and `cross-refs NOT CHECKED — externals failed to
+        load`, against PASS in the main checkout. The red carried no information
+        about the plant. Only once the externals were made visible did that row
+        become a measurement.
+
+        BOTH EDGES OF THE WINDOW ARE REAL, which is why the remedy is a reachable
+        window rather than an earlier call. Asked with the tag of the release
+        being cut the gate TRACEBACKS — an unhandled CalledProcessError from a
+        remote commit lookup, not a diagnostic. Asked with no window argument at
+        all it refuses at argparse. And asked in any of its four existing modes on
+        the honest plan-time tree it reds on VACUOUS AUTHORISED SET, the
+        legitimate state of a planning PR — so wiring any mode as it stood would
+        have red every planning PR, the trap this repository has already measured
+        once and declined to build.
+
+        THE REMEDY WOULD HAVE BEEN INERT WHERE IT RUNS. Before the third flag
+        existed, the CI invocation was measured with only `gh`'s auth broken and
+        the plant still over a CLOSED issue (#1183). It exited ZERO and never printed the
+        finding: the live-state read returns None, the held-open direction falls
+        back to the WINDOW, and an empty window flags nothing. The script is LOUD
+        about it — the notice prints — but loud is not blocking, and a step reading
+        the exit code would have been green on exactly the falsehood it was added
+        to catch. `--require-state` makes that exit 2, reusing the script's own
+        "the gate could not run" convention, and the step grep-pins the state
+        read's own population so a future edit dropping the flag cannot read as a
+        pass.
+
+        A BROKEN CONTROL ON THE WAY THERE, recorded because it nearly read as the
+        finding: the first attempt broke the state read with a temporary HOME and
+        died on a missing `yaml` module — user site-packages live under HOME, so it
+        measured a broken interpreter rather than a broken state read, and its
+        silence would have read as blindness. A sanity probe showing `gh issue
+        list` asking for `gh auth login` is what established that the intended
+        thing, and only it, was broken.
+
+        POTENCY, EXECUTED NOT CLAIMED. Both halves of each new self-test case are
+        asserted, and two mutants were run against the shipped gate: making the
+        downgrade flag a NO-OP reds the "vacuity is a warning with the flag" case,
+        and making it ALSO swallow the held-open direction reds the
+        "held-open-over-closed still fails" case. Each mutant reds the case that
+        names it, and the gate was restored byte-identically after each. The
+        mutant harness itself needed three repairs first — a detector matching the
+        word FAILURE inside a test's own LABEL rather than the verdict token, an
+        anchor typed from memory that matched nothing, and a regex requiring two
+        spaces after the verdict where the source prints ONE after FAIL and three
+        after ok, so it was blind to precisely the verdict it was hunting and
+        reported a potent mutant as inert.
+
+        RESIDUALS, stated rather than left to be found. The CI invocation runs the
+        HELD-OPEN direction only (`--closed ''`): with a window, the
+        closed-but-not-authorised direction would run on every PR, so an unrelated
+        issue closed mid-release would red every open PR for something its diff
+        did not do. Both directions still run at the tag. And `gh issue list`
+        enumerates ISSUES, so an artifact whose `issue:` field names a PULL
+        REQUEST — this artifact's own #1478 is one, a merged PR rather than an
+        issue — can never appear in the open set, leaving the authorised-but-open
+        direction structurally silent for it. Neither is closed by this lane.
       done-when: >
         manual:2027-03-31 a record cannot declare an already-closed issue held open
         without a gate reading it — delivered with measured numbers, or REFUTED with the

@@ -45,6 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from status_evidence_check import (  # noqa: E402
+    ANCHOR_TAG,
     CLAIMING,
     authorised_close_set,
     load_release_artifacts,
@@ -404,7 +405,8 @@ def fmt_release(v: tuple[int, int]) -> str:
 
 
 def check(root: Path, release: str, closed: set[int],
-          allow_unclosed: bool = False, open_issues: set[int] | None = None):
+          allow_unclosed: bool = False, open_issues: set[int] | None = None,
+          allow_vacuous: bool = False):
     """Returns (failures, warnings, authorised, held_open).
 
     `closed` is the WINDOW — issues closed at or after the tag. `open_issues`,
@@ -435,7 +437,19 @@ def check(root: Path, release: str, closed: set[int],
     # So vacuity is now reported as a FINDING ABOUT THE AUTHORISED SET and the
     # loop runs regardless.
     if not authorised and not held_open:
-        failures.append(
+        # RQ-87-CLOSEWINDOW (#1478): downgradable, for one measured reason. A
+        # PLANNING PR is legitimately vacuous -- every artifact is `proposed`, so
+        # nothing authorises any closure -- and this failure is UNCONDITIONAL, so
+        # every invocation mode reds at plan time. MEASURED on the v0.87 planning
+        # tree: all four of {GATE5-as-scripted, --closed '', --closed '' --open
+        # ..., --no-state --closed ''} red, every one on THIS line, while three of
+        # the four correctly caught a planted `outlives` over a closed issue. So
+        # the gate could not be wired into a required context without reding
+        # every planning PR -- the v0.72 trap this file's CI step documents and
+        # declines to build. The downgrade is for CI only; the TAG ritual calls
+        # the gate WITHOUT it, so v0.85's vacuous-authorised-set finding stays a
+        # failure exactly where it is actionable.
+        (warnings if allow_vacuous else failures).append(
             f"VACUOUS AUTHORISED SET: no {release} artifact both names an issue "
             f"and claims completion, so nothing in this release authorises ANY "
             f"closure. The per-issue verdicts below are still derived -- from "
@@ -582,7 +596,10 @@ def check(root: Path, release: str, closed: set[int],
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--release", required=True, help="e.g. v0.71")
+    # Not `required=True` since RQ-87-CLOSEWINDOW (#1478): --from-anchor
+    # supplies it. main() refuses when NEITHER is given, so the contract is
+    # unchanged for every existing caller.
+    ap.add_argument("--release", help="e.g. v0.71; or --from-anchor")
     ap.add_argument("--root", default=".", type=Path)
     ap.add_argument("--repo", default="pulseengine/synth")
     g = ap.add_mutually_exclusive_group(required=True)
@@ -602,7 +619,35 @@ def main() -> int:
                          "this STATE, not against the closed window)")
     ap.add_argument("--no-state", action="store_true",
                     help="do not consult live issue state (window only)")
+    ap.add_argument("--allow-vacuous-authorised", action="store_true",
+                    help="report an empty authorised-AND-held-open set as a "
+                         "warning (RQ-87-CLOSEWINDOW, #1478). For CI, where a "
+                         "planning PR is legitimately vacuous; the tag ritual "
+                         "must NOT pass it")
+    ap.add_argument("--require-state", action="store_true",
+                    help="exit 2 if live issue STATE cannot be read, instead of "
+                         "falling back to the window (RQ-87-CLOSEWINDOW, #1478)")
+    ap.add_argument("--from-anchor", action="store_true",
+                    help="derive --release as ANCHOR_TAG's successor, importing "
+                         "ANCHOR_TAG from status_evidence_check rather than "
+                         "mirroring it, so a CI invocation does not become a "
+                         "seventh anchor site (RQ-87-CLOSEWINDOW, #1478)")
     args = ap.parse_args()
+
+    # RQ-87-CLOSEWINDOW (#1478). A CI step must not spell the release out: the
+    # anchor move already has SIX sites, and a seventh that nobody updates would
+    # leave this gate checking the PREVIOUS release forever while reading green.
+    # ANCHOR_TAG is the last SHIPPED release, so the one being cut is its
+    # successor -- the same derivation `status_evidence_check` makes for its own
+    # `_expected_cut`, imported rather than mirrored.
+    if args.from_anchor:
+        if args.release:
+            sys.exit("--from-anchor and --release are mutually exclusive")
+        mm = tuple(int(x) for x in ANCHOR_TAG.lstrip("v").split(".")[:2])
+        args.release = f"v{mm[0]}.{mm[1] + 1}"
+        print(f"  release DERIVED from ANCHOR_TAG {ANCHOR_TAG}: {args.release}")
+    elif not args.release:
+        sys.exit("one of the arguments --release --from-anchor is required")
 
     if args.closed is not None:
         closed = {int(x) for x in args.closed.split(",") if x.strip()}
@@ -635,8 +680,27 @@ def main() -> int:
                   "which cannot distinguish 'never closed' from 'closed before "
                   "the tag'")
 
+    # RQ-87-CLOSEWINDOW (#1478): FAIL CLOSED on an unreadable state read.
+    # MEASURED: with the state read broken (gh unauthenticated) and a planted
+    # `issue-scope: outlives` over CLOSED #1183, `--closed ''` exits 0 and never
+    # prints HELD OPEN BUT ALREADY CLOSED -- open_issues is None, the directions
+    # fall back to the WINDOW, and an empty window flags nothing. The notice
+    # above is printed, so the gate is loud; loud is not blocking, and a CI step
+    # reading the exit code would be GREEN on exactly the falsehood it was added
+    # to catch. Exit 2, not 1: "the gate could not run", the same distinction
+    # RQ-76-CLOSUREMAIN (#1404) makes just below.
+    if args.require_state and open_issues is None:
+        print("REFUSED: live issue STATE could not be read and --require-state "
+              "was given. The authorised/held-open directions would fall back "
+              "to the window, which cannot see an issue closed before the "
+              "window opened -- the exact falsehood this gate exists to catch. "
+              "Fix the state read (gh auth / `issues: read` permission) rather "
+              "than dropping the flag.")
+        return 2
+
     failures, warnings, authorised, held_open = check(
-        args.root, args.release, closed, args.allow_unclosed, open_issues)
+        args.root, args.release, closed, args.allow_unclosed, open_issues,
+        allow_vacuous=args.allow_vacuous_authorised)
 
     # RQ-76-CLOSUREMAIN (#1404): an EMPTY live-open set is not evidence.
     #
@@ -676,6 +740,12 @@ def main() -> int:
         print(f"WARN {w}")
     for f in failures:
         print(f"FAIL {f}")
+    # RQ-87-CLOSEWINDOW (#1478): the state read's own population, so a CI step
+    # can pin `[1-9][0-9]*` and a silent downgrade to zero-state cannot read as a
+    # pass. `--no-state` prints nothing here, which is the honest output for a
+    # mode that deliberately does not look.
+    if open_issues is not None:
+        print(f"issue-closure-state: {len(open_issues)} open issue(s) read")
     print(f"issue-closure: {args.release} — {len(authorised)} authorised, "
           f"{len(held_open)} held open, {len(closed)} closed, "
           f"{len(failures)} failures")
