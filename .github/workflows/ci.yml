@@ -932,6 +932,27 @@ jobs:
       - name: "Self-test the self-test vacuity sweep (RQ-86-SELFTEST2, #1515)"
         run: python3 scripts/self_test_vacuity_sweep.py --self-test
 
+      # RQ-87-MEMLAYER4 (#1145): the multi-memory width scoping, with BOTH SIDES
+      # OF THE COMPARISON DERIVED -- the reporter's exercised widths parsed from
+      # the committed fixture (adopted verbatim from their own kill criterion),
+      # phase-one's reach parsed out of the selector's `MultiMemory` arm. Neither
+      # is a hand-written list, so widening or narrowing either moves the number.
+      #
+      # IT HALF-REFUTES ITS OWN LANE'S PREMISE, which was that phase one reaching
+      # "the i32 family ONLY" leaves a blocker for any other width. The reporter
+      # uses NO other width: `i32.load8_u` and `i32.store8`, both inside the
+      # family, so the WIDTH refusal never reaches them. The two refusals are not
+      # symmetric -- `--safety-bounds software|mask` declines ANY memory-k access
+      # regardless of width, because the guard reads R10, which is MEMORY 0's
+      # size. So the lift to cost is a per-memory size source, not width coverage.
+      #
+      # The pin reds when either side moves. Both negative controls were executed
+      # against mutated copies; one of them fired by RAISING rather than
+      # over-reading, and the file records that mechanism rather than the one it
+      # was written to expect.
+      - name: "Self-test the multi-memory width scope pin (RQ-87-MEMLAYER4, #1145)"
+        run: python3 scripts/multi_memory_width_scope.py --self-test
+
       # RQ-86-PROVENANCE2 (#1516): a shipped record's METHOD is as checkable as
       # its figures. A cold-review record cites COMMITS and TOOL PATHS as its
       # evidence and nothing tested either. Measured over the last three records:
