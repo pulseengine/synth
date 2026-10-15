@@ -40,6 +40,23 @@ CONSOLIDATE lanes into one PR rather than serialize them. The hold window scales
 with the NUMBER OF PRs, not with the amount of work, so N lanes in one PR cost
 one cycle and N lanes in N PRs cost N.
 
+AND THE WINDOW IS A POLICY COST, NOT A PLATFORM ONE — measured, and it changes
+what the number means. This repository's branch protection has
+`required_status_checks.strict = FALSE`, so GitHub does NOT require a PR to be
+up to date with its base and does NOT invalidate a stale-base PR's green checks.
+Verified live: after a lane merged, the three remaining open PRs kept their
+checks and all three still merged cleanly onto the new main. So the serialization
+is imposed by the release loop's OWN CHECK2 (baseRefOid == origin/main), not by
+the platform.
+
+That is a deliberate choice with a recorded reason rather than an accident: a
+stale-base PR can merge cleanly at the TEXT level and still break semantically —
+this repository has a patch against a moved main that undid an already-merged
+dependency bump while presenting three green gates. So CHECK2 stays. But the
+honest framing of the window is "the cost of a policy that prevents a measured
+failure mode", and the lever is therefore the NUMBER OF PRs, which the loop
+controls, rather than the platform setting, which it should not relax.
+
 NOT a CI gate — the report samples the live API and is window-dependent by
 construction. CI gates the SELF-TEST.
 """

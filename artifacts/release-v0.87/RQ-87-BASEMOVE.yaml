@@ -76,6 +76,23 @@ artifacts:
         starvation is counted. The figure MOVES with the next lane, by design, which is the
         reason it is derived and printed with its inputs rather than quoted.
 
+        AND THE WINDOW IS A POLICY COST, NOT A PLATFORM ONE — which changes what the
+        number means, and was measured rather than assumed. This repository branch
+        protection has required_status_checks.strict = FALSE, so GitHub does NOT require a
+        PR to be up to date with its base and does NOT invalidate a stale-base PR green
+        checks. Verified live during this release: after one lane merged, the three
+        remaining open PRs KEPT their checks, and a merge-tree dry run showed all three
+        still applying cleanly onto the new main. So the serialization is imposed by the
+        release loop OWN CHECK2, baseRefOid equals origin/main, and not by the platform.
+
+        THAT CHOICE STAYS, for a recorded reason rather than inertia: a stale-base PR can
+        merge cleanly at the TEXT level and still break SEMANTICALLY, and this repository
+        already has the specimen — a patch against a moved main that undid an
+        already-merged dependency bump while presenting three green gates. So the honest
+        framing is that the window is the price of a policy preventing a MEASURED failure
+        mode, and the lever is the NUMBER OF PRs, which the loop controls, rather than the
+        protection setting, which it should not relax.
+
         WHAT FOLLOWS FROM IT, stated because a number like that is otherwise just alarming:
         CONSOLIDATE lanes into one PR rather than serialize them. The window scales with the
         NUMBER OF PRs, not with the amount of work, so N lanes in one PR cost one cycle and
