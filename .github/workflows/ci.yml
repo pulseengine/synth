@@ -920,6 +920,31 @@ jobs:
       - name: "Self-test the release-file statistics scan (RQ-86-SPELLSCAN, #1515)"
         run: python3 scripts/release_file_statistics_scan.py --self-test
 
+      # RQ-87-WIDEFILE10 (#1439): the `vfp-wide-file` rung's unobservability,
+      # ACCEPTED with a denominator and a mechanism rather than restated. The
+      # refuting command ran over a DERIVED population -- 24 float-bearing
+      # fixtures, not the "four" the previous pass reported, which is not a number
+      # this tree can re-derive -- across three float targets, 72 invocations.
+      #
+      # THE POSITIVE CONTROL IS THE LOAD-BEARING PART, because a zero try count
+      # has two readings and only one is a finding: the sweep records 75 tries on
+      # FIVE OTHER rungs, so the ladder demonstrably runs and `vfp-wide-file` is
+      # simply never the rung it reaches. The sweep REFUSES a zero taken over an
+      # inactive ladder as VACUOUS instead of reporting it clean.
+      #
+      # AND THE MECHANISM: six purpose-built high-pressure probes (20/28/40 live
+      # f32 locals, and 12/20/30 live across a call) all compiled rc=0, rescued by
+      # pool-grow, because pool-grow's depth is DERIVED from the local-target
+      # count -- so any shape whose pressure scales with local count is always
+      # rescued and the ladder never descends. The reporter's own failure is
+      # register-file exhaustion, which local-count pressure cannot reproduce.
+      #
+      # Only `--self-test` is a gate: the sweep needs a built binary and 72
+      # compiler invocations. Its parser carries a positive control on a frozen
+      # real sample, so the live zero is a property of the tree, not of the regex.
+      - name: "Self-test the vfp-wide-file reach sweep (RQ-87-WIDEFILE10, #1439)"
+        run: python3 scripts/vfp_wide_file_reach.py --self-test
+
       # RQ-86-SELFTEST2 (#1515). The vacuity sweep is the instrument whose ABSENCE
       # cold review found: the artifact's figures came from a script in no commit.
       # It is committed now, so its own self-test is wired here -- an instrument

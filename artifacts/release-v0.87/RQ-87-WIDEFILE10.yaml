@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-WIDEFILE10
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "The wide-file rung is either exercised by a local fixture or its unobservability is accepted"
     description: >
         The rung is reached ZERO times by every local fixture and the committed
@@ -23,6 +23,75 @@ artifacts:
       priority: must
       issue: "#1439"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1550 - #1439 - DELIVERED on the done-when SECOND branch: the unobservability is ACCEPTED, with a denominator this tree can re-derive and a MECHANISM, neither of which the previous pass had. THE REFUTING COMMAND RAN FIRST at a version-matched 0.86.0 binary with no crate source newer. The population is DERIVED: TWENTY-FOUR float-bearing .wat fixtures under scripts/repro, not the FOUR v0.86 reported - four is not a number this repository can re-derive, and a census is bounded by its population. Across 24 fixtures by three float targets, SEVENTY-TWO invocations, the vfp-wide-file try count is ZERO. THE POSITIVE CONTROL IS WHAT MAKES THAT ZERO MEAN ANYTHING: a zero has two readings, the rung is not reached and the ladder never ran, and only the first is a finding. The sweep records SEVENTY-FIVE tries on FIVE OTHER rungs - vfp-spill, vfp-frame-locals, two pool-grow depths and vfp-spill+pool-grow - so the ladder demonstrably runs throughout, and the shipped sweep REFUSES a zero taken over an inactive ladder as VACUOUS rather than reporting it clean. THE MECHANISM, which is this lane contribution: EIGHTEEN purpose-built probes across TWO INDEPENDENT PRESSURE AXES at two float targets, not one reaching the rung. LOCAL-COUNT pressure, six probes - twenty, twenty-eight and forty simultaneously-live f32 locals, then twelve, twenty and thirty live ACROSS A CALL where S0-S15 are caller-saved and synth does not allocate the callee-saved half - all rc=0, rescued by vfp-frame-locals+pool-grow. TEMPORARY pressure, twelve probes - RIGHT-DEEP chains where each operation second operand is the nested expression so the operand stack holds n partial values at once, f32 at depth twenty, forty and sixty-four and f64 at depth ten, twenty and forty, each at cortex-m4f and cortex-m7dp, the f64-at-m7dp case being the tightest in the machine since D0-D7 is only EIGHT registers - all rc=0, rescued by vfp-spill+pool-grow, while f64 at cortex-m4f declines PRE-LADDER as a single-precision target correctly should. THE SECOND AXIS WAS ADDED BECAUSE THE FIRST SIX SHARED A SHAPE: all six were left-deep, so operand-stack depth never exceeded about two, and all six were f32, so they varied local-count pressure ONLY - which is not the axis the reporter fails on. The answer did not change. The reason is structural and the second axis shows it GENERALISES: pool-grow depth is DERIVED from the pressure the rung below it hit, so whichever rung is tried its pool-grow variant is sized to rescue it, and making the fixture bigger makes the rescue bigger too. The reporter own step fails for a DIFFERENT reason, register-file exhaustion with every single-precision register live, which local-count pressure cannot reproduce however much of it there is. So a differential for this class needs the reporter own module. CONDUCT RULE FOUR BINDS: nothing here changes what the reporter can compile."
+      verified-by: >
+        DELIVERED on the done-when SECOND branch — the unobservability is ACCEPTED, and
+        accepted with a reason rather than a shrug.
+
+        THE REFUTING COMMAND RAN FIRST, at a version-matched 0.86.0 binary with no crate
+        source newer than it, over a population DERIVED from the tree. That derivation is
+        the first correction: the float-bearing fixture population under scripts/repro is
+        TWENTY-FOUR, not the FOUR the previous pass reported. Four is not a number this
+        repository can re-derive, and a census is bounded by its population. Twenty-four
+        fixtures across three float targets is SEVENTY-TWO invocations, and the
+        vfp-wide-file try count across all of them is ZERO.
+
+        THE POSITIVE CONTROL IS WHAT MAKES THAT ZERO MEAN ANYTHING, and it is the part the
+        previous pass could not supply. A zero try count has TWO readings — the rung is not
+        reached, or the ladder never ran at all — and only the first is a finding. Measured:
+        the sweep records SEVENTY-FIVE tries on FIVE OTHER rungs, vfp-spill at thirty-seven,
+        vfp-frame-locals at twenty-two, two distinct pool-grow depths at twelve and three,
+        and vfp-spill+pool-grow at one. The ladder is demonstrably running throughout;
+        vfp-wide-file is simply never the rung it reaches. The shipped sweep encodes this
+        rather than leaving it to the reader: a zero taken over an INACTIVE ladder is
+        reported as VACUOUS and exits non-zero, never as a clean zero.
+
+        THE MECHANISM, which is this lane own contribution and not a restatement.
+        EIGHTEEN purpose-built probes were compiled, across TWO INDEPENDENT PRESSURE AXES
+        and two float targets, and not one reached the rung.
+
+        LOCAL-COUNT pressure, six probes: twenty, twenty-eight and forty simultaneously-live
+        f32 locals, then twelve, twenty and thirty live ACROSS A CALL — the AAPCS shape,
+        where S0-S15 are caller-saved and synth does not allocate the callee-saved half at
+        all. All rc=0, every one rescued by vfp-frame-locals+pool-grow.
+
+        TEMPORARY pressure, twelve probes: RIGHT-DEEP expression chains, where each
+        operation second operand is the nested expression so the operand stack holds n
+        partial values at once. f32 at depth twenty, forty and sixty-four, and f64 at depth
+        ten, twenty and forty, each at cortex-m4f and cortex-m7dp — f64 at m7dp being the
+        tightest case in the machine, since D0-D7 is only EIGHT registers. All rc=0, every
+        one rescued by vfp-spill+pool-grow. f64 at cortex-m4f declines PRE-LADDER, which is
+        correct: a single-precision target refuses f64 before recovery runs at all.
+
+        THE SECOND AXIS WAS ADDED BECAUSE THE FIRST SIX PROBES SHARED A SHAPE, and that is
+        worth recording rather than quietly fixing. All six were LEFT-deep, so operand-stack
+        depth never exceeded about two, and all six were f32 — so they varied LOCAL-COUNT
+        pressure only, which is not the axis the reporter fails on. Six probes that differ
+        in size but not in shape are closer to one probe than to six. The right-deep f64
+        probes vary the axis that was missing, and the answer did not change.
+
+        The reason is structural, and the second axis shows it GENERALISES: pool-grow asks
+        for a depth DERIVED from the pressure the rung below it hit, so whichever rung is
+        tried, its pool-grow variant is sized to rescue it. Making the fixture bigger makes
+        the rescue bigger too.
+
+        SO THE UNOBSERVABILITY IS A PROPERTY OF THE LADDER, NOT OF THE FIXTURES TRIED. The
+        reporter own step fails for a different reason — register-file exhaustion with every
+        single-precision register live — and local-count pressure cannot reproduce that
+        however much of it there is. A differential for this class therefore needs the
+        reporter own module, which is the honest residual and the same one v0.86 reached by
+        a weaker route.
+
+        THE SHIPPED PARSER CARRIES ITS OWN POSITIVE CONTROL, on a FROZEN real stderr sample,
+        because a pin whose evidence is a zero is otherwise indistinguishable from a regex
+        that never matches: the self-test asserts the parser finds NO wide-file try in a
+        sample without one AND DOES find one in a sample with one. CI gates the self-test,
+        not the sweep, which needs a built binary and seventy-two invocations.
+
+        CONDUCT RULE FOUR BINDS AND IS STATED: nothing in this lane changes what the
+        reporter can compile. Hardening the measurement around an open external defect is
+        not progress on it.
       done-when: >
         manual:2027-03-31 the wide-file rung is either exercised by a local fixture or
         its unobservability is accepted — delivered with measured numbers, or REFUTED
