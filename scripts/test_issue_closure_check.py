@@ -221,32 +221,39 @@ def closewindow_tests() -> None:
     check("closewindow: ...and 2 is not 1 — 'could not run' is its own outcome",
           r.returncode != 1, f"rc={r.returncode}")
 
-    # (6) TWO API SURFACES, one question. `gh issue list --json` and
-    # `gh api repos/{repo}/issues` do not fail together in this repository's CI:
-    # the claim-check job reads issue state through `stale_pin_check.py` in the
-    # same run where its pool tripwire's `gh api` degrades to UNAVAILABLE. So a
-    # primary failure is not evidence that the state is unreadable. The surfaces
-    # must AGREE where both answer, and the comparison calls the RAW primary --
-    # `open_issues_now` is an orchestrator that returns the REST answer on a
-    # primary failure, so comparing against it would compare REST to REST and
-    # agree vacuously.
+    # (6) TWO GENUINELY DIFFERENT SURFACES, one question — and the first version
+    # of this case had two that were the SAME. It compared `gh issue list` against
+    # `gh api`, both of which shell out to the `gh` BINARY, which is ABSENT on the
+    # self-hosted pool where this runs (RQ-72-CIPOOL measured it;
+    # `stale_pin_check.py` says so in its own docstring). So the "fallback" shared
+    # the primary's single point of failure and the agreement test compared two
+    # dead paths. The CI run that found it printed the reason in one line:
+    # `FileNotFoundError: No such file or directory: 'gh'`.
     #
-    # A LOUD SKIP, not a pass, when neither can be reached: this needs network
-    # and a token, which CI has and a local run may not.
-    prim = C._open_issues_primary("pulseengine/synth")
-    rest = C._open_issues_rest("pulseengine/synth")
-    if prim is None or rest is None:
+    # The surfaces now are urllib-over-REST (no binary, needs a token) and `gh`
+    # (needs the binary, no token). They must AGREE where BOTH answer. Neither is
+    # the orchestrator: comparing against `open_issues_now` would compare a
+    # surface with itself whenever it fell through.
+    #
+    # A LOUD SKIP, not a pass, when one cannot be reached — in CI that is the
+    # `gh` half, so this case is NOT CI potency evidence there; it is exercised
+    # locally, where both exist.
+    import os as _os
+    _tok = _os.environ.get("GH_TOKEN") or _os.environ.get("GITHUB_TOKEN")
+    api = C._open_issues_api("pulseengine/synth", _tok) if _tok else None
+    gh = C._open_issues_gh("pulseengine/synth")
+    if api is None or gh is None:
         print("  SKIP closewindow: API-surface agreement — "
-              f"primary={'None' if prim is None else len(prim)}, "
-              f"rest={'None' if rest is None else len(rest)}; needs gh + a token")
+              f"rest={'None' if api is None else len(api)}, "
+              f"gh={'None' if gh is None else len(gh)}; needs BOTH a token and `gh`")
     else:
         check("closewindow: the two state surfaces AGREE on the open set",
-              prim == rest,
-              f"primary {len(prim)} vs rest {len(rest)}; "
-              f"only-in-primary={sorted(prim - rest)[:6]}, "
-              f"only-in-rest={sorted(rest - prim)[:6]}")
+              api == gh,
+              f"rest {len(api)} vs gh {len(gh)}; "
+              f"only-in-rest={sorted(api - gh)[:6]}, "
+              f"only-in-gh={sorted(gh - api)[:6]}")
         check("closewindow: ...and the agreed set is NON-EMPTY, so (6) is not vacuous",
-              len(prim) > 0, str(len(prim)))
+              len(api) > 0, str(len(api)))
 
 
 def next_release_tag_tests() -> None:

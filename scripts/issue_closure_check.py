@@ -38,8 +38,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -237,48 +239,70 @@ def closed_since(tag: str, repo: str, until_tag: str | None = None) -> set[int]:
     return {int(r["number"]) for r in json.loads(out)}
 
 
-def _open_issues_rest(repo: str) -> set[int] | None:
-    """A SECOND API surface for the same question — RQ-87-CLOSEWINDOW (#1478).
+def _open_issues_api(repo: str, token: str) -> set[int] | None:
+    """Every OPEN issue via the REST API with NO `gh` binary — RQ-87-CLOSEWINDOW
+    (#1478), and this is the PRIMARY path, not a fallback.
 
-    `gh issue list --json` and `gh api repos/{repo}/issues` are different
-    surfaces, and in this repository's own CI they do not fail together: the
-    claim-check job reads issue state successfully through `stale_pin_check.py`
-    while its pool tripwire's `gh api` on branch protection degrades to
-    UNAVAILABLE in the same run. So one surface failing is not evidence that the
-    state is unreadable, and refusing on the first failure would make the gate
-    fail closed for a reason that is not true.
+    MEASURED, and it refuted the obvious hypothesis. The first CI run of this
+    gate refused with `--require-state`, and the reason it printed was not a
+    permission error but `FileNotFoundError: No such file or directory: 'gh'`.
+    **`gh` IS ABSENT FROM THE SELF-HOSTED POOL** where `claim-check` runs —
+    RQ-72-CIPOOL measured that, `stale_pin_check.py` documents it in its own
+    docstring ("NOT `gh` first: it is absent from the self-hosted pool where this
+    runs"), and the CI pool tripwire's degradation message lists "no gh" FIRST.
+    The first version of this lane added a `gh api` "second surface" beside
+    `gh issue list`, which is not a second surface at all: both shell out to the
+    same missing binary, so the fallback shared the primary's single point of
+    failure and the agreement test compared two dead paths.
 
-    REST `/issues` INCLUDES PULL REQUESTS, which the GraphQL list does not, so
-    they are filtered out by `pull_request == null`. Without that filter the open
-    set would gain every open PR number and an artifact citing a PR would start
-    reading as "authorised but still open".
-
-    Returns None if this surface fails too; the caller then refuses, and by then
-    BOTH reasons are in the log.
+    So the order is token-REST first and `gh` only when no token exists, which is
+    exactly the order `stale_pin_check.py` uses in this same job for the same
+    reason. Pagination is by page number until a short page: `/issues` INCLUDES
+    pull requests, which are filtered by `pull_request` being absent — without
+    that the open set gains every open PR number and an artifact citing a PR
+    starts reading as "authorised but still open".
     """
-    try:
-        out = subprocess.run(
-            ["gh", "api", "--paginate", f"repos/{repo}/issues?state=open&per_page=100",
-             "--jq", ".[] | select(.pull_request == null) | .number"],
-            capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.SubprocessError) as e:
-        print(f"issue-closure-state-error: REST fallback {type(e).__name__}: {e}")
-        return None
-    if out.returncode != 0:
-        print(f"issue-closure-state-error: REST fallback rc={out.returncode}: "
-              f"{(out.stderr or '').strip()[:300] or '(no output)'}")
-        return None
-    try:
-        nums = {int(l) for l in out.stdout.split() if l.strip()}
-    except ValueError as e:
-        print(f"issue-closure-state-error: REST fallback parse: {e}")
-        return None
-    print(f"issue-closure-state-source: REST `gh api repos/{repo}/issues` "
-          f"answered after `gh issue list` failed")
-    return nums
+    out: set[int] = set()
+    page = 1
+    while page <= 20:                     # 2000 issues; a bound, not a guess
+        url = (f"https://api.github.com/repos/{repo}/issues"
+               f"?state=open&per_page=100&page={page}")
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "synth-issue-closure-check"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310
+                batch = json.loads(r.read())
+        except Exception as e:            # noqa: BLE001 - the reason is printed
+            print(f"issue-closure-state-error: REST page {page}: "
+                  f"{type(e).__name__}: {e}")
+            return None
+        if not isinstance(batch, list):
+            print(f"issue-closure-state-error: REST page {page} was not a list")
+            return None
+        out |= {int(i["number"]) for i in batch if "pull_request" not in i}
+        if len(batch) < 100:
+            print(f"issue-closure-state-source: REST api.github.com "
+                  f"({page} page(s), no `gh` binary needed)")
+            return out
+        page += 1
+    print("issue-closure-state-error: REST pagination exceeded its page bound")
+    return None
 
 
 def open_issues_now(repo: str) -> set[int] | None:
+    """Token-REST FIRST, `gh` only without a token — see `_open_issues_api`."""
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        got = _open_issues_api(repo, token)
+        if got is not None:
+            return got
+        print("issue-closure-state-error: REST failed; trying `gh`")
+    return _open_issues_gh(repo)
+
+
+def _open_issues_gh(repo: str) -> set[int] | None:
     """Every OPEN issue number, or None when it cannot be read.
 
     RQ-72-ISSUEGATE (#1250) deliverable (e). The window (`closed_since`) answers
@@ -300,36 +324,15 @@ def open_issues_now(repo: str) -> set[int] | None:
         # RQ-77-STDERR (#1419) shape, a refusal whose REASON is discarded.
         # MEASURED: the first CI run of the gate step refused with exit 2 and the
         # log said only that the state was unavailable, so the cause could not be
-        # told from the log. `gh issue view` succeeds in this same job
-        # (`stale_pin_check.py`) while `gh api` on branch protection does not, so
-        # "the token cannot read issues" was a guess, not a reading.
+        # told from the log. The guess it then prompted -- "the token cannot read
+        # issues" -- was REFUTED by the next run's own reason line:
+        # `FileNotFoundError: No such file or directory: 'gh'`. The binary is
+        # ABSENT on the self-hosted pool. A primed reader finds what they expect.
         print(f"issue-closure-state-error: {type(e).__name__}: {e}")
         return None
     if out.returncode != 0:
         print(f"issue-closure-state-error: `gh issue list` rc={out.returncode}: "
               f"{(out.stderr or out.stdout or '').strip()[:300] or '(no output)'}")
-        return _open_issues_rest(repo)
-    try:
-        return {int(r["number"]) for r in json.loads(out.stdout)}
-    except (ValueError, KeyError, TypeError):
-        return None
-
-
-def _open_issues_primary(repo: str) -> set[int] | None:
-    """The PRIMARY surface alone, with no fallback — RQ-87-CLOSEWINDOW (#1478).
-
-    `open_issues_now` is an orchestrator: on a primary failure it returns the
-    REST answer. So a test comparing the two MUST call this rather than the
-    orchestrator, or it compares REST against REST and agrees vacuously.
-    """
-    try:
-        out = subprocess.run(
-            ["gh", "issue", "list", "--repo", repo, "--state", "open",
-             "--limit", "500", "--json", "number"],
-            capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if out.returncode != 0:
         return None
     try:
         return {int(r["number"]) for r in json.loads(out.stdout)}
@@ -768,8 +771,12 @@ def main() -> int:
               "was given. The authorised/held-open directions would fall back "
               "to the window, which cannot see an issue closed before the "
               "window opened -- the exact falsehood this gate exists to catch. "
-              "Fix the state read (gh auth / `issues: read` permission) rather "
-              "than dropping the flag.")
+              "FIX THE STATE READ, do not drop the flag: set GH_TOKEN or "
+              "GITHUB_TOKEN so the REST path can run. `gh` is NOT the remedy "
+              "here -- the binary is ABSENT on the self-hosted pool (the reason "
+              "line above says so), which is why REST is the primary path. An "
+              "earlier version of this message advised `gh auth` and sent its "
+              "first reader hunting a permission problem that did not exist.")
         return 2
 
     failures, warnings, authorised, held_open = check(
