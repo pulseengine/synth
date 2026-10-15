@@ -640,6 +640,34 @@ jobs:
       # head-vs-merge diff means nothing on a stale one.
       - name: "Merge-ritual gate self-test (#1269, RQ-72-RITUAL)"
         run: python3 scripts/merge_gate.py --self-test
+
+      # RQ-87-PINDEBT12 (#1428): the suppression-table ESCAPE, narrowed and named.
+      # The refuting command ran and did NOT refute: a three-entry suppression
+      # table planted as `SUPPRESSED_CASES` left `claim_check` at rc=0 with both
+      # pin numbers unchanged, while the SAME table under `KNOWN_PROBE_CASES` red
+      # at once ("derived 13 != documented 12"). A PAIRED control, so the
+      # mechanism is proven to discriminate on the NAME alone.
+      #
+      # CLOSING IT BY A NAME-INDEPENDENT POPULATION IS REFUSED WITH NUMBERS: 179
+      # top-level dict/set bindings in the repro corpus against 12 pinned tables,
+      # so pinning all of them would move on every unrelated fixture table (SIGS,
+      # CASES, WATS, BASES) — the RQ-74-STALEMSG trap of a gate nobody can move
+      # honestly. So this is a NARROWING: suppression-SHAPED non-matching
+      # bindings must each be CLASSIFIED with a reason, a new one reds, and a name
+      # carrying none of the shape tokens still escapes.
+      #
+      # The classification found NO unaccounted pin debt — 7 decline pins (the
+      # ledger's own stated exclusion), 2 red-half fixtures, 3 config, 1 envelope
+      # entry named explicitly — so the escape is LATENT rather than EXPLOITED,
+      # a fact about today's tree and not a property of the gate.
+      #
+      # The self-test carries an INDEPENDENCE CHECK: this scan's AST walk must
+      # agree with the ledger's regex on the pinned count. Making them agree
+      # exposed this lane's own first error — counting only `ast.Assign` read 3
+      # where the ledger reads 12, because an ANNOTATED binding is an `AnnAssign`
+      # and the ledger's pattern admits one deliberately.
+      - name: "Self-test the suppression-table shape scan (RQ-87-PINDEBT12, #1428)"
+        run: python3 scripts/suppression_table_shape_scan.py --self-test
       # RQ-75-CALLSITE (#1269): the step ABOVE exercises the arithmetic and
       # never reaches `gate()` or `main()` — the two functions the merge ritual
       # actually runs. Ten mutations to those two leave it green; all ten turn
