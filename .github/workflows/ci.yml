@@ -761,7 +761,18 @@ jobs:
       # shipped, frozen release that closed exactly five issues and left #1331
       # and #1318 open on purpose — so it also proves the rule would have
       # caught the thing it was built for.
+      # RQ-87-CLOSEWINDOW (#1478) added `GH_TOKEN` here for ONE case: the two
+      # state surfaces (`gh issue list --json` and `gh api repos/{repo}/issues`)
+      # must AGREE on the open set, and the REST surface's `pull_request == null`
+      # filter is the part most needing a control — without it the open set gains
+      # every open PR number and an artifact citing a PR starts reading as
+      # "authorised but still open". Without a token BOTH calls return None and
+      # that case prints a LOUD SKIP rather than passing, so this step does not
+      # become flaky; it also means the case is NOT CI potency evidence on a run
+      # where the state cannot be read.
       - name: Issue-closure gate tests (#1250)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/test_issue_closure_check.py
       # RQ-87-CLOSEWINDOW (#1478): the step ABOVE tests the gate's RULES against
       # synthetic artifacts and a frozen replay. Nothing ran the gate on the LIVE
