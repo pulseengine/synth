@@ -22,10 +22,26 @@ one of them -- and the commit that fixed the figure's twin elsewhere reported th
 file "re-verified free of statistics", truthfully, by a scan that could not see
 it. A census is bounded by its pattern's spellings.
 
-THIS IS NOT AN ORACLE, AND SAYING SO IS THE POINT. A word-number scan over every
-release file in the tree returns 560 hits across 29 of 30 files while the digit
-scan returns 0 -- and the overwhelming majority are IDIOMS ("every one of",
-"fired twice", "a single lane", "the one-line key append"), not statistics. A
+THIS IS NOT AN ORACLE, AND SAYING SO IS THE POINT. `--all` over every release
+file in the tree returns 300 word-number hits across 24 files and 234 digit hits
+across 20, of a population of 26 release directories, 25 of which carry a
+`_release.yaml` -- and the overwhelming majority of the word hits are IDIOMS
+("every one of", "including this one", "the one-line key append"), not
+statistics. An earlier version of this docstring said the word scan returns 560
+across 29 of 30 files while the digit scan returns ZERO. Only the ZERO was wrong.
+Round two refuted the retraction: driving `scan()` over that thirty-file set --
+five flat `artifacts/release-v0.5*.yaml` plus the twenty-five nested ones -- gives
+1162 digit hits across 25 and 558 word hits across 29, the 558 being 560 less the
+two hits this change-set removed. So the word figure REPRODUCES, and the digit
+half is zero in exactly 5 of the 30, not all of them. What no tree-wide mode could
+be derived from was the SHIPPED scan: `release_file` returns ONE path. Thirty is
+the wrong DENOMINATOR for a rule about comments-only files -- the five flat ones
+carry artifact bodies -- which is a different objection from the figures being
+unreproducible, and this docstring previously conflated them. Two of
+the four idioms this paragraph used to cite ("fired twice", "a single lane")
+were not idioms: cold review showed both were unsourced counts of a shipped
+release's outcomes, and they have been removed from the file rather than
+reworded, which is what the report's own instruction demands. A
 gate that red on a token match would be refused on day one and routed around,
 which is the RQ-74-STALEMSG trap. So this REPORTS the population and the
 operator RECORDS the judgement; it does not pretend a token match is a statistic.
@@ -101,6 +117,49 @@ def release_file(release: str | None) -> Path:
     return dirs[-1] / "_release.yaml"
 
 
+def population() -> tuple[list[Path], list[Path]]:
+    """(release dirs, those carrying a `_release.yaml`) — the DENOMINATOR, derived.
+
+    RQ-86-SPELLSCAN round two (#1515). Every tree-wide figure this lane ever
+    reported came from an ad-hoc loop that was never committed, so none of them
+    could be re-derived and three different ones circulated: the artifact said
+    the digit half returns zero in all thirty files, cold review re-measured
+    1162 across 25, and a loop over the files that actually exist gives a third
+    answer again. The scan could not settle it because `release_file` returns
+    ONE path and there was no tree-wide mode at all. A figure whose population
+    is not part of the output is not a measurement.
+    """
+    d = REPO_ROOT / "artifacts"
+    dirs = sorted(p for p in d.glob("release-v0.*") if p.is_dir())
+    return dirs, [p for p in dirs if (p / "_release.yaml").exists()]
+
+
+def report_all() -> int:
+    """Scan EVERY release file, and state the population it was taken over."""
+    dirs, files = population()
+    if not files:
+        # The single-file path already refuses an empty population; this one
+        # must too, or `--all` reports a clean ZERO over nothing scanned --
+        # which is exactly the blindness this lane exists to report.
+        print("FAIL: no release file found under artifacts/ — refusing to "
+              "report a figure over an empty population")
+        return 1
+    td = tw = nd = nw = both = 0
+    for p in files:
+        digits, words = scan((p / "_release.yaml").read_text())
+        td += len(digits); tw += len(words)
+        nd += bool(digits); nw += bool(words); both += bool(digits and words)
+        print(f"  {p.name:16s} {len(digits):5d} digit  {len(words):5d} word")
+    without = [q.name.replace("release-", "") for q in dirs if q not in files]
+    print("")
+    print(f"statistics-scan --all: POPULATION {len(dirs)} release directories, "
+          f"{len(files)} carrying a `_release.yaml`"
+          + (f" ({', '.join(without)} without one)" if without else ""))
+    print(f"statistics-scan --all: {td} digit hit(s) across {nd} file(s); "
+          f"{tw} word-number hit(s) across {nw}; both non-zero in {both}")
+    return 0
+
+
 def report(path: Path) -> int:
     text = path.read_text()
     digits, words = scan(text)
@@ -155,6 +214,21 @@ def self_test() -> int:
     idiom = "# AND THE POPULATION IS PART OF THE CLAIM. It fired twice inside a single run."
     d3, w3 = scan(idiom)
     ok(len(w3) == 1, "an IDIOM still fires — so this reports, it does not adjudicate")
+
+    # The tree-wide mode, added in round two because every tree-wide figure
+    # this lane reported came from an uncommitted loop. Its POPULATION must be
+    # derived and non-empty, and it must REFUSE rather than report a clean
+    # zero over nothing -- the vacuity the single-file path already refuses.
+    dirs, files = population()
+    ok(len(dirs) > 0 and len(files) > 0,
+       "the tree-wide population is DERIVED and non-empty")
+    ok(set(files) <= set(dirs),
+       "every file counted sits in a directory that was counted")
+    import contextlib, io, unittest.mock as _m
+    with _m.patch(f"{__name__}.population", lambda: ([], [])):
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc_empty = report_all()
+    ok(rc_empty == 1, "--all REFUSES an empty population instead of reporting zero")
     ok(len(d3) == 0, "and carries no digit")
 
     ok(scan("# v0.85 release scope — COMMENTS ONLY.")[0] == [],
@@ -171,9 +245,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--release", help="release id, e.g. v0.86 (default: newest)")
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--all", action="store_true",
+                    help="scan every release file and state the population")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
+    if a.all:
+        return report_all()
     return report(release_file(a.release))
 
 

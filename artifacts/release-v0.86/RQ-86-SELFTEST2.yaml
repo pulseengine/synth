@@ -34,24 +34,42 @@ artifacts:
       issue: "#1515"
       verification-track: manual
       disposition: partial
-      landed: "PR #1537 - #1515 - the class sweep RAN over every self-test in the tree and the vacuous case is NAMED, which is the done-when's second branch. Population measured from the self-tests' own output rather than from a pattern: nine files carry a runnable self-test reporting two hundred and two cases; of the twelve files mentioning the flag, one rejects it as unknown and two use a different idiom and report none. The sweep neutralises one of each file's own top-level functions at a time and re-runs the self-test: sixty-two subjects, of which eighteen go cleanly red, twenty-seven red by crashing, and SEVENTEEN STAY GREEN. Nine of those seventeen are the entry point itself, where neutralising removes the TEST rather than the subject - an artefact of the mutation and reported as such, not as a finding - leaving EIGHT real uncovered subjects. The POSITIVE CONTROL the artifact demands LANDS: the exact function whose removal the previous release found undetected is among the eight, so the sweep would have found it. Classified, the eight are five that cross a process or network boundary a self-test cannot exercise, one that reaches a boundary indirectly but has a pure fixture branch that could be covered, and two that are pure or filesystem-bound and genuinely coverable - one of which is the known vacuity. The sweep's own first run returned a HUNDRED PERCENT skip rate and was debugged rather than reported."
+      landed: "PR #1537 - #1515 - the class sweep RAN over every self-test in the tree and the vacuous case is NAMED, which is the done-when's second branch. THE SWEEP IS NOW COMMITTED, which is this lane's own correction: round one found that every figure below came from a script that was in no commit, so for a release themed 'the instrument is part of the evidence' the vacuity lane shipped its figures with the instrument left out. Population measured from the self-tests' own output rather than from a pattern: nine files are swept and report two hundred and seven cases; of the twelve files mentioning the flag, one rejects it as unknown and two use a different idiom and report none. Those nine are NOT the self-test-bearing population - thirteen files define one, five are unswept including both this release added - and the sweep now prints that drift itself rather than hiding a hand-written list. The sweep neutralises one of each file's own top-level functions at a time and re-runs the self-test: sixty-three subjects, of which eighteen go cleanly red, twenty-eight red by crashing, and SEVENTEEN STAY GREEN. Sixty-two and twenty-seven was the reading before a later commit of this same release added a function to a swept file. Nine of those seventeen are the entry point itself, where neutralising removes the TEST rather than the subject - an artefact of the mutation and reported as such, not as a finding - leaving EIGHT real uncovered subjects. The POSITIVE CONTROL the artifact demands LANDS: the exact function whose removal the previous release found undetected is among the eight, so the sweep would have found it. Classified, the eight are five that cross a process or network boundary a self-test cannot exercise, one that reaches a boundary indirectly but has a pure fixture branch that could be covered, and two that are pure or filesystem-bound and genuinely coverable - one of which is the known vacuity. The sweep's own first run returned a HUNDRED PERCENT skip rate and was debugged rather than reported."
       verified-by: >
         PARTIAL — the sweep ran over every self-test in the tree, the uncovered subjects are
         named, and the positive control the artifact requires fires. No self-test is rewritten.
 
         THE POPULATION IS MEASURED FROM THE SELF-TESTS' OWN OUTPUT, not from a pattern over the
         source — because a pattern over the source got it wrong first. Twelve files mention the
-        flag; NINE implement a runnable self-test, together reporting two hundred and two cases.
-        Of the other three, one REJECTS the flag as unknown and exits with a usage error, and two
-        use a different reporting idiom and print no cases at all. A regular expression counting
-        assertion-like calls returned zero for most of these files, so the files were RUN instead.
+        flag; NINE are SWEPT, together reporting TWO HUNDRED AND SEVEN cases. Of the other three,
+        one REJECTS the flag as unknown and exits with a usage error, and two use a different
+        reporting idiom and print no cases at all. A regular expression counting assertion-like
+        calls returned zero for most of these files, so the files were RUN instead.
+
+        BUT THE SWEPT NINE ARE NOT THE SELF-TEST-BEARING POPULATION, and the sweep now prints
+        that drift in its own output rather than leaving it to be re-measured. Derived over the
+        whole scripts tree, THIRTEEN files define a runnable self-test; the hand-written list
+        sweeps nine of them, one swept file defines none, and FIVE self-test-bearing files are
+        NOT SWEPT — including all THREE of the self-test-bearing scripts this release itself
+        added. An earlier version of this sentence said BOTH, counting two; the third is the
+        sweep itself, which does not sweep its own self-test.
+        A hand-written population standing in for a derived one is the mirror class this
+        repository's own North Star names first, and this instrument was carrying it. The list is
+        left as measured, because changing it in the same breath would invalidate every figure
+        above; the drift is made VISIBLE instead, and closing it is named rather than claimed.
 
         THE SWEEP, which is the refuting command mechanised at function granularity. For each
         self-test-bearing file, one of its own top-level functions is neutralised at a time — body
         replaced by a bare return — and the self-test re-run. A self-test that stays GREEN with
         one of its subjects removed does not cover that subject, which is the vacuity signal.
-        SIXTY-TWO subjects: eighteen go cleanly RED, twenty-seven red by CRASHING, and SEVENTEEN
-        STAY GREEN.
+        SIXTY-THREE subjects: eighteen go cleanly RED, twenty-eight red by CRASHING, and
+        SEVENTEEN STAY GREEN. An earlier version of this record said sixty-two and twenty-seven.
+        Round two located the move exactly: the subject count is SIXTY-TWO at the planning commit
+        and at the lane-wave's own first commit, and SIXTY-THREE from the squash onward, the
+        increment being one function added to `extract_r1_numbers.py`. SO IT MOVED INSIDE THE
+        SQUASH, and NO FIRST-PARENT COMMIT OF THIS RELEASE EVER READ SIXTY-TWO — the figure was
+        already stale at the commit that shipped it, rather than overtaken by a later one.
+        The load-bearing number is unchanged by that: SEVENTEEN still stay green.
 
         NINE OF THE SEVENTEEN ARE AN ARTEFACT OF THE MUTATION AND ARE REPORTED AS SUCH. Each is
         the file's entry point, and in these files the self-test is dispatched from inside it — so
@@ -83,7 +101,7 @@ artifacts:
 
         THE SWEEP'S OWN FIRST RUN WAS VACUOUS AND WAS DEBUGGED RATHER THAN REPORTED, which is the
         same failure class one tier further out. It returned a HUNDRED PERCENT skip rate across
-        all sixty-two subjects, which would have read as "nothing could be measured". The cause
+        every subject, which would have read as "nothing could be measured". The cause
         was in the sweep, not the tree: walking a function's syntax tree yields an argument node
         carrying no line number, and the resulting error was swallowed by a broad handler that
         labelled it an unparseable mutation. A sweep whose every case skips is an empty positive

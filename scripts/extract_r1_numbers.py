@@ -277,7 +277,8 @@ def self_test() -> int:
     # The sample ENDS THE SENTENCE on a decimal on purpose: the hand-written
     # mirror this replaced rejected exactly that, and a sample without a final
     # period cannot tell the two implementations apart.
-    w_pos = withheld_decimals("fitted in 552 MB / 16.3 s; rounded up from 11.74.")
+    WITHHELD_POS = "fitted in 552 MB / 16.3 s; rounded up from 11.74."
+    w_pos = withheld_decimals(WITHHELD_POS)
     if sorted(w_pos) != ["11.74", "16.3"]:
         failures.append(f"WITHHELD positive: expected the two quantities, got {dict(w_pos)}")
     else:
@@ -291,7 +292,16 @@ def self_test() -> int:
 
     # VACUITY GUARD for the bucket: the positive sample must carry a decimal at
     # all, or `sorted(w_pos) != [...]` would be asserting about an empty string.
-    if not re.search(r"\d+\.\d+", "fitted in 552 MB / 16.3 s and the 364/31 ratio is 11.74"):
+    #
+    # RQ-86 round two. This guard used to search a HARD-CODED STRING that was not
+    # the sample -- a second, differently-worded literal. Both operands were
+    # constants, so the branch was UNREACHABLE: it could not fail for any state of
+    # the thing it names, and emptying the real sample reddened only the positive
+    # assertion while the guard stayed silent. It now reads WITHHELD_POS, the same
+    # name the assertion above consumes, so there is no second copy to drift.
+    # The commit that introduced the defect was the one removing a hand mirror
+    # from this bucket's DERIVATION; it left one in the bucket's GUARD.
+    if not re.search(r"\d+\.\d+", WITHHELD_POS):
         failures.append("VACUOUS withheld positive: the sample carries no decimal")
 
     # A derived population of zero is a refusal, not a pass.
