@@ -60,6 +60,13 @@ vendor.log
 
 # Rivet external project cache
 .rivet/
+# ...and a SYMLINK named `.rivet`, which the pattern above does NOT match:
+# a trailing slash matches a DIRECTORY only. v0.87 committed
+# `.rivet -> /Users/r/git/pulseengine/synth/.rivet` — mode 120000, an absolute
+# self-referential path — into a branch, because a review worktree needs the
+# federated siblings visible for `rivet validate` and the obvious way to get
+# them is a symlink.
+.rivet
 
 # Nix
 result
