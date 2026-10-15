@@ -237,6 +237,47 @@ def closed_since(tag: str, repo: str, until_tag: str | None = None) -> set[int]:
     return {int(r["number"]) for r in json.loads(out)}
 
 
+def _open_issues_rest(repo: str) -> set[int] | None:
+    """A SECOND API surface for the same question — RQ-87-CLOSEWINDOW (#1478).
+
+    `gh issue list --json` and `gh api repos/{repo}/issues` are different
+    surfaces, and in this repository's own CI they do not fail together: the
+    claim-check job reads issue state successfully through `stale_pin_check.py`
+    while its pool tripwire's `gh api` on branch protection degrades to
+    UNAVAILABLE in the same run. So one surface failing is not evidence that the
+    state is unreadable, and refusing on the first failure would make the gate
+    fail closed for a reason that is not true.
+
+    REST `/issues` INCLUDES PULL REQUESTS, which the GraphQL list does not, so
+    they are filtered out by `pull_request == null`. Without that filter the open
+    set would gain every open PR number and an artifact citing a PR would start
+    reading as "authorised but still open".
+
+    Returns None if this surface fails too; the caller then refuses, and by then
+    BOTH reasons are in the log.
+    """
+    try:
+        out = subprocess.run(
+            ["gh", "api", "--paginate", f"repos/{repo}/issues?state=open&per_page=100",
+             "--jq", ".[] | select(.pull_request == null) | .number"],
+            capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"issue-closure-state-error: REST fallback {type(e).__name__}: {e}")
+        return None
+    if out.returncode != 0:
+        print(f"issue-closure-state-error: REST fallback rc={out.returncode}: "
+              f"{(out.stderr or '').strip()[:300] or '(no output)'}")
+        return None
+    try:
+        nums = {int(l) for l in out.stdout.split() if l.strip()}
+    except ValueError as e:
+        print(f"issue-closure-state-error: REST fallback parse: {e}")
+        return None
+    print(f"issue-closure-state-source: REST `gh api repos/{repo}/issues` "
+          f"answered after `gh issue list` failed")
+    return nums
+
+
 def open_issues_now(repo: str) -> set[int] | None:
     """Every OPEN issue number, or None when it cannot be read.
 
@@ -248,6 +289,39 @@ def open_issues_now(repo: str) -> set[int] | None:
     said CLOSED — closed on 2026-09-17, simply BEFORE the tag. `--allow-unclosed`
     downgraded that to a warning, which hid the false sentence instead of
     correcting it."""
+    try:
+        out = subprocess.run(
+            ["gh", "issue", "list", "--repo", repo, "--state", "open",
+             "--limit", "500", "--json", "number"],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        # RQ-87-CLOSEWINDOW (#1478): SAY WHY. This returned a bare None, and the
+        # caller then printed "state unavailable" with no cause -- the
+        # RQ-77-STDERR (#1419) shape, a refusal whose REASON is discarded.
+        # MEASURED: the first CI run of the gate step refused with exit 2 and the
+        # log said only that the state was unavailable, so the cause could not be
+        # told from the log. `gh issue view` succeeds in this same job
+        # (`stale_pin_check.py`) while `gh api` on branch protection does not, so
+        # "the token cannot read issues" was a guess, not a reading.
+        print(f"issue-closure-state-error: {type(e).__name__}: {e}")
+        return None
+    if out.returncode != 0:
+        print(f"issue-closure-state-error: `gh issue list` rc={out.returncode}: "
+              f"{(out.stderr or out.stdout or '').strip()[:300] or '(no output)'}")
+        return _open_issues_rest(repo)
+    try:
+        return {int(r["number"]) for r in json.loads(out.stdout)}
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _open_issues_primary(repo: str) -> set[int] | None:
+    """The PRIMARY surface alone, with no fallback — RQ-87-CLOSEWINDOW (#1478).
+
+    `open_issues_now` is an orchestrator: on a primary failure it returns the
+    REST answer. So a test comparing the two MUST call this rather than the
+    orchestrator, or it compares REST against REST and agrees vacuously.
+    """
     try:
         out = subprocess.run(
             ["gh", "issue", "list", "--repo", repo, "--state", "open",

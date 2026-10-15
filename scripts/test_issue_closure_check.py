@@ -221,6 +221,33 @@ def closewindow_tests() -> None:
     check("closewindow: ...and 2 is not 1 — 'could not run' is its own outcome",
           r.returncode != 1, f"rc={r.returncode}")
 
+    # (6) TWO API SURFACES, one question. `gh issue list --json` and
+    # `gh api repos/{repo}/issues` do not fail together in this repository's CI:
+    # the claim-check job reads issue state through `stale_pin_check.py` in the
+    # same run where its pool tripwire's `gh api` degrades to UNAVAILABLE. So a
+    # primary failure is not evidence that the state is unreadable. The surfaces
+    # must AGREE where both answer, and the comparison calls the RAW primary --
+    # `open_issues_now` is an orchestrator that returns the REST answer on a
+    # primary failure, so comparing against it would compare REST to REST and
+    # agree vacuously.
+    #
+    # A LOUD SKIP, not a pass, when neither can be reached: this needs network
+    # and a token, which CI has and a local run may not.
+    prim = C._open_issues_primary("pulseengine/synth")
+    rest = C._open_issues_rest("pulseengine/synth")
+    if prim is None or rest is None:
+        print("  SKIP closewindow: API-surface agreement — "
+              f"primary={'None' if prim is None else len(prim)}, "
+              f"rest={'None' if rest is None else len(rest)}; needs gh + a token")
+    else:
+        check("closewindow: the two state surfaces AGREE on the open set",
+              prim == rest,
+              f"primary {len(prim)} vs rest {len(rest)}; "
+              f"only-in-primary={sorted(prim - rest)[:6]}, "
+              f"only-in-rest={sorted(rest - prim)[:6]}")
+        check("closewindow: ...and the agreed set is NON-EMPTY, so (6) is not vacuous",
+              len(prim) > 0, str(len(prim)))
+
 
 def next_release_tag_tests() -> None:
     """v0.81 round-2 cold review, finding 9.
