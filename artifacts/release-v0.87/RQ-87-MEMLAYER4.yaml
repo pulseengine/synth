@@ -1,0 +1,31 @@
+artifacts:
+  - id: RQ-87-MEMLAYER4
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "The multi-memory layering is scoped to the widths the reporter actually uses"
+    description: >
+        The layering is the whole remaining blocker (sizing shipped in v0.83), and its
+        phase-one reach is the i32 access family ONLY — so lifting the two refusals
+        moves the blocker for any other width.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: Re-read the downstream answer with
+        `git grep -n "static_data_addend" -- artifacts/`; then measure which WIDTHS the
+        reporter's memory-k accesses actually use before costing the lift.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1145"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the multi-memory layering is scoped to the widths the reporter
+        actually uses — delivered with measured numbers, or REFUTED with the measurement
+        that refutes it; and the refuting command above is RUN FIRST and its result
+        reported either way

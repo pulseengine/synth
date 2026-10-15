@@ -1,0 +1,31 @@
+artifacts:
+  - id: RQ-87-FALCON4
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "The remaining falcon skip is float register pressure, not a raisable constant"
+    description: >
+        The remaining skip is float REGISTER PRESSURE, not a raisable constant — both
+        terminal recovery rungs are spent. Either a lowering ships or the pressure is
+        re-measured at this release's binary.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: Re-run the reporter's own command at
+        a version-matched binary; if the skip count has moved from one of seventeen, the
+        lane's premise changed.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1318"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the remaining falcon skip is float register pressure, not a
+        raisable constant — delivered with measured numbers, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST and its
+        result reported either way

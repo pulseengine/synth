@@ -1,0 +1,44 @@
+artifacts:
+  - id: RQ-87-PROVBLIND
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "The record-provenance ancestry half must not go silent on an unresolvable citation"
+    description: >
+        The ancestry half of `review_record_provenance_check.py` gates every hex token
+        on whether the LOCAL object store resolves it, so a citation whose object the
+        store has lost is SKIPPED and the record reports CLEAN. This repository
+        squash-merges and deletes branches on merge, which is precisely what removes
+        those objects — so the half goes silent exactly when a citation becomes
+        unfollowable. Measured in both venues at the v0.86 cut: the v0.83 record reads
+        35 tested / 12 NOT an ancestor in a store holding the deleted branch heads, and
+        23 tested / ZERO in a fresh `git clone --no-local` — which is what CI checks out
+        and what any reader following the record would have. An absent object deserves
+        its own verdict, and `unfollowable` is a STRONGER check than ancestry because no
+        reader can follow it in any clone.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: run the check over the same record in
+        both venues and compare. If the two counts AGREE, the skip is not load-bearing
+        and the lane is moot. THIS LANE ALSO INVALIDATES RQ-87-PROVENANCE3's REFUTING
+        COMMAND, which reads "if the historical non-ancestor count has fallen to zero,
+        the reconciliation already happened" — that is satisfied VACUOUSLY in a fresh
+        clone, where it was already zero and nothing was reconciled. Report every
+        ancestry figure with its venue NAMED; a figure without one is not a measurement.
+        CITATION: #1540 is where this was measured, filed from v0.86's round-one review.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1540"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 an unresolvable citation is reported rather than skipped, or
+        the skip is shown not to be load-bearing — delivered with measured numbers, or
+        REFUTED with the measurement that refutes it; and the refuting command above is
+        RUN FIRST and its result reported either way

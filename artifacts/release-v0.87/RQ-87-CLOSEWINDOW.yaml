@@ -1,0 +1,43 @@
+artifacts:
+  - id: RQ-87-CLOSEWINDOW
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "A record cannot declare an already-closed issue held open without a gate reading it"
+    description: >
+        A record can declare `issue-scope: outlives` over an issue that is ALREADY
+        CLOSED, and NO required CI context reads that field against live issue state.
+        v0.86 shipped exactly that falsehood (DISPVOCAB3 over #1458, closed a week
+        before the release opened) and it was caught only because the closure gate was
+        asked EARLY, out of its scripted position — in the ritual it runs after the tag
+        push and is ADVISORY, printing into a log nobody re-reads. A gate says nothing
+        outside its window, and this one's window is after the only moment it could have
+        blocked.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: Plant an `outlives` over a closed
+        issue on a scratch branch and run every required context by name; if any reds,
+        the lane is moot. Then check the other edge: the gate TRACEBACKS when asked
+        before any tag exists, because `--since-tag` resolves through a remote commit
+        lookup — so "ask it earlier" has a floor, and the fix is a reachable window
+        rather than an earlier call.
+        CITATION: #1478 is the issue that INTRODUCED `issue-scope: outlives` to express an
+        honest half-delivery. This lane is the follow-on failure of that same mechanism — the
+        field it added can now carry a falsehood no required gate reads. The number names where
+        the mechanism was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1478"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 a record cannot declare an already-closed issue held open
+        without a gate reading it — delivered with measured numbers, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST and its
+        result reported either way

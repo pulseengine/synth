@@ -1,0 +1,44 @@
+artifacts:
+  - id: RQ-87-ARTFLOOR
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "The artifact-load floor sits 245 below the live figure, so it cannot catch what it exists to catch"
+    description: >
+        Rivet Validation's `ARTIFACT_FLOOR` is 526 while the live CI figure is 771, so
+        the floor that exists to catch an artifact SOURCE FILE going invisible cannot
+        catch one carrying fewer than 245 artifacts. Its own comment demands the floor be
+        raised in the PR that adds artifacts and warns that slack "would have passed
+        quietly"; the count went 584 on 2026-09-18 to 771 while the floor stayed put.
+        CONFIRMED BY CI at the v0.86 cut: the Rivet Validation job's own log prints
+        `artifact-load floor=526 measured=771`, identical to an isolated-worktree run, so
+        the slack is NOT a local artefact and raising the floor is safe rather than
+        speculative. The anchors move together: `scripts/status_evidence_check.py` and
+        `claims.yaml`, two movers and four fixed, with the glob field proven load-bearing.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: re-read that line from the CURRENT job
+        log before changing anything —
+        `gh api repos/pulseengine/synth/actions/jobs/<id>/logs --allow-escape-sequences`
+        and grep it; plain `gh api` refuses on terminal escape sequences, and
+        `gh run view --log` refuses while the RUN is still in progress even when the job
+        itself is done. If `measured` has fallen to near 526 then an artifact source went
+        invisible and THAT is the defect; NEVER lower the floor to make it pass.
+        CITATION: #1064 is where the invisible-source-file defect was analysed — the floor
+        is its remedy, now slack. The number names the analysis, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1064"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the artifact-load floor equals the live measured figure and the
+        gate is shown to red when a source file goes invisible — delivered with measured
+        numbers, or REFUTED with the measurement that refutes it; and the refuting command
+        above is RUN FIRST and its result reported either way

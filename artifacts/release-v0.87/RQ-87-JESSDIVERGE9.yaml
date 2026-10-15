@@ -1,0 +1,35 @@
+artifacts:
+  - id: RQ-87-JESSDIVERGE9
+    type: system-req
+    release: v0.87
+    status: proposed
+    title: "The held divergence reply is stamped and rests only on objects in this tree"
+    description: >
+        MEASURED at the v0.86 cut: the held reply carries NO version stamp in ANY
+        spelling — zero `v`-prefixed, zero release words, zero artifact ids — so v0.86's
+        brief was wrong that BOTH held drafts carried one. Its only version-shaped
+        tokens are `ekf@0.10.0#estimate`, the REPORTER'S OWN export name. Its substance
+        still rests on a disassembly of an object not in this tree.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers: Re-read the held draft and scan for a
+        stamp in all four spellings with a positive control. A re-stamp sweep MUST NOT
+        touch `ekf@0.10.0` — rewriting a reporter's own symbol inside a reply to them
+        violates conduct rule 2. Then confirm nothing asserts offsets against a rebuilt
+        object.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1436"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the held divergence reply is stamped and rests only on objects
+        in this tree — delivered with measured numbers, or REFUTED with the measurement
+        that refutes it; and the refuting command above is RUN FIRST and its result
+        reported either way
