@@ -36,7 +36,7 @@ artifacts:
       priority: must
       issue: "#1478"
       verification-track: manual
-      landed: "PR #1543 - #1478 - DELIVERED: the issue-closure gate now runs on the LIVE tree inside the `Claim Check` REQUIRED context, so a record declaring `issue-scope: outlives` over an already-closed issue reds a merge instead of printing into a post-push advisory log. The refuting command ran FIRST and CONFIRMED the premise rather than refuting it: with an `outlives` planted over a CLOSED issue (#1183) against an OPEN #1476 paired control, every artifact-READING step of every required context is GREEN on both arms - all five in the claim-check job plus `rivet validate`, the other seven required contexts containing no step that touches artifacts/ at all - while the advisory gate reds and names #1183. Three flags were each paid for by a measurement: --from-anchor so a CI invocation does not become a seventh anchor site; --allow-vacuous-authorised because the VACUOUS AUTHORISED SET failure is unconditional and red all four invocation modes on the honest plan-time tree, which is why no mode could be wired before; and --require-state because with the state read broken the gate falls back to the window, an empty window flags nothing, and it exited ZERO on the planted falsehood - loud but not blocking, potent locally and inert in the venue that matters. The tag ritual still calls the gate WITHOUT --allow-vacuous-authorised, so v0.85 vacuous-authorised finding stays a failure where it is actionable. Both halves of the new self-test are asserted and both negative controls were EXECUTED: a no-op flag reds the downgrade case, an over-suppressing flag reds the held-open case."
+      landed: "PR #1543 - #1478 - DELIVERED: the issue-closure gate now runs on the LIVE tree inside the `Claim Check` REQUIRED context, so a record declaring `issue-scope: outlives` over an already-closed issue reds a merge instead of printing into a post-push advisory log. The refuting command ran FIRST and CONFIRMED the premise rather than refuting it: with an `outlives` planted over a CLOSED issue (#1183) against an OPEN #1476 paired control, every artifact-READING step of every required context is GREEN on both arms - all five in the claim-check job plus `rivet validate`, the other seven required contexts containing no step that touches artifacts/ at all - while the advisory gate reds and names #1183. Three flags were each paid for by a measurement: --from-anchor so a CI invocation does not become a seventh anchor site; --allow-vacuous-authorised because the VACUOUS AUTHORISED SET failure is unconditional and red all four invocation modes on the honest plan-time tree, which is why no mode could be wired before; and --require-state because with the state read broken the gate falls back to the window, an empty window flags nothing, and it exited ZERO on the planted falsehood - loud but not blocking, potent locally and inert in the venue that matters. The tag ritual still calls the gate WITHOUT --allow-vacuous-authorised, so v0.85 vacuous-authorised finding stays a failure where it is actionable. Both halves of the new self-test are asserted and both negative controls were EXECUTED: a no-op flag reds the downgrade case, an over-suppressing flag reds the held-open case. AND THE GUARD EARNED ITSELF TWICE BEFORE THE STEP WENT GREEN: --require-state REFUSED on exit 2 on its first two CI runs rather than passing blind, and the second refusal carried the cause because the first correction made it print one - FileNotFoundError No such file or directory gh. The gh BINARY IS ABSENT from the self-hosted pool, which REFUTED the hypothesis that the token could not read issues, and it also condemned the first fix: a gh api second surface beside gh issue list is not a second surface, since both shell out to the same missing binary. Corrected to urllib-over-REST primary with gh as the local fallback - the order stale_pin_check.py already documents in this same job - and the step is now GREEN, reporting REST api.github.com one page no gh binary needed, SIXTY open issues read, and one authorised zero held open zero failures."
       verified-by: >
         DELIVERED — the gate is wired into a REQUIRED context, so its window of
         positions now includes one from which it can block. Measured, with the
@@ -107,6 +107,46 @@ artifacts:
         spaces after the verdict where the source prints ONE after FAIL and three
         after ok, so it was blind to precisely the verdict it was hunting and
         reported a potent mutant as inert.
+
+        THE CI VERDICT, written after the measurement and not before it. The step
+        REFUSED twice on exit 2 before it went green, which is the guard doing its
+        job — visibly broken rather than falsely green. The first refusal said only
+        that state was unavailable; the correction that made it print a reason is
+        what diagnosed it, in one line: `FileNotFoundError: [Errno 2] No such file
+        or directory: 'gh'`. **The `gh` binary is ABSENT from the self-hosted pool
+        where `claim-check` runs.** Not a permission problem, not a token problem,
+        not GraphQL versus REST — and the hypothesis that it WAS a permission
+        problem came from this release's own theme, which is what the theme warns
+        about.
+
+        THAT ALSO CONDEMNED THE FIRST FIX. A `gh api` "second surface" added beside
+        `gh issue list` is not a second surface: both shell out to the same missing
+        binary, so the fallback shared the primary's single point of failure and
+        the agreement self-test compared two dead paths. A fallback that shares the
+        failure mode is worse than none, because it reads like redundancy. And the
+        repository already knew — `stale_pin_check.py`, in the SAME job, documents
+        "NOT `gh` first: it is absent from the self-hosted pool where this runs",
+        RQ-72-CIPOOL measured it, and the pool tripwire's degradation message
+        lists "no gh" FIRST, a line this lane had already read and passed over.
+
+        CORRECTED AND MEASURED GREEN: `_open_issues_api` over `urllib` against
+        `api.github.com` is the PRIMARY and `gh` the local fallback — the order
+        the sibling gate uses for the same reason. The CI log reads
+        `issue-closure-state-source: REST api.github.com (1 page(s), no gh binary
+        needed)`, `issue-closure-state: 60 open issue(s) read`, and
+        `issue-closure: v0.87 — 1 authorised, 0 held open, 0 closed, 0 failures`,
+        with the step's `[1-9][0-9]*` pin satisfied. In a CI-shaped local
+        environment the paired arms hold: a token with no `gh` on PATH exits 0 via
+        REST; neither token nor `gh` still FAILS CLOSED at exit 2 with the reason
+        printed.
+
+        THE SELF-TEST POPULATION, split by venue rather than quoted as one number:
+        NINE `closewindow` cases run locally and ZERO skip. In CI SEVEN run and the
+        API-surface agreement pair SKIPS — `SKIP closewindow: API-surface
+        agreement — rest=60, gh=None` — because that case needs BOTH a token and
+        the binary. So it is exercised locally and is NOT CI potency evidence,
+        which the step's own comment says. Its SKIP line names `gh=None`, the
+        absent binary attesting to itself a third time.
 
         RESIDUALS, stated rather than left to be found. The CI invocation runs the
         HELD-OPEN direction only (`--closed ''`): with a window, the
