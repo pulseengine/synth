@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-BASEMOVE
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "A release lane survives a dependabot auto-merge, or the hold window is stated"
     description: >
         A dependabot auto-merge stales every open lane PR because CHECK2 is branch
@@ -29,6 +29,62 @@ artifacts:
       priority: should
       issue: "#1269"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1551 - #1269 - DELIVERED ON THE SECOND BRANCH, and the FIRST half is REFUTED. THE REFUTING COMMAND RAN FIRST: one open dependabot PR, auto-merge ENABLED on ZERO of them and ZERO across ALL authors, so by the stated criterion the auto-merge hazard is NOT LIVE this cycle and that is reported rather than worked around. BUT THE CRITERION IS NARROWER THAN THE HAZARD IT NAMES, which is the finding. #1269 established that CHECK2 is branch CURRENCY: a lane goes behind when its BASE MOVES, by whatever mechanism. Auto-merge is one. A manual dependabot merge is another. AND THE RELEASE OWN SERIALIZED LANE MERGES ARE A THIRD - each merge moves main, so every remaining lane PR is stale the moment the previous one lands. That third route needs no dependabot at all, it is GUARANTEED rather than contingent, and an auto-merge census cannot see it; it is also exactly why v0.86 consolidated six PRs into one. SO THE HOLD WINDOW IS STATED WITH NUMBERS, both inputs DERIVED. The lane count partitions open PRs on user.type and NOT on a login spelling, which is load-bearing: REST reports dependabot[bot] while the gh CLI renders the same account app/dependabot, and a filter written against one spelling fails SILENTLY against the other - that exact error inflated this lane first reading from THREE lanes to FOUR. The cycle cost is the MEDIAN wall-clock of completed CI runs rather than a best case, over twenty-five runs reading min THREE, median ONE HUNDRED AND TWENTY, max THREE HUNDRED AND SIX minutes - and the spread is the point. THE HELD-BRANCH COUNT IS DERIVED, AND IT HAD TO BE: it was first PASSED IN as seven, and the number went stale INSIDE THE HOUR when committing one more lane made it eight while the record still said seven - a count of the thing the count lives in is false by construction, which is this repository own named class, and the instrument now derives it from local v087 branches carrying no open PR. At the commit that writes this: THREE open lane PRs plus EIGHT derived held branches is ELEVEN lanes, which serialized at the median cycle is TWENTY-TWO HOURS of pure rebase-and-revalidate BEFORE any queue starvation - and the figure moves with the next lane, which is why the instrument prints its own inputs and the branch names behind them. WHAT FOLLOWS, stated because the number is otherwise just alarming: CONSOLIDATE lanes into one PR rather than serialize them, because the window scales with the NUMBER OF PRs and not with the amount of work. An empty CI-run population is REFUSED as vacuous rather than reported as a clean cycle cost."
+      verified-by: >
+        DELIVERED ON THE DONE-WHEN SECOND BRANCH — the hold window is STATED with numbers —
+        while the FIRST half of the refuting command is REFUTED, and both outcomes are
+        reported.
+
+        THE REFUTING COMMAND, run first. ONE open dependabot PR; auto-merge ENABLED on ZERO
+        of them, and ZERO across every author. By the criterion the artifact states, the
+        auto-merge hazard is NOT LIVE this cycle, so the lane as posed is refuted.
+
+        BUT THE CRITERION IS NARROWER THAN THE HAZARD IT NAMES. #1269 established that
+        CHECK2 is branch CURRENCY — a lane PR goes behind when its BASE MOVES, by whatever
+        mechanism. Auto-merge is one mechanism. A manual dependabot merge is a second. THE
+        RELEASE OWN SERIALIZED LANE MERGES ARE A THIRD, and it is the one that actually
+        bites: each merge moves main, so every remaining lane PR is stale the instant the
+        previous one lands. That route involves no dependabot at all, it is GUARANTEED
+        rather than contingent, and an auto-merge census is structurally blind to it. It is
+        also precisely why v0.86 consolidated six PRs into one — the escape was already
+        practised before it was measured.
+
+        THE WINDOW, with both inputs DERIVED rather than assumed. The LANE COUNT partitions
+        open PRs on user.type and NOT on a login spelling, and that choice is load-bearing:
+        the REST API reports dependabot as dependabot[bot] while the gh CLI renders the same
+        account as app/dependabot, so a filter written against either spelling fails
+        silently against the other and counts the bot as a lane. That is not hypothetical —
+        it inflated this lane own first reading from THREE to FOUR, and the shipped
+        self-test carries it as a NEGATIVE CONTROL showing the login filter keeping the
+        bot. The CYCLE COST is the MEDIAN wall-clock of completed CI runs, not a best case:
+        over twenty-five runs, min THREE minutes, median ONE HUNDRED AND TWENTY, max THREE
+        HUNDRED AND SIX. The spread is the point — a three-minute run and a five-hour run
+        are both in the same window.
+
+        THE PRODUCT, AND THE HELD COUNT IS DERIVED BECAUSE THE PASSED-IN ONE WENT STALE
+        INSIDE THE HOUR. It was first supplied as a parameter, SEVEN. Committing one further
+        lane made it EIGHT while the record still said seven — a count of the very thing the
+        count lives in, false by construction, and this repository own named class landing on
+        the lane that was measuring release bookkeeping. The instrument now DERIVES it from
+        local v087 branches that carry no open PR, and prints the branch names behind the
+        number so the derivation is checkable rather than asserted.
+
+        At the commit that writes this: THREE open lane PRs plus EIGHT derived held branches
+        is ELEVEN lanes, which serialized at the median cycle is ONE THOUSAND THREE HUNDRED
+        AND TWENTY MINUTES — TWENTY-TWO HOURS — of rebase-and-revalidate before any queue
+        starvation is counted. The figure MOVES with the next lane, by design, which is the
+        reason it is derived and printed with its inputs rather than quoted.
+
+        WHAT FOLLOWS FROM IT, stated because a number like that is otherwise just alarming:
+        CONSOLIDATE lanes into one PR rather than serialize them. The window scales with the
+        NUMBER OF PRs, not with the amount of work, so N lanes in one PR cost one cycle and
+        N lanes in N PRs cost N. This lane applies that conclusion to its own release.
+
+        AN EMPTY CI-RUN POPULATION IS REFUSED, not defaulted: with no completed run in the
+        window the report exits non-zero as VACUOUS instead of stating a cycle cost over
+        nothing, and the self-test asserts that. A derived population of zero is a refusal,
+        not a pass.
       done-when: >
         manual:2027-03-31 a release lane survives a dependabot auto-merge, or the hold
         window is stated — delivered with measured numbers, or REFUTED with the

@@ -451,6 +451,31 @@ jobs:
       - name: Unit-test the citation FLOOR — arithmetic, not a digit class (#1435)
         run: python3 scripts/ci_citation_floor.py --self-test
 
+      # RQ-87-BASEMOVE (#1269): the release-lane hold window, stated with numbers.
+      # The refuting command ("count open dependabot PRs with auto-merge ENABLED;
+      # a zero means the hazard is not live") was run and REFUTED the lane for
+      # this cycle — zero across ALL authors, not just dependabot.
+      #
+      # But the criterion is NARROWER than the hazard it names. #1269 established
+      # that CHECK2 is branch CURRENCY, so a lane goes behind when its base moves
+      # by ANY mechanism — and the release's OWN serialized merges are one, with
+      # no dependabot involved at all. That route is guaranteed rather than
+      # contingent and an auto-merge census cannot see it. It is why v0.86
+      # consolidated six PRs into one.
+      #
+      # Both inputs to the window are DERIVED. The lane count partitions open PRs
+      # on `user.type == "Bot"` and NOT on a login spelling, which is load-bearing:
+      # REST reports `dependabot[bot]` while the gh CLI renders the same account
+      # `app/dependabot`, and a filter written against one spelling fails silently
+      # against the other — that exact error inflated this lane's first reading
+      # from 3 lanes to 4. The cycle cost is the MEDIAN wall-clock of completed CI
+      # runs, not a best case, and an empty run population is REFUSED as vacuous
+      # rather than reported as a clean zero.
+      #
+      # Only `--self-test` is a gate: the report samples the live API.
+      - name: "Self-test the release-lane hold window (RQ-87-BASEMOVE, #1269)"
+        run: python3 scripts/release_lane_hold_window.py --self-test
+
       # RQ-78-FEATURESET: "is the binary we deliver the full feature set, or is
       # capability hiding behind a flag?" was answerable only by reading 128
       # source files. This derives it. The CENSUS is a measurement with no
