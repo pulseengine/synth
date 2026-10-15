@@ -14,6 +14,7 @@ repo's current artifacts goes vacuous the moment the release moves on.
 from __future__ import annotations
 
 import pathlib
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -151,6 +152,108 @@ def _cw_run(table):
         return C.closed_since(CW_TAG, CW_REPO), rec
     finally:
         C.subprocess = orig
+
+
+def closewindow_tests() -> None:
+    """RQ-87-CLOSEWINDOW (#1478) — the gate must have a REACHABLE window.
+
+    Usable as a required context means GREEN where the honest plan-time tree is
+    vacuous and RED on a record asserting `issue-scope: outlives` over an issue
+    that is not open. BOTH halves are asserted, because either alone passes under
+    a broken flag: a NO-OP `allow_vacuous` reds only the first, and one that
+    suppresses every failure reds only the third. v0.86 shipped a self-test case
+    that asserted one half of its own message and was green under exactly the
+    state it forbade; this is that lesson applied at authoring time.
+
+    Fixtures are OFFLINE and deterministic. `v0.1` has no artifacts in the
+    population and never will, so it is vacuous by construction rather than
+    because of where v0.87 happens to stand today — a case keyed to the live
+    release would go green the moment the first lane claims completion.
+    """
+    root = Path(__file__).resolve().parent.parent
+
+    # (1) vacuity DOWNGRADES with the flag.
+    f, w, _a, _h = C.check(root, "v0.1", set(), open_issues={1318},
+                           allow_vacuous=True)
+    check("closewindow: vacuous authorised set is a WARNING with the flag",
+          not f and any("VACUOUS AUTHORISED SET" in x for x in w), f"{f} / {w}")
+
+    # (2) ...and is still a FAILURE without it. Without this half, a flag that
+    # did nothing at all would pass (1) and the pair would be vacuous.
+    f, _w, _a, _h = C.check(root, "v0.1", set(), open_issues={1318})
+    check("closewindow: ...and a FAILURE without it — the flag is not a no-op",
+          any("VACUOUS AUTHORISED SET" in x for x in f), str(f))
+
+    # (3) the flag must NOT suppress the falsehood the gate exists for. v0.70
+    # held #1318 and #1331 open; an OPEN set containing only #1331 says #1318 is
+    # not open, which is the HELD-OPEN-BUT-ALREADY-CLOSED shape.
+    f, _w, _a, held = C.check(root, "v0.70", {1321, 1333, 1334, 1335, 1337},
+                              open_issues={1331}, allow_vacuous=True)
+    check("closewindow: held-open-over-closed still FAILS with the flag set",
+          any("HELD OPEN BUT ALREADY CLOSED: #1318" in x for x in f), str(f))
+    check("closewindow: ...and the held-open set was non-empty, so (3) is not vacuous",
+          1318 in held, str(sorted(held)))
+
+    # (4) --from-anchor must track ANCHOR_TAG rather than mirror a version. A
+    # hard-coded release in a CI step would become a seventh anchor site and
+    # would keep checking the PREVIOUS release while reading green.
+    mm = tuple(int(x) for x in C.ANCHOR_TAG.lstrip("v").split(".")[:2])
+    r = subprocess.run(
+        [sys.executable, str(root / "scripts" / "issue_closure_check.py"),
+         "--from-anchor", "--closed", "", "--no-state", "--allow-vacuous-authorised"],
+        capture_output=True, text=True, cwd=root, timeout=300)
+    check("closewindow: --from-anchor derives ANCHOR_TAG's successor",
+          f"release DERIVED from ANCHOR_TAG {C.ANCHOR_TAG}: v{mm[0]}.{mm[1] + 1}"
+          in r.stdout, r.stdout[:200])
+
+    # (5) FAIL CLOSED when state is unreadable. `--no-state` is the deterministic
+    # way to make `open_issues` None without breaking the network. MEASURED
+    # before the flag existed: with the state read broken and a planted
+    # `outlives` over a closed issue, the gate exited 0 and never printed the
+    # finding — potent locally, inert in CI.
+    r = subprocess.run(
+        [sys.executable, str(root / "scripts" / "issue_closure_check.py"),
+         "--from-anchor", "--closed", "", "--no-state", "--require-state"],
+        capture_output=True, text=True, cwd=root, timeout=300)
+    check("closewindow: --require-state REFUSES (exit 2) on an unreadable state read",
+          r.returncode == 2 and "REFUSED:" in r.stdout, f"rc={r.returncode}")
+    # ...and exit 2 is distinguishable from "ran and found failures" (1).
+    check("closewindow: ...and 2 is not 1 — 'could not run' is its own outcome",
+          r.returncode != 1, f"rc={r.returncode}")
+
+    # (6) TWO GENUINELY DIFFERENT SURFACES, one question — and the first version
+    # of this case had two that were the SAME. It compared `gh issue list` against
+    # `gh api`, both of which shell out to the `gh` BINARY, which is ABSENT on the
+    # self-hosted pool where this runs (RQ-72-CIPOOL measured it;
+    # `stale_pin_check.py` says so in its own docstring). So the "fallback" shared
+    # the primary's single point of failure and the agreement test compared two
+    # dead paths. The CI run that found it printed the reason in one line:
+    # `FileNotFoundError: No such file or directory: 'gh'`.
+    #
+    # The surfaces now are urllib-over-REST (no binary, needs a token) and `gh`
+    # (needs the binary, no token). They must AGREE where BOTH answer. Neither is
+    # the orchestrator: comparing against `open_issues_now` would compare a
+    # surface with itself whenever it fell through.
+    #
+    # A LOUD SKIP, not a pass, when one cannot be reached — in CI that is the
+    # `gh` half, so this case is NOT CI potency evidence there; it is exercised
+    # locally, where both exist.
+    import os as _os
+    _tok = _os.environ.get("GH_TOKEN") or _os.environ.get("GITHUB_TOKEN")
+    api = C._open_issues_api("pulseengine/synth", _tok) if _tok else None
+    gh = C._open_issues_gh("pulseengine/synth")
+    if api is None or gh is None:
+        print("  SKIP closewindow: API-surface agreement — "
+              f"rest={'None' if api is None else len(api)}, "
+              f"gh={'None' if gh is None else len(gh)}; needs BOTH a token and `gh`")
+    else:
+        check("closewindow: the two state surfaces AGREE on the open set",
+              api == gh,
+              f"rest {len(api)} vs gh {len(gh)}; "
+              f"only-in-rest={sorted(api - gh)[:6]}, "
+              f"only-in-gh={sorted(gh - api)[:6]}")
+        check("closewindow: ...and the agreed set is NON-EMPTY, so (6) is not vacuous",
+              len(api) > 0, str(len(api)))
 
 
 def next_release_tag_tests() -> None:
@@ -656,6 +759,7 @@ def main() -> int:
     next_release_tag_tests()
     r11conflict_tests()
     closed_since_tests()
+    closewindow_tests()
 
     print(f"issue-closure-tests: {FAILS} failure(s)")
     return 1 if FAILS else 0

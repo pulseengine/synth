@@ -38,13 +38,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from status_evidence_check import (  # noqa: E402
+    ANCHOR_TAG,
     CLAIMING,
     authorised_close_set,
     load_release_artifacts,
@@ -236,7 +239,70 @@ def closed_since(tag: str, repo: str, until_tag: str | None = None) -> set[int]:
     return {int(r["number"]) for r in json.loads(out)}
 
 
+def _open_issues_api(repo: str, token: str) -> set[int] | None:
+    """Every OPEN issue via the REST API with NO `gh` binary — RQ-87-CLOSEWINDOW
+    (#1478), and this is the PRIMARY path, not a fallback.
+
+    MEASURED, and it refuted the obvious hypothesis. The first CI run of this
+    gate refused with `--require-state`, and the reason it printed was not a
+    permission error but `FileNotFoundError: No such file or directory: 'gh'`.
+    **`gh` IS ABSENT FROM THE SELF-HOSTED POOL** where `claim-check` runs —
+    RQ-72-CIPOOL measured that, `stale_pin_check.py` documents it in its own
+    docstring ("NOT `gh` first: it is absent from the self-hosted pool where this
+    runs"), and the CI pool tripwire's degradation message lists "no gh" FIRST.
+    The first version of this lane added a `gh api` "second surface" beside
+    `gh issue list`, which is not a second surface at all: both shell out to the
+    same missing binary, so the fallback shared the primary's single point of
+    failure and the agreement test compared two dead paths.
+
+    So the order is token-REST first and `gh` only when no token exists, which is
+    exactly the order `stale_pin_check.py` uses in this same job for the same
+    reason. Pagination is by page number until a short page: `/issues` INCLUDES
+    pull requests, which are filtered by `pull_request` being absent — without
+    that the open set gains every open PR number and an artifact citing a PR
+    starts reading as "authorised but still open".
+    """
+    out: set[int] = set()
+    page = 1
+    while page <= 20:                     # 2000 issues; a bound, not a guess
+        url = (f"https://api.github.com/repos/{repo}/issues"
+               f"?state=open&per_page=100&page={page}")
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "synth-issue-closure-check"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310
+                batch = json.loads(r.read())
+        except Exception as e:            # noqa: BLE001 - the reason is printed
+            print(f"issue-closure-state-error: REST page {page}: "
+                  f"{type(e).__name__}: {e}")
+            return None
+        if not isinstance(batch, list):
+            print(f"issue-closure-state-error: REST page {page} was not a list")
+            return None
+        out |= {int(i["number"]) for i in batch if "pull_request" not in i}
+        if len(batch) < 100:
+            print(f"issue-closure-state-source: REST api.github.com "
+                  f"({page} page(s), no `gh` binary needed)")
+            return out
+        page += 1
+    print("issue-closure-state-error: REST pagination exceeded its page bound")
+    return None
+
+
 def open_issues_now(repo: str) -> set[int] | None:
+    """Token-REST FIRST, `gh` only without a token — see `_open_issues_api`."""
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        got = _open_issues_api(repo, token)
+        if got is not None:
+            return got
+        print("issue-closure-state-error: REST failed; trying `gh`")
+    return _open_issues_gh(repo)
+
+
+def _open_issues_gh(repo: str) -> set[int] | None:
     """Every OPEN issue number, or None when it cannot be read.
 
     RQ-72-ISSUEGATE (#1250) deliverable (e). The window (`closed_since`) answers
@@ -252,9 +318,21 @@ def open_issues_now(repo: str) -> set[int] | None:
             ["gh", "issue", "list", "--repo", repo, "--state", "open",
              "--limit", "500", "--json", "number"],
             capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as e:
+        # RQ-87-CLOSEWINDOW (#1478): SAY WHY. This returned a bare None, and the
+        # caller then printed "state unavailable" with no cause -- the
+        # RQ-77-STDERR (#1419) shape, a refusal whose REASON is discarded.
+        # MEASURED: the first CI run of the gate step refused with exit 2 and the
+        # log said only that the state was unavailable, so the cause could not be
+        # told from the log. The guess it then prompted -- "the token cannot read
+        # issues" -- was REFUTED by the next run's own reason line:
+        # `FileNotFoundError: No such file or directory: 'gh'`. The binary is
+        # ABSENT on the self-hosted pool. A primed reader finds what they expect.
+        print(f"issue-closure-state-error: {type(e).__name__}: {e}")
         return None
     if out.returncode != 0:
+        print(f"issue-closure-state-error: `gh issue list` rc={out.returncode}: "
+              f"{(out.stderr or out.stdout or '').strip()[:300] or '(no output)'}")
         return None
     try:
         return {int(r["number"]) for r in json.loads(out.stdout)}
@@ -404,7 +482,8 @@ def fmt_release(v: tuple[int, int]) -> str:
 
 
 def check(root: Path, release: str, closed: set[int],
-          allow_unclosed: bool = False, open_issues: set[int] | None = None):
+          allow_unclosed: bool = False, open_issues: set[int] | None = None,
+          allow_vacuous: bool = False):
     """Returns (failures, warnings, authorised, held_open).
 
     `closed` is the WINDOW — issues closed at or after the tag. `open_issues`,
@@ -435,7 +514,19 @@ def check(root: Path, release: str, closed: set[int],
     # So vacuity is now reported as a FINDING ABOUT THE AUTHORISED SET and the
     # loop runs regardless.
     if not authorised and not held_open:
-        failures.append(
+        # RQ-87-CLOSEWINDOW (#1478): downgradable, for one measured reason. A
+        # PLANNING PR is legitimately vacuous -- every artifact is `proposed`, so
+        # nothing authorises any closure -- and this failure is UNCONDITIONAL, so
+        # every invocation mode reds at plan time. MEASURED on the v0.87 planning
+        # tree: all four of {GATE5-as-scripted, --closed '', --closed '' --open
+        # ..., --no-state --closed ''} red, every one on THIS line, while three of
+        # the four correctly caught a planted `outlives` over a closed issue. So
+        # the gate could not be wired into a required context without reding
+        # every planning PR -- the v0.72 trap this file's CI step documents and
+        # declines to build. The downgrade is for CI only; the TAG ritual calls
+        # the gate WITHOUT it, so v0.85's vacuous-authorised-set finding stays a
+        # failure exactly where it is actionable.
+        (warnings if allow_vacuous else failures).append(
             f"VACUOUS AUTHORISED SET: no {release} artifact both names an issue "
             f"and claims completion, so nothing in this release authorises ANY "
             f"closure. The per-issue verdicts below are still derived -- from "
@@ -582,7 +673,10 @@ def check(root: Path, release: str, closed: set[int],
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--release", required=True, help="e.g. v0.71")
+    # Not `required=True` since RQ-87-CLOSEWINDOW (#1478): --from-anchor
+    # supplies it. main() refuses when NEITHER is given, so the contract is
+    # unchanged for every existing caller.
+    ap.add_argument("--release", help="e.g. v0.71; or --from-anchor")
     ap.add_argument("--root", default=".", type=Path)
     ap.add_argument("--repo", default="pulseengine/synth")
     g = ap.add_mutually_exclusive_group(required=True)
@@ -602,7 +696,35 @@ def main() -> int:
                          "this STATE, not against the closed window)")
     ap.add_argument("--no-state", action="store_true",
                     help="do not consult live issue state (window only)")
+    ap.add_argument("--allow-vacuous-authorised", action="store_true",
+                    help="report an empty authorised-AND-held-open set as a "
+                         "warning (RQ-87-CLOSEWINDOW, #1478). For CI, where a "
+                         "planning PR is legitimately vacuous; the tag ritual "
+                         "must NOT pass it")
+    ap.add_argument("--require-state", action="store_true",
+                    help="exit 2 if live issue STATE cannot be read, instead of "
+                         "falling back to the window (RQ-87-CLOSEWINDOW, #1478)")
+    ap.add_argument("--from-anchor", action="store_true",
+                    help="derive --release as ANCHOR_TAG's successor, importing "
+                         "ANCHOR_TAG from status_evidence_check rather than "
+                         "mirroring it, so a CI invocation does not become a "
+                         "seventh anchor site (RQ-87-CLOSEWINDOW, #1478)")
     args = ap.parse_args()
+
+    # RQ-87-CLOSEWINDOW (#1478). A CI step must not spell the release out: the
+    # anchor move already has SIX sites, and a seventh that nobody updates would
+    # leave this gate checking the PREVIOUS release forever while reading green.
+    # ANCHOR_TAG is the last SHIPPED release, so the one being cut is its
+    # successor -- the same derivation `status_evidence_check` makes for its own
+    # `_expected_cut`, imported rather than mirrored.
+    if args.from_anchor:
+        if args.release:
+            sys.exit("--from-anchor and --release are mutually exclusive")
+        mm = tuple(int(x) for x in ANCHOR_TAG.lstrip("v").split(".")[:2])
+        args.release = f"v{mm[0]}.{mm[1] + 1}"
+        print(f"  release DERIVED from ANCHOR_TAG {ANCHOR_TAG}: {args.release}")
+    elif not args.release:
+        sys.exit("one of the arguments --release --from-anchor is required")
 
     if args.closed is not None:
         closed = {int(x) for x in args.closed.split(",") if x.strip()}
@@ -635,8 +757,31 @@ def main() -> int:
                   "which cannot distinguish 'never closed' from 'closed before "
                   "the tag'")
 
+    # RQ-87-CLOSEWINDOW (#1478): FAIL CLOSED on an unreadable state read.
+    # MEASURED: with the state read broken (gh unauthenticated) and a planted
+    # `issue-scope: outlives` over CLOSED #1183, `--closed ''` exits 0 and never
+    # prints HELD OPEN BUT ALREADY CLOSED -- open_issues is None, the directions
+    # fall back to the WINDOW, and an empty window flags nothing. The notice
+    # above is printed, so the gate is loud; loud is not blocking, and a CI step
+    # reading the exit code would be GREEN on exactly the falsehood it was added
+    # to catch. Exit 2, not 1: "the gate could not run", the same distinction
+    # RQ-76-CLOSUREMAIN (#1404) makes just below.
+    if args.require_state and open_issues is None:
+        print("REFUSED: live issue STATE could not be read and --require-state "
+              "was given. The authorised/held-open directions would fall back "
+              "to the window, which cannot see an issue closed before the "
+              "window opened -- the exact falsehood this gate exists to catch. "
+              "FIX THE STATE READ, do not drop the flag: set GH_TOKEN or "
+              "GITHUB_TOKEN so the REST path can run. `gh` is NOT the remedy "
+              "here -- the binary is ABSENT on the self-hosted pool (the reason "
+              "line above says so), which is why REST is the primary path. An "
+              "earlier version of this message advised `gh auth` and sent its "
+              "first reader hunting a permission problem that did not exist.")
+        return 2
+
     failures, warnings, authorised, held_open = check(
-        args.root, args.release, closed, args.allow_unclosed, open_issues)
+        args.root, args.release, closed, args.allow_unclosed, open_issues,
+        allow_vacuous=args.allow_vacuous_authorised)
 
     # RQ-76-CLOSUREMAIN (#1404): an EMPTY live-open set is not evidence.
     #
@@ -676,6 +821,12 @@ def main() -> int:
         print(f"WARN {w}")
     for f in failures:
         print(f"FAIL {f}")
+    # RQ-87-CLOSEWINDOW (#1478): the state read's own population, so a CI step
+    # can pin `[1-9][0-9]*` and a silent downgrade to zero-state cannot read as a
+    # pass. `--no-state` prints nothing here, which is the honest output for a
+    # mode that deliberately does not look.
+    if open_issues is not None:
+        print(f"issue-closure-state: {len(open_issues)} open issue(s) read")
     print(f"issue-closure: {args.release} — {len(authorised)} authorised, "
           f"{len(held_open)} held open, {len(closed)} closed, "
           f"{len(failures)} failures")
