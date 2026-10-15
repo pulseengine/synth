@@ -973,6 +973,34 @@ jobs:
       - name: "Self-test the round-2 number extractor (#1516)"
         run: python3 scripts/extract_r1_numbers.py --self-test
 
+      # RQ-87-RUNNERSHAPE4 (#1451): the no-show/cancel split is NOT ESTABLISHED,
+      # and this step gates a REFUTATION OF THE LANE'S OWN FIRST ATTEMPT, which
+      # concluded "non-derivable, PINNED" and should not have.
+      #
+      # Three things were wrong with it, each found by re-measuring. The SAMPLE
+      # NUMBERS were wrong: a helper returned None on failure and the caller made
+      # that an empty job list, so two passes over IMMUTABLE data disagreed (49
+      # unserved, then 41) and HTTP 502 was later seen live on that endpoint;
+      # re-measured in one pass with retries it is 68 cancelled / 67 unserved,
+      # per-run 18/9/5/18/18 which SUMS to its total — the consistency check the
+      # original numbers could not have passed, now asserted here. A CANDIDATE
+      # SEPARATOR was measured and then left out of the field set: the job's own
+      # SPAN, which runs 1246-14421s across every cancelled-unserved job measured
+      # while the recorded no-show is "600s" in this file's own prose — BELOW the
+      # whole observed range. And the comparison has a THIRD ARM nobody counted:
+      # four cancelled-and-unstarted jobs sit in runs concluding FAILURE, a
+      # fail-fast cascade, two of them LONE — so lone-ness does not identify a
+      # no-show either, which v0.85 had already measured via the straggler.
+      #
+      # The arm the question turns on was NEVER MEASURED: the first attempt's
+      # NO_SHOW fixture was hand-typed from prose while claiming to be captured
+      # from the live API. What IS settled is the refuting command's literal
+      # question — a no-show is separable from an ordinary QUEUED job by
+      # status+conclusion — and that half is kept as the positive control.
+      #
+      # Only `--self-test` is a gate; the report is a window sample.
+        run: python3 scripts/runner_noshow_split.py --self-test
+
       # RQ-62-CLAIMCHECK (#1062): the runner-redundancy invariant, enforced
       # rather than remembered. On 2026-09-02 the `light` pool had exactly
       # one runner, it went offline, and NOTHING IN THE REPO COULD MERGE —
