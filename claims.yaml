@@ -341,8 +341,11 @@ status_fields:
   # oracle stays green without hiding the bug and the pin moving is the
   # fix's own evidence. NOTHING MADE A PIN TEMPORARY — and a comfortable pin
   # is the shape of every accumulation this repo has measured and then had
-  # to correct (20 selector waivers; sel_dsl_rules flat at 80 for twelve
-  # releases; a delivery floor at 28 against a live 67 for eleven). Derived
+  # to correct. THE FIGURES ARE NOT COPIED HERE — `--metric` prints every pin's
+  # live value, baseline, delta, waivers and HELD LENGTH on every run, and this
+  # comment's earlier copy of three of them had gone stale. RQ-87-FLATRULES
+  # (#242) REMOVED them rather than swapping them, because a swap goes stale
+  # again; the table is the single source. Derived
   # here from the oracles' OWN suppression tables (`kind: pin-table`: an
   # `ast` walk over the oracle source — the oracles import unicorn/wasmtime,
   # so they are read, never run), so the number can never be a hand tally

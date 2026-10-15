@@ -241,9 +241,19 @@ ever-growing pile of locally-correct patches.**
 > issue #N", exact in both directions — keeps CI green without hiding the
 > bug, and the pin moving is the fix's own evidence. But nothing made a pin
 > TEMPORARY, and a comfortable pin is the shape of every accumulation this
-> project has measured and then had to correct (20 selector waivers;
-> `sel_dsl_rules` flat at 80 for twelve releases; a delivery floor at 28
-> against a live 67 for eleven). So
+> project has measured and then had to correct: the selector waivers, the
+> verified-rule count that has not risen, and a delivery floor that sat far
+> below its live value until it was DERIVED from the anchor instead of typed.
+> THOSE FIGURES ARE DELIBERATELY NOT COPIED HERE. `claim_check.py claims.yaml
+> --metric` prints every pin's live value, baseline, delta, direction, waiver
+> count and HELD LENGTH on every CI run, derived from `claims.yaml`, and the
+> #1286 rule this file already applies to the acceptance ladder applies to its
+> own paragraph: a second copy of a measured number is how it goes stale. All
+> three figures HAD gone stale, in two places, before RQ-87-FLATRULES (#242)
+> re-measured them. The DECISION that lane recorded is NOT to pin the prose —
+> the metric table is already the single derived source and prints every run,
+> so pinning a restatement of it would add exactly the hand-maintained second
+> copy this paragraph warns against. So
 > the known-open pin count is pinned `direction: down` as `known_open_pins`,
 > DERIVED at check time (`kind: pin-table`, an `ast` walk over the oracle
 > source — never a hand tally) from the suppression tables the CI-wired
