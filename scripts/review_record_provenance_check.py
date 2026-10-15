@@ -182,6 +182,29 @@ def self_test() -> int:
     ok(TOOLPATH.findall("via `scripts/claim_check.py`") == ["scripts/claim_check.py"],
        "the tool extractor matches a cited path")
 
+    # RQ-87-PROVCRASH (#1539): the REPORT form, with a RELATIVE path — the form a
+    # human runs, which nothing exercised. It raised ValueError from
+    # `relative_to` on the raw argument. Both halves are asserted: the relative
+    # path must work AND must resolve to the same record as the absolute one, so a
+    # fix that merely swallowed the error would not pass.
+    import subprocess as _sp
+    newest = newest_record()
+    rel = newest.relative_to(REPO_ROOT)
+    runs = {}
+    for label, arg in (("relative", str(rel)), ("absolute", str(newest))):
+        r = _sp.run([sys.executable, str(Path(__file__).resolve()), "--record", arg],
+                    capture_output=True, text=True, timeout=300, cwd=REPO_ROOT)
+        runs[label] = r
+        ok("Traceback" not in (r.stdout + r.stderr),
+           f"REPORT form with a {label} path does not TRACEBACK")
+    ok(runs["relative"].returncode == runs["absolute"].returncode,
+       "...and both paths reach the same verdict "
+       f"(rel={runs['relative'].returncode}, abs={runs['absolute'].returncode})")
+    first = lambda r: next((l for l in r.stdout.split("\n")
+                            if l.startswith("record-provenance:")), "")
+    ok(first(runs["relative"]) == first(runs["absolute"]) != "",
+       "...and both report the SAME record, non-vacuously")
+
     # RQ-87-PROVBLIND (#1540): the UNRESOLVABLE bucket. BOTH halves, because
     # either alone passes under a broken implementation -- a bucket that
     # swallowed everything would pass the first, and one that stayed empty would
@@ -231,7 +254,15 @@ def main() -> int:
         for p in sorted(REVIEWS.glob("v0.*-cold-review.md")):
             report(p, a.ref, gate=False)
         return rc
-    return report(Path(a.record) if a.record else newest_record(), a.ref, gate=True)
+    # RQ-87-PROVCRASH (#1539): RESOLVE the argument. `report()` calls
+    # `path.relative_to(REPO_ROOT)`, which raises ValueError on a RELATIVE path —
+    # a traceback, not a diagnostic. CI gates only `--self-test`, so the form a
+    # human runs was the unexercised one, and v0.86's review worked around it
+    # with an absolute path instead of reporting it: the unreported-workaround
+    # anti-pattern. A self-test wired into CI says nothing about the report path
+    # beside it.
+    return report(Path(a.record).resolve() if a.record else newest_record(),
+                  a.ref, gate=True)
 
 
 if __name__ == "__main__":
