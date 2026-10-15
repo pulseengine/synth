@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-87-PROVENANCE3
     type: system-req
     release: v0.87
-    status: proposed
+    status: implemented
     title: "A shipped record's commit citations are ancestors, or the obligation is forward-only in writing"
     description: >
         Ancestry failures are systemic in SHIPPED records and the gating form cannot be
@@ -24,6 +24,61 @@ artifacts:
       priority: should
       issue: "#1516"
       verification-track: manual
+      landed: "PR #1544 - #1516 - DELIVERED ON THE SECOND BRANCH OF ITS OWN DONE-WHEN: the forward-only obligation is now IN WRITING at docs/reviews/README.md, and the provenance checker gating message points at it. The refuting command ran FIRST and its own premise is DEFECTIVE, which RQ-87-PROVBLIND measured: it says a historical non-ancestor count fallen to zero means the reconciliation happened, and in a fresh clone that is satisfied VACUOUSLY because the count was already one and nothing was reconciled. Run over every record in BOTH venues: the authoring checkout tests 243 citations and flags 105, a fresh clone of the remote tests 139 and flags 1, the flag count differs on 22 of the 25 records, and 243 minus 139 equals 104 skipped against 105 minus 1 equals 104 fewer flags - so every skipped token was a flagged one. The first branch of the done-when, reconciling historical citations, is therefore REFUSED with its reason: every flagged citation is a pre-squash branch head, wiring the gating form would red on day one over history it cannot change, and CI gates the self-test rather than the report for exactly that reason. The written obligation states the consequence for a READER - a non-ancestor citation in a record older than this release is expected and is not a defect - and for a TOOL: report unresolvable tokens rather than skipping them, and name the venue beside any ancestry figure. The new README is verified not to disturb the record population: step 7 filters by release id or version so it is never a candidate, both provenance globs are v0 star cold-review so it is never a record, 69 loop-conformance tests pass, and the citation and floor-prose counts are unmoved."
+      verified-by: >
+        DELIVERED ON THE SECOND BRANCH OF ITS OWN DONE-WHEN, and the first branch
+        is REFUSED with its reason rather than left open.
+
+        THE REFUTING COMMAND RAN FIRST, AND IT IS ITSELF DEFECTIVE — which
+        RQ-87-PROVBLIND measured and this record now acknowledges. It says: run
+        the check over every record, and if the historical non-ancestor count has
+        fallen to zero the reconciliation already happened. In a fresh clone that
+        test is satisfied VACUOUSLY: the count was already ONE and nothing was
+        reconciled. A refuting command whose success condition is met by the
+        measuring venue rather than by the subject cannot refute anything.
+
+        MEASURED OVER EVERY RECORD IN BOTH VENUES, every figure with its venue
+        named. Authoring checkout: 243 commit citations tested, 105 flagged
+        non-ancestors. Fresh `git clone` of the remote: 139 tested, ONE flagged.
+        The flag count differs on 22 of the 25 records. And the arithmetic closes
+        — 243 − 139 = 104 skipped, 105 − 1 = 104 fewer flags — so every token the
+        fresh clone skipped was one the authoring checkout had flagged.
+
+        THE FIRST BRANCH IS REFUSED, not deferred. Reconciling the historical
+        citations is not available: every flagged one is a pre-squash branch head,
+        this repository squash-merges so such a head never becomes an ancestor,
+        and wiring the gating form would red on day one over history it cannot
+        change — the trap this repository has measured once and declined to build.
+        CI therefore gates the checker's SELF-TEST and not its report, stated in
+        the workflow step rather than left to be inferred.
+
+        THE SECOND BRANCH IS DELIVERED: the obligation is forward-only IN WRITING,
+        at `docs/reviews/README.md`, which had no equivalent before — the
+        directory held only the records themselves, so the record contract existed
+        only in the checkers that enforce it. It states the header spelling and
+        why the declared commit is deliberately NOT ancestor-tested; it states the
+        forward-only citation rule with the measured venue figures beside it; and
+        it draws the two consequences explicitly. For a READER: a non-ancestor
+        citation in a record older than this release is EXPECTED and is not a
+        defect in that record. For a TOOL: report the unresolvable tokens rather
+        than skipping them, and name the venue beside any ancestry figure, because
+        a figure without one is not a measurement. The checker's gating message
+        now points at it, so the obligation is reachable from the failure that
+        raises it.
+
+        THE NEW FILE IS VERIFIED NOT TO DISTURB THE RECORD POPULATION, which is
+        the risk a README in that directory carries. `loop_conformance_check.py`
+        step 7 filters candidates by release id or version, and `README.md`
+        matches neither, so it can never be read as a record; both globs in the
+        provenance checker are `v0.*-cold-review.md`, so it is never audited as
+        one; `--all` does not mention it; 69 loop-conformance tests pass; and the
+        artifact-citation and floor-prose counts are unmoved.
+
+        RESIDUAL: nothing enforces the forward-only rule on a NEW record. The
+        gating form exists and is run by hand at review time, and wiring it is
+        still blocked by the 105 historical flags in the authoring venue. What
+        changed is that a reader no longer has to infer the decision from a
+        checker's silence.
       done-when: >
         manual:2027-03-31 a shipped record's commit citations are ancestors, or the
         obligation is forward-only in writing — delivered with measured numbers, or

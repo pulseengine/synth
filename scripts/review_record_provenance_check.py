@@ -153,7 +153,10 @@ def report(path: Path, ref: str, gate: bool) -> int:
     if gate and (bad_sha or bad_path):
         print("\nA citation a reader cannot follow is not evidence. Cite the MERGED "
               "sha (this repo squash-merges, so a branch head never becomes an "
-              "ancestor), or state the mapping in the record.")
+              "ancestor), or state the mapping in the record. The obligation is "
+              "FORWARD-ONLY and written down: see docs/reviews/README.md "
+              "(RQ-87-PROVENANCE3, #1516) — historical citations are not going to "
+              "be reconciled, and every ancestry figure must name its VENUE.")
         return 1
     return 0
 
