@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-88-FALCON5
+    type: system-req
+    release: v0.88
+    status: proposed
+    title: "The remaining falcon skip is lowered, or re-measured honestly as not lowered"
+    description: >
+        The reporter's optimized module still skips one function at the last measured
+        release, on float register exhaustion after the slot pool has grown. Either a
+        lowering ships, or the pressure is re-measured at this release's binary on the
+        reporter's own module, with its digest matched.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers:
+        Re-fetch the reporter's attachment only with the maintainer's approval, match
+        the published digests, and compile it at this release's binary; if nothing is
+        skipped, the defect has moved.
+        CITATION: #1318 is the reporter's open issue. The number names where the matter was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1318"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the remaining falcon skip is lowered, or re-measured honestly
+        as not lowered — delivered with measured numbers, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST and its
+        result reported either way

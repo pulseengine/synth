@@ -1,0 +1,42 @@
+# v0.88 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS, in either spelling. A figure parked here is a
+# second copy of a measured number, and a second copy is how a number goes stale.
+# The release's numbers live in the artifact records that measured them and in the
+# CHANGELOG section that cites those records. Re-derive; do not read a count here.
+#
+# THEME: A BLOCKER IS A MEASUREMENT TOO. The predecessor's cut found preconditions
+# carried rather than measured. The acceptance ladder was carried as blocked on a key
+# while its corpus sat verified on the release machine. A reporter's blocker was named
+# from the selector's own comment instead of from the reporter's latest message, which
+# names a different refusal. And the workspace version bump was assumed to ride with
+# the release notes, so no gate on any pull request noticed it had not. Each was a
+# precondition repeated from the last reading instead of re-read at the source.
+#
+# SO THE STANDING OBLIGATIONS for this release, each earned rather than asserted:
+#
+#   * RE-MEASURE A BLOCKER BEFORE CARRYING IT. A blocked disposition is a claim about
+#     the world, and it goes stale like any other measured number.
+#   * NAME A REPORTER'S BLOCKER FROM THE REPORTER. Read their latest comment, not our
+#     summary of an earlier one, and never correct their figures.
+#   * A GATE SAYS NOTHING OUTSIDE ITS WINDOW. Ask where a check sits as well as whether
+#     it can fail; a check that can only speak at the tag cannot block the pull request
+#     that caused the defect.
+#   * A CORRECTION IS AN UNREVIEWED CLAIM, and a number is invalidated by the edit that
+#     writes it. Both carried from the releases before this one.
+#
+# CARRIED LANES: the residuals the predecessor recorded rather than closed, each with
+# its own refuting command in its own artifact file. The lanes blocked outside this
+# repository are named in their own records and must be reported as blocked rather
+# than re-measured as progress; re-derive which they are.
+#
+# REPORTER CORRESPONDENCE is the maintainer's to send. Drafted replies stay unposted
+# until the maintainer says otherwise, and a draft whose prediction a reporter has
+# since refuted is re-written from their figures, not stamped.
+#
+# The anchor moves to the predecessor's tag in a SINGLE pull request, across every
+# site the ledger pins -- re-derive them, and re-derive which patterns must NOT move by
+# simulating the move against each pattern's own declared glob. The anchored counts are
+# read off the gate's own printed anchor line, never from the programme-status line,
+# which counts the live tree rather than the tree at the tag.
+

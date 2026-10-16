@@ -1,0 +1,37 @@
+artifacts:
+  - id: RQ-88-LADDER10
+    type: system-req
+    release: v0.88
+    status: proposed
+    title: "The acceptance ladder is re-measured on the corpus that is already present"
+    description: >
+        The v0.87 cold review found the 243-module corpus present on the release machine
+        at the ladder's own last-known path with every manifest entry verifying, while
+        four releases had carried the ladder as blocked on a key only the maintainer
+        could add. The blocker was carried, not measured. So the ladder can be re-
+        measured now, per backend and per invocation rung, at this release's binary.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers:
+        Re-verify the manifest from the corpus's modules directory with a positive
+        control; if it no longer verifies, or the path is gone, the lane reverts to
+        blocked with that measurement. Then check that the census script the ladder
+        names still runs at a version-matched binary before trusting any rung figure it
+        prints.
+        CITATION: #1432 is where the stale ladder was analysed. The number names where the matter was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1432"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the acceptance ladder is re-measured on the corpus that is
+        already present — delivered with measured numbers, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST and its
+        result reported either way
