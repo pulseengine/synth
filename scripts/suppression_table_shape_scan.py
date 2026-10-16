@@ -25,14 +25,17 @@ SO WHAT SHIPS IS A NARROWING, AND IT IS NAMED AS ONE. This scan derives the
 suppression-SHAPED bindings that do NOT match the ledger's name pattern, and
 requires each to be CLASSIFIED here with a reason. A new one is UNCLASSIFIED and
 reds. The escape is narrowed from "any name at all" to "a name carrying none of
-the suppression tokens below", which is strictly smaller and still real —
-`FOO = {...}` still escapes, and saying so is the point.
+the suppression tokens below, or a shaped name bound to something other than a
+dict/set literal or comprehension", which is strictly smaller and still real —
+`FOO = {...}` and `SUPPRESSED_CASES = dict(...)` still escape, and an
+unparseable file is skipped, and saying so is the point.
 
 WHAT THE CLASSIFICATION FOUND, which is the second half of the answer. Of the
 suppression-shaped non-matching bindings, NONE is unaccounted-for pin debt: each
 is a DECLINE pin (excluded by the ledger's own stated rule — a loud refusal is
 reach, not silent wrongness), a RED-HALF fixture (excluded by design, like
-`PINNED_WRONG`), or CONFIGURATION that is not a case suppression at all. A
+`PINNED_WRONG`), CONFIGURATION that is not a case suppression at all, or an
+ENVELOPE entry (`INFORMATIONAL_KINDS`, which suppresses a gating decision). A
 DERIVED POPULATION OF ZERO IS A REFUSAL AND NOT A PASS, so the reason is stated
 rather than assumed: the convention — name a suppression table `KNOWN*` or
 `PINNED*` — has in fact been followed, so the escape is LATENT rather than
@@ -149,7 +152,8 @@ def report() -> int:
     print(f"\nclassification of the shaped set: {kinds}")
     print("\nWHY THAT POPULATION IS EMPTY OF PIN DEBT, stated rather than assumed:")
     print("  every shaped non-matching binding is a DECLINE pin (the ledger's own")
-    print("  stated exclusion), a RED-HALF fixture (excluded by design) or CONFIG.")
+    print("  stated exclusion), a RED-HALF fixture (excluded by design), CONFIG,")
+    print("  or ENVELOPE (a gating decision, outside the listed pin tables).")
     print("  So the escape is LATENT, not EXPLOITED — a fact about today's tree,")
     print("  not a property of the gate. The convention has simply been followed.")
     print("\nTHE RESIDUAL ESCAPE, named rather than claimed closed: a table whose name")

@@ -15,9 +15,10 @@ FIRST-PARENT line. `DECLARED_COMMIT_RE` in `scripts/loop_conformance_check.py` i
 the single source for that spelling — import it rather than restating the pattern.
 
 **The declared commit is deliberately NOT ancestor-tested.** This repository
-squash-merges, so squashing DISCARDS the reviewed commit and
-`merge-base --is-ancestor` is guaranteed to fail on exactly the commit the record
-is about. On v0.63 an ancestor test rejected the correct declared sha and
+squash-merges, so squashing DISCARDS a branch's own commits, and an ancestor test
+fails on a record that declares a pre-squash branch head. A sha on main's
+first-parent line is by definition an ancestor of main, so declaring one keeps the
+record checkable. On v0.63 an ancestor test rejected the correct declared sha and
 silently accepted one the record merely CITES.
 
 ## Commit citations are a FORWARD-ONLY obligation (RQ-87-PROVENANCE3, #1516)
@@ -32,7 +33,8 @@ be inferred, because the alternative was measured and refused:
 
 * Ancestry failures are **systemic** in shipped records, not incidental. Measured
   across all 25 records in the authoring checkout: **243** commit citations
-  tested, **105** flagged non-ancestors. Every one is a pre-squash branch head.
+  tested, **105** flagged non-ancestors, all pre-squash commits: most were a pushed
+  branch tip at some point, but nine were intermediate commits never pushed as a tip.
 * So wiring the gating form would red on day one over history it cannot change —
   the trap this repository has already measured once and declined to build. CI
   therefore gates the provenance checker's **self-test**, never its report, and

@@ -5,8 +5,11 @@ artifacts:
     status: proposed
     title: "The acceptance ladder's corpus mount is reported at its source rather than re-measured"
     description: >
-        Blocked outside this repository: a one-line key append so the corpus volume
-        mounts.
+        NO LONGER blocked outside this repository. Planned as blocked on a one-line
+        key append so the corpus volume mounts; measured 2026-10-16, the corpus is
+        present on the release machine at the ladder's own last-known path,
+        /Volumes/Work/corpora/wasm-243, with 243 of 243 manifest entries OK. The
+        re-measure was not run in this release and is DEFERRED to the next one.
 
         REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
         legitimate outcome, reported with numbers: Re-read the issue state; attempting
@@ -22,7 +25,7 @@ artifacts:
       priority: should
       issue: "#1432"
       verification-track: manual
-      disposition: blocked
+      disposition: deferred
       done-when: >
         manual:2027-03-31 the acceptance ladder's corpus mount is reported at its source
         rather than re-measured — delivered with measured numbers, or REFUTED with the

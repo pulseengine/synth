@@ -59,7 +59,7 @@ quantity a synthetic fixture varies. A differential for this class needs the
 reporter's own module, and conduct rule four binds -- nothing here changes what
 they can compile.
 
-CI gates the SELF-TEST. The sweep needs a built binary and eighty-four compiler
+CI gates the SELF-TEST. The sweep needs a built binary and seventy-two compiler
 invocations, so it is a deliberate local measurement; the self-test is offline.
 """
 import argparse
@@ -77,8 +77,9 @@ FLOAT = re.compile(r"\b(f32|f64)\.")
 TRIED = re.compile(r"tried rung=(\S+)")
 RUNG = "vfp-wide-file"
 
-# A FROZEN stderr sample, captured from the live sweep, so the parser has an
-# offline subject. Keeping a real sample is what lets the self-test prove the
+# A FROZEN, HAND-COMPOSED stderr sample (no compiler source prints its first
+# line, so it was NOT captured from the live sweep), so the parser has an
+# offline subject. Keeping a sample is what lets the self-test prove the
 # parser finds a wide-file line WHEN ONE IS PRESENT -- the potency evidence a
 # zero-count pin otherwise cannot carry.
 FROZEN_STDERR = (

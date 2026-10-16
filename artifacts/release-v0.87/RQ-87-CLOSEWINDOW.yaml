@@ -7,9 +7,10 @@ artifacts:
     description: >
         A record can declare `issue-scope: outlives` over an issue that is ALREADY
         CLOSED, and NO required CI context reads that field against live issue state.
-        v0.86 shipped exactly that falsehood (DISPVOCAB3 over #1458, closed a week
-        before the release opened) and it was caught only because the closure gate was
-        asked EARLY, out of its scripted position — in the ritual it runs after the tag
+        v0.86 nearly shipped exactly that falsehood (DISPVOCAB3 over #1458, closed a
+        week before the release opened): it sat on a lane branch and was removed before
+        the squash, so it never reached main or the tag. It was caught only because the
+        closure gate was asked EARLY, out of its scripted position — in the ritual it runs after the tag
         push and is ADVISORY, printing into a log nobody re-reads. A gate says nothing
         outside its window, and this one's window is after the only moment it could have
         blocked.
@@ -21,8 +22,8 @@ artifacts:
         before any tag exists, because `--since-tag` resolves through a remote commit
         lookup — so "ask it earlier" has a floor, and the fix is a reachable window
         rather than an earlier call.
-        CITATION: #1478 is the issue that INTRODUCED `issue-scope: outlives` to express an
-        honest half-delivery. This lane is the follow-on failure of that same mechanism — the
+        CITATION: #1478 is a merged PR that declared `issue-scope: outlives` to express an
+        honest half-delivery; the field itself was introduced earlier, by #1356. This lane is the follow-on failure of that same mechanism — the
         field it added can now carry a falsehood no required gate reads. The number names where
         the mechanism was analysed, not an open scope.
     tags:
@@ -109,7 +110,7 @@ artifacts:
         reported a potent mutant as inert.
 
         THE CI VERDICT, written after the measurement and not before it. The step
-        REFUSED twice on exit 2 before it went green, which is the guard doing its
+        REFUSED three times on exit 2 before it went green, which is the guard doing its
         job — visibly broken rather than falsely green. The first refusal said only
         that state was unavailable; the correction that made it print a reason is
         what diagnosed it, in one line: `FileNotFoundError: [Errno 2] No such file
