@@ -25,14 +25,15 @@ artifacts:
       issue: "#1145"
       verification-track: manual
       issue-scope: outlives
-      landed: "PR #1546 - #1145 - DELIVERED, and the lane premise is HALF-REFUTED by its own measurement. THE REFUTING COMMAND, run first, both halves. Half one, the downstream answer: git grep for static_data_addend over artifacts/ returns FOUR hits across THREE files, but only ONE is substantive - release-v0.84 line 58, the actual downstream answer - and the other three are lanes QUOTING THE COMMAND ITSELF, including this artifact. v0.86 recorded TWO hits; the growth since is pure self-citation, so a census whose needle is a command text counts its own callers. Half two, the widths: the reporter entire #1145 thread AND the fixture adopted verbatim from their kill criterion exercise exactly i32.load8_u twice and i32.store8 once, and NOTHING ELSE - zero non-i32 accesses. Phase one reach, derived from the selector MultiMemory arm, is EIGHT ops: five loads including the two sign-extending ones and three stores. The reporter widths are a strict SUBSET, so the WIDTH refusal never reaches them and costing a width lift would spend effort on input they never exercise. THE TWO REFUSALS ARE NOT SYMMETRIC, which is the scoping conclusion: --safety-bounds software or mask declines ANY memory-k access REGARDLESS of width, because the guard compares against R10, which holds MEMORY ZERO size by the register contract, and memory k has no size register at all. That is the reporter whole remaining blocker and it is width-independent, so the lift to cost is a per-memory size source, not width coverage. Grounded in EXECUTION: the pinned repro compiles this fixture on the plain --relocatable path at a version-matched binary and records software/mask loud-skipping memory 1 and the cross-tenant write landing. Both negative controls EXECUTED against mutated copies; one fired by RAISING rather than over-reading, and the instrument records that mechanism rather than the one it was written to expect."
+      landed: "PR #1546 - #1145 - DELIVERED, and the lane premise is HALF-REFUTED by its own measurement. THE REFUTING COMMAND, run first, both halves. Half one, the downstream answer: git grep for static_data_addend over artifacts/ returned FOUR hits across THREE files before this record was written (this record's own text adds more), but only ONE is substantive - release-v0.84 line 58, the actual downstream answer - and the rest are lanes QUOTING THE COMMAND ITSELF, including this artifact. v0.86 recorded TWO hits; the growth since is pure self-citation, so a census whose needle is a command text counts its own callers. Half two, the widths: the reporter entire #1145 thread AND the fixture adopted verbatim from their kill criterion exercise exactly i32.load8_u twice and i32.store8 once, and NOTHING ELSE - zero non-i32 accesses. Phase one reach, derived from the selector MultiMemory arm, is EIGHT ops: five loads including the two sign-extending ones and three stores. The reporter widths are a strict SUBSET, so the WIDTH refusal never reaches them and costing a width lift would spend effort on input they never exercise. THE TWO REFUSALS ARE NOT SYMMETRIC, which is the scoping conclusion: --safety-bounds software or mask declines ANY memory-k access REGARDLESS of width, because the guard compares against R10, which holds MEMORY ZERO size by the register contract, and memory k has no size register at all. It is width-independent, so for that refusal the lift to cost is a per-memory size source, not width coverage. It is NOT the reporter whole remaining blocker: their latest comment (2026-10-06) compiles without --safety-bounds and names the --native-pointer-abi memory-0-only refusal, the static-data region having no per-memory layering, and gale isolation path is --safety-bounds mpu --embedder-mpu, which is accepted. Grounded in EXECUTION: the pinned repro compiles this fixture on the plain --relocatable path at a version-matched binary and records software/mask loud-skipping memory 1 and the cross-tenant write landing. Both negative controls EXECUTED against mutated copies; one fired by RAISING rather than over-reading, and the instrument records that mechanism rather than the one it was written to expect."
       verified-by: >
         DELIVERED, with the refuting command run FIRST in both halves, and the lane own
         premise HALF-REFUTED by the measurement it asked for.
 
-        HALF ONE, THE DOWNSTREAM ANSWER, re-read rather than assumed. The grep returns
-        FOUR hits across THREE files, and only ONE of them is a substantive answer -
-        release-v0.84 line 58, which names the selector own accessor. The other three
+        HALF ONE, THE DOWNSTREAM ANSWER, re-read rather than assumed. Before this
+        record was written the grep returned FOUR hits across THREE files (this record's
+        own text adds more), and only ONE of them is a substantive answer -
+        release-v0.84 line 58, which names the selector own accessor. The rest
         are lanes QUOTING THE REFUTING COMMAND, this artifact among them. v0.86 recorded
         TWO hits for the same command, so every increment since has been SELF-CITATION:
         a census whose needle is a command text counts its own callers, and the count
@@ -57,8 +58,10 @@ artifacts:
         .rivet/repos/gale/benches/gust/wasm-kernel/fused.wasm, and a walk of its section
         table shows it declares exactly ONE memory. A single-memory module has no memory-k
         access at any width, so it contributes nothing to this census and cannot be a
-        counter-example; the two-tenant fixture remains the only multi-memory evidence in
-        existence for this reporter. Second, is "the two refusals" even the pair analysed
+        counter-example. The two-tenant fixture is NOT the only multi-memory evidence for
+        this reporter: the thread names gale's run-two-tenant.sh module (full-width
+        i32.load and i32.store, both inside phase-one reach) and a --domain fused module
+        with two memories (comment of 2026-10-06). Second, is "the two refusals" even the pair analysed
         here? It is read off the SOURCE rather than inferred: the selector own phase-1
         comment names exactly two, the non-i32 widths and --safety-bounds on memory k. The
         configuration refusals in multi_memory_pages, non-relocatable and native-pointer
@@ -70,9 +73,10 @@ artifacts:
         memory-k access REGARDLESS OF WIDTH, and its root cause has nothing to do with
         width: the software guard compares against R10 and mask derives size-minus-one
         from R10, both MEMORY ZERO size by the register contract, and memory k has no
-        size register for a guard to read. That refusal is the reporter whole remaining
-        blocker. THE LIFT TO COST IS THEREFORE A PER-MEMORY SIZE SOURCE, not width
-        coverage - and a lane that had scoped width work would have shipped reach the
+        size register for a guard to read. That refusal is NOT the reporter whole
+        remaining blocker: their 2026-10-06 comment names the --native-pointer-abi
+        memory-0-only refusal instead. FOR THE SOFTWARE/MASK REFUSAL THE LIFT TO COST IS
+        A PER-MEMORY SIZE SOURCE, not width coverage - and a lane that had scoped width work would have shipped reach the
         reporter cannot use while leaving the thing blocking them untouched.
 
         GROUNDED IN EXECUTION, not in reading the arm. The pinned repro was run at a
@@ -84,8 +88,11 @@ artifacts:
 
         BOTH SIDES OF THE SHIPPED PIN ARE DERIVED, which is the first invariant: the
         reporter widths are parsed from the committed fixture and phase one reach out of
-        the selector own match arm, so neither is a hand-written mirror and moving either
-        moves the number. BOTH NEGATIVE CONTROLS WERE EXECUTED against mutated copies,
+        the selector own match arm, so neither is a hand-written mirror. Moving the
+        fixture moves the number; narrowing the selector does NOT always move it,
+        because the pattern also matches the arm's inner mapping lines, so removing
+        I32Load8U from the dispatch pattern leaves the family at eight and the
+        self-test green. BOTH NEGATIVE CONTROLS WERE EXECUTED against mutated copies,
         the real files untouched. Growing the fixture an i64.load breaks the subset pin
         as intended. Removing the selector `other` cut does NOT make the family slice
         over-read - it RAISES, so the derivation fails closed and the self-test ERRORS

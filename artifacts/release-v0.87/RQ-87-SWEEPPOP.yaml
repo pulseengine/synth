@@ -37,7 +37,7 @@ artifacts:
       priority: should
       issue: "#1541"
       verification-track: manual
-      landed: "PR #1546 - #1541 - DELIVERED: the sweep population is DERIVED with every exclusion reasoned, and the three verdict counts are re-measured over it. The refuting command ran FIRST and the mirror is live: hand list NINE against THIRTEEN derived, one swept-but-not-defining and FIVE defining-but-unswept. THREE of this record OWN implications were corrected by measurement. def self_test IS THE WRONG NEEDLE - thirteen define one but FIFTEEN mention --self-test. test_merge_gate_callsite.py WAS CORRECTLY SWEPT: it accepts --self-test, exits 0, carries ELEVEN subjects, so the DERIVATION was too narrow rather than the hand list too wide, which is the opposite of the decision the record asked for. And the real precondition is BEHAVIOURAL - a file belongs only if its own --self-test exits 0 unmutated, else a neutralised subject cannot be told from the pre-existing failure. Probed over the bounded candidate set: 15 candidates, 13 usable, 2 unusable, each now an EXCLUDE entry with a written reason. A DEFECT I INTRODUCED AND MEASURED: the behavioural probe ran the sweep OWN self-test, which re-derives the population and probes the sweep again - unbounded subprocess recursion, 112 live processes before it was killed, and caching cannot help because each level is a fresh process. A behavioural derivation whose population includes the deriving instrument does not terminate; the old syntactic needle could include itself harmlessly. Two guards now, self-exemption plus a nested marker on every child. RE-MEASURED: red-crash 40, GREEN-undetected 47, red-detected 21, subjects 108, and the partition SUMS. AND SELFTEST3 EIGHT DOES NOT REPRODUCE - the same nine files now give SEVENTEEN and the derived thirteen give FORTY-SEVEN, so the eight does not hold on the population it was taken over."
+      landed: "PR #1546 - #1541 - DELIVERED: the sweep population is DERIVED with every exclusion reasoned, and the three verdict counts are re-measured over it. The refuting command ran FIRST and the mirror is live: hand list NINE against THIRTEEN derived, one swept-but-not-defining and FIVE defining-but-unswept. THREE of this record OWN implications were corrected by measurement. def self_test IS THE WRONG NEEDLE - thirteen define one but FIFTEEN mention --self-test. test_merge_gate_callsite.py WAS CORRECTLY SWEPT: it accepts --self-test, exits 0, carries ELEVEN subjects, so the DERIVATION was too narrow rather than the hand list too wide, which is the opposite of the decision the record asked for. And the real precondition is BEHAVIOURAL - a file belongs only if its own --self-test exits 0 unmutated, else a neutralised subject cannot be told from the pre-existing failure. Probed over the bounded candidate set: 15 candidates, 13 usable, 2 unusable, each now an EXCLUDE entry with a written reason. A DEFECT I INTRODUCED AND MEASURED: the behavioural probe ran the sweep OWN self-test, which re-derives the population and probes the sweep again - unbounded subprocess recursion, 112 live processes before it was killed, and caching cannot help because each level is a fresh process. A behavioural derivation whose population includes the deriving instrument does not terminate; the old syntactic needle could include itself harmlessly. Two guards now, self-exemption plus a nested marker on every child. RE-MEASURED: red-crash 40, GREEN-undetected 47, red-detected 21, subjects 108, and the partition SUMS. AND SELFTEST3 EIGHT REPRODUCES on its nine files - seventeen GREEN-undetected rows, nine of them main, net eight, exactly v0.86's own figures (an earlier draft compared gross against net) - while the derived thirteen give FORTY-SEVEN."
       verified-by: >
         DELIVERED — the population is derived, every exclusion carries a written
         reason, and the three verdict counts are re-measured over it with the
@@ -101,14 +101,13 @@ artifacts:
         count: for those subjects the self-test notices, but exits on a traceback
         instead of a verdict.
 
-        AND RQ-87-SELFTEST3's EIGHT DOES NOT REPRODUCE. This record says the lane
-        BOUNDS it and that widening "can only raise it". Measured: the same NINE
-        files now give SEVENTEEN, and the derived thirteen give FORTY-SEVEN. So
-        the eight is not a narrower reading of the same measurement — it does not
-        hold on the population it was taken over. Both of the last two releases
-        added and changed self-tests in those files, which is a plausible cause
-        and is NOT asserted as one; what is measured is that the figure does not
-        reproduce, and SELFTEST3 should restate it against a named population.
+        AND RQ-87-SELFTEST3's EIGHT REPRODUCES. This record says the lane BOUNDS it
+        and that widening "can only raise it". Measured: the same NINE files give
+        seventeen GREEN-undetected rows at v0.86.0 and at this release, nine of them
+        the entry point main, which v0.86 netted out to EIGHT — so nothing moved
+        (an earlier draft of this paragraph compared the gross seventeen against the
+        net eight and called it a non-reproduction). Widening to the derived
+        thirteen raises it to FORTY-SEVEN, as the bound predicts.
       done-when: >
         manual:2027-03-31 the sweep's population is derived with every exclusion
         reasoned, and the verdict counts re-measured over it — delivered with measured

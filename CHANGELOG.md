@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.87.0] - 2026-10-15
+## [0.87.0] - 2026-10-16
 
 ### The theme, and where it landed
 
@@ -33,29 +33,33 @@ position where it could still block.
 
 ### A workflow that could not parse ran nothing
 
-Three pushes of the lane branch ran no CI at all. The run was named by its file path instead of
+Four pushes of the lane branch ran no `CI` workflow at all. The run was named by its file path instead of
 `CI`, failed within seconds, and created zero jobs — which reads exactly like a starved runner
 pool. The cause was a splice: a rewritten step dropped its `- name:` line, so its `run:` attached
 to the preceding step, which ended up with two `run:` keys. `yaml.safe_load` keeps the last value
 on a duplicate key and reports nothing; Actions rejects the file. `scripts/workflow_strict_check.py`
 now refuses duplicate keys and steps that have neither `run` nor `uses`. Where it can run matters:
 a check inside `ci.yml` that validates `ci.yml` can never catch this failure, because a workflow
-that does not parse never runs its own steps. So it is documented to run before the push.
+that does not parse never runs its own steps. It is not yet wired into any workflow or hook; it is
+run by hand before a push.
 
 ### Refutations of this programme's own work
 
 - **RQ-87-RUNNERSHAPE4 reversed its own first answer** (#1451). The first attempt pinned the
   no-show/cancel split as non-derivable. Re-measuring found its sample numbers were wrong: a
-  swallowed HTTP 502 had turned a failed API page into an empty job list, so two passes over
-  immutable data disagreed. Correctly counted, it is 68 cancelled jobs, 67 never served. The first
+  helper that swallowed API failures turned a failed page into an empty job list, so two passes
+  over immutable data disagreed (HTTP 502s on that endpoint were observed afterwards; that the
+  failed pages were 502s is not shown). Correctly counted, it is 68 cancelled jobs, 67 never served. The first
   attempt had also left a measured candidate separator (the job's span) out of the field set, and
   missed a third cause of cancellation entirely (fail-fast cascades). The no-show case itself was
   never measured, so the split is now recorded as not established. What is settled: a no-show
   can be told apart from an ordinary queued job.
-- **RQ-87-MEMLAYER4 half-refuted its premise** (#1145). The reporter's thread and fixture use
-  only `i32.load8_u` and `i32.store8`, both of which phase one already handles, so the width
-  refusal never reaches them. What blocks them is `--safety-bounds` on memory k, which is refused
-  whatever the access width, because the bounds guard reads memory 0's size. The real kernel was
+- **RQ-87-MEMLAYER4 half-refuted its premise** (#1145). The accesses in the reporter's thread and
+  fixture, and in the two-tenant module the thread names, are i32 widths phase one already handles,
+  so the width refusal never reaches them. `--safety-bounds software|mask` on memory k is refused
+  whatever the access width, because the bounds guard reads memory 0's size. Neither is what the
+  reporter's latest comment names as blocking them: that is the `--native-pointer-abi` refusal,
+  which has no per-memory layering for the static-data region. The real kernel was
   checked as well: it declares a single memory. The lift worth costing is a per-memory size
   source, not wider width coverage.
 - **RQ-87-BASEMOVE's criterion was narrower than its hazard** (#1269). No open PR had auto-merge
@@ -69,7 +73,8 @@ that does not parse never runs its own steps. So it is documented to run before 
 - **The record-provenance ancestry check now reports citations it cannot resolve instead of
   skipping them** (#1540), and every figure it prints names the checkout it was measured in.
   Across all 25 shipped records, the authoring checkout tests 243 citations and flags 105, while a
-  fresh clone of the remote tests 139 and flags 1.
+  full fresh clone of the remote tests 139 and flags 1 (a blob-filtered clone varies between runs,
+  because git fetches missing commits on demand).
 - **A crash on a relative `--record` path is fixed** (#1539).
 - **The forward-only citation obligation is written down** in `docs/reviews/README.md` (#1516).
   The issue stays open: squash merging guarantees a lane head is never an ancestor of main, so a
@@ -79,14 +84,15 @@ that does not parse never runs its own steps. So it is documented to run before 
 
 - **The wide-file recovery rung** (#1439): the float-bearing fixture population is 24, not the
   four reported before, and the rung is reached by none of them. The ladder demonstrably runs —
-  75 tries across five other rungs — and 18 purpose-built probes on two separate pressure axes are
-  all rescued by pool growth. Accepted as not observable from committed fixtures. The defect itself
+  75 tries across five other rungs — and of 18 purpose-built probes on two separate pressure axes,
+  15 are rescued by pool growth and 3 (f64 on a single-precision target) decline before recovery. Accepted as not observable from committed fixtures. The defect itself
   is unchanged.
 - **Suppression tables** (#1428): a table added under a name the ledger's pattern does not match
   still escapes it. A paired control confirmed this. A new scan narrows the escape: tables shaped
   like suppressions must be classified. None of the 13 it finds is unaccounted pin debt.
 - **The self-test vacuity sweep** now derives its population, with each exclusion reasoned
-  (#1541), and the "eight" undetected figure does not reproduce (#1515).
+  (#1541). The "eight" undetected figure reproduces on its own nine files, and the derived
+  population raises it to 47 (#1515).
 - **The disposition vocabulary**: both gates now accept the full set the release files use (#1458).
 - **The artifact floor** is raised from 526 to the live figure, so losing an artifact source turns
   it red (#1064).
@@ -107,8 +113,10 @@ issue stays open.
 - **npm** (#1460): the package is not published past 0.69.0. Publishing needs a credential, and it
   is also gated on the compliance job.
 - **Compliance on release** (#1453): releases published by the bot do not trigger `on: release`.
-- **The acceptance ladder** (#1432): it still describes v0.63. The corpus host needs a key
-  installed that only the maintainer can add.
+- **The acceptance ladder** (#1432): it still describes v0.63. This was recorded as blocked on a
+  key only the maintainer can add, but the review found the corpus already present on the release
+  machine (243 of 243 manifest entries OK), so it is no longer blocked. The re-measure is deferred
+  to the next release.
 
 ## [0.86.0] - 2026-10-14
 

@@ -48,16 +48,20 @@ artifacts:
         SO THE DELIVERY IS A NARROWING, AND THE RESIDUAL IS NAMED. Suppression-SHAPED
         bindings that do not match the ledger name pattern must each be CLASSIFIED with a
         written reason; a new one is UNCLASSIFIED and reds. The escape shrinks from any
-        name at all to a name carrying none of the shape tokens — strictly smaller and
-        still real. A table called FOO still passes both halves, and saying so is the
+        name at all to a name carrying none of the shape tokens OR a shaped name whose
+        value is not a dict/set literal or comprehension (`dict(...)`, a list, a
+        `frozenset(...)`) — strictly smaller and still real. A table called FOO still
+        passes both halves, and saying so is the
         point rather than a caveat.
 
         THE CLASSIFICATION IS THE SECOND HALF OF THE ANSWER, and it is the half a reader
         primed to expect hidden debt would have got wrong. Of the THIRTEEN shaped
         non-matching bindings, NONE is unaccounted-for pin debt: SEVEN are DECLINE pins,
         which the ledger own stated rule excludes because a loud refusal is reach and not
-        silent wrongness; TWO are RED-HALF fixtures, excluded by design exactly as
-        PINNED_WRONG is; THREE are CONFIGURATION and suppress no case at all, one of them
+        silent wrongness; TWO are classified RED-HALF, though only one is a frozen
+        fixture excluded by design as PINNED_WRONG is — the other,
+        invalid_accept_1207's DECLINES, is a live input to the pinned KNOWN table
+        and is already counted inside it; THREE are CONFIGURATION and suppress no case at all, one of them
         a single scratch register and another a set of path components; and ONE —
         INFORMATIONAL_KINDS — suppresses a GATING decision rather than pinning a decline,
         which is the single entry worth naming explicitly, its members being documented

@@ -50,13 +50,15 @@ kernel is available locally
 (`.rivet/repos/gale/benches/gust/wasm-kernel/fused.wasm`), and a walk of its
 section table shows it declares exactly ONE memory. A single-memory module has
 no memory-k access at any width, so it contributes nothing to this census and
-cannot be a counter-example. The two-tenant fixture remains the only
-multi-memory evidence in existence for this reporter, which is why it is the
-right subject.
+cannot be a counter-example. The two-tenant fixture is NOT the only
+multi-memory evidence for this reporter: the thread also names gale's
+run-two-tenant.sh module (full-width i32.load/i32.store, inside phase-one
+reach) and a --domain fused module with two memories.
 
-WHAT THIS PIN IS FOR. It reds when either side moves -- if the reporter's
-fixture grows a width phase one does not reach, or if the family narrows under
-one the fixture uses. Either event means the scoping decision above needs
+WHAT THIS PIN IS FOR. It reds if the reporter's fixture grows a width phase
+one does not reach. It does NOT reliably red if the family narrows under one
+the fixture uses: the pattern also matches the arm's inner mapping lines, so
+removing I32Load8U from the dispatch pattern leaves the family at eight. Either event means the scoping decision above needs
 re-examining, which is the only thing a pin can usefully guarantee here.
 
 BOTH NEGATIVE CONTROLS WERE EXECUTED against mutated copies, with the real
@@ -107,9 +109,9 @@ def phase_one_family() -> set[str]:
     body = body[inner:]
     end = body.index("other => {")
     region = body[:end]
-    # Pattern position only: a variant followed by a brace-destructure. The
-    # `=> ArmOp::` mapping lines reuse the same names, which is harmless for a
-    # SET, and the `other =>` cut keeps the declining widths out.
+    # NOT position-only: a variant followed by a brace-destructure matches both
+    # the dispatch pattern and the `=> ArmOp::` mapping lines, so a variant
+    # removed from the dispatch pattern alone is still counted (RQ-87 review), and the `other =>` cut keeps the declining widths out.
     return set(re.findall(r"\b((?:I32|I64|F32|F64|V128)[A-Za-z0-9]*)\s*\{", region))
 
 
