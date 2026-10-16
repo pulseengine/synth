@@ -18,6 +18,8 @@ artifacts:
     tags:
       - feature-loop
       - process
+      - aadl
+      - spar
     links:
       - type: derives-from
         target: BR-001
