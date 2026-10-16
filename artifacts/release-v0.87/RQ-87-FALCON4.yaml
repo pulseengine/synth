@@ -24,7 +24,56 @@ artifacts:
       priority: must
       issue: "#1318"
       verification-track: manual
-      disposition: blocked
+      disposition: partial
+      landed: "PR #1547 - #1318 - PARTIAL, and NO LOWERING SHIPS. The refuting command RAN at a version-matched binary - synth 0.86.0 at main b0b7c58e, which cargo confirmed current by rebuilding nothing - on the reporter OWN modules, re-fetched from the errors.zip attachment on #1318 with the maintainer explicit approval on 2026-10-15 and treated as untrusted input, compiled and never executed, with the reporter OWN command line from the issue body. The figure HELD for a FOURTH release: the optimized module exports SEVENTEEN functions and skips ONE, the controller@0.10.0#step export, rc 1; the fused module exports TWENTY-ONE and skips NONE, rc 0. So the lane premise did not change and the lane is not moot. THE MEASUREMENT CONFIRMS THE TITLE rather than inferring it: under the recovery-statistics flag the skipped export climbs the whole ladder, and the pool-grow rung raised the slot pool to TWO HUNDRED AND EIGHTEEN and STILL failed on GI-FPU-002, the VFP register file exhausted with S0 to S15 all live - so raising a constant does not help, and the residual is float REGISTER PRESSURE. Both terminal rungs are spent: frame-locals with the wide file exhausts the slot pool. CONDUCT RULE FOUR BINDS AND IS STATED: #1318 is the reporter open defect, this release only re-measured it, and re-measurement is not progress on it - so the lane stays partial, claims nothing, and authorises no closure."
+      verified-by: >
+        PARTIAL — the refuting command RAN and the figure HELD, so the premise is confirmed
+        and the lane is not moot; and NO LOWERING SHIPS, so nothing here is progress on the
+        reporter defect.
+
+        THE INPUT, stated so it can be checked rather than trusted. The reporter own modules
+        were re-fetched from the errors.zip attachment on #1318, on the maintainer explicit
+        approval given on 2026-10-15 — the record of the earlier fetch attributed it to
+        approval too, so that approval was not assumed to carry over. Both files were treated
+        as untrusted: extracted into their own empty directory, checked for the wasm magic,
+        compiled and NEVER executed. Their SHA-256 digests are
+        7065f112fdaae127291f5f12cacc00619c55363e14a5141059dc2fcc6cfd00df for opt.wasm and
+        21e7a893b93ef47138e99639b53f356ddd51da31a4f50c6a4ee7950470a20bef for fused.wasm, so
+        a later release can confirm it measured the same bytes.
+
+        THE BINARY, version-matched rather than assumed. synth 0.86.0 equals the workspace
+        version, and at main b0b7c58e cargo rebuilt nothing — its fingerprint over the real
+        dependency graph says the binary is current, which is a better instrument than the
+        file-mtime check that had flagged twelve manifest files as newer.
+
+        THE MEASUREMENT, using the reporter OWN command line from the issue body —
+        cortex-m7, relocatable, all exports, embedder data and global initialisation. The
+        optimized module exports SEVENTEEN functions and skips exactly ONE, the
+        controller@0.10.0#step export, exiting 1. The fused module exports TWENTY-ONE and
+        skips NONE, exiting 0. The same figure as v0.84, v0.85 and v0.86: a fourth release.
+
+        THE TITLE IS CONFIRMED BY THE LADDER, not inferred from it. Under the
+        recovery-statistics flag the skipped export tries every rung. Spill fails on
+        GI-FPU-002, the VFP register file exhausted with S0 to S15 all live. Frame-locals fails
+        on the slot pool. The pool-grow rung then raises the pool to TWO HUNDRED AND EIGHTEEN
+        slots — and fails AGAIN on GI-FPU-002. That is the direct evidence the residual is NOT a
+        raisable constant: the constant was raised, by a lot, and the register file was still
+        the binding limit. The wide-file rung then exhausts the slot pool, so both terminal
+        rungs are spent. The per-function verdicts sum to the export count — fourteen at base,
+        one via spill, one via frame-locals, one exhausted — so no function is unaccounted for.
+
+        A CROSS-LANE CONSEQUENCE, stated with its limit. The vfp-wide-file rung is TRIED on
+        this module, which is the first non-zero try count v0.87 has observed for it. That does
+        not refute RQ-87-WIDEFILE10, whose claim concerns the fixtures COMMITTED in this
+        repository, and this attachment is not committed. It does supply the positive control
+        that lane lacked: the rung is reachable, and reachable by the reporter shape, which
+        fails on register-file exhaustion exactly as that lane mechanism predicted.
+
+        CONDUCT RULE FOUR BINDS AND IS STATED HERE RATHER THAN IMPLIED. #1318 is the reporter
+        open blocker. Everything this lane did was measurement — sharper evidence about the
+        defect, not a change to it — and a release whose only work on an open external defect
+        was hardening its understanding does not count as progress on it. So the lane is
+        partial, claims nothing, authorises no closure, and posts nothing to the reporter.
       done-when: >
         manual:2027-03-31 the remaining falcon skip is float register pressure, not a
         raisable constant — delivered with measured numbers, or REFUTED with the

@@ -5,6 +5,111 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.87.0] - 2026-10-15
+
+### The theme, and where it landed
+
+"A gate says nothing outside its window — and a primed reader finds what they expect." v0.86
+found a gate that was potent, wired and green but asked only after the tag, where it could no
+longer block anything. This release asked where each gate sits, not only whether it can fail —
+and twice watched a gate catch this programme's own work because it had been moved into a
+position where it could still block.
+
+### A gate moved into its window, and what it caught there
+
+- **The issue-closure gate now runs in a required context on every PR** (#1478). Before this it
+  ran only in the tag ritual, after the push. Two lanes later it refused an artifact this same
+  release had written: RQ-87-BASEMOVE declared `issue-scope: outlives` over #1269, which closed on
+  2026-09-24 — three weeks before this release's window opened. That is exactly the v0.86 defect
+  the gate exists to catch, and this time it blocked a PR instead of printing to a log after the
+  tag. The field was removed and the reason recorded in the artifact.
+- **The recurring steps 1–2 filing had lapsed without anyone seeing it** (#1136). Deriving the
+  ordinal by artifact identity gives 25 filings from v0.63 to v0.87, and exactly one of the 25 —
+  v0.87's own — lacked the `aadl`/`spar` tag the matcher needs. Asked for v0.87, the matcher
+  returned a stale filing from 24 releases earlier. The conformance slot that reads it only ever
+  runs at the tag. It does block there, but only after every lane has merged, so the same check
+  now also runs on the PR. It imports the shipped matcher rather than re-implementing it, and it
+  refuses when two independent derivations of the release under cut disagree.
+
+### A workflow that could not parse ran nothing
+
+Three pushes of the lane branch ran no CI at all. The run was named by its file path instead of
+`CI`, failed within seconds, and created zero jobs — which reads exactly like a starved runner
+pool. The cause was a splice: a rewritten step dropped its `- name:` line, so its `run:` attached
+to the preceding step, which ended up with two `run:` keys. `yaml.safe_load` keeps the last value
+on a duplicate key and reports nothing; Actions rejects the file. `scripts/workflow_strict_check.py`
+now refuses duplicate keys and steps that have neither `run` nor `uses`. Where it can run matters:
+a check inside `ci.yml` that validates `ci.yml` can never catch this failure, because a workflow
+that does not parse never runs its own steps. So it is documented to run before the push.
+
+### Refutations of this programme's own work
+
+- **RQ-87-RUNNERSHAPE4 reversed its own first answer** (#1451). The first attempt pinned the
+  no-show/cancel split as non-derivable. Re-measuring found its sample numbers were wrong: a
+  swallowed HTTP 502 had turned a failed API page into an empty job list, so two passes over
+  immutable data disagreed. Correctly counted, it is 68 cancelled jobs, 67 never served. The first
+  attempt had also left a measured candidate separator (the job's span) out of the field set, and
+  missed a third cause of cancellation entirely (fail-fast cascades). The no-show case itself was
+  never measured, so the split is now recorded as not established. What is settled: a no-show
+  can be told apart from an ordinary queued job.
+- **RQ-87-MEMLAYER4 half-refuted its premise** (#1145). The reporter's thread and fixture use
+  only `i32.load8_u` and `i32.store8`, both of which phase one already handles, so the width
+  refusal never reaches them. What blocks them is `--safety-bounds` on memory k, which is refused
+  whatever the access width, because the bounds guard reads memory 0's size. The real kernel was
+  checked as well: it declares a single memory. The lift worth costing is a per-memory size
+  source, not wider width coverage.
+- **RQ-87-BASEMOVE's criterion was narrower than its hazard** (#1269). No open PR had auto-merge
+  enabled, so the hazard as stated was not live. But branch protection's `strict` is false, so
+  the serialization between lane PRs comes from the loop's own base-currency check, not from the
+  platform. That check stays, because a stale base can merge cleanly as text and still break
+  behaviour. The cost it imposes scales with the number of PRs, so the lanes were consolidated.
+
+### Records and provenance
+
+- **The record-provenance ancestry check now reports citations it cannot resolve instead of
+  skipping them** (#1540), and every figure it prints names the checkout it was measured in.
+  Across all 25 shipped records, the authoring checkout tests 243 citations and flags 105, while a
+  fresh clone of the remote tests 139 and flags 1.
+- **A crash on a relative `--record` path is fixed** (#1539).
+- **The forward-only citation obligation is written down** in `docs/reviews/README.md` (#1516).
+  The issue stays open: squash merging guarantees a lane head is never an ancestor of main, so a
+  figure pinned to a pre-squash head stays uncheckable.
+
+### Populations derived instead of inherited
+
+- **The wide-file recovery rung** (#1439): the float-bearing fixture population is 24, not the
+  four reported before, and the rung is reached by none of them. The ladder demonstrably runs —
+  75 tries across five other rungs — and 18 purpose-built probes on two separate pressure axes are
+  all rescued by pool growth. Accepted as not observable from committed fixtures. The defect itself
+  is unchanged.
+- **Suppression tables** (#1428): a table added under a name the ledger's pattern does not match
+  still escapes it. A paired control confirmed this. A new scan narrows the escape: tables shaped
+  like suppressions must be classified. None of the 13 it finds is unaccounted pin debt.
+- **The self-test vacuity sweep** now derives its population, with each exclusion reasoned
+  (#1541), and the "eight" undetected figure does not reproduce (#1515).
+- **The disposition vocabulary**: both gates now accept the full set the release files use (#1458).
+- **The artifact floor** is raised from 526 to the live figure, so losing an artifact source turns
+  it red (#1064).
+- **The selector-rule count**: the figure stays held, and the stale copies of it were removed from
+  prose rather than re-pinned (#242).
+
+### Falcon
+
+The reporter's own modules were re-measured at this release's binary (#1318): the optimized
+module skips one function of 17 and the fused module skips none — the same as the previous three
+releases. The recovery ladder shows the slot pool growing to 218 and failing anyway on VFP
+register exhaustion, so the remaining skip is register pressure, not a constant to raise. **No
+lowering ships.** This release only re-measured the defect, which is not progress on it, and the
+issue stays open.
+
+### Still blocked outside this repository
+
+- **npm** (#1460): the package is not published past 0.69.0. Publishing needs a credential, and it
+  is also gated on the compliance job.
+- **Compliance on release** (#1453): releases published by the bot do not trigger `on: release`.
+- **The acceptance ladder** (#1432): it still describes v0.63. The corpus host needs a key
+  installed that only the maintainer can add.
+
 ## [0.86.0] - 2026-10-14
 
 ### The theme, and what it found inside this release's own instruments
