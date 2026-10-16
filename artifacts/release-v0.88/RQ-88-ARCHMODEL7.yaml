@@ -1,0 +1,33 @@
+artifacts:
+  - id: RQ-88-ARCHMODEL7
+    type: system-req
+    release: v0.88
+    status: proposed
+    title: "The recurring steps 1-2 filing is made for this release and found by the matcher"
+    description: >
+        The recurring architecture-model filing is a standing obligation; v0.87 found it
+        had lapsed silently once, and it now has a PR-time check. This release files its
+        own.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers:
+        Run the recurring filing check against this release before filing; if it already
+        passes, the filing exists and the lane reduces to confirming the matcher found
+        this release's and not an older one.
+        CITATION: #1136 is where the recurring filing was analysed. The number names where the matter was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1136"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the recurring steps 1-2 filing is made for this release and
+        found by the matcher — delivered with measured numbers, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST and its
+        result reported either way

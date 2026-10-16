@@ -1,0 +1,36 @@
+artifacts:
+  - id: RQ-88-MEMLAYER5
+    type: system-req
+    release: v0.88
+    status: proposed
+    title: "The reporter's named blocker, native-pointer-abi with no per-memory layering, is costed or lifted"
+    description: >
+        The multi-memory reporter's latest comment names the --native-pointer-abi
+        refusal as what blocks them: the static-data region classification has no per-
+        memory layering in phase one. v0.87 named --safety-bounds instead, and the
+        review corrected that. This lane works on the blocker the reporter actually
+        reported. A release whose only work here is measurement is not progress on it.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers:
+        Re-run the reporter's own compile command from their comment at this release's
+        binary, on the two-domain module it names; if it compiles, the blocker has moved
+        and the lane re-scopes to what refuses next. Re-read the downstream answer with
+        git grep for the refusal's symbol over artifacts/ before writing any code.
+        CITATION: #1145 carries the reporter's measurement and the refusal text. The number names where the matter was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1145"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the reporter's named blocker, native-pointer-abi with no per-
+        memory layering, is costed or lifted — delivered with measured numbers, or
+        REFUTED with the measurement that refutes it; and the refuting command above is
+        RUN FIRST and its result reported either way

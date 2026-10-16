@@ -1,0 +1,37 @@
+artifacts:
+  - id: RQ-88-PREPBUMP
+    type: system-req
+    release: v0.88
+    status: proposed
+    title: "A release-prep PR cannot omit the workspace version bump while every PR gate stays green"
+    description: >
+        The v0.87 release-prep PR shipped the 0.87.0 CHANGELOG section with the
+        workspace still at 0.86.0, and every gate on it and on the next PR passed. Only
+        the pretag conformance step 0 caught it, at the tag ritual, so the bump cost a
+        third PR and a further full CI cycle. A gate that can only speak after every
+        lane has merged is the predecessor's theme in a new place.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers:
+        Build a scratch tree whose topmost CHANGELOG release section names a version the
+        workspace does not carry, and run every required context by name; if any reds,
+        the lane is moot. Then confirm the OTHER edge: an ordinary mid-release tree,
+        whose topmost section is the PREVIOUS release, must stay green, or the remedy
+        reds every PR and gets routed around.
+        CITATION: #1550 is where the omission was measured, at the v0.87 cut. The number names where the matter was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1550"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 a release-prep PR cannot omit the workspace version bump while
+        every PR gate stays green — delivered with measured numbers, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST and its
+        result reported either way
