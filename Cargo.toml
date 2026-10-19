@@ -46,7 +46,7 @@ wasm-encoder = "0.261"
 wit-parser = "0.261"
 wit-component = "0.261"
 wat = "1.261"
-wast = "261.0"
+wast = "262.0"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
