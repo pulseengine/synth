@@ -1,0 +1,42 @@
+# RQ-88-STRICTWIRE (#1552): validate every workflow file from a workflow that
+# is NOT ci.yml, so it still runs when ci.yml cannot parse.
+#
+# Four pushes of a v0.87 lane branch ran no `CI` workflow at all: a dropped
+# `- name:` left one step with two `run:` keys. `yaml.safe_load` keeps the last
+# value silently, and Actions rejected the file, naming the run by its path with
+# zero jobs. scripts/workflow_strict_check.py refuses exactly that, but nothing
+# ran it. A step inside ci.yml cannot catch a ci.yml that does not parse,
+# because that workflow never runs its own steps. A SEPARATE workflow does run:
+# Spec Suite ran and succeeded on all four broken shas. So the check lives here.
+#
+# Its own blind spot is this file: if workflow-strict.yml itself does not parse,
+# this job does not run. ci.yml's Claim Check job runs the same check too, which
+# covers this file from the other side.
+#
+# NOT in the required-check set (main's 9), for the reason Spec Suite records:
+# a new required context that fails to run deadlocks every merge.
+name: Workflow Strictness
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  workflow-strict:
+    name: workflow files parse strictly — no duplicate keys, no empty steps (1552)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Ensure PyYAML
+        run: |
+          python3 -c "import yaml" \
+            || python3 -m pip install --user pyyaml \
+            || python3 -m pip install --user --break-system-packages pyyaml
+      - name: Strict-check every workflow file
+        run: |
+          set -euo pipefail
+          python3 scripts/workflow_strict_check.py --self-test
+          python3 scripts/workflow_strict_check.py

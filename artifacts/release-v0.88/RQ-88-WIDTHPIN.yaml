@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-88-WIDTHPIN
     type: system-req
     release: v0.88
-    status: proposed
+    status: implemented
     title: "The multi-memory width pin reds when the selector's dispatch pattern narrows"
     description: >
         The width pin's derivation matches every variant in the selector arm, including
@@ -27,6 +27,14 @@ artifacts:
       priority: should
       issue: "#1551"
       verification-track: manual
+      landed: "PR #1564 - #1551 - DELIVERED. multi_memory_width_scope.py counted widths with a regex that also matched the arm's inner mapping lines, so removing I32Load8U from the dispatch left the family at eight and the self-test green. phase_one_family now walks the dispatch by brace depth and counts variants only at depth 1, skipping destructure braces."
+      verified-by: >
+        DELIVERED. Both mutations now go through the shipped function, phase_one_family,
+        not a helper: removing the dispatch line drops I32Load8U from the family and
+        reds; removing only its mapping line leaves the family unchanged and stays
+        green, which is correct. Planting the old regex back makes the self-test fail
+        by name. A first version of this test exercised a helper instead of the shipped
+        function and passed under the old regex; that is why it was rewritten.
       done-when: >
         manual:2027-03-31 the multi-memory width pin reds when the selector's dispatch
         pattern narrows — delivered with measured numbers, or REFUTED with the

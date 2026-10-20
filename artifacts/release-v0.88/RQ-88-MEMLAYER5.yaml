@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-88-MEMLAYER5
     type: system-req
     release: v0.88
-    status: proposed
+    status: implemented
     title: "The reporter's named blocker, native-pointer-abi with no per-memory layering, is costed or lifted"
     description: >
         The multi-memory reporter's latest comment names the --native-pointer-abi
@@ -29,6 +29,17 @@ artifacts:
       priority: must
       issue: "#1145"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1564 - #1145 - REFUTED with execution evidence. Lifting both --native-pointer-abi multi-memory refusals in a scratch build compiles the reporter's shape silently and miscompiles it: read1_static returns 0x0 where wasmtime returns 0xaaaaaaaa, because a memory-0 constant rewritten to an absolute address is then added to memory 1's base. Paired controls in the same run pass. The refusal stays. This is NOT progress on #1145."
+      verified-by: >
+        REFUTED. The fix the previous lane implied, a memory index on static_data_addend,
+        would not work: the rewrite happens on the VALUE (I32Const and stack-pointer global
+        reads) before any access knows its memory. A correct lift needs module-level
+        provenance on rewritten values and a stack-pointer pick that knows which memory each
+        global belongs to. The downstream answer was re-read first: the reporter wants
+        memory-0 seams native and memory k at exact wasm offsets via the region table.
+        Evidence is committed under scripts/repro/memlayer5_1145. Under conduct rule 4 this
+        release made no progress on the reporter's defect.
       done-when: >
         manual:2027-03-31 the reporter's named blocker, native-pointer-abi with no per-
         memory layering, is costed or lifted — delivered with measured numbers, or

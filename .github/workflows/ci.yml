@@ -984,6 +984,29 @@ jobs:
       - name: Unit-test the changelog-structure slot — real-commit red/green (1259)
         run: python3 scripts/test_loop_conformance_changelog.py
 
+      # RQ-88-PREPBUMP (#1550): the same release-identity rule pretag step 0
+      # enforces, asked on EVERY PR instead of only at the tag. v0.87's release
+      # prep shipped the [0.87.0] notes with the workspace at 0.86.0 and every PR
+      # gate stayed green. The check imports step 0's own workspace_version and
+      # changelog_structure_verdict, so the two cannot disagree. Its self-test
+      # runs on real commits: d3c13c83 reds, f69d3548 and the mid-release
+      # 897dbf69 green. fetch-depth: 0 above supplies them; missing history
+      # FAILS rather than skips.
+      # RQ-88-STRICTWIRE (#1552): the other half of the strictness wiring. The
+      # Workflow Strictness workflow covers ci.yml when ci.yml cannot parse; this
+      # step covers workflow-strict.yml from the other side.
+      - name: Every OTHER workflow file parses strictly (RQ-88-STRICTWIRE, 1552)
+        run: |
+          set -euo pipefail
+          python3 scripts/workflow_strict_check.py --self-test
+          python3 scripts/workflow_strict_check.py
+
+      - name: Release notes and workspace version move together (RQ-88-PREPBUMP, 1550)
+        run: |
+          set -euo pipefail
+          python3 scripts/release_version_check.py --self-test
+          python3 scripts/release_version_check.py
+
       # RQ-86-SPELLSCAN (#1515): the release file's statistics scan, in BOTH
       # spellings. v0.85 shipped a figure its own round-1 review had proven
       # false, spelled as a WORD, through three commits where the digit-only
