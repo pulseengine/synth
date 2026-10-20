@@ -88,8 +88,20 @@ argued **down** over time and cannot grow silently:
 
 - **145 wired** — a floor (`count-min`). The surface cannot be emptied by
   deleting oracles instead of fixing them.
-- **9 manual** — a ceiling (`count-max`). A tenth needs a conversation, not a
-  commit.
+- **11 manual** — a ceiling (`count-max`). A twelfth needs a conversation, not a
+  commit. (This sentence said **9 manual** for one release after the ceiling
+  reached 10, because the pin checks the sentence's presence, not its number;
+  the tenth and eleventh are itemized below.)
+
+  The eleventh is `jessdiverge10_localise_1436.py` (RQ-88-JESSDIVERGE10, #1436,
+  v0.88): it localised a reporter's divergence by execution over the reporter's
+  own module, which this tree does not carry. The defect it found is gated by
+  the wired `vfp_home_alias_1436_differential.py`; this script is the evidence of
+  how the first divergent op was found.
+
+  The tenth is `literal_table_census_1403.py` (RQ-77-CENSUS, #1403, v0.77): it
+  reports the module-level literal-table population under five named readings
+  rather than one number, so there is no single figure for CI to assert.
 
   The ninth is `diagnostic_issue_census_345.py` (RQ-74-STALEMSG, #345, v0.74),
   and it is the second script here whose own conclusion is that CI must not
@@ -131,7 +143,7 @@ The gate also writes a table (and the unwired-debt list) to
 `$GITHUB_STEP_SUMMARY`, so the backlog is visible on every run rather than only
 in a log nobody opens.
 
-## The manual nine
+## The manual eleven
 
 | script | category | why |
 |---|---|---|
@@ -144,6 +156,8 @@ in a log nobody opens.
 | `run204_unicorn.py` | scratch | #204 bring-up probe, hardcoded `/tmp/gz.bin` + hand-transcribed stub offsets from one historical disassembly; asserts nothing |
 | `i64_load_store_372_differential.py` | scratch | 25-line print-only probe; superseded as a gate by the wired `i64_large_offset_382` / `load_store_big_offset_382` differentials |
 | `diagnostic_issue_census_345.py` | measurement | RQ-74-STALEMSG's refutation evidence (#345): the lane set out to build a tripwire refusing a diagnostic that cites a CLOSED issue, and this census found 93% of citation sites already do (363 of 389), because a `#N` names where the limitation was ANALYSED and that issue is normally closed. The refusal would have red 363 sites on landing. Prints counts, no verdict about the compiler |
+| `literal_table_census_1403.py` | measurement | RQ-77-CENSUS (#1403): the literal-table population under five named readings, because the stated predicate is ambiguous; no single figure, so no verdict for CI |
+| `jessdiverge10_localise_1436.py` | external-input | RQ-88-JESSDIVERGE10 (#1436): needs the reporter's module (sha256 in the header), not vendored here. The defect it localised is gated by the wired `vfp_home_alias_1436_differential.py` |
 
 ## Anti-vacuity — the gate must not become the thing it polices
 

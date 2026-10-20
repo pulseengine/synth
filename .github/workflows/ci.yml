@@ -6775,6 +6775,20 @@ jobs:
           SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
             scripts/repro/carried_float_branch_1318_differential.py | tee /tmp/1318cfb.txt
           grep -q '^RESULT: PASS' /tmp/1318cfb.txt
+      # RQ-88-JESSDIVERGE10 (#1436): a float local's home S/D register was
+      # rewritten by `local.set`/`local.tee` while an earlier `local.get`/
+      # `local.tee` of the SAME local was still on the operand stack naming it
+      # — the float twin of #989. It was the reporter's `ekf#estimate`
+      # divergence (gravity compensation stored +9.81 where wasm stores 0).
+      # EXECUTED bit-exact against wasmtime: straight-line, param-home,
+      # if/block/loop and f64 legs, plus two different-local NEGATIVE
+      # CONTROLS. Unfixed: 88 of 136 vectors wrong.
+      - name: "a float home rewritten while still read EXECUTES bit-exact (#1436)"
+        run: |
+          set -euo pipefail
+          SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
+            scripts/repro/vfp_home_alias_1436_differential.py | tee /tmp/1436vha.txt
+          grep -q '^RESULT: PASS' /tmp/1436vha.txt
       - name: "#1223 — the five algebraic-identity shapes, EXECUTED (RQ-74-PINDEBT2)"
         run: |
           set -euo pipefail

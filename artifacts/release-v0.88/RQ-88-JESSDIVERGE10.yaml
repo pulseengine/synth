@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-88-JESSDIVERGE10
     type: system-req
     release: v0.88
-    status: proposed
+    status: implemented
     title: "The reporter's measured divergence PCs are used to localise the lowering defect"
     description: >
         The reporter answered on the thread with the six measured PCs and slot
@@ -30,6 +30,23 @@ artifacts:
       priority: must
       issue: "#1436"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1564 - #1436 - DELIVERED: a wrong-code fix. The first divergent op, found by comparing every wasm store under wasmtime against every ARM write to linear memory, is 28 stores into tick 1: func 2 f32.store offset=1448 writes 0x411cf5c3 (+9.81) where wasmtime writes 0. Cause: try_lower_f32 pushes a REFERENCE to a float local's home register, and a second local.tee rewrites that register while the first value is still on the stack (the float twin of #989). Fix: detach_vfp_home_aliases copies every stack entry naming a float home before the home is written, and at every if/block/loop entry. On the reporter's own module, sha256 matched, every return word and every one of 16384 linear-memory words now matches wasmtime at 16 and 1024 ticks."
+      verified-by: >
+        DELIVERED, with the reporter's own measurement as the positive control. On the
+        UNFIXED object the harness reproduces their QEMU trace exactly: all 36 gravity-block
+        words, all 1024 vel-d words ending at 41221afe, and every read of slots
+        0x1358/5c/60 from object 0x30dc (their ELF 0x33c0). Only then was the fix measured.
+        The new differential, vfp_home_alias_1436_differential.py, is wired into ci.yml:
+        88 of 136 vectors and 15 of 17 exports wrong before, 0 after; its negative
+        controls are green both before and after. Mutations: removing only the boundary
+        detach reds exactly the 6 control-flow exports, removing both reproduces 88/136.
+        Byte identity with the detach toggled: 382 module builds, 4177 functions, 0 differ;
+        on the reporter's module only estimate changes (15300 to 15270 bytes). All 17
+        existing oracles, fmt, clippy and 3159 workspace tests pass. UNPROVEN: the fixed
+        object has not run on QEMU, Renode or silicon, and only one IMU vector was run.
+        The issue therefore outlives this release until the reporter re-measures. A
+        separate integer twin of this defect was found and is filed on its own.
       done-when: >
         manual:2027-03-31 the reporter's measured divergence PCs are used to localise
         the lowering defect — delivered with measured numbers, or REFUTED with the
