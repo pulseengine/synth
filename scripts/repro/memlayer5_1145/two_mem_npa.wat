@@ -1,0 +1,30 @@
+;; Synthetic proxy of the #1145 reporter's shape: memory 0 = 1 page,
+;; memory 1 = 2 pages, a memory-0 __stack_pointer, active data in BOTH memories.
+(module
+  (memory $m0 1 1)
+  (memory $m1 2 2)
+  (global $sp (mut i32) (i32.const 0x1000))
+  (data (memory $m0) (i32.const 0x2000) "\11\11\11\11\22\22\22\22")
+  (data (memory $m1) (i32.const 0x2000) "\aa\aa\aa\aa\bb\bb\bb\bb")
+  (data (memory $m1) (i32.const 0x10010) "\cc\cc\cc\cc")
+  ;; memory-1 static INSIDE memory 0's classified range [sp_init, 64 KiB)
+  (func (export "read1_static") (result i32)
+    (i32.load $m1 (i32.const 0x2000)))
+  ;; control: memory-1 static OUTSIDE memory 0's range (>= 64 KiB)
+  (func (export "read1_ctrl") (result i32)
+    (i32.load $m1 (i32.const 0x10010)))
+  ;; memory-0 static at the SAME offset (NPA's own path)
+  (func (export "read0_static") (result i32)
+    (i32.load $m0 (i32.const 0x2000)))
+  ;; runtime-index memory-1 load (param, not a classified const)
+  (func (export "read1_dyn") (param i32) (result i32)
+    (i32.load $m1 (local.get 0)))
+  ;; write memory 1 at an in-range const, then read memory 0 at the same offset
+  (func (export "write1_read0") (param i32) (result i32)
+    (i32.store $m1 (i32.const 0x2004) (local.get 0))
+    (i32.load $m0 (i32.const 0x2004)))
+  ;; write memory 1, read it back from memory 1
+  (func (export "write1_read1") (param i32) (result i32)
+    (i32.store $m1 (i32.const 0x2004) (local.get 0))
+    (i32.load $m1 (i32.const 0x2004)))
+)

@@ -3397,6 +3397,168 @@ fn vfp_try_reg_home_d(vfp_used: &mut [bool; VFP_FILE]) -> Option<VfpReg> {
     }
 }
 
+/// Bit-exact D→D copy via the proven core round-trip (`VMOV r,r,Dm` +
+/// `VMOV Dd,r,r`) — the lowered ArmOp set has no `VMOV.F64 Dd,Dm`, and
+/// both moves copy all 64 bits, so ±0.0/NaN/±inf are preserved.
+fn emit_d_copy(
+    dd: VfpReg,
+    dm: VfpReg,
+    idx: usize,
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    reserved: &[Reg],
+) -> Result<()> {
+    let rlo = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+    // Keep `rlo` visibly live while allocating `rhi` (same trick as
+    // `materialize_f64_const`).
+    stack.push(StackVal::i32(rlo));
+    let rhi = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx);
+    stack.pop();
+    let rhi = rhi?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::I64ReinterpretF64 {
+            rdlo: rlo,
+            rdhi: rhi,
+            dm,
+        },
+        source_line: Some(idx),
+    });
+    instructions.push(ArmInstruction {
+        op: ArmOp::F64ReinterpretI64 {
+            dd,
+            rmlo: rlo,
+            rmhi: rhi,
+        },
+        source_line: Some(idx),
+    });
+    Ok(())
+}
+
+/// #1436 (RQ-88-JESSDIVERGE10): detach every operand-stack entry that READS
+/// the float home register `home` before that register is overwritten.
+///
+/// `local.get` (and `local.tee`'s kept value) of a register-homed f32/f64
+/// local pushes a REFERENCE to the home register, not a copy. A later
+/// `local.set`/`local.tee` of the SAME local writes the home in place, so any
+/// entry still naming it would read the NEW value — the float twin of the
+/// #989 get→set→use hazard that `snapshot_home_reg_aliases` closes for the
+/// core-register homes. Measured on the reporter's `ekf#estimate`: the first
+/// tee'd `t18` was consumed after the second `local.tee 18`, and the gravity
+/// compensation stored +9.81 where wasm stores 0.
+///
+/// Each aliasing entry gets its OWN fresh temp (the VFP allocator frees by
+/// entry, so two entries sharing one temp would let the first consumer free a
+/// register the second still reads). The copy is the bit-exact core
+/// round-trip (±0.0/NaN payloads preserved). An exhausted VFP file is a loud
+/// `Err`, never a fallback. Emits NOTHING when no entry aliases `home`, which
+/// keeps every alias-free function byte-identical.
+#[allow(clippy::too_many_arguments)]
+fn detach_vfp_home_aliases(
+    home: VfpReg,
+    idx: usize,
+    vfp_used: &mut [bool; VFP_FILE],
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    reserved: &[Reg],
+) -> Result<()> {
+    let is_d = vfp_d_index(home).is_some();
+    let aliases = |v: &StackVal| {
+        matches!(v, StackVal::Float { sreg } if !is_d && *sreg == home)
+            || matches!(v, StackVal::Double { dreg } if is_d && *dreg == home)
+    };
+    // Re-scan after every copy: the core temp allocation's spill fallback can
+    // itself rewrite entries, so a position found before it is not trusted.
+    while stack.iter().any(aliases) {
+        if is_d {
+            let tmp = alloc_vfp_dtemp(vfp_used)?;
+            emit_d_copy(
+                tmp,
+                home,
+                idx,
+                stack,
+                next_temp,
+                spill,
+                instructions,
+                reserved,
+            )?;
+            if let Some(p) = stack.iter().position(aliases) {
+                stack[p] = StackVal::Double { dreg: tmp };
+            }
+        } else {
+            let tmp = alloc_vfp_temp(vfp_used)?;
+            let rt = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::I32ReinterpretF32 { rd: rt, sm: home },
+                source_line: Some(idx),
+            });
+            instructions.push(ArmInstruction {
+                op: ArmOp::F32ReinterpretI32 { sd: tmp, rm: rt },
+                source_line: Some(idx),
+            });
+            if let Some(p) = stack.iter().position(aliases) {
+                stack[p] = StackVal::Float { sreg: tmp };
+            }
+        }
+    }
+    Ok(())
+}
+
+/// #1436: detach every operand-stack entry that reads ANY float home register
+/// — called at the entry of `if`/`block`/`loop`. A home written INSIDE the
+/// construct can only be snapshotted on the path that writes it; an entry
+/// pushed before the construct and consumed after it would then name a temp
+/// that the other path never filled (`if` not taken, `br_if` out of a
+/// `block`) or re-copy an already-overwritten home (the next `loop`
+/// iteration). Detaching at the boundary makes every path see the value the
+/// local held when the entry was pushed. Emits nothing when no such entry is
+/// on the stack.
+#[allow(clippy::too_many_arguments)]
+fn detach_all_vfp_home_aliases(
+    idx: usize,
+    vfp_used: &mut [bool; VFP_FILE],
+    vfp_home: &[bool; VFP_FILE],
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    spill: &mut SpillState,
+    instructions: &mut Vec<ArmInstruction>,
+    reserved: &[Reg],
+) -> Result<()> {
+    let mut homes: Vec<VfpReg> = Vec::new();
+    for v in stack.iter() {
+        let h = if let StackVal::Float { sreg } = v
+            && vfp_s_index(*sreg).is_some_and(|s| vfp_home[s])
+        {
+            *sreg
+        } else if let StackVal::Double { dreg } = v
+            && vfp_d_index(*dreg).is_some_and(|d| vfp_home[2 * d])
+        {
+            *dreg
+        } else {
+            continue;
+        };
+        if !homes.contains(&h) {
+            homes.push(h);
+        }
+    }
+    for h in homes {
+        detach_vfp_home_aliases(
+            h,
+            idx,
+            vfp_used,
+            stack,
+            next_temp,
+            spill,
+            instructions,
+            reserved,
+        )?;
+    }
+    Ok(())
+}
+
 /// Lower an in-scope scalar f32 op (or f32-param `local.get`) onto the VFP
 /// register file. Returns `Ok(true)` when it handled `op` (caller `continue`s),
 /// `Ok(false)` when `op` is not an f32 op (fall through to the integer match),
@@ -3429,9 +3591,11 @@ fn try_lower_f32(
         }
         LocalGet(i) => {
             if let Some(&home) = f32_home.get(i) {
-                // Read-only reference to the home S-register. Phase 1 never
-                // rewrites a home while referenced (f32 local.set declines), so
-                // no copy is needed to defend against aliasing.
+                // Reference to the home S-register, not a copy. The home IS
+                // rewritten while referenced (f32 `local.set` has lowered since
+                // #719 phase 1b): every write of a home first detaches the
+                // entries naming it (`detach_vfp_home_aliases`, #1436), and
+                // `if`/`block`/`loop` entry detaches them all.
                 stack.push(StackVal::Float { sreg: home });
                 Ok(true)
             } else if let Some(&slot) = f32_frame.get(i) {
@@ -3539,6 +3703,19 @@ fn try_lower_f32(
                 h
             };
             if home != src {
+                // #1436: an earlier `local.get`/`local.tee` of THIS local may
+                // still be on the stack naming `home` — copy it out before the
+                // write below destroys the value it reads.
+                detach_vfp_home_aliases(
+                    home,
+                    idx,
+                    vfp_used,
+                    stack,
+                    next_temp,
+                    spill,
+                    instructions,
+                    reserved,
+                )?;
                 // S->S copy is bit-exact via the proven core round-trip (the
                 // phase-1 ArmOp set has no `VMOV.F32 Sd,Sm`): `VMOV Rt,src`
                 // (reinterpret to a core scratch) then `VMOV home,Rt`. Both
@@ -5491,51 +5668,14 @@ fn try_lower_f64(
     reserved: &[Reg],
 ) -> Result<bool> {
     use WasmOp::*;
-    /// Bit-exact D→D copy via the proven core round-trip (`VMOV r,r,Dm` +
-    /// `VMOV Dd,r,r`) — the lowered ArmOp set has no `VMOV.F64 Dd,Dm`, and
-    /// both moves copy all 64 bits, so ±0.0/NaN/±inf are preserved.
-    fn emit_d_copy(
-        dd: VfpReg,
-        dm: VfpReg,
-        idx: usize,
-        stack: &mut Vec<StackVal>,
-        next_temp: &mut u8,
-        spill: &mut SpillState,
-        instructions: &mut Vec<ArmInstruction>,
-        reserved: &[Reg],
-    ) -> Result<()> {
-        let rlo = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
-        // Keep `rlo` visibly live while allocating `rhi` (same trick as
-        // the F64Const materialization below).
-        stack.push(StackVal::i32(rlo));
-        let rhi = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx);
-        stack.pop();
-        let rhi = rhi?;
-        instructions.push(ArmInstruction {
-            op: ArmOp::I64ReinterpretF64 {
-                rdlo: rlo,
-                rdhi: rhi,
-                dm,
-            },
-            source_line: Some(idx),
-        });
-        instructions.push(ArmInstruction {
-            op: ArmOp::F64ReinterpretI64 {
-                dd,
-                rmlo: rlo,
-                rmhi: rhi,
-            },
-            source_line: Some(idx),
-        });
-        Ok(())
-    }
     match op {
         // GI-FPU-002 phase 3 (#369): f64 param/local D-register homes —
         // the double-precision mirror of the f32 home machinery above.
         LocalGet(i) => {
             if let Some(&home) = f64_home.get(i) {
-                // Read-only reference to the home D-register (a `local.set`
-                // writes THROUGH the stable home, so no defensive copy).
+                // Reference to the home D-register, not a copy; a write of the
+                // home detaches the entries naming it first (#1436, see the
+                // f32 twin).
                 stack.push(StackVal::Double { dreg: home });
                 Ok(true)
             } else if let Some(&slot) = f64_frame.get(i) {
@@ -5626,6 +5766,17 @@ fn try_lower_f64(
                 h
             };
             if home != src {
+                // #1436: detach earlier references to `home` (f32 twin above).
+                detach_vfp_home_aliases(
+                    home,
+                    idx,
+                    vfp_used,
+                    stack,
+                    next_temp,
+                    spill,
+                    instructions,
+                    reserved,
+                )?;
                 emit_d_copy(
                     home,
                     src,

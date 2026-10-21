@@ -271,6 +271,20 @@ def changelog_structure_verdict(text: str | None, bare_version: str) -> tuple[st
     )
 
 
+def workspace_version(cargo_text: str) -> str | None:
+    """The `[workspace.package] version` in a Cargo.toml text, or None.
+
+    PURE and shared: `check_release_identity` (the pretag step 0) and
+    `scripts/release_version_check.py` (the PR-time twin, RQ-88-PREPBUMP,
+    #1550) both call this, so the two cannot drift into reading different
+    versions out of the same file.
+    """
+    m = re.search(
+        r"\[workspace\.package\].*?^version\s*=\s*\"([^\"]+)\"", cargo_text, re.S | re.M
+    )
+    return m.group(1) if m else None
+
+
 def release_scope(version: str) -> str:
     """`v0.65.0` -> `v0.65` — the value artifacts carry in their `release:`
     field. The conformance check is invoked with a full vX.Y.Z tag; artifacts
@@ -1249,10 +1263,7 @@ class Check:
             cargo = Path("Cargo.toml").read_text()
         except OSError:
             cargo = ""
-        m = re.search(
-            r"\[workspace\.package\].*?^version\s*=\s*\"([^\"]+)\"", cargo, re.S | re.M
-        )
-        ws = m.group(1) if m else None
+        ws = workspace_version(cargo)
         if ws == self.bare_version:
             self.add("0", "release identity", DERIVED_PASS, f"workspace version {ws} matches", source=("worktree",))
         else:

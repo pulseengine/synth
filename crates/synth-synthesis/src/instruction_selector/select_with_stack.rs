@@ -959,6 +959,24 @@ impl InstructionSelector {
                     }
                 }
             }
+            // #1436 (RQ-88-JESSDIVERGE10): an entry pushed before a structured
+            // construct that still READS a float local's home register must not
+            // survive into it — a write of that local inside one path would be
+            // snapshotted on that path only. Detach them all at the boundary
+            // (`detach_all_vfp_home_aliases`); nothing is emitted when no such
+            // entry is on the stack.
+            if fpu.is_some() && matches!(op, If | Block | Loop) {
+                detach_all_vfp_home_aliases(
+                    idx,
+                    &mut vfp_used,
+                    &vfp_home,
+                    &mut stack,
+                    &mut next_temp,
+                    &mut spill,
+                    &mut instructions,
+                    &live_params,
+                )?;
+            }
             // #1069 (RQ-60-VFPPRESSURE increment 1): intercept the AEABI-routed
             // i64<->f32 conversions BEFORE `try_lower_f32` — its arms for these
             // ops run on DOUBLE-precision machinery (D-temps, VCVT.F64), which

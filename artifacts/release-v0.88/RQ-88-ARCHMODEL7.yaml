@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-88-ARCHMODEL7
     type: system-req
     release: v0.88
-    status: proposed
+    status: implemented
     title: "The recurring steps 1-2 filing is made for this release and found by the matcher"
     description: >
         The recurring architecture-model filing is a standing obligation; v0.87 found it
@@ -28,6 +28,12 @@ artifacts:
       priority: should
       issue: "#1136"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1564 - #1136 - DELIVERED. The refuting command, run first, PASSED: the recurring filing check finds RQ-88-ARCHMODEL7 scoped to v0.88, so the lane reduced to confirming the matcher found this release's filing and not an older one. It did. #1136 is a recurring N/A and outlives every release."
+      verified-by: >
+        DELIVERED. Paired control executed: stripping this artifact's aadl and spar tags
+        turns the check red, and it names the only remaining visible filing as the stale
+        RQ-63-ARCHMODEL; restoring the tags turns it green. The self-test passes.
       done-when: >
         manual:2027-03-31 the recurring steps 1-2 filing is made for this release and
         found by the matcher — delivered with measured numbers, or REFUTED with the

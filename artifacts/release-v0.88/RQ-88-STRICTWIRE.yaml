@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-88-STRICTWIRE
     type: system-req
     release: v0.88
-    status: proposed
+    status: implemented
     title: "The workflow strictness check runs from a workflow that survives a broken ci.yml"
     description: >
         The workflow strictness check refuses the duplicate-key splice that made four
@@ -27,6 +27,12 @@ artifacts:
       priority: should
       issue: "#1552"
       verification-track: manual
+      landed: "PR #1564 - #1552 - DELIVERED. workflow_strict_check.py was potent and wired into nothing. It now runs twice: as a Claim Check step over every OTHER workflow file, and from a separate workflow-strict.yml over ci.yml itself, because a ci.yml that cannot parse runs no step that could say so. A planted duplicate run: key in ci.yml reds at its line."
+      verified-by: >
+        DELIVERED. The placement is the point: a check inside ci.yml cannot observe ci.yml
+        failing to parse, so the ci.yml case lives in a separate workflow. Paired
+        control executed: a duplicate `run:` key planted in ci.yml makes the check
+        exit 1 naming the line; restored, it exits 0. The self-test runs in both places.
       done-when: >
         manual:2027-03-31 the workflow strictness check runs from a workflow that
         survives a broken ci.yml — delivered with measured numbers, or REFUTED with the

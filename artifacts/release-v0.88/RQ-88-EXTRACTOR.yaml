@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-88-EXTRACTOR
     type: system-req
     release: v0.88
-    status: proposed
+    status: implemented
     title: "The round-two number extractor sees spelled-out numbers and drops citation line numbers"
     description: >
         The extractor that round two uses to attack round one's figures leaks file-
@@ -27,6 +27,11 @@ artifacts:
       priority: should
       issue: "#1553"
       verification-track: manual
+      landed: "PR #1564 - #1553 - DELIVERED. The artifact-id scrubber ran before the file:line scrubber, so a citation such as RQ-87-MEMLAYER4.yaml:28 leaked 28 into round two's number list. The order is swapped, with a self-test case for exactly that citation, and spelled-out counts now surface in their own bucket with a paired self-test. On the v0.87 record the distinct-number list falls from 175 to 172, plus 19 spelled-out words."
+      verified-by: >
+        DELIVERED. Paired controls executed: restoring the old scrubber order makes the
+        self-test fail with the leaked 28; the spelled-out bucket returns counts for
+        sentences that contain number words and is empty for one that does not.
       done-when: >
         manual:2027-03-31 the round-two number extractor sees spelled-out numbers and
         drops citation line numbers — delivered with measured numbers, or REFUTED with

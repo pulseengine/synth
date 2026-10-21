@@ -1854,9 +1854,38 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 19805
+        value: 19974
         baseline: 17897
         waivers:
+          - to: 19974
+            reason: >-
+              RQ-88-JESSDIVERGE10 (#1436): 19805 -> 19974, +169 — a SOUNDNESS
+              decision the float homes never had, replacing no arm. The direct
+              selector pushes a REFERENCE to a register-homed f32/f64 local's
+              home S/D register on `local.get`/`local.tee`, and a later
+              `local.set`/`local.tee` of the SAME local wrote the home in
+              place, so an entry still on the operand stack read the NEW
+              value — the float twin of the #989 WAR class whose core-register
+              guard is `snapshot_home_reg_aliases` (waived above). It was the
+              reporter's whole divergence: in `ekf#estimate` the first tee'd
+              `t18` was consumed after the second `local.tee 18`, the gravity
+              compensation stored +9.81 where wasm stores 0, and vel-d
+              integrated to 0x41221afe after 1024 ticks; with the guard all 14
+              return words and all 16384 linear-memory words match wasmtime
+              at 16 and 1024 ticks. DERIVED with `git diff --unified=0` over
+              this glob family: +157/-33 code, +52/-10 comment, +3 blank; ~35
+              of the code lines on each side are `emit_d_copy` LIFTED out of
+              `try_lower_f64` to module scope unchanged so both widths share
+              it. New code: `detach_vfp_home_aliases` (per-entry fresh temp,
+              bit-exact core round-trip, loud Err on exhaustion),
+              `detach_all_vfp_home_aliases` (called at `if`/`block`/`loop`
+              entry, because a copy made at a write inside one path is made on
+              that path only), and the three call sites. Zero wildcards (the
+              two `_ =>` arms of the first draft were rewritten as
+              `matches!`/`if let` so `selector_wildcard_arms_code` holds at
+              55). Gated by scripts/repro/vfp_home_alias_1436_differential.py
+              (88 of 136 vectors wrong, 15 of 17 exports, before; 0 after;
+              the two different-local negative controls green both times).
           - to: 19805
             reason: >-
               RQ-83-PAGESIZE5 (#1441): 19782 -> 19805, a RISE of 23 that adds
@@ -2778,7 +2807,9 @@ claims:
         # selector_lines_code (17 comment + 2 diagnostic-string lines);
         # the new both-directions test lives in synth-backend, outside
         # this population. `direction: track` — no waiver, by design.
-        value: 30398
+        # 30398 -> 30567 (RQ-88-JESSDIVERGE10 #1436): +169 code region, the
+        # float-home alias guard waived on selector_lines_code above.
+        value: 30567
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -3874,9 +3905,27 @@ claims:
         # repo agrees on, or by the readings converging — the census grows a
         # single number and a verdict, and must then be WIRED with the ceiling
         # falling back to 9.
+        #
+        # 10 -> 11 (RQ-88-JESSDIVERGE10 #1436, v0.88). The conversation, since
+        # the rule at the top of this block requires one:
+        #
+        # jessdiverge10_localise_1436.py localised the reporter's ekf divergence
+        # by EXECUTION over the reporter's own module, which is not vendored in
+        # this tree (sha256-pinned in the script header). It is external-input,
+        # the same kind as wake_path_differential.py. The defect it localised is
+        # GATED in CI by the wired vfp_home_alias_1436_differential.py (88/136
+        # vectors wrong before the fix, 0 after), so this script is the
+        # re-runnable evidence of HOW the first divergent op was found, not the
+        # gate. Putting it outside scripts/repro/ so the glob misses it would be
+        # routing around the ceiling, which is worse than paying it.
+        #
+        # What would make this the WRONG call: if the reporter's module is ever
+        # vendored (or a hermetic fixture reproduces the localisation), the script
+        # grows an in-tree input and must be WIRED, with the ceiling falling back
+        # to 10.
         pattern: '^# ci-status: manual'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        max: 10
+        max: 11
       - kind: count-max                      # known debt: zero, and it stays zero
         pattern: '^# ci-status: unwired'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
@@ -3885,7 +3934,7 @@ claims:
         # 7 -> 8 (RQ-69-PROSEGATE #1319): moved in the same PR that raised the
         # count-max above, which is the point of pinning the sentence as well
         # as the number — the prose cannot lag the budget it describes.
-        text: "**9 manual**"
+        text: "**11 manual**"
       - kind: verbatim
         text: "**0 unwired**"
 
@@ -4071,7 +4120,12 @@ claims:
     #   is EXACT (RQ-63-FLOOREQ), so this bump is not optional bookkeeping —
     #   CI reddened on `Claim Check` until ci.yml AND this line moved together,
     #   which is the pair working as designed.
-    text: "--exact-emulation-floor 367921"
+    # v0.88 RQ-88-JESSDIVERGE10 (#1436): 367921 -> 368057. The new
+    #   vfp_home_alias_1436_differential.py declares `emulations >= 136` (136
+    #   vectors, 88 of them wrong before the fix) and is wired into the unicorn
+    #   job. The first push of #1564 reddened Claim Check on exactly this
+    #   equality, ABOVE by 136, before this line moved.
+    text: "--exact-emulation-floor 368057"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

@@ -55,10 +55,13 @@ multi-memory evidence for this reporter: the thread also names gale's
 run-two-tenant.sh module (full-width i32.load/i32.store, inside phase-one
 reach) and a --domain fused module with two memories.
 
-WHAT THIS PIN IS FOR. It reds if the reporter's fixture grows a width phase
-one does not reach. It does NOT reliably red if the family narrows under one
-the fixture uses: the pattern also matches the arm's inner mapping lines, so
-removing I32Load8U from the dispatch pattern leaves the family at eight. Either event means the scoping decision above needs
+WHAT THIS PIN IS FOR. It reds when either side moves: if the reporter's
+fixture grows a width phase one does not reach, or if the family narrows under
+one the fixture uses. The second direction did NOT hold until RQ-88-WIDTHPIN
+(#1551). The family was a regex over the whole arm, which also matched the
+inner mapping lines, so removing I32Load8U from the dispatch pattern left it at
+eight. It is now read by POSITION (`dispatch_variants`), and the self-test
+executes that mutation through `phase_one_family` itself. Either event means the scoping decision above needs
 re-examining, which is the only thing a pin can usefully guarantee here.
 
 BOTH NEGATIVE CONTROLS WERE EXECUTED against mutated copies, with the real
@@ -95,24 +98,73 @@ def reporter_widths() -> dict[str, int]:
     return counts
 
 
-def phase_one_family() -> set[str]:
+def phase_one_family(src: str | None = None) -> set[str]:
     """The variants the selector's MultiMemory arm actually lowers.
 
     Derived by slicing the arm out of the source and reading the PATTERNS of its
     inner match, stopping at the `other =>` fallthrough that declines the rest.
     A hand-written list here would be the mirror the North Star names first.
     """
-    src = SELECTOR.read_text()
+    if src is None:
+        src = SELECTOR.read_text()
     start = src.index("                MultiMemory {")
     body = src[start:]
     inner = body.index("match inner_op.as_ref() {")
     body = body[inner:]
     end = body.index("other => {")
     region = body[:end]
-    # NOT position-only: a variant followed by a brace-destructure matches both
-    # the dispatch pattern and the `=> ArmOp::` mapping lines, so a variant
-    # removed from the dispatch pattern alone is still counted (RQ-87 review), and the `other =>` cut keeps the declining widths out.
-    return set(re.findall(r"\b((?:I32|I64|F32|F64|V128)[A-Za-z0-9]*)\s*\{", region))
+    return dispatch_variants(region)
+
+
+VARIANT = re.compile(r"\b((?:I32|I64|F32|F64|V128)[A-Za-z0-9]*)\s*\{")
+
+
+def dispatch_variants(region: str) -> set[str]:
+    """Variants named in the inner match's own ARM PATTERNS, by POSITION.
+
+    RQ-88-WIDTHPIN (#1551): the previous derivation was a regex over the whole
+    region, so it also matched the `I32Load8U { .. } => ArmOp::Ldrb` mapping
+    lines nested inside each arm's body. Removing a width from the dispatch
+    pattern alone left the family unchanged and the self-test green -- the pin
+    could not red in the one direction it exists for.
+
+    `region` starts at `match inner_op.as_ref() {`. That brace opens depth 1,
+    and the arm patterns sit at depth 1. Arm bodies open depth 2, and the
+    mapping lines live at depth 3 or deeper. So a variant counts only when it
+    starts at depth 1. Its own destructure braces `{ offset, .. }` are walked
+    over without being mistaken for a body.
+    """
+    found: set[str] = set()
+    depth = 0
+    i = 0
+    n = len(region)
+    while i < n:
+        c = region[i]
+        if c == "{":
+            depth += 1
+            i += 1
+            continue
+        if c == "}":
+            depth -= 1
+            i += 1
+            continue
+        if depth == 1:
+            m = VARIANT.match(region, i)
+            if m and (i == 0 or not (region[i - 1].isalnum() or region[i - 1] == "_")):
+                found.add(m.group(1))
+                # Skip the destructure `{ ... }` so it does not move the depth.
+                j = m.end()  # just past the opening brace
+                inner = 1
+                while j < n and inner:
+                    if region[j] == "{":
+                        inner += 1
+                    elif region[j] == "}":
+                        inner -= 1
+                    j += 1
+                i = j
+                continue
+        i += 1
+    return found
 
 
 def report() -> int:
@@ -192,6 +244,28 @@ def self_test() -> int:
     ok({"I32Load8S", "I32Load16S"} <= family,
        "POSITIVE CONTROL: the family includes sign-extending loads the fixture "
        "never uses, so it is read from the source rather than from the fixture")
+    # RQ-88-WIDTHPIN (#1551): the derivation reads the DISPATCH position, so a
+    # width removed from the arm pattern alone LEAVES the family -- the mutation
+    # the previous regex survived. Applied to the region text in memory, never
+    # to the selector file.
+    # Through phase_one_family itself, fed mutated SOURCE text, so the case
+    # tests the derivation the pin runs and not a helper beside it.
+    src = SELECTOR.read_text()
+    start = src.index("                MultiMemory {")
+    body = src[start:]
+    body = body[body.index("match inner_op.as_ref() {"):]
+    region = body[: body.index("other => {")]
+    dispatch_line = "| I32Load8U { offset, .. }"
+    ok(region.count(dispatch_line) == 1,
+       "the dispatch-pattern line for I32Load8U is present exactly once (mutation anchor)")
+    mutated_src = src[:start] + src[start:].replace(dispatch_line, "", 1)
+    ok("I32Load8U" not in phase_one_family(mutated_src),
+       "MUTATION: I32Load8U removed from the DISPATCH pattern leaves the family "
+       "(it is still named in an inner mapping line, which must not count)")
+    mapping_line = "I32Load8U { .. } => ArmOp::Ldrb { rd: dst, addr: mem },"
+    ok(region.count(mapping_line) == 1, "the inner mapping line for I32Load8U is present exactly once")
+    ok("I32Load8U" in phase_one_family(src[:start] + src[start:].replace(mapping_line, "", 1)),
+       "CONTROL: removing only the INNER mapping line does not change the family")
     return 0 if fails == 0 else 1
 
 

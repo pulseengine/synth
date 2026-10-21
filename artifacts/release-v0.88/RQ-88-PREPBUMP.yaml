@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-88-PREPBUMP
     type: system-req
     release: v0.88
-    status: proposed
+    status: implemented
     title: "A release-prep PR cannot omit the workspace version bump while every PR gate stays green"
     description: >
         The v0.87 release-prep PR shipped the 0.87.0 CHANGELOG section with the
@@ -30,6 +30,14 @@ artifacts:
       priority: must
       issue: "#1550"
       verification-track: manual
+      landed: "PR #1564 - #1550 - DELIVERED. The refuting command, run first, CONFIRMED the gap: no PR gate compared the CHANGELOG head against the workspace version, so v0.87 shipped 0.87.0 notes over a 0.86.0 workspace and only pretag conformance step 0 caught it. scripts/release_version_check.py now runs in Claim Check on every PR, importing the conformance check's own workspace_version and changelog_structure_verdict rather than re-implementing them. Its self-test replays history: d3c13c83 must FAIL, f69d3548 and 897dbf69 must PASS."
+      verified-by: >
+        DELIVERED. The check imports the shipped parsers, so it cannot drift from the
+        pretag slot it moves forward. Paired controls, both executed: planting a
+        `## [0.88.0]` heading over a 0.87.0 workspace turns the live check red; an
+        always-pass mutant of the verdict function turns the self-test red. The
+        history replay is the potency evidence: the exact commit that slipped through
+        v0.87 (d3c13c83) is required to FAIL.
       done-when: >
         manual:2027-03-31 a release-prep PR cannot omit the workspace version bump while
         every PR gate stays green — delivered with measured numbers, or REFUTED with the

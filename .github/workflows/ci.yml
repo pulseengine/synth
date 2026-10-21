@@ -984,6 +984,29 @@ jobs:
       - name: Unit-test the changelog-structure slot — real-commit red/green (1259)
         run: python3 scripts/test_loop_conformance_changelog.py
 
+      # RQ-88-PREPBUMP (#1550): the same release-identity rule pretag step 0
+      # enforces, asked on EVERY PR instead of only at the tag. v0.87's release
+      # prep shipped the [0.87.0] notes with the workspace at 0.86.0 and every PR
+      # gate stayed green. The check imports step 0's own workspace_version and
+      # changelog_structure_verdict, so the two cannot disagree. Its self-test
+      # runs on real commits: d3c13c83 reds, f69d3548 and the mid-release
+      # 897dbf69 green. fetch-depth: 0 above supplies them; missing history
+      # FAILS rather than skips.
+      # RQ-88-STRICTWIRE (#1552): the other half of the strictness wiring. The
+      # Workflow Strictness workflow covers ci.yml when ci.yml cannot parse; this
+      # step covers workflow-strict.yml from the other side.
+      - name: Every OTHER workflow file parses strictly (RQ-88-STRICTWIRE, 1552)
+        run: |
+          set -euo pipefail
+          python3 scripts/workflow_strict_check.py --self-test
+          python3 scripts/workflow_strict_check.py
+
+      - name: Release notes and workspace version move together (RQ-88-PREPBUMP, 1550)
+        run: |
+          set -euo pipefail
+          python3 scripts/release_version_check.py --self-test
+          python3 scripts/release_version_check.py
+
       # RQ-86-SPELLSCAN (#1515): the release file's statistics scan, in BOTH
       # spellings. v0.85 shipped a figure its own round-1 review had proven
       # false, spelled as a WORD, through three commits where the digit-only
@@ -1187,7 +1210,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 367921 \
+            --exact-emulation-floor 368057 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2230,7 +2253,12 @@ jobs:
     # entry LEAVES this list the day its lowering lands — asserting a decline
     # for a capability that now ships is the same doc-honesty defect as claiming
     # one that does not.
-    runs-on: ubuntu-latest
+    # Pinned to ubuntu-24.04 (v0.88, #1564): on the ubuntu-26.04 image that
+    # ubuntu-latest began rolling to on 2026-10-21 this job's apt toolchain
+    # changed underneath it (qemu-user-static has no candidate; the newer
+    # arm-none-eabi-ld rejects an interworking reloc). Unpin when the job is
+    # ported to 26.04 — tracked as its own issue.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -6066,7 +6094,12 @@ jobs:
     # produced #757 — and none of them was running. postlink_359_oracle links a
     # REAL image with arm-none-eabi-ld (the #368 lesson: a unicorn-on-.o oracle
     # cannot see link-time retargeting), so binutils is installed for it here.
-    runs-on: ubuntu-latest
+    # Pinned to ubuntu-24.04 (v0.88, #1564): on the ubuntu-26.04 image that
+    # ubuntu-latest began rolling to on 2026-10-21 this job's apt toolchain
+    # changed underneath it (qemu-user-static has no candidate; the newer
+    # arm-none-eabi-ld rejects an interworking reloc). Unpin when the job is
+    # ported to 26.04 — tracked as its own issue.
+    runs-on: ubuntu-24.04
     env:
       SYNTH: ./target/debug/synth
     steps:
@@ -6752,6 +6785,20 @@ jobs:
           SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
             scripts/repro/carried_float_branch_1318_differential.py | tee /tmp/1318cfb.txt
           grep -q '^RESULT: PASS' /tmp/1318cfb.txt
+      # RQ-88-JESSDIVERGE10 (#1436): a float local's home S/D register was
+      # rewritten by `local.set`/`local.tee` while an earlier `local.get`/
+      # `local.tee` of the SAME local was still on the operand stack naming it
+      # — the float twin of #989. It was the reporter's `ekf#estimate`
+      # divergence (gravity compensation stored +9.81 where wasm stores 0).
+      # EXECUTED bit-exact against wasmtime: straight-line, param-home,
+      # if/block/loop and f64 legs, plus two different-local NEGATIVE
+      # CONTROLS. Unfixed: 88 of 136 vectors wrong.
+      - name: "a float home rewritten while still read EXECUTES bit-exact (#1436)"
+        run: |
+          set -euo pipefail
+          SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
+            scripts/repro/vfp_home_alias_1436_differential.py | tee /tmp/1436vha.txt
+          grep -q '^RESULT: PASS' /tmp/1436vha.txt
       - name: "#1223 — the five algebraic-identity shapes, EXECUTED (RQ-74-PINDEBT2)"
         run: |
           set -euo pipefail

@@ -1,46 +1,26 @@
-# Acceptance ladder — v0.63
+# Acceptance ladder — re-measured at v0.88
 
-**Measured 2026-09-06** on synth at `e3a09ac2` (all v0.63 capability work merged),
-over the **243-module reachable corpus** (131 core + 112 components, unique by
-sha256, manifest `MANIFEST.sha256`, 243 entries / 243 OK / 0 failed as verified at
-`docs/reviews/v0.63-cold-review.md:83`).
+**Re-measured 2026-10-16** on synth at `897dbf69` (`synth --version` = `synth 0.87.0`,
+matching the workspace version), over the **243-module reachable corpus** (131 core
++ 112 components, unique by sha256). **Every rung on every backend is identical to
+the v0.63 measurement** (2026-09-06, `e3a09ac2`): delta 0 everywhere. Corpus
+integrity was re-verified in the same session, with the paths relative to
+`modules/` as the manifest requires: `cd /Volumes/Work/corpora/wasm-243/modules &&
+shasum -a 256 -c ../MANIFEST.sha256` exited 0 with **243 `: OK` lines** (the
+positive control) and 0 failures. Raw outputs: RQ-88-LADDER10.
 
-> **THE CORPUS IS EXTERNAL TO THIS REPO** (RQ-78-LADDER). `corpora/` is not
-> tracked here, not present, and not gitignored, so the bare path this header used
-> to cite — `corpora/wasm-243/…` — reads as repo-relative and is not. That cost a
-> v0.78 lane real time and nearly produced a published claim that the corpus was
-> unobtainable; it is not lost, it is unmounted. Last known location:
-> `/Volumes/Work/corpora/wasm-243`. Re-measuring the ladder requires mounting that
-> volume, and **the host is `mac.fritz.box`** — named here, in the file an operator
-> actually reads, because four releases named it only in their release artifacts.
+> **THE CORPUS IS EXTERNAL TO THIS REPO, AND IT IS REACHABLE.** `corpora/` is not
+> tracked here; the corpus lives at `/Volumes/Work/corpora/wasm-243`, which is
+> mounted on the release machine. v0.78–v0.87 recorded the ladder as BLOCKED on a
+> remote host's `authorized_keys`. That disposition was CARRIED, not measured: the
+> corpus sat at its last-known path, verifying, throughout. The first re-check in
+> v0.87 printed ZERO OK because it ran from the corpus root instead of `modules/`
+> — so a re-check of this corpus needs the positive control above, not just an
+> exit code. A blocked disposition goes stale like any other number.
 >
-> **THE ACTION, SPECIFIC ENOUGH TO BE EXECUTED BY SOMEONE ELSE** (re-measured
-> 2026-10-08, and it CORRECTS what v0.78–v0.81 recorded). Those releases said the
-> host "refused every offered auth method", which conflated *offered* with
-> *accepted*. Measured with `ssh -o BatchMode=yes -o
-> PreferredAuthentications=publickey -v mac.fritz.box true`: the name resolves,
-> sshd answers, and it **offers** `publickey,password,keyboard-interactive` — so
-> publickey is ENABLED and no sshd config change is needed. What fails is
-> authorisation: the login attempted is user **`r`**, and the two keys this release
-> machine holds are not in that account's `authorized_keys`
-> (`SHA256:zvTyfAFp29N6McgyIZRf8N4bOkpnU84deMxZN140NR4` and
-> `SHA256:67Cc3EHL9UpUVb0ELbB7oKeQrR1swpVFWfD1Zd70i9A`, both rejected). So the
-> remedy is an `authorized_keys` edit, not a server-configuration one:
->
-> 1. append the release machine's `~/.ssh/id_ed25519.pub` (the first fingerprint
->    above) to `~r/.ssh/authorized_keys` on `mac.fritz.box`; **or**
-> 2. mount the volume carrying `/Volumes/Work/corpora/wasm-243` on the release
->    machine directly — it is NOT a locally-known volume awaiting mount:
->    `diskutil list` on 2026-10-08 knows no volume named `Work`, so this is a
->    second machine, not an unmounted disk in this one; **or**
-> 3. relocate the 243-module corpus to a path inside this repo's reach and update
->    this header plus `partial_census_1017.py --help`.
->
-> **Attempting passwords is declined** and is not one of the options.
->
-> Until then every rung below carries the measurement
-> date and commit in this header and MUST be cited with them — a ladder figure
-> quoted without its date is the #1286 defect.
+> Every rung below carries the measurement date and commit in this header and
+> MUST be cited with them — a ladder figure quoted without its date is the #1286
+> defect.
 
 Produced by `scripts/repro/partial_census_1017.py --ladder`. Rungs are reported
 **separately and never summed into one rate** — see "Why a ladder" below.

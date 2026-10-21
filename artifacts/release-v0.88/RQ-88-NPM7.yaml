@@ -23,6 +23,7 @@ artifacts:
       priority: should
       issue: "#1460"
       verification-track: manual
+      disposition: blocked
       done-when: >
         manual:2027-03-31 the npm publish blocker is reported at its source rather than
         re-measured — delivered with measured numbers, or REFUTED with the measurement

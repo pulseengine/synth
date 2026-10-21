@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-88-COMPLIANCE8
     type: system-req
     release: v0.88
-    status: proposed
+    status: implemented
     title: "The compliance-on-release trigger blocker is reported at its source"
     description: >
         Blocked outside this repository: bot-published releases do not trigger on-
@@ -24,6 +24,14 @@ artifacts:
       priority: should
       issue: "#1453"
       verification-track: manual
+      issue-scope: closes
+      landed: "PR #1564 - #1453 - REFUTED: the carried blocked disposition is stale. The release: published trigger has not fired since v0.43.0 (2026-07-15), because bot-published releases raise no workflow events. But the workflow_call path RQ-81 added, which is #1453's own fix option 1, generated a compliance report for every recent release: v0.85.0 4,770,546 bytes, v0.86.0 4,883,339, v0.87.0 4,990,991. The defect #1453 names, a release with no report, no longer occurs."
+      verified-by: >
+        REFUTED. The blocker was real in that the event still never fires, and it is
+        routed around by design. What #1453 asked for is a report on every release, and
+        three consecutive releases carry one, produced by a job that succeeded in the
+        release run. A blocked disposition carried across releases without re-measuring
+        described a world that had already changed.
       done-when: >
         manual:2027-03-31 the compliance-on-release trigger blocker is reported at its
         source — delivered with measured numbers, or REFUTED with the measurement that

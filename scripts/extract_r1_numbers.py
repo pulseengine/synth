@@ -97,12 +97,16 @@ SCRUBBERS: list[tuple[str, str]] = [
     # fragments that record complains about in its own text. Seconds are
     # optional and Z is optional, in that order, or the `:\d{2}` tail survives.
     ("bare-clock", r"\b\d{1,2}:\d{2}(?::\d{2})?Z?\b"),
+    # file:line citations: foo.rs:118, CHANGELOG.md:10, RQ-87-MEMLAYER4.yaml:28.
+    # MUST run BEFORE artifact-id (RQ-88-EXTRACTOR, #1553): run after it, the id
+    # was eaten first, the remaining `.yaml:28` no longer matched this pattern,
+    # and the citation's line number reached the queue as a quantity -- 32 such
+    # citations sat in the v0.87 round-1 record.
+    ("file-line", r"\b[\w./-]+\.[A-Za-z]{1,6}:\d+\b"),
     # artifact ids: RQ-85-FALCON2, BR-001
     ("artifact-id", r"\b(?:RQ|BR|LS|VCR|GI)-[0-9A-Za-z-]+"),
     # runner names: ci-01-8, pulseengine-ci-01-10
     ("runner", r"\b(?:[a-z]+-)*ci-\d+-\d+\b"),
-    # file:line citations: foo.rs:118, CHANGELOG.md:10
-    ("file-line", r"\b[\w./-]+\.[A-Za-z]{1,6}:\d+\b"),
     # version and layer strings: v0.85.0, 0.85.0, 2026.10.9
     ("version", r"\bv?\d+\.\d+(?:\.\d+)*\b"),
     # issue/PR refs
@@ -147,6 +151,25 @@ def withheld_decimals(text: str) -> collections.Counter:
 # attack a figure that does not exist while missing the two that do; and it left a
 # TRAILING COMMA on `184,`, so the same quantity counted in two buckets.
 NUMBER = re.compile(r"\b\d{1,3}(?:,\d{3})+\b|\b\d+\b")
+
+# SPELLED-OUT NUMBERS (RQ-88-EXTRACTOR, #1553). This programme writes its
+# load-bearing counts as capitalised WORDS ("FOUR hits", "ELEVEN comments"), and
+# NUMBER sees only digits, so every word-number correction round 1 made was
+# invisible to round 2's queue -- five of them in the v0.87 record. They are a
+# SEPARATE bucket for hand triage, like the withheld decimals, because "one" and
+# "two" are also ordinary English and no pattern can tell an idiom from a count.
+NUMBER_WORDS = (
+    "zero one two three four five six seven eight nine ten eleven twelve "
+    "thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty "
+    "thirty forty fifty sixty seventy eighty ninety hundred thousand"
+).split()
+WORD_NUMBER = re.compile(r"\b(" + "|".join(NUMBER_WORDS) + r")\b", re.I)
+
+
+def word_numbers(text: str) -> collections.Counter:
+    """Spelled-out numbers, lower-cased, after the same scrubbers run. Hyphenated
+    compounds count by their parts ("twenty-four" -> twenty, four)."""
+    return collections.Counter(m.lower() for m in WORD_NUMBER.findall(scrub(text)))
 
 
 def scrub(text: str) -> str:
@@ -196,6 +219,9 @@ def self_test() -> int:
         # An ALL-DIGIT sha: a mixed hex sha yields no bare number even unscrubbed,
         # which is what made this case vacuous before v0.85's round 2.
         ("sha", "declared 1234567890abcdef and 9876543"),
+        # #1553: the scrubber-ORDER case. With artifact-id ahead of file-line
+        # this left `28` behind.
+        ("artifact-file-line", "RQ-87-MEMLAYER4.yaml:28 says exactly that"),
     ]
     failures = []
     for name, sample in cases:
@@ -304,6 +330,14 @@ def self_test() -> int:
     if not re.search(r"\d+\.\d+", WITHHELD_POS):
         failures.append("VACUOUS withheld positive: the sample carries no decimal")
 
+    # #1553 WORD BUCKET, paired: it must find the capitalised counts, and must
+    # find nothing in a sentence that has none.
+    wn = word_numbers("The grep returns FOUR hits, and ELEVEN comments; twenty-four in all.")
+    if wn != collections.Counter({"four": 2, "eleven": 1, "twenty": 1}):
+        failures.append(f"word bucket mis-read its positive sample: {dict(wn)}")
+    if word_numbers("the gate reds by name and the record holds"):
+        failures.append("word bucket found a number in a sentence that carries none")
+
     # A derived population of zero is a refusal, not a pass.
     if not cases:
         failures.append("REFUSE: empty self-test population")
@@ -346,6 +380,13 @@ def main(argv: list[str]) -> int:
     if not held:
         print("  (none)")
     for val, n in sorted(held.items(), key=lambda kv: (-kv[1], kv[0])):
+        print(f"  {n:>4}x  {val}")
+    words = word_numbers(p.read_text())
+    print(f"\nSPELLED-OUT numbers --- {len(words)} distinct word(s), triage by hand "
+          f"(an idiom and a count share this shape; #1553):")
+    if not words:
+        print("  (none)")
+    for val, n in sorted(words.items(), key=lambda kv: (-kv[1], kv[0])):
         print(f"  {n:>4}x  {val}")
     return 0
 

@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-88-LADDER10
     type: system-req
     release: v0.88
-    status: proposed
+    status: implemented
     title: "The acceptance ladder is re-measured on the corpus that is already present"
     description: >
         The v0.87 cold review found the 243-module corpus present on the release machine
@@ -30,6 +30,14 @@ artifacts:
       priority: must
       issue: "#1432"
       verification-track: manual
+      landed: "PR #1564 - #1432 - DELIVERED. The refuting command REFUTED the carried blocked disposition: the 243-module corpus sat at its last-known path on the release machine. Manifest check from modules/: rc 0, 243 OK lines (the positive control), 0 failures. Re-measured at 897dbf69 with synth 0.87.0 on all three backends: every rung identical to v0.63 (arm 27, +72, +3, +0, 141; riscv 50, +0, +11, +0, 182; aarch64 49, +0, +1, +0, 193). The ladder header now carries this measurement instead of the host-key blocker."
+      verified-by: >
+        DELIVERED, and the blocker it carried for several releases is REFUTED by
+        measurement. The re-check ran from modules/, as the manifest's relative paths
+        require, and carried its positive control (243 OK) rather than reading an exit
+        code. Partitions sum to 243 on every backend, the script's blocker sum check
+        passed, and stderr was empty. The delta-0 result means synth's reach did not move
+        between v0.63 and v0.87; the ladder is now live, not stale.
       done-when: >
         manual:2027-03-31 the acceptance ladder is re-measured on the corpus that is
         already present — delivered with measured numbers, or REFUTED with the
