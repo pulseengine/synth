@@ -8343,7 +8343,147 @@ impl InstructionSelector {
             return None;
         };
         let eff = (c as u32).wrapping_add(offset);
-        if eff <= 0xFFF { Some(eff) } else { None }
+        // #1563 follow-up: past the imm12 limit the fold is still taken when
+        // the access would otherwise BAKE a static address — the relocated
+        // `LdrSym` arm takes any addend (see `npa_baked_const_addr`).
+        if eff <= 0xFFF || self.npa_baked_const_addr(c, offset).is_some() {
+            Some(eff)
+        } else {
+            None
+        }
+    }
+
+    /// `--native-pointer-abi`: `Some(eff)` when a memory access whose address
+    /// operand is the constant `c` (memarg `offset`) would be lowered as a RAW
+    /// linear-memory offset off R11 — a silent miscompile under that ABI.
+    ///
+    /// Under `--native-pointer-abi` R11 is 0 (`CompileConfig::
+    /// linear_memory_bytes`: "any address beyond it is a runtime host pointer
+    /// → `[R11=0 + addr]`"), so a wasm static at `eff` is reachable ONLY
+    /// through the `__synth_wasm_data + eff` relocation (retargeted to
+    /// `__synth_wasm_seg_K` on the mixed split). The selector relocates a
+    /// static address in exactly three places; anything else bakes it:
+    ///
+    /// 1. the `i32.const` handler rewrites `c` itself when a stack-pointer
+    ///    global marks it a pointer (`sp_global` set and `c >= wasm_data_base`);
+    /// 2. the #359/#739 dynamic path relocates a memarg `offset` in the static
+    ///    region (`is_native_pointer_static_offset`, which needs a stack-pointer
+    ///    global: `wasm_data_base > 0`);
+    /// 3. the const-address fold (`try_fold_const_addr{,_store}`) on the i32
+    ///    load/store arms.
+    ///
+    /// So this returns `Some` exactly when `eff` is a static address and
+    /// neither (1) nor (2) applies. The i32 arms then fold (3) whatever the
+    /// size of `eff`; every other arm — and an i32 arm whose fold is disabled
+    /// by bounds checking — is refused by [`Self::npa_const_addr_guard`].
+    /// Without a stack-pointer global this is EVERY constant static address
+    /// (`wasm_data_base == 0`); with one it is the sliver where both `c` and
+    /// `offset` sit below the base but their sum does not.
+    fn npa_baked_const_addr(&self, c: i32, offset: u32) -> Option<u32> {
+        if !self.native_pointer_abi {
+            return None;
+        }
+        let eff = (c as u32).checked_add(offset)?;
+        self.static_data_addend(eff)?;
+        if self.sp_global.is_some() && self.static_data_addend(c as u32).is_some() {
+            return None; // (1): the const is already `__synth_wasm_data + c`
+        }
+        if self.is_native_pointer_static_offset(offset) {
+            return None; // (2): the offset is relocated on the dynamic path
+        }
+        Some(eff)
+    }
+
+    /// `--native-pointer-abi` pre-flight: refuse, loudly, any memory access in
+    /// `wasm_ops` whose address operand is a constant that would be BAKED as a
+    /// raw linear-memory offset off R11 ([`Self::npa_baked_const_addr`]),
+    /// unless the access is an i32 load/store arm whose const-address fold
+    /// relocates it. Only POSITIONAL constant operands are visible here — the
+    /// `i32.const` immediately feeding the address, past at most the
+    /// single-push operands (constants, `local.get`, `global.get`) that
+    /// follow it. A constant address that reaches the access through a local
+    /// or arithmetic cannot be told from a scalar and is not caught.
+    pub(crate) fn npa_const_addr_guard(&self, wasm_ops: &[WasmOp]) -> synth_core::Result<()> {
+        use WasmOp::*;
+        if !self.native_pointer_abi {
+            return Ok(());
+        }
+        let simple = |op: &WasmOp| {
+            matches!(
+                op,
+                I32Const(_) | I64Const(_) | F32Const(_) | F64Const(_) | LocalGet(_) | GlobalGet(_)
+            )
+        };
+        // The const at `idx - back`, provided every op between it and the
+        // access is a single-push operand.
+        let const_at = |idx: usize, back: usize| -> Option<i32> {
+            if idx < back || !(1..back).all(|k| simple(&wasm_ops[idx - k])) {
+                return None;
+            }
+            if let I32Const(c) = wasm_ops[idx - back] {
+                Some(c)
+            } else {
+                None
+            }
+        };
+        for (idx, op) in wasm_ops.iter().enumerate() {
+            // (name, [(operand distance, memarg offset)], folds on the i32 arm)
+            let (name, operands, i32_fold): (&str, Vec<(usize, u32)>, bool) = match op {
+                I32Load { offset, .. }
+                | I32Load8S { offset, .. }
+                | I32Load8U { offset, .. }
+                | I32Load16S { offset, .. }
+                | I32Load16U { offset, .. } => ("an i32 load", vec![(1, *offset)], true),
+                I32Store { offset, .. } | I32Store8 { offset, .. } | I32Store16 { offset, .. } => {
+                    ("an i32 store", vec![(2, *offset)], true)
+                }
+                I64Load { offset, .. }
+                | I64Load8S { offset, .. }
+                | I64Load8U { offset, .. }
+                | I64Load16S { offset, .. }
+                | I64Load16U { offset, .. }
+                | I64Load32S { offset, .. }
+                | I64Load32U { offset, .. } => ("an i64 load", vec![(1, *offset)], false),
+                I64Store { offset, .. }
+                | I64Store8 { offset, .. }
+                | I64Store16 { offset, .. }
+                | I64Store32 { offset, .. } => ("an i64 store", vec![(2, *offset)], false),
+                F32Load { offset, .. } => ("an f32 load", vec![(1, *offset)], false),
+                F64Load { offset, .. } => ("an f64 load", vec![(1, *offset)], false),
+                F32Store { offset, .. } => ("an f32 store", vec![(2, *offset)], false),
+                F64Store { offset, .. } => ("an f64 store", vec![(2, *offset)], false),
+                V128Load { offset, .. } => ("a v128 load", vec![(1, *offset)], false),
+                V128Store { offset, .. } => ("a v128 store", vec![(2, *offset)], false),
+                MemoryFill => ("memory.fill (destination)", vec![(3, 0)], false),
+                MemoryCopy => ("memory.copy", vec![(3, 0), (2, 0)], false),
+                _ => continue,
+            };
+            for (back, offset) in operands {
+                let Some(c) = const_at(idx, back) else {
+                    continue;
+                };
+                let Some(eff) = self.npa_baked_const_addr(c, offset) else {
+                    continue;
+                };
+                // The i32 arms relocate through the fold — unless bounds
+                // checking disabled it (`try_fold_const_addr*` returns None).
+                if i32_fold && self.bounds_check.is_passthrough() {
+                    continue;
+                }
+                return Err(synth_core::Error::synthesis(format!(
+                    "--native-pointer-abi: {name} at op {idx} addresses the constant \
+                     static-data address 0x{eff:x} (i32.const 0x{c:x}, offset {offset}), \
+                     which this lowering would emit as a raw linear-memory offset off R11 \
+                     with no relocation — under the native-pointer ABI R11 is 0 and the \
+                     static lives at __synth_wasm_data + 0x{eff:x}, so the access would \
+                     silently read or write the wrong address. Refusing. Give the module \
+                     a stack-pointer global (the toolchain `__stack_pointer`), whose init \
+                     marks constants at or above it as relocated pointers, or drop \
+                     --native-pointer-abi"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// A const-materialization instruction: what the `i32.const` handler emits
@@ -8420,7 +8560,12 @@ impl InstructionSelector {
             return None;
         };
         let eff = (c as u32).wrapping_add(offset);
-        if eff <= 0xFFF { Some(eff) } else { None }
+        // #1563 follow-up: see `try_fold_const_addr`.
+        if eff <= 0xFFF || self.npa_baked_const_addr(c, offset).is_some() {
+            Some(eff)
+        } else {
+            None
+        }
     }
 
     /// Splice out the addr-const materialization instructions (those tagged

@@ -1531,7 +1531,8 @@ claims:
   #
   # Phase 2 (#777 follow-ups, v0.47): (a) SPANNED reloc check — the mixed split
   # validates every runtime-covered byte of a conservatively-widened access
-  # (MAX_ACCESS_BYTES) against the SHIPPED packed init blob (the
+  # (MAX_ACCESS_BYTES; since #1563 the reloc's PROVEN access width when the
+  # backend derives one from the final stream) against the SHIPPED packed init blob (the
   # staggered-overlap straddle phase 1 silently miscompiled is now refused);
   # (b) the self-contained #758 ROM image is packed by the shared
   # declaration-order packer and validated unconditionally against the
@@ -1854,9 +1855,27 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 19974
+        value: 20125
         baseline: 17897
         waivers:
+          - to: 20125
+            reason: >-
+              v0.88 native-pointer constant address (Refs #1563): 19974 -> 20125
+              on the merged tree over main's RQ-88-JESSDIVERGE10 waiver,
+              +153 / -2 in instruction_selector.rs, of which roughly a third is
+              doc comment. ONE new lowering decision, not a replacement: under
+              --native-pointer-abi R11 is 0, and a constant static address the
+              selector did not relocate was emitted as a raw `[fp, rX]` — wrong
+              for every such access (measured: 81 of 162 probe modules wrong at
+              the pre-fix binary). `npa_baked_const_addr` names exactly when an
+              access would bake. `try_fold_const_addr{,_store}` now fold past
+              the 0xFFF limit in that case, so the existing LdrSym arms relocate
+              it. `npa_const_addr_guard` refuses it loudly on every arm that
+              cannot fold (i64, f32/f64, v128, memory.fill/copy, and the i32 arms
+              when bounds checking disables the fold). Execution-gated by
+              scripts/repro/npa_const_addr_differential.py (28 calls vs wasmtime,
+              8 refusal rows). The byte sweep moved only --native-pointer-abi
+              objects whose pre-fix code was baked.
           - to: 19974
             reason: >-
               RQ-88-JESSDIVERGE10 (#1436): 19805 -> 19974, +169 — a SOUNDNESS
@@ -2809,7 +2828,9 @@ claims:
         # this population. `direction: track` — no waiver, by design.
         # 30398 -> 30567 (RQ-88-JESSDIVERGE10 #1436): +169 code region, the
         # float-home alias guard waived on selector_lines_code above.
-        value: 30567
+        # v0.88 NPACONST: 30567 -> 30718, the same rise as
+        # selector_lines_code; the tests live in synth-cli.
+        value: 30718
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -2861,9 +2882,17 @@ claims:
         # `_ => QReg::Q7` — the Q-register allocator was orphaned by deleting
         # the 88 Helium arms, and `-D warnings` found it rather than a human
         # predicting it. No waiver: the value equals the baseline.
-        value: 55
+        value: 56
         baseline: 55
         waivers:
+          - to: 56
+            reason: >-
+              v0.88 native-pointer constant address (Refs #1563): +1, the
+              `_ => continue` in `npa_const_addr_guard`'s per-op match. It is
+              closed over the memory-access ops: every op that takes a linear-
+              memory address is listed, and the wildcard only skips ops that
+              take none. A second wildcard the first draft had (`_ => None`
+              over the const operand) was rewritten as `if let`.
           - to: 56
             reason: >-
               RQ-66-BOTHWRONG (#1215 partial, scripts/repro/bothwrong_1210_1211_1214_triage.md):
@@ -2899,7 +2928,9 @@ claims:
         # `target_of` match's `_ => {}` (see selector_wildcard_arms_code).
         # RQ-69-SUBTRACT (#242): 94 -> 93 — `index_to_qreg`'s `_ => QReg::Q7`,
         # deleted with the orphaned Q-register allocator (see the code pin).
-        value: 93
+        # v0.88 native-pointer constant address: 93 -> 94, the guard's
+        # `_ => continue` (see selector_wildcard_arms_code).
+        value: 94
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -4125,7 +4156,18 @@ claims:
     #   vectors, 88 of them wrong before the fix) and is wired into the unicorn
     #   job. The first push of #1564 reddened Claim Check on exactly this
     #   equality, ABOVE by 136, before this line moved.
-    text: "--exact-emulation-floor 368057"
+    # v0.88 #1563: 368057 -> 368082 (re-derived on the merged tree over main's 368057). `verwidth_1563_differential.py`
+    #   declares `emulations >= 25` (25 measured via oracle_run.py: 12 calls
+    #   on the gale-guard shape + 13 on the staggered overlap) and is wired
+    #   into the unicorn job beside the #739 static oracle. Value RE-DERIVED
+    #   from `oracle_wiring_check.py --exact-emulation-floor 368082`.
+    # v0.88 native-pointer const address: 368082 -> 368110 (re-derived on the merged tree).
+    #   `npa_const_addr_differential.py` declares `emulations >= 28` (28
+    #   measured via oracle_run.py: 9 no-SP calls + 13 multi_segment_static_data
+    #   exports + 6 SP-sliver calls; its 8 refusal rows are counted by the
+    #   script itself, not by this floor). Re-derived from
+    #   `oracle_wiring_check.py --exact-emulation-floor 368110`.
+    text: "--exact-emulation-floor 368110"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

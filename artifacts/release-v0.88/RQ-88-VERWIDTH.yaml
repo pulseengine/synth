@@ -1,0 +1,58 @@
+artifacts:
+  - id: RQ-88-VERWIDTH
+    type: system-req
+    release: v0.88
+    status: implemented
+    title: "The static-data addressing validator spans each relocation at its proven access width, not a blanket 8 bytes"
+    description: >
+        VCR-VER-003 spanned every static-data relocation as a possible 8-byte
+        access. gale's meld-fused gust:os composite carries a 1-byte load8_u /
+        store8 constructor guard at linmem 0xe0c, in a 1-byte segment declared
+        after the segment that follows it at 0xe10. Span bytes +4..+7 fell in that
+        neighbour, so the validator refused a correct image. The fix takes each
+        relocation's width from the instruction that uses it, and keeps the
+        conservative maximum only where the width is genuinely unknown.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers:
+        Reproduce the reporter's shape hermetically, a 1-byte segment immediately
+        followed in linear memory by a segment declared earlier, accessed with
+        load8_u / store8 at its byte, and show it is refused at the pre-fix binary.
+        Then show that a 1-byte access cannot read further than its byte, or report
+        the measurement that shows it can.
+        CITATION: #1563 carries the reporter's measurement. The number names where the matter was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1563"
+      verification-track: manual
+      issue-scope: closes
+      landed: "PR #1569 - #1563 - DELIVERED. The refuting command, run first, CONFIRMED the false positive: a hermetic gale-shape fixture gives 8 span errors at the pre-fix binary (+4..+7 for the load and the store relocation, serves 0x00 but the runtime image owns 0x01, the reporter's diagnostic) and compiles clean after. CodeRelocation now carries access_width, which the ARM backend DERIVES from the final instruction stream (literal_access_width): every reader of the loaded address, up to its kill, must be a plain [rd, #0] load or store of that width that does not store the pointer, and the width is the maximum over readers. Exact today: the folded const-address i32 load / load8 / load16 and store / store8 / store16. Still 8 bytes: i64 pairs, f32/f64, dynamic-index bases including const addresses above the 0xFFF fold, escaping i32.const pointers. A proven width is now checked strictly against implicit-zero memory, which also refuses a 4-byte read of packed-neighbour bytes the old span accepted."
+      verified-by: >
+        DELIVERED, with the controls proving the narrowing does not open the hole it
+        guards. On a staggered overlap, load32, load16_u/s, store32 and store16 that reach
+        the overwritten bytes are still refused at their exact width. A cross-segment
+        straddle and the i64, dynamic-index and pointer shapes are still refused, and the
+        #757 wrong-segment owner is refused at widths 1, 2, 4, 8 and unproven. Mutations:
+        forcing the width to 8 reds 5 of 15 CLI tests (3 by verdict); forcing it to 1 reds
+        5 and the binary then accepts load32, load16, store32, the straddle and load64.
+        verwidth_1563_differential.py runs the newly accepted objects against wasmtime,
+        25 of 25 equal, and refuses at the pre-fix binary. Byte identity: 1130 compiles, 0
+        byte differences; the one verdict change, multi_segment_static_data on
+        --native-pointer-abi, exposed a separate defect filed as #1568 and fixed by
+        RQ-88-NPACONST in the same PR. UNPROVEN: gale's real composite was NOT run here,
+        because no gale checkout exists on the release machine. Five gale-shape variants
+        compile clean, but an if/else around the guard still leaves the store width
+        unproven. The issue closes on this execution-verified fix, and gale reopens it if
+        their composite still fails.
+      done-when: >
+        manual:2027-03-31 the static-data addressing validator spans each relocation at its
+        proven access width — delivered with measured numbers, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST and its
+        result reported either way

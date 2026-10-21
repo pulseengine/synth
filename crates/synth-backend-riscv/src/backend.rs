@@ -429,6 +429,7 @@ fn compile_function_with_opts(
             offset: r.offset,
             symbol: r.symbol,
             kind: r.kind.core_kind(),
+            access_width: None,
         })
         .collect();
 

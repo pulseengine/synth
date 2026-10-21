@@ -53,16 +53,25 @@
 //!    bytes — an i32/i64 load starting in segment `K` whose span crosses into
 //!    a range a LATER-declared segment owns at runtime (staggered overlap), or
 //!    crosses `K`'s packed end into 4-align padding / the next *declared*
-//!    (not next *linmem*) segment. The access width is not recorded on
-//!    [`crate::backend::CodeRelocation`] (the Abs32 literal is a pointer; its
-//!    consumers are ldrb/ldrh/ldr/ldrd), so the span is validated
-//!    conservatively out to [`MAX_ACCESS_BYTES`] with one deliberate
+//!    (not next *linmem*) segment. #1563: the span is the reloc's PROVEN
+//!    access width ([`RelocResolution::access_width`], carried from
+//!    [`crate::backend::CodeRelocation::access_width`], which the ARM backend
+//!    derives from the FINAL instruction stream: every reader of the loaded
+//!    address is a plain `[rd, #0]` access of that width). An EXACT span is
+//!    checked strictly — a byte no segment covers is implicit-zero linear
+//!    memory and the blob must serve `0x00` there. When the width is NOT
+//!    proven (the address feeds a dynamic-index `Add`, escapes as an
+//!    `i32.const` pointer, a pair/FP access, a branch before its kill …) the
+//!    span stays the conservative [`MAX_ACCESS_BYTES`] with the original
 //!    tolerance: a span byte whose runtime address NO segment covers is
-//!    skipped (implicit-zero linear memory — flagging it would hard-error the
-//!    ubiquitous "pointer near the end of a sparse segment, narrow access"
-//!    shape). A span byte that IS runtime-covered must match what the packed
-//!    blob actually serves at that position, byte-for-byte, so the served
-//!    side reads the EMITTED init blob ([`PackedInit`]) — never a recompute.
+//!    skipped (flagging it would hard-error the ubiquitous "pointer near the
+//!    end of a sparse segment, narrow access" shape). Either way a span byte
+//!    that IS runtime-covered must match what the packed blob actually serves
+//!    at that position, byte-for-byte, so the served side reads the EMITTED
+//!    init blob ([`PackedInit`]) — never a recompute. Before #1563 every reloc
+//!    was spanned at 8 bytes, which refused a CORRECT 1-byte `load8_u` guard
+//!    whose segment is immediately followed in linear memory by another
+//!    segment (gale's meld-fused composite).
 //! 2. **Dense served images** ([`validate_served_image`] /
 //!    [`pack_rom_image`]): the self-contained `--cortex-m` ROM-copy layout
 //!    (#758) serves linear memory from ONE dense flash blob copied to RAM at
@@ -119,6 +128,10 @@ pub struct RelocResolution {
     pub addend: u32,
     /// Optional label for diagnostics (e.g. `"func 3 @ 0x1a"`); not load-bearing.
     pub label: String,
+    /// #1563: the PROVEN width in bytes of every access through this address
+    /// (read back from the emitted relocation, never recomputed here), or
+    /// `None` when unproven — the span then stays [`MAX_ACCESS_BYTES`].
+    pub access_width: Option<u32>,
 }
 
 /// The verdict of the addressing gate.
@@ -149,9 +162,12 @@ pub struct AddrMismatch {
     /// The byte the runtime image holds at `access_addr` (the truth).
     pub runtime: u8,
     /// Which byte of the (potentially multi-byte) access diverges: 0 = the
-    /// addend byte itself (the phase-1 check), 1..[`MAX_ACCESS_BYTES`] = a
-    /// tail byte of a conservatively-widened span (phase 2).
+    /// addend byte itself (the phase-1 check), 1.. = a tail byte of the span
+    /// (phase 2).
     pub span_byte: u32,
+    /// #1563: the reloc's proven access width (`None` = unproven, spanned at
+    /// [`MAX_ACCESS_BYTES`]). Diagnostic only.
+    pub access_width: Option<u32>,
 }
 
 impl AddrMismatch {
@@ -160,10 +176,13 @@ impl AddrMismatch {
         let span = if self.span_byte == 0 {
             String::new()
         } else {
-            format!(
-                " (span byte +{} of a possibly {}-byte access)",
-                self.span_byte, MAX_ACCESS_BYTES
-            )
+            match self.access_width {
+                Some(w) => format!(" (span byte +{} of a {w}-byte access)", self.span_byte),
+                None => format!(
+                    " (span byte +{} of a possibly {}-byte access — width unproven)",
+                    self.span_byte, MAX_ACCESS_BYTES
+                ),
+            }
         };
         format!(
             "{}: __synth_wasm_seg_{}+0x{:x} -> linmem 0x{:x}{span} serves 0x{:02x} but \
@@ -210,6 +229,7 @@ pub fn validate_reloc_resolutions(
                 served: 0,
                 runtime: 0,
                 span_byte: 0,
+                access_width: r.access_width,
             });
             continue;
         };
@@ -224,6 +244,7 @@ pub fn validate_reloc_resolutions(
                 served: 0,
                 runtime: 0,
                 span_byte: 0,
+                access_width: r.access_width,
             });
             continue;
         };
@@ -240,6 +261,7 @@ pub fn validate_reloc_resolutions(
                 served,
                 runtime: 0,
                 span_byte: 0,
+                access_width: r.access_width,
             });
             continue;
         };
@@ -252,6 +274,7 @@ pub fn validate_reloc_resolutions(
                 served,
                 runtime: runtime_byte,
                 span_byte: 0,
+                access_width: r.access_width,
             });
         }
     }
@@ -285,6 +308,7 @@ pub fn resolve_owner(segments: &[DataSegment], c: u32, last_wins: bool) -> Optio
         seg_index: idx,
         addend: c - segments[idx].linmem_off,
         label: format!("addr 0x{c:x}"),
+        access_width: None,
     })
 }
 
@@ -305,10 +329,11 @@ pub struct PackedInit<'a> {
 }
 
 /// Phase-2 (#777) per-compilation addressing gate: the phase-1 addend-byte
-/// check PLUS a conservative multi-byte span check per reloc.
+/// check PLUS a multi-byte span check per reloc.
 ///
-/// For every emitted resolution `(K, A)` and every span byte
-/// `j in 0..`[`MAX_ACCESS_BYTES`]:
+/// For every emitted resolution `(K, A)` and every span byte `j in 0..W`,
+/// where `W` is the resolution's proven [`RelocResolution::access_width`]
+/// (#1563) or [`MAX_ACCESS_BYTES`] when unproven:
 ///
 /// - the byte SERVED is read from the emitted init blob at
 ///   `packed.seg_packed_off[K] + A + j` (the real artifact — for `j = 0` this
@@ -318,14 +343,19 @@ pub struct PackedInit<'a> {
 ///   applied in declaration order, later-wins, independent of `K`).
 ///
 /// `j = 0` keeps phase-1 semantics exactly (a missing byte on either side is
-/// a broken retargeting → mismatch). For `j > 0` the access width is unknown
-/// (see the module docs), so one tolerance applies: when NO segment covers
-/// the runtime address, the byte is implicit-zero linear memory and the span
-/// byte is SKIPPED — a wide access genuinely reaching there would read packed
-/// neighbours instead of zeros, but flagging it would hard-error the common
-/// "pointer near a sparse segment's end, narrow access" shape; exact checking
-/// of that residue needs a recorded access width (named follow-up). When the
-/// runtime address IS covered by some segment, the served byte must match —
+/// a broken retargeting → mismatch). For `j > 0`:
+///
+/// - **width proven** (#1563): the access really reads byte `j`, so it is
+///   checked STRICTLY — a runtime address NO segment covers is implicit-zero
+///   linear memory and the blob must serve `0x00` there (a packed neighbour
+///   or an init-region escape is the miscompile);
+/// - **width unproven**: one tolerance applies — when NO segment covers the
+///   runtime address the span byte is SKIPPED (a wide access genuinely
+///   reaching there would read packed neighbours instead of zeros, but
+///   flagging it would hard-error the common "pointer near a sparse
+///   segment's end, narrow access" shape).
+///
+/// When the runtime address IS covered by some segment, the served byte must match —
 /// including bytes past `K`'s packed end (4-align padding or the next
 /// *declared* segment) and bytes that escape the init region entirely (both
 /// are exactly how a straddling access mis-serves).
@@ -347,13 +377,26 @@ pub fn validate_reloc_resolutions_spanned(
         let Some(&poff) = packed.seg_packed_off.get(r.seg_index) else {
             continue; // impossible when layout and segments are parallel
         };
-        for j in 0..MAX_ACCESS_BYTES {
+        // #1563: span exactly the proven width; the conservative maximum
+        // only when the width is unproven. A proven width is clamped into
+        // [1, MAX_ACCESS_BYTES] — 0 or an over-wide claim cannot shrink the
+        // span below one byte or widen it past what the tolerance models.
+        let (span, exact) = match r.access_width {
+            Some(w) => (w.clamp(1, MAX_ACCESS_BYTES), true),
+            None => (MAX_ACCESS_BYTES, false),
+        };
+        for j in 0..span {
             let access_addr = seg.linmem_off.wrapping_add(r.addend).wrapping_add(j);
-            // Unknown-width tolerance: runtime-uncovered ⇒ implicit zero ⇒ skip
-            // (for j = 0 a missing runtime byte was already flagged by the
-            // strict phase-1 pass above).
-            let Some(&runtime_byte) = runtime.get(&access_addr) else {
-                continue;
+            let runtime_byte = match runtime.get(&access_addr) {
+                Some(&b) => b,
+                // Exact width: the access really reads this byte, and linear
+                // memory no segment covers is implicit zero — check it. (j = 0
+                // cannot reach here: the addend byte lies in seg[K] itself.)
+                None if exact && j > 0 => 0,
+                // Unproven width: runtime-uncovered ⇒ implicit zero ⇒ skip
+                // (for j = 0 a missing runtime byte was already flagged by the
+                // strict phase-1 pass above).
+                None => continue,
             };
             // j = 0: the phase-1 pass already reported a divergent SEGMENT
             // byte; re-checking here would double-report it. Only the blob
@@ -377,6 +420,7 @@ pub fn validate_reloc_resolutions_spanned(
                     served: served.unwrap_or(0),
                     runtime: runtime_byte,
                     span_byte: j,
+                    access_width: r.access_width,
                 });
             }
         }
@@ -1137,6 +1181,7 @@ mod tests {
             seg_index: 0,
             addend: 99,
             label: "oob".into(),
+            access_width: None,
         };
         assert!(matches!(
             validate_reloc_resolutions(&segs, &[bad]),
@@ -1328,6 +1373,234 @@ mod tests {
         match validate_linmem_globals_disjoint(func_visible, linmem, bad, 4) {
             LayoutVerdict::Overlap { overlap_bytes, .. } => assert_eq!(overlap_bytes, 0x100),
             v => panic!("expected 0x100 overlap under low, got {v:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // #1563: the span is the reloc's PROVEN access width.
+    // -----------------------------------------------------------------------
+
+    fn with_width(mut r: RelocResolution, w: Option<u32>) -> RelocResolution {
+        r.access_width = w;
+        r
+    }
+
+    fn spanned(segs: &[DataSegment], r: RelocResolution) -> Verdict {
+        let (offs, blob) = mixed_pack(segs);
+        validate_reloc_resolutions_spanned(
+            segs,
+            &[r],
+            &PackedInit {
+                seg_packed_off: &offs,
+                bytes: &blob,
+            },
+        )
+    }
+
+    /// gale's #1563 shape: a 1-byte guard segment at 0xe0c declared AFTER the
+    /// segment that follows it in linear memory (0xe10). The 1-byte access
+    /// reads only its own byte, so a proven width of 1 is CONSISTENT; the
+    /// unproven 8-byte span reads 0xe10.. from the guard's packed neighbour
+    /// and is refused — the false positive this fixes. Both directions are
+    /// asserted so a validator that ignores the width (always 8, or always 1)
+    /// fails one of them.
+    #[test]
+    fn width_1563_one_byte_guard_before_a_later_declared_neighbour() {
+        let segs = vec![
+            DataSegment {
+                linmem_off: 0xe10,
+                bytes: vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+            },
+            DataSegment {
+                linmem_off: 0xe0c,
+                bytes: vec![0x00],
+            },
+        ];
+        let r = resolve_owner(&segs, 0xe0c, true).unwrap();
+        assert_eq!(r.seg_index, 1);
+        assert_eq!(
+            spanned(&segs, with_width(r.clone(), Some(1))),
+            Verdict::Consistent,
+            "a proven 1-byte access inside its own segment must be accepted"
+        );
+        match spanned(&segs, with_width(r, None)) {
+            Verdict::Mismatch(m) => {
+                assert_eq!(m.len(), 4, "bytes +4..+7 land in the 0xe10 segment");
+                assert_eq!(m[0].span_byte, 4);
+                assert!(
+                    m[0].describe().contains("width unproven"),
+                    "{}",
+                    m[0].describe()
+                );
+            }
+            Verdict::Consistent => panic!("the unproven 8-byte span must stay conservative"),
+        }
+    }
+
+    /// The #757 wrong-segment class is refused at EVERY proven width: the
+    /// first-match owner serves a stale byte at the addend itself, which no
+    /// width can hide.
+    #[test]
+    fn width_1563_wrong_segment_refused_at_every_width() {
+        let segs = overlapping_segments();
+        let wrong = resolve_owner(&segs, 0x100000, false).unwrap();
+        assert_eq!(wrong.seg_index, 0);
+        for w in [Some(1), Some(2), Some(4), Some(8), None] {
+            match spanned(&segs, with_width(wrong.clone(), w)) {
+                Verdict::Mismatch(m) => assert!(
+                    m.iter().any(|x| x.span_byte == 0),
+                    "width {w:?}: the addend byte itself must be flagged"
+                ),
+                Verdict::Consistent => panic!("width {w:?}: #757 wrong segment accepted"),
+            }
+            let right = resolve_owner(&segs, 0x100000, true).unwrap();
+            assert_eq!(
+                spanned(&segs, with_width(right, w)),
+                Verdict::Consistent,
+                "width {w:?}: the later-wins owner must be accepted"
+            );
+        }
+    }
+
+    /// Staggered overlap (seg_1 overwrites seg_0's bytes +2,+3): every width
+    /// that REACHES the overwritten bytes is refused, and only the widths that
+    /// stay inside seg_0's surviving bytes are accepted. This is the control
+    /// that bites a "width forced to 1" mutation: widths 4 and 2 must go red.
+    #[test]
+    fn width_1563_staggered_overlap_refused_exactly_where_the_access_reaches() {
+        let segs = vec![
+            DataSegment {
+                linmem_off: 0x800,
+                bytes: vec![0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7],
+            },
+            DataSegment {
+                linmem_off: 0x802,
+                bytes: vec![0xB2, 0xB3],
+            },
+        ];
+        let at0 = resolve_owner(&segs, 0x800, true).unwrap();
+        let at1 = resolve_owner(&segs, 0x801, true).unwrap();
+        assert_eq!((at0.seg_index, at1.seg_index), (0, 0));
+        // 4-byte load at 0x800 reaches 0x802 (+2).
+        match spanned(&segs, with_width(at0.clone(), Some(4))) {
+            Verdict::Mismatch(m) => {
+                assert_eq!(m[0].span_byte, 2);
+                assert!(m[0].describe().contains("of a 4-byte access"));
+            }
+            Verdict::Consistent => panic!("4-byte straddle into the overwritten bytes accepted"),
+        }
+        // 2-byte load at 0x801 reaches 0x802 (+1).
+        match spanned(&segs, with_width(at1.clone(), Some(2))) {
+            Verdict::Mismatch(m) => assert_eq!(m[0].span_byte, 1),
+            Verdict::Consistent => panic!("2-byte straddle into the overwritten bytes accepted"),
+        }
+        // Accesses that stay inside seg_0's surviving bytes are correct.
+        assert_eq!(
+            spanned(&segs, with_width(at0.clone(), Some(2))),
+            Verdict::Consistent
+        );
+        assert_eq!(
+            spanned(&segs, with_width(at0, Some(1))),
+            Verdict::Consistent
+        );
+        assert_eq!(
+            spanned(&segs, with_width(at1, Some(1))),
+            Verdict::Consistent
+        );
+    }
+
+    /// Straddle across two NON-overlapping segments packed apart: a 4-byte
+    /// access whose first two bytes are in seg A and last two in seg B
+    /// (declared earlier, so not A's packed neighbour) is refused at its
+    /// proven width.
+    #[test]
+    fn width_1563_cross_segment_straddle_refused() {
+        let segs = vec![
+            DataSegment {
+                linmem_off: 0xe0e,
+                bytes: vec![0xCC, 0xDD],
+            },
+            DataSegment {
+                linmem_off: 0xe0c,
+                bytes: vec![0xAA, 0xBB],
+            },
+        ];
+        let r = resolve_owner(&segs, 0xe0c, true).unwrap();
+        match spanned(&segs, with_width(r.clone(), Some(4))) {
+            Verdict::Mismatch(m) => {
+                assert_eq!(m.len(), 2);
+                assert_eq!(m[0].span_byte, 2);
+            }
+            Verdict::Consistent => panic!("cross-segment straddle accepted"),
+        }
+        assert_eq!(spanned(&segs, with_width(r, Some(2))), Verdict::Consistent);
+    }
+
+    /// A PROVEN width is checked strictly against implicit-zero linear memory:
+    /// a 4-byte load at 0x7d2 reads 0x7d4/0x7d5, which no segment covers (so
+    /// the runtime holds 0x00), but the packed blob serves the NEXT declared
+    /// segment's bytes there. The unproven span skips uncovered bytes (the
+    /// documented tolerance) and accepted this miscompile before #1563.
+    #[test]
+    fn width_1563_exact_width_checks_implicit_zero_bytes() {
+        let segs = vec![
+            DataSegment {
+                linmem_off: 0x7d0,
+                bytes: vec![0x01, 0x02, 0x03, 0x04],
+            },
+            DataSegment {
+                linmem_off: 0xbb8,
+                bytes: vec![0x05, 0x06, 0x07, 0x08],
+            },
+        ];
+        let r = resolve_owner(&segs, 0x7d2, true).unwrap();
+        match spanned(&segs, with_width(r.clone(), Some(4))) {
+            Verdict::Mismatch(m) => {
+                assert_eq!(m.len(), 2);
+                assert_eq!((m[0].span_byte, m[0].served, m[0].runtime), (2, 0x05, 0x00));
+            }
+            Verdict::Consistent => panic!("a 4-byte read of packed-neighbour bytes accepted"),
+        }
+        // The unproven span keeps the pre-#1563 tolerance (documented residue).
+        assert_eq!(
+            spanned(&segs, with_width(r.clone(), None)),
+            Verdict::Consistent
+        );
+        // A narrow access that stays inside the segment is fine either way.
+        let last = resolve_owner(&segs, 0x7d3, true).unwrap();
+        assert_eq!(
+            spanned(&segs, with_width(last, Some(1))),
+            Verdict::Consistent
+        );
+        // Padding bytes served as 0x00 match implicit zero. main.rs pads the
+        // init region to a 4-byte boundary (`globals_off`), so a 4-byte
+        // access to a 2-byte final segment reads two padding zeros: correct.
+        let short = vec![DataSegment {
+            linmem_off: 0x7d0,
+            bytes: vec![0x01, 0x02],
+        }];
+        let padded = [0x01u8, 0x02, 0x00, 0x00];
+        let s0 = resolve_owner(&short, 0x7d0, true).unwrap();
+        let v = |r: RelocResolution, blob: &[u8]| {
+            validate_reloc_resolutions_spanned(
+                &short,
+                &[r],
+                &PackedInit {
+                    seg_packed_off: &[0],
+                    bytes: blob,
+                },
+            )
+        };
+        assert_eq!(
+            v(with_width(s0.clone(), Some(4)), &padded),
+            Verdict::Consistent
+        );
+        // …but a span that ESCAPES the init region (into the globals slots
+        // that follow it) is not linear memory, so a proven width reaching
+        // past it is refused.
+        match v(with_width(s0, Some(8)), &padded) {
+            Verdict::Mismatch(m) => assert_eq!(m[0].span_byte, 4),
+            Verdict::Consistent => panic!("an access escaping the init region accepted"),
         }
     }
 }

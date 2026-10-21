@@ -4,7 +4,7 @@ point at the instruction it was recorded for, after an inline literal island
 has been inserted.
 
 # ci-status: wired
-# ci-checks: stdout /^objects checked: ([0-9]+)$/ >= 308
+# ci-checks: stdout /^objects checked: ([0-9]+)$/ >= 307
 
 WHAT THIS ORACLE CANNOT SEE (RQ-74-ISLANDREACH, v0.74) — disclosed here rather
 than left for the next reviewer to rediscover. INV1/INV2 check that a RECORDED
@@ -27,6 +27,16 @@ change that made modules stop compiling would shrink `objects checked` rather
 than red. That is why the declared floor is pinned at the measured population
 (308 at the v0.74 cut, up from 306 because RQ-74-ISLANDREACH added two
 spanning fixtures to this sweep) and not a round number below it.
+
+v0.88 (#1568, RQ-88-NPACONST) moved it DOWN, deliberately: 312 -> 307 on
+the same 412 legs. Six `--native-pointer-abi` legs are now REFUSED because
+they address a constant static-data address that the old path baked as a raw
+linear-memory offset (bulk_local_clobber_677, bulk_mask_679,
+home_alias_class_1189_promo, i64_width_vstack_mem_946, spill_slot_alias_1321,
+vcr_reach_001_i64_pair), and one leg main refused now compiles under the
+per-instruction access width (#1563: multi_segment_static_data). A refusal of
+a miscompile is the correct outcome, so the floor follows the measured
+population instead of keeping 308, which the new tree cannot meet.
 
 WHY THIS EXISTS. v0.72's first island guard reasoned only about BRANCH offsets
 (`BOffset`/`BCondOffset`) and missed that the same loop records FOUR other

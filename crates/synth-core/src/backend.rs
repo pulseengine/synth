@@ -742,6 +742,20 @@ pub struct CodeRelocation {
     pub symbol: String,
     /// Which ARM relocation type to emit for this site.
     pub kind: RelocKind,
+    /// #1563 (VCR-VER-003): the PROVEN width, in bytes, of every linear-memory
+    /// access the relocated address feeds — or `None` when it is not proven.
+    ///
+    /// Only an `Abs32` literal-pool word (`LdrSym`) can carry `Some`, and only
+    /// when the ARM backend derived it from the FINAL instruction stream
+    /// (`literal_access_width` in `synth-backend`): every reader of the loaded
+    /// register, up to the instruction that kills it, is a plain
+    /// `[rd, #0]` load or store of that width that does not store the pointer
+    /// itself. Any other use (an `Add` of a dynamic index, a copy, a call
+    /// argument, a spill, a branch or label before the kill) leaves it `None`.
+    /// The static-data addressing validator spans exactly `Some(w)` bytes and
+    /// falls back to its conservative maximum on `None`. Metadata only — never
+    /// serialized into the object, so emitted bytes are unchanged.
+    pub access_width: Option<u32>,
 }
 
 /// Symbol BINDING — whether a symbol takes part in cross-object resolution

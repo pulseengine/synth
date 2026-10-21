@@ -33,6 +33,12 @@ impl InstructionSelector {
         // a panic deep in the selector's pop sequence (see PR #117).
         synth_core::wasm_stack_check::check_no_underflow(wasm_ops)?;
 
+        // `--native-pointer-abi` pre-flight: no constant static address may be
+        // lowered as a raw linear-memory offset off R11 (R11 is 0 under that
+        // ABI). The i32 arms relocate it through the const-address fold; every
+        // other positional constant-address access is refused here, loudly.
+        self.npa_const_addr_guard(wasm_ops)?;
+
         // #1093 pre-flight: a PARAMETER-taking block type declines as a typed
         // error, never a panic — block params pop BELOW the #313 frame-entry
         // checkpoint, so `Else`'s `split_off` panics (and the else-less shape

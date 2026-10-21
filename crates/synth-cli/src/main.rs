@@ -7027,6 +7027,10 @@ fn build_relocatable_elf(
                         seg_index: k,
                         addend: new_addend as u32,
                         label: format!("func {i} reloc @ 0x{:x} (linmem 0x{c:x})", reloc.offset),
+                        // #1563: the width the backend DERIVED from the final
+                        // instruction stream (`None` = unproven → the
+                        // validator's conservative maximum).
+                        access_width: reloc.access_width,
                     });
                 }
             }
@@ -7041,9 +7045,10 @@ fn build_relocatable_elf(
         // riscv` shipping build, not just `verify`.
         //
         // Phase 2 (#777): the check is SPANNED — beyond the addend byte, every
-        // runtime-covered byte a conservatively-widened access (up to
-        // MAX_ACCESS_BYTES; the reloc records no width) could read must equal
-        // what the packed init blob actually serves at that position. This
+        // byte the access can read must equal what the packed init blob
+        // actually serves at that position. #1563: the span is the reloc's
+        // PROVEN access width when the backend derived one from the final
+        // instruction stream, else the conservative MAX_ACCESS_BYTES. This
         // catches the staggered-overlap straddle (addend byte correct, tail
         // bytes runtime-owned by a LATER segment) and the packed-boundary
         // crossing (4-align padding / next-declared segment / init-region
@@ -10807,11 +10812,13 @@ mod tests {
                     offset: 0,
                     symbol: "__synth_wasm_data".to_string(),
                     kind: synth_core::backend::RelocKind::MovwAbs,
+                    access_width: None,
                 },
                 synth_core::backend::CodeRelocation {
                     offset: 4,
                     symbol: "__synth_wasm_data".to_string(),
                     kind: synth_core::backend::RelocKind::MovtAbs,
+                    access_width: None,
                 },
             ],
             op_offsets: vec![],
@@ -10923,11 +10930,13 @@ mod tests {
                     offset: 0,
                     symbol: "__synth_wasm_data".to_string(),
                     kind: synth_core::backend::RelocKind::Abs32,
+                    access_width: None,
                 },
                 synth_core::backend::CodeRelocation {
                     offset: 4,
                     symbol: "__synth_globals".to_string(),
                     kind: synth_core::backend::RelocKind::Abs32,
+                    access_width: None,
                 },
             ],
             op_offsets: vec![],
@@ -11025,6 +11034,7 @@ mod tests {
                 offset: 0,
                 symbol: "__synth_wasm_data".to_string(),
                 kind: synth_core::backend::RelocKind::Abs32,
+                access_width: None,
             }],
             op_offsets: vec![],
             line_map: vec![],
