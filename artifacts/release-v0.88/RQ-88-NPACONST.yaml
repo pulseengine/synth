@@ -1,0 +1,60 @@
+artifacts:
+  - id: RQ-88-NPACONST
+    type: system-req
+    release: v0.88
+    status: implemented
+    title: "--native-pointer-abi never bakes a constant static address as a raw linear-memory offset off R11"
+    description: >
+        Under --native-pointer-abi R11 is 0, so a wasm static is reachable only through
+        its __synth_wasm_data relocation (retargeted to __synth_wasm_seg_K on the mixed
+        split). The selector relocated a constant address in three places only: the
+        i32.const rewrite gated on a stack-pointer global, the #359 dynamic offset path
+        (also gated on it), and the i32 const-address fold, which stopped at the 0xFFF
+        imm12 limit. Every other constant address was emitted as movw rX,#addr; ldr
+        [fp, rX] and read absolute addr. Found when RQ-88-VERWIDTH made
+        multi_segment_static_data.wat compile on --native-pointer-abi and five of its
+        exports read wrong bytes.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a refutation is a
+        legitimate outcome, reported with numbers:
+        Establish from the source, not the harness, what R11 holds under
+        --native-pointer-abi for a module with no stack-pointer global. If it is the
+        linear-memory base, the baked form is correct and the wrong exports are a harness
+        artefact: say so and stop. Otherwise reproduce the wrong values against wasmtime
+        at the pre-fix binary before changing anything.
+        CITATION: #1568 is where the defect and its open residue are analysed. The number names where the matter was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1568"
+      verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1569 - #1568 - DELIVERED (partial: the residue stays open). The refuting command, run first, CONFIRMED the defect: CompileConfig::linear_memory_bytes, the CLI flag doc, the ARM embedder ABI doc and the wasm_data_base doc all state R11 = 0 under the native-pointer ABI with or without a stack-pointer global, and the mixed split moves the init bytes to .data, so a baked [fp, #addr] is wrong for any R11. npa_baked_const_addr names exactly when an access would bake; try_fold_const_addr and its store twin now fold past 0xFFF in that case, so the existing LdrSym arms relocate it; npa_const_addr_guard refuses it loudly on every arm that cannot fold (i64, f32/f64, v128, memory.fill/copy, and the i32 arms when bounds checking disables the fold). Residue left open on #1568: a constant pointer reaching the access through a local, and a dynamic access whose memarg offset is in the static region of a module with no stack-pointer global."
+      verified-by: >
+        DELIVERED for every positional constant address, measured on an execution matrix
+        of 162 probe modules (19 access families, 4 address shapes, three module kinds:
+        no stack-pointer global, one at 0x80, and one at 0x2000 with a constant and an
+        offset that are each below it). Against wasmtime at the pre-fix binary 81 were
+        WRONG; after the fix 0 are wrong, 24 of those 81 are correct and 57 are refused,
+        and none of the 75 that were correct changed. npa_const_addr_differential.py
+        executes the relocated shapes, including multi_segment_static_data.wat, 28 of 28
+        equal, and asserts 8 refusal rows with no object written. Mutations: reverting the
+        fold extension gives 12 wrong results, removing the guard reds the first refusal
+        row. Byte identity over 1130 compiles: nothing moves outside
+        --native-pointer-abi, and every npa object that moved or is newly refused was
+        baked and faulted under R11 = 0 before. NOT CLOSED: the two residue shapes, a
+        constant pointer through a local and a static-region memarg offset on a dynamic
+        access in a module with no stack-pointer global, still read the wrong address,
+        measured after the fix. Closing them is a reach decision recorded on #1568, so
+        the issue outlives this release.
+      done-when: >
+        manual:2027-03-31 --native-pointer-abi never bakes a constant static address as a
+        raw linear-memory offset off R11 — delivered with measured numbers, or REFUTED with
+        the measurement that refutes it; and the refuting command above is RUN FIRST and
+        its result reported either way

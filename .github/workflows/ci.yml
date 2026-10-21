@@ -1210,7 +1210,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 368082 \
+            --exact-emulation-floor 368110 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2929,6 +2929,16 @@ jobs:
       # so a store through a narrowed reloc is observed by the loads after it.
       - name: Run proven-access-width static-data oracle (#1563, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/verwidth_1563_differential.py
+      # --native-pointer-abi has R11 = 0, so a wasm static is reachable only
+      # through its __synth_wasm_data relocation. A constant address the
+      # selector did not relocate (no stack-pointer global: every one above the
+      # 0xFFF fold limit, and every one on the i64/float/bulk arms) was baked
+      # as `[fp, rX]` and read absolute `addr`. The i32 arms now fold and
+      # relocate any static address (executed against wasmtime here, incl.
+      # multi_segment_static_data.wat); the non-folding arms must refuse
+      # loudly with no object written (counted, #1113 non-vacuity).
+      - name: Run native-pointer constant-address oracle (cortex-m3/m7dp)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_const_addr_differential.py
       # #746 (the #739 residual): the i64/WIDE static-region arms — i64.load/
       # i64.store pair accesses plus the i64 narrow loads/stores (load8/16/32,
       # store8/16/32) — get the #744 relocation treatment instead of the loud

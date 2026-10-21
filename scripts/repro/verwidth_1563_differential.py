@@ -29,16 +29,13 @@ compiled clean after it):
   staggered   — seg_1 overwrites bytes +2,+3 of seg_0. 1-byte loads/stores
                 that stay inside the bytes their owner really holds.
 
-NOT here, deliberately: `scripts/repro/multi_segment_static_data.wat` is also
-refused before #1563 and accepted after it on `--native-pointer-abi`, and five
-of its thirteen exports read wrong bytes under this harness. That is NOT the
-narrowing: the module declares no stack-pointer global, so the selector bakes
-every const address above the 0xFFF fold limit as an un-relocated
-`[r11, #addr]` (`b_after`, `d_*`, `gap`), and the SAME shape compiles clean on
-the pre-#1563 binary whenever no other reloc trips the 8-byte span — measured
-on a two-segment module with one folded and one high const load. The 8-byte
-false positive on `c_head` was masking it in that one fixture. It is reported
-alongside #1563 as its own defect, not pinned here.
+NOT here: `scripts/repro/multi_segment_static_data.wat` is also refused
+before #1563 and accepted after it on `--native-pointer-abi`. Five of its
+exports read wrong bytes on the #1563 change ALONE — not the narrowing: the
+module has no stack-pointer global, so const addresses above 0xFFF were baked
+as an un-relocated `[r11, rX]`. That root defect is fixed separately (the i32
+const-address fold relocates any static address; the arms that cannot fold
+refuse) and the module is executed by `npa_const_addr_differential.py`.
 
 It also asserts the compile is now CLEAN (no VCR-VER-003 line), so a
 regression of the narrowing reds here as a compile failure first.
