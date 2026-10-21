@@ -4120,7 +4120,12 @@ claims:
     #   is EXACT (RQ-63-FLOOREQ), so this bump is not optional bookkeeping —
     #   CI reddened on `Claim Check` until ci.yml AND this line moved together,
     #   which is the pair working as designed.
-    text: "--exact-emulation-floor 367921"
+    # v0.88 RQ-88-JESSDIVERGE10 (#1436): 367921 -> 368057. The new
+    #   vfp_home_alias_1436_differential.py declares `emulations >= 136` (136
+    #   vectors, 88 of them wrong before the fix) and is wired into the unicorn
+    #   job. The first push of #1564 reddened Claim Check on exactly this
+    #   equality, ABOVE by 136, before this line moved.
+    text: "--exact-emulation-floor 368057"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

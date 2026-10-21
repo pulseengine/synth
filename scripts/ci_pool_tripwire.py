@@ -70,7 +70,10 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 # incidental tidy-up. 34 remain PEP668_POOL_READY and are a one-line retarget
 # each; they are left for a measured follow-up rather than moved in one burst,
 # because a pool change that goes wrong takes every lane's CI with it.
-UBUNTU_LATEST_CEILING = 46
+# v0.88 (#1564): 46 -> 44. aarch64-oracle and repro-sweep-memory-oracle were
+# pinned to ubuntu-24.04 because the ubuntu-26.04 image ubuntu-latest began
+# rolling to on 2026-10-21 changed their apt toolchain underneath them.
+UBUNTU_LATEST_CEILING = 44
 
 EXACT_LABEL = "ubuntu-latest"
 
