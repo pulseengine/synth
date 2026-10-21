@@ -30,7 +30,7 @@ artifacts:
       priority: must
       issue: "#1436"
       verification-track: manual
-      issue-scope: outlives
+      issue-scope: closes
       landed: "PR #1564 - #1436 - DELIVERED: a wrong-code fix. The first divergent op, found by comparing every wasm store under wasmtime against every ARM write to linear memory, is 28 stores into tick 1: func 2 f32.store offset=1448 writes 0x411cf5c3 (+9.81) where wasmtime writes 0. Cause: try_lower_f32 pushes a REFERENCE to a float local's home register, and a second local.tee rewrites that register while the first value is still on the stack (the float twin of #989). Fix: detach_vfp_home_aliases copies every stack entry naming a float home before the home is written, and at every if/block/loop entry. On the reporter's own module, sha256 matched, every return word and every one of 16384 linear-memory words now matches wasmtime at 16 and 1024 ticks."
       verified-by: >
         DELIVERED, with the reporter's own measurement as the positive control. On the
@@ -45,7 +45,9 @@ artifacts:
         on the reporter's module only estimate changes (15300 to 15270 bytes). All 17
         existing oracles, fmt, clippy and 3159 workspace tests pass. UNPROVEN: the fixed
         object has not run on QEMU, Renode or silicon, and only one IMU vector was run.
-        The issue therefore outlives this release until the reporter re-measures. A
+        The maintainer authorised closing execution-verified fixes at the release
+        without waiting for the reporter's re-measurement (2026-10-21); the issue
+        closes at the tag and reopens if the reporter's hardware disagrees. A
         separate integer twin of this defect was found and is filed on its own.
       done-when: >
         manual:2027-03-31 the reporter's measured divergence PCs are used to localise
