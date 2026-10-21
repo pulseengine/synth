@@ -117,6 +117,7 @@ impl AArch64Backend {
                 offset: cs.offset,
                 symbol: format!("func_{}", cs.callee),
                 kind: RelocKind::AArch64Call26,
+                access_width: None,
             })
             .chain(sym_relocs)
             .collect();

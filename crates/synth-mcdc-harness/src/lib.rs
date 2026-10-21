@@ -130,6 +130,49 @@ pub extern "C" fn sd_validate_spanned(seg_index: i32, addend: i32) -> i32 {
         seg_index: seg_index as usize,
         addend: addend as u32,
         label: "row".to_string(),
+        access_width: None,
+    }];
+    match validate_reloc_resolutions_spanned(&segs, &res, &packed) {
+        Verdict::Consistent => 0,
+        Verdict::Mismatch(m) => m.len() as i32,
+    }
+}
+
+/// #1563: drives the PROVEN-width span of `validate_reloc_resolutions_spanned`
+/// — the `match r.access_width` split and the exact-width implicit-zero arm
+/// `None if exact && j > 0`, which `sd_validate_spanned` (always `None`)
+/// cannot reach.
+///
+/// gale's geometry: an 8-byte segment at 0xe10 declared FIRST, a 1-byte guard
+/// segment at 0xe0c declared LATER; packed `[seg0 @0, seg1 @8, 3 pad]`.
+/// `width` <= 0 is "unproven" (`None`), else `Some(width)`. With `addend = 0`:
+/// unproven reads 0xe10.. from beyond the blob (4 mismatches); width 1 is
+/// consistent; width 4 reaches uncovered 0xe0d..0xe0f, served as padding
+/// zeros = implicit zero (consistent, via the exact arm); width 8 reaches
+/// 0xe10.. served from beyond the blob (4 mismatches).
+#[unsafe(no_mangle)]
+pub extern "C" fn sd_validate_spanned_width(width: i32, addend: i32) -> i32 {
+    let segs = vec![
+        DataSegment {
+            linmem_off: 0xe10,
+            bytes: vec![1, 2, 3, 4, 5, 6, 7, 8],
+        },
+        DataSegment {
+            linmem_off: 0xe0c,
+            bytes: vec![0x00],
+        },
+    ];
+    let packed_off = [0u32, 8u32];
+    let blob: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0];
+    let packed = PackedInit {
+        seg_packed_off: &packed_off,
+        bytes: &blob,
+    };
+    let res = vec![RelocResolution {
+        seg_index: 1,
+        addend: addend as u32,
+        label: "row".to_string(),
+        access_width: (width > 0).then_some(width as u32),
     }];
     match validate_reloc_resolutions_spanned(&segs, &res, &packed) {
         Verdict::Consistent => 0,
@@ -631,6 +674,14 @@ mod tests {
         // spanned: correct owner is consistent, the #757 owner is not.
         assert_eq!(sd_validate_spanned(1, 0), 0);
         assert!(sd_validate_spanned(0, 0) > 0);
+
+        // #1563 proven-width span: unproven and over-wide spans reach the
+        // neighbour, the true 1-byte width and the padding-only 4-byte span
+        // do not.
+        assert_eq!(sd_validate_spanned_width(0, 0), 4);
+        assert_eq!(sd_validate_spanned_width(1, 0), 0);
+        assert_eq!(sd_validate_spanned_width(4, 0), 0);
+        assert_eq!(sd_validate_spanned_width(8, 0), 4);
 
         // served image: full blob consistent, truncated blob drops bytes.
         assert_eq!(sd_validate_served(4, 0), 0);

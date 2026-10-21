@@ -459,3 +459,235 @@ fn freshness_guard_refuses_stale_validator_artifact_977() {
         "the stale artifact must be GONE — left in place, a later reader picks it up"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1563: the span is each relocation's PROVEN access width, derived by the
+// ARM backend from the final instruction stream. Before #1563 every reloc
+// was spanned at 8 bytes.
+// ---------------------------------------------------------------------------
+
+/// Compile on the mixed split and return (success, stdout+stderr).
+fn compile_1563(tag: &str, wat: &str) -> (bool, String) {
+    let fixture = wat_file(&format!("{tag}_1563.wat"), wat);
+    let out = compile(
+        &fixture,
+        &format!("{tag}_1563.o"),
+        &[
+            "--target",
+            "cortex-m3",
+            "--native-pointer-abi",
+            "--relocatable",
+        ],
+    );
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), all)
+}
+
+/// gale's meld-fused composite, reduced to its shape without gale's files:
+/// a Rust constructor guard — `i32.load8_u` / `i32.store8` at linmem 0xe0c —
+/// lives in a 1-byte segment that is declared AFTER the segment immediately
+/// following it in linear memory (0xe10). The 1-byte accesses read and write
+/// only the guard byte, which the packed guard segment serves correctly.
+/// Before #1563 the 8-byte span read 0xe10.. from the guard's packed
+/// neighbour and refused this correct image with 8 span errors (+4..+7 for
+/// the load reloc and for the store reloc) — measured on the pre-fix binary.
+const GALE_GUARD_1563_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (global $sp (mut i32) (i32.const 1024))
+  (data (i32.const 3600) "\01\02\03\04\05\06\07\08")
+  (data (i32.const 3596) "\00")
+  (func $ctor)
+  (func (export "start")
+    i32.const 0
+    i32.load8_u offset=3596
+    i32.eqz
+    if
+      i32.const 0
+      i32.const 1
+      i32.store8 offset=3596
+      call $ctor
+    end))"#;
+
+#[test]
+fn gale_1563_one_byte_guard_before_a_packed_neighbour_compiles_clean() {
+    let (ok, all) = compile_1563("gale_guard", GALE_GUARD_1563_WAT);
+    assert!(
+        ok && !all.contains("VCR-VER-003"),
+        "the 1-byte constructor guard is served correctly and must compile \
+         clean (#1563 false positive):\n{all}"
+    );
+}
+
+/// The staggered overlap every control below shares: seg_1 (declared later)
+/// overwrites bytes +2,+3 of seg_0's range, so the packed seg_0 serves stale
+/// `a2 a3` where the runtime image holds `b2 b3`.
+fn staggered_1563(body: &str) -> String {
+    format!(
+        r#"(module
+  (memory (export "memory") 1)
+  (global $sp (mut i32) (i32.const 1024))
+  (data (i32.const 2048) "\a0\a1\a2\a3\a4\a5\a6\a7")
+  (data (i32.const 2050) "\b2\b3")
+  (func (export "f") {body}))"#
+    )
+}
+
+/// SOUNDNESS: every access that genuinely REACHES the overwritten bytes is
+/// still refused, at its own proven width — this is what a "width forced to
+/// 1" mutation turns green.
+#[test]
+fn width_1563_accesses_reaching_stale_bytes_are_refused_at_their_width() {
+    for (tag, body, needle) in [
+        (
+            "load32",
+            "(result i32) i32.const 0 i32.load offset=2048",
+            "span byte +2 of a 4-byte access",
+        ),
+        (
+            "load16u",
+            "(result i32) i32.const 0 i32.load16_u offset=2049",
+            "span byte +1 of a 2-byte access",
+        ),
+        (
+            "load16s",
+            "(result i32) i32.const 0 i32.load16_s offset=2049",
+            "span byte +1 of a 2-byte access",
+        ),
+        (
+            "store32",
+            "i32.const 0 i32.const 7 i32.store offset=2048",
+            "span byte +2 of a 4-byte access",
+        ),
+        (
+            "store16",
+            "i32.const 0 i32.const 7 i32.store16 offset=2049",
+            "span byte +1 of a 2-byte access",
+        ),
+    ] {
+        let (ok, all) = compile_1563(tag, &staggered_1563(body));
+        assert!(
+            !ok && all.contains("VCR-VER-003") && all.contains(needle),
+            "{tag}: must be refused with `{needle}`:\n{all}"
+        );
+    }
+}
+
+/// The narrow accesses on the SAME geometry that stay inside the bytes their
+/// segment really owns are correct and now compile (all were refused by the
+/// 8-byte span before #1563).
+#[test]
+fn width_1563_narrow_accesses_inside_their_bytes_compile_clean() {
+    for (tag, body) in [
+        ("load8u", "(result i32) i32.const 0 i32.load8_u offset=2048"),
+        ("load8s", "(result i32) i32.const 0 i32.load8_s offset=2049"),
+        (
+            "load8_owner",
+            "(result i32) i32.const 0 i32.load8_u offset=2050",
+        ),
+        ("store8", "i32.const 0 i32.const 7 i32.store8 offset=2049"),
+    ] {
+        let (ok, all) = compile_1563(tag, &staggered_1563(body));
+        assert!(
+            ok && !all.contains("VCR-VER-003"),
+            "{tag}: a 1-byte access inside its owner's bytes must compile:\n{all}"
+        );
+    }
+}
+
+/// SOUNDNESS, conservative side: where the width is NOT proven the 8-byte
+/// span stays, and these shapes keep their pre-#1563 refusal — an i64 pair
+/// access, a pointer `i32.const` used as an index register, a dynamic-index
+/// access through `__synth_wasm_data + offset`, and a const address above
+/// the selector's 0xFFF fold limit (lowered through the same dynamic path).
+#[test]
+fn width_1563_unproven_widths_stay_conservative() {
+    let guard_geometry = |body: &str| {
+        format!(
+            r#"(module
+  (memory (export "memory") 1)
+  (global $sp (mut i32) (i32.const 1024))
+  (data (i32.const 3600) "\01\02\03\04\05\06\07\08")
+  (data (i32.const 3596) "\00")
+  (func (export "f") {body}))"#
+        )
+    };
+    for (tag, wat) in [
+        (
+            "load64",
+            staggered_1563("(result i64) i32.const 0 i64.load offset=2048"),
+        ),
+        (
+            "store64",
+            staggered_1563("i32.const 0 i64.const 7 i64.store offset=2048"),
+        ),
+        (
+            "ptr_index",
+            guard_geometry("(result i32) i32.const 3596 i32.load8_u"),
+        ),
+        (
+            "dynamic",
+            guard_geometry("(param i32) (result i32) local.get 0 i32.load8_u offset=3596"),
+        ),
+        (
+            "above_fold_limit",
+            r#"(module
+  (memory (export "memory") 1)
+  (global $sp (mut i32) (i32.const 1024))
+  (data (i32.const 8208) "\01\02\03\04\05\06\07\08")
+  (data (i32.const 8204) "\00")
+  (func (export "f") (result i32) i32.const 0 i32.load8_u offset=8204))"#
+                .to_string(),
+        ),
+    ] {
+        let (ok, all) = compile_1563(tag, &wat);
+        assert!(
+            !ok && all.contains("VCR-VER-003") && all.contains("width unproven"),
+            "{tag}: an unproven width must keep the conservative 8-byte span:\n{all}"
+        );
+    }
+}
+
+/// Straddle across two NON-overlapping segments: the 4-byte load at 0xe0c
+/// reads `aa bb` from seg A and `cc dd` from seg B, which is declared EARLIER
+/// and so is not A's packed neighbour. Refused at its proven width.
+#[test]
+fn width_1563_cross_segment_straddle_is_refused() {
+    let wat = r#"(module
+  (memory (export "memory") 1)
+  (global $sp (mut i32) (i32.const 1024))
+  (data (i32.const 3598) "\cc\dd")
+  (data (i32.const 3596) "\aa\bb")
+  (func (export "f") (result i32) i32.const 0 i32.load offset=3596))"#;
+    let (ok, all) = compile_1563("straddle", wat);
+    assert!(
+        !ok && all.contains("span byte +2 of a 4-byte access"),
+        "the cross-segment straddle must be refused:\n{all}"
+    );
+}
+
+/// A PROVEN width is checked against implicit-zero linear memory. The 4-byte
+/// load at 2002 reads 2004/2005, which no segment covers (runtime 0x00), but
+/// the packed blob serves the next declared segment's `05 06` there. The
+/// pre-#1563 8-byte span SKIPPED uncovered bytes and compiled this silent
+/// miscompile clean (measured on the pre-fix binary).
+#[test]
+fn width_1563_exact_width_refuses_packed_neighbour_in_implicit_zero_memory() {
+    let wat = r#"(module
+  (memory (export "memory") 1)
+  (global $sp (mut i32) (i32.const 1024))
+  (data (i32.const 2000) "\01\02\03\04")
+  (data (i32.const 3000) "\05\06\07\08")
+  (func (export "f") (result i32) i32.const 0 i32.load offset=2002))"#;
+    let (ok, all) = compile_1563("implicit_zero", wat);
+    assert!(
+        !ok && all.contains("span byte +2 of a 4-byte access")
+            && all.contains(
+                "serves 0x05 but the runtime image (segments applied later-wins) owns 0x00"
+            ),
+        "the 4-byte read of packed-neighbour bytes must be refused:\n{all}"
+    );
+}

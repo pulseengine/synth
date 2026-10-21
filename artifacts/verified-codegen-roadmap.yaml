@@ -1566,8 +1566,8 @@ artifacts:
       PHASE 2 (v0.47, #777 follow-ups) — the phase-1 BOUNDED items, landed:
       (5) MULTI-BYTE SPANS (validate_reloc_resolutions_spanned): beyond the
       addend byte, every runtime-covered byte a conservatively-widened access
-      (MAX_ACCESS_BYTES = 8; CodeRelocation records no width — the Abs32
-      literal is a pointer) could read must equal what the SHIPPED packed init
+      (MAX_ACCESS_BYTES = 8 — superseded by #1563, below, wherever the width
+      is proven) could read must equal what the SHIPPED packed init
       blob serves at that position (the emission extends the validated blob,
       so the served side is the real artifact). Catches the staggered-overlap
       straddle (addend byte correct, tail bytes runtime-owned by a LATER
@@ -1578,7 +1578,22 @@ artifacts:
       RESIDUE: a span byte NO segment covers at runtime (implicit-zero linmem)
       is skipped — flagging it would hard-error the ubiquitous "pointer near a
       sparse segment's end, narrow access" shape; exact checking needs a
-      recorded access width (named follow-up).
+      recorded access width (named follow-up — landed as #1563).
+      #1563 (v0.88): CodeRelocation now carries `access_width`, which the ARM
+      backend DERIVES from the final instruction stream
+      (`literal_access_width`): every reader of the LdrSym-loaded address,
+      up to its kill, must be a plain `[rd, #0]` load/store of that width that
+      does not store the pointer (max over readers; calls passed by AAPCS,
+      fall-through labels passed, any branch / unmodelled op / other use ->
+      unproven). A proven width is spanned EXACTLY and strictly (an
+      implicit-zero byte must be served as 0x00 — closing the residue above
+      for proven widths); unproven keeps 8 bytes and the tolerance. Exact
+      today: the const-address (<= 0xFFF fold) i32 load/load8/load16 and
+      store/store8/store16 arms. Still conservative: i64 pair and f32/f64
+      accesses, dynamic-index `__synth_wasm_data + offset` bases (incl. const
+      addresses above the 0xFFF fold), escaping `i32.const` pointers. Fixed
+      gale's false positive (a 1-byte load8_u/store8 guard whose segment is
+      followed in linmem by another, meld#479).
       (6) SELF-CONTAINED --cortex-m (#758 ROM-copy): the dense flash image is
       packed by the shared declaration-order packer (pack_rom_image) and
       validated unconditionally against the reconstructed runtime image

@@ -356,6 +356,111 @@ struct PendingLiteral {
     ldr_offset: u32,
     symbol: String,
     addend: i32,
+    /// #1563: the proven access width the loaded address feeds (see
+    /// [`literal_access_width`]), carried onto the word's relocation.
+    access_width: Option<u32>,
+}
+
+/// #1563 (VCR-VER-003): the width, in bytes, of every linear-memory access
+/// that reads the address `instrs[i]` (an `LdrSym`) loads — derived from the
+/// FINAL instruction stream the encoder is about to ship, never from what the
+/// selector intended.
+///
+/// Walks forward from the `LdrSym rd` until `rd` is killed (redefined).
+/// Every instruction in between that READS `rd` must be a plain access through
+/// it — `LDR`/`LDRB`/`LDRSB`/`LDRH`/`LDRSH` or `STR`/`STRB`/`STRH` with base
+/// `rd`, immediate offset exactly 0 and no index register, and, for a store, a
+/// value register other than `rd` (storing the pointer lets it escape). The
+/// result is the MAXIMUM width over those readers, so an address that some
+/// later pass made two accesses share is spanned at the wider one.
+///
+/// The walk follows the single fall-through path: it passes labels, and passes
+/// a `BL`/`BLX` by its AAPCS effect (`call_effect`: R0-R3 read, caller-saved
+/// set clobbered), so a callee-saved address register survives a call.
+///
+/// `None` — unknown, the caller keeps the conservative maximum — whenever:
+/// the instruction is not an `LdrSym`; any other instruction reads `rd` (the
+/// dynamic-index `Add` of the #359/#739 paths, a copy, an escaping
+/// `i32.const` pointer, a push/spill, a call argument); an instruction whose
+/// register effect neither `reg_effect` nor `call_effect` models is reached
+/// before the kill (every branch, `BX`, the i64-pair and FP pseudo-ops, the
+/// `Call`/`CallIndirect` pseudo-ops); a return (`POP {.., pc}` / `BX lr`)
+/// after which `rd` may still be observed — R0/R1 (results) or an unrestored
+/// callee-saved register; the stream ends first; or no access reads `rd` at
+/// all. The kill itself may be the access (a load whose destination is `rd` —
+/// the const-address load shape), a later full definition of `rd`, a call
+/// that clobbers it, or a return after which it is dead (restored by the
+/// epilogue, or R2/R3/R12).
+pub(crate) fn literal_access_width(
+    instrs: &[synth_synthesis::ArmInstruction],
+    i: usize,
+) -> Option<u32> {
+    use synth_synthesis::rules::MemAddr;
+    let ArmOp::LdrSym { rd, .. } = &instrs.get(i)?.op else {
+        return None;
+    };
+    let rd = *rd;
+    let plain = |a: &MemAddr| a.base == rd && a.offset == 0 && a.offset_reg.is_none();
+    let dead_at_return = |r: synth_synthesis::Reg| {
+        use synth_synthesis::Reg::{R2, R3, R12};
+        matches!(r, R2 | R3 | R12)
+    };
+    let mut width: Option<u32> = None;
+    for ins in &instrs[i + 1..] {
+        let (w, dst) = match &ins.op {
+            ArmOp::Ldr { rd: d, addr } if plain(addr) => (4, Some(*d)),
+            ArmOp::Ldrb { rd: d, addr } | ArmOp::Ldrsb { rd: d, addr } if plain(addr) => {
+                (1, Some(*d))
+            }
+            ArmOp::Ldrh { rd: d, addr } | ArmOp::Ldrsh { rd: d, addr } if plain(addr) => {
+                (2, Some(*d))
+            }
+            ArmOp::Str { rd: v, addr } if plain(addr) && *v != rd => (4, None),
+            ArmOp::Strb { rd: v, addr } if plain(addr) && *v != rd => (1, None),
+            ArmOp::Strh { rd: v, addr } if plain(addr) && *v != rd => (2, None),
+            // A fall-through label is a join point, not a transfer: the walk
+            // follows the one path out of the `LdrSym`, and any extra reader a
+            // joining path brings can only make the answer more conservative.
+            ArmOp::Label { .. } => continue,
+            // A return (`POP {.., pc}` / `BX lr`). `rd` is dead past it when
+            // the epilogue restores it, or when it is R2/R3/R12 — AAPCS
+            // caller-saved registers that carry no result. R0/R1 may carry the
+            // function's result and a callee-saved register that is not
+            // restored would be visible to the caller, so both stay None.
+            ArmOp::Pop { regs } if regs.contains(&synth_synthesis::Reg::PC) => {
+                return if regs.contains(&rd) || dead_at_return(rd) {
+                    width
+                } else {
+                    None
+                };
+            }
+            ArmOp::Bx {
+                rm: synth_synthesis::Reg::LR,
+            } => return if dead_at_return(rd) { width } else { None },
+            other => {
+                // `call_effect` models a direct/indirect call (`BL`/`BLX`) by
+                // AAPCS: R0-R3 are read (an address passed as an argument
+                // escapes → None) and the caller-saved set is clobbered (a
+                // kill); a callee-saved `rd` survives the call untouched and
+                // the walk continues. Every branch, and every op neither
+                // function models, ends the walk with None.
+                let eff = synth_synthesis::liveness::reg_effect(other)
+                    .or_else(|| synth_synthesis::liveness::call_effect(other))?;
+                if eff.uses.contains(&rd) {
+                    return None;
+                }
+                if eff.defs.contains(&rd) {
+                    return width;
+                }
+                continue;
+            }
+        };
+        width = Some(width.map_or(w, |m: u32| m.max(w)));
+        if dst == Some(rd) {
+            return width;
+        }
+    }
+    None
 }
 
 /// RQ-72-ISLANDS (#345, cpetig via #1331): emit ONE constant island — the
@@ -411,6 +516,7 @@ fn emit_literal_pool(
             offset: word_offset,
             symbol: lit.symbol.clone(),
             kind: synth_core::backend::RelocKind::Abs32,
+            access_width: lit.access_width,
         });
 
         // Patch the placeholder `LDR.W rd,[pc,#imm12]`. Thumb-2 LDR (literal):
@@ -1852,6 +1958,7 @@ fn compile_wasm_to_arm(
                 offset: code.len() as u32,
                 symbol: label.clone(),
                 kind,
+                access_width: None,
             });
         }
         // #237: symbol-relative MOVW/MOVT (the `--native-pointer-abi` static-data
@@ -1862,6 +1969,7 @@ fn compile_wasm_to_arm(
                 offset: code.len() as u32,
                 symbol: symbol.clone(),
                 kind: synth_core::backend::RelocKind::MovwAbs,
+                access_width: None,
             });
         }
         if let ArmOp::MovtSym { symbol, .. } = &instr.op {
@@ -1869,6 +1977,7 @@ fn compile_wasm_to_arm(
                 offset: code.len() as u32,
                 symbol: symbol.clone(),
                 kind: synth_core::backend::RelocKind::MovtAbs,
+                access_width: None,
             });
         }
         // #345: defer the literal-pool word + reloc + offset patch to the
@@ -1878,6 +1987,7 @@ fn compile_wasm_to_arm(
                 ldr_offset: code.len() as u32,
                 symbol: symbol.clone(),
                 addend: *addend,
+                access_width: literal_access_width(&arm_instrs, instr_index),
             });
         }
 
@@ -4011,5 +4121,267 @@ mod tests {
             bytes_hi32,
             bytes_generic,
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #1563: `literal_access_width` — the access width an `LdrSym` address
+    // feeds, read off the final stream. Every `None` here is a case where the
+    // static-data validator must keep its conservative 8-byte span.
+    // -----------------------------------------------------------------------
+
+    fn w1563(ops: Vec<ArmOp>) -> Option<u32> {
+        let instrs: Vec<ArmInstruction> = ops
+            .into_iter()
+            .map(|op| ArmInstruction {
+                op,
+                source_line: None,
+            })
+            .collect();
+        literal_access_width(&instrs, 0)
+    }
+
+    fn lit(rd: Reg) -> ArmOp {
+        ArmOp::LdrSym {
+            rd,
+            symbol: "__synth_wasm_data".into(),
+            addend: 0xe0c,
+        }
+    }
+
+    fn at(base: Reg) -> synth_synthesis::MemAddr {
+        synth_synthesis::MemAddr::imm(base, 0)
+    }
+
+    fn pop_pc(regs: &[Reg]) -> ArmOp {
+        let mut v = regs.to_vec();
+        v.push(Reg::PC);
+        ArmOp::Pop { regs: v }
+    }
+
+    /// The const-address load shape: the load overwrites the address.
+    #[test]
+    fn width_1563_load_that_kills_its_base_is_exact() {
+        let r = Reg::R1;
+        let a = at(r);
+        assert_eq!(
+            w1563(vec![
+                lit(r),
+                ArmOp::Ldrb {
+                    rd: r,
+                    addr: a.clone()
+                }
+            ]),
+            Some(1)
+        );
+        assert_eq!(
+            w1563(vec![
+                lit(r),
+                ArmOp::Ldrsb {
+                    rd: r,
+                    addr: a.clone()
+                }
+            ]),
+            Some(1)
+        );
+        assert_eq!(
+            w1563(vec![
+                lit(r),
+                ArmOp::Ldrh {
+                    rd: r,
+                    addr: a.clone()
+                }
+            ]),
+            Some(2)
+        );
+        assert_eq!(
+            w1563(vec![
+                lit(r),
+                ArmOp::Ldrsh {
+                    rd: r,
+                    addr: a.clone()
+                }
+            ]),
+            Some(2)
+        );
+        assert_eq!(w1563(vec![lit(r), ArmOp::Ldr { rd: r, addr: a }]), Some(4));
+    }
+
+    /// gale's `store8` shape as the backend really emits it: a callee-saved
+    /// address register survives a `BL`, a fall-through label, and is restored
+    /// by the epilogue `POP {.., pc}`.
+    #[test]
+    fn width_1563_store_through_call_label_and_epilogue_is_exact() {
+        let ops = vec![
+            lit(Reg::R5),
+            ArmOp::Strb {
+                rd: Reg::R4,
+                addr: at(Reg::R5),
+            },
+            ArmOp::Bl {
+                label: "func_0".into(),
+            },
+            ArmOp::Label { name: "L".into() },
+            pop_pc(&[Reg::R4, Reg::R5]),
+        ];
+        assert_eq!(w1563(ops), Some(1));
+        // A caller-saved non-result register is dead at the return.
+        let ops = vec![
+            lit(Reg::R2),
+            ArmOp::Strh {
+                rd: Reg::R0,
+                addr: at(Reg::R2),
+            },
+            pop_pc(&[Reg::R4]),
+        ];
+        assert_eq!(w1563(ops), Some(2));
+    }
+
+    /// When later code (whatever pass put it there) reads the SAME address
+    /// again, the width is the maximum over every reader — a shared address
+    /// is spanned at its widest access, never its first.
+    #[test]
+    fn width_1563_shared_address_takes_the_widest_reader() {
+        let ops = vec![
+            lit(Reg::R4),
+            ArmOp::Ldrb {
+                rd: Reg::R0,
+                addr: at(Reg::R4),
+            },
+            ArmOp::Bl { label: "f".into() },
+            ArmOp::Ldr {
+                rd: Reg::R1,
+                addr: at(Reg::R4),
+            },
+            ArmOp::Ldr {
+                rd: Reg::R4,
+                addr: at(Reg::R4),
+            },
+        ];
+        assert_eq!(w1563(ops), Some(4));
+    }
+
+    /// Every shape where the address does more than feed a `[rd, #0]` access
+    /// stays UNPROVEN.
+    #[test]
+    fn width_1563_unproven_shapes_stay_none() {
+        let r = Reg::R1;
+        let kill = ArmOp::Movw { rd: r, imm16: 0 };
+        // Dynamic-index add (#359/#739 path).
+        assert_eq!(
+            w1563(vec![
+                lit(r),
+                ArmOp::Add {
+                    rd: Reg::R2,
+                    rn: r,
+                    op2: Operand2::Reg(Reg::R3),
+                },
+                ArmOp::Ldrb {
+                    rd: Reg::R0,
+                    addr: at(Reg::R2),
+                },
+                kill.clone(),
+            ]),
+            None
+        );
+        // Used as an index register (`[r11, rd]`, the escaping-pointer form).
+        assert_eq!(
+            w1563(vec![
+                lit(r),
+                ArmOp::Ldrb {
+                    rd: r,
+                    addr: synth_synthesis::MemAddr::reg(Reg::R11, r),
+                },
+            ]),
+            None
+        );
+        // Non-zero immediate offset.
+        assert_eq!(
+            w1563(vec![
+                lit(r),
+                ArmOp::Ldrb {
+                    rd: r,
+                    addr: synth_synthesis::MemAddr::imm(r, 4),
+                },
+            ]),
+            None
+        );
+        // Storing the pointer itself.
+        assert_eq!(
+            w1563(vec![
+                lit(r),
+                ArmOp::Str { rd: r, addr: at(r) },
+                kill.clone(),
+            ]),
+            None
+        );
+        // Copied to another register.
+        assert_eq!(
+            w1563(vec![
+                lit(r),
+                ArmOp::Mov {
+                    rd: Reg::R2,
+                    op2: Operand2::Reg(r),
+                },
+                kill.clone(),
+            ]),
+            None
+        );
+        // Pushed (spilled).
+        assert_eq!(
+            w1563(vec![lit(r), ArmOp::Push { regs: vec![r] }, kill.clone()]),
+            None
+        );
+        // Passed to a call in an argument register.
+        assert_eq!(
+            w1563(vec![
+                lit(Reg::R0),
+                ArmOp::Strb {
+                    rd: Reg::R4,
+                    addr: at(Reg::R0),
+                },
+                ArmOp::Bl { label: "f".into() },
+            ]),
+            None
+        );
+        // A branch before the kill.
+        assert_eq!(
+            w1563(vec![
+                lit(r),
+                ArmOp::Ldrb {
+                    rd: Reg::R0,
+                    addr: at(r),
+                },
+                ArmOp::B { label: "L".into() },
+                kill.clone(),
+            ]),
+            None
+        );
+        // A return that leaves the address in a result register.
+        assert_eq!(
+            w1563(vec![
+                lit(Reg::R0),
+                ArmOp::Strb {
+                    rd: Reg::R4,
+                    addr: at(Reg::R0),
+                },
+                pop_pc(&[Reg::R4]),
+            ]),
+            None
+        );
+        // The stream ends before a kill.
+        assert_eq!(
+            w1563(vec![
+                lit(r),
+                ArmOp::Ldrb {
+                    rd: Reg::R0,
+                    addr: at(r),
+                },
+            ]),
+            None
+        );
+        // Killed with no access at all.
+        assert_eq!(w1563(vec![lit(r), kill]), None);
+        // Not an LdrSym.
+        assert_eq!(w1563(vec![ArmOp::Movw { rd: r, imm16: 0 }]), None);
     }
 }

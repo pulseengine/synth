@@ -1531,7 +1531,8 @@ claims:
   #
   # Phase 2 (#777 follow-ups, v0.47): (a) SPANNED reloc check — the mixed split
   # validates every runtime-covered byte of a conservatively-widened access
-  # (MAX_ACCESS_BYTES) against the SHIPPED packed init blob (the
+  # (MAX_ACCESS_BYTES; since #1563 the reloc's PROVEN access width when the
+  # backend derives one from the final stream) against the SHIPPED packed init blob (the
   # staggered-overlap straddle phase 1 silently miscompiled is now refused);
   # (b) the self-contained #758 ROM image is packed by the shared
   # declaration-order packer and validated unconditionally against the
@@ -4125,7 +4126,12 @@ claims:
     #   vectors, 88 of them wrong before the fix) and is wired into the unicorn
     #   job. The first push of #1564 reddened Claim Check on exactly this
     #   equality, ABOVE by 136, before this line moved.
-    text: "--exact-emulation-floor 368057"
+    # v0.88 #1563: 368057 -> 368082 (re-derived on the merged tree over main's 368057). `verwidth_1563_differential.py`
+    #   declares `emulations >= 25` (25 measured via oracle_run.py: 12 calls
+    #   on the gale-guard shape + 13 on the staggered overlap) and is wired
+    #   into the unicorn job beside the #739 static oracle. Value RE-DERIVED
+    #   from `oracle_wiring_check.py --exact-emulation-floor 368082`.
+    text: "--exact-emulation-floor 368082"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

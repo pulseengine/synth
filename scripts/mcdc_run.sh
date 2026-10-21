@@ -69,6 +69,11 @@ test -f "$WASM" || { echo "error: harness wasm not found at $WASM" >&2; exit 1; 
   `# out-of-range emitted resolutions — both let-else rejects` \
   --invoke-with-args 'sd_validate_spanned:9,0' \
   --invoke-with-args 'sd_validate_spanned:1,99' \
+  `# #1563 proven-width span — match access_width / None if exact && j > 0` \
+  --invoke-with-args 'sd_validate_spanned_width:0,0' \
+  --invoke-with-args 'sd_validate_spanned_width:1,0' \
+  --invoke-with-args 'sd_validate_spanned_width:4,0' \
+  --invoke-with-args 'sd_validate_spanned_width:8,0' \
   `# validate_served_image — addr >= image.len() && owed != 0` \
   --invoke-with-args 'sd_validate_served:4,0' \
   --invoke-with-args 'sd_validate_served:0,0' \

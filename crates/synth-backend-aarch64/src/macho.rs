@@ -493,6 +493,7 @@ mod tests {
                     offset: 0,
                     symbol: "func_2".into(),
                     kind: RelocKind::AArch64Call26,
+                    access_width: None,
                 }],
             ),
             ElfFunction::code(
@@ -508,16 +509,19 @@ mod tests {
                         offset: 0,
                         symbol: "__synth_globals".into(),
                         kind: RelocKind::AArch64AdrPrelPgHi21,
+                        access_width: None,
                     },
                     CodeRelocation {
                         offset: 4,
                         symbol: "__synth_globals".into(),
                         kind: RelocKind::AArch64AddAbsLo12Nc,
+                        access_width: None,
                     },
                     CodeRelocation {
                         offset: 8,
                         symbol: "host_add".into(),
                         kind: RelocKind::AArch64Call26,
+                        access_width: None,
                     },
                 ],
             ),
@@ -528,6 +532,7 @@ mod tests {
                     offset: 4,
                     symbol: "func_1".into(),
                     kind: RelocKind::AArch64Jump26,
+                    access_width: None,
                 }],
                 is_object: true,
             },
@@ -737,6 +742,7 @@ mod tests {
                 offset: 0,
                 symbol: "func_0".into(),
                 kind: RelocKind::AArch64Call26,
+                access_width: None,
             }],
         )];
         let e = build_macho_object_full(&f, &DataBlob::default(), &[]).unwrap_err();

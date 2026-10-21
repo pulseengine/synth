@@ -142,12 +142,14 @@ def run_gate(
 
 
 # Enough report-side-only demotion to miss FLOOR_PROVED while every other
-# floor still holds (176 total conditions; 122 gapped leaves 54 proved < 56,
-# conditions 176 >= 130, dead 0 <= 50, decisions and full untouched enough).
+# floor still holds (179 total conditions; 125 gapped leaves 54 proved < 56,
+# conditions 179 >= 130, dead 0 <= 50, decisions and full untouched enough).
+# #1563 moved validate_reloc_resolutions_spanned's population 13 -> 16, so
+# its gap entry moved with it to keep 54 proved.
 DRIFT_GAP = {
     "synth_backend_riscv::alloc_validator::is_straight_line": 52,
     "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32": 47,
-    "synth_core::static_data_addr::validate_reloc_resolutions_spanned": 13,
+    "synth_core::static_data_addr::validate_reloc_resolutions_spanned": 16,
     "synth_backend_riscv::backend::compile_function_with_opts": 10,
 }
 

@@ -477,7 +477,15 @@ BRANCH_POPULATION = {
     "synth_core::static_data_addr::resolve_owner::_$u7b$$u7b$closure$u7d$$u7d$": 2,
     "synth_core::static_data_addr::runtime_image": 3,
     "synth_core::static_data_addr::validate_reloc_resolutions": 8,
-    "synth_core::static_data_addr::validate_reloc_resolutions_spanned": 13,
+    # 13 -> 16 (#1563): the span became the reloc's PROVEN access width —
+    # `match r.access_width { Some(w) => .., None => .. }` and the exact-width
+    # implicit-zero arm `None if exact && j > 0` added three branches. Driven
+    # by the static_data_addr width_1563_* unit tests and the
+    # vcr_ver_003_addr_777 #1563 CLI rows. Value taken from the gate's own
+    # REPIN output (witness 0.42.0 / rustc 1.96.1, the pinned pair), on which
+    # this was the ONLY population that moved; the same local run of origin/main
+    # matched every pin exactly.
+    "synth_core::static_data_addr::validate_reloc_resolutions_spanned": 16,
     "synth_core::static_data_addr::validate_served_image": 5,
     "synth_core::static_data_addr::validate_served_image::_$u7b$$u7b$closure$u7d$$u7d$": 1,
     "synth_core::wasm_op::count_params_heuristic": 5,

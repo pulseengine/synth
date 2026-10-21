@@ -1210,7 +1210,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 368057 \
+            --exact-emulation-floor 368082 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2920,6 +2920,15 @@ jobs:
       # SEPARATE bases so a baked absolute offset cannot accidentally resolve.
       - name: Run above-SP static shadow-stack-shrink oracle (#739, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/static_above_sp_739_differential.py
+      # #1563: VCR-VER-003 now spans each static-data reloc at the access
+      # width the backend PROVES from the final stream (8 only when unproven).
+      # The objects that narrowing newly ACCEPTS — gale's 1-byte constructor
+      # guard before a packed neighbour, 1-byte accesses inside a staggered
+      # overlap — are hand-linked (.text/.data/.bss at separate bases) and
+      # run against wasmtime, call sequence by call sequence in one instance,
+      # so a store through a narrowed reloc is observed by the loads after it.
+      - name: Run proven-access-width static-data oracle (#1563, cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/verwidth_1563_differential.py
       # #746 (the #739 residual): the i64/WIDE static-region arms — i64.load/
       # i64.store pair accesses plus the i64 narrow loads/stores (load8/16/32,
       # store8/16/32) — get the #744 relocation treatment instead of the loud
