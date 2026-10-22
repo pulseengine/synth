@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.88.0] - 2026-10-21
+
+### Wrong-code fixes
+
+- **A float local rewritten while its old value was still on the stack read the new value**
+  (#1436). `try_lower_f32` and `try_lower_f64` pushed a reference to a float local's home
+  register, and a second `local.tee` rewrote that register while the first value was still in
+  use — the float twin of #989, which the integer snapshot never covered. In the reporter's ekf
+  module a gravity term that should cancel to 0 stayed at +9.81 and integrated into the measured
+  drift. Aliased stack entries are now copied before the write and at every `if`/`block`/`loop`
+  entry. On the reporter's own module every return word and all 16384 linear-memory words match
+  wasmtime at 16 and 1024 ticks, and the unfixed binary reproduces the reporter's own QEMU trace
+  exactly. Gated by `vfp_home_alias_1436_differential.py` (88 of 136 vectors wrong before, 0
+  after). Elsewhere, 382 module builds and 4177 functions are byte-identical.
+- **`--native-pointer-abi` baked a raw linear-memory offset for many constant addresses**
+  (#1568). Under that ABI R11 is 0, so `movw r0,#addr; ldr r0,[fp,r0]` with no relocation
+  read and wrote the wrong memory, and the static-data validator could not see it. Over a
+  162-module matrix (19 access families × 4 address shapes × 3 module kinds), 81 compiled cleanly
+  and returned wrong values. i32 constant addresses now relocate past 0xFFF, and every access
+  that cannot be relocated is refused with a diagnostic naming the op and the remedy. The same
+  matrix after: 0 wrong, 24 newly correct, 57 newly refused, 0 previously-correct changed.
+  **If you compile with `--native-pointer-abi`**, modules that used to compile may now be
+  refused: each refusal replaces code that was wrong. Outside that flag the output is
+  byte-identical. Two shapes are still wrong and stay open under #1568: a constant pointer
+  routed through a local, and a dynamic access with `offset=` into the static region of a module
+  with no stack-pointer global.
+- **The static-data validator no longer refuses a correct 1-byte access next to another
+  segment** (#1563). VCR-VER-003 assumed every relocated access might be 8 bytes, so a
+  `load8_u`/`store8` guard byte packed directly before another segment (as meld 0.62.0+ lays out
+  gale's composite) read the neighbour and was refused. Each relocation now carries the width
+  proven from the instruction that uses it; unproven widths keep 8 bytes. The wrong-segment class
+  (#757) is still refused at every width, and a 4-byte load past a segment end that was
+  previously accepted is now refused.
+
+### Found and filed, not fixed here
+
+- **#1566**: the integer twin of #1436 — the #989 snapshot is emitted inside the branch that
+  writes, so the path that skips the write reads a register that was never filled.
+- **#1567**: two CI jobs break on the ubuntu-26.04 runner image; pinned to 24.04 until ported.
+
+### A blocker is a measurement too
+
+Three dispositions carried from earlier releases were re-measured, and two of them were wrong.
+
+- **The acceptance ladder** (#1432) was recorded as blocked on a remote host's keys. The
+  243-module corpus was on this machine at its last-known path the whole time. Re-measured at
+  `897dbf69` (synth 0.87.0): every rung on every backend is identical to v0.63, and the ladder
+  header now carries the measurement instead of the blocker.
+- **Compliance on release** (#1453) was recorded as blocked because bot-published releases do
+  not trigger `on: release`. That is still true, but v0.81's `workflow_call` path has attached a
+  compliance report to every release since; v0.85.0, v0.86.0 and v0.87.0 all carry one.
+- **npm** (#1460) is still blocked: the publish preflight rejects the `NPM_TOKEN` secret, and the
+  registry's latest version is 0.69.0.
+
+### Gates
+
+- **Release notes and workspace version move together** (#1550): a PR whose CHANGELOG heads a
+  version the workspace is not at now fails Claim Check. v0.87's release-prep PR, which shipped
+  0.87.0 notes over a 0.86.0 workspace, is in the check's own self-test as a required failure.
+- **Workflow strictness runs where it can see the failure** (#1552): every other workflow is
+  checked from Claim Check, and `ci.yml` itself from a separate workflow, because a `ci.yml` that
+  cannot parse runs no step that could report it.
+- **The multi-memory width pin reads the dispatch by position** (#1551), so narrowing the
+  dispatch now fails the pin.
+- **The round-two number extractor** no longer leaks file line numbers from citations, and
+  reports spelled-out counts separately (#1553).
+
+### Refuted
+
+- **Lifting the `--native-pointer-abi` multi-memory refusal** (#1145) was tried in a scratch
+  build: the reporter's shape compiled silently and returned 0x0 where wasmtime returns
+  0xaaaaaaaa. The refusal stays. Evidence is under `scripts/repro/memlayer5_1145/`. This is not
+  progress on #1145.
+
+### Falcon
+
+- The reporter's optimized module still skips one function (#1318, `controller@0.10.0#step`,
+  float register exhaustion); the fused module skips none. Not lowered in this release.
+
 ## [0.87.0] - 2026-10-16
 
 ### The theme, and where it landed
