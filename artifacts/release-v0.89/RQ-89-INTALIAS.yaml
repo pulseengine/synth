@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-89-INTALIAS
     type: system-req
     release: v0.89
-    status: proposed
+    status: implemented
     title: "An integer local rewritten on one path of an if/block is read stale on the other"
     description: >
         SILENT MISCOMPILE, filed 2026-10-21: an integer local written on one
@@ -34,3 +34,24 @@ artifacts:
         where the lane is a wrong-code fix, or REFUTED with the measurement that
         refutes it; and the refuting command above is RUN FIRST and its result
         reported either way
+      landed: "PR #1578 - #1566 - DELIVERED: a wrong-code fix. The refuting command was run first and the defect was live on 0161dee1: with r3 poisoned to 0xdeadbeef, if_param_get_set_i32(10, 3, 0) and block_param_get_set_i32(10, 3, 1) returned 0xdeadbee5 where wasmtime returns 0. Cause: the #989 snapshot_home_reg_aliases copy runs at the local.set INSIDE the construct, so it runs on the writing path only. Fix: at every if/block/loop entry, the direct selector snapshots every operand-stack entry that still names a core-register local home (the integer twin of the #1436 float detach); +16 code lines and +10 comment lines in select_with_stack.rs. Byte census over scripts/repro/*.wat: 1 function in 1 module moved on the ARM relocatable paths, and 0 on the self-contained and RV32 paths."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime. The new wired differential
+        scripts/repro/int_home_alias_1566_differential.py has 11 exports and 8 rows, and
+        every non-argument core register is poisoned.
+        Against the base binary, built from 0161dee1 in a separate worktree, it exits rc=1:
+        32 of 80 executed vectors are wrong and i64_if_set is declined by VCR-RA-003, so 8
+        of 11 exports fail. Against the fix it exits rc=0 with 88 of 88 matching. Both
+        negative controls (a write to a different local, a read consumed before the
+        construct) are green on both binaries.
+        Mutation: dropping Loop from the boundary set reds exactly loop_set (7 of 88).
+        Dropping the if-condition skip stays green, because that skip only avoids a dead
+        copy.
+        Byte census, base vs fix: m4/m7dp relocatable (with and without --no-optimize)
+        change 1 function in 1 module, home_alias_class_1189_i32 ifparam, where the same
+        2-byte mov is hoisted above the cmp. m4 self-contained (176 modules) and RV32
+        (160 modules) change 0.
+        The #989, #1436 and #1189 oracles hold unchanged. fmt, clippy and
+        synth-synthesis tests pass, and every python CI invocation is green apart from
+        the environmental baseline.
+        #1189 did NOT move: its reproducer was already green on base.
