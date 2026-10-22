@@ -1210,7 +1210,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 368170 \
+            --exact-emulation-floor 368258 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -6829,6 +6829,20 @@ jobs:
           SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
             scripts/repro/vfp_home_alias_1436_differential.py | tee /tmp/1436vha.txt
           grep -q '^RESULT: PASS' /tmp/1436vha.txt
+      # RQ-89-INTALIAS (#1566): the INTEGER twin of #1436 at a control-flow
+      # boundary — an entry pushed before an if/block/loop still naming a
+      # param's home register, the local rewritten on ONE path inside it. The
+      # #989 snapshot ran on the writing path only, so the other path read a
+      # temp nobody filled. EXECUTED against wasmtime with every non-argument
+      # core register poisoned; two different-local / consumed-before NEGATIVE
+      # CONTROLS. Unfixed: 32 of 80 executed vectors wrong + 1 export declined
+      # (VCR-RA-003), 8 of 11 exports.
+      - name: "an integer home rewritten on one path of a construct EXECUTES bit-exact (#1566)"
+        run: |
+          set -euo pipefail
+          SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
+            scripts/repro/int_home_alias_1566_differential.py | tee /tmp/1566iha.txt
+          grep -q '^RESULT: PASS' /tmp/1566iha.txt
       - name: "#1223 — the five algebraic-identity shapes, EXECUTED (RQ-74-PINDEBT2)"
         run: |
           set -euo pipefail
