@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-89-RELOCSINGLE
     type: system-req
     release: v0.89
-    status: proposed
+    status: implemented
     title: "--relocatable is honoured on the single-function path, or refused loudly"
     description: >
         On the ARM single-function path (-n/--func-name), --relocatable is
