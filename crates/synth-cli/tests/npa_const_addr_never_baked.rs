@@ -195,3 +195,89 @@ fn stack_pointer_modules_refuse_only_the_sliver() {
         "the sliver on the i64 arm must be refused:\n{log}"
     );
 }
+
+/// RQ-89-NPARESIDUE (#1568), shape 1: a constant pointer routed through a
+/// local that is read ONLY as the exact address of a scalar access is
+/// relocated at its definition — each such access carries a static-data
+/// relocation (pre-fix: none, the access read absolute `0x1004` off R11 = 0).
+/// Executed against wasmtime by `scripts/repro/npa_const_addr_differential.py`.
+#[test]
+fn const_through_an_address_only_local_is_relocated() {
+    let wat = format!(
+        r#"(module {SEGS}
+  (func (export "ld") (result i32) (local i32) i32.const 0x1004 local.set 0 local.get 0 i32.load)
+  (func (export "tee") (result i32) (local i32) i32.const 0x1004 local.tee 0 i32.load)
+  (func (export "st") (local i32) i32.const 0x1000 local.set 0 local.get 0 i32.const 5 i32.store)
+  (func (export "ld64") (result i64) (local i32) i32.const 0x1000 local.set 0 local.get 0 i64.load))"#
+    );
+    let (ok, bytes, log) = compile("local_reloc", &wat, "cortex-m3");
+    assert!(ok, "must compile:\n{log}");
+    assert_eq!(
+        static_relocs(&bytes.expect("object")),
+        5,
+        "anchor + 4 local-routed constant addresses must each carry a static-data relocation"
+    );
+}
+
+/// Shape 1, the refusals: a local-routed constant address the plan cannot
+/// relocate soundly is refused loudly on EVERY arm (the i32 fold only sees a
+/// positional `i32.const`), one row per relocation condition.
+#[test]
+fn const_through_a_local_that_cannot_be_relocated_is_refused() {
+    for (tag, body) in [
+        (
+            "nonzero_offset",
+            "(result i32) (local i32) i32.const 5 local.set 0 local.get 0 i32.load8_u offset=0x1000",
+        ),
+        (
+            "zero_init_visible",
+            "(result i32) (local i32) block i32.const 0x1004 local.set 0 end local.get 0 i32.load",
+        ),
+        (
+            "scalar_observer",
+            "(result i32) (local i32) i32.const 0x1004 local.set 0 local.get 0 i32.load local.get 0 i32.add",
+        ),
+    ] {
+        let wat = format!("(module {SEGS} (func (export \"f\") {body}))");
+        let (ok, bytes, log) = compile(tag, &wat, "cortex-m3");
+        assert!(
+            !ok && bytes.is_none() && log.contains(NEEDLE) && log.contains("local 0"),
+            "{tag}: must be refused with the raw-offset diagnostic naming the local:\n{log}"
+        );
+    }
+}
+
+/// With a stack-pointer global a pointer constant routed through a local is
+/// already relocated at its definition (the #237 rule) and must still
+/// compile; the sliver routed through a local is refused.
+#[test]
+fn stack_pointer_modules_relocate_a_local_pointer_and_refuse_the_local_sliver() {
+    let wat = |body: &str| {
+        format!(
+            r#"(module (memory (export "mem") 1)
+  (global $sp (mut i32) (i32.const 0x2000))
+  (data (i32.const 0x2800) "\31\32\33\34\35\36\37\38")
+  (func (export "f") {body}))"#
+        )
+    };
+    let (ok, _, log) = compile(
+        "sp_local_ptr",
+        &wat("(result i32) (local i32) i32.const 0x2804 local.set 0 local.get 0 i32.load"),
+        "cortex-m3",
+    );
+    assert!(
+        ok,
+        "a rewritten pointer constant through a local must compile:\n{log}"
+    );
+    let (ok, bytes, log) = compile(
+        "sp_local_sliver",
+        &wat(
+            "(result i32) (local i32) i32.const 0x1800 local.set 0 local.get 0 i32.load offset=0x1000",
+        ),
+        "cortex-m3",
+    );
+    assert!(
+        !ok && bytes.is_none() && log.contains(NEEDLE),
+        "the sliver through a local must be refused:\n{log}"
+    );
+}

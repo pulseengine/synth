@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 28
+# ci-checks: emulations >= 38
 """--native-pointer-abi never bakes a constant static address as a raw
 linear-memory offset off R11 — execution differential vs wasmtime.
 
@@ -32,11 +32,33 @@ diagnostic and no object written.
                (its b_after / d_* / gap exports were wrong before the fix).
   sliver     — WITH a stack-pointer global (0x2000): `i32.const 0x1800
                offset=0x1000`, where neither part is a pointer on its own.
+  local      — RQ-89-NPARESIDUE (#1568) shape 1, no stack-pointer global: a
+               constant pointer routed through a local
+               (`i32.const 0x1004 local.set 0 local.get 0 i32.load`, plus the
+               tee / store / byte / i64 twins and a low 0x100 address). The
+               local is read only as an exact scalar address, so its constant
+               is relocated where it is defined. All 7 rows were WRONG at
+               0161dee1 (each faulted on the unmapped absolute address).
+  local_sp   — the same through a local WITH a stack-pointer global (0x800):
+               already relocated by the #237 rule; no-regression rows.
 
-NOT covered, and not catchable by a positional rule: a constant address that
-reaches the access through a local or arithmetic, and a dynamic access whose
-memarg offset is in the static region of a module with no stack-pointer
-global. Both still read the wrong address; they are reported, not pinned.
+The refusal half also asserts, for the local-routed shape, one row per
+condition the relocation needs (memarg offset 0, a set before every read, no
+scalar observer, and the stack-pointer sliver reached through a local).
+
+NOT covered, and not catchable by this rule:
+  - a dynamic access whose memarg offset is in the static region of a module
+    with no stack-pointer global (#1568 shape 2) — measured, left to a
+    maintainer decision (artifacts/release-v0.89/RQ-89-NPARESIDUE.yaml);
+  - a constant address reaching the access through arithmetic, or through a
+    local that also has a non-constant definition;
+  - WITH a stack-pointer global, a relocated pointer constant plus a non-zero
+    memarg offset that leaves the constant's region:
+    `(global (mut i32) (i32.const 0x800)) (data (i32.const 0x2000) ..)`
+    `i32.const 0x1900 i32.load offset=0x704` reads the zero reservation (0x0
+    vs wasmtime 0x38373635), and `i32.const 0x900 i32.load offset=0x1704`
+    relocates both parts and faults. Pre-existing, found by this lane.
+They still read the wrong address; they are reported, not pinned.
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python scripts/repro/npa_const_addr_differential.py
@@ -89,6 +111,27 @@ SLIVER = r"""(module
   (func (export "st8") i32.const 0x1800 i32.const 0x99 i32.store8 offset=0x1001)
   (func (export "st") i32.const 0x1800 i32.const 0x01020304 i32.store offset=0x1004))"""
 
+LOCAL = r"""(module
+  (memory (export "mem") 1)
+  (data (i32.const 0x100) "\aa\bb\cc\dd")
+  (data (i32.const 0x1000) "\11\22\33\44\55\66\77\88")
+  (func (export "anchor") (result i32) (i32.load (i32.const 0x100)))
+  (func (export "ld") (result i32) (local i32) i32.const 0x1004 local.set 0 local.get 0 i32.load)
+  (func (export "ld_low") (result i32) (local i32) i32.const 0x100 local.set 0 local.get 0 i32.load)
+  (func (export "ld8") (result i32) (local i32) i32.const 0x1005 local.set 0 local.get 0 i32.load8_u)
+  (func (export "tee") (result i32) (local i32) i32.const 0x1004 local.tee 0 i32.load)
+  (func (export "st") (local i32) i32.const 0x1000 local.set 0 local.get 0 i32.const 0x5a5a5a5a i32.store)
+  (func (export "ld0") (result i32) (local i32) i32.const 0x1000 local.set 0 local.get 0 i32.load)
+  (func (export "ld64") (result i64) (local i32) i32.const 0x1000 local.set 0 local.get 0 i64.load))"""
+
+LOCAL_SP = r"""(module
+  (memory (export "mem") 1)
+  (global $sp (mut i32) (i32.const 0x800))
+  (data (i32.const 0x1000) "\11\22\33\44\55\66\77\88")
+  (func (export "ld") (result i32) (local i32) i32.const 0x1004 local.set 0 local.get 0 i32.load)
+  (func (export "st") (local i32) i32.const 0x1000 local.set 0 local.get 0 i32.const 0x5a5a5a5a i32.store)
+  (func (export "ld0") (result i32) (local i32) i32.const 0x1000 local.set 0 local.get 0 i32.load))"""
+
 CASES = [
     ("nosp", NOSP, ["low", "high", "high8", "high_off", "set_high", "high",
                     "set_high8", "high8", "low"]),
@@ -96,6 +139,8 @@ CASES = [
      ["a_lo", "a_hi", "b_straddle", "b_after", "c_head", "c_ovl", "d_lo",
       "d_hi", "d_byte", "e_0", "e_16", "e_28", "gap"]),
     ("sliver", SLIVER, ["ld", "ld16", "st8", "ld", "st", "ld16"]),
+    ("local", LOCAL, ["ld", "ld_low", "ld8", "tee", "st", "ld0", "ld64"]),
+    ("local_sp", LOCAL_SP, ["ld", "st", "ld0"]),
 ]
 
 # Arms that cannot fold a constant address: each must be REFUSED. (label,
@@ -117,15 +162,41 @@ REFUSE = [
      "i32.const 0x1000 i32.const 9 i32.const 4 memory.fill"),
     ("memory_copy_src", "cortex-m3",
      "i32.const 0x104 i32.const 0x1000 i32.const 4 memory.copy"),
+    # RQ-89-NPARESIDUE (#1568) shape 1: a constant routed through a local the
+    # plan cannot relocate soundly — one row per relocation condition.
+    ("local_nonzero_offset", "cortex-m3",
+     "(result i32) (local i32) i32.const 5 local.set 0 local.get 0 "
+     "i32.load8_u offset=0x1000"),
+    ("local_zero_init_visible", "cortex-m3",
+     "(result i32) (local i32) block i32.const 0x1004 local.set 0 end "
+     "local.get 0 i32.load"),
+    ("local_scalar_observer", "cortex-m3",
+     "(result i32) (local i32) i32.const 0x1004 local.set 0 local.get 0 "
+     "i32.load local.get 0 i32.add"),
+    ("local_i64_nonzero_offset", "cortex-m3",
+     "(result i64) (local i32) i32.const 0x1000 local.set 0 local.get 0 "
+     "i64.load offset=4"),
+]
+# The stack-pointer sliver reached through a local (header with an SP global).
+REFUSE_SP_HDR = r"""(module (memory (export "mem") 1)
+  (global $sp (mut i32) (i32.const 0x2000))
+  (data (i32.const 0x2800) "\31\32\33\34\35\36\37\38")
+  (func (export "anchor") (result i32) (i32.load (i32.const 0x2800)))
+  (func (export "f") """
+REFUSE_SP = [
+    ("local_sp_sliver", "cortex-m3",
+     "(result i32) (local i32) i32.const 0x1800 local.set 0 local.get 0 "
+     "i32.load offset=0x1000"),
 ]
 NEEDLE = "which this lowering would emit as a raw linear-memory offset off R11"
 
 
 def assert_refusals(tmp):
     n = 0
-    for label, tgt, body in REFUSE:
+    rows = [(REFUSE_HDR, r) for r in REFUSE] + [(REFUSE_SP_HDR, r) for r in REFUSE_SP]
+    for hdr, (label, tgt, body) in rows:
         src = tmp / f"refuse_{label}.wat"
-        src.write_text(REFUSE_HDR + body + "))")
+        src.write_text(hdr + body + "))")
         obj = tmp / f"refuse_{label}.o"
         r = subprocess.run(
             [SYNTH, "compile", str(src), "-o", str(obj), "--target", tgt,
@@ -140,6 +211,8 @@ def assert_refusals(tmp):
             sys.exit(f"refuse {label}: refusal PANICKED: {log[-400:]}")
         if NEEDLE not in log or "--native-pointer-abi:" not in log:
             sys.exit(f"refuse {label}: refused for the WRONG reason:\n{log[-800:]}")
+        if label.startswith("local") and "local 0" not in log:
+            sys.exit(f"refuse {label}: the diagnostic does not name the local:\n{log[-800:]}")
         if obj.exists() and obj.stat().st_size > 0:
             sys.exit(f"refuse {label}: an object was written despite the refusal")
         print(f"  [ok ] refused: {label}")
@@ -277,8 +350,8 @@ def main():
     refusals = assert_refusals(tmp)
     # Non-vacuity for the refusal half (#1113): the emulation floor cannot
     # see a refused compile, so it is counted here.
-    if refusals != len(REFUSE):
-        print(f"VACUOUS: refusals={refusals} of {len(REFUSE)}")
+    if refusals != len(REFUSE) + len(REFUSE_SP):
+        print(f"VACUOUS: refusals={refusals} of {len(REFUSE) + len(REFUSE_SP)}")
         return 1
     print(f"refusals: {refusals}")
     print(f"\ncompared: {compared}")
