@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-89-BRVALUE
+    type: system-req
+    release: v0.89
+    status: proposed
+    title: "br_table/br_if with a value-carrying branch in an operand position is correct on both selectors"
+    description: >
+        br_table and br_if with a value-carrying branch, or an if, in an operand
+        position produce wrong results on both selectors (spec br/br_if/br_table
+        operand cases).
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Execute the
+        operand-position cases from the spec br, br_if and br_table files on
+        both selectors against wasmtime; report each case's outcome.
+        CITATION: #1215 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      issue: "#1215"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 br_table/br_if with a value-carrying branch in an
+        operand position is correct on both selectors — delivered with an
+        execution-verified result where the lane is a wrong-code fix, or REFUTED
+        with the measurement that refutes it; and the refuting command above is
+        RUN FIRST and its result reported either way

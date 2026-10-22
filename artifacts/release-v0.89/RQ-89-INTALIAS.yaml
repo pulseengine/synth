@@ -1,0 +1,36 @@
+artifacts:
+  - id: RQ-89-INTALIAS
+    type: system-req
+    release: v0.89
+    status: proposed
+    title: "An integer local rewritten on one path of an if/block is read stale on the other"
+    description: >
+        SILENT MISCOMPILE, filed 2026-10-21: an integer local written on one
+        path of an if or block is read stale on the join, the integer twin of
+        the float home-register class fixed for #1436. A module compiles cleanly
+        and returns a different value than wasmtime.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Compile the
+        reproducer recorded on #1566 with the current binary and execute it
+        against wasmtime; if every export already matches, the defect is gone
+        and the lane is moot, reported with the module and its outputs.
+        CITATION: #1566 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1566"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 an integer local rewritten on one path of an if/block
+        is read stale on the other — delivered with an execution-verified result
+        where the lane is a wrong-code fix, or REFUTED with the measurement that
+        refutes it; and the refuting command above is RUN FIRST and its result
+        reported either way

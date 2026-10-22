@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-89-WIDEFILE11
+    type: system-req
+    release: v0.89
+    status: proposed
+    title: "The vfp-wide-file rung emits sign-correct code under execution"
+    description: >
+        The vfp-wide-file ladder rung emits sign-wrong code, and it is the only
+        rung with no pool-grow retry and no execution check.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Execute the
+        #1439 reproducer on the vfp-wide-file rung against wasmtime; if the
+        signs agree, report the outputs and state whether the rung now has an
+        execution check.
+        CITATION: #1439 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      issue: "#1439"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the vfp-wide-file rung emits sign-correct code under
+        execution — delivered with an execution-verified result where the lane
+        is a wrong-code fix, or REFUTED with the measurement that refutes it;
+        and the refuting command above is RUN FIRST and its result reported
+        either way

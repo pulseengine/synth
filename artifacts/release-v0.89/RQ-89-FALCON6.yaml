@@ -1,0 +1,34 @@
+artifacts:
+  - id: RQ-89-FALCON6
+    type: system-req
+    release: v0.89
+    status: proposed
+    title: "The reporter's falcon blocker is re-measured on the current release from their own modules"
+    description: >
+        #1318 is an open externally reported blocker. Its figure goes stale with
+        every release, and hardening an oracle around it is not progress on it.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Re-run the
+        reporter's own modules on the current release binary (refetching the
+        attachment needs the maintainer's approval each time); report the figure
+        against the last one recorded.
+        CITATION: #1318 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1318"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the reporter's falcon blocker is re-measured on the
+        current release from their own modules — delivered with an execution-
+        verified result where the lane is a wrong-code fix, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST
+        and its result reported either way

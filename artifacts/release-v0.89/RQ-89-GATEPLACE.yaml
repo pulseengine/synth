@@ -1,0 +1,38 @@
+artifacts:
+  - id: RQ-89-GATEPLACE
+    type: system-req
+    release: v0.89
+    status: proposed
+    title: "Decide whether the wrong-code differentials become required checks"
+    description: >
+        The three new wrong-code differentials (#1436, #1563, #1568) and the
+        moved island floor are potent but sit outside the required status
+        checks, so a pull request can merge with any of them red. Changing the
+        required set is a branch-protection decision for the maintainer; this
+        lane carries the measured cost and the maintainer's decision.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Read the
+        required contexts with gh api repos/pulseengine/synth/branches/main/prot
+        ection/required_status_checks/contexts and map each of the four gates to
+        its job; if every one is already covered by a required context, the lane
+        is moot.
+        CITATION: #1573 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1573"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 decide whether the wrong-code differentials become
+        required checks — delivered with an execution-verified result where the
+        lane is a wrong-code fix, or REFUTED with the measurement that refutes
+        it; and the refuting command above is RUN FIRST and its result reported
+        either way
