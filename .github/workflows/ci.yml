@@ -4547,7 +4547,14 @@ jobs:
           # 217081 could not still hold. Nothing caught it because no grep ever
           # read it: exactly the "a ratchet fixes the number and cannot fix the
           # prose" shape this project keeps paying for. Derived here: 217291.
-          grep -Eq '^attributed instructions: 235457 ' haa1189.txt
+          # RQ-89-INTALIAS (#1566): 235457 -> 235493 (+36 = +9 on each of the
+          # 4 legs). ATTRIBUTED: the new if/block/loop-entry home snapshot
+          # copies an entry still naming a promoted local's home (r4) into a
+          # temp at each enclosing `block`/`loop` — spec-testsuite block.wast
+          # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
+          # else. Both still return 0xf / 0x1f executed. functions audited
+          # 7307, homes watched 8370 and hits 0 are UNCHANGED.
+          grep -Eq '^attributed instructions: 235493 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

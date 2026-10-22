@@ -34,7 +34,7 @@ artifacts:
         where the lane is a wrong-code fix, or REFUTED with the measurement that
         refutes it; and the refuting command above is RUN FIRST and its result
         reported either way
-      landed: "PR #1578 - #1566 - DELIVERED: a wrong-code fix. The refuting command was run first and the defect was live on 0161dee1: with r3 poisoned to 0xdeadbeef, if_param_get_set_i32(10, 3, 0) and block_param_get_set_i32(10, 3, 1) returned 0xdeadbee5 where wasmtime returns 0. Cause: the #989 snapshot_home_reg_aliases copy runs at the local.set INSIDE the construct, so it runs on the writing path only. Fix: at every if/block/loop entry, the direct selector snapshots every operand-stack entry that still names a core-register local home (the integer twin of the #1436 float detach); +16 code lines and +10 comment lines in select_with_stack.rs. Byte census over scripts/repro/*.wat: 1 function in 1 module moved on the ARM relocatable paths, and 0 on the self-contained and RV32 paths."
+      landed: "PR #1578 - #1566 - DELIVERED: a wrong-code fix. The refuting command was run first and the defect was live on 0161dee1: with r3 poisoned to 0xdeadbeef, if_param_get_set_i32(10, 3, 0) and block_param_get_set_i32(10, 3, 1) returned 0xdeadbee5 where wasmtime returns 0. Cause: the #989 snapshot_home_reg_aliases copy runs at the local.set INSIDE the construct, so it runs on the writing path only. Fix: at every if/block/loop entry, the direct selector snapshots every operand-stack entry that still names a core-register local home (the integer twin of the #1436 float detach); +16 code lines and +10 comment lines in select_with_stack.rs. Byte census over scripts/repro/*.wat: 1 function in 1 module moved. Over the wider home-alias audit corpus (spec testsuite plus tests/ plus scripts/repro, 4 legs), it also moved spec block.wast and loop.wast break-inner: a promoted-local copy at each enclosing block. That is +36 attributed instructions (235457 -> 235493, ci.yml pin moved), and both still return 0xf and 0x1f executed. RV32 changed nothing."
       verified-by: >
         DELIVERED, execution-verified against wasmtime. The new wired differential
         scripts/repro/int_home_alias_1566_differential.py has 11 exports and 8 rows, and
@@ -51,6 +51,14 @@ artifacts:
         change 1 function in 1 module, home_alias_class_1189_i32 ifparam, where the same
         2-byte mov is hoisted above the cmp. m4 self-contained (176 modules) and RV32
         (160 modules) change 0.
+        The home-alias audit corpus (1972 module x leg jobs over m4/m4f, relocatable and
+        self-contained) widens that. Spec block.wast break-inner gains 4 copies and
+        loop.wast break-inner gains 5: these are boundary snapshots of the promoted local
+        r4. In self-contained images the as-call_indirect-* functions differ only in a
+        literal-pool address that shifts after them. Attributed instructions go
+        235457 -> 235493 (+9 per leg). Functions audited (7307), homes watched (8370) and
+        hits (0) are unchanged. break-inner still returns 0xf and 0x1f when executed on
+        both binaries.
         The #989, #1436 and #1189 oracles hold unchanged. fmt, clippy and
         synth-synthesis tests pass, and every python CI invocation is green apart from
         the environmental baseline.
