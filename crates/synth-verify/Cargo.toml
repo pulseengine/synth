@@ -61,7 +61,7 @@ synth-synthesis = { path = "../synth-synthesis", version = "0.88.0", optional = 
 # the encoding is byte-identical at power-of-two widths, so unchanged verdicts
 # are evidence of non-affectedness and ANY changed verdict is the finding.
 # Reasoning alone would not have settled it.
-ordeal = "=0.22.1"
+ordeal = "=0.32.0"
 
 # Z3: optional differential oracle (feature `z3-solver`) — no longer default.
 # Default features only (NO `static-link-z3`/`bundled`): z3-sys links the
