@@ -1,0 +1,39 @@
+# v0.89 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS, in either spelling. A figure parked here is a
+# second copy of a measured number, and a second copy is how a number goes stale.
+# The release's numbers live in the artifact records that measured them and in the
+# CHANGELOG section that cites those records. Re-derive; do not read a count here.
+#
+# THEME: SOLVE THE SERIOUS ISSUES. The maintainer's direction for this release is that
+# wrong code comes first: a module that compiles cleanly and returns a different
+# answer than the reference is the defect this compiler exists to prevent, and a
+# release that only hardens the instruments around such a defect has not moved it.
+#
+# SO THE ORDER OF WORK, earned rather than asserted:
+#
+#   * WRONG-CODE LANES FIRST. Each is delivered as an execution-verified fix, red
+#     before and green after, against the reference runtime, or as a loud refusal
+#     where supporting the input is out of scope. A refusal is a correct outcome; a
+#     silent wrong answer never is.
+#   * RUN THE REFUTING COMMAND BEFORE BUILDING. A defect already gone is reported with
+#     its outputs and closed, not re-fixed.
+#   * A FIX THAT NARROWS REACH SAYS WHAT IT COSTS. Count what newly refuses, and why,
+#     before calling the change done.
+#   * A CORRECTION IS AN UNREVIEWED CLAIM, and a number is invalidated by the edit that
+#     writes it. Both carried from the releases before this one.
+#   * A BLOCKER IS A MEASUREMENT TOO. Carried lanes blocked outside this repository are
+#     re-measured, not carried; re-derive which they are from their own records.
+#
+# PROCESS LANES are kept to the ones the predecessor's review found: where the new
+# wrong-code oracles sit relative to the required checks (a maintainer decision), an
+# uncommitted generator behind a published figure, and the number extractor's
+# remaining gaps.
+#
+# REPORTER CORRESPONDENCE is the maintainer's to send. A reply leads with what changed
+# for the reporter; nothing is posted without the maintainer's word.
+#
+# The anchor moves to the predecessor's tag in a SINGLE pull request, across every
+# site the ledger pins. The anchored counts are read off the gate's own printed anchor
+# line, never from the programme-status line, which counts the live tree rather than
+# the tree at the tag.

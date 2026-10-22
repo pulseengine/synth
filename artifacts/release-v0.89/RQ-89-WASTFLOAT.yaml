@@ -1,0 +1,36 @@
+artifacts:
+  - id: RQ-89-WASTFLOAT
+    type: system-req
+    release: v0.89
+    status: proposed
+    title: "synth-test's WAST parser counts the float assertions it cannot grade instead of dropping them"
+    description: >
+        synth_test::WastParser drops every assert_return whose arguments or
+        results are not i32/i64, logs only at debug level, and increments no
+        counter. On the vendored spec suite that is most of the value-checking
+        assertions, so a consumer that grades results gets a confident zero for
+        every float file.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Parse one f32
+        spec file with WastParser and read whether any counter or declined count
+        reports the dropped assertions; if it does, the defect is gone.
+        CITATION: #1570 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1570"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 synth-test's WAST parser counts the float assertions
+        it cannot grade instead of dropping them — delivered with an execution-
+        verified result where the lane is a wrong-code fix, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST
+        and its result reported either way
