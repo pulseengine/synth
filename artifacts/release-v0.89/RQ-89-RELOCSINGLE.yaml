@@ -37,3 +37,19 @@ artifacts:
         the lane is a wrong-code fix, or REFUTED with the measurement that
         refutes it; and the refuting command above is RUN FIRST and its result
         reported either way
+      landed: "PR #1577 - #1565 - DELIVERED: a wrong-output fix, the flag honoured rather than refused. The refuting command, run first, CONFIRMED the defect: -n a --relocatable gave e_type 2 (ET_EXEC with Reset_Handler) and --all-exports --relocatable gave 1. An ARM -n/--func-index plus --relocatable compile now reroutes onto the module path seeded from that one root, so the object is what --all-exports --relocatable emits for the function: ET_REL, the same direct selector, the same reachable-callee closure, no vector table, no startup. A non-exported --func-index root, a built-in demo and a multi-module .wast refuse loudly. Byte identity, base vs fixed, over 206 scripts/repro modules: 1638 of 1638 comparisons identical for every other invocation. On the changed set, cortex-m4 121 went ET_EXEC to ET_REL, 17 refused to ET_REL, 19 exit 0 to refused; cortex-r5 117, 18, 44. All 135 single-function refusals are also refused by --all-exports --relocatable. The exact emulation floor rises by 60, the new oracle's declared floor, over its v0.88 value 368110; the live value is what oracle_wiring_check.py reports."
+      verified-by: >
+        DELIVERED. Red first: the new crates/synth-cli/tests/relocatable_single_function_1565.rs
+        fails 4 of 5 on the base commit 0161dee1, built in a separate worktree. The fifth is
+        the negative control, which passes by design. It passes 5 of 5 on the branch, on
+        cortex-m3, m4, m7 and r5, for -n and --func-index. It asserts ET_REL, no Reset_Handler,
+        the export defined global, the other exports absent, no undefined symbol, and the
+        export's bytes equal to its bytes in the --all-exports --relocatable object. The new
+        scripts/repro/relocatable_single_function_1565_differential.py links every object with
+        arm-none-eabi-ld and executes the linked export under unicorn against wasmtime, a(41)
+        equal to 42 among the vectors. It PASSES with 12 legs and 60 emulations, and FAILS on
+        the base binary with 0 emulations because the linker refuses each ET_EXEC. The i64
+        610, 632 and 633 oracles had been pinning the self-contained bytes through the ignored
+        flag. They drop the flag, and 23 of 23 functions stay byte-identical to the v0.88
+        -n --relocatable output. Paired control on the floor: the summed value rc 0, the
+        v0.88 value 368110 rc 1, ABOVE by 60.
