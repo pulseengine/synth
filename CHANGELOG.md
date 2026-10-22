@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`--native-pointer-abi` baked a raw linear-memory offset for many constant addresses**
   (#1568). Under that ABI R11 is 0, so `movw r0,#addr; ldr r0,[fp,r0]` with no relocation
   read and wrote the wrong memory, and the static-data validator could not see it. Over a
-  162-module matrix (19 access families × 4 address shapes × 3 module kinds), 81 compiled cleanly
+  162-module probe set (drawn from 19 access families, 4 address shapes and 3 module kinds; it is
+  not the full 19 × 4 × 3 product, and its generator is not committed), 81 compiled cleanly
   and returned wrong values. i32 constant addresses now relocate past 0xFFF, and every access
   that cannot be relocated is refused with a diagnostic naming the op and the remedy. The same
   matrix after: 0 wrong, 24 newly correct, 57 newly refused, 0 previously-correct changed.
@@ -33,8 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no stack-pointer global.
 - **The static-data validator no longer refuses a correct 1-byte access next to another
   segment** (#1563). VCR-VER-003 assumed every relocated access might be 8 bytes, so a
-  `load8_u`/`store8` guard byte packed directly before another segment (as meld 0.62.0+ lays out
-  gale's composite) read the neighbour and was refused. Each relocation now carries the width
+  `load8_u`/`store8` guard byte packed directly before another segment (gale's composite fused by meld
+  0.62.0–0.63.0 with `--pack-rebase`; meld 0.64.0 pads after each provider) read the neighbour
+  and was refused. Each relocation now carries the width
   proven from the instruction that uses it; unproven widths keep 8 bytes. The wrong-segment class
   (#757) is still refused at every width, and a 4-byte load past a segment end that was
   previously accepted is now refused.
