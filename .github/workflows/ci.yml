@@ -1210,7 +1210,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 368110 \
+            --exact-emulation-floor 368170 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3205,6 +3205,17 @@ jobs:
       # here, after the lld install, because the links are hard failures.
       - name: Run .wast reachable-callgraph closure oracle (#1168, 5 backend legs, GREEN)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/wast_callgraph_closure_1168_differential.py
+      # #1565 (RQ-89-RELOCSINGLE): `--relocatable` on the ARM single-function
+      # path (`-n` / `--func-index`) was silently ignored — exit 0, an ET_EXEC
+      # image with its own Reset_Handler that no host linker accepts. Per leg
+      # (cortex-m3/m4/m7 Thumb-2 + cortex-r5 A32, x `-n a` / `--func-index 1`
+      # / `-n entry` with a non-exported callee): ET_REL, no Reset_Handler,
+      # the export defined global, 0 UNDEF, a REAL arm-none-eabi-ld link
+      # (installed above; a missing linker is a hard failure), and the linked
+      # export executed under unicorn vs wasmtime. Red against the pre-fix
+      # binary at the first leg.
+      - name: Run single-function --relocatable object/link/execute oracle (#1565, 12 legs)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/relocatable_single_function_1565_differential.py
       # Non-vacuity, the OTHER half of #1168: the SAME probe binary + hatch
       # (`EXPORTS_ONLY_275=1`, built above) reverts the .wast merge to its
       # pre-fix exports-only behaviour, and the harness then asserts that the

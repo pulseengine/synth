@@ -4167,7 +4167,14 @@ claims:
     #   exports + 6 SP-sliver calls; its 8 refusal rows are counted by the
     #   script itself, not by this floor). Re-derived from
     #   `oracle_wiring_check.py --exact-emulation-floor 368110`.
-    text: "--exact-emulation-floor 368110"
+    # v0.89 RQ-89-RELOCSINGLE (#1565): 368110 -> 368170. The new
+    #   relocatable_single_function_1565_differential.py declares
+    #   `emulations >= 60` (60 measured via oracle_run.py: 12 legs x 5 vectors,
+    #   each a REAL arm-none-eabi-ld link of the single-function ET_REL object
+    #   executed under unicorn vs wasmtime) and is wired into the
+    #   trap-semantics-oracle job beside the #1168 link oracle. Paired control:
+    #   `--exact-emulation-floor 368170` rc=0, `368110` rc=1.
+    text: "--exact-emulation-floor 368170"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
