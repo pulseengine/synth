@@ -10,9 +10,11 @@ shasum -a 256 -c ../MANIFEST.sha256` exited 0 with **243 `: OK` lines** (the
 positive control) and 0 failures. Raw outputs: RQ-88-LADDER10.
 
 > **THE CORPUS IS EXTERNAL TO THIS REPO, AND IT IS REACHABLE.** `corpora/` is not
-> tracked here; the corpus lives at `/Volumes/Work/corpora/wasm-243`, which is
-> mounted on the release machine. v0.78–v0.87 recorded the ladder as BLOCKED on a
-> remote host's `authorized_keys`. That disposition was CARRIED, not measured: the
+> tracked here; the corpus lives at `/Volumes/Work/corpora/wasm-243`, on a work
+> volume of the release machine that is not always mounted (mounted 2026-10-20;
+> not mounted 2026-10-22). v0.78–v0.81 recorded the ladder as BLOCKED on a remote
+> host refusing every offered auth method, and v0.82–v0.87 on its
+> `authorized_keys`. That disposition was CARRIED, not measured: the
 > corpus sat at its last-known path, verifying, throughout. The first re-check in
 > v0.87 printed ZERO OK because it ran from the corpus root instead of `modules/`
 > — so a re-check of this corpus needs the positive control above, not just an

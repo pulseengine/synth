@@ -6,7 +6,8 @@ artifacts:
     title: "The reporter's measured divergence PCs are used to localise the lowering defect"
     description: >
         The reporter answered on the thread with the six measured PCs and slot
-        addresses; that reply post-dates the v0.87 lane and is unanswered. The held
+        addresses; that reply post-dates the v0.87 lane (it was answered by the
+        maintainer on 2026-10-21T19:13:26Z, once the fix was measured). The held
         reply drafted before it predicts something their measurement refutes, so it must
         not be posted as written. The lane is to use their figures to localise the
         defect in this repository's lowering, which is progress on it, not a re-hardened
