@@ -2115,7 +2115,7 @@ fn compile_command(
             // RQ-66-BOTHWRONG (#1209): same for memory64 — this path shares
             // the module-path #1046 lineage.
             refuse_memory64_module(&module.memories)?;
-            refuse_custom_page_size(&module.memories, relocatable)?;
+            refuse_custom_page_size(&module.memories, relocatable, backend.name())?;
             refuse_shared_memory(&module.memories)?;
             // #642: compute the call_indirect guard inputs BEFORE the
             // module's vectors are moved out below.
@@ -3764,6 +3764,7 @@ fn mpu_region_bytes(declared_bytes: u32) -> u32 {
 fn refuse_custom_page_size(
     memories: &[synth_core::wasm_decoder::WasmMemory],
     relocatable: bool,
+    backend_name: &str,
 ) -> Result<()> {
     // #1441 NARROWS #1315's blanket refusal, and the narrowing is deliberately
     // REACH-SHAPED rather than total. `(pagesize 1)` is now HONOURED on
@@ -3789,8 +3790,28 @@ fn refuse_custom_page_size(
             continue; // the proposal's other legal value IS the default
         }
         let declared = 1u64 << log2.min(63);
-        if log2 == 0 && relocatable {
+        if log2 == 0 && relocatable && backend_name == "arm" {
             continue; // THE CAPABILITY (#1441)
+        }
+        // RQ-89-PAGESIZEAPI (#1339): the honour above was written for every
+        // backend, but only the ARM `memory.size` lowering reads the declared
+        // log2. `-b riscv --relocatable` emitted `li t0, 0` and
+        // `-b aarch64 --relocatable` emitted `mov w9, #0` for a 20000-byte
+        // `(pagesize 1)` memory, where wasmtime answers 20000. Both backends
+        // now refuse it themselves (on the published API too); this names it
+        // here first, with the path it is honoured on.
+        if log2 == 0 && relocatable {
+            anyhow::bail!(
+                "module declares memory {idx} with a custom page size of 1 \
+                 byte(s) (`(pagesize 1)`), which synth honours only on the ARM \
+                 backend with `--relocatable` (#1441). The {backend_name} \
+                 backend's `memory.size` lowering divides the byte extent by \
+                 65536, so it would return 0 for any memory under 64 KiB \
+                 (#1339; the over-grant measurement is in #1315). Use `-b arm \
+                 --relocatable`, or declare the memory with the default 64 KiB \
+                 page size.",
+                idx = mem.index,
+            );
         }
         if log2 == 0 {
             let would_report = (mem.initial_pages as u64) * 65536;
@@ -4090,7 +4111,7 @@ fn compile_all_exports(
                     refuse_dropped_start_function(module.start_function)?;
                     // RQ-66-BOTHWRONG (#1209): same for memory64.
                     refuse_memory64_module(&module.memories)?;
-                    refuse_custom_page_size(&module.memories, relocatable)?;
+                    refuse_custom_page_size(&module.memories, relocatable, backend.name())?;
                     refuse_shared_memory(&module.memories)?;
                     let export_count = module
                         .functions
@@ -4324,7 +4345,7 @@ fn compile_all_exports(
         // start-function decision below — memory64 is refused on every
         // compile mode this path serves.
         refuse_memory64_module(&module.memories)?;
-        refuse_custom_page_size(&module.memories, relocatable)?;
+        refuse_custom_page_size(&module.memories, relocatable, backend.name())?;
         refuse_shared_memory(&module.memories)?;
         // RQ-59-STARTFN (#1046) / RQ-65-MVPCORE (#1017): a `(start ...)`
         // module is ACCEPTED on exactly one path — the self-contained ARM

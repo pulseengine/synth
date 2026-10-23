@@ -464,13 +464,26 @@ BRANCH_POPULATION = {
     "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32": 47,
     "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32::_$u7b$$u7b$closure$u7d$$u7d$": 2,
     "synth_backend_riscv::backend::build_options": 8,
+    # NEW (RQ-89-PAGESIZEAPI, #1339): the RV32 page-size refusal — `log2 ==
+    # 16` accepts, otherwise refuse with a message chosen by `log2 == 0`.
+    # Written as two single-condition `if`s, not a `match` on the integer:
+    # the first draft's match lowered to a jump table that this instrument
+    # scored as 18 branches / 18 conditions, 17 of them DEAD (no row can
+    # reach table slots 1..15 meaningfully). Driven by the
+    # rv_page_size_gate rows (16 compiles; 0 and 5 refuse). Value from the
+    # gate's own REPIN output (witness 0.42.0 / rustc 1.96.1), not
+    # hand-counted.
+    "synth_backend_riscv::backend::check_page_log2": 2,
+    # 10 -> 11 (RQ-89-PAGESIZEAPI, #1339): the `check_page_log2(0,
+    # config.memory0_page_log2)?` call at the top of the function — the `?`
+    # is the ONE added branch, taken by the rv_page_size_gate 0/5 rows.
     # 9 -> 10 (RQ-61-MVPANIC, #1093): the parameter-taking-block-type decline
     # (`find_param_block_type` over the ordinal blocktype-arity side-table —
     # the aarch64 VCR-A64-CF-001 refusal ported) added ONE condition at the
     # top of the function. Driven both ways by the rv_param_block_gate rows
     # (params=0 compiles, params=1/2 decline). Value taken from the gate's
     # own REPIN output on the #1096 evidence, not hand-counted.
-    "synth_backend_riscv::backend::compile_function_with_opts": 10,
+    "synth_backend_riscv::backend::compile_function_with_opts": 11,
     "synth_backend_riscv::backend::effective_num_params": 1,
     "synth_backend_riscv::backend::ensure_supported_target": 4,
     "synth_core::static_data_addr::resolve_owner": 4,
