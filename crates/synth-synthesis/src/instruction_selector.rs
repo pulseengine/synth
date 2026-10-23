@@ -3105,26 +3105,25 @@ impl Default for RegisterState {
     }
 }
 
-/// Convert VFP register index to VfpReg enum (S0-S15 for linear allocation)
+/// #1439: the single-precision file IN SLOT ORDER, S0..S31 — the one table
+/// both directions of the slot<->register mapping read, so they cannot disagree.
+/// They did: the occupancy map widened to 32 slots for the wide-file rung
+/// (#1267) while the slot->register map still wrapped `% 16` and the
+/// register->slot map stopped at S15, so the 17th grant came back as S0 (a live
+/// param or local home) and every S16..S31 grant aliased a caller-saved register.
+const VFP_S_FILE: [VfpReg; VFP_FILE] = {
+    use VfpReg::*;
+    [
+        S0, S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19,
+        S20, S21, S22, S23, S24, S25, S26, S27, S28, S29, S30, S31,
+    ]
+};
+
+/// Convert VFP register index to VfpReg enum (S0-S15, wrapping — the
+/// round-robin callers rely on the wrap; occupancy-map grants use
+/// [`VFP_S_FILE`] directly so S16..S31 are real registers).
 fn index_to_vfp_reg(index: u8) -> VfpReg {
-    match index % 16 {
-        0 => VfpReg::S0,
-        1 => VfpReg::S1,
-        2 => VfpReg::S2,
-        3 => VfpReg::S3,
-        4 => VfpReg::S4,
-        5 => VfpReg::S5,
-        6 => VfpReg::S6,
-        7 => VfpReg::S7,
-        8 => VfpReg::S8,
-        9 => VfpReg::S9,
-        10 => VfpReg::S10,
-        11 => VfpReg::S11,
-        12 => VfpReg::S12,
-        13 => VfpReg::S13,
-        14 => VfpReg::S14,
-        _ => VfpReg::S15,
-    }
+    VFP_S_FILE[index as usize % VFP_ALLOC_DEFAULT]
 }
 
 /// Convert VFP D-register index to VfpReg enum (D0-D15 for linear allocation).
@@ -3168,29 +3167,11 @@ fn index_to_vfp_dreg(index: u8) -> VfpReg {
 // caller; f64 stays dropped at decode. See CLAUDE.md North Star / #369.
 // ============================================================================
 
-/// The 0..15 file index of a single-precision VFP register `S0..S15`, or `None`
-/// for a double-precision (`D`) register (never used on the f32 path).
+/// The 0..32 file index of a single-precision VFP register `S0..S31`, or `None`
+/// for a double-precision (`D`) register (never used on the f32 path). S16..S31
+/// are reached only by the wide-file rung (#1267/#1439).
 fn vfp_s_index(r: VfpReg) -> Option<usize> {
-    use VfpReg::*;
-    Some(match r {
-        S0 => 0,
-        S1 => 1,
-        S2 => 2,
-        S3 => 3,
-        S4 => 4,
-        S5 => 5,
-        S6 => 6,
-        S7 => 7,
-        S8 => 8,
-        S9 => 9,
-        S10 => 10,
-        S11 => 11,
-        S12 => 12,
-        S13 => 13,
-        S14 => 14,
-        S15 => 15,
-        _ => return None,
-    })
+    VFP_S_FILE.iter().position(|&s| s == r)
 }
 
 /// Allocate the lowest-numbered free single-precision S-register (S0..S15).
@@ -3211,7 +3192,7 @@ fn alloc_vfp_temp(used: &mut [bool; VFP_FILE]) -> Result<VfpReg> {
     for (i, slot) in used.iter_mut().enumerate() {
         if !*slot {
             *slot = true;
-            return Ok(index_to_vfp_reg(i as u8));
+            return Ok(VFP_S_FILE[i]);
         }
     }
     Err(synth_core::Error::synthesis(
@@ -9895,6 +9876,39 @@ pub struct SelectionStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1439 (RQ-89-WIDEFILE11): with the wide file on, the 17th S-register
+    /// grant must be S16 — a REAL callee-saved register — never S0. Before the
+    /// fix the slot->register map wrapped `% 16`, so this grant returned S0 (the
+    /// param home) and the wide-file rung miscompiled under execution.
+    #[test]
+    fn wide_file_grants_are_real_s16_to_s31_1439() {
+        let mut used = new_vfp_used(true);
+        for (k, &want) in VFP_S_FILE.iter().enumerate() {
+            let r = alloc_vfp_temp(&mut used).expect("32 grants fit the wide file");
+            assert_eq!(r, want);
+            assert_eq!(vfp_s_index(r), Some(k), "slot<->register round-trip");
+        }
+        assert_eq!(VFP_S_FILE[16], VfpReg::S16);
+        assert!(alloc_vfp_temp(&mut used).is_err(), "33rd grant exhausts");
+        // An above-cap home grant must be returned to ITS OWN slot: before the
+        // fix the ungrant cleared slot 0 (the live param home) instead of 16.
+        let mut used = new_vfp_used(true);
+        for slot in used.iter_mut().take(VFP_ALLOC_DEFAULT) {
+            *slot = true;
+        }
+        assert_eq!(vfp_try_reg_home_s(&mut used), None);
+        assert!(used[..VFP_ALLOC_DEFAULT].iter().all(|&u| u) && !used[16]);
+        // The narrow (default) file still never reaches S16, and the
+        // round-robin mapper still wraps.
+        let mut used = new_vfp_used(false);
+        let grants: Vec<_> = (0..16)
+            .map(|_| alloc_vfp_temp(&mut used).unwrap())
+            .collect();
+        assert_eq!(grants, VFP_S_FILE[..16].to_vec());
+        assert!(alloc_vfp_temp(&mut used).is_err());
+        assert_eq!(index_to_vfp_reg(17), VfpReg::S1);
+    }
     use crate::rules::RuleDatabase;
     // RQ-69-SUBTRACT (#242): the lowering path that used MveSize was deleted;
     // it survives here only for the hand-built ArmInstructions that exercise

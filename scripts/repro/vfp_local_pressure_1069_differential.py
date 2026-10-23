@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 40
+# ci-checks: emulations >= 98
 """#1069 (RQ-60-VFPPRESSURE increment 2) — EXECUTION-validate frame-homed
 VFP locals on cortex-m7dp under falcon's exact flags
 (`-t cortex-m7dp --relocatable`).
@@ -21,13 +21,18 @@ present:
        * live13 — negative control (base path, no rung);
        * live14/live16 — phase-1 S-file wall (attitude#tick / ekf#estimate);
        * live24 — grown-pool composition (>8 permanent slots);
-       * live8d — the f64/D-file twin.
+       * live8d — the f64/D-file twin;
+       * wide60/wsum60 — the vfp-wide-file rung (#1267) plus its pool-grow
+         retry (#1439), the ONLY rung reaching them; gate 1b asserts that
+         from SYNTH_RECOVERY_STATS so a ladder change that rescues them
+         elsewhere cannot silently drop the rung's execution coverage.
 
 Run (needs wasmtime + unicorn + pyelftools + arm-none-eabi-ld):
   SYNTH=/path/to/synth python scripts/repro/vfp_local_pressure_1069_differential.py
 """
 
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -54,7 +59,9 @@ except ImportError:  # older unicorn naming
 WAT = Path(__file__).with_name("vfp_local_pressure_1069.wat")
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 
-F32_EXPORTS = ["live13", "live14", "live16", "live24"]
+F32_EXPORTS = ["live13", "live14", "live16", "live24", "wide60", "wsum60"]
+# #1439: the exports that must compile THROUGH the wide-file rung (gate 1b).
+WIDE_FILE_EXPORTS = ["wide60", "wsum60"]
 F64_EXPORTS = ["live8d"]
 EXPORTS = F32_EXPORTS + F64_EXPORTS
 
@@ -69,14 +76,31 @@ def compile_relocatable(tmp):
     r = subprocess.run(
         [SYNTH, "compile", str(WAT), "-o", obj,
          "-t", "cortex-m7dp", "--relocatable"],
-        capture_output=True, text=True,
+        # ONE stream, so each `[recovery-stats]` line (stderr) stays after the
+        # `Compiling function` line (log) it belongs to (#1439 gate 1b).
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        env={**os.environ, "SYNTH_RECOVERY_STATS": "1"},
     )
+    combined = r.stdout
     if r.returncode != 0:
-        fail(f"compile failed:\n{r.stderr}\n{r.stdout}")
-    combined = r.stderr + r.stdout
+        fail(f"compile failed:\n{combined}")
     if "skipping function" in combined:
         fail(f"a function was skipped (GI-FPU-002 regression):\n{combined}")
-    return obj
+    return obj, combined
+
+
+def rungs_by_function(log):
+    """Map each compiled function to its `[recovery-stats]` lines (logging
+    only — SYNTH_RECOVERY_STATS does not move a byte)."""
+    out, cur = {}, None
+    for line in log.splitlines():
+        m = re.search(r"Compiling function '([^']+)'", line)
+        if m:
+            cur = m.group(1)
+            out.setdefault(cur, [])
+        elif "[recovery-stats]" in line and cur is not None:
+            out[cur].append(line.strip())
+    return out
 
 
 def link(tmp, obj):
@@ -191,9 +215,18 @@ VALS = [0.0, -0.0, 1.0, -1.0, 0.5, -0.25, 1.5, 0.001, -3.14159265,
 # indistinguishable -- abs(-x) and neg(-x) both give +x -- so the positive rows
 # are the discriminator: a `neg` would corrupt them too, an `abs` leaves them
 # alone. v0.78 recorded the failing set as exactly the six NEGATIVE values and
-# no positive one, which identifies the operation as an ABS. That conclusion
-# evaporates if someone trims this list to "the interesting cases", so the span
-# is asserted rather than hoped for.
+# no positive one, and read that as identifying an ABS.
+#
+# REFUTED BY v0.89 (RQ-89-WIDEFILE11). The defect was neither an abs nor a neg:
+# it was REGISTER ALIASING. The occupancy map widened to S0..S31 for the wide
+# file, but the slot->register map still wrapped `% 16`, so the 17th grant came
+# back as S0 (the param home) and every S16..S31 grant aliased a live
+# caller-saved register. One factor of the product was therefore some OTHER
+# value; the product saturates to +-inf/0, so only its sign survived. The
+# non-saturating `wsum60` export failed 9 of 14 rows on that binary, POSITIVE
+# inputs included. The sign-only signature was a property of this fixture, not
+# of the defect. The span below stays asserted — it is still the row set the
+# product exports are checked over.
 import struct as _struct  # noqa: E402  (bit-exact row pinning, below)
 
 _POS = [v for v in VALS if v == v and v > 0 or (v == 0 and str(v)[0] != "-")]
@@ -276,7 +309,25 @@ assert not _missing_positive, (
 
 def main():
     tmp = tempfile.mkdtemp(prefix="vfp1069_")
-    obj = compile_relocatable(tmp)
+    obj, log = compile_relocatable(tmp)
+
+    # Gate 1b (#1439): the wide exports must be produced BY the wide-file rung
+    # and its pool-grow retry. Without this, a ladder change that rescues them
+    # through another rung would leave the executions below green while the
+    # rung they exist to cover went unexecuted.
+    stats = rungs_by_function(log)
+    for name in WIDE_FILE_EXPORTS:
+        lines = stats.get(name)
+        if not lines:
+            fail(f"{name}: no [recovery-stats] lines — the ladder never ran")
+        if lines[-1] != "[recovery-stats] rung=vfp-wide-file result=ok":
+            fail(f"{name}: not produced by the vfp-wide-file rung: {lines[-1]}")
+        if not any("tried rung=vfp-wide-file+pool-grow(" in ln and ln.endswith("-> ok")
+                   for ln in lines):
+            fail(f"{name}: the wide-file pool-grow retry did not produce it:\n"
+                 + "\n".join(lines))
+    print(f"PASS: {len(WIDE_FILE_EXPORTS)} exports compiled through "
+          "vfp-wide-file+pool-grow (the rung under test is the one reached)")
 
     # Gate 1: every export is an emitted T symbol (see the #850 note in
     # vfp_spill_881_differential.py — pyelftools, never host nm).
