@@ -44,7 +44,7 @@ categories = ["compilers", "embedded", "wasm", "no-std"]
 wasmparser = "0.261"
 wasm-encoder = "0.261"
 wit-parser = "0.261"
-wit-component = "0.261"
+wit-component = "0.262"
 wat = "1.261"
 wast = "261.0"
 
