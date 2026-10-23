@@ -3735,7 +3735,11 @@ fn refuse_memory64_module(
              ships to (Cortex-M, RV32, host-native AArch64) can provide. \
              Refusing; there is no workaround short of a 32-bit-indexed \
              memory.",
-            mem.index
+            // `WasmMemory::index` counts DEFINED memories from 0, but imports
+            // take the leading memory indices, so the true index is offset by
+            // the import count (RQ-89-MEM64: an imported i32 memory beside a
+            // defined i64 one was reported as "memory 0").
+            mem.index as usize + imported_memories.len()
         );
     }
     Ok(())

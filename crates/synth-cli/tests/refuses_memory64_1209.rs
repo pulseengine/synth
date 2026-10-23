@@ -157,3 +157,23 @@ fn imported_i32_memory_still_compiles() {
         );
     }
 }
+
+/// The diagnostic names the memory's TRUE index. Imports take the leading
+/// memory indices, so a defined `(memory i64 1)` after an imported i32 memory is
+/// memory 1. v0.88 reported it as "memory 0".
+#[test]
+fn defined_memory64_after_imported_memory_reports_true_index_1209() {
+    let wat = r#"(module
+  (import "env" "mem" (memory 1))
+  (memory i64 1)
+  (func (export "get") (result i32) (i32.load (i32.const 0))))"#;
+    let (ok, text) = run("mixed-index", wat, &["-t", "cortex-m4", "--relocatable"]);
+    assert!(
+        !ok,
+        "a defined memory64 beside an imported memory compiled:\n{text}"
+    );
+    assert!(
+        text.contains("declares memory 1 as 64-bit-indexed"),
+        "the refusal must name memory 1, the true index:\n{text}"
+    );
+}
