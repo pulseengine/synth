@@ -2115,6 +2115,13 @@ fn compile_command(
             // RQ-66-BOTHWRONG (#1209): same for memory64 — this path shares
             // the module-path #1046 lineage.
             refuse_memory64_module(&module.memories, &module.imported_memories)?;
+            refuse_imported_multi_memory(
+                &module.imported_memories,
+                &module.memories,
+                &module.imports,
+                backend_name,
+                relocatable,
+            )?;
             refuse_custom_page_size(&module.memories, relocatable)?;
             refuse_shared_memory(&module.memories)?;
             // #642: compute the call_indirect guard inputs BEFORE the
@@ -3745,6 +3752,52 @@ fn refuse_memory64_module(
     Ok(())
 }
 
+/// RQ-89-MEM64 (#1582): refuse a module whose memory index space mixes an
+/// IMPORTED memory with any other memory, on every path except ARM
+/// `--relocatable`.
+///
+/// Module-level memory handling (the #406 multi-memory gate, memory 0's size,
+/// the `.linear_memory` reservation, R10, the AArch64/RV32 compile-time limit)
+/// reads the DEFINED-memory list, which numbers from 0 and ignores imports. So
+/// `(import "env" "m0" (memory 1 1)) (memory 2 2)` counted as ONE memory, passed
+/// the gate, and memory 0 took the DEFINED memory 1's size. Measured on v0.88:
+/// self-contained Cortex-M and RV32 `memory.size 0` returned 2 where wasmtime
+/// returns 1, and under bounds checking (`--safety-bounds software` on ARM, the
+/// AArch64 default) accesses in [64 KiB, 128 KiB) returned data where wasmtime
+/// traps.
+///
+/// ARM `--relocatable` is exempt: memory 0's size there is the embedder's R10,
+/// measured correct (`memory.size 0` = 1), and every op that addresses memory k
+/// directly already loud-refuses.
+fn refuse_imported_multi_memory(
+    imported_memories: &[synth_core::wasm_decoder::WasmMemory],
+    defined_memories: &[synth_core::wasm_decoder::WasmMemory],
+    imports: &[ImportEntry],
+    backend_name: &str,
+    relocatable: bool,
+) -> Result<()> {
+    let total = imported_memories.len() + defined_memories.len();
+    if imported_memories.is_empty() || total <= 1 || (backend_name == "arm" && relocatable) {
+        return Ok(());
+    }
+    let first = imports
+        .iter()
+        .find(|i| matches!(i.kind, synth_core::ImportKind::Memory))
+        .map(|i| format!("`{}`.`{}`", i.module, i.name))
+        .unwrap_or_else(|| "an import".to_string());
+    anyhow::bail!(
+        "module imports memory 0 ({first}) and has {total} linear memories in \
+         total ({} imported, {} defined), but this path sizes and addresses \
+         memory 0 from the DEFINED memories only — memory 0 would silently take \
+         another memory's size (a wrong `memory.size`, and lost out-of-bounds \
+         traps under bounds checking) (#1582). Multi-memory with an imported \
+         memory compiles only on ARM --relocatable, where the embedder supplies \
+         memory 0's size. Refusing",
+        imported_memories.len(),
+        defined_memories.len()
+    );
+}
+
 /// RQ-69-PAGESIZE (#1315, gale): refuse a memory whose DECLARED page size is
 /// not the default 64 KiB (the custom-page-sizes proposal).
 ///
@@ -4119,6 +4172,13 @@ fn compile_all_exports(
                     refuse_dropped_start_function(module.start_function)?;
                     // RQ-66-BOTHWRONG (#1209): same for memory64.
                     refuse_memory64_module(&module.memories, &module.imported_memories)?;
+                    refuse_imported_multi_memory(
+                        &module.imported_memories,
+                        &module.memories,
+                        &module.imports,
+                        backend.name(),
+                        relocatable,
+                    )?;
                     refuse_custom_page_size(&module.memories, relocatable)?;
                     refuse_shared_memory(&module.memories)?;
                     let export_count = module
@@ -4353,6 +4413,13 @@ fn compile_all_exports(
         // start-function decision below — memory64 is refused on every
         // compile mode this path serves.
         refuse_memory64_module(&module.memories, &module.imported_memories)?;
+        refuse_imported_multi_memory(
+            &module.imported_memories,
+            &module.memories,
+            &module.imports,
+            backend.name(),
+            relocatable,
+        )?;
         refuse_custom_page_size(&module.memories, relocatable)?;
         refuse_shared_memory(&module.memories)?;
         // RQ-59-STARTFN (#1046) / RQ-65-MVPCORE (#1017): a `(start ...)`

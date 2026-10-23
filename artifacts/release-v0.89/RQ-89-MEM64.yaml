@@ -61,6 +61,40 @@ artifacts:
         accepted the imported shapes on 5 of them); `synthesize` is a PoC that
         emits no code; w2c2 is not installed here and awsm/wasker are not built
         by default, so those three paths were NOT exercised.
+        SECOND FIX, Refs #1582 (found by this lane). A module that IMPORTS memory 0
+        and DEFINES memory 1 passed the #406 multi-memory gate, which counted
+        defined memories only, so memory 0 took memory 1's size. Measured on the
+        f9ca92de binary against wasmtime: `memory.size 0` = 2 where wasmtime gives 1
+        on self-contained Cortex-M, RV32, AArch64 and the single-function path. Under
+        bounds checking (ARM --safety-bounds software, the AArch64 default), 3 of 3
+        out-of-range ARM accesses and 4 of 4 AArch64 accesses in [64 KiB, 128 KiB)
+        returned data where wasmtime traps. refuse_imported_multi_memory now refuses
+        an imported memory plus any other memory on every path except ARM
+        --relocatable, which is unchanged: the embedder's R10 gives the correct
+        size (1), as measured. refuses_imported_multi_memory_1582.rs is red on the
+        v0.88 gate (7 of 7 legs) and green after; its imported-only, defined-only,
+        two-defined and relocatable controls are green on both. Newly refused, over
+        the same 2735 modules: 17 modules mix an imported memory with another, all
+        in the spec suite, and 0 of their 68 module-level legs went from accepted
+        to refused. On the merged .wast path the census moves 4 files to
+        module_decline on every backend: imports1 and imports4 from all_declined,
+        memory_grow and memory_size_import from partial. The partial losses removed
+        only wrong code: the one memory function that compiled, size1, returned 4
+        on the pre-fix image where the spec asserts 2. Census PINS and
+        at-least-one-export moved 45/42/44 to 43/40/42 (README, FEATURE_MATRIX and
+        its template, SPEC_FAMILY_CENSUS, claims.yaml). Paired control: the new pins
+        pass on the fixed binary and fail 9 ways on f9ca92de; the old pins fail 9
+        ways on the fixed binary. home_alias_audit, arm_corpus_sweep,
+        invalid_accept, the #1225 identity oracle (420 checks) and the pagesize
+        oracle (32) are unchanged. Selector parity still PASSes at 17924 of 17924
+        assertions; 3 modules move from wasmtime-instantiate, where they compiled but
+        no assertion could run, to module-decline (261 to 258 both-accepted; nothing
+        pins that count). Byte identity is 824 compiles with 0
+        differences. NOT FIXED: with ONLY an imported memory, RV32 returns
+        `memory.size 0` = 0 and AArch64 returns 0 and traps an in-bounds load (4 of
+        6 agree with wasmtime). Those paths size memory 0 from the first defined
+        memory, read at six sites; the self-contained ARM image gets it right. That
+        is not a one-line cause, so it is reported for filing.
       done-when: >
         manual:2027-03-31 memory64 modules are refused loudly rather than
         accepted and silently wrong — delivered with an execution-verified
