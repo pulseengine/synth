@@ -156,12 +156,25 @@ SWITCH_WAT = HERE / "ra003_switch_1230.wat"
 # "joined value" here). Pinning 0 explicitly, rather than deleting the row,
 # makes a REGRESSION back to 1 a caught pin-mismatch instead of a silently
 # ignored new key.
+#
+# br_if.wast/R5 (2 -> 0) and labels.wast/R4 (1 -> 0): RQ-89-BRVALUE (#1215,
+# v0.89). The three call-free instances were the direct selector's stack
+# model at an UNREACHABLE block join — dead code after a `br`/`br_table`
+# left values on the simulated stack, so a later join read a register no
+# live path had written, and VCR-RA-003 refused that stream. With the model
+# reset at the join (`select_with_stack`, `End`), all three now COMPILE and
+# are EXECUTED correct against wasmtime on the default, --no-optimize and
+# --relocatable legs by scripts/repro/brvalue_operand_1215_differential.py
+# (`labels.switch`, `br_if.nested-br-value`, `br_if.nested-br_table-value`).
+# Pinned at 0 like the two rows above, for the same reason. The frozen-bytes
+# proof below is unaffected: it replays the PRE-fix `switch` object, which
+# is the evidence the validator was right to refuse it.
 # ---------------------------------------------------------------------------
 KNOWN: dict[tuple[str, str], int] = {
     ("br.wast", "R4"): 0,
-    ("br_if.wast", "R5"): 2,
+    ("br_if.wast", "R5"): 0,
     ("br_table.wast", "R4"): 0,
-    ("labels.wast", "R4"): 1,
+    ("labels.wast", "R4"): 0,
 }
 FILES = ["br.wast", "br_if.wast", "br_table.wast", "labels.wast"]
 

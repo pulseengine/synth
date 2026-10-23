@@ -24,7 +24,7 @@ implemented**.
 
 | family | files | arm | riscv | aarch64 |
 |--------|-------|-----|-------|---------|
-| **MVP core** | 80 | **12** / 21 | **9** / 23 | **18** / 20 |
+| **MVP core** | 80 | **13** / 20 | **9** / 23 | **18** / 20 |
 | SIMD | 59 | 0 / 0 | 0 / 0 | 0 / 0 |
 | multi-memory | 39 | 1 / 3 | 0 / 3 | 1 / 1 |
 | reference types | 23 | 0 / 3 | 0 / 3 | 0 / 0 |
@@ -120,17 +120,19 @@ own line — `start-function modules: 4 seen, 2 both-accepted and booted ...
 That is the file-vs-module gap v0.63's caution predicted, measured rather than
 assumed.
 
+**v0.89 movement (RQ-89-BRVALUE, #1215): arm MVP core 12 / 21 -> 13 / 20.** `labels.wast` moved from `partial` to `ok`. Its one declined function, `switch`, was a VCR-RA-003 refusal caused by the direct selector's stack model at an unreachable block join. It now compiles, and it is EXECUTED against wasmtime: all 6 of its spec assertions pass on both selectors in the parity oracle, and on all three ARM legs in `brvalue_operand_1215_differential.py`. No other file on any backend moved.
+
 ## The two facts the aggregate hides
 
-### 1. MVP core is 12 of 80 fully-`ok` on arm
+### 1. MVP core is 13 of 80 fully-`ok` on arm
 
-The scalar foundation every other family rests on is **15 %** complete by
+The scalar foundation every other family rests on is **16 %** complete by
 this measure (9 riscv, 18 aarch64) — and this is the first release in which
 that number is measured on objects nothing was silently dropped from. It is
 the single most decision-relevant number in the project.
 
 It is why **`VCR-SIMD-001` is gated on the scalar core, not on appetite**:
-building a vector story on a 15 %-complete foundation widens the base faster
+building a vector story on a 16 %-complete foundation widens the base faster
 than it is closed.
 
 ### 2. 89 files — 35 % of the suite — are families with ZERO support anywhere

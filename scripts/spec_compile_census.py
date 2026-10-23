@@ -203,8 +203,18 @@ BUCKETS = [
 # after) is UNCHANGED and is `i64.wast`, a plain MVP-core i64-arithmetic file
 # mis-attributed to the `memory64` family by the `64\.wast$` filename
 # pattern — not a memory64 module, and not evidence of a hole in the refusal.
+# v0.89 (RQ-89-BRVALUE, #1215): arm ok 15 -> 16, partial 30 -> 29, and the
+# arm "MVP core" family ok 12 -> 13 below. ONE file flipped — labels.wast,
+# partial -> ok, measured file-by-file with the v0.88.0 binary against the fix
+# on the same tree (no other file moved on arm). Its one previously declined
+# function, `switch`, was a VCR-RA-003 refusal caused by the direct selector's
+# stack model at an unreachable block join; it now compiles and is EXECUTED
+# correct against wasmtime (6/6 spec assertions on both selectors in the
+# parity oracle, and on all three ARM legs in
+# scripts/repro/brvalue_operand_1215_differential.py). at-least-one-export is
+# unchanged (45): the file already exported something.
 PINS = {
-    "arm": dict(ok=15, partial=30, all_declined=94, module_decline=99,
+    "arm": dict(ok=16, partial=29, all_declined=94, module_decline=99,
                 no_module=9, no_exports=9, parse_fail=1, panic=0,
                 other_error=0),
     "riscv": dict(ok=9, partial=33, all_declined=96, module_decline=100,
@@ -288,8 +298,9 @@ def run_backend(synth: Path, backend: str, files, jobs: int):
 # This census publishes ONE derived figure per backend (`at-least-one-export`).
 # That figure is correct and gated, and it is the wrong number to plan from: it
 # averages families synth TARGETS with families synth has never implemented.
-# Split by family it says two things the aggregate hides — MVP core is 12 of
-# 80 fully-ok on arm (the scalar foundation every other family rests on;
+# Split by family it says two things the aggregate hides — MVP core is 13 of
+# 80 fully-ok on arm (12 until v0.89, when RQ-89-BRVALUE #1215 moved
+# labels.wast partial -> ok) (the scalar foundation every other family rests on;
 # 14 of 114 in v0.63 before the family re-attribution and the #1225 path fix
 # below), and 89 files (35 % of the suite) are families with ZERO support on
 # any backend, which is a declared BOUNDARY rather than a failure.
@@ -380,7 +391,7 @@ def family_of(name: str) -> str:
 # pre-existing #1168 multi-module label-collision refusal, unchanged by this
 # PR (confirmed identical on the pre-fix binary).
 FAMILY_OK_PINS = {
-    "arm":     {"MVP core": 12, "multi-memory": 1, "SIMD": 0, "GC": 0,
+    "arm":     {"MVP core": 13, "multi-memory": 1, "SIMD": 0, "GC": 0,
                 "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                 "memory64": 1, "bulk memory": 1, "reference types": 0,
                 "multi-value": 0},

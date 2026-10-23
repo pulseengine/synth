@@ -25,6 +25,29 @@ artifacts:
       priority: should
       issue: "#1213"
       verification-track: manual
+      disposition: refuted
+      issue-scope: closes
+      landed: "PR #1583 - #1213 - REFUTED: the refuting command, run first, found the defect already gone. select.wast as-convert-operand agrees with wasmtime on both legs (default and --no-optimize), 2 of 2 vectors each, on the v0.88.0 binary at 0161dee1. Nothing was built."
+      verified-by: >
+        REFUTED, and stated precisely about WHY it is right, because the reason is not that
+        the optimized lowering was repaired. The default leg's path for the function is the
+        RQ-65-DECLINE (v0.65, PR #1228) fallback: `wasm_to_ir`'s `Select` arm declines an i64
+        select (register-pair operands) and the function is lowered by the direct selector
+        (`direct (fallback: ...)` under SYNTH_PATH_DEBUG). So it is correct because the
+        optimized path REFUSES the shape, not because ir_to_arm handles it.
+        THE MEASUREMENT: the spec vectors are weak (results 0 and 1), so the issue's own
+        distinguishing probe was also run against wasmtime: an i64 select between
+        0x1122334455667788 and 0x1899aabbccddeeff feeding i32.wrap_i64, its high word via
+        i64.shr_u, and the full i64 result. Through the parity oracle's own boot-and-call
+        machinery (default and --no-optimize images), the three functions for condition 0
+        and non-zero: 12 rows, 12 agree. As bare objects on all three legs, default,
+        --no-optimize and --relocatable, the wrap and high-word functions for conditions
+        0, 1 and 7: 18 rows, 18 agree (0xccddeeff compared as a 32-bit word). A fourth
+        probe function with two i64 params and an i32 condition was NOT executed: it needs
+        five AAPCS argument words and the harness declines stack arguments, so it is not
+        counted. The parity oracle's full run on this lane's tree has no select.wast
+        divergence other than the two pre-existing as-memory.grow-value assertions, which
+        are a different matter (#539 envelope) and stay pinned under it.
       done-when: >
         manual:2027-03-31 the optimized path's i64 select feeding i32.wrap_i64
         returns the right value — delivered with an execution-verified result

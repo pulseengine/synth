@@ -235,23 +235,13 @@ EXPECTED_DECLINES = {
     # m7dp execution truth for all five lives in
     # vfp_local_pressure_1069_differential.py.
     "vfp_local_pressure_1069.wat": "f64 local shapes (live8d) on m4f",
-    # RQ-66-UNWATCHED (#1230). `switch` (extracted verbatim from
-    # tests/spec-testsuite/labels.wast) is the fixture #1230's own oracle
-    # (ra003_join_1230_differential.py) freezes and dynamically proves wrong
-    # via a poisoned-register replay — its decline IS the finding, not an
-    # incidental gap. Verified by compiling it for BOTH cortex-m3 and this
-    # sweep's own cortex-m4f (`--relocatable --all-exports`, identical
-    # message on both, so it is not FPU-target-dependent):
-    # "VCR-RA-003: register-allocation validation FAILED —
-    # JoinValueNotAvailable { reg: R4, join_block: 6 }" — the register-
-    # allocation validator refusing a genuinely broken join-value
-    # materialization, per #1230's own dynamic proof. This corpus's presence
-    # of the fixture is a SECOND, independent witness to the same finding,
-    # not a new one: the RATCHET is #1230's own oracle (5 -> 3 declines
-    # after RQ-66-BOTHWRONG fixed 2 of the original 5); this entry moves the
-    # day #1230's underlying allocator bug is fixed, same as that oracle's
-    # pin.
-    "ra003_switch_1230.wat": "VCR-RA-003 JoinValueNotAvailable (#1230 — the fixture's own point)",
+    # ra003_switch_1230.wat LEFT this table in v0.89 (RQ-89-BRVALUE, #1215).
+    # Its VCR-RA-003 refusal was the direct selector's stack model at an
+    # unreachable block join (dead code after a `br_table` left values on the
+    # simulated stack); with the model reset there it COMPILES, and Phase B
+    # now executes its 12 vectors against wasmtime with no mismatch. #1230's
+    # own oracle keeps the frozen pre-fix bytes as the proof the refusal was
+    # right.
 }
 
 # RQ-69-PAGESIZE (#1315): fixtures REFUSED AT THE MODULE LEVEL, by design.

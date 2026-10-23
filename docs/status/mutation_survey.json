@@ -682,6 +682,9 @@
         "addw_offset_681.wat|reloc",
         "addw_offset_681.wat|self",
         "addw_offset_681.wat|self-noopt",
+        "brvalue_operand_1215.wat|reloc",
+        "brvalue_operand_1215.wat|self",
+        "brvalue_operand_1215.wat|self-noopt",
         "cabi_arena_bind.wat|self",
         "cabi_arena_bind.wat|self-noopt",
         "call_5args.wat|self",
@@ -730,6 +733,7 @@
         "vcr_reach_001_i64_pair.wat|self",
         "vcr_reach_001_i64_pair.wat|self-noopt"
       ],
+      "want_changed_note": "re-pinned at v0.89 (RQ-89-BRVALUE, #1215) by pin-subset's own rule (sorted module names), 53 -> 56, re-derived on the tree rebased over #1577/#1578/#1579. The three new keys are brvalue_operand_1215.wat on its three corpus configurations, a fixture this lane ADDED to scripts/repro; replaying the mutant changed exactly the 53 pinned modules plus those three and removed none, so the set grew because the CORPUS grew, not because codegen changed for an existing module.",
       "want_classification": "UNTESTED"
     },
     {
@@ -2296,7 +2300,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "dda1718b",
+    "reanchored_at": "0b9fce74",
     "seed": 1189
   },
   "mutants": [
@@ -6967,13 +6971,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 7225,
+      "end": 7327,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/COND/select_with_stack.rs:7225:37",
+      "id": "R3-direct/COND/select_with_stack.rs:7327:37",
       "op": "COND",
       "region": "R3-direct",
       "seconds": 329.4,
-      "start": 7225,
+      "start": 7327,
       "status": "survived",
       "suite_seconds": 301.7
     },
@@ -7426,9 +7430,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 6430,
+      "end": 6532,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/GUARD/select_with_stack.rs:6430:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:6532:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -7440,7 +7444,7 @@
       "op": "GUARD",
       "region": "R3-direct",
       "seconds": 22.6,
-      "start": 6430,
+      "start": 6532,
       "status": "killed"
     },
     {

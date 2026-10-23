@@ -505,6 +505,24 @@ struct BlockLabel {
     /// parameters where the body's first read expects them. Empty for a
     /// block/if and for a parameter-free loop (legacy lowering, byte-identical).
     param_regs: Vec<Reg>,
+    /// #1215: the operand-stack height when the construct opened, below its
+    /// parameters — the height wasm's validation rule resets the stack to at
+    /// the construct's `end` (plus its results).
+    entry_height: usize,
+    /// #1215: `Some(stack[..entry_height])` once the code inside this construct
+    /// has become UNREACHABLE — set at the first unconditional transfer
+    /// (`br`/`br_table`/`return`/`unreachable`) while it was the innermost
+    /// open construct, or when a nested block's `end` is itself unreachable.
+    /// Wasm's operand stack is POLYMORPHIC after such a transfer; this
+    /// selector's simulated stack is not, so the dead code that follows (a
+    /// `br_table`'s remaining operands, the rest of an enclosing expression)
+    /// leaves values on it that no execution ever produces. The snapshot is
+    /// the LIVE prefix at the transfer; `End` uses it to drop the dead values
+    /// and to refuse loudly if the dead code reached below it.
+    dead_prefix: Option<Vec<StackVal>>,
+    /// #1215: some `br`/`br_if`/`br_table` targets this construct's join, so
+    /// its `end` is reachable even when its fall-through is not.
+    branched: bool,
 }
 
 /// #509: at a `br`/`br_if`/`br_table` edge, land the carried value in the

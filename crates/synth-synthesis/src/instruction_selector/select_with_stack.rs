@@ -3864,6 +3864,9 @@ impl InstructionSelector {
                         result_reg: None,  // allocated lazily at the first br edge
                         result_slot: None, // ditto, for an f32-carrying block (#1318)
                         param_regs: Vec::new(),
+                        entry_height: stack.len().saturating_sub(params as usize),
+                        dead_prefix: None,
+                        branched: false,
                     });
                     // No ARM code emitted at block entry (label at end)
                 }
@@ -3949,6 +3952,9 @@ impl InstructionSelector {
                         result_reg: None,
                         result_slot: None, // #1318
                         param_regs,
+                        entry_height: stack.len().saturating_sub(params_n),
+                        dead_prefix: None,
+                        branched: false,
                     });
                     // Emit loop start label
                     instructions.push(ArmInstruction {
@@ -3989,6 +3995,9 @@ impl InstructionSelector {
                         result_reg: None,
                         result_slot: None, // #1318
                         param_regs: Vec::new(),
+                        entry_height: stack.len().saturating_sub(params as usize),
+                        dead_prefix: None,
+                        branched: false,
                     });
                     // #313: checkpoint the operand-stack depth (the condition is
                     // already popped). The then-arm runs from here; its results
@@ -4057,6 +4066,11 @@ impl InstructionSelector {
                 }
 
                 Else => {
+                    // #1215: the else arm starts REACHABLE whatever the then
+                    // arm ended in.
+                    if let Some(bl) = block_labels.last_mut() {
+                        bl.dead_prefix = None;
+                    }
                     // #313: the then-arm's results are the vstack entries above
                     // the checkpoint. Pop them (top-most last) and truncate the
                     // vstack back to the checkpoint so the else-arm starts from
@@ -4140,6 +4154,26 @@ impl InstructionSelector {
 
                 End => {
                     cf.exit_block();
+                    // #1215: a construct whose own `end` is unreachable — a
+                    // LOOP whose body ended in an unconditional transfer (a
+                    // loop's `end` is reached only by falling through), or a
+                    // BLOCK nothing branches to — makes the code after it in
+                    // the enclosing construct unreachable too. Hand the
+                    // enclosing construct the LIVE prefix captured at the
+                    // transfer, so its own `end` can discard what the dead
+                    // code in between leaves on the simulated stack.
+                    if let Some(bl) = block_labels.last()
+                        && !bl.is_if
+                        && (bl.is_loop || !bl.branched)
+                        && let Some(live) = bl.dead_prefix.clone()
+                        && block_labels.len() >= 2
+                    {
+                        let parent_idx = block_labels.len() - 2;
+                        let parent = &mut block_labels[parent_idx];
+                        if parent.dead_prefix.is_none() && parent.entry_height <= live.len() {
+                            parent.dead_prefix = Some(live[..parent.entry_height].to_vec());
+                        }
+                    }
                     // If this closes an if-block, emit the end label
                     // and possibly the else label (if no else was present).
                     //
@@ -4297,6 +4331,48 @@ impl InstructionSelector {
                     } else if let Some(bl) = block_labels.pop()
                         && !bl.is_loop
                     {
+                        // #1215: the join of a block whose fall-through is
+                        // UNREACHABLE but which a branch targets. Validation
+                        // resets wasm's stack here to the block's entry height
+                        // plus its results; the simulated stack must be reset
+                        // the same way, or the values the dead code after the
+                        // transfer pushed (a `br_table`'s remaining operands,
+                        // the rest of an enclosing expression) stay on it and
+                        // the code after the block consumes them instead of
+                        // the outer values beneath — `br.wast`
+                        // `nested-br_table-value-index` returned 4+8=12, not
+                        // 1+8=9, on BOTH selectors. The reset is sound only if
+                        // the dead code left the live prefix exactly as the
+                        // transfer left it; if it popped or rewrote an entry
+                        // below the block's entry height, the model of the
+                        // enclosing values is lost and the function is
+                        // REFUSED rather than miscompiled.
+                        let dead_join = bl.dead_prefix.is_some()
+                            && (bl.result_reg.is_some()
+                                || bl.result_slot.is_some()
+                                || (bl.results == 0 && bl.branched));
+                        if dead_join {
+                            let live = bl.dead_prefix.as_deref().unwrap_or_default();
+                            if stack.len() < bl.entry_height || stack[..bl.entry_height] != *live {
+                                return Err(synth_core::Error::synthesis(
+                                    "#1215: unreachable code after a br/br_table/\
+                                     return/unreachable consumed or rewrote an \
+                                     operand-stack value BELOW its enclosing \
+                                     block's entry height — the direct selector's \
+                                     simulated stack is not polymorphic, so the \
+                                     enclosing values cannot be recovered at the \
+                                     block's join; declined rather than \
+                                     miscompiled"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                        // With nothing above the entry height there is no
+                        // fall-through value to land (the join is reached
+                        // only by its branches). Above it, the dead top is
+                        // still moved exactly as before — unexecuted bytes,
+                        // kept so no currently-correct function moves.
+                        let fallthrough = !dead_join || stack.len() > bl.entry_height;
                         // #509: fall-through edge into a branched-to value
                         // block's join — land the falling-through result in the
                         // designated result register BEFORE the end label (the
@@ -4329,6 +4405,7 @@ impl InstructionSelector {
                         // ("it sits BEFORE it, like the integer move"), which
                         // described the one arrangement that miscompiles.
                         if let Some(slot) = bl.result_slot
+                            && fallthrough
                             && let Some(top) = stack.last().copied()
                         {
                             // `let ... else`, not a match with a `_` arm: the
@@ -4355,7 +4432,7 @@ impl InstructionSelector {
                             free_vfp_temp(&mut vfp_used, &vfp_home, sreg);
                         }
                         if let Some(r_res) = bl.result_reg {
-                            if let Some(top) = stack.last().copied() {
+                            if let Some(top) = stack.last().copied().filter(|_| fallthrough) {
                                 if top.is_i64() {
                                     return Err(synth_core::Error::synthesis(
                                         "#509: i64 fall-through into an \
@@ -4388,6 +4465,9 @@ impl InstructionSelector {
                             // (An empty stack here is dead code after a
                             // terminator — the branch edges already loaded
                             // R_res, so just publish it as the result.)
+                            if dead_join {
+                                stack.truncate(bl.entry_height); // #1215
+                            }
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Label { name: bl.label },
                                 source_line: Some(idx),
@@ -4395,6 +4475,9 @@ impl InstructionSelector {
                             cf.add_instruction();
                             stack.push(StackVal::i32(r_res));
                         } else {
+                            if dead_join {
+                                stack.truncate(bl.entry_height); // #1215
+                            }
                             // Block end: emit end label
                             let slot = bl.result_slot;
                             instructions.push(ArmInstruction {
@@ -4442,6 +4525,7 @@ impl InstructionSelector {
                     // the `Return` arm below.
                     match block_labels.len().checked_sub(1 + *depth as usize) {
                         Some(target_idx) => {
+                            block_labels[target_idx].branched = true; // #1215
                             // #509: land a carried value in the target block's
                             // designated result register BEFORE the jump (no-op for
                             // void targets and plain loop back-edges).
@@ -4539,6 +4623,7 @@ impl InstructionSelector {
                     // executes none of it.
                     match block_labels.len().checked_sub(1 + *depth as usize) {
                         Some(target_idx) => {
+                            block_labels[target_idx].branched = true; // #1215
                             let mut edge_reserved = live_params.clone();
                             edge_reserved.push(cond_reg);
                             edge_value_move(
@@ -4712,6 +4797,7 @@ impl InstructionSelector {
                     for t in targets.iter().chain(std::iter::once(default)) {
                         match target_of(block_labels.len(), *t) {
                             Some(target_idx) if !moved.contains(&target_idx) => {
+                                block_labels[target_idx].branched = true; // #1215
                                 moved.push(target_idx);
                                 let mut edge_reserved = live_params.clone();
                                 edge_reserved.push(index_reg);
@@ -4726,34 +4812,38 @@ impl InstructionSelector {
                                     idx,
                                 )?;
                             }
-                            None if !moved_fn_return => {
-                                moved_fn_return = true;
-                                if !stack.is_empty() {
-                                    let mut peek_reserved = live_params.clone();
-                                    peek_reserved.push(index_reg);
-                                    let val = peek_operand(
-                                        &mut stack,
-                                        &mut next_temp,
-                                        &mut instructions,
-                                        &mut spill,
-                                        &peek_reserved,
-                                        idx,
-                                    )?;
-                                    if val != Reg::R0 {
-                                        instructions.push(ArmInstruction {
-                                            op: ArmOp::Mov {
-                                                rd: Reg::R0,
-                                                op2: Operand2::Reg(val),
-                                            },
-                                            source_line: Some(idx),
-                                        });
-                                        cf.add_instruction();
-                                    }
-                                }
-                            }
-                            _ => {}
+                            None => moved_fn_return = true,
+                            Some(_) => {}
                         }
                     }
+                    // #1215: the function-level edge's carried value is
+                    // PEEKED here, after every block edge has allocated its
+                    // result register (so none of those allocations can spill
+                    // or reuse the register it names), but the `mov R0, val`
+                    // is emitted only on the return path, after
+                    // `fn_return_label` below. Landing it up front with the
+                    // block edges was wrong whenever the INDEX lived in R0 —
+                    // a `br_table` indexed by parameter 0: the landing
+                    // overwrote the index before the cascade compared it, so
+                    // every input dispatched as if it were the carried value
+                    // (spec `func.wast` `break-br_table-nested-num(1)`
+                    // returned 52, wasmtime 50). The cascade between the peek
+                    // and the label is CMP/Bcc only and writes no register,
+                    // so `val` is still live at the label.
+                    let fn_ret_val = if moved_fn_return && !stack.is_empty() {
+                        let mut peek_reserved = live_params.clone();
+                        peek_reserved.push(index_reg);
+                        Some(peek_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &peek_reserved,
+                            idx,
+                        )?)
+                    } else {
+                        None
+                    };
 
                     // Emit cascading CMP + BEQ for each target
                     for (i, target) in targets.iter().enumerate() {
@@ -4806,6 +4896,18 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
+                        if let Some(val) = fn_ret_val
+                            && val != Reg::R0
+                        {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Mov {
+                                    rd: Reg::R0,
+                                    op2: Operand2::Reg(val),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                         if layout.frame_size > 0 {
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Add {
@@ -8520,6 +8622,19 @@ impl InstructionSelector {
                         stack.push(StackVal::i32(placeholder));
                     }
                 }
+            }
+            // #1215: an unconditional transfer makes the rest of the innermost
+            // construct unreachable. Record the LIVE stack prefix below its
+            // entry height now — after the op, so any spill the op itself
+            // performed is part of it — for `End` to restore the model to.
+            if matches!(
+                op,
+                WasmOp::Br(_) | WasmOp::BrTable { .. } | WasmOp::Return | WasmOp::Unreachable
+            ) && let Some(bl) = block_labels.last_mut()
+                && bl.dead_prefix.is_none()
+                && stack.len() >= bl.entry_height
+            {
+                bl.dead_prefix = Some(stack[..bl.entry_height].to_vec());
             }
         }
 
