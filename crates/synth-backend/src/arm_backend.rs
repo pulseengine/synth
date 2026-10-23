@@ -19,6 +19,53 @@ use synth_synthesis::{
 /// ARM Cortex-M backend using Synth's custom compiler pipeline
 pub struct ArmBackend;
 
+/// RQ-89-PAGESIZEAPI (#1339): the custom-page-size decision for the PUBLISHED
+/// `Backend` API, per memory, matching what `synth compile` decides on the
+/// same path (`refuse_custom_page_size` in `synth-cli`).
+///
+/// `(pagesize 1)` is HONOURED on `relocatable`: that forces the direct
+/// selector (#197), whose `memory.size` shifts by the declared log2 (#1441).
+/// Off it, the optimized path's `memory.size` hardcodes a 16-bit shift and the
+/// self-contained image is sized in 64 KiB pages, so it is REFUSED. Any other
+/// log2 is not valid wasm (the proposal permits exactly 1 and 65536).
+///
+/// This lives in the BACKEND, not in the `synth-core` decoder: gale asked on
+/// #1145 that the library HONOUR the declaration rather than refuse it
+/// (RQ-71-PAGELIB), and RQ-81-PAGESIZE3 built a decoder-level refusal and
+/// reverted it. The decoder still reports every declaration; only a backend
+/// that cannot lower one refuses it.
+fn check_page_sizes(
+    memories: &[synth_core::wasm_decoder::WasmMemory],
+    relocatable: bool,
+) -> Result<(), BackendError> {
+    for mem in memories {
+        if let Some(log2) = mem.page_size_log2 {
+            check_page_log2(mem.index, log2, relocatable)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_page_log2(idx: u32, log2: u32, relocatable: bool) -> Result<(), BackendError> {
+    match log2 {
+        16 => Ok(()),
+        0 if relocatable => Ok(()),
+        0 => Err(BackendError::CompilationFailed(format!(
+            "memory {idx} declares a custom page size of 1 byte (`(pagesize 1)`), \
+             which the ARM backend honours only with `relocatable` set (#1441): \
+             off it, the optimized path lowers `memory.size` with a literal \
+             16-bit shift and the image is sized in 64 KiB pages, so the module \
+             would be silently mis-sized. Refusing (#1339)."
+        ))),
+        _ => Err(BackendError::CompilationFailed(format!(
+            "memory {idx} declares a page size of 2^{log2} bytes; the \
+             custom-page-sizes proposal permits exactly 1 and 65536, so this is \
+             not valid wasm. Refusing rather than choosing an interpretation \
+             (#1339)."
+        ))),
+    }
+}
+
 impl ArmBackend {
     pub fn new() -> Self {
         Self
@@ -71,6 +118,30 @@ impl Backend for ArmBackend {
                 "no exported functions found".into(),
             ));
         }
+
+        // RQ-89-PAGESIZEAPI (#1339): DERIVE memory 0's page size from the
+        // module this call was handed, rather than trusting the caller's
+        // config. `CompileConfig::default()` says 16, so a library caller that
+        // decoded a `(pagesize 1)` module and compiled it got `memory.size`
+        // lowered as `R10 >> 16` — 0 for a 20000-byte memory where wasmtime
+        // answers 20000. Honoured where the CLI honours it (`relocatable`),
+        // refused where the CLI refuses it — see `check_page_sizes`.
+        check_page_sizes(&module.memories, config.relocatable)?;
+        let mem0_page_log2 = module
+            .memories
+            .first()
+            .and_then(|m| m.page_size_log2)
+            .unwrap_or(16);
+        let derived;
+        let config = if config.memory0_page_log2 == mem0_page_log2 {
+            config
+        } else {
+            derived = CompileConfig {
+                memory0_page_log2: mem0_page_log2,
+                ..config.clone()
+            };
+            &derived
+        };
 
         let mut functions = Vec::new();
         for func in &exports {
@@ -163,6 +234,10 @@ impl Backend for ArmBackend {
         ops: &[WasmOp],
         config: &CompileConfig,
     ) -> Result<CompiledFunction, BackendError> {
+        // RQ-89-PAGESIZEAPI (#1339): no module here, but the config can still
+        // say memory 0 is byte-paged — and off `relocatable` the optimized
+        // path's `memory.size` would ignore that and shift by a literal 16.
+        check_page_log2(0, config.memory0_page_log2, config.relocatable)?;
         let (code, relocations, line_map, branch_map, final_instrs) =
             compile_wasm_to_arm(ops, config).map_err(BackendError::CompilationFailed)?;
 

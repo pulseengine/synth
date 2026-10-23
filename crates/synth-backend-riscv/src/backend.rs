@@ -17,6 +17,42 @@ use synth_core::wasm_op::WasmOp;
 
 pub struct RiscVBackend;
 
+/// RQ-89-PAGESIZEAPI (#1339): the RV32 `memory.size` lowering is
+/// `li rd, bytes / 65536` — it does not read the declared page size, so a
+/// `(pagesize 1)` memory of 20000 bytes answered 0 where wasmtime answers
+/// 20000. Only the ARM direct selector honours `(pagesize 1)` (#1441); here
+/// every non-default page size is REFUSED, on the published `Backend` API and
+/// therefore under `synth compile` too, rather than silently mis-sized.
+/// The decoder still reports the declaration — the refusal lives in the
+/// backend that cannot lower it, not in `synth-core` (RQ-81-PAGESIZE3).
+fn check_page_log2(idx: u32, log2: u32) -> Result<(), BackendError> {
+    match log2 {
+        16 => Ok(()),
+        0 => Err(BackendError::CompilationFailed(format!(
+            "memory {idx} declares a custom page size of 1 byte (`(pagesize 1)`), \
+             which the RV32 backend does not honour: its `memory.size` \
+             lowering divides the byte extent by 65536, so it would return 0 \
+             for any memory under 64 KiB. Only the ARM backend with \
+             --relocatable honours `(pagesize 1)` (#1441). Refusing (#1339)."
+        ))),
+        _ => Err(BackendError::CompilationFailed(format!(
+            "memory {idx} declares a page size of 2^{log2} bytes; the \
+             custom-page-sizes proposal permits exactly 1 and 65536, so this is \
+             not valid wasm. Refusing rather than choosing an interpretation \
+             (#1339)."
+        ))),
+    }
+}
+
+fn check_page_sizes(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Result<(), BackendError> {
+    for mem in memories {
+        if let Some(log2) = mem.page_size_log2 {
+            check_page_log2(mem.index, log2)?;
+        }
+    }
+    Ok(())
+}
+
 impl RiscVBackend {
     pub fn new() -> Self {
         Self
@@ -53,6 +89,7 @@ impl Backend for RiscVBackend {
         config: &CompileConfig,
     ) -> Result<CompilationResult, BackendError> {
         ensure_supported_target(&config.target)?;
+        check_page_sizes(&module.memories)?;
 
         let exports: Vec<_> = module
             .functions
@@ -319,6 +356,7 @@ fn compile_function_with_opts(
     opts: SelectorOptions,
 ) -> Result<CompiledFunction, BackendError> {
     ensure_supported_target(&config.target)?;
+    check_page_log2(0, config.memory0_page_log2)?;
 
     // #1093: a PARAMETER-taking block type (`if`/`block`/`loop (param ..)`,
     // wasm multi-value) declines LOUDLY before selection. The RV32 selector's
