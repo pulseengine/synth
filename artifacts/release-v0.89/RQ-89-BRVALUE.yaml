@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-89-BRVALUE
     type: system-req
     release: v0.89
-    status: proposed
+    status: implemented
     title: "br_table/br_if with a value-carrying branch in an operand position is correct on both selectors"
     description: >
         br_table and br_if with a value-carrying branch, or an if, in an operand
@@ -26,6 +26,65 @@ artifacts:
       priority: should
       issue: "#1215"
       verification-track: manual
+      issue-scope: closes
+      landed: "PR #1583 - #1215 - DELIVERED: a wrong-code fix in select_with_stack, the one lowering every affected function takes on both legs. The refuting command, run first on the v0.88.0 binary, did NOT refute: 11 assertions across 5 spec functions were wrong on both legs, all pre-gated to the direct selector. Two mechanisms: (1) a block's end never reset the simulated operand stack to the block's entry height when its fall-through was unreachable, so values pushed by dead code after a br/br_table were consumed by the code after the block (br.wast nested-br_table-value-index 12, wasmtime 9); (2) a function-level br_table edge landed its carried value in R0 before the dispatch, overwriting an index held in R0 (func.wast break-br_table-nested-num(1) 52, wasmtime 50). Fixed by tracking each construct's entry height and the live prefix at its first unconditional transfer, resetting the model at an unreachable but branched-to join (refusing loudly if dead code reached below it), and landing R0 after the dispatch."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime, red on the v0.88.0 binary and green
+        on the fix, on the default, --no-optimize AND --relocatable legs.
+        THE NEW ORACLE, scripts/repro/brvalue_operand_1215_differential.py, wired into
+        ci.yml with `emulations >= 141`: on v0.88.0 `#1215 CHECKS=57/144`, the same 29
+        failures on each of the three legs (18 wrong values, 10 vectors of three functions
+        the base compiler refused, and the refusal needle absent); on the fix 144/144 with
+        141 emulations. It includes a fixture from scripts/repro/rv32_br_value_931.wat,
+        `carried`, which that file runs only on RV32: on ARM it returned 2 on all three
+        legs, wasmtime 6.
+        THE PARITY ORACLE, its five #1215 pins (11 cases) removed: on v0.88.0 it is RED with exactly the 11
+        (`CHECKS=17913/17924`, five unpinned new divergences, rc 1); on the fix it is GREEN,
+        `CHECKS=17934/17934` over 261 modules with 25328 emulations, 0 unpinned. The +10
+        assertions come from the newly accepted functions.
+        THE BYTE CENSUS, base binary vs fix on all three legs: 2243 modules from tests/wast
+        and the spec suite, plus 447 .wat/.wasm files under scripts/repro, tests and
+        examples. Functions moved or newly accepted only in br, br_if, br_table, func,
+        labels and unwind .wast, in rv32_br_value_931.wat and in the new fixture. Every one
+        is executed and agrees with wasmtime. NEWLY REFUSED: zero. NEWLY ACCEPTED, all
+        executed correct: labels.wast switch and br_if.wast nested-br-value and
+        nested-br_table-value, the three VCR-RA-003 JoinValueNotAvailable refusals that
+        scripts/repro/ra003_join_1230_differential.py pinned under #1230. Its census moved
+        from 3 to 0, with the ci.yml greps moved too. Paired control: the old pins red on the
+        fix binary and the new pins red on the base binary.
+        THE SAME CENSUS on cortex-m4f, cortex-m7dp (the FPU path whose f32 block
+        rendezvous this change also gates) and cortex-r5 (A32) moved exactly the same
+        functions, and no float function moved. The ARM corpus sweep (#973) drops
+        ra003_switch_1230.wat from EXPECTED_DECLINES, because it now compiles and its 12
+        vectors execute with no mismatch. Its run is green on the fix.
+        THREE MORE POPULATIONS, each measured as old vs new binary on the same tree.
+        The SPEC COMPILE CENSUS flips exactly one file, labels.wast, from partial to ok.
+        So arm ok goes 15 to 16, partial 30 to 29, and MVP core ok 12 to 13. Its newly
+        compiling `switch` passes 6/6 spec assertions in the parity oracle. The PINS, the
+        README / feature-matrix rows and SPEC_FAMILY_CENSUS.md moved together. Paired
+        control: the v0.88.0 binary reds on the new pins with exactly those three
+        mismatches, and the fix passes on all three backends.
+        The HOME-ALIAS AUDIT moves 7307 to 7367 functions, 8370 to 8418 homes, and
+        235493 to 236409 attributed instructions (re-measured after the rebase over INTALIAS). All of that is the new fixture, 15
+        functions on 4 legs. With the fixture held aside, both binaries print the old
+        three numbers exactly. The audit counts a function before VCR-RA-003 validation,
+        so this lane's newly compiling functions were already in it.
+        The MUTATION REPLAY entry R4-shared/REG/liveness.rs:7404:36 now changes 56
+        modules instead of 53. The three new ones are the new fixture on its three
+        corpus configurations, and none of the old 53 dropped out. It was re-pinned by
+        pin-subset's sorted rule.
+        THE REFUSAL: dead code that pops below the enclosing block's entry height is
+        refused with a `#1215:` diagnostic, pinned by the oracle on all three legs. The base
+        compiler also refused that shape, with a bare `stack underflow`.
+        PINS MOVED: known_open_pins 84 to 79 (waiver to 79), known_open_pinned_cases 157 to
+        146, selector_wildcard_arms_code 56 to 55 (back at baseline),
+        selector_lines_code 20125 to 20258 (waiver), and the exact emulation floor by +141 (re-derived by oracle_wiring_check.py).
+        The mutation ledger was re-anchored, with 2 sites moved and 34 live plus 4 retired
+        unchanged.
+        RESIDUAL, NOT WRONG CODE: other operand-position functions in these files are still
+        LOUD declines and do not miscompile. They are `stack underflow` in br.wast and
+        br_table.wast (for example as-br_if-cond and as-br_table-index), #509 i64
+        value-carry, GI-FPU-002 float, and a branch to an if join.
       done-when: >
         manual:2027-03-31 br_table/br_if with a value-carrying branch in an
         operand position is correct on both selectors — delivered with an

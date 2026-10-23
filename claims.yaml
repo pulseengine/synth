@@ -1119,7 +1119,8 @@ claims:
   # families synth TARGETS with families it has never implemented. Split by
   # family it says two things the aggregate hides, and BOTH are pinned here so
   # neither can rot behind a green total:
-  #   (a) MVP CORE is 12 of 80 fully-ok on arm — the scalar foundation every
+  #   (a) MVP CORE is 13 of 80 fully-ok on arm (12 until v0.89 RQ-89-BRVALUE
+  #       moved labels.wast partial -> ok) — the scalar foundation every
   #       other family rests on, 15 %. It is the most decision-relevant number
   #       in the project and appeared nowhere before v0.63 (as 14 of 114; v0.65
   #       re-attributed 31 multi-memory twins and 3 relaxed-SIMD lane files
@@ -1137,7 +1138,7 @@ claims:
   # boundary is still stated.
   - id: SYNTH-SPEC-FAMILY-MVP-CORE
     doc: docs/status/SPEC_FAMILY_CENSUS.md
-    text: "| **MVP core** | 80 | **12** / 21 | **9** / 23 | **18** / 20 |"
+    text: "| **MVP core** | 80 | **13** / 20 | **9** / 23 | **18** / 20 |"
     evidence:
       - kind: count-eq                       # the family split is EMITTED, not just documented
         pattern: 'def report_by_family\('
@@ -1152,10 +1153,10 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-README
     doc: README.md
-    text: "full-module compile 15 ARM / 9 RV32 / 21 AArch64, at-least-one-export 45 / 42 / 44, panics 0 / 0 / 0"
+    text: "full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 45 / 42 / 44, panics 0 / 0 / 0"
     evidence:
       - kind: count-eq                       # arm pins in the census script
-        pattern: 'ok=15, partial=30'
+        pattern: 'ok=16, partial=29'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # riscv pins
@@ -1189,10 +1190,10 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-MATRIX
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 15 ARM / 9 RV32 / 21 AArch64, at-least-one-export 45 / 42 / 44, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
+    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 45 / 42 / 44, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
     evidence:
       - kind: count-eq                       # same script pins as the README leg
-        pattern: 'ok=15, partial=30'
+        pattern: 'ok=16, partial=29'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
@@ -1855,9 +1856,35 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 20410
+        value: 20543
         baseline: 17897
         waivers:
+          - to: 20543
+            reason: >-
+              RQ-89-BRVALUE (#1215): 20410 -> 20543 on the tree rebased over
+              #1577/#1578/#1579 (first measured as 20125 -> 20258, +133 net:
+              160 added, 64 of them comment, 27 removed). ONE new lowering
+              decision, replacing no arm: `select_with_stack` now models wasm's
+              stack polymorphism after an unconditional transfer. Three
+              `BlockLabel` fields (entry height, the live prefix captured at the
+              first `br`/`br_table`/`return`/`unreachable`, and whether any
+              branch targets the join); `End` resets the simulated stack to the
+              entry height at an unreachable but branched-to join, propagates
+              unreachability out of a loop or an untargeted block, and REFUSES
+              loudly when the dead code reached below the entry height. Plus the
+              function-level `br_table` R0 landing moved behind the dispatch
+              (the wildcard that match carried went, see
+              selector_wildcard_arms_code). Execution-gated: 11 shared-wrong
+              spec assertions to `ok` in the parity oracle, and
+              scripts/repro/brvalue_operand_1215_differential.py (141 emulations
+              on three legs, red 57/144 on the v0.88.0 binary). A base-vs-fix
+              byte census on the default, --no-optimize and --relocatable legs
+              over every module of tests/wast and the spec suite (2243) and
+              every .wat/.wasm under scripts/repro, tests and examples (447)
+              moved only functions that this oracle or the parity oracle
+              execute (the census is in the PR), and newly declined none. It
+              also made the three VCR-RA-003 refusals the #1230 oracle pins
+              compile, correctly — that oracle's census moved 3 -> 0.
           - to: 20410
             reason: >-
               v0.89 RQ-89-NPARESIDUE (Refs #1568): 20151 -> 20410, re-derived
@@ -2876,7 +2903,9 @@ claims:
         
         # v0.89 RQ-89-NPARESIDUE (#1568): 30744 -> 31003, the same rise as
         # selector_lines_code (waived there); the tests live in synth-cli.
-        value: 31003
+        # RQ-89-BRVALUE (#1215): 31003 -> 31136, the same rise as
+        # selector_lines_code; the oracle is a scripts/repro differential.
+        value: 31136
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -2928,7 +2957,11 @@ claims:
         # `_ => QReg::Q7` — the Q-register allocator was orphaned by deleting
         # the 88 Helium arms, and `-D warnings` found it rather than a human
         # predicting it. No waiver: the value equals the baseline.
-        value: 56
+        # RQ-89-BRVALUE (#1215): 56 -> 55, back AT the baseline — the very
+        # `_ => {}` RQ-66-BOTHWRONG added to `BrTable`'s value-landing match
+        # went when that match was rewritten exhaustively (`Some(t) if ..`,
+        # `None`, `Some(_)`) around the deferred R0 landing. No waiver.
+        value: 55
         baseline: 55
         waivers:
           - to: 56
@@ -2976,7 +3009,9 @@ claims:
         # deleted with the orphaned Q-register allocator (see the code pin).
         # v0.88 native-pointer constant address: 93 -> 94, the guard's
         # `_ => continue` (see selector_wildcard_arms_code).
-        value: 94
+        # RQ-89-BRVALUE (#1215): 94 -> 93, the `BrTable` `_ => {}` (see
+        # selector_wildcard_arms_code).
+        value: 93
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -3128,9 +3163,22 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 84
+        value: 79
         baseline: 27
         waivers:
+          - to: 79
+            reason: >-
+              RQ-89-BRVALUE (#1215): 84 -> 79. Not a growth waiver — FIVE pins
+              CLOSED BY A FIX, none deleted or merged: the parity oracle's five
+              `#1215` shared-wrong entries (11 assertions) are `ok` because
+              `select_with_stack` now resets its simulated stack at an
+              unreachable block join and lands a function-level `br_table`
+              edge's R0 after the dispatch instead of over its index. Executed,
+              red on the v0.88.0 binary and green on the fix, by the parity
+              oracle with the pins removed and by
+              scripts/repro/brvalue_operand_1215_differential.py on all three
+              legs including --relocatable. An entry is still required because
+              79 remains above the baseline of 27.
           - to: 84
             reason: >-
               RQ-74-PINDEBT2 (#1223): 85 -> 84, the first movement in SEVEN
@@ -3254,7 +3302,9 @@ claims:
       - kind: ratchet
         name: known_open_pinned_cases
         direction: track
-        value: 157
+        # RQ-89-BRVALUE (#1215): 157 -> 146, the five closed #1215 pins'
+        # 1 + 2 + 2 + 5 + 1 = 11 cases.
+        value: 146
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the six tables in the
       # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in
@@ -4231,7 +4281,13 @@ claims:
     #   (38 measured via oracle_run.py: the 28 above + 7 no-SP calls of a
     #   constant routed through a local, all 7 WRONG at 0161dee1, + 3 SP-global
     #   no-regression calls; its 13 refusal rows are counted by the script).
-    text: "--exact-emulation-floor 368268"
+    # v0.89 RQ-89-BRVALUE (#1215): 368268 -> 368409 (re-derived on the tree rebased over #1577/#1578/#1579; first 368110 -> 368251).
+    #   `brvalue_operand_1215_differential.py` declares `emulations >= 141`
+    #   (141 measured via oracle_run.py: 47 vectors x 3 legs — default,
+    #   --no-optimize, --relocatable; its 3 refusal rows are counted by the
+    #   script itself, not by this floor). Re-derived from
+    #   `oracle_wiring_check.py --exact-emulation-floor 368409`.
+    text: "--exact-emulation-floor 368409"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

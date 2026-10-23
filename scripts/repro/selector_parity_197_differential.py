@@ -281,29 +281,20 @@ KNOWN: dict[tuple[str, int, str, str], tuple[str, int]] = {
     # closed `func.wast`'s `break-br_table-num` (`br_table 0 0 (i32.const 50)
     # (local.get 0)) (i32.const 51)`, the same function-level shape.
     #
-    # The remaining SIX entries are a third, genuinely different, unaddressed
-    # mechanism: a `br_table`/`br_if` whose INDEX or CONDITION operand is
-    # ITSELF a nested branch instruction that carries a value out (e.g. the
-    # outer `br_table`'s index operand is a second, nested `br_table`) — the
-    # selector does not model a branch as a value-producing expression when it
-    # appears in another branch's operand position. No call is involved, so
-    # #1210 cannot and does not touch these; the `target_idx` depth is
-    # in-range on every one, so the #1215 `checked_sub` fix does not touch
-    # them either (confirmed: all six reproduce, unchanged, after every fix in
-    # this lane). Left pinned — see
-    # scripts/repro/bothwrong_1210_1211_1214_triage.md for the evidence a
-    # nested `br 0 (i32.const 8)` used as `br_table`'s INDEX operand leaves
-    # its sibling VALUE operand undiscarded on the compiler's simulated
-    # stack, so a later `i32.add` sums both instead of using the one the
-    # taken branch actually carries (`br.wast`/`br_if.wast`
-    # nested-br_table-value-index: 1+4+8=... observed 12, wasmtime 9;
-    # `br_table.wast`'s two nested-br_table-* shapes and `func.wast`'s
-    # break-br_table-nested-num are the same mechanism).
-    ('br.wast', 0, 'nested-br_table-value-index', 'shared-wrong'): ('#1215', 1),
-    ('br_if.wast', 0, 'nested-br_table-value-index', 'shared-wrong'): ('#1215', 2),
-    ('br_table.wast', 0, 'nested-br_table-value', 'shared-wrong'): ('#1215', 2),
-    ('br_table.wast', 0, 'nested-br_table-value-index', 'shared-wrong'): ('#1215', 5),
-    ('func.wast', 0, 'break-br_table-nested-num', 'shared-wrong'): ('#1215', 1),
+    # The remaining FIVE entries (11 assertions) were two further mechanisms,
+    # both in `select_with_stack` (every one is pre-gated to it, so the
+    # "optimized" leg was the same lowering). FIXED in v0.89 (RQ-89-BRVALUE):
+    # (a) a block's `end` never reset the simulated operand stack to the
+    # block's entry height when its fall-through was UNREACHABLE, so the
+    # values the dead code after a `br`/`br_table` pushed (a `br_table`'s
+    # remaining operands) stayed on the model and the code after the block
+    # consumed them — br.wast/br_if.wast/br_table.wast nested-br_table-value*
+    # (`1+8` observed as `4+8`); (b) a function-level `br_table` edge landed
+    # its carried value in R0 BEFORE the dispatch cascade, overwriting an
+    # index that lived in R0 — func.wast break-br_table-nested-num(1). All
+    # eleven are `ok`; the shapes are executed on all three legs (including
+    # `--relocatable`, which refuses these spec modules whole) by
+    # scripts/repro/brvalue_operand_1215_differential.py.
     #
     # #1214 — i64 read-before-write local not zero-initialised on either
     # selector. Root cause: `infer_i64_locals` infers a local's width only

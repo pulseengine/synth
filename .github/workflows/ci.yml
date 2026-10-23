@@ -1210,7 +1210,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 368268 \
+            --exact-emulation-floor 368409 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -4538,8 +4538,31 @@ jobs:
           # reproduces 7305 / 8368 / 235455 EXACTLY. `hits: 0` is unchanged
           # throughout, and a codegen change would not have been confined to
           # the one fixture whose acceptance changed.
-          grep -Eq '^functions audited: 7307$' haa1189.txt
-          grep -Eq '^homes watched: 8370$' haa1189.txt
+          # RQ-89-BRVALUE (#1215): 7307 -> 7367, 8370 -> 8418, attributed
+          # 235493 -> 236409 (re-measured on the tree rebased over #1578
+          # INTALIAS; first measured over 235457 as -> 236357, the fixture
+          # then contributing 900 — INTALIAS's block-entry home copies add 16
+          # more inside it, 4 per leg). ONE new scripts/repro/*.wat fixture
+          # enters the audit corpus: brvalue_operand_1215.wat, 15 exported
+          # functions x 4 legs = +60 functions, +48 homes, +916 attributed.
+          # With the fixture held aside, THIS binary prints main's 7307 / 8370
+          # / 235493 exactly. That is the WHOLE
+          # delta, MEASURED per (module, leg): the fixture contributes exactly
+          # 60 / 48 / 900 on both binaries (first measurement, pre-INTALIAS); on that tree the v0.88.0 binary and
+          # the fixed binary print identical functions / homes / attributed,
+          # per (module, leg) as well as in total; and with the fixture held
+          # aside BOTH binaries print the previous 7307 / 8370 / 235457
+          # exactly. Only the UNPINNED unattributed count moves (base 29368, fix
+          # 29360; 29180 vs 29176 without the fixture): instructions the audit
+          # attributes to no home (where in the corpus was not localised).
+          # Not a reach change here either: the audit counts a
+          # function at SELECTION time, before VCR-RA-003 validation, so the
+          # functions this lane newly lets compile (labels.wast `switch`,
+          # br_if.wast `nested-br-value`/`nested-br_table-value`, the
+          # ra003_switch_1230.wat fixture) were already counted when they
+          # were refused. `hits: 0` unchanged.
+          grep -Eq '^functions audited: 7367$' haa1189.txt
+          grep -Eq '^homes watched: 8418$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -4554,7 +4577,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 235493 ' haa1189.txt
+          grep -Eq '^attributed instructions: 236409 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
@@ -5920,8 +5943,8 @@ jobs:
           set -euo pipefail
           python scripts/oracle_run.py \
             scripts/repro/ra003_join_1230_differential.py | tee /tmp/1230.txt
-          grep -qE '^#1230 decline TOTAL=3 \(pin 3\)$' /tmp/1230.txt
-          grep -qE '^#1230 CHECKS: 3 declines \+ 6 spec confirmations \+ 8 poisoned emulations$' /tmp/1230.txt
+          grep -qE '^#1230 decline TOTAL=0 \(pin 0\)$' /tmp/1230.txt
+          grep -qE '^#1230 CHECKS: 0 declines \+ 6 spec confirmations \+ 8 poisoned emulations$' /tmp/1230.txt
           grep -q '^RESULT: PASS' /tmp/1230.txt
       - name: "#1231 — AArch64 selector confuses GP/FP operand classes on local.set"
         run: |
@@ -6011,6 +6034,16 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/base_cse_differential.py
       - name: value-returning-branch differential (#509, both paths)
         run: python scripts/oracle_run.py scripts/repro/br_table_value_509_differential.py
+      - name: value-carrying branch in an operand position (#1215, three legs)
+        # RQ-89-BRVALUE: the direct selector's stack model at an unreachable
+        # block join, and a function-level br_table edge landing R0 over its
+        # own index. Default, --no-optimize AND --relocatable vs wasmtime, plus
+        # the loud refusal when dead code pops below the block entry.
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py scripts/repro/brvalue_operand_1215_differential.py | tee /tmp/brvalue1215.log
+          grep -qE '^#1215 CHECKS=[0-9]{3,}/[0-9]{3,}$' /tmp/brvalue1215.log
+          grep -q '^RESULT: PASS' /tmp/brvalue1215.log
       - name: optimized-path forward-branch shapes (#500)
         run: python scripts/oracle_run.py scripts/repro/cf_shapes_500_differential.py
       - name: const-only-body return differential (#791)
