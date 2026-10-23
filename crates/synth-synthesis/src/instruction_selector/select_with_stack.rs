@@ -37,7 +37,12 @@ impl InstructionSelector {
         // lowered as a raw linear-memory offset off R11 (R11 is 0 under that
         // ABI). The i32 arms relocate it through the const-address fold; every
         // other positional constant-address access is refused here, loudly.
-        self.npa_const_addr_guard(wasm_ops)?;
+        // RQ-89-NPARESIDUE (#1568): constants routed through a local are
+        // resolved too — relocated at their definition when the local is used
+        // only as an address, refused otherwise.
+        let npa_plan = self.npa_local_const_plan(wasm_ops, num_params);
+        self.npa_const_addr_guard(wasm_ops, &npa_plan)?;
+        self.npa_ptr_const_defs = npa_plan.rewrite;
 
         // #1093 pre-flight: a PARAMETER-taking block type declines as a typed
         // error, never a panic — block params pop BELOW the #313 frame-entry
@@ -1257,7 +1262,10 @@ impl InstructionSelector {
                     // const (including stored *values*) would look like an address,
                     // which is unsound — those modules use the positional
                     // load/store promotion only.
-                    if self.sp_global.is_some()
+                    // RQ-89-NPARESIDUE (#1568): without one, a const that
+                    // defines a local read ONLY as an address is relocated too
+                    // (`npa_local_const_plan`) — no scalar ever observes it.
+                    if (self.sp_global.is_some() || self.npa_ptr_const_defs.contains(&idx))
                         && let Some(addend) = self.static_data_addend(uval)
                     {
                         Self::emit_wasm_data_addr(&mut instructions, dst, addend, idx);

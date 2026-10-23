@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-89-NPARESIDUE
     type: system-req
     release: v0.89
-    status: proposed
+    status: implemented
     title: "The two --native-pointer-abi shapes v0.88 left wrong are fixed or refused loudly"
     description: >
         v0.88 fixed or refused every positional constant address under --native-
@@ -31,6 +31,51 @@ artifacts:
       priority: must
       issue: "#1568"
       verification-track: manual
+      issue-scope: outlives
+      landed: "PR #1579 - #1568 - DELIVERED (partial: shape 1 fixed or refused, shape 2 measured and left to a maintainer decision). The refuting command, run first at 0161dee1 with --native-pointer-abi against wasmtime, CONFIRMED both shapes: 10 of 14 probe calls wrong and 0 refused. Shape 1 was wrong in 7 of 7 no-stack-pointer rows, including 0x100 (so not only above 0xFFF), the i64 twin and local.tee. 3 of 3 rows with a stack-pointer global were already correct through the #237 rule. The stack-pointer sliver reached through a local was wrong. Shape 2 was wrong in 2 of 2. SHAPE 1: npa_local_const_plan finds every non-parameter local whose every definition stores an immediately preceding i32.const. It relocates those constants at their definition (__synth_wasm_data + C) when four conditions all hold: the module has no stack-pointer global, bounds checking is off, a set at block depth 0 precedes every read, and every read is the exact address (memarg offset 0) of a scalar load or store. npa_const_addr_guard resolves local.get and local.tee operands through the plan and refuses every other value that would bake, on every arm, including the i32 arms whose fold sees only a positional i32.const. Corpus cost: 0 of the 180 inputs that compile under the flag newly refuse. SHAPE 2: not implemented. Every option measured is either unsound or not narrow; see verified-by."
+      verified-by: >
+        DELIVERED for shape 1. npa_const_addr_differential.py now executes 38 calls
+        against wasmtime: the earlier 28, 7 no-stack-pointer rows of a constant routed
+        through a local, and 3 stack-pointer no-regression rows. It asserts 13 refusal
+        rows, among them one per relocation condition: a non-zero memarg offset (i32
+        and i64), a read that can see the zero initial value, a scalar observer, and
+        the stack-pointer sliver reached through a local. At the 0161dee1 binary the
+        oracle exits 1 with 7 BUG rows, and all 5 new refusal rows compile there. At
+        the new binary it exits 0, with 38 of 38 equal. Mutations, each red: dropping
+        the address-only condition, dropping the zero-initial-value condition,
+        allowing any memarg offset, and not rewriting the definition (the last gives 7
+        BUG). Why a non-zero offset is refused rather than relocated: relocating at
+        the definition and then adding offset 0x1000 read the zero reservation (0x0
+        against 0x66), because the mixed split retargets __synth_wasm_data + C by C
+        alone. Byte identity: 1356 compiles (226 inputs x 6 configurations, three of
+        them with --native-pointer-abi), 0 moved and 0 changed exit code. POPULATION:
+        the 184 of #1568 re-derives exactly as 226 inputs compiled with --target
+        cortex-m3 --relocatable --native-pointer-abi --all-exports at f982481f. At
+        f982481f, 62 of those 184 have no stack-pointer global and linmem > 0, exactly
+        #1568's figure; with data segments as the definition of a static region the
+        count is 8. At 0161dee1 the population is 180 and 58 of them have no
+        stack-pointer global; shared_memory_1315.wat is not among the 180. SHAPE 2
+        OPTIONS, the newly refused count of 180 for each, measured by real compiles: (A) refuse
+        any dynamic access in a no-stack-pointer module with memory, 25, and it also
+        refuses the host-pointer seam GI-NPA-001 exists for; (B) memarg offset > 0 in
+        the static region, 11; (C) offset at or above the lowest data segment, 0;
+        (D) offset inside a declared data segment, 0, the likeliest maintainer choice;
+        (E) offset >= 0x1000, 5; (F) offset >= 1024, 7. Without a stack-pointer global
+        wasm_data_base is 0, so B is the blanket rule under another name. C and D cost
+        nothing, but they catch no corpus input. They leave BSS-only modules and
+        offsets below the first segment open, as well as any base that is itself a
+        wasm offset. Relocating the offset (the #359 semantic) is refuted by
+        execution. The selector cannot tell a host-pointer base from an index base,
+        so no option is sound, and shape 2 is left to the maintainer. WHAT REMAINS,
+        led by a NEW pre-existing class found by this lane in modules WITH a
+        stack-pointer global, the shape gale ships: a relocated pointer constant
+        plus a non-zero memarg offset that leaves the constant's region. With an
+        SP global at 0x800 and segments at 0x900 and 0x2000, `i32.const 0x1900
+        i32.load offset=0x704` reads the zero reservation (0x0 against
+        0x38373635), and `i32.const 0x900 i32.load offset=0x1704` relocates both
+        parts and faults. Also remaining: shape 2, and constants reaching an
+        address through arithmetic or through a local with a non-constant
+        definition.
       done-when: >
         manual:2027-03-31 the two --native-pointer-abi shapes v0.88 left wrong
         are fixed or refused loudly — delivered with an execution-verified

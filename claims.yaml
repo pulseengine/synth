@@ -1855,9 +1855,27 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 20151
+        value: 20410
         baseline: 17897
         waivers:
+          - to: 20410
+            reason: >-
+              v0.89 RQ-89-NPARESIDUE (Refs #1568): 20151 -> 20410, re-derived
+              on the merged tree after #1577 and #1578 (first computed as
+              20125 -> 20384 against origin/main 0161dee1), +332 / -73 across the selector
+              files, roughly a third doc comment and ~40 lines MOVED (the
+              guard's access table became `npa_address_operands`, shared with
+              the new pass). ONE new soundness decision, replacing no arm: a
+              constant pointer routed through a local
+              (`i32.const 0x1004 local.set 0 local.get 0 i32.load`) was emitted
+              as `[R11 = 0, reg]` under --native-pointer-abi and read absolute
+              0x1004 (7 of 7 no-stack-pointer probe calls WRONG at 0161dee1).
+              `npa_local_const_plan` relocates the local's constant at its
+              definition when every read is the exact address of a scalar
+              access; `npa_const_addr_guard` refuses every other baked value
+              loudly. Execution-gated by npa_const_addr_differential.py (38
+              calls vs wasmtime, 13 refusal rows). Byte sweep: 1356 compiles,
+              0 moved, with and without the flag. No wildcard arm added.
           - to: 20151
             reason: >-
               RQ-89-INTALIAS (Refs #1566): 20125 -> 20151, +26 in
@@ -2855,7 +2873,10 @@ claims:
         # RQ-89-INTALIAS (#1566): 30718 -> 30744, the same +26 as
         # selector_lines_code; the gate is a python differential, outside
         # this population. `direction: track` — no waiver.
-        value: 30744
+        
+        # v0.89 RQ-89-NPARESIDUE (#1568): 30744 -> 31003, the same rise as
+        # selector_lines_code (waived there); the tests live in synth-cli.
+        value: 31003
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4204,7 +4225,13 @@ claims:
     #   exports x 8 argument rows, derived from its tables) and is wired into
     #   the unicorn job beside the #1436 float twin. Re-derived from
     #   `oracle_wiring_check.py --exact-emulation-floor 368258`.
-    text: "--exact-emulation-floor 368258"
+    # v0.89 RQ-89-NPARESIDUE (#1568): 368258 -> 368268, re-derived on the merged
+    #   tree after #1577 and #1578 (368110 + 60 + 88 + 10; first computed as
+    #   368110 -> 368120 against 0161dee1). `npa_const_addr_differential.py` now declares `emulations >= 38`
+    #   (38 measured via oracle_run.py: the 28 above + 7 no-SP calls of a
+    #   constant routed through a local, all 7 WRONG at 0161dee1, + 3 SP-global
+    #   no-regression calls; its 13 refusal rows are counted by the script).
+    text: "--exact-emulation-floor 368268"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
