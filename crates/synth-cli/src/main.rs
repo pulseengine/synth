@@ -1920,9 +1920,13 @@ fn compile_command(
     let use_all_exports =
         all_exports || (input.is_some() && func_index.is_none() && func_name_arg.is_none());
 
-    // RQ-68-MPUHONEST (#1284, #1145): the single-function path always builds a
-    // synth-owned image (it never emits a relocatable object), and synth
-    // programs no MPU — `--safety-bounds mpu` here could only be a silent no-op.
+    // RQ-68-MPUHONEST (#1284, #1145): the single-function path builds a
+    // synth-owned image, and synth programs no MPU — `--safety-bounds mpu`
+    // here could only be a silent no-op. (RQ-89-RELOCSINGLE, #1565: on the ARM
+    // backend `--relocatable` now reroutes this path to the module path
+    // below; that reroute sits AFTER this refusal, so `mpu` stays refused on
+    // `--func-index`/`--func-name` whatever the output kind — the whole-module
+    // form named in the message is the supported one.)
     if !use_all_exports && safety_bounds == SafetyBounds::Mpu {
         anyhow::bail!(
             "--safety-bounds mpu is refused on the single-function path \
@@ -1950,7 +1954,32 @@ fn compile_command(
         );
     }
 
-    if use_all_exports {
+    // RQ-89-RELOCSINGLE (#1565): `--relocatable` on the ARM single-function
+    // path was accepted and SILENTLY IGNORED — the self-contained builders
+    // below (`build_cortex_m_elf`, and `build_simple_elf` for A32) emit an
+    // ET_EXEC image with its own Reset_Handler, byte-identical to the same
+    // command without the flag, which no host linker accepts as input. The
+    // flag is HONOURED by rerouting to the module path restricted to the ONE
+    // requested root: the object is exactly what `--all-exports --relocatable`
+    // emits, minus the other exports — the same direct selector (#197), the
+    // same #235 reachable-callee closure and relocations, no vector table and
+    // no startup. aarch64 and RV32 already wrap this path in ET_REL and are
+    // untouched; every invocation without `--relocatable` is untouched.
+    let single_root = if !use_all_exports && relocatable && backend.name() == "arm" {
+        if input.is_none() {
+            anyhow::bail!(
+                "--relocatable is refused with a built-in demo (no input module):                  the demo path builds a synth-owned image and has no module to                  compile relocatably. Pass a .wasm/.wat input (#1565)"
+            );
+        }
+        Some(match func_name_arg {
+            Some(ref name) => SingleRoot::Name(name.clone()),
+            None => SingleRoot::Index(func_index.unwrap_or(0)),
+        })
+    } else {
+        None
+    };
+
+    if use_all_exports || single_root.is_some() {
         return compile_all_exports(
             input,
             output,
@@ -1981,6 +2010,7 @@ fn compile_command(
             stack_layout,
             proven_safe,
             allow_skipped_exports,
+            single_root,
         );
     }
 
@@ -3595,6 +3625,15 @@ fn reachable_from_roots(
     reachable
 }
 
+/// RQ-89-RELOCSINGLE (#1565): the one root an ARM single-function
+/// `--relocatable` compile asks the module path for — the export NAME given by
+/// `-n`/`--func-name`, or the function INDEX given by `--func-index`.
+#[derive(Clone, Debug)]
+enum SingleRoot {
+    Name(String),
+    Index(u32),
+}
+
 /// RQ-59-STARTFN (#1046): refuse a module that declares a `(start ...)`
 /// function on every path that does not invoke it — since RQ-65-MVPCORE
 /// (#1017, v0.65) the SELF-CONTAINED ARM Cortex-M image does (its
@@ -3886,6 +3925,11 @@ fn compile_all_exports(
     // non-exported internal helper (#235 reachability) — that stays a
     // warning-only skip either way.
     allow_skipped_exports: bool,
+    // RQ-89-RELOCSINGLE (#1565): `Some` only for an ARM single-function
+    // `--relocatable` compile (`-n`/`--func-index`) — seed the #235 closure
+    // from this ONE root instead of every export. `None` (every other caller
+    // and invocation) is byte-identical to before.
+    single_root: Option<SingleRoot>,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -3990,6 +4034,19 @@ fn compile_all_exports(
         all_funcref_slots, // #275: static funcref-region image (slot -> func index; None = null)
         a64_plan_inputs, // #851 lane L3: snapshot of the aarch64 substrate inputs (globals image + funcref table)
     ) = if let Some(module_binaries) = multi_wast_modules {
+        // RQ-89-RELOCSINGLE (#1565): the single-function path compiles ONE
+        // extracted module, the merge below compiles them all — rerouting a
+        // `-n`/`--func-index` request onto the merge would silently change
+        // which module's function is compiled. Refuse instead.
+        if single_root.is_some() {
+            anyhow::bail!(
+                "--relocatable with --func-index/--func-name is refused on a \
+                 multi-module .wast input: the merge would pick the export across \
+                 every module, not the single extracted module this path compiles. \
+                 Use --all-exports --relocatable, or extract the module to a .wat \
+                 (#1565)"
+            );
+        }
         // Decode each module and collect exports.
         // Last module with a given export name wins (matching WAST spec
         // semantics where assertions test the most-recent module).
@@ -4375,7 +4432,44 @@ fn compile_all_exports(
         // exports call no internal function (every leaf fixture) yields exactly
         // the exports, so existing output stays bit-identical.
         #[cfg_attr(not(feature = "exports_only_275_probe"), allow(unused_mut))]
-        let mut reachable = if let Some(start_idx) = accepted_start_function {
+        let mut reachable = if let Some(root) = &single_root {
+            // RQ-89-RELOCSINGLE (#1565): one requested root. Resolved exactly
+            // as the single-function path resolves it (export NAME for `-n`,
+            // function INDEX for `--func-index`), then closed over its callees
+            // like any export. A non-exported root would ship as a file-LOCAL
+            // symbol (#656) — an object exporting nothing — so it is refused.
+            let found = match root {
+                SingleRoot::Name(name) => module
+                    .functions
+                    .iter()
+                    .find(|f| f.export_name.as_deref() == Some(name.as_str()))
+                    .with_context(|| format!("Function '{}' not found", name))?,
+                SingleRoot::Index(idx) => module
+                    .functions
+                    .iter()
+                    .find(|f| f.index == *idx)
+                    .with_context(|| format!("Function index {} not found", idx))?,
+            };
+            if found.export_name.is_none() {
+                anyhow::bail!(
+                    "--relocatable with --func-index {} is refused: function {} is \
+                     not exported, so the relocatable object would define it only as \
+                     a file-local symbol and export nothing a host could link \
+                     against. Select an exported function (--func-name), or use \
+                     --all-exports --relocatable (#1565)",
+                    found.index,
+                    found.index
+                );
+            }
+            info!(
+                "Single-function --relocatable: compiling '{}' (index {}) and its \
+                 reachable callees on the module path (#1565)",
+                found.export_name.as_deref().unwrap_or(""),
+                found.index
+            );
+            let roots: std::collections::BTreeSet<u32> = [found.index].into_iter().collect();
+            reachable_from_roots(&module.functions, num_imports, &elem_func_indices, &roots)
+        } else if let Some(start_idx) = accepted_start_function {
             // #1017: the start function is a ROOT of the closure alongside the
             // exports — it is invoked at instantiation, so its body and its
             // callees ship exactly like an export's.

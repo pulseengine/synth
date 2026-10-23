@@ -14,6 +14,13 @@
 #
 # Differential: compile each export with the issue's exact config
 # (`-t cortex-m3 -n <name> --relocatable`), emulate under unicorn
+# [#1565 NOTE: until v0.89 that config SILENTLY IGNORED --relocatable and
+# built the self-contained single-function image — those are the bytes
+# that were wrong and that this oracle pins. #1565 made the flag honoured
+# (it now emits the direct-selector ET_REL object), so the flag is dropped
+# from the compile below to keep pinning the SAME bytes: `-n <name>` now
+# is byte-identical to the pre-#1565 `-n <name> --relocatable`, checked
+# per function by cmp against the v0.88 binary in the #1565 PR.]
 # (UC_MODE_THUMB), difference against the wasmtime oracle. Trap vectors
 # assert BOTH sides trap (unicorn: UDF hit / no return-pad; wasmtime:
 # "integer overflow" / "divide by zero").
@@ -110,7 +117,6 @@ def compile_func(func, out_o):
         SYNTH, "compile", WAT,
         "-t", "cortex-m3",
         "-n", func,
-        "--relocatable",
         "-o", out_o,
     ]
     r = subprocess.run(argv, capture_output=True, text=True)
