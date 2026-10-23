@@ -1855,9 +1855,31 @@ claims:
         # them already loud-errored all 91 of the same ops, so no decline was
         # lost and no emitted byte moved — byte identity over the corpus is the
         # gate this passed. A FALL, no waiver.
-        value: 20125
+        value: 20151
         baseline: 17897
         waivers:
+          - to: 20151
+            reason: >-
+              RQ-89-INTALIAS (Refs #1566): 20125 -> 20151, +26 in
+              select_with_stack.rs, DERIVED with `git diff --unified=0` over
+              this glob family: +16 code, +10 comment, 0 removed. ONE soundness
+              decision the integer homes never had at a control-flow boundary,
+              replacing no arm: the #989 `snapshot_home_reg_aliases` copy at a
+              `local.set`/`local.tee` INSIDE an if/block/loop ran on the
+              writing path only, so an operand-stack entry pushed before the
+              construct and still naming a param's home register read a temp
+              the other path never filled (`if_param_get_set_i32(10, 3, 0)`
+              returned 0xdeadbee5 with r3 poisoned, wasmtime 0). The new code
+              calls the EXISTING snapshot for every core-register local home
+              at `if`/`block`/`loop` entry, the integer twin of the #1436
+              float detach waived below; no new helper, zero wildcards. Gated
+              by scripts/repro/int_home_alias_1566_differential.py (32 of 80
+              executed vectors wrong + 1 export declined by VCR-RA-003, 8 of
+              11 exports, before; 0 of 88 after; both negative controls green
+              both times). Byte census over scripts/repro/*.wat: 1 function in
+              1 module moved (home_alias_class_1189_i32.wat `ifparam`, the
+              same 2-byte copy hoisted above the `cmp`), on the m4/m7dp
+              relocatable paths; 0 on the self-contained and RV32 paths.
           - to: 20125
             reason: >-
               v0.88 native-pointer constant address (Refs #1563): 19974 -> 20125
@@ -2830,7 +2852,10 @@ claims:
         # float-home alias guard waived on selector_lines_code above.
         # v0.88 NPACONST: 30567 -> 30718, the same rise as
         # selector_lines_code; the tests live in synth-cli.
-        value: 30718
+        # RQ-89-INTALIAS (#1566): 30718 -> 30744, the same +26 as
+        # selector_lines_code; the gate is a python differential, outside
+        # this population. `direction: track` — no waiver.
+        value: 30744
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4174,7 +4199,12 @@ claims:
     #   executed under unicorn vs wasmtime) and is wired into the
     #   trap-semantics-oracle job beside the #1168 link oracle. Paired control:
     #   `--exact-emulation-floor 368170` rc=0, `368110` rc=1.
-    text: "--exact-emulation-floor 368170"
+    # v0.89 RQ-89-INTALIAS (#1566): 368170 -> 368258 (rebased onto #1577; 368110 + 60 + 88). The new
+    #   int_home_alias_1566_differential.py declares `emulations >= 88` (11
+    #   exports x 8 argument rows, derived from its tables) and is wired into
+    #   the unicorn job beside the #1436 float twin. Re-derived from
+    #   `oracle_wiring_check.py --exact-emulation-floor 368258`.
+    text: "--exact-emulation-floor 368258"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

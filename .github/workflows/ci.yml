@@ -1210,7 +1210,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 368170 \
+            --exact-emulation-floor 368258 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -4547,7 +4547,14 @@ jobs:
           # 217081 could not still hold. Nothing caught it because no grep ever
           # read it: exactly the "a ratchet fixes the number and cannot fix the
           # prose" shape this project keeps paying for. Derived here: 217291.
-          grep -Eq '^attributed instructions: 235457 ' haa1189.txt
+          # RQ-89-INTALIAS (#1566): 235457 -> 235493 (+36 = +9 on each of the
+          # 4 legs). ATTRIBUTED: the new if/block/loop-entry home snapshot
+          # copies an entry still naming a promoted local's home (r4) into a
+          # temp at each enclosing `block`/`loop` — spec-testsuite block.wast
+          # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
+          # else. Both still return 0xf / 0x1f executed. functions audited
+          # 7307, homes watched 8370 and hits 0 are UNCHANGED.
+          grep -Eq '^attributed instructions: 235493 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
@@ -6829,6 +6836,20 @@ jobs:
           SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
             scripts/repro/vfp_home_alias_1436_differential.py | tee /tmp/1436vha.txt
           grep -q '^RESULT: PASS' /tmp/1436vha.txt
+      # RQ-89-INTALIAS (#1566): the INTEGER twin of #1436 at a control-flow
+      # boundary — an entry pushed before an if/block/loop still naming a
+      # param's home register, the local rewritten on ONE path inside it. The
+      # #989 snapshot ran on the writing path only, so the other path read a
+      # temp nobody filled. EXECUTED against wasmtime with every non-argument
+      # core register poisoned; two different-local / consumed-before NEGATIVE
+      # CONTROLS. Unfixed: 32 of 80 executed vectors wrong + 1 export declined
+      # (VCR-RA-003), 8 of 11 exports.
+      - name: "an integer home rewritten on one path of a construct EXECUTES bit-exact (#1566)"
+        run: |
+          set -euo pipefail
+          SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
+            scripts/repro/int_home_alias_1566_differential.py | tee /tmp/1566iha.txt
+          grep -q '^RESULT: PASS' /tmp/1566iha.txt
       - name: "#1223 — the five algebraic-identity shapes, EXECUTED (RQ-74-PINDEBT2)"
         run: |
           set -euo pipefail

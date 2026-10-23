@@ -983,6 +983,32 @@ impl InstructionSelector {
                     &live_params,
                 )?;
             }
+            // #1566 (RQ-89-INTALIAS): the integer twin of the #1436 detach above.
+            // The #989 snapshot (`snapshot_home_reg_aliases`) at a `local.set`/
+            // `local.tee` inside a construct runs on the WRITING path only, so an
+            // entry pushed before the construct and consumed after it named a
+            // temp the other path never filled (`if` not taken, `br_if` out of a
+            // `block`, a later `loop` iteration re-copying an overwritten home).
+            // Snapshot every entry still naming a core-register local home — r0-r3
+            // params, r4-r8 promoted locals, and each i64 pair's hi half — at the
+            // boundary instead. `if`'s own condition is skipped: it is consumed
+            // before any write can run. Emits nothing when no entry aliases a home.
+            if matches!(op, If | Block | Loop) {
+                let mut homes: Vec<Reg> = Vec::new();
+                for (l, &r) in &local_to_reg {
+                    homes.push(r);
+                    if i64_locals.contains(l) {
+                        homes.extend(i64_pair_hi(r).ok());
+                    }
+                }
+                homes.sort_by_key(|r| *r as u8);
+                homes.dedup();
+                let skip = matches!(op, If).then(|| stack.len().wrapping_sub(1));
+                for h in homes {
+                    let (st, nt, ins) = (&mut stack, &mut next_temp, &mut instructions);
+                    snapshot_home_reg_aliases(h, skip, st, nt, ins, &mut spill, &live_params, idx)?;
+                }
+            }
             // #1069 (RQ-60-VFPPRESSURE increment 1): intercept the AEABI-routed
             // i64<->f32 conversions BEFORE `try_lower_f32` — its arms for these
             // ops run on DOUBLE-precision machinery (D-temps, VCVT.F64), which
