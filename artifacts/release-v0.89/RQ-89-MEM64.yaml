@@ -74,7 +74,7 @@ artifacts:
         size (1), as measured. refuses_imported_multi_memory_1582.rs is red on the
         v0.88 gate (7 of 7 legs) and green after; its imported-only, defined-only,
         two-defined and relocatable controls are green on both. Newly refused, over
-        the same 2735 modules: 17 modules mix an imported memory with another, all
+        the same corpus (2736 modules after the bbda3f9e rebase): 17 modules mix an imported memory with another, all
         in the spec suite, and 0 of their 68 module-level legs went from accepted
         to refused. On the merged .wast path the census moves 4 files to
         module_decline on every backend: imports1 and imports4 from all_declined,
@@ -86,10 +86,10 @@ artifacts:
         pass on the fixed binary and fail 9 ways on f9ca92de; the old pins fail 9
         ways on the fixed binary. home_alias_audit, arm_corpus_sweep,
         invalid_accept, the #1225 identity oracle (420 checks) and the pagesize
-        oracle (32) are unchanged. Selector parity still PASSes at 17924 of 17924
+        oracle (32) are unchanged. Selector parity still PASSes, at 17934 of 17934 on the bbda3f9e merge
         assertions; 3 modules move from wasmtime-instantiate, where they compiled but
         no assertion could run, to module-decline (261 to 258 both-accepted; nothing
-        pins that count). Byte identity is 824 compiles with 0
+        pins that count). Byte identity on the merged tree is 828 compiles with 0
         differences. NOT FIXED: with ONLY an imported memory, RV32 returns
         `memory.size 0` = 0 and AArch64 returns 0 and traps an in-bounds load (4 of
         6 agree with wasmtime). Those paths size memory 0 from the first defined
