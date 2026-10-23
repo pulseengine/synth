@@ -365,6 +365,22 @@ pub struct DecodedModule {
     /// shipping the region uninitialized — the segment would otherwise be
     /// INVISIBLE to any post-decode honesty check.
     pub default_memory_nonconst_data: Option<String>,
+    /// RQ-89-MEM64 (#1209): every IMPORTED memory's declared type, in import
+    /// order, with `index` set to its position in the memory index space
+    /// (imports come first, so the k-th imported memory is memory k).
+    ///
+    /// Kept SEPARATE from [`Self::memories`] on purpose: `memories` drives
+    /// data placement and the `__synth_mem_base_N`/`__synth_mem_size_N`
+    /// region table, so folding imports into it would move emitted bytes for
+    /// every module importing an ordinary 32-bit memory. This field exists
+    /// only so the module-shape refusals can SEE an imported declaration —
+    /// until v0.89 the import arm discarded the memory type entirely, so
+    /// `(import "env" "mem" (memory i64 1))` slipped past
+    /// `refuse_memory64_module`: its `i64.const`-offset data segment was
+    /// silently dropped (a booted Cortex-M image read 0 where wasmtime reads
+    /// the segment's 42) and a high-word out-of-bounds store under
+    /// `--safety-bounds software` landed at the low word instead of trapping.
+    pub imported_memories: Vec<WasmMemory>,
     /// Import entries (module name, field name, kind)
     pub imports: Vec<ImportEntry>,
     /// Number of imported functions (for distinguishing import calls from local calls)
@@ -812,6 +828,7 @@ impl DecodedModule {
 pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     let mut functions = Vec::new();
     let mut memories = Vec::new();
+    let mut imported_memories: Vec<WasmMemory> = Vec::new();
     let mut data_segments = Vec::new();
     // VCR-MEM-002 phase 1 (#406): (memory_index, offset, bytes) for active
     // const-offset data segments on memory > 0, and the first decode-level
@@ -1053,7 +1070,21 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             );
                             (ImportKind::Function(type_idx), idx)
                         }
-                        wasmparser::TypeRef::Memory(_) => (ImportKind::Memory, 0),
+                        wasmparser::TypeRef::Memory(mem) => {
+                            // RQ-89-MEM64 (#1209): record the imported memory's
+                            // declared type so `refuse_memory64_module` sees an
+                            // imported `(memory i64 ...)` (it used to be
+                            // discarded here, and the refusal never fired).
+                            imported_memories.push(WasmMemory {
+                                index: imported_memories.len() as u32,
+                                initial_pages: mem.initial as u32,
+                                max_pages: mem.maximum.map(|m| m as u32),
+                                shared: mem.shared,
+                                memory64: mem.memory64,
+                                page_size_log2: mem.page_size_log2,
+                            });
+                            (ImportKind::Memory, 0)
+                        }
                         wasmparser::TypeRef::Table(t) => {
                             // #642: an imported table only yields a SOUND
                             // compile-time bound when its limits pin the size
@@ -1485,6 +1516,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         extra_memory_data_segments,
         multi_memory_decline,
         default_memory_nonconst_data,
+        imported_memories,
         imports,
         num_imported_funcs,
         func_arg_counts,

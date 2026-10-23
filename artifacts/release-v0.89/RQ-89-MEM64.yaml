@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-89-MEM64
     type: system-req
     release: v0.89
-    status: proposed
+    status: implemented
     title: "memory64 modules are refused loudly rather than accepted and silently wrong"
     description: >
         memory64 modules are accepted and silently wrong on both selectors: data
@@ -28,6 +28,30 @@ artifacts:
       priority: should
       issue: "#1209"
       verification-track: manual
+      issue-scope: closes
+      landed: "PR #PRNUM - #1209 - DELIVERED. The refuting command, run first, found the defect REFUTED as filed and LIVE in one shape. As filed: a module that DEFINES `(memory i64 1)` has been refused at decode since v0.66.0 (4a3f6080, RQ-66-BOTHWRONG). The v0.88 binary refuses it on 16 of 16 legs (with and without an i64.const data segment, across Cortex-M self-contained, --no-optimize, --relocatable, RV32, RV32 --relocatable, AArch64 and Cortex-R5), as memory 1 under multi-memory, and through the .wast path. Still live: an IMPORTED `(import ... (memory i64 1))`. The decoder's import arm discarded the memory type, so the refusal never saw it, and the imported shapes compiled rc=0 on 13 of 21 legs. A booted self-contained Cortex-M image read 0 from an i64.const 16 data segment that wasmtime reads as 42, on both selectors; the i32-memory twin reads 42. Under --safety-bounds software, a store to i64 address 0x1_0000_0008 landed at offset 8 instead of trapping, on 4 of 4 ARM legs. Fix: `DecodedModule.imported_memories` records each imported memory's type. It is kept separate from `memories`, so data placement and the __synth_mem_* region table are untouched. `refuse_memory64_module` checks both, and its diagnostic says `imports memory N` or `declares memory N`."
+      verified-by: >
+        DELIVERED, red to green, as a loud refusal rather than support. Supporting
+        memory64 needs i64 addressing on every path of both selectors and a >4 GiB
+        address space no shipped target has. Refusing the memory TYPE, not only an
+        i64-offset data segment, is deliberate: a memory64 module with no data
+        segment is equally wrong, since an out-of-bounds i64 address is truncated
+        into bounds. crates/synth-cli/tests/refuses_memory64_1209.rs has five
+        tests. On the v0.88 source the two imported tests FAIL on 8 of 8 legs
+        each, the two defined tests pass (regression guards, there was no cargo
+        test of this refusal before), and the i32 imported-memory negative
+        control passes; on the fixed source all five pass. Newly refused, counted
+        over all 571 .wast/.wat/.wasm files in the tree (2735 modules): 14 modules
+        import a memory64, all in tests/spec-testsuite/memory64-imports.wast, and
+        all 14 were ALREADY refused by v0.88 on 4 of 4 legs ("No exported
+        functions found in module"), so only the reason changes. No oracle output
+        moved: spec_compile_census, home_alias_audit_corpus_1189,
+        arm_corpus_sweep_973 and invalid_accept_1207 print identical output on
+        both binaries, and no pinned number, floor or KNOWN entry moved. Byte
+        identity: 206 repo fixtures x 4 legs = 824 compiles, 536 byte-identical,
+        288 the same error, 0 different. NOT FIXED HERE: an imported
+        `(memory 1 (pagesize 1))` bypasses refuse_custom_page_size the same way.
+        It is recorded for #1315/#1441 rather than narrowed in this lane.
       done-when: >
         manual:2027-03-31 memory64 modules are refused loudly rather than
         accepted and silently wrong — delivered with an execution-verified
