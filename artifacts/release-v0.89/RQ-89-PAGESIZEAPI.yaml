@@ -64,8 +64,17 @@ artifacts:
         land after it, so #1339 stays open by issue-scope outlives. KNOWN STALE HINT, kept
         byte-identical on purpose: the CLI refusal on -b riscv and -b aarch64 WITHOUT
         --relocatable still says "Add --relocatable". That advice now leads to the new
-        refusal, not to wrong code. The mutation ledger was reanchored by text on the tree
-        rebased onto 33050370: 14 sites, 0 not found, all moved by this lane — 7 in
+        refusal, not to wrong code. MC/DC (RQ-57-MCDC): the RV32 check_page_log2 is in the
+        scored synth_backend_riscv::backend surface. Its first draft, a match on the integer,
+        lowered to a jump table scored as 18 conditions with 17 DEAD, which pushed dead past
+        the ceiling of 51. It is now two single-condition ifs, driven by three new
+        rv_page_size_gate harness rows (16 compiles, 0 and 5 refuse). BRANCH_POPULATION adds
+        check_page_log2 = 2 and moves compile_function_with_opts 10 -> 11, both from the
+        gate's own REPIN output. Paired controls under witness 0.42.0 / rustc 1.96.1: the main
+        gate passes the main build and fails the lane build, and the lane gate passes the lane
+        build and fails the main build. Locally, dead is 49 on BOTH builds; the lane adds
+        +1 decision, +2 conditions, +1 proved and 0 dead, and moves no floor or ceiling. The
+        mutation ledger was reanchored by text on the tree rebased onto 0b9fce74: 14 sites, 0 not found, all moved by this lane — 7 in
         arm_backend.rs by +75 and 7 in main.rs by +21, each matching its file's net added
         lines above the site. Mutants 34, controls 3, ci_subset 10 and retired 4 are
         unchanged. Also out of scope: memory.grow on a

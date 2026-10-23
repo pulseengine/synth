@@ -652,6 +652,31 @@ pub extern "C" fn rv_param_block_gate(params: i32) -> i32 {
     }
 }
 
+/// Drives the RQ-89-PAGESIZEAPI (#1339) page-size refusal in
+/// `synth_backend_riscv::backend::check_page_log2`, reached through
+/// `compile_function_with_opts` from the config's `memory0_page_log2`. The
+/// RV32 `memory.size` lowering divides the byte extent by 65536, so a
+/// `(pagesize 1)` memory answered 0 where wasmtime answers its byte count.
+///
+/// Rows: `16` → the default page, compiles (the `log2 == 16` accept);
+/// `0` → `(pagesize 1)`, refused (the `log2 == 0` message arm); `5` → a
+/// spec-invalid page size, refused (the other message arm). `log2` arrives
+/// as a Wasm parameter so the comparison is never constant-folded.
+#[unsafe(no_mangle)]
+pub extern "C" fn rv_page_size_gate(log2: i32) -> i32 {
+    let config = CompileConfig {
+        target: TargetSpec::riscv32imac(),
+        memory0_page_log2: log2.clamp(0, 63) as u32,
+        linear_memory_bytes: 65536,
+        ..Default::default()
+    };
+    let ops = [WasmOp::MemorySize(0), WasmOp::End];
+    match RiscVBackend::new().compile_function("f", &ops, &config) {
+        Ok(_) => 0,
+        Err(_) => 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,6 +736,12 @@ mod tests {
         assert_eq!(rv_param_block_gate(0), 0, "void block must compile");
         assert_eq!(rv_param_block_gate(1), 1, "#1093: (1,0) block must decline");
         assert_eq!(rv_param_block_gate(2), 1, "#1093: params=2 must decline");
+
+        // #1339 page-size refusal: the default page compiles, (pagesize 1)
+        // and a spec-invalid page size are refused.
+        assert_eq!(rv_page_size_gate(16), 0, "default page must compile");
+        assert_eq!(rv_page_size_gate(0), 1, "#1339: (pagesize 1) must refuse");
+        assert_eq!(rv_page_size_gate(5), 1, "#1339: invalid page must refuse");
 
         // Every added shape must be reachable and classified.
         for shape in 0..=21 {

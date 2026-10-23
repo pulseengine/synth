@@ -30,22 +30,30 @@ pub struct AArch64Backend;
 /// The decoder still reports the declaration — the refusal lives in the
 /// backend that cannot lower it, not in `synth-core` (RQ-81-PAGESIZE3).
 fn check_page_log2(idx: u32, log2: u32) -> Result<(), BackendError> {
-    match log2 {
-        16 => Ok(()),
-        0 => Err(BackendError::CompilationFailed(format!(
+    // Two single-condition decisions rather than a `match` on `log2`: a match
+    // over an integer lowers to a jump table, and the MC/DC instrument scores
+    // every table slot as a condition (RQ-57-MCDC) — 15 of them unreachable
+    // by any legal or illegal declaration this check distinguishes.
+    if log2 == 16 {
+        return Ok(());
+    }
+    let msg = if log2 == 0 {
+        format!(
             "memory {idx} declares a custom page size of 1 byte (`(pagesize 1)`), \
              which the AArch64 backend does not honour: its `memory.size` \
              lowering divides the byte extent by 65536, so it would return 0 \
              for any memory under 64 KiB. Only the ARM backend with \
              --relocatable honours `(pagesize 1)` (#1441). Refusing (#1339)."
-        ))),
-        _ => Err(BackendError::CompilationFailed(format!(
+        )
+    } else {
+        format!(
             "memory {idx} declares a page size of 2^{log2} bytes; the \
              custom-page-sizes proposal permits exactly 1 and 65536, so this is \
              not valid wasm. Refusing rather than choosing an interpretation \
              (#1339)."
-        ))),
-    }
+        )
+    };
+    Err(BackendError::CompilationFailed(msg))
 }
 
 fn check_page_sizes(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Result<(), BackendError> {
