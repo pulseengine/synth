@@ -748,7 +748,7 @@
       "reanchor_note": "v0.73 RQ-73-ISLANDPASS: a PURE LINE DRIFT of -22, unlike the v0.72 reanchor recorded after this sentence. place_literal_islands_fixedpoint replaced the span guard inside the same functions, so every R1-routing site in arm_backend.rs moved by exactly 22 lines and none changed meaning: 444->422, 1597->1575, 1059->1037, 1093->1071, 1030->1008. Each new id was DERIVED from enumerate_sites() rather than computed by hand, and the one ambiguous text match (the file holds three `if grown.is_ok() {`) was disambiguated by diffing surrounding context against origin/main. Only the ci_subset ids are re-pointed: the .mutants[] records are the HISTORY of a survey run, and rewriting them would change what was measured. | v0.72 RQ-72-ISLANDS: NOT a line drift. The pool emitter was LIFTED OUT of `compile_wasm_to_arm` into `emit_literal_pool`, and R1-routing is a list of FUNCTIONS \u2014 so this site left the scanned region and enumerate_sites() stopped producing it. `reanchor` reported NOT FOUND correctly: there was nothing to find. Remedy was to name emit_literal_pool in R1-routing (also bringing the new island trigger under mutation), then re-point at the id the enumerator emits. The mutation is unchanged: `>` -> `>=` on the bound whose loosening turns a refusal into a wrong-address load."
     },
     {
-      "id": "R1-routing/BOUND/arm_backend.rs:1682:36",
+      "id": "R1-routing/BOUND/arm_backend.rs:1718:36",
       "want_bytes": "identical",
       "want_classification": "DEAD",
       "want_reach": "unreached",
@@ -2300,7 +2300,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "0b9fce74",
+    "reanchored_at": "c1eb2869",
     "seed": 1189
   },
   "mutants": [
@@ -3400,9 +3400,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 1380,
+      "end": 1416,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/GUARD/arm_backend.rs:1380:8",
+      "id": "R1-routing/GUARD/arm_backend.rs:1416:8",
       "killed_by": {
         "binaries": [
           "base_cse_flip_468",
@@ -3442,7 +3442,7 @@
       "op": "GUARD",
       "region": "R1-routing",
       "seconds": 314.0,
-      "start": 1380,
+      "start": 1416,
       "status": "killed"
     },
     {
@@ -6572,9 +6572,9 @@
       "bytes": "identical",
       "changed": [],
       "classification": "DEAD",
-      "end": 1682,
+      "end": 1718,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/BOUND/arm_backend.rs:1682:36",
+      "id": "R1-routing/BOUND/arm_backend.rs:1718:36",
       "op": "BOUND",
       "published_as": "v0.65.0 published this site as 'DEAD \u2014 a deletion candidate for the subtraction ratchet' (CHANGELOG 0.65.0, MUTATION_SURVEY.md section (b), RQ-65-MUTANTS). That statement is FALSE: reached under graph-alloc-reloc, graph-alloc-self (see reach_wide). Classification left as v0.65 recorded it; under classify_identical the same measurement is UNRESOLVED, not DEAD.",
       "reach": "unreached",
@@ -6869,7 +6869,7 @@
       "reach_wide_at": "a73d5ac2",
       "region": "R1-routing",
       "seconds": 26.6,
-      "start": 1682,
+      "start": 1718,
       "status": "identical"
     },
     {
@@ -12102,15 +12102,15 @@
       "bytes": "identical",
       "changed": [],
       "classification": "UNRESOLVED",
-      "end": 1695,
+      "end": 1731,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/BOUND/arm_backend.rs:1695:67",
+      "id": "R1-routing/BOUND/arm_backend.rs:1731:67",
       "op": "BOUND",
       "probe_error": "error: prefix `REACHED` is unknown",
       "reach": "unknown",
       "region": "R1-routing",
       "seconds": 16.0,
-      "start": 1695,
+      "start": 1731,
       "status": "identical"
     },
     {

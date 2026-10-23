@@ -1209,6 +1209,42 @@ fn compile_wasm_to_arm(
                     // failure here stays the honest loud decline it already was.
                     let (wide, wide_rung, wide_dropped) = full_sequence(None, true, true, true);
                     note("vfp-wide-file", &wide);
+                    // #1439: stage 3's pool-grow retry, mirroring stage 2's.
+                    // The wide file relieves the register-file wall stage 2's
+                    // grown pool dies on, and runs out of SLOTS with the default
+                    // pool while frame-homing — so the two only rescue together.
+                    // Added only after the wide file's S16..S31 aliasing
+                    // miscompile was fixed and the rung given an execution
+                    // differential (vfp_local_pressure_1069_differential.py).
+                    let (wide, wide_rung, wide_dropped) = if wide.as_ref().err().is_some_and(|e| {
+                        let msg = e.to_string();
+                        msg.contains(SLOT_EXHAUSTION)
+                            || msg.contains("spilling the VFP register file")
+                            || msg.contains(
+                                synth_synthesis::instruction_selector::VFP_FRAME_HOME_SLOT_EXHAUSTION,
+                            )
+                    }) {
+                        let depth = synth_core::wasm_stack_check::max_depth_bound(wasm_ops) as usize;
+                        let local_targets: std::collections::HashSet<u32> = wasm_ops
+                            .iter()
+                            .filter_map(|op| match op {
+                                synth_synthesis::WasmOp::LocalSet(i)
+                                | synth_synthesis::WasmOp::LocalTee(i) => Some(*i),
+                                _ => None,
+                            })
+                            .collect();
+                        let slots = depth.saturating_add(local_targets.len()).saturating_add(4);
+                        let (grown, grown_rung, grown_dropped) =
+                            full_sequence(Some(slots), true, true, true);
+                        note(&format!("vfp-wide-file+pool-grow({slots})"), &grown);
+                        if grown.is_ok() {
+                            (grown, grown_rung, grown_dropped)
+                        } else {
+                            (wide, wide_rung, wide_dropped)
+                        }
+                    } else {
+                        (wide, wide_rung, wide_dropped)
+                    };
                     if wide.is_ok() {
                         attempt = wide;
                         rung = match wide_rung {

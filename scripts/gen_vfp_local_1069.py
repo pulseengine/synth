@@ -40,6 +40,16 @@ HEADER = """;; #1069 (RQ-60-VFPPRESSURE increment 2) — VFP pressure from HOMED
 ;;  * live8d  — the f64 twin on m7dp: param home D0 + 8 pinned D homes
 ;;              exhausts the caller-saved D0..D7 pair file.
 ;;
+;;  * wide60  — 60 homed locals consumed RIGHT-leaning, so every local stays
+;;              live at once: beyond stage 2's reach (the 1020-byte VSTR/VLDR
+;;              window), it compiles ONLY through the vfp-wide-file rung plus
+;;              its pool-grow retry (#1439). The product saturates, so it can
+;;              only see a SIGN error;
+;;  * wsum60  — the same 60 locals summed right-leaning: the sum does not
+;;              saturate, so it sees ANY wrong-register value. The wide file
+;;              once handed out S16..S31 as aliases of S0..S15 (#1439); this
+;;              export failed 9 of 14 rows on that binary, positives included.
+;;
 ;; Every local is derived from the param (nothing constant-folds) and all are
 ;; consumed in ONE product tree, mirroring the falcon control-math shape
 ;; (attitude@0.7.0#tick / ekf@0.7.0#estimate, both phase-1 S exhaustion).
@@ -60,6 +70,19 @@ def live(name: str, n: int, ty: str) -> str:
     return "\n".join(lines)
 
 
+def right(name: str, n: int, ty: str, op: str) -> str:
+    """#1439: RIGHT-leaning consumption — every local stays live at once."""
+    lines = [f'  (func ${name} (export "{name}") (param $a {ty}) (result {ty})']
+    lines.append("    (local " + " ".join([ty] * n) + ")")
+    for k in range(1, n + 1):
+        lines.append(f"    (local.set {k} ({ty}.mul (local.get 0) ({ty}.const {k}.5)))")
+    expr = f"(local.get {n})"
+    for k in range(n - 1, 0, -1):
+        expr = f"({ty}.{op} (local.get {k}) {expr})"
+    lines.append(f"    {expr})")
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     print(HEADER)
     print("(module")
@@ -68,4 +91,6 @@ if __name__ == "__main__":
     print(live("live16", 16, "f32"))
     print(live("live24", 24, "f32"))
     print(live("live8d", 8, "f64"))
+    print(right("wide60", 60, "f32", "mul"))
+    print(right("wsum60", 60, "f32", "add"))
     print(")")

@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-89-WIDEFILE11
     type: system-req
     release: v0.89
-    status: proposed
+    status: implemented
     title: "The vfp-wide-file rung emits sign-correct code under execution"
     description: >
         The vfp-wide-file ladder rung emits sign-wrong code, and it is the only
@@ -32,3 +32,35 @@ artifacts:
         is a wrong-code fix, or REFUTED with the measurement that refutes it;
         and the refuting command above is RUN FIRST and its result reported
         either way
+      landed: "PR #1585 - #1439 - DELIVERED: an execution-verified wrong-code fix, then the stage-3 pool-grow retry the issue said must wait for it. The refuting command, run first, CONFIRMED the defect: with v0.78's retry applied to the base selector, the right-leaning 60-local product returned 6 of 14 rows wrong against wasmtime, exactly the sign bit on every negative input. The mechanism was NOT an abs: the VFP occupancy map widened to 32 slots for the wide file, but the slot-to-register map still wrapped modulo 16 and the register-to-slot map stopped at S15. So the 17th S grant came back as S0, the param home, every S16 to S31 grant aliased a live caller-saved register, and an above-cap home ungrant cleared slot 0. Both maps now read one 32-entry table. The rung never used the callee-saved half before this fix. The product saturates, so only a sign survived; a non-saturating 60-local sum failed 9 of 14 rows, positive inputs included. Reach: across the 24 float-bearing scripts/repro fixtures on three FPU targets, 72 invocations, every object other than the 1069 fixture is byte-identical base against fix, and the base 1069 fixture is byte-identical too. Newly compiling: the two new exports on each target, 6 functions, all through vfp-wide-file plus its pool-grow retry; nothing else. Newly refused: none. The reporter's falcon module was reported to reach this rung twice; its effect is UNMEASURED, because that module is not in this tree."
+      verified-by: >
+        DELIVERED. Red first: scripts/repro/vfp_local_pressure_1069_differential.py, extended with
+        wide60 and wsum60, FAILS on the retry-without-fix binary at wide60(-0.0), got 0x80000000
+        and want 0x00000000, and FAILS on the base binary because base declines both exports.
+        It PASSES on the branch with 98 emulations bit-identical to wasmtime, and its new gate 1b
+        asserts, from SYNTH_RECOVERY_STATS, that both exports are produced by
+        vfp-wide-file+pool-grow, so a ladder change cannot silently drop the rung's execution
+        coverage. The same two shapes are bit-exact on cortex-m4f, cortex-m7 and cortex-m7dp,
+        and fail 15 of 28 rows on the retry-without-fix binary. Forcing the wide rung on 4 to 30
+        locals gave 52 wrong rows before the fix and 0 after; the same forcing with the wide file
+        off gave 0. The unit test wide_file_grants_are_real_s16_to_s31_1439 FAILS when
+        alloc_vfp_temp is mutated back to the wrapping map. The v0.78 tripwire test flips to
+        wide60_compiles_through_the_wide_file_rung_and_its_retry_1439. The f32_vfp_619,
+        vfp_spill_881, vfp_home_redef_881, vfp_home_alias_1436 and int_home_alias_1566
+        differentials stay green. Pins moved, each with a paired control: the exact emulation
+        floor rises by 58, the differential's floor going from 40 to 98. The summed value that
+        oracle_wiring_check.py reports gives rc 0 on this tree and rc 1 on the base tree. The
+        superseded RQ-89-BRVALUE value, 368409, gives rc 1 on this tree. selector_lines_code falls 20543 to 20524, re-derived after #1583, under a value-bound waiver.
+        selector_wildcard_arms_code falls 55 to 53, so the baseline moves to 53. The track pins
+        selector_lines_total and selector_wildcard_arms_total move to 31150 and 91, and the old
+        values red claim_check on this tree. The home-alias audit's ci.yml pins
+        move 7367 to 7371 functions, 8418 to 8470 homes, and 236409 to 237853 attributed
+        instructions, all corpus growth from the two new exports on the two hard-float
+        legs. The same fixed binary over the pre-lane tree prints the old three exactly,
+        and hits stay 0. Also run: cargo test --workspace passes. The determinism check
+        passes over 296 compared outputs, run as two processes of one build, not two
+        independent builds. The self-contained-mode census matches the relocatable one,
+        with only the six new-export functions newly compiling. The mutation ci replay and
+        its gate pass, with failures 0 and reach-wide 4 of 4. Gate 1b's potency was shown
+        by adding live24 to its list in a scratch copy, which fails with "not produced by
+        the vfp-wide-file rung".

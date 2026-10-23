@@ -205,54 +205,35 @@ fn rung_frame_homes_locals_and_pins_no_home_above_s7() {
     );
 }
 
-/// #1426 — THE RECOVERY LADDER'S LAST RUNG HAS NO POOL-GROW RETRY, and giving it
-/// one is not safe today because the wide-file path MISCOMPILES.
+/// #1426/#1439 — THE RECOVERY LADDER'S LAST RUNG, NOW WITH ITS POOL-GROW RETRY.
 ///
-/// THE ASYMMETRY. Stages 1 and 2 of the ladder in `arm_backend.rs` each retry with
-/// a GROWN slot pool when their failure is slot exhaustion. Stage 3
-/// (`vfp-wide-file`, #1267) does not: it calls `full_sequence(None, ...)` and runs
-/// with the DEFAULT 8-slot pool while asking the selector to frame-home locals.
-/// The two halves each fix exactly what the other hits — stage 2's grown pool ends
-/// in register-file exhaustion, which the wide S16..S31 file relieves; the wide
-/// file ends in slot-pool exhaustion, which the grown pool relieves — and the
-/// combination had never been tried. The external reporter's
-/// `controller@0.10.0#step` (#1318) shows both walls in one ladder.
+/// THE ASYMMETRY (v0.78). Stages 1 and 2 of the ladder in `arm_backend.rs` each
+/// retry with a GROWN slot pool when their failure is slot exhaustion; stage 3
+/// (`vfp-wide-file`, #1267) did not. The two halves each fix exactly what the
+/// other hits — stage 2's grown pool ends at the 1020-byte VSTR/VLDR window,
+/// which the wide S16..S31 file relieves (fewer spills); the wide file with the
+/// default 8-slot pool ends in slot exhaustion, which a grown pool relieves.
 ///
-/// WHY THE OBVIOUS FIX IS NOT IN THE TREE. Adding the retry (about 20 lines,
-/// the same shape as stage 2's) DOES extend reach: this shape compiles, and the
-/// wall for the family moves from 60 to 66 locals — SIX locals, measured by applying
-/// the retry in a probe: 60..65 compile (1956, 1992, 2028, 2064, 2100, 2136 bytes)
-/// and 66 declines. An earlier version of this comment said 72, which was never
-/// measured; v0.78's round-2 review derived 66 and found that the grow formula is
-/// not the variable (identical outcome at the stage-2 size, at the `I64_SPILL_SLOTS_MAX`
-/// cap of 120, and with the cap lifted to 400). The new wall is the genuine
-/// `[sp,#imm]` 1020-byte VSTR/VLDR ceiling: at n=66 the rung already asks for offset
-/// 1024, so ~128 8-byte slots are the addressable maximum and this family consumes
-/// about two per local. But the newly-accepted code is WRONG. Driven
-/// through the `#1069` execution differential against wasmtime, every NEGATIVE
-/// input returns a result differing from wasmtime in EXACTLY the sign bit
-/// (`got ^ want == 0x8000_0000` for -0.0, -1.0, -0.25, -3.14159265, -1e30, -inf;
-/// every non-negative input is correct). All 60 factors share the param's sign, so
-/// 60 of them multiply to a POSITIVE result — an odd number of sign contributions
-/// means one factor is not the value it should be. `live24` above exercises
-/// `vfp-frame-locals+pool-grow` and is bit-exact in that same differential, so the
-/// defect is in the WIDE-FILE path, not in pool growth.
+/// WHY THE RETRY WAS HELD OUT, AND WHY IT LANDS NOW. v0.78 measured that the
+/// retry made this shape compile and that the code was WRONG under execution
+/// (sign-wrong on every negative input). RQ-89-WIDEFILE11 found the mechanism:
+/// the VFP occupancy map widened to 32 slots for the wide file, but the
+/// slot->register map still wrapped `% 16` and the register->slot map stopped at
+/// S15 — so the 17th S-register grant came back as S0 (the param home) and every
+/// "S16..S31" grant aliased a live caller-saved register. The fixed mapping reads
+/// one 32-entry table both ways. The order the v0.78 analysis set — root-cause,
+/// THEN an execution differential, THEN the retry — is the order it landed in:
+/// `wide60` and the non-saturating `wsum60` are in
+/// `scripts/repro/vfp_local_pressure_1069_differential.py`, which asserts (gate
+/// 1b) that they are produced by `vfp-wide-file+pool-grow` and executes them
+/// bit-exactly against wasmtime. That differential is red on the retry-without-
+/// fix binary.
 ///
-/// That path has encoding tests (`vfp_wide_file_1267.rs` asserts the VPUSH/VPOP
-/// pair, its position relative to the frame `sub sp`, and the #1273 stack-param
-/// refusal) but NO execution oracle — nothing in `scripts/repro/` covers #1267.
-/// Its own header records that nothing on this tree reaches it, and that on the
-/// reporter's module it is "reached TWICE and rescues neither call". So extending
-/// the ladder would convert two loud declines in a real customer module into
-/// possibly-wrong code: "accept more and check less", which the reach rule forbids.
-///
-/// THIS TEST PINS THE CURRENT, HONEST STATE so the next attempt starts from a
-/// failing assertion rather than from scratch: the shape declines, and the ladder
-/// REACHES the wide-file rung and dies there on slot exhaustion. When the
-/// wide-file miscompile is fixed and the retry added, this test must flip to
-/// asserting a successful compile AND `wide60` must join the execution
-/// differential's export list — a compile-only green here would be the
-/// "it compiles now" claim that says nothing about the code.
+/// THIS TEST REPLACES v0.78's TRIPWIRE
+/// `wide60_declines_and_the_ladder_dies_on_the_wide_file_rung_1426`, which
+/// asserted that stage 3 had NO grow retry and fired, as designed, when the
+/// retry landed. The name is kept here because RQ-78-WIDEFILE's `done-when`
+/// cites it: that artifact delivered the tripwire, and the tripwire did its job.
 fn wide_f32_ops(n: u32) -> Vec<WasmOp> {
     let mut ops = Vec::new();
     for k in 1..=n {
@@ -275,50 +256,44 @@ fn wide_f32_ops(n: u32) -> Vec<WasmOp> {
 }
 
 #[test]
-fn wide60_declines_and_the_ladder_dies_on_the_wide_file_rung_1426() {
+fn wide60_compiles_through_the_wide_file_rung_and_its_retry_1439() {
     let ops = wide_f32_ops(60);
-    // `.map(len)` first: on the FAILING side of this assertion the Ok value is the
-    // whole emitted byte vector, and `expect_err` prints it — 2 KB of decimal
-    // bytes burying the one fact that matters. The byte COUNT is the useful
-    // signal, because it says the rung landed and roughly how big the result is.
-    let err = ladder_compile("wide60", &ops, false)
-        .map(|code| format!("{} bytes", code.len()))
-        .expect_err(
-            "60 right-leaning-consumed homed f32 locals must still DECLINE. \
-             IF THIS FIRED, THE RUNG LANDED: give the ladder's stage 3 its \
-             pool-grow retry and this shape compiles. Before trusting that as \
-             reach, flip this test to assert a successful compile AND add a \
-             right-leaning 60-local export to scripts/gen_vfp_local_1069.py, \
-             regenerate the .wat, and add it to F32_EXPORTS in the #1069 \
-             execution differential — the wide-file path emitted SIGN-WRONG \
-             code for every negative input when this was measured (#1439), so a \
-             compile-only green here says nothing about the bytes",
-        );
-    // The ladder must REACH the last rung — if it stopped earlier the asymmetry
-    // above would be about an unreached rung and this test would prove nothing.
+    // Stage 2 alone cannot take this shape: the grown pool reaches the
+    // VSTR/VLDR [sp,#imm] window. Pinned so the success below is attributable
+    // to stage 3, not to a stage-2 change.
+    let mut stage2 = m7dp_selector(false);
+    stage2.set_vfp_spill_on_exhaustion(true);
+    stage2.set_vfp_frame_home_locals(true);
+    stage2.set_i64_spill_slots(124);
+    let err = stage2
+        .select_with_stack(&ops, 1)
+        .expect_err("stage 2 (frame-homed locals + grown pool) must not take wide60");
     assert!(
-        err.contains("vfp-wide-file"),
-        "the ladder must reach the wide-file rung for this shape: {err}"
+        err.to_string().contains("1020"),
+        "stage 2 must die on the VSTR/VLDR window: {err}"
     );
-    // And it must die there on SLOT exhaustion, which is what a grown pool fixes.
+    // And the wide file with the DEFAULT pool dies on slot exhaustion — the
+    // wall the stage-3 retry relieves.
+    let mut wide_default = m7dp_selector(false);
+    wide_default.set_vfp_spill_on_exhaustion(true);
+    wide_default.set_vfp_frame_home_locals(true);
+    wide_default.set_vfp_wide_file(true);
+    let err = wide_default
+        .select_with_stack(&ops, 1)
+        .expect_err("the wide file with the default pool must exhaust its slots");
     assert!(
-        err.contains(VFP_FRAME_HOME_SLOT_EXHAUSTION),
-        "the wide-file rung must fail on slot-pool exhaustion (the wall a grown \
-         pool relieves): {err}"
+        err.to_string().contains(VFP_FRAME_HOME_SLOT_EXHAUSTION),
+        "the wide-file rung must fail on slot exhaustion without the retry: {err}"
     );
-    // NEGATIVE CONTROL for the claim that the retry is genuinely absent: stage 2
-    // records its grow attempt by name, so the ladder text proves stage 2 HAS a
-    // retry while stage 3 does not.
+    // The full ladder now compiles it, through the wide file: the AAPCS
+    // callee-saved save (`VPUSH {d8-d15}`, 0xED2D8B10 as two LE halfwords) is
+    // emitted only by that rung. Execution truth is the #1069 differential.
+    let code = ladder_compile("wide60", &ops, false)
+        .expect("wide60 must compile through vfp-wide-file+pool-grow (#1439)");
+    let vpush = [0x2D, 0xED, 0x10, 0x8B];
     assert!(
-        err.contains("vfp-frame-locals+pool-grow("),
-        "stage 2's grow retry must appear, or 'stage 3 lacks one' is not a \
-         contrast: {err}"
-    );
-    assert!(
-        !err.contains("vfp-wide-file+pool-grow("),
-        "stage 3 must have NO grow retry today — if this fires, the rung landed \
-         and this test must be flipped to assert a successful compile AND \
-         `wide60` added to the #1069 execution differential (#1426): {err}"
+        code.windows(4).any(|w| w == vpush),
+        "wide60 must be produced by the wide-file rung (VPUSH {{d8-d15}} absent)"
     );
 }
 

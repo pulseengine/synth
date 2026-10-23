@@ -1024,6 +1024,9 @@ jobs:
       - name: "Self-test the release-file statistics scan (RQ-86-SPELLSCAN, #1515)"
         run: python3 scripts/release_file_statistics_scan.py --self-test
 
+      # SUPERSEDED BY v0.89 (RQ-89-WIDEFILE11): the rung IS now reached locally
+      # (wide60/wsum60 in vfp_local_pressure_1069.wat) and EXECUTED by the #1069
+      # differential below; only the parser self-test remains gated here.
       # RQ-87-WIDEFILE10 (#1439): the `vfp-wide-file` rung's unobservability,
       # ACCEPTED with a denominator and a mechanism rather than restated. The
       # refuting command ran over a DERIVED population -- 24 float-bearing
@@ -1210,7 +1213,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 368409 \
+            --exact-emulation-floor 368467 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2880,7 +2883,10 @@ jobs:
       # — jess's 13-ok/14-exhausted wall (attitude#tick / ekf#estimate shape).
       # Frame-homed overflow locals (rung-only) on cortex-m7dp --relocatable:
       # live13 negative control (base path), live14/live16 the S-file wall,
-      # live24 the grown-pool composition, live8d the f64/D-file twin — all
+      # live24 the grown-pool composition, live8d the f64/D-file twin, and
+      # wide60/wsum60 the vfp-wide-file rung + its pool-grow retry (#1439,
+      # asserted reached from SYNTH_RECOVERY_STATS; wsum60 does not saturate,
+      # so it sees any wrong-register value, not only a sign) — all
       # nm -> T AND bit-identical to wasmtime under unicorn (a wrong-slot
       # reload is a plausible wrong float; every local feeds the product, so
       # any mixup flips result bits).
@@ -4561,8 +4567,15 @@ jobs:
           # br_if.wast `nested-br-value`/`nested-br_table-value`, the
           # ra003_switch_1230.wat fixture) were already counted when they
           # were refused. `hits: 0` unchanged.
-          grep -Eq '^functions audited: 7367$' haa1189.txt
-          grep -Eq '^homes watched: 8418$' haa1189.txt
+          #
+          # RQ-89-WIDEFILE11 (#1439): 7367 -> 7371, 8418 -> 8470 and (below)
+          # 236409 -> 237853, MEASURED on the tree rebased over #1583, not added.
+          # vfp_local_pressure_1069.wat gains wide60 and wsum60, which compile on
+          # the two hard-float legs only. PROVEN CORPUS GROWTH: main's binary
+          # (bbda3f9e) over this tree, and this binary over main's tree, both
+          # print 7367 / 8418 / 236409 exactly; `hits: 0` holds throughout.
+          grep -Eq '^functions audited: 7371$' haa1189.txt
+          grep -Eq '^homes watched: 8470$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -4577,7 +4590,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 236409 ' haa1189.txt
+          grep -Eq '^attributed instructions: 237853 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

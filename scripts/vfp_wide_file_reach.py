@@ -2,6 +2,16 @@
 """RQ-87-WIDEFILE10 (#1439) — is the `vfp-wide-file` recovery rung reachable
 from any LOCAL fixture, or is its unobservability to be accepted?
 
+SUPERSEDED BY v0.89 (RQ-89-WIDEFILE11). The verdict below — NOT REFUTED — was
+true of the tree it was measured on and is false now: `wide60` and `wsum60` in
+`scripts/repro/vfp_local_pressure_1069.wat` reach the rung on all three float
+targets, and the sweep reports `REFUTED` (6 tries of `vfp-wide-file`, 6 of
+`vfp-wide-file+pool-grow(124)`, 93 on six other rungs, 72 invocations). Its
+stated mechanism was also incomplete: a RIGHT-leaning consumption of 60 locals
+defeats stage 2 not on depth but on the 1020-byte VSTR/VLDR window, which
+v0.78 had already measured. The rung is now executed bit-exactly against
+wasmtime by `scripts/repro/vfp_local_pressure_1069_differential.py`.
+
 THE REFUTING COMMAND: "Drive the recovery-statistics flag again; a non-zero
 local try count refutes the unobservability." Run, and NOT refuted — but with a
 denominator this repository can re-derive, and with a MECHANISM, neither of
