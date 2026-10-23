@@ -2114,7 +2114,14 @@ fn compile_command(
             refuse_dropped_start_function(module.start_function)?;
             // RQ-66-BOTHWRONG (#1209): same for memory64 — this path shares
             // the module-path #1046 lineage.
-            refuse_memory64_module(&module.memories)?;
+            refuse_memory64_module(&module.memories, &module.imported_memories)?;
+            refuse_imported_multi_memory(
+                &module.imported_memories,
+                &module.memories,
+                &module.imports,
+                backend_name,
+                relocatable,
+            )?;
             refuse_custom_page_size(&module.memories, relocatable)?;
             refuse_shared_memory(&module.memories)?;
             // #642: compute the call_indirect guard inputs BEFORE the
@@ -3696,7 +3703,32 @@ fn refuse_dropped_start_function(start_function: Option<u32>) -> Result<()> {
 /// address-materialization path on BOTH selectors — multi-release-scale
 /// work for a proposal this backend's targets cannot use anyway. No escape
 /// hatch: there is no partial-correctness mode to opt into, only a wrong one.
-fn refuse_memory64_module(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Result<()> {
+///
+/// RQ-89-MEM64 (v0.89): the refusal covers IMPORTED memories too. Until then
+/// the decoder discarded an imported memory's type, so
+/// `(import "env" "mem" (memory i64 1))` compiled rc=0 on every backend that
+/// accepts an imported memory — measured on v0.88: a booted self-contained
+/// Cortex-M image read 0 from an `i64.const 16` data segment wasmtime reads
+/// as 42, on both selectors, and under `--safety-bounds software` a store to
+/// i64 address `0x1_0000_0008` landed at offset 8 instead of trapping.
+fn refuse_memory64_module(
+    memories: &[synth_core::wasm_decoder::WasmMemory],
+    imported_memories: &[synth_core::wasm_decoder::WasmMemory],
+) -> Result<()> {
+    if let Some(mem) = imported_memories.iter().find(|m| m.memory64) {
+        anyhow::bail!(
+            "module imports memory {} as 64-bit-indexed (the memory64 \
+             proposal, `(import ... (memory i64 ...))`), but no synth backend \
+             implements i64 linear-memory addressing — an active data segment \
+             with an `i64.const` offset would be silently DROPPED, and an i64 \
+             address is truncated to its low word, so an out-of-bounds access \
+             lands in bounds instead of trapping; accepting this module would \
+             compile it to executable, WRONG code rather than fail (#1209). \
+             Refusing; there is no workaround short of a 32-bit-indexed \
+             memory.",
+            mem.index
+        );
+    }
     if let Some(mem) = memories.iter().find(|m| m.memory64) {
         anyhow::bail!(
             "module declares memory {} as 64-bit-indexed (the memory64 \
@@ -3710,10 +3742,60 @@ fn refuse_memory64_module(memories: &[synth_core::wasm_decoder::WasmMemory]) -> 
              ships to (Cortex-M, RV32, host-native AArch64) can provide. \
              Refusing; there is no workaround short of a 32-bit-indexed \
              memory.",
-            mem.index
+            // `WasmMemory::index` counts DEFINED memories from 0, but imports
+            // take the leading memory indices, so the true index is offset by
+            // the import count (RQ-89-MEM64: an imported i32 memory beside a
+            // defined i64 one was reported as "memory 0").
+            mem.index as usize + imported_memories.len()
         );
     }
     Ok(())
+}
+
+/// RQ-89-MEM64 (#1582): refuse a module whose memory index space mixes an
+/// IMPORTED memory with any other memory, on every path except ARM
+/// `--relocatable`.
+///
+/// Module-level memory handling (the #406 multi-memory gate, memory 0's size,
+/// the `.linear_memory` reservation, R10, the AArch64/RV32 compile-time limit)
+/// reads the DEFINED-memory list, which numbers from 0 and ignores imports. So
+/// `(import "env" "m0" (memory 1 1)) (memory 2 2)` counted as ONE memory, passed
+/// the gate, and memory 0 took the DEFINED memory 1's size. Measured on v0.88:
+/// self-contained Cortex-M and RV32 `memory.size 0` returned 2 where wasmtime
+/// returns 1, and under bounds checking (`--safety-bounds software` on ARM, the
+/// AArch64 default) accesses in [64 KiB, 128 KiB) returned data where wasmtime
+/// traps.
+///
+/// ARM `--relocatable` is exempt: memory 0's size there is the embedder's R10,
+/// measured correct (`memory.size 0` = 1), and every op that addresses memory k
+/// directly already loud-refuses.
+fn refuse_imported_multi_memory(
+    imported_memories: &[synth_core::wasm_decoder::WasmMemory],
+    defined_memories: &[synth_core::wasm_decoder::WasmMemory],
+    imports: &[ImportEntry],
+    backend_name: &str,
+    relocatable: bool,
+) -> Result<()> {
+    let total = imported_memories.len() + defined_memories.len();
+    if imported_memories.is_empty() || total <= 1 || (backend_name == "arm" && relocatable) {
+        return Ok(());
+    }
+    let first = imports
+        .iter()
+        .find(|i| matches!(i.kind, synth_core::ImportKind::Memory))
+        .map(|i| format!("`{}`.`{}`", i.module, i.name))
+        .unwrap_or_else(|| "an import".to_string());
+    anyhow::bail!(
+        "module imports memory 0 ({first}) and has {total} linear memories in \
+         total ({} imported, {} defined), but this path sizes and addresses \
+         memory 0 from the DEFINED memories only — memory 0 would silently take \
+         another memory's size (a wrong `memory.size`, and lost out-of-bounds \
+         traps under bounds checking) (#1582). Multi-memory with an imported \
+         memory compiles only on ARM --relocatable, where the embedder supplies \
+         memory 0's size. Refusing",
+        imported_memories.len(),
+        defined_memories.len()
+    );
 }
 
 /// RQ-69-PAGESIZE (#1315, gale): refuse a memory whose DECLARED page size is
@@ -4089,7 +4171,14 @@ fn compile_all_exports(
                     // exports whose init never runs.
                     refuse_dropped_start_function(module.start_function)?;
                     // RQ-66-BOTHWRONG (#1209): same for memory64.
-                    refuse_memory64_module(&module.memories)?;
+                    refuse_memory64_module(&module.memories, &module.imported_memories)?;
+                    refuse_imported_multi_memory(
+                        &module.imported_memories,
+                        &module.memories,
+                        &module.imports,
+                        backend.name(),
+                        relocatable,
+                    )?;
                     refuse_custom_page_size(&module.memories, relocatable)?;
                     refuse_shared_memory(&module.memories)?;
                     let export_count = module
@@ -4323,7 +4412,14 @@ fn compile_all_exports(
         // RQ-66-BOTHWRONG (#1209): unconditional, independent of the
         // start-function decision below — memory64 is refused on every
         // compile mode this path serves.
-        refuse_memory64_module(&module.memories)?;
+        refuse_memory64_module(&module.memories, &module.imported_memories)?;
+        refuse_imported_multi_memory(
+            &module.imported_memories,
+            &module.memories,
+            &module.imports,
+            backend.name(),
+            relocatable,
+        )?;
         refuse_custom_page_size(&module.memories, relocatable)?;
         refuse_shared_memory(&module.memories)?;
         // RQ-59-STARTFN (#1046) / RQ-65-MVPCORE (#1017): a `(start ...)`
