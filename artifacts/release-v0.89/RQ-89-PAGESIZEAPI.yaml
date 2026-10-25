@@ -28,7 +28,7 @@ artifacts:
       issue: "#1339"
       verification-track: manual
       issue-scope: outlives
-      landed: "PR #PRNUM - #1339 - DELIVERED. The refuting command, run FIRST through the published Backend API (not the CLI), CONFIRMED the defect: ArmBackend::compile_module on a decoded 20000-byte (pagesize 1) module returned Ok on every path with memory.size lowered as R10 >> 16, because CompileConfig::default() carries memory0_page_log2 16 and nothing derived it from the module; RiscVBackend and AArch64Backend returned Ok with memory.size = 20000 / 65536 = 0. The ARM backend now DERIVES memory 0's page size from the module it is handed and HONOURS (pagesize 1) where the CLI does (relocatable, the direct selector #1441 fixed), and refuses it naming the page size where the CLI does (off relocatable, in both compile_module and compile_function). RV32 and AArch64 refuse it in compile_module and compile_function. Measuring the CLI on the way found the same wrong code LIVE in the shipped binary: refuse_custom_page_size honoured (pagesize 1) on --relocatable for EVERY backend, so -b riscv --relocatable emitted li t0, 0 and -b aarch64 --relocatable emitted mov w9, #0, executed in unicorn as memory.size = 0 where wasmtime answers 20000. The CLI honour is narrowed to -b arm --relocatable. Nothing moves into the synth-core decoder (RQ-71-PAGELIB, RQ-81-PAGESIZE3): the decoder still reports every declaration and only a backend that cannot lower one refuses it."
+      landed: "PR #1586 - #1339 - DELIVERED. The refuting command, run FIRST through the published Backend API (not the CLI), CONFIRMED the defect: ArmBackend::compile_module on a decoded 20000-byte (pagesize 1) module returned Ok on every path with memory.size lowered as R10 >> 16, because CompileConfig::default() carries memory0_page_log2 16 and nothing derived it from the module; RiscVBackend and AArch64Backend returned Ok with memory.size = 20000 / 65536 = 0. The ARM backend now DERIVES memory 0's page size from the module it is handed and HONOURS (pagesize 1) where the CLI does (relocatable, the direct selector #1441 fixed), and refuses it naming the page size where the CLI does (off relocatable, in both compile_module and compile_function). RV32 and AArch64 refuse it in compile_module and compile_function. Measuring the CLI on the way found the same wrong code LIVE in the shipped binary: refuse_custom_page_size honoured (pagesize 1) on --relocatable for EVERY backend, so -b riscv --relocatable emitted li t0, 0 and -b aarch64 --relocatable emitted mov w9, #0, executed in unicorn as memory.size = 0 where wasmtime answers 20000. The CLI honour is narrowed to -b arm --relocatable. Nothing moves into the synth-core decoder (RQ-71-PAGELIB, RQ-81-PAGESIZE3): the decoder still reports every declaration and only a backend that cannot lower one refuses it."
       verified-by: >
         DELIVERED, red-first through the published API and execution-checked against
         wasmtime. Eleven new Rust tests across synth-backend (5), synth-backend-riscv (3) and
@@ -45,7 +45,11 @@ artifacts:
         tests .wat plus four probes) on 8 paths, 1816 compiles. Exactly 6 differ, and all 6
         are (pagesize 1) modules on riscv or aarch64 --relocatable going from rc 0 to a
         refusal. Every other object hash and every other diagnostic text is identical,
-        including all four existing (pagesize 1) refusals. NEWLY REFUSED: in the repo corpus,
+        including all four existing (pagesize 1) refusals. A second sweep covers the paths
+        the first did not reach: -t cortex-m3 --relocatable without --all-exports (the #1577
+        single-function route), -t cortex-r5 with and without --relocatable (the A32 encoder),
+        and a .wast input (the merge call site). The only differences are again the (pagesize 1)
+        modules on riscv and aarch64 --relocatable. NEWLY REFUSED: in the repo corpus,
         custom_page_size_1315.wat on those two paths. That moves the macho_host_link
         differential's byte-identical population from 153 to 152 (its floor is 3 digits, still
         PASS). In the unwired spec proposal custom-page-sizes, 21 modules: custom-page-sizes.4 on
@@ -57,7 +61,14 @@ artifacts:
         IMPORTED (memory 20000 20000 (pagesize 1)) is still silently compiled on every path,
         because the decoder discards imported memory types; ARM --relocatable emits LSR #16
         and riscv/aarch64 emit 0. This needs the imported-memory type list of #1581 and must
-        land after it, so #1339 stays open by issue-scope outlives. Also out of scope: memory.grow on a
+        land after it, so #1339 stays open by issue-scope outlives. KNOWN STALE HINT, kept
+        byte-identical on purpose: the CLI refusal on -b riscv and -b aarch64 WITHOUT
+        --relocatable still says "Add --relocatable". That advice now leads to the new
+        refusal, not to wrong code. The mutation ledger was reanchored by text on the tree
+        rebased onto 33050370: 14 sites, 0 not found, all moved by this lane — 7 in
+        arm_backend.rs by +75 and 7 in main.rs by +21, each matching its file's net added
+        lines above the site. Mutants 34, controls 3, ci_subset 10 and retired 4 are
+        unchanged. Also out of scope: memory.grow on a
         relocatable byte-paged memory returns -1, the pre-existing grow-fails envelope; and
         main.rs logs initial_pages * 64 KB, which overflows in a debug build on a 4294967295-page
         declaration (memory_max.1 still panics on -t cortex-m3 --relocatable in debug).
