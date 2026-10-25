@@ -124,6 +124,11 @@ test -f "$WASM" || { echo "error: harness wasm not found at $WASM" >&2; exit 1; 
   --invoke-with-args 'rv_param_block_gate:0' \
   --invoke-with-args 'rv_param_block_gate:1' \
   --invoke-with-args 'rv_param_block_gate:2' \
+  `# RQ-89-PAGESIZEAPI (#1339) page-size refusal — check_page_log2's` \
+  `# log2 == 16 accept and its log2 == 0 / spec-invalid message arms` \
+  --invoke-with-args 'rv_page_size_gate:16' \
+  --invoke-with-args 'rv_page_size_gate:0' \
+  --invoke-with-args 'rv_page_size_gate:5' \
   -o "$OUT/run.json"
 
 "$WITNESS" report --input "$OUT/run.json" --format mcdc > "$OUT/report.txt"
