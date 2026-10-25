@@ -24,13 +24,13 @@ implemented**.
 
 | family | files | arm | riscv | aarch64 |
 |--------|-------|-----|-------|---------|
-| **MVP core** | 80 | **13** / 20 | **9** / 23 | **18** / 20 |
+| **MVP core** | 80 | **13** / 19 | **9** / 22 | **18** / 19 |
 | SIMD | 59 | 0 / 0 | 0 / 0 | 0 / 0 |
 | multi-memory | 39 | 1 / 3 | 0 / 3 | 1 / 1 |
 | reference types | 23 | 0 / 3 | 0 / 3 | 0 / 0 |
 | GC | 16 | 0 / 2 | 0 / 2 | 0 / 0 |
 | memory64 | 14 | 2 / 1 | 0 / 1 | 2 / 3 |
-| bulk memory | 11 | 1 / 1 | 0 / 2 | 0 / 2 |
+| bulk memory | 11 | 1 / 0 | 0 / 1 | 0 / 1 |
 | relaxed SIMD | 7 | 0 / 0 | 0 / 0 | 0 / 0 |
 | exception handling | 4 | 0 / 0 | 0 / 0 | 0 / 0 |
 | tail call | 3 | 0 / 0 | 0 / 0 | 0 / 0 |
