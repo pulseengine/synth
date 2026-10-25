@@ -213,23 +213,42 @@ BUCKETS = [
 # parity oracle, and on all three ARM legs in
 # scripts/repro/brvalue_operand_1215_differential.py). at-least-one-export is
 # unchanged (45): the file already exported something.
+# RE-MEASURED after RQ-89-MEM64 (#1582). `refuse_imported_multi_memory`
+# (crates/synth-cli/src/main.rs) refuses a module that IMPORTS a memory and has
+# more than one memory in total, on every path except ARM --relocatable — the
+# census runs `--cortex-m`, RV32 and AArch64, so all three backends move.
+# Diffed file-by-file against the pre-fix binary: EXACTLY four files move, on
+# every backend, all into `module_decline`; nothing else moves and `ok` is
+# unchanged everywhere:
+#
+#   imports1.wast             all_declined -> module_decline (all 3)
+#   imports4.wast             all_declined -> module_decline (all 3)
+#   memory_grow.wast          partial      -> module_decline (all 3)
+#   memory_size_import.wast   partial      -> module_decline (all 3)
+#
+# The two `partial` losses removed only WRONG code. In both files module #1
+# imports `mem1` as memory 0 and defines `mem3`/`mem4`; the only memory
+# function that compiled before the fix, `size1` (`memory.size $mem1`),
+# executed on the pre-fix self-contained image returns 4 — R10 = 0x40000, the
+# DEFINED `mem4`'s size — where the spec asserts 2.
 PINS = {
-    "arm": dict(ok=16, partial=29, all_declined=94, module_decline=99,
+    "arm": dict(ok=16, partial=27, all_declined=92, module_decline=103,
                 no_module=9, no_exports=9, parse_fail=1, panic=0,
                 other_error=0),
-    "riscv": dict(ok=9, partial=33, all_declined=96, module_decline=100,
+    "riscv": dict(ok=9, partial=31, all_declined=94, module_decline=104,
                   no_module=9, no_exports=9, parse_fail=1, panic=0,
                   other_error=0),
-    "aarch64": dict(ok=21, partial=23, all_declined=80, module_decline=114,
+    "aarch64": dict(ok=21, partial=21, all_declined=78, module_decline=118,
                     no_module=9, no_exports=9, parse_fail=1, panic=0,
                     other_error=0),
 }
 
 # Doc-cited derived figure, re-asserted at runtime against the pins above so
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:
-# arm=45 riscv=42 aarch64=44 (RQ-66-BOTHWRONG: 47/43/47 -> 45/42/44 — the five
-# memory64 files' ok+partial losses above, see the PINS comment)
-AT_LEAST_ONE_EXPORT = {"arm": 45, "riscv": 42, "aarch64": 44}
+# arm=43 riscv=40 aarch64=42 (RQ-66-BOTHWRONG: 47/43/47 -> 45/42/44 — the five
+# memory64 files' ok+partial losses above, see the PINS comment; RQ-89-MEM64
+# #1582: 45/42/44 -> 43/40/42, the two imported-memory `partial` files above)
+AT_LEAST_ONE_EXPORT = {"arm": 43, "riscv": 40, "aarch64": 42}
 
 
 def classify(output: str, rc: int) -> str:
