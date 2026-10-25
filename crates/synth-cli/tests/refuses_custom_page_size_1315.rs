@@ -106,6 +106,37 @@ fn refused_on_rv32_1315() {
     assert_refused("rv32", &["-b", "riscv", "--all-exports"]);
 }
 
+/// RQ-89-PAGESIZEAPI (#1339): #1441's honour was written for EVERY backend on
+/// `--relocatable`, but only the ARM `memory.size` lowering reads the declared
+/// page size. On base, `-b riscv --relocatable` emitted `li t0, 0` and
+/// `-b aarch64 --relocatable` emitted `mov w9, #0` for a 20000-byte
+/// `(pagesize 1)` memory — rc=0, where wasmtime answers 20000. RED on base:
+/// both compiled. The refusal names the page size and the path it IS
+/// honoured on.
+#[test]
+fn refused_on_non_arm_relocatable_1339() {
+    for (tag, backend) in [("rv32-reloc", "riscv"), ("a64-reloc", "aarch64")] {
+        let (ok, text) = run(
+            tag,
+            "custom_page_size_1315.wat",
+            &["-b", backend, "--all-exports", "--relocatable"],
+        );
+        assert!(
+            !ok,
+            "{tag}: (pagesize 1) compiled on a backend whose memory.size \
+             ignores it:\n{text}"
+        );
+        assert!(
+            text.contains("(pagesize 1)") && text.contains("#1339"),
+            "{tag}: refusal does not name the page size and #1339:\n{text}"
+        );
+        assert!(
+            text.contains("-b arm") && text.contains("--relocatable"),
+            "{tag}: refusal does not name the path it IS honoured on:\n{text}"
+        );
+    }
+}
+
 /// The negative control. A memory with the DEFAULT page size must still
 /// compile — the refusal is about an ignored declaration, not about memories.
 #[test]
