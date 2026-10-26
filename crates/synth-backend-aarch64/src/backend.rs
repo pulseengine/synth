@@ -21,6 +21,50 @@ use crate::selector;
 #[derive(Debug, Default)]
 pub struct AArch64Backend;
 
+/// RQ-89-PAGESIZEAPI (#1339): the AArch64 `memory.size` lowering is
+/// `mov rd, #(limit_bytes / 65536)` — it does not read the declared page size, so a
+/// `(pagesize 1)` memory of 20000 bytes answered 0 where wasmtime answers
+/// 20000. Only the ARM direct selector honours `(pagesize 1)` (#1441); here
+/// every non-default page size is REFUSED, on the published `Backend` API and
+/// therefore under `synth compile` too, rather than silently mis-sized.
+/// The decoder still reports the declaration — the refusal lives in the
+/// backend that cannot lower it, not in `synth-core` (RQ-81-PAGESIZE3).
+fn check_page_log2(idx: u32, log2: u32) -> Result<(), BackendError> {
+    // Two single-condition decisions rather than a `match` on `log2`: a match
+    // over an integer lowers to a jump table, and the MC/DC instrument scores
+    // every table slot as a condition (RQ-57-MCDC) — 15 of them unreachable
+    // by any legal or illegal declaration this check distinguishes.
+    if log2 == 16 {
+        return Ok(());
+    }
+    let msg = if log2 == 0 {
+        format!(
+            "memory {idx} declares a custom page size of 1 byte (`(pagesize 1)`), \
+             which the AArch64 backend does not honour: its `memory.size` \
+             lowering divides the byte extent by 65536, so it would return 0 \
+             for any memory under 64 KiB. Only the ARM backend with \
+             --relocatable honours `(pagesize 1)` (#1441). Refusing (#1339)."
+        )
+    } else {
+        format!(
+            "memory {idx} declares a page size of 2^{log2} bytes; the \
+             custom-page-sizes proposal permits exactly 1 and 65536, so this is \
+             not valid wasm. Refusing rather than choosing an interpretation \
+             (#1339)."
+        )
+    };
+    Err(BackendError::CompilationFailed(msg))
+}
+
+fn check_page_sizes(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Result<(), BackendError> {
+    for mem in memories {
+        if let Some(log2) = mem.page_size_log2 {
+            check_page_log2(mem.index, log2)?;
+        }
+    }
+    Ok(())
+}
+
 impl AArch64Backend {
     pub fn new() -> Self {
         Self
@@ -41,6 +85,7 @@ impl AArch64Backend {
         func_result_counts: &[u32],
         func_ret_float: &[bool],
     ) -> Result<CompiledFunction, BackendError> {
+        check_page_log2(0, config.memory0_page_log2)?;
         // #457: cap the access-pattern inference with the declared count when
         // the driver supplied one — a read-before-write non-param local (wasm
         // zero-init) is otherwise indistinguishable from a param and would be
@@ -252,6 +297,7 @@ impl Backend for AArch64Backend {
         module: &DecodedModule,
         config: &CompileConfig,
     ) -> Result<CompilationResult, BackendError> {
+        check_page_sizes(&module.memories)?;
         // #851: to lower direct `call`, EVERY locally-defined function must be
         // placed in `.text` with a `func_N` symbol — a callee is often a
         // non-exported helper, and an R_AARCH64_CALL26 needs a symbol to resolve
