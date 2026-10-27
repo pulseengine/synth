@@ -125,8 +125,10 @@ pub fn read_input_dwarf_line(wasm: &[u8]) -> InputDwarfLine {
             Ok(Payload::CustomSection(c)) if c.name().starts_with(".debug_") => {
                 sections.insert(c.name().to_string(), c.data().to_vec());
             }
-            Ok(Payload::CodeSectionStart { range, .. }) => {
-                code_base = range.start as u32;
+            Ok(Payload::CodeSectionStart {
+                unchecked_range, ..
+            }) => {
+                code_base = unchecked_range.start as u32;
             }
             _ => {}
         }

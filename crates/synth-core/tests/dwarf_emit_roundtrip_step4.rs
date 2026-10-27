@@ -30,8 +30,11 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 
 fn code_base(wasm: &[u8]) -> u32 {
     for p in Parser::new(0).parse_all(wasm) {
-        if let Ok(Payload::CodeSectionStart { range, .. }) = p {
-            return range.start as u32;
+        if let Ok(Payload::CodeSectionStart {
+            unchecked_range, ..
+        }) = p
+        {
+            return unchecked_range.start as u32;
         }
     }
     0

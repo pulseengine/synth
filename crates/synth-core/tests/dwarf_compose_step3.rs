@@ -28,8 +28,11 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 /// DWARF address space (`dwarf_addr = op_offset - code_base`).
 fn code_base(wasm: &[u8]) -> u32 {
     for payload in Parser::new(0).parse_all(wasm) {
-        if let Ok(Payload::CodeSectionStart { range, .. }) = payload {
-            return range.start as u32;
+        if let Ok(Payload::CodeSectionStart {
+            unchecked_range, ..
+        }) = payload
+        {
+            return unchecked_range.start as u32;
         }
     }
     0
