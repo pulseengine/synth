@@ -41,12 +41,12 @@ categories = ["compilers", "embedded", "wasm", "no-std"]
 
 [workspace.dependencies]
 # WebAssembly tooling
-wasmparser = "0.261"
-wasm-encoder = "0.261"
-wit-parser = "0.261"
-wit-component = "0.261"
-wat = "1.261"
-wast = "261.0"
+wasmparser = "0.262"
+wasm-encoder = "0.262"
+wit-parser = "0.262"
+wit-component = "0.262"
+wat = "1.262"
+wast = "262.0"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

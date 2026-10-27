@@ -513,11 +513,15 @@ pub fn bind_cabi_arena_realloc(wasm: &[u8]) -> Result<ArenaBind> {
                 ensure_globals(&mut module, &mut global_emitted);
                 copy_raw(&mut module, &payload, wasm)?;
             }
-            Payload::CodeSectionStart { range, .. } => {
+            Payload::CodeSectionStart {
+                unchecked_range, ..
+            } => {
                 ensure_globals(&mut module, &mut global_emitted);
-                // `range` spans the full section contents (count + bodies);
-                // `size` would EXCLUDE the count leb — do not use it here.
-                let contents = &wasm[section_span(range.clone(), wasm)?];
+                // `unchecked_range` spans the full section contents (count +
+                // bodies); `size` would EXCLUDE the count leb — do not use it
+                // here. wasm-tools 0.262 renamed it from `range` because the
+                // parser does NOT bounds-check it; `section_span` does.
+                let contents = &wasm[section_span(unchecked_range.clone(), wasm)?];
                 module.section(&wasm_encoder::RawSection {
                     id: wasm_encoder::SectionId::Code as u8,
                     data: &prepend_entry(contents, &body)?,
