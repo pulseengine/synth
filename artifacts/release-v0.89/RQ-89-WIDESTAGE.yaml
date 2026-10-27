@@ -39,7 +39,7 @@ artifacts:
         with the measurement that refutes it; and the refuting command above is
         RUN FIRST and its result reported either way
       landed: >-
-        PR (branch v089-widestage) - #1593 - DELIVERED: an execution-verified
+        PR #1595 - #1593 - DELIVERED: an execution-verified
         wrong-code fix, not the fallback refusal. The refuting command was run
         first and CONFIRMED the defect on main d4c0b232: a synthetic module whose
         three exports all land on vfp-wide-file returned 148 of 210 rows wrong
@@ -56,7 +56,10 @@ artifacts:
         f64 arguments cannot reach the defect, because alloc_vfp_dtemp grants only
         D0 to D7, which are words 0 to 15. Reach: over 248 corpus inputs on
         cortex-m4f, cortex-m7 and cortex-m7dp, relocatable and self-contained,
-        1488 invocations, 0 objects changed and 0 exit codes changed. The only
+        1488 invocations, 0 objects changed and 0 exit codes changed. That census
+        globs the .wat and .wasm files under tests/ and scripts/repro/; the
+        spec-testsuite .wast files were compared only through the home-alias audit,
+        on cortex-m4 and cortex-m4f. The only
         vfp-wide-file functions in that corpus are wide60 and wsum60 on every
         target and mode, which make no call. Newly refused: no corpus function.
         In the synthetic family, the 58-local and 60-local versions of the
@@ -84,8 +87,9 @@ artifacts:
         zeroed stack, step matches 999 of 1000, against 334 of 1000 on main. On garbage
         stacks it matches 968 of 1000. All 32 residuals are the same calls the hand-patched
         object left; they read uninitialised frame-homed float locals, a separate defect
-        not fixed here. configure is 42 of 42 and cabi_realloc 60 of 60, and no callee-saved
-        violation appears. The vfp_local_pressure_1069, f32_vfp_619, vfp_spill_881,
+        not fixed here. configure is 42 of 42 and cabi_realloc 60 of 60. The harness's callee-saved
+        check (R4 to R11, S16 to S31, SP) marks any violating call mismatching, and none
+        of the 1102 calls in either run carries one. The vfp_local_pressure_1069, f32_vfp_619, vfp_spill_881,
         vfp_home_redef_881 and vfp_home_alias_1436 differentials stay green. Pins moved,
         each with a paired control. The exact emulation floor rises by 210, this
         oracle's declared floor: the total oracle_wiring_check.py reports gives rc 0 on
@@ -93,7 +97,9 @@ artifacts:
         selector_lines_code goes 20524 to
         20532 under a value-bound waiver. selector_lines_total goes 31150 to 31222. The old
         values red claim_check on this tree. The mutation ledger was re-anchored, and only
-        6 select_with_stack.rs sites moved one line. The home-alias audit, run over the
+        6 select_with_stack.rs sites moved one line. The mutation ci replay and its gate
+        then pass, with failures 0 and reach-wide 4 of 4. cargo test --workspace passes,
+        with 3209 passed and 0 failed. The home-alias audit, run over the
         same spec-testsuite commit with the base and the fixed binary, prints identical
         functions audited, homes watched and attributed instructions with 0 hits, so its
         ci.yml pins do not move.
