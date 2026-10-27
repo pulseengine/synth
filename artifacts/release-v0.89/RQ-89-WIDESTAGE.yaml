@@ -1,0 +1,105 @@
+artifacts:
+  - id: RQ-89-WIDESTAGE
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "The vfp-wide-file rung stages float call arguments from the right register into the staging area"
+    description: >
+        SILENT MISCOMPILE, a v0.89 regression of a loud refusal: on ARM Thumb-2 a
+        function that reaches the vfp-wide-file recovery rung and makes a call
+        with staged float arguments compiles rc=0 and is wrong. Staging slot n
+        is stored from register s(n mod 16) instead of the wide-file register,
+        and staging slots 16 and up overlap live frame slots. It is the second
+        site of the S16..S31 to S0..S15 wrap that PR #1585 fixed in the register
+        pool (#1439). v0.88.0 refuses the same shape.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Compile a
+        function with more than 16 simultaneously live f32 values and a call
+        whose float arguments are computed into S16..S31 on the current binary,
+        confirm from SYNTH_RECOVERY_STATS that it is produced by vfp-wide-file,
+        and execute it against wasmtime; if every row agrees, the defect is gone.
+        CITATION: #1593 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1593"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the vfp-wide-file rung stages float call arguments from
+        the right register into a slot inside the staging area — delivered with an
+        execution-verified result where the lane is a wrong-code fix, or REFUTED
+        with the measurement that refutes it; and the refuting command above is
+        RUN FIRST and its result reported either way
+      landed: >-
+        PR #1595 - #1593 - DELIVERED: an execution-verified
+        wrong-code fix, not the fallback refusal. The refuting command was run
+        first and CONFIRMED the defect on main d4c0b232: a synthetic module whose
+        three exports all land on vfp-wide-file returned 148 of 210 rows wrong
+        against wasmtime. Cause, in emit_vfp_arg_moves: every moving float argument
+        source is parked at base + 4 x its S-index, and the index reaches 31 on the
+        wide file. The store named the register through index_to_vfp_reg, which
+        wraps modulo 16, so S17 was stored from S1. The VFP call-spill area it
+        indexes is 16 words, so the slot for S16 and up lay past it, on whatever
+        the frame keeps there. Fix: the store and reload name the register from
+        the unwrapped 32-entry file table, and compute_local_layout takes a
+        vfp_wide_file parameter that sizes the area at 32 words on that rung only,
+        in both the early and the late placement and in the re-lay range test.
+        The encoder already encodes S16 to S31 correctly, so no encoder change.
+        f64 arguments cannot reach the defect, because alloc_vfp_dtemp grants only
+        D0 to D7, which are words 0 to 15. Reach: over 248 corpus inputs on
+        cortex-m4f, cortex-m7 and cortex-m7dp, relocatable and self-contained,
+        1488 invocations, 0 objects changed and 0 exit codes changed. That census
+        globs the .wat and .wasm files under tests/ and scripts/repro/; the
+        spec-testsuite .wast files were compared only through the home-alias audit,
+        on cortex-m4 and cortex-m4f. The only
+        vfp-wide-file functions in that corpus are wide60 and wsum60 on every
+        target and mode, which make no call. Newly refused: no corpus function.
+        In the synthetic family, the 58-local and 60-local versions of the
+        shape now decline loudly, because the extra 64 bytes push a frame-home
+        slot past the 1020-byte VSTR range. They were silently wrong on main
+        and were refused by v0.88. The reporter's #1318 module still compiles
+        rc=0, with step on vfp-wide-file.
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime. The new wired differential
+        scripts/repro/vfp_wide_stage_1593_differential.py generates its module in-process.
+        Its three exports keep 24 f32 locals pending while a local call's six weighted f32
+        arguments are computed, and run on cortex-m7 and cortex-m7dp. stagel adds twelve
+        i32 locals that are read only after the call. Every row starts with garbage in the
+        caller-saved registers and the stack, and the callee-saved R4 to R11, S16 to S31,
+        SP and the caller's frame are checked after return. Gate 1 asserts the rung from
+        SYNTH_RECOVERY_STATS, and gate 2 asserts an argument temp is computed into S16 to
+        S31 before the call. On main d4c0b232 it fails, 148 of 210 rows wrong, rc 1 through
+        oracle_run.py. On the fix it passes, 210 of 210. Each half alone stays red:
+        register-only, with a 16-word area, fails 66 of 210, all stagel, where a staging
+        store lands on the home of an i32 local read after the call. Slot-only, with the
+        store still wrapped, fails 130 of 210. The unit test
+        wide_file_arg_staging_reads_s16_to_s31_in_a_32_word_area_1593 fails on each half
+        mutant. Acceptance on the reporter's #1318 module, run sandboxed under unicorn and
+        wasmtime with real libgcc, using the reporter's command and 1000 step calls. On a
+        zeroed stack, step matches 999 of 1000, against 334 of 1000 on main. On garbage
+        stacks it matches 968 of 1000. All 32 residuals are the same calls the hand-patched
+        object left; they read uninitialised frame-homed float locals, a separate defect
+        not fixed here. configure is 42 of 42 and cabi_realloc 60 of 60. The harness's callee-saved
+        check (R4 to R11, S16 to S31, SP) marks any violating call mismatching, and none
+        of the 1102 calls in either run carries one. The vfp_local_pressure_1069, f32_vfp_619, vfp_spill_881,
+        vfp_home_redef_881 and vfp_home_alias_1436 differentials stay green. Pins moved,
+        each with a paired control. The exact emulation floor rises by 210, this
+        oracle's declared floor: the total oracle_wiring_check.py reports gives rc 0 on
+        this tree, and the superseded RQ-89-WIDEFILE11 value, 368467, gives rc 1.
+        selector_lines_code goes 20524 to
+        20532 under a value-bound waiver. selector_lines_total goes 31150 to 31222. The old
+        values red claim_check on this tree. The mutation ledger was re-anchored, and only
+        6 select_with_stack.rs sites moved one line. The mutation ci replay and its gate
+        then pass, with failures 0 and reach-wide 4 of 4. cargo test --workspace passes,
+        with 3209 passed and 0 failed. The home-alias audit, run over the
+        same spec-testsuite commit with the base and the fixed binary, prints identical
+        functions audited, homes watched and attributed instructions with 0 hits, so its
+        ci.yml pins do not move.

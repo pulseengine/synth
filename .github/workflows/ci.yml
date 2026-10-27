@@ -1213,7 +1213,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 368467 \
+            --exact-emulation-floor 368677 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2892,6 +2892,17 @@ jobs:
       # any mixup flips result bits).
       - name: Run frame-homed VFP locals oracle (#1069, m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_local_pressure_1069_differential.py
+      # RQ-89-WIDESTAGE (#1593): the vfp-wide-file rung's CALL-ARGUMENT
+      # staging, which #1585's oracle above never reached. A float argument
+      # computed into S16..S31 was parked from S(n-16) (the #1439 `% 16` wrap,
+      # second site) into a slot past the 16-word VFP call-spill area, i.e. onto
+      # a live frame home. Three exports x two targets, GARBAGE caller-saved
+      # registers and stack, callee-saved S16..S31/R4..R11/SP checked; gate 1
+      # asserts the rung from SYNTH_RECOVERY_STATS, gate 2 that an argument temp
+      # really sits in S16..S31. Red on main d4c0b232 (148/210), and on each
+      # half-fix alone (register-only 66/210, slot-only 130/210).
+      - name: Run wide-file float call-argument staging oracle (#1593, m7 + m7dp)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_wide_stage_1593_differential.py
       # RQ-71-VFPALIAS (#881/#1069): the twin narrowing's execution half. The
       # #881 VFP slot-aliasing check policed EVERY `[sp,#off]` VFP access,
       # including the permanent home the #1069 rung gives an overflow local —
