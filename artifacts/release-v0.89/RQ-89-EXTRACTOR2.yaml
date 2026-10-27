@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-89-EXTRACTOR2
     type: system-req
     release: v0.89
-    status: proposed
+    status: implemented
     title: "extract_r1_numbers.py extracts hex quantities and stops leaking range ends and finding labels"
     description: >
         Round 2 of the v0.88 cold review found three gaps in the round-1 number
@@ -26,6 +26,17 @@ artifacts:
       priority: should
       issue: "#1575"
       verification-track: manual
+      landed: "PR #1597 - #1575 - DELIVERED. REFUTING COMMAND RUN FIRST on origin/main 366d73bc with three cases added to the self-test: NOT refuted, all five assertions failed (ranged citation left 3633 and, with an en dash, 424; the labels R1-4 / F3-2 left 4 and 2 and finding 2 / Findings 11 left 2 and 11; hex 0x10000 / 0xaaf6 / 0XFF extracted as nothing). The file-line scrubber now takes an optional range end, a new finding-label scrubber removes one-capital-letter dashed labels and finding N, and NUMBER gains a leading 0x hex alternative that keeps the figure whole. The two #1553 gaps still hold (artifact-file-line case and the spelled-out bucket both pass). Population over docs/reviews/v0.8*-cold-review.md: v0.80-v0.82 lose nothing, v0.81/v0.82/v0.83/v0.87/v0.88 gain only hex tokens, and every removed token in v0.83-v0.88 is a range end or the tail of an RN-N label (removed 18/21/126/195/171/89 occurrences for v0.83..v0.88; v0.88 gains 13 distinct hex tokens)."
+      verified-by: >
+        DELIVERED. Red-first: on base the five new assertions fail by name. Paired
+        mutation controls executed on the fixed script: dropping the range suffix reds
+        both file-line-range cases, dropping the finding-label scrubber reds
+        label-r1 and label-finding, dropping only its R1-4 half reds label-r1 alone,
+        dropping only its finding-N half reds label-finding alone, and dropping the
+        hex alternative reds the HEX assertion. Leave-one-out now reads 10 of 11
+        individually necessary (iso-datetime was already redundant on base, 9 of 10).
+        No ci.yml step or claims.yaml pin consumes the extractor's counts; only
+        --self-test is wired.
       done-when: >
         manual:2027-03-31 extract_r1_numbers.py extracts hex quantities and
         stops leaking range ends and finding labels — delivered with an
