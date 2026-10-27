@@ -2320,6 +2320,8 @@ fn compute_local_layout(
     vfp_reachable_area: bool,
     // RQ-69-FALCON (#1318): this call is the re-lay with the area up front.
     place_vfp_early: bool,
+    // #1593: wide-file arg sources reach S31, parked by S-index: area = 32 words.
+    vfp_wide_file: bool,
 ) -> LocalLayout {
     use std::collections::{BTreeSet, HashMap};
     let i64_set = infer_i64_locals(
@@ -2372,9 +2374,11 @@ fn compute_local_layout(
     // rung, which runs only after every earlier rung has failed, so the
     // functions whose layout changes are exactly the functions that emit no
     // bytes today. Byte-identity over the corpus holds by construction.
+    // #1593: gated on the rung flag, so the narrow path keeps its exact frame.
+    let vfp_area_words: i32 = if vfp_wide_file { 32 } else { 16 };
     let vfp_early_base = if place_vfp_early {
         let base = offset;
-        offset += 16 * 4;
+        offset += vfp_area_words * 4;
         Some(base)
     } else {
         None
@@ -2547,7 +2551,7 @@ fn compute_local_layout(
         Some(base)
     } else if has_f32 && has_call {
         let base = offset;
-        offset += 16 * 4;
+        offset += vfp_area_words * 4;
         Some(base)
     } else {
         None
@@ -2594,7 +2598,7 @@ fn compute_local_layout(
     // cannot be encoded declines today, so it has no bytes to preserve.
     if !place_vfp_early
         && vfp_reachable_area
-        && vfp_spill_base.is_some_and(|b| b + 15 * 4 > VFP_SP_IMM_MAX)
+        && vfp_spill_base.is_some_and(|b| b + (vfp_area_words - 1) * 4 > VFP_SP_IMM_MAX)
     {
         return compute_local_layout(
             wasm_ops,
@@ -2615,6 +2619,7 @@ fn compute_local_layout(
             i64_spill_slots,
             vfp_reachable_area,
             true,
+            vfp_wide_file,
         );
     }
     LocalLayout {
@@ -9045,11 +9050,13 @@ impl InstructionSelector {
             Ok(off)
         };
         // Phase A: park every moving source in its own S-indexed slot.
+        // #1593: `w` reaches 31 on the wide file; `index_to_vfp_reg` wraps % 16
+        // (stored S(w-16), the #1439 wrap's second site) — use the real file.
         for (src, _) in &moved {
             for w in words(*src) {
                 instructions.push(ArmInstruction {
                     op: ArmOp::F32Store {
-                        sd: index_to_vfp_reg(w as u8),
+                        sd: VFP_S_FILE[w],
                         addr: MemAddr::imm(Reg::SP, slot(w)?),
                     },
                     source_line: Some(idx),
@@ -9061,7 +9068,7 @@ impl InstructionSelector {
             for (sw, dw) in words(*src).into_iter().zip(words(*dst)) {
                 instructions.push(ArmInstruction {
                     op: ArmOp::F32Load {
-                        sd: index_to_vfp_reg(dw as u8),
+                        sd: VFP_S_FILE[dw],
                         addr: MemAddr::imm(Reg::SP, slot(sw)?),
                     },
                     source_line: Some(idx),
@@ -9908,6 +9915,65 @@ mod tests {
         assert_eq!(grants, VFP_S_FILE[..16].to_vec());
         assert!(alloc_vfp_temp(&mut used).is_err());
         assert_eq!(index_to_vfp_reg(17), VfpReg::S1);
+    }
+
+    /// #1593 (RQ-89-WIDESTAGE): a float call argument whose source is a
+    /// wide-file register must be parked FROM that register (not S(n-16)), in
+    /// a slot INSIDE the VFP call-spill area — which the wide-file layout
+    /// sizes at 32 words, the narrow one at 16 (byte-identical frames).
+    #[test]
+    fn wide_file_arg_staging_reads_s16_to_s31_in_a_32_word_area_1593() {
+        let mut layout = arg_move_layout(false);
+        layout.vfp_spill_base = Some(0);
+        let mut out = Vec::new();
+        InstructionSelector::emit_vfp_arg_moves(
+            &mut out,
+            &[(VfpReg::S17, VfpReg::S0), (VfpReg::S16, VfpReg::S1)],
+            &layout,
+            0,
+        )
+        .unwrap();
+        let stores: Vec<_> = out
+            .iter()
+            .filter_map(|i| {
+                if let ArmOp::F32Store { sd, addr } = &i.op {
+                    Some((*sd, addr.offset))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(stores, vec![(VfpReg::S17, 17 * 4), (VfpReg::S16, 16 * 4)]);
+        // f32 op + call: the area is reserved; the wide flag adds 16 words.
+        let ops = [WasmOp::F32Const(1.0), WasmOp::Call(0), WasmOp::Drop];
+        let frame = |wide| {
+            let l = compute_local_layout(
+                &ops,
+                0,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                false,
+                false,
+                false,
+                false,
+                0,
+                I64_SPILL_SLOTS,
+                false,
+                false,
+                wide,
+            );
+            (l.vfp_spill_base.expect("area reserved"), l.frame_size)
+        };
+        let (narrow_base, narrow) = frame(false);
+        let (wide_base, wide) = frame(true);
+        assert_eq!(narrow_base, wide_base);
+        assert_eq!(wide - narrow, 16 * 4, "wide area = 32 words, narrow = 16");
     }
     use crate::rules::RuleDatabase;
     // RQ-69-SUBTRACT (#242): the lowering path that used MveSize was deleted;
@@ -17535,6 +17601,7 @@ mod tests {
             I64_SPILL_SLOTS,
             false,
             false,
+            false,
         );
         assert_eq!(layout.frame_size, 0);
         assert!(layout.locals.is_empty());
@@ -17565,6 +17632,7 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
             false,
             false,
         );
@@ -17601,6 +17669,7 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
             false,
             false,
         );
@@ -17642,6 +17711,7 @@ mod tests {
             I64_SPILL_SLOTS,
             false,
             false,
+            false,
         );
         let (off0, is_i64_0) = layout.locals[&0];
         let (off1, is_i64_1) = layout.locals[&1];
@@ -17681,6 +17751,7 @@ mod tests {
             false,
             0,
             I64_SPILL_SLOTS,
+            false,
             false,
             false,
         );

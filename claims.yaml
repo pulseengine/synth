@@ -1861,9 +1861,26 @@ claims:
         # -19). The two S-register maps (a 16-arm `index_to_vfp_reg` and a
         # 16-arm `vfp_s_index`) became one 32-entry table read both ways; their
         # disagreement was the wide-file miscompile.
-        value: 20524
+        # RQ-89-WIDESTAGE (#1593): 20524 -> 20532, a RISE of 8, waived below.
+        value: 20532
         baseline: 17897
         waivers:
+          - to: 20532
+            reason: >-
+              RQ-89-WIDESTAGE (Refs #1593): 20524 -> 20532. The wide-file
+              rung's float call-argument staging stored a source in S16..S31
+              FROM S(n-16) (the second site of the #1439 `% 16` wrap) into a
+              slot past the 16-word VFP call-spill area, onto live frame
+              homes; a silent miscompile that #1585 turned on (v0.88 refused
+              the shape). The fix is a one-token register change plus a
+              `vfp_wide_file` layout parameter that sizes the area 32 words
+              on that rung only; the +8 are that parameter, its threading
+              through the re-lay call, the area-size binding and three short
+              comments. No hand-written lowering added. Gated by execution
+              (vfp_wide_stage_1593_differential.py: 148/210 red on main,
+              210/210 green; red on each half-fix alone) and by object
+              byte-identity over 1488 corpus invocations (248 inputs x 3 float
+              targets x relocatable/self-contained, 0 changed, 0 rc changed).
           - to: 20524
             reason: >-
               RQ-89-WIDEFILE11 (Refs #1439): 20543 -> 20524 (re-derived on the merged tree after #1583), a FALL that
@@ -2926,7 +2943,11 @@ claims:
         # tree: the code-region fall (see selector_lines_code) plus +33 test
         # module, the unit test `wide_file_grants_are_real_s16_to_s31_1439`.
         # No waiver.
-        value: 31150
+        # RQ-89-WIDESTAGE (#1593): 31150 -> 31222: +8 code (see
+        # selector_lines_code, waived there) and +64 test module, the unit
+        # test `wide_file_arg_staging_reads_s16_to_s31_in_a_32_word_area_1593`
+        # (red on each half-fix). `direction: track` — no waiver.
+        value: 31222
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4322,7 +4343,12 @@ claims:
     #   pool-grow retry) and its floor rises `emulations >= 40` -> `>= 98` (7
     #   exports x 14 VALS, all measured). Paired control: `368467` rc=0 and
     #   `368326` / `368409` rc=1 on this tree; `368467` rc=1 on main bbda3f9e.
-    text: "--exact-emulation-floor 368467"
+    # v0.89 RQ-89-WIDESTAGE (#1593): 368467 -> 368677. The new
+    #   vfp_wide_stage_1593_differential.py declares `emulations >= 210`
+    #   (stage 15 VALS + stagei 15x3 + stagel 15x3 = 105 per target, x
+    #   cortex-m7 and cortex-m7dp; all 210 measured green). Paired control on
+    #   this tree: `368677` rc=0, `368467` rc=1.
+    text: "--exact-emulation-floor 368677"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

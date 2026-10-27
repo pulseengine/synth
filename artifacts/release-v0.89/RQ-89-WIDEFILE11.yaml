@@ -64,3 +64,9 @@ artifacts:
         its gate pass, with failures 0 and reach-wide 4 of 4. Gate 1b's potency was shown
         by adding live24 to its list in a scratch copy, which fails with "not produced by
         the vfp-wide-file rung".
+        CORRECTION (RQ-89-WIDESTAGE, #1593): this execution evidence did not cover
+        float CALL-ARGUMENT staging, because wide60 and wsum60 make no call. On the rung
+        this lane turned on, emit_vfp_arg_moves still stored a wide-file argument source
+        from S(n-16), the second site of the same modulo-16 wrap, into a slot past the
+        16-word staging area. That is a silent miscompile on main d4c0b232. RQ-89-WIDESTAGE
+        closes it, with its own execution differential, vfp_wide_stage_1593_differential.py.
