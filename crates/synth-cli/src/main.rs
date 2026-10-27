@@ -5126,23 +5126,31 @@ fn compile_all_exports(
         .map(|r| r.diagnostics.clone())
         .unwrap_or_default();
 
-    // RQ-89-IMPSIZE (#1584): memory 0's size on every path where SYNTH fixes
-    // it — the self-contained ARM image (synth instantiates the import with a
-    // memory of exactly its declared minimum) and the RV32/AArch64 baked size
-    // (an import reaching here has pinned limits; the rest were refused). It
-    // used to read `all_memories.first()`, the DEFINED list, which an
-    // imported-only module leaves empty: RV32/AArch64 sized memory 0 as 0
-    // bytes and the self-contained image fell back to one page.
+    // RQ-89-IMPSIZE (#1584): memory 0's COMPILE-TIME size on RV32 and
+    // AArch64, which bake it into the code (an import reaching here has pinned
+    // limits; the rest were refused). It used to read `all_memories.first()`,
+    // the DEFINED list, which an imported-only module leaves empty, so memory
+    // 0 was sized as 0 bytes.
     //
-    // ARM `--relocatable` keeps the defined-list reading byte for byte: there
-    // memory 0's size is the embedder's R10 at run time, and this figure only
-    // describes the object's own reservation of a DEFINED memory.
-    let memory0_owned: Option<&WasmMemory> = if backend.name() == "arm" && relocatable {
+    // ARM keeps the defined-list reading here, byte for byte. Its code reads
+    // memory 0's size from R10 at run time; this figure reaches the ARM
+    // backend only as the `--safety-bounds mask` constant and the
+    // native-pointer statics bound, and an ARM compile is not known here to
+    // end as a self-contained image — a module with function imports degrades
+    // to an ET_REL object whose memory the EMBEDDER sizes, where a mask baked
+    // from the import's minimum would wrap a legal larger memory. The
+    // self-contained image itself is sized from `memory0_decl` where it is
+    // built, below.
+    let memory0_baked_bytes: u32 = if backend.name() == "arm" {
         all_memories.first()
     } else {
         memory0_decl.as_ref()
-    };
-    let memory0_owned_bytes: u32 = memory0_owned.map(|m| m.initial_bytes()).unwrap_or(0);
+    }
+    .map(|m| m.initial_bytes())
+    .unwrap_or(0);
+    // Set where the self-contained ARM image is built; that image is the
+    // instantiator and reserves the import's declared minimum.
+    let mut memory0_reserved_bytes: u32 = memory0_baked_bytes;
 
     // Build compile config from CLI flags
     let config = CompileConfig {
@@ -5161,7 +5169,7 @@ fn compile_all_exports(
         // #237: native-pointer ABI — wasm statics (initialized + zero-init/BSS)
         // become __synth_wasm_data-relative across the whole linear memory.
         native_pointer_abi,
-        linear_memory_bytes: memory0_owned_bytes,
+        linear_memory_bytes: memory0_baked_bytes,
         // #1441: memory 0's DECLARED page size as a shift. R10 holds its size
         // in BYTES while `memory.size` must answer in DECLARED pages, so the
         // ARM lowering shifts by this instead of a literal 16. Absent
@@ -6222,7 +6230,7 @@ fn compile_all_exports(
         // Instantiation-trap guard (#758 parity): a segment past the declared
         // linear memory would trap at wasm instantiation — refuse to ship a
         // layout the semantics say cannot exist. u64 so off + len can't wrap.
-        let rv_mem_size = memory0_owned_bytes as u64; // RQ-89-IMPSIZE (#1584)
+        let rv_mem_size = memory0_baked_bytes as u64; // RQ-89-IMPSIZE (#1584)
         let rv_extent = synth_core::static_data_addr::image_extent(&rv_segments);
         if rv_extent > rv_mem_size {
             anyhow::bail!(
@@ -6386,6 +6394,11 @@ fn compile_all_exports(
             &all_extra_memory_segments,
         )?
     } else if cortex_m {
+        // RQ-89-IMPSIZE (#1584): see `memory0_baked_bytes`.
+        memory0_reserved_bytes = memory0_decl
+            .as_ref()
+            .map(|m| m.initial_bytes())
+            .unwrap_or(0);
         // #649: the self-contained image materializes the R9 globals table —
         // startup writes every global's captured init (both words for i64)
         // into RAM just above linear memory and points R9 at it.
@@ -6397,7 +6410,7 @@ fn compile_all_exports(
             // was byte-identical to the `(memory 1 1)` one). The image is the
             // instantiator, so it reserves the import's declared minimum.
             // Multi-memory never reaches here (refused off --relocatable).
-            &memory0_owned.cloned().into_iter().collect::<Vec<_>>(),
+            &memory0_decl.clone().into_iter().collect::<Vec<_>>(),
             target_spec,
             &globals_table_words(&all_globals),
             stack_layout,
@@ -6432,7 +6445,7 @@ fn compile_all_exports(
 
     // Phase 1: emit safety-manifest.json next to the ELF when any
     // safety knob is active.
-    let linear_mem_bytes = memory0_owned_bytes; // RQ-89-IMPSIZE (#1584)
+    let linear_mem_bytes = memory0_reserved_bytes; // RQ-89-IMPSIZE (#1584)
     maybe_emit_safety_manifest(
         &output,
         target_spec,
