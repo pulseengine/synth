@@ -3656,12 +3656,14 @@ fn try_lower_f32(
             // for `local.tee` leave the value on the operand stack.
             let src = pop_float(stack)?;
             // #1069: FRAME-homed f32 local — the def IS the store. `local.set`
-            // stores `src` to the local's permanent slot; dominance of every
-            // later `local.get`'s load over this store is inherited from wasm's
-            // own def-use semantics (the store sits exactly where wasm writes
-            // the local), which is what makes frame residence sound where a
-            // mid-function eviction of a register home would not be (its
-            // transfer store could sit on one arm of a branch).
+            // stores `src` to the local's permanent slot, exactly where wasm
+            // writes the local (a mid-function eviction of a register home
+            // could instead put its transfer store on one arm of a branch).
+            // This store does NOT dominate every later load (#1594: a set on
+            // one `if` arm, or skipped by a `br_if`, precedes the join's read
+            // in op order only); a local read before written on SOME path is
+            // homed and zeroed at function entry by `select_with_stack`, so
+            // such a load reads 0.0 or a later store, never stack garbage.
             if let Some(&slot) = f32_frame.get(i) {
                 instructions.push(ArmInstruction {
                     op: ArmOp::F32Store {
@@ -5727,8 +5729,8 @@ fn try_lower_f64(
                 return Ok(false); // not an f64 local — fall through
             }
             let src = pop_double(stack)?;
-            // #1069: FRAME-homed f64 local — the def IS the store (dominance
-            // inherited from wasm's own def-use semantics; see the f32 twin).
+            // #1069: FRAME-homed f64 local — the def IS the store; it need not
+            // dominate later loads — #1594 entry zero-init, see the f32 twin.
             if let Some(&slot) = f64_frame.get(i) {
                 instructions.push(ArmInstruction {
                     op: ArmOp::F64Store {
@@ -6404,6 +6406,13 @@ pub struct InstructionSelector {
     /// dataflow-only inference; every function whose locals ARE written
     /// somewhere is byte-identical).
     declared_i64_locals: Vec<bool>,
+    /// #1594: THIS function's declared-f32/f64-local side-table
+    /// (`4` = f32, `8` = f64, `0` = other; non-param locals in declaration
+    /// order) — see
+    /// [`synth_core::wasm_decoder::FunctionOps::declared_float_locals`].
+    /// Drives the entry zero-init of a read-before-write float local's VFP
+    /// home in `select_with_stack`. Empty ⇒ no float zero-init.
+    declared_float_locals: Vec<u8>,
     /// GI-FPU-002 (#619/#369): `params_f32[k]` true ⇒ param `k` is an f32,
     /// homed in an AAPCS-VFP argument S-register (S0..S15) rather than the
     /// R0..R3 integer path. Empty ⇒ no f32 params (byte-identical legacy path).
@@ -6664,6 +6673,7 @@ impl InstructionSelector {
             func_result_counts: Vec::new(),
             params_i64: Vec::new(),
             declared_i64_locals: Vec::new(),
+            declared_float_locals: Vec::new(),
             params_f32: Vec::new(),
             params_f64: Vec::new(),
             ret_f32: false,
@@ -6721,6 +6731,7 @@ impl InstructionSelector {
             func_result_counts: Vec::new(),
             params_i64: Vec::new(),
             declared_i64_locals: Vec::new(),
+            declared_float_locals: Vec::new(),
             params_f32: Vec::new(),
             params_f64: Vec::new(),
             ret_f32: false,
@@ -7419,6 +7430,12 @@ impl InstructionSelector {
     /// legacy dataflow-only inference).
     pub fn set_declared_i64_locals(&mut self, declared_i64_locals: Vec<bool>) {
         self.declared_i64_locals = declared_i64_locals;
+    }
+
+    /// #1594: set THIS function's declared-f32/f64-local side-table (see the
+    /// `declared_float_locals` field). Called per function by the backend.
+    pub fn set_declared_float_locals(&mut self, declared_float_locals: Vec<u8>) {
+        self.declared_float_locals = declared_float_locals;
     }
 
     /// GI-FPU-002 (#619/#369): register the declared f32-param mask of the

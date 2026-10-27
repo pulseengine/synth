@@ -1,0 +1,75 @@
+artifacts:
+  - id: RQ-89-FLOATZERO
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "A float local written on only one path reads wasm's 0.0 at the join"
+    description: >
+        SILENT MISCOMPILE, live in v0.88.0 on the default ARM path: a float
+        (f32/f64) local written on only ONE path (one if arm, skipped by a
+        br_if, a loop accumulator) and read after the join was not
+        zero-initialised. Its home was born at the first local.set in op order
+        and read stale contents on every path that skipped that write. A VFP
+        register on the base rung read a temp's leftover. A frame slot on the
+        vfp-frame-locals rung, and so also on vfp-wide-file, read stack garbage.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: compile the
+        #1594 reproducer (r_cond) for cortex-m4f --relocatable and execute
+        r_cond(1.0, 0) against wasmtime; if it returns 4.5 on every machine
+        state (zeroed and garbage stack and registers), the defect is gone.
+        CITATION: #1594 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1594"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 a float local written on only one path reads 0.0 at
+        the join on every ARM rung — delivered with an execution-verified result
+        where the lane is a wrong-code fix, or REFUTED with the measurement that
+        refutes it; and the refuting command above is RUN FIRST and its result
+        reported either way
+      landed: "Branch v089-floatzero - #1594 - DELIVERED: a wrong-code fix. The refuting command was run first and the defect was LIVE on d4c0b232: r_cond(1.0, 0) returned 9.0 where wasmtime returns 4.5. Cause: the #457/#990 read-before-write zero-init (select_with_stack.rs) kept only integer frame slots, so a float local's real home was never zeroed. Fix: the decoder now records declared f32/f64 locals (FunctionOps::declared_float_locals), plumbed like #1214's declared_i64_locals. At entry, select_with_stack gives every declared float local in the #990 read-before-write set its home through the ordinary local.set lowering, with +0.0 materialised by F32Const per S-register (staged through R12, never R0). The register-or-frame residence choice is therefore the body's own. The false dominance comment on the frame-home store was corrected. Functions without such a local are byte-identical. Byte census, base vs fix, over the spec testsuite, tests/, examples/ and scripts/repro/*.wat on m4f and m7dp (relocatable and self-contained) and m4 relocatable: 505 files, 2525 pairs, 0 rc changes, 0 newly refused. 10 symbols are newly accepted outside the new fixtures, local_get.wast type-local-f32/-f64 and loop.wast nesting, which were refused loudly before. Bytes moved in only two symbols outside the fixtures: align.wast's f32_align_switch (the scripts/repro/aarch64_align_f32_switch_1231.wat extract, +20 bytes) and loop.wast as-call_indirect-* in self-contained images, which differ only by a literal-pool table address shifted by the newly accepted nesting."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime. The new wired oracle
+        scripts/repro/float_local_zero_init_1594_differential.py covers 16 f32 shapes on
+        cortex-m4f (relocatable and self-contained) and cortex-m7, and 14 f64 shapes on
+        cortex-m7dp (relocatable and self-contained). Shapes cover if-arm, br_if-skipped,
+        early, loop-late, read-first, loop accumulator, multi-probe, operand-stack
+        pressure and 60 live locals. Gate 1b asserts from SYNTH_RECOVERY_STATS that each
+        shape lands on its rung: base, vfp-spill, vfp-frame-locals, or (f32 only)
+        vfp-wide-file. Every vector runs in three machine states: zeroed, garbage stack,
+        and garbage registers. Red on the d4c0b232 binary: 4 shapes decline, so gate 1
+        fails. With those tolerated, 1362 of 10080 emulations are wrong, and every
+        compiled shape is wrong in at least one state. Green on the fix: 13680 of 13680
+        bit-identical. The disassembly shows the frame half is real: m_multi zeroes its
+        above-cap probes with vstr at entry. Every newly accepted or byte-moved corpus
+        function was executed against wasmtime in the same three states, on both FPU
+        targets and both paths: type-local-f32/-f64, loop.wast nesting with the spec's own
+        argument rows, and f32_align_switch, 410 of 410 correct. The self-contained
+        loop.wast as-call_indirect-first/mid/last, whose bytes differ only in the
+        literal-pool table address, were executed too: 30 of 30 correct on each binary. f32_align_switch was
+        itself WRONG on base, 12 of 140 runs, at br_table index 4/5/-1 with garbage
+        registers: a live spec-testsuite instance of #1594. Unit tests
+        crates/synth-synthesis/tests/float_local_zero_init_1594.rs pin the entry zero, its
+        absence without the declared table, and byte-identity for a dominating write.
+        Pins moved, each with a paired control. The exact emulation floor rises by this
+        oracle's declared 13680 from the RQ-89-IMPSIZE value 368815 (re-derived after
+        rebasing over #1595 and #1592; first computed on d4c0b232 from 368467). The summed value
+        that oracle_wiring_check.py reports gives rc 0 on this tree and rc 1 on main
+        efb0f28a, and 368815 gives rc 1 on this tree and rc 0 on efb0f28a. The home-alias audit goes 7371/8470/237853 -> 7407/8852/240549. Re-measured
+        after the rebase, unchanged: the fix binary over main efb0f28a's tree prints
+        7375/8480/237921; efb0f28a's binary over this tree prints 7395/8742/240049;
+        efb0f28a's binary over its own tree prints the old pins; hits stay 0. selector_lines_code goes 20532 -> 20635 under a
+        value-bound waiver chained after RQ-89-WIDESTAGE's, and selector_lines_total goes
+        31222 -> 31325 (both re-derived on efb0f28a; main's tree derives the old values). The mutation
+        ledger was re-anchored with 19 sites moved and 0 not found. The ARM corpus sweep
+        (#973) gains the f64 fixture on EXPECTED_DECLINES, because m4f has no f64.

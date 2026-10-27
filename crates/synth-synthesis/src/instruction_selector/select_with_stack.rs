@@ -844,6 +844,92 @@ impl InstructionSelector {
             }
         }
 
+        // #1594: WASM zero-initialises EVERY non-param local, floats too. A
+        // float local's home (pinned VFP register, or a #1069 frame slot) is
+        // otherwise born at its first `local.set` in op order, so a write on
+        // one `if` arm / skipped by a `br_if` left the join's read seeing the
+        // home's pre-birth contents (a temp's leftover, or stack garbage). The
+        // #457/#990 zero-init above covers integer frame slots only. So each
+        // DECLARED f32/f64 local in the #990 read-before-write set gets its
+        // home reserved here, at entry, by an ordinary `local.set` of +0.0 —
+        // the body's own lowering decides residence (register vs. frame, the
+        // S7/D3 cap), not a second copy of it. The zero is `F32Const 0.0` per
+        // S-register (staged through R12 only; `F64Const` stages through R0,
+        // which may hold a param). Functions without such a local are
+        // byte-identical; the entry code belongs to no op (no source line).
+        let double = matches!(fpu, Some(FPUPrecision::Double));
+        let float_rbw: Vec<(u32, bool)> = read_before_write_locals(wasm_ops, num_params)
+            .into_iter()
+            .filter_map(|i| {
+                let w = *self
+                    .declared_float_locals
+                    .get(i.checked_sub(num_params)? as usize)?;
+                (fpu.is_some() && (w == 4 || (w == 8 && double))).then_some((i, w == 8))
+            })
+            .collect();
+        let first_entry_instr = instructions.len();
+        let entry_reserved = live_param_regs(0);
+        for (i, is_f64) in float_rbw {
+            let set = WasmOp::LocalSet(i);
+            let handled = if is_f64 {
+                let dd = alloc_vfp_dtemp(&mut vfp_used)?;
+                let d = vfp_d_index(dd).expect("alloc_vfp_dtemp yields D registers only");
+                for sd in [VFP_S_FILE[2 * d], VFP_S_FILE[2 * d + 1]] {
+                    let op = ArmOp::F32Const { sd, value: 0.0 };
+                    instructions.push(ArmInstruction {
+                        op,
+                        source_line: None,
+                    });
+                }
+                stack.push(StackVal::Double { dreg: dd });
+                try_lower_f64(
+                    &set,
+                    0,
+                    &params_f64_vfp,
+                    &mut f64_home,
+                    &mut f64_frame,
+                    &mut vfp_used,
+                    &mut vfp_home,
+                    &mut stack,
+                    &mut next_temp,
+                    &mut spill,
+                    &mut instructions,
+                    &entry_reserved,
+                )?
+            } else {
+                let sd = alloc_vfp_temp(&mut vfp_used)?;
+                let op = ArmOp::F32Const { sd, value: 0.0 };
+                instructions.push(ArmInstruction {
+                    op,
+                    source_line: None,
+                });
+                stack.push(StackVal::Float { sreg: sd });
+                try_lower_f32(
+                    &set,
+                    0,
+                    &params_f32,
+                    &mut f32_home,
+                    &mut f32_frame,
+                    &mut vfp_used,
+                    &mut vfp_home,
+                    &mut stack,
+                    &mut next_temp,
+                    &mut spill,
+                    &mut instructions,
+                    &entry_reserved,
+                )?
+            };
+            if !handled || !stack.is_empty() {
+                return Err(synth_core::Error::synthesis(format!(
+                    "#1594: internal error — the entry zero-init of float local \
+                     {i} was not lowered as a float local.set"
+                )));
+            }
+        }
+        for ins in &mut instructions[first_entry_instr..] {
+            ins.source_line = None;
+        }
+
         // #881: straight-line floor for the VFP spill rung — the operand-stack
         // depth at the last control-flow boundary. Entries below it were pushed
         // before a branch/label and are never spill victims (a conditionally-
