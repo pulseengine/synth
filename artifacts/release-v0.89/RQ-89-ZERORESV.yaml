@@ -1,0 +1,103 @@
+artifacts:
+  - id: RQ-89-ZERORESV
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "An --native-pointer-abi access whose bytes span two data regions is refused loudly"
+    description: >
+        SILENT WRONG CODE under --native-pointer-abi --relocatable. When every
+        data segment sits at or above the static-data base, the mixed split
+        (#354) does not lay linear memory out contiguously. The zero-initialised
+        reservation is a .bss under __synth_wasm_data. Each segment is packed,
+        4-aligned and in declaration order, into a .data under its own
+        __synth_wasm_seg_K, and the globals slots follow the last one. A
+        relocated address is retargeted by the region of its FIRST byte. So an
+        access whose bytes [ea, ea + width) cross a region boundary reads or
+        writes the wrong bytes for its tail. With data at 0x2000,
+        `i32.const 0x1ffe i32.load` returned 0x0 against wasmtime 0x32310000;
+        `i32.const 0 i32.load offset=0x1ffe` did the same. VCR-VER-003 checks
+        only retargeted relocations, and it checks them by value, so it never
+        saw a reservation start.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers. Compile the
+        two #1604 rows with --target cortex-m3 --relocatable
+        --native-pointer-abi and execute them against wasmtime. If both return
+        0x32310000, report that and close.
+        CITATION: #1604 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1604"
+      verification-track: manual
+      issue-scope: outlives
+      landed: "PR (this lane) - #1604 - DELIVERED AS A LOUD REFUSAL, not a relocation, because the image is measurably NOT contiguous. The refuting command was run first, on origin/main 7e170d62 and again on main d048b523 (#1602 merged; tree-identical to its head 5879a144), and CONFIRMED the defect: both issue rows returned 0x0 against wasmtime 0x32310000. A 360-row class map (stack-pointer global yes or no; reservation->segment, segment->gap, segment->padding, segment->segment and an in-region control; const, offset and const+offset address forms; i32, i16, i64, i64.load32 and f32/f64 loads and stores), extended to 510 rows with local-routed and memory.fill/memory.copy rows, separated #1604 from #1580. On main + #1602 the straddle rows were WRONG, not refused: reservation->segment 73 of 102, segment->gap 51, segment->padding 45. Three breaks in contiguity were each observed. (a) The reservation .bss and the segment .data are separate sections. (b) A segment whose length is not a multiple of 4 is followed by padding; its loads read 0, correct by value, while its stores are lost. (c) The globals slots follow the last segment; with a stack-pointer global, an i32 load off segment C's end returned 0x08006867, which is the SP slot, and a store clobbered it. The only contiguous layout is the one-PROGBITS fallback, which ships the whole zero gap that #354 exists to avoid. So the fix is a refusal: npa_region_straddle_guard, in crates/synth-synthesis/src/instruction_selector.rs, is called from select_with_stack after npa_const_addr_guard. It refuses with a (#1604) diagnostic naming the op, the byte range and both regions. It fires on any access whose bytes do not all fall in ONE region, judged by npa_region_of, the mixed split's own last-declared-wins rule. The address may be a constant, after #1580's offset fold, found by its exact producer walk; every value of a #1568 constant-only local; or, with a stack-pointer global, a run-time base whose memarg offset is relocated alone (#739). The width is the access's own, or the constant length of memory.fill or memory.copy. It mirrors the ELF builder's mixed_separable gate: with any segment below the base, the one-PROGBITS image is contiguous and nothing is refused. Newly REFUSED over the repo corpus: 0 (261 inputs x 2 NPA relocatable configurations, 522 cells, 0 objects moved, 0 exit codes changed). Newly refused in the class map are 110 rows that were CORRECT on main + #1602: 72 segment->segment rows, correct only because the two adjacent segments are declared consecutively with a 4-multiple length, and 38 loads that read correct bytes from zero padding or by coincidence. They are refused because the selector does not re-derive the packer."
+      verified-by: >
+        DELIVERED. scripts/repro/npa_straddle_1604_differential.py executes 82
+        in-region calls against wasmtime: 30 with no stack-pointer global and
+        42 with one on cortex-m3, plus 10 on cortex-m7dp. Each call is an
+        access that ENDS or STARTS exactly at a region boundary: a
+        reservation tail, a segment head or tail, a whole segment, a padded
+        segment's last bytes, a local-routed tail, memory.fill inside a segment
+        and memory.fill up to a segment's first byte. Stores are read back byte
+        by byte through each byte's own region. R0-R10 and R12 are poisoned and
+        the stack below SP is filled with a pattern before every call. The
+        script also asserts 255 refusal rows, each requiring rc != 0, a (#1604)
+        diagnostic, no panic and no object. The rows cover five classes
+        (reservation->segment, segment->gap, segment->padding,
+        segment->segment, and an overlap where a later segment overwrites an
+        earlier one's tail). They cross the const, offset, local and run-time
+        base forms with i32, i16, i64, f32 and f64 loads and stores, and add
+        memory.fill and memory.copy (destination and source). RED on main +
+        #1602 (5879a144): exit 1 and 0 of 255 refused. Of those rows, 109
+        compiled and executed WRONG, 79 compiled and happened to agree, and 67
+        were refused for another reason: VCR-VER-003 refused 57 (the
+        overlap rows among them over their 1-byte readback functions, not the
+        access) and #952 skipped an f64 export in 10. GREEN at the new binary: exit 0, 82 of 82
+        equal, 255 of 255 refused. The neighbouring NPA oracles are unchanged
+        at the new binary: npa_const_addr_differential.py 38 of 38,
+        npa_const_addr_matrix_1568.py --expect
+        ok=99,refused=63,guard=59,wrong=0 holds,
+        npa_offset_cross_segment_1580_differential.py 42 of 42 with 5 of 5
+        refusals, and verwidth_1563_differential.py 25 of 25. The class map
+        (510 rows) goes from 171 BUG on main + #1602 to 1. The remaining BUG
+        is not a straddle: with no stack-pointer global, `i32.const 0x4000
+        <f64.load through a local> f64.store` faults on the unmapped absolute
+        address 0x4000. The f64.store's constant address is not positional,
+        so npa_const_addr_guard does not see it. This is a #1568 residual,
+        pre-existing and reported here, not fixed. Pins moved, each with a
+        paired control: the exact emulation floor rises by the oracle's
+        declared 82 over the superseded 382876 (v0.89 NPAOFFSET), to the total
+        oracle_wiring_check.py reports; on this tree that total gives rc=0 and
+        382876 gives rc=1, and the reverse holds on main + #1602. selector_lines_code goes
+        20830 -> 20979 (+149: 105 code, 42 comment, 2 blank), waived; the old
+        value reds on this tree and the new value on main + #1602.
+        selector_lines_total goes 31520 -> 31669. No wildcard arm was added.
+        The mutation ledger was re-anchored: 6 sites moved, 0 not found, and
+        mutants, controls and ci_subset are unchanged at 34, 3 and 10. WHAT
+        REMAINS, measured, not fixed: (1) a run-time base whose memarg offset
+        is NOT relocated, i.e. no stack-pointer global, #1568 shape 2; (2) a
+        bulk access with a non-constant length; (3) a constant reached through
+        arithmetic. Each has no static byte range to check, which is why
+        issue-scope is outlives. (4) VCR-VER-003's unproven-width tolerance
+        refuses a CORRECT 4-byte load at 0x2400 under a stack-pointer global
+        when a later segment overwrites 0x2406..0x2408 (span byte +6 of a
+        possibly 8-byte access). That is pre-existing and was dropped from the
+        accept set rather than fixed. (5) Non-relocatable --native-pointer-abi
+        compiles the issue row with rc 0 at both binaries. It produces a
+        self-contained image whose ROM copy is dense (#758). Its execution was
+        not measured here.
+      done-when: >
+        manual:2027-03-31 an --native-pointer-abi access whose bytes span two
+        data regions of the split static-data layout is refused loudly, or
+        relocated so it sees the true bytes, delivered with an
+        execution-verified result, or REFUTED with the measurement that refutes
+        it; and the refuting command above is RUN FIRST and its result
+        reported either way

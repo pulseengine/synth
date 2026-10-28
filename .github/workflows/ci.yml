@@ -1213,7 +1213,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 382876 \
+            --exact-emulation-floor 382958 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3020,6 +3020,16 @@ jobs:
       # pre-fix 7e170d62 binary: exit 1.
       - name: Run native-pointer constant+offset cross-region oracle (#1580, cortex-m3/m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_offset_cross_segment_1580_differential.py
+      # #1604: the mixed split is not a contiguous image (reservation .bss,
+      # segments packed 4-aligned in declaration order, globals after), so an
+      # access whose bytes span two data regions is REFUSED (255 rows:
+      # reservation->segment, segment->gap/padding/segment, overlap x
+      # const/offset/local/run-time-base x loads/stores x i16..f64, plus
+      # memory.fill/copy). 82 boundary-touching in-region calls still execute
+      # vs wasmtime (garbage registers and stack; stores read back byte by
+      # byte). RED on main d048b523: 0 of 255 refused, 109 WRONG.
+      - name: Run native-pointer region-straddle oracle (#1604, cortex-m3/m7dp)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_straddle_1604_differential.py
       # #746 (the #739 residual): the i64/WIDE static-region arms — i64.load/
       # i64.store pair accesses plus the i64 narrow loads/stores (load8/16/32,
       # store8/16/32) — get the #744 relocation treatment instead of the loud
