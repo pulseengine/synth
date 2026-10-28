@@ -64,12 +64,16 @@ artifacts:
         i64_reinterpret_rt. Two unit tests in instruction_selector.rs:
         test_1603_i64_reinterpret_f64_is_a_pair and
         test_infer_i64_locals_float_to_i64_producers_1603. Both FAIL with the fix
-        disabled and pass with it. Pins moved, each with a paired control. The exact
-        emulation floor rises by this oracle's declared 2512 from the RQ-89-FALCONSTEP
-        value 382834. The summed value that oracle_wiring_check.py reports gives rc 0 on
-        this tree and rc 1 on main 7e170d62, and 382834 gives rc 1 on this tree and rc 0
-        on 7e170d62. selector_lines_code goes 20635 -> 20690 under a value-bound
-        waiver. selector_lines_total goes 31325 -> 31452, and
+        disabled and pass with it. Pins moved, each with a paired control. All pins were
+        re-derived after rebasing over #1602 (RQ-89-NPAOFFSET, main d048b523); the
+        census and red-first figures above were measured on 7e170d62 (#1602's own byte
+        sweep reports 0 symbols moved; the three moved files were re-executed on the
+        rebased binary, 0 wrong). The exact
+        emulation floor rises by this oracle's declared 2512 from the RQ-89-NPAOFFSET
+        value 382876. The summed value that oracle_wiring_check.py reports gives rc 0 on
+        this tree and rc 1 on main d048b523, and 382876 gives rc 1 on this tree and rc 0
+        on d048b523. selector_lines_code goes 20830 -> 20885 under a value-bound
+        waiver chained after RQ-89-NPAOFFSET's. selector_lines_total goes 31520 -> 31647, and
         selector_wildcard_arms_total goes 91 -> 93 (two test-region find_map arms;
         the directed code-region count is unchanged). The new ledger on main's tree
         reds all three, and main's ledger on this tree reds all three. The home-alias audit (cortex-m4/m4f legs) and the ARM
