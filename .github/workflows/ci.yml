@@ -2139,7 +2139,10 @@ jobs:
     # Same pinned reference engine and unicorn as the #197 job: the counts
     # are measured against wasmtime-py 48.0.0. `submodules: recursive` is
     # load-bearing — the script hard-fails on an empty corpus.
-    runs-on: ubuntu-latest
+    # Self-hosted, like cmp-select-oracle: `ci_pool_tripwire.py` pins how
+    # many jobs queue on the GitHub-hosted `ubuntu-latest` quota (RQ-72-CIPOOL),
+    # and a new job does not get to raise that ceiling by default.
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
