@@ -48,6 +48,9 @@ impl InstructionSelector {
         let wasm_ops: &[WasmOp] = npa_rewritten.as_deref().unwrap_or(wasm_ops);
         let npa_plan = self.npa_local_const_plan(wasm_ops, num_params);
         self.npa_const_addr_guard(wasm_ops, &npa_plan)?;
+        // #1604: a constant access whose bytes span two data regions of the
+        // split static-data layout reads/writes the wrong bytes — refused.
+        self.npa_region_straddle_guard(wasm_ops, &npa_plan)?;
         self.npa_ptr_const_defs = npa_plan.rewrite;
 
         // #1093 pre-flight: a PARAMETER-taking block type declines as a typed

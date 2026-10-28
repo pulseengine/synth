@@ -1865,9 +1865,33 @@ claims:
         # RQ-89-FLOATZERO (#1594): 20532 -> 20635, waived below (chained
         # after RQ-89-WIDESTAGE's waiver).
         # RQ-89-NPAOFFSET (#1580): 20635 -> 20830, waived below.
-        value: 20830
+        # RQ-89-ZERORESV (#1604): 20830 -> 20979, waived below.
+        value: 20979
         baseline: 17897
         waivers:
+          - to: 20979
+            reason: >-
+              RQ-89-ZERORESV (Refs #1604): 20830 -> 20979 (+149 / -0 in
+              instruction_selector.rs and select_with_stack.rs, DERIVED with
+              `git diff --unified=0` over this glob family: 105 code, 42
+              comment, 2 blank). ONE new refusal decision, replacing no arm:
+              under --native-pointer-abi the mixed split is not a contiguous
+              image (reservation .bss, segments packed 4-aligned in
+              declaration order, globals slots after), and a relocation
+              follows its first byte's region, so a constant access whose
+              bytes span two regions read or wrote the wrong bytes
+              (`i32.const 0x1ffe i32.load`, data at 0x2000: 0x0 vs wasmtime
+              0x32310000; with a stack-pointer global a load off the last
+              segment read the SP slot, a store clobbered it).
+              `npa_region_straddle_guard` refuses it before selection (a
+              constant via #1580's exact producer walk, a constant-only local,
+              or a run-time base whose offset is relocated alone), judging
+              each byte by `npa_region_of`. Execution-gated
+              by scripts/repro/npa_straddle_1604_differential.py (82 in-region
+              calls vs wasmtime + 255 refusal rows; exit 1 on main + #1602,
+              0 of 255 refused, 109 executed wrong). Byte census: 261 repo
+              inputs x 2 NPA configurations, 522 cells, 0 moved. No wildcard
+              arm added.
           - to: 20830
             reason: >-
               RQ-89-NPAOFFSET (Refs #1580): 20635 -> 20830 (+195 / -0 in
@@ -3000,7 +3024,10 @@ claims:
         # scripts/repro differential, outside this population. No waiver.
         # RQ-89-NPAOFFSET (#1580): 31325 -> 31520, the same +195 as
         # selector_lines_code (waived there); the tests live in synth-cli.
-        value: 31520
+        # RQ-89-ZERORESV (#1604): 31520 -> 31669, the same +149 as
+        # selector_lines_code (waived there); the oracle is a scripts/repro
+        # differential, outside this population. No waiver.
+        value: 31669
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4435,7 +4462,13 @@ claims:
     #   cortex-m7dp calls; its 5 refusal rows are counted by the script).
     #   Paired control: `382876` rc=0 and `382834` rc=1 on this tree;
     #   `382876` rc=1 and `382834` rc=0 on main 7e170d62.
-    text: "--exact-emulation-floor 382876"
+    # v0.89 RQ-89-ZERORESV (#1604): 382876 -> 382958 (+82). The new
+    #   npa_straddle_1604_differential.py declares `emulations >= 82` (82
+    #   measured via oracle_run.py: 30 nosp + 42 sp cortex-m3 + 10
+    #   cortex-m7dp calls; its 255 refusal rows are counted by the script).
+    #   Paired control: `382958` rc=0 and `382876` rc=1 on this tree;
+    #   `382958` rc=1 and `382876` rc=0 on main d048b523 (#1602 merged; tree-identical to its head 5879a144).
+    text: "--exact-emulation-floor 382958"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

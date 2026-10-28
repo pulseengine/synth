@@ -8947,6 +8947,152 @@ impl InstructionSelector {
         Ok(())
     }
 
+    /// #1604: the data region a static address lives in, for a diagnostic.
+    fn npa_region_name(&self, region: Option<usize>) -> String {
+        match region.map(|k| (k, self.npa_data_regions[k])) {
+            Some((k, (off, len))) => format!(
+                "data segment {k} [0x{off:x}, 0x{:x})",
+                u64::from(off) + u64::from(len)
+            ),
+            None => "the zero-initialised reservation".to_string(),
+        }
+    }
+
+    /// #1604: `--native-pointer-abi` pre-flight — refuse, loudly, a memory
+    /// access with a CONSTANT effective address whose bytes `[ea, ea + width)`
+    /// do not all lie in ONE data region.
+    ///
+    /// When every data segment sits at or above the static-data base, the ELF
+    /// builder's mixed split (#354) is NOT a contiguous image of linear
+    /// memory: the zero-initialised reservation is a `.bss` under
+    /// `__synth_wasm_data`, and each segment is packed — 4-aligned, in
+    /// declaration order, followed by the globals slots — into a `.data`
+    /// under its own `__synth_wasm_seg_K`. A relocated address is retargeted
+    /// by the region holding its FIRST byte, so an access that starts in the
+    /// reservation and runs into a segment reads the reservation's zeros for
+    /// every byte (`i32.const 0x1ffe i32.load`, data at 0x2000: 0x0, wasmtime
+    /// 0x32310000), and one that runs off a segment's end reads (or writes)
+    /// the packing padding, the next declared segment, or the globals slots.
+    /// VCR-VER-003 validates only retargeted relocations, by value, so it
+    /// accepts a store into zero padding and every reservation start.
+    ///
+    /// The region of each byte is [`Self::npa_region_of`] — the same
+    /// last-declared-wins rule the mixed split retargets by. The width is the
+    /// access's own (`access_width`), or the constant length of a
+    /// `memory.fill` / `memory.copy`. The constant is the `i32.const` that
+    /// produced the address operand (exact backward stack walk, after the
+    /// #1580 effective-address fold), or every value of a local in `plan`.
+    ///
+    /// A run-time base with a memarg offset that a stack-pointer global
+    /// relocates on its own (#739) is checked on `[offset, offset + width)`,
+    /// the bytes the relocation is retargeted by.
+    ///
+    /// NOT covered: a bulk access with a non-constant length, a constant that
+    /// reaches the access through arithmetic, and a run-time base whose static
+    /// offset is NOT relocated (no stack-pointer global, #1568 shape 2).
+    pub(crate) fn npa_region_straddle_guard(
+        &self,
+        wasm_ops: &[WasmOp],
+        plan: &NpaLocalPlan,
+    ) -> synth_core::Result<()> {
+        use WasmOp::*;
+        // Mirrors the ELF builder's `mixed_separable` gate: with a segment
+        // below the base it ships ONE contiguous PROGBITS image instead.
+        if !self.native_pointer_abi
+            || self.npa_data_regions.is_empty()
+            || self
+                .npa_data_regions
+                .iter()
+                .any(|&(off, _)| off < self.wasm_data_base)
+        {
+            return Ok(());
+        }
+        let producer_const = |idx: usize, back: u32| -> Option<i32> {
+            let j = Self::npa_operand_producer(wasm_ops, idx, back)?;
+            if let I32Const(c) = wasm_ops[j] {
+                Some(c)
+            } else {
+                None
+            }
+        };
+        for (idx, op) in wasm_ops.iter().enumerate() {
+            let Some((name, operands, _)) = Self::npa_address_operands(op) else {
+                continue;
+            };
+            let width = if matches!(op, MemoryFill | MemoryCopy) {
+                producer_const(idx, 1).map(|len| len as u32)
+            } else {
+                synth_core::proven_safe::access_width(op)
+            };
+            let Some(width) = width.filter(|&w| w >= 2) else {
+                continue;
+            };
+            for (back, offset) in operands {
+                let mut values: Vec<(i32, String)> = Vec::new();
+                if let Some(c) = producer_const(idx, back as u32) {
+                    values.push((c, format!("i32.const 0x{c:x}")));
+                } else if idx >= back
+                    && (1..back).all(|k| Self::npa_simple_push(&wasm_ops[idx - k]))
+                    && let LocalGet(l) | LocalTee(l) = wasm_ops[idx - back]
+                    && let Some((vals, _)) = plan.consts.get(&l)
+                {
+                    let vals = if let LocalTee(_) = wasm_ops[idx - back]
+                        && let Some(I32Const(c)) = wasm_ops.get(idx.wrapping_sub(back + 1))
+                    {
+                        vec![*c]
+                    } else {
+                        vals.clone()
+                    };
+                    for v in vals {
+                        values.push((v, format!("local {l}, set from i32.const 0x{v:x}")));
+                    }
+                } else if self.is_native_pointer_static_offset(offset) {
+                    // A run-time base: the offset is relocated ALONE and
+                    // retargeted by its own region, so `[offset, offset+width)`
+                    // must lie in one region (base 0 reads exactly those).
+                    values.push((0, "a run-time base, the offset relocated alone".into()));
+                }
+                for (c, via) in values {
+                    let Some(ea) = (c as u32).checked_add(offset) else {
+                        continue;
+                    };
+                    let Some(last) = ea.checked_add(width - 1) else {
+                        continue;
+                    };
+                    // The region can change only at a segment's first byte
+                    // or one past its last, so those are the bytes to test.
+                    let first = self.npa_region_of(ea);
+                    let Some(other) = self
+                        .npa_data_regions
+                        .iter()
+                        .flat_map(|&(off, len)| [Some(off), off.checked_add(len)])
+                        .flatten()
+                        .filter(|&b| ea < b && b <= last)
+                        .map(|b| self.npa_region_of(b))
+                        .find(|r| *r != first)
+                    else {
+                        continue;
+                    };
+                    return Err(synth_core::Error::synthesis(format!(
+                        "--native-pointer-abi: {name} at op {idx} touches the {width} \
+                         byte(s) [0x{ea:x}, 0x{:x}) ({via}, offset {offset}), which span \
+                         {} and {}. The relocatable object does not lay these out \
+                         contiguously (the reservation is a .bss; each segment is packed \
+                         4-aligned into .data), and the relocation follows the first \
+                         byte's region, so the access would silently read or write the \
+                         wrong bytes (#1604). Refusing. Keep the access inside one region, \
+                         merge the data segments it touches into one segment that covers \
+                         every byte, or drop --native-pointer-abi",
+                        u64::from(last) + 1,
+                        self.npa_region_name(first),
+                        self.npa_region_name(other),
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// A const-materialization instruction: what the `i32.const` handler emits
     /// to build the value in a register — `MOVW`, `MOVW+MOVT`, or `MOVW+MVN`.
     ///
