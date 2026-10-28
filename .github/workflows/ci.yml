@@ -1213,7 +1213,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 368677 \
+            --exact-emulation-floor 368815 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2332,6 +2332,25 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_ctrlflow_851_differential.py
       - name: Run #865 linear-memory BOUNDS oracle (OOB traps + modes differ + mask/mpu hard-error)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_bounds_865_differential.py
+      - name: "Run #1584 imported-memory sizing oracle (ARM self-contained + relocatable, RV32, AArch64 vs wasmtime)"
+        # RQ-89-IMPSIZE (#1584, and the imported-memory residual of #1339):
+        # an IMPORTED memory 0 was sized from the DEFINED-memory list, so an
+        # imported-only module compiled rc=0 with memory 0 = 0 bytes on RV32
+        # and AArch64 (memory.size 0; AArch64 trapped in-bounds loads) and
+        # one page on self-contained ARM whatever the import declared, and an
+        # imported `(pagesize 1)` skipped the page-size refusal. Six limits
+        # shapes x seven legs, every accepted leg EXECUTED against wasmtime
+        # (the import satisfied with exactly its declared minimum); the RV32/
+        # AArch64 refusal of an import whose limits do not pin its size must
+        # name #1584. Red-first: 41 disagreements on d4c0b232. Lives in this
+        # job because it is the one that already installs wasmtime + unicorn
+        # + pyelftools and builds the default (riscv-featured) synth.
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth \
+            python scripts/oracle_run.py scripts/repro/imported_memory_size_1584_differential.py | tee impsize1584.txt
+          grep -Eq '^#1584 compiled=28 refused=14 compared=[1-9][0-9]{2,}$' impsize1584.txt
+          grep -q '^PASS' impsize1584.txt
       - name: Run #851 v0.53 op-surface oracle (select x4 types + wrap/extends + drop/nop + memory.size/grow)
         # The VCR-SEL-005 third-backend closes: select (CSEL/FCSEL) incl.
         # NaN/-0 carry, wrap/extends with POISONED upper argument bits (the
@@ -2558,7 +2577,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 18
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 19
 
   aarch64-native-matrix:
     name: aarch64 native execution matrix (gale #851 acceptance gate)

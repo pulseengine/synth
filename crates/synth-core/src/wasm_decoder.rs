@@ -157,6 +157,25 @@ impl WasmMemory {
     }
 }
 
+/// RQ-89-IMPSIZE (#1584, #1339): every memory in the wasm memory INDEX SPACE —
+/// imported memories first, then defined ones — with `index` set to the TRUE
+/// memory index. [`WasmMemory::index`] counts each of the two lists from 0 on
+/// its own, so a per-memory check that walks only `memories` never sees an
+/// imported declaration (an imported `(pagesize 1)` slipped past every
+/// custom-page-size refusal), and one that walks both lists separately names a
+/// defined memory after an import as "memory 0".
+pub fn memory_index_space(imported: &[WasmMemory], defined: &[WasmMemory]) -> Vec<WasmMemory> {
+    let n = imported.len() as u32;
+    imported
+        .iter()
+        .cloned()
+        .chain(defined.iter().map(|m| WasmMemory {
+            index: m.index + n,
+            ..m.clone()
+        }))
+        .collect()
+}
+
 /// #642: one element segment's statically-decoded shape — see
 /// [`DecodedModule::elem_segments`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -514,6 +533,29 @@ pub struct DecodedModule {
 }
 
 impl DecodedModule {
+    /// RQ-89-IMPSIZE (#1584): the declaration of MEMORY 0 in the wasm memory
+    /// index space — the first IMPORTED memory if there is one (imports take
+    /// the leading indices), otherwise the first DEFINED memory.
+    ///
+    /// `memories.first()` is NOT memory 0 when the module imports one, and
+    /// reading it as memory 0 is the #1584 defect: an imported-only module
+    /// has no defined memory, so RV32 and AArch64 sized memory 0 as zero bytes
+    /// (`memory.size` 0 where wasmtime says 1; AArch64 trapped in-bounds
+    /// loads), and the self-contained ARM image fell back to one page whatever
+    /// the import declared. Whether a given path may SIZE an imported memory
+    /// from its declaration is the caller's decision — the host chooses an
+    /// imported memory's size within its limits, so a baked compile-time size
+    /// is sound only where the limits pin it or synth is the instantiator.
+    pub fn memory0(&self) -> Option<&WasmMemory> {
+        self.imported_memories.first().or(self.memories.first())
+    }
+
+    /// RQ-89-IMPSIZE (#1584, #1339): every memory in the wasm memory INDEX
+    /// SPACE — see [`memory_index_space`].
+    pub fn memory_index_space(&self) -> Vec<WasmMemory> {
+        memory_index_space(&self.imported_memories, &self.memories)
+    }
+
     /// #676/#851: the STRUCTURAL signature class of every function type —
     /// structurally-equal types share one dense 1-based id (first-occurrence
     /// order over the type section); id 0 is reserved for "null slot / not

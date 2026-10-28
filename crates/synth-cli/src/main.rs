@@ -2122,7 +2122,16 @@ fn compile_command(
                 backend_name,
                 relocatable,
             )?;
-            refuse_custom_page_size(&module.memories, relocatable, backend.name())?;
+            // RQ-89-IMPSIZE (#1584, #1339): imported memories are part of the
+            // memory index space, so an imported `(pagesize 1)` is refused or
+            // honoured exactly like a defined one, and an imported memory whose
+            // size the limits do not pin is refused where the size is baked.
+            refuse_custom_page_size(&module.memory_index_space(), relocatable, backend.name())?;
+            refuse_unpinned_imported_memory(
+                &module.imported_memories,
+                &module.imports,
+                backend.name(),
+            )?;
             refuse_shared_memory(&module.memories)?;
             // #642: compute the call_indirect guard inputs BEFORE the
             // module's vectors are moved out below.
@@ -2149,11 +2158,23 @@ fn compile_command(
             single_func_nonconst_data = module.default_memory_nonconst_data.clone();
             // #865: capture memory 0's declared minimum size for the aarch64
             // software bounds check (pages × 64 KiB).
-            single_func_linear_memory_bytes = module
-                .memories
-                .first()
-                .map(|m| m.initial_bytes())
-                .unwrap_or(0);
+            //
+            // RQ-89-IMPSIZE (#1584): on the baked-size backends memory 0 is
+            // the IMPORTED memory when there is one (sized from its pinned
+            // limits — `refuse_unpinned_imported_memory` above refused the
+            // rest); it used to read the DEFINED list only and size an
+            // imported-only module as 0 bytes. ARM keeps the defined-list
+            // reading: this path's Cortex-M image reserves one page whatever
+            // the module says, and its only other reader is the mask gate.
+            single_func_linear_memory_bytes = if backend_name == "arm" {
+                module.memories.first()
+            } else {
+                // `DecodedModule::memory0`, spelled on the fields: `module` is
+                // already partially moved here.
+                module.imported_memories.first().or(module.memories.first())
+            }
+            .map(|m| m.initial_bytes())
+            .unwrap_or(0);
             let module_func_params_i64 = module.func_params_i64;
             let module_func_arg_counts = module.func_arg_counts;
             func_params_f32_all = module.func_params_f32.clone();
@@ -3798,6 +3819,62 @@ fn refuse_imported_multi_memory(
     );
 }
 
+/// RQ-89-IMPSIZE (#1584): refuse an IMPORTED memory 0 whose declared limits do
+/// not pin its size, on the backends that BAKE memory 0's size into the code.
+///
+/// RV32 and AArch64 lower `memory.size` to a constant and bound every access
+/// against a compile-time limit (#242/#865), in an object whose memory the
+/// EMBEDDER supplies. For a DEFINED memory that constant is the module's own
+/// declaration. For an IMPORTED one the HOST chooses the size anywhere in the
+/// declared `[min, max]` (no maximum: anything from `min` up), so a baked size
+/// is sound only when `max == min` — the rule #642 already applies to an
+/// imported table. Those pinned imports are sized from the declaration; the
+/// rest are refused rather than given a size the embedder was never told
+/// about. Before v0.89 they were sized as ZERO bytes: `memory.size` returned 0
+/// where wasmtime returns the import's pages, and AArch64 trapped every
+/// in-bounds access.
+///
+/// ARM is not refused: on `--relocatable` memory 0's size is the embedder's
+/// R10 at run time (measured correct), and the self-contained image is the
+/// instantiator — it resolves the import with a memory of exactly its declared
+/// minimum, which is a legal instantiation for any declared maximum.
+fn refuse_unpinned_imported_memory(
+    imported_memories: &[synth_core::wasm_decoder::WasmMemory],
+    imports: &[ImportEntry],
+    backend_name: &str,
+) -> Result<()> {
+    if !matches!(backend_name, "riscv" | "aarch64") {
+        return Ok(());
+    }
+    let Some(mem) = imported_memories.first() else {
+        return Ok(());
+    };
+    if mem.max_pages == Some(mem.initial_pages) {
+        return Ok(());
+    }
+    let name = imports
+        .iter()
+        .find(|i| matches!(i.kind, synth_core::ImportKind::Memory))
+        .map(|i| format!("`{}`.`{}`", i.module, i.name))
+        .unwrap_or_else(|| "an import".to_string());
+    let declared = match mem.max_pages {
+        Some(max) => format!("min {} / max {max} pages", mem.initial_pages),
+        None => format!("min {} pages and no maximum", mem.initial_pages),
+    };
+    anyhow::bail!(
+        "module imports memory 0 ({name}, {declared}), but the {backend_name} \
+         backend bakes memory 0's size into the code — `memory.size` is a \
+         constant and every access is bounded by a compile-time limit — while \
+         the host may supply an imported memory of any size its limits allow. \
+         A baked size is sound only when the import pins it (maximum == \
+         minimum), so this path refuses rather than guess (#1584). Declare the \
+         import with equal limits, e.g. `(memory {min} {min})`, or compile with \
+         `-b arm --relocatable`, where the embedder supplies memory 0's size at \
+         run time.",
+        min = mem.initial_pages,
+    );
+}
+
 /// RQ-69-PAGESIZE (#1315, gale): refuse a memory whose DECLARED page size is
 /// not the default 64 KiB (the custom-page-sizes proposal).
 ///
@@ -4111,6 +4188,11 @@ fn compile_all_exports(
         all_origins, // #1168: per-function owning module + its import count (parallel to all_exports)
         wast_module_tables, // #1168: per-module signature tables (Some on the .wast merge, None otherwise)
         all_memories,
+        // RQ-89-IMPSIZE (#1584): the declaration of MEMORY 0 in the wasm index
+        // space — an imported memory when the module imports one. Kept apart
+        // from `all_memories` (the DEFINED list that drives data placement and
+        // the `__synth_mem_*` region table) so those stay byte-identical.
+        memory0_decl,
         all_imports,
         max_num_imported_funcs,
         func_arg_counts,
@@ -4168,6 +4250,10 @@ fn compile_all_exports(
         let mut export_owner: std::collections::HashMap<String, (usize, u32)> =
             std::collections::HashMap::new();
         let mut merged_memories: Vec<WasmMemory> = Vec::new();
+        // RQ-89-IMPSIZE (#1584): the largest IMPORTED memory 0 across the
+        // merged modules — consulted only when no module DEFINES a memory, so
+        // every defined-memory merge sizes exactly as before.
+        let mut merged_imported_memory0: Option<WasmMemory> = None;
         let mut merged_imports: Vec<ImportEntry> = Vec::new();
         let mut max_imports: u32 = 0;
         // #195: keep the arg-count tables aligned with the module whose
@@ -4200,7 +4286,20 @@ fn compile_all_exports(
                         backend.name(),
                         relocatable,
                     )?;
-                    refuse_custom_page_size(&module.memories, relocatable, backend.name())?;
+                    // RQ-89-IMPSIZE (#1584, #1339): imported memories are part of the
+                    // memory index space, so an imported `(pagesize 1)` is refused or
+                    // honoured exactly like a defined one, and an imported memory whose
+                    // size the limits do not pin is refused where the size is baked.
+                    refuse_custom_page_size(
+                        &module.memory_index_space(),
+                        relocatable,
+                        backend.name(),
+                    )?;
+                    refuse_unpinned_imported_memory(
+                        &module.imported_memories,
+                        &module.imports,
+                        backend.name(),
+                    )?;
                     refuse_shared_memory(&module.memories)?;
                     let export_count = module
                         .functions
@@ -4233,6 +4332,13 @@ fn compile_all_exports(
                         {
                             merged_memories = vec![mem.clone()];
                         }
+                    }
+                    if let Some(imp) = module.imported_memories.first()
+                        && merged_imported_memory0
+                            .as_ref()
+                            .is_none_or(|m| imp.initial_pages > m.initial_pages)
+                    {
+                        merged_imported_memory0 = Some(imp.clone());
                     }
 
                     if module.num_imported_funcs > max_imports {
@@ -4333,11 +4439,13 @@ fn compile_all_exports(
             }
         }
         check_wast_merge_labels(&exports, &origins, &tables, &merged_imports)?;
+        let merged_memory0 = merged_memories.first().cloned().or(merged_imported_memory0);
         (
             exports,
             origins,
             Some(tables),
             merged_memories,
+            merged_memory0,
             merged_imports,
             max_imports,
             merged_func_arg_counts,
@@ -4441,7 +4549,16 @@ fn compile_all_exports(
             backend.name(),
             relocatable,
         )?;
-        refuse_custom_page_size(&module.memories, relocatable, backend.name())?;
+        // RQ-89-IMPSIZE (#1584, #1339): imported memories are part of the
+        // memory index space, so an imported `(pagesize 1)` is refused or
+        // honoured exactly like a defined one, and an imported memory whose
+        // size the limits do not pin is refused where the size is baked.
+        refuse_custom_page_size(&module.memory_index_space(), relocatable, backend.name())?;
+        refuse_unpinned_imported_memory(
+            &module.imported_memories,
+            &module.imports,
+            backend.name(),
+        )?;
         refuse_shared_memory(&module.memories)?;
         // RQ-59-STARTFN (#1046) / RQ-65-MVPCORE (#1017): a `(start ...)`
         // module is ACCEPTED on exactly one path — the self-contained ARM
@@ -4484,6 +4601,13 @@ fn compile_all_exports(
         let func_arg_counts = module.func_arg_counts;
         let func_result_counts = module.func_result_counts; // #851
         let type_arg_counts = module.type_arg_counts;
+        // RQ-89-IMPSIZE (#1584): `DecodedModule::memory0`, spelled on the
+        // fields because `module` is already partially moved here.
+        let memory0 = module
+            .imported_memories
+            .first()
+            .or(module.memories.first())
+            .cloned();
         let memories = module.memories;
         let imports = module.imports;
         let num_imports = module.num_imported_funcs;
@@ -4638,6 +4762,7 @@ fn compile_all_exports(
             origins,
             None,
             memories,
+            memory0,
             imports,
             num_imports,
             func_arg_counts,
@@ -5001,6 +5126,32 @@ fn compile_all_exports(
         .map(|r| r.diagnostics.clone())
         .unwrap_or_default();
 
+    // RQ-89-IMPSIZE (#1584): memory 0's COMPILE-TIME size on RV32 and
+    // AArch64, which bake it into the code (an import reaching here has pinned
+    // limits; the rest were refused). It used to read `all_memories.first()`,
+    // the DEFINED list, which an imported-only module leaves empty, so memory
+    // 0 was sized as 0 bytes.
+    //
+    // ARM keeps the defined-list reading here, byte for byte. Its code reads
+    // memory 0's size from R10 at run time; this figure reaches the ARM
+    // backend only as the `--safety-bounds mask` constant and the
+    // native-pointer statics bound, and an ARM compile is not known here to
+    // end as a self-contained image — a module with function imports degrades
+    // to an ET_REL object whose memory the EMBEDDER sizes, where a mask baked
+    // from the import's minimum would wrap a legal larger memory. The
+    // self-contained image itself is sized from `memory0_decl` where it is
+    // built, below.
+    let memory0_baked_bytes: u32 = if backend.name() == "arm" {
+        all_memories.first()
+    } else {
+        memory0_decl.as_ref()
+    }
+    .map(|m| m.initial_bytes())
+    .unwrap_or(0);
+    // Set where the self-contained ARM image is built; that image is the
+    // instantiator and reserves the import's declared minimum.
+    let mut memory0_reserved_bytes: u32 = memory0_baked_bytes;
+
     // Build compile config from CLI flags
     let config = CompileConfig {
         no_optimize,
@@ -5018,14 +5169,18 @@ fn compile_all_exports(
         // #237: native-pointer ABI — wasm statics (initialized + zero-init/BSS)
         // become __synth_wasm_data-relative across the whole linear memory.
         native_pointer_abi,
-        linear_memory_bytes: all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0),
+        linear_memory_bytes: memory0_baked_bytes,
         // #1441: memory 0's DECLARED page size as a shift. R10 holds its size
         // in BYTES while `memory.size` must answer in DECLARED pages, so the
         // ARM lowering shifts by this instead of a literal 16. Absent
         // declaration ⇒ 16, which keeps every default-paged object
         // byte-identical.
-        memory0_page_log2: all_memories
-            .first()
+        // RQ-89-IMPSIZE (#1339 residual): read from memory 0's TRUE
+        // declaration, so an imported `(pagesize 1)` memory on ARM
+        // `--relocatable` lowers `memory.size` as `R10 >> 0` like a defined one
+        // (it read the defined list and shifted by 16: 0 for 20000 bytes).
+        memory0_page_log2: memory0_decl
+            .as_ref()
             .and_then(|m| m.page_size_log2)
             .unwrap_or(16),
         // VCR-MEM-002 phase 1 (#406): per-memory initial page counts, indexed
@@ -6075,7 +6230,7 @@ fn compile_all_exports(
         // Instantiation-trap guard (#758 parity): a segment past the declared
         // linear memory would trap at wasm instantiation — refuse to ship a
         // layout the semantics say cannot exist. u64 so off + len can't wrap.
-        let rv_mem_size = all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0) as u64;
+        let rv_mem_size = memory0_baked_bytes as u64; // RQ-89-IMPSIZE (#1584)
         let rv_extent = synth_core::static_data_addr::image_extent(&rv_segments);
         if rv_extent > rv_mem_size {
             anyhow::bail!(
@@ -6239,12 +6394,23 @@ fn compile_all_exports(
             &all_extra_memory_segments,
         )?
     } else if cortex_m {
+        // RQ-89-IMPSIZE (#1584): see `memory0_baked_bytes`.
+        memory0_reserved_bytes = memory0_decl
+            .as_ref()
+            .map(|m| m.initial_bytes())
+            .unwrap_or(0);
         // #649: the self-contained image materializes the R9 globals table —
         // startup writes every global's captured init (both words for i64)
         // into RAM just above linear memory and points R9 at it.
         build_multi_func_cortex_m_elf(
             &compiled_funcs,
-            &all_memories,
+            // RQ-89-IMPSIZE (#1584): an imported-only module has no DEFINED
+            // memory, and the builder's empty-list fallback is ONE page
+            // whatever the import declares (an imported `(memory 2 2)` image
+            // was byte-identical to the `(memory 1 1)` one). The image is the
+            // instantiator, so it reserves the import's declared minimum.
+            // Multi-memory never reaches here (refused off --relocatable).
+            &memory0_decl.clone().into_iter().collect::<Vec<_>>(),
             target_spec,
             &globals_table_words(&all_globals),
             stack_layout,
@@ -6279,7 +6445,7 @@ fn compile_all_exports(
 
     // Phase 1: emit safety-manifest.json next to the ELF when any
     // safety knob is active.
-    let linear_mem_bytes = all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0);
+    let linear_mem_bytes = memory0_reserved_bytes; // RQ-89-IMPSIZE (#1584)
     maybe_emit_safety_manifest(
         &output,
         target_spec,

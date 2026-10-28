@@ -1153,22 +1153,22 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-README
     doc: README.md
-    text: "full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 43 / 40 / 42, panics 0 / 0 / 0"
+    text: "full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0"
     evidence:
       - kind: count-eq                       # arm pins in the census script
         pattern: 'ok=16, partial=27'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # riscv pins
-        pattern: 'ok=9, partial=31'
+        pattern: 'ok=9, partial=30'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # aarch64 pins
-        pattern: 'ok=21, partial=21'
+        pattern: 'ok=21, partial=20'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # doc-cited ok+partial figures
-        pattern: '"arm": 43, "riscv": 40, "aarch64": 42'
+        pattern: '"arm": 43, "riscv": 39, "aarch64": 41'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-min                      # #1225: the path the census measures is byte-identity gated in the same workflow
@@ -1190,22 +1190,22 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-MATRIX
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 43 / 40 / 42, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
+    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
     evidence:
       - kind: count-eq                       # same script pins as the README leg
         pattern: 'ok=16, partial=27'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: 'ok=9, partial=31'
+        pattern: 'ok=9, partial=30'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: 'ok=21, partial=21'
+        pattern: 'ok=21, partial=20'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: '"arm": 43, "riscv": 40, "aarch64": 42'
+        pattern: '"arm": 43, "riscv": 39, "aarch64": 41'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
@@ -4348,7 +4348,15 @@ claims:
     #   (stage 15 VALS + stagei 15x3 + stagel 15x3 = 105 per target, x
     #   cortex-m7 and cortex-m7dp; all 210 measured green). Paired control on
     #   this tree: `368677` rc=0, `368467` rc=1.
-    text: "--exact-emulation-floor 368677"
+    # v0.89 RQ-89-IMPSIZE (#1584): 368677 -> 368815 (+138; first computed as
+    #   368467 -> 368605 on d4c0b232, re-derived after rebasing over #1595). The
+    #   new imported_memory_size_1584_differential.py declares
+    #   `emulations >= 138` (138 measured via oracle_run.py: 128 compared rows
+    #   + 10 self-contained boots; its 14 refusal rows are counted by the
+    #   script) and is wired into the aarch64-oracle job. Paired control:
+    #   `368815` rc=0 and `368677` rc=1 on this tree; `368815` rc=1 and
+    #   `368677` rc=0 on main ce348045.
+    text: "--exact-emulation-floor 368815"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

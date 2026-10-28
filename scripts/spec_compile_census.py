@@ -231,14 +231,26 @@ BUCKETS = [
 # function that compiled before the fix, `size1` (`memory.size $mem1`),
 # executed on the pre-fix self-contained image returns 4 — R10 = 0x40000, the
 # DEFINED `mem4`'s size — where the spec asserts 2.
+# RE-MEASURED after RQ-89-IMPSIZE (#1584). `refuse_unpinned_imported_memory`
+# refuses, on RV32 and AArch64 only (the backends that BAKE memory 0's size),
+# an imported memory 0 whose limits do not pin its size (max != min). Diffed
+# file-by-file against the pre-fix binary on all three backends: EXACTLY one
+# file moves, on riscv and aarch64, and `ok` is unchanged everywhere:
+#
+#   linking2.wast             partial      -> module_decline (riscv, aarch64)
+#
+# The `partial` loss removed only WRONG code: module $Pm imports `Mm`.`mem1`
+# as `(memory 1 8)` and its one compiled export, `grow`, executed on the
+# pre-fix objects returns 0 (aarch64) and -1 (riscv) for `grow(0)`, where the
+# spec asserts 1 — memory 0 was sized as ZERO bytes.
 PINS = {
     "arm": dict(ok=16, partial=27, all_declined=92, module_decline=103,
                 no_module=9, no_exports=9, parse_fail=1, panic=0,
                 other_error=0),
-    "riscv": dict(ok=9, partial=31, all_declined=94, module_decline=104,
+    "riscv": dict(ok=9, partial=30, all_declined=94, module_decline=105,
                   no_module=9, no_exports=9, parse_fail=1, panic=0,
                   other_error=0),
-    "aarch64": dict(ok=21, partial=21, all_declined=78, module_decline=118,
+    "aarch64": dict(ok=21, partial=20, all_declined=78, module_decline=119,
                     no_module=9, no_exports=9, parse_fail=1, panic=0,
                     other_error=0),
 }
@@ -247,8 +259,9 @@ PINS = {
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:
 # arm=43 riscv=40 aarch64=42 (RQ-66-BOTHWRONG: 47/43/47 -> 45/42/44 — the five
 # memory64 files' ok+partial losses above, see the PINS comment; RQ-89-MEM64
-# #1582: 45/42/44 -> 43/40/42, the two imported-memory `partial` files above)
-AT_LEAST_ONE_EXPORT = {"arm": 43, "riscv": 40, "aarch64": 42}
+# #1582: 45/42/44 -> 43/40/42, the two imported-memory `partial` files above;
+# RQ-89-IMPSIZE #1584: 43/40/42 -> 43/39/41, linking2.wast above)
+AT_LEAST_ONE_EXPORT = {"arm": 43, "riscv": 39, "aarch64": 41}
 
 
 def classify(output: str, rc: int) -> str:

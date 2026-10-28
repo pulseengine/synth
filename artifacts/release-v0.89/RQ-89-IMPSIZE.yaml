@@ -1,0 +1,121 @@
+artifacts:
+  - id: RQ-89-IMPSIZE
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "An imported memory 0 is sized from its own declaration, or refused loudly"
+    description: >
+        A module whose only memory is IMPORTED compiled rc=0 on RV32 and AArch64
+        and sized memory 0 as zero pages: memory.size returned 0 where wasmtime
+        returns the import's pages, and AArch64 trapped in-bounds loads. Memory 0's
+        size was read from the first DEFINED memory, and an imported memory is not
+        in that list. The same blind spot let an imported `(pagesize 1)` memory skip
+        the custom-page-size refusal (the residual RQ-89-PAGESIZEAPI recorded on
+        #1339). An imported memory 0 must be sized from its declaration where that
+        is sound, and refused with a diagnostic where it is not.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: compile
+        `(module (import "env" "m0" (memory 1 1)) (func (export "size0") (result
+        i32) (memory.size 0)) (func (export "ld") (param i32) (result i32)
+        (i32.load (local.get 0))))` with -b riscv and -b aarch64, execute size0 and
+        an in-bounds ld against wasmtime with the import supplied as
+        Memory(Limits(1,1)); if both agree, the defect is gone.
+        CITATION: #1584 is where the matter was analysed; the page-size residual
+        was analysed on #1339. The numbers name where it was analysed, not an open
+        scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      issue: "#1584"
+      verification-track: manual
+      issue-scope: closes
+      landed: "PR #1592 - #1584 - DELIVERED. The refuting command, run FIRST on d4c0b232, CONFIRMED the defect and found it wider than filed. New oracle scripts/repro/imported_memory_size_1584_differential.py (6 imported-limits shapes x 7 legs, every accepted leg executed in unicorn against wasmtime with the import satisfied by exactly its declared minimum) reported 41 disagreements on the base binary. RV32 and AArch64: memory.size 0 returned 0 for (memory 1 1) and (memory 2 2) where wasmtime returns 1 and 2, on the module path and on the single-function path, and under bounds checking (RV32 --safety-bounds software, the AArch64 default) every in-bounds access trapped. Self-contained ARM, which #1584 called correct, was correct only for (memory 1 1), by coincidence of a one-page fallback: an imported (memory 2 2) image was byte-identical to the (memory 1 1) one, so memory.size said 1 (wasmtime 2) and the software guard trapped the in-bounds second page; an imported (memory 0 0) said 1 and returned data where wasmtime traps. An imported (pagesize 1) 20000-byte memory compiled rc=0 on all 7 legs, and on ARM --relocatable memory.size returned 0 (R10 >> 16) where wasmtime answers 20000. ARM --relocatable with 64 KiB pages was already correct (R10). Fix: memory 0 is now the TRUE memory 0 of the wasm index space (DecodedModule::memory0, the import when there is one), read at the sizing sites in synth-cli (RV32/AArch64 linear_memory_bytes and the single-function size, memory0_page_log2, the RV32 data-extent check, the self-contained ARM image's reservation and its safety manifest) and in the RV32 and ARM library backends; every per-memory page-size check walks the memory index space (wasm_decoder::memory_index_space) so an imported (pagesize 1) is refused or honoured exactly like a defined one; and a new refuse_unpinned_imported_memory refuses, on RV32 and AArch64 only, an imported memory 0 whose limits do not pin its size. ARM --relocatable keeps the defined-list reading for its object reservation and is byte-identical."
+      verified-by: >
+        DELIVERED, red to green against wasmtime-py 48.0.0 (unicorn 2.1.4). THE DECISION on an imported
+        memory with no maximum (or max > min), and why: the host chooses an
+        imported memory's size anywhere its limits allow. RV32 and AArch64 BAKE
+        memory 0's size (memory.size is a constant, the bounds limit an immediate)
+        into an object whose memory the embedder supplies, so a baked size is sound
+        only when the import pins it (max == min) — the rule #642 already applies to
+        an imported table. Pinned imports are sized from the declaration; the rest
+        are REFUSED naming #1584 rather than given a size no embedder contract
+        states (no embedder ABI is invented). ARM is not refused: on --relocatable
+        the size is the embedder's R10 at run time, and the self-contained image is
+        the instantiator, which resolves the import with a memory of exactly its
+        declared minimum — a legal instantiation for any declared maximum, since
+        memory.grow may fail. AFTER, same oracle on the fixed binary: compiled 28,
+        refused 14 (each naming #1584 or `(pagesize 1)`), compared 128, 0
+        disagreements; oracle_run measured 138 emulations (128 rows + 10
+        self-contained boots), declared `emulations >= 138`. Wired into ci.yml's
+        aarch64-oracle job with grep pins on its count line and verdict; that job's
+        ledger --min-oracles 18 -> 19; the exact emulation floor in ci.yml and
+        claims.yaml moves by +138 to the total oracle_wiring_check.py reports, from
+        368677 (RQ-89-WIDESTAGE's value, after rebasing over #1595; first derived
+        on d4c0b232 from RQ-89-WIDEFILE11's 368467), paired: the new total rc=0 and
+        the old one rc=1 on this tree, and the reverse on main ce348045. The
+        census pins were re-run live on the rebased binary (PASS); main changed
+        none of the census script, synth-cli, the decoder or the RV32/AArch64
+        backends after d4c0b232, so the base half of their pair is the d4c0b232
+        run. Library red-first (the
+        backend sources reverted to d4c0b232, the tests unchanged):
+        synth-backend tests/library_imported_pagesize_1339.rs fails 2 of 3,
+        synth-backend-riscv tests/library_imported_memory_1584.rs 3 of 3,
+        synth-backend-aarch64 tests/library_imported_memory_1584.rs 2 of 3 (its
+        pinned-size row passes on base by construction: that backend takes the size
+        from the caller's config); all 9 pass after. NEWLY REFUSED, counted: the
+        spec census (257 files x 3 backends) moves EXACTLY one file, linking2.wast,
+        partial -> module_decline on riscv and aarch64 only; arm and every `ok`
+        count are unchanged. The loss removed only wrong code: its module $Pm
+        imports (memory 1 8) and its one compiled export, grow, executed on the
+        base objects returns 0 (aarch64) and -1 (riscv) for grow(0) where the spec
+        asserts 1. Census PINS (riscv partial 31 -> 30, module_decline 104 -> 105;
+        aarch64 partial 21 -> 20, module_decline 118 -> 119) and at-least-one-export
+        43/40/42 -> 43/39/41 moved together with README, FEATURE_MATRIX and its
+        template, SPEC_FAMILY_CENSUS (multi-memory row) and claims.yaml; paired: the
+        new pins PASS on the fixed binary and fail 4 ways on d4c0b232, the old pins
+        fail 4 ways on the fixed binary. The #1225 single-module identity oracle
+        (420 checks) and the pagesize oracle (32 assertions) PASS on the fixed
+        binary. Byte identity: 240 repo fixtures x 8 paths (ARM self-contained,
+        --no-optimize, --cortex-m, --relocatable; RV32 --relocatable and default;
+        AArch64 and --relocatable) = 1920 compiles, 0 differences — and 0 of those
+        fixtures import a memory, so that sweep says only that non-importing modules
+        are untouched. The mutation ledger was reanchored by its stored text: 14
+        sites moved (arm_backend.rs +3, synth-cli main.rs +166, this lane's own net
+        lines above each site), 0 not found; mutants 34, controls 3, ci_subset 10,
+        retired 4 unchanged. ARM's compile-time linear_memory_bytes (the
+        --safety-bounds mask constant and the native-pointer bound) deliberately
+        stays on the defined-list reading: a first draft fed it the import's
+        minimum, which newly ACCEPTED `--safety-bounds mask` for a module with a
+        function import plus an imported memory — an ET_REL object whose memory the
+        embedder sizes, where a mask baked from the minimum would wrap a legal
+        larger memory. Measured: rc=1 on d4c0b232, rc=0 on the draft, rc=1 after
+        the narrowing; mask on a self-contained image with an imported memory stays
+        refused as before (no widening). CI sweep: every `python3 scripts/` command
+        in ci.yml run blocks (350) was run on this tree; the 45 distinct non-zero
+        commands were re-run serially on this tree and on a git worktree of
+        d4c0b232 with the base binary. 42 are non-zero on both (environmental), 0
+        are non-zero only here once the tree is committed (mutation_survey.py ci
+        asserts a clean tree and was re-run after the commit). NOT MEASURED: the external 243-module acceptance-ladder
+        corpus (/Volumes/Work/corpora/wasm-243 was not mounted), so how many real
+        modules the RV32/AArch64 refusal of an unpinned import moves on the ladder
+        is unknown. NOT FIXED HERE, recorded: the single-function self-contained
+        Cortex-M image reserves one page for EVERY module, defined or imported (its
+        builder hardcodes 64 KiB); an imported SHARED memory compiles rc=0 on ARM,
+        RV32 and AArch64 while a defined one is refused (refuse_shared_memory reads
+        the defined list); --proven-safe still refuses (fail-closed, #932) to
+        establish a floor for an imported memory although its minimum is now
+        carried; the native-pointer stack-pointer heuristic still reads the defined
+        list; the AArch64 library API takes memory 0's size from the caller's
+        config, as before.
+      done-when: >
+        manual:2027-03-31 an imported memory 0 is sized from its own declaration
+        on every path where synth fixes the size, or refused loudly where it cannot
+        be — delivered with an execution-verified result against wasmtime, and the
+        refuting command above RUN FIRST and its result reported

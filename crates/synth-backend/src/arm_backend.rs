@@ -126,10 +126,13 @@ impl Backend for ArmBackend {
         // lowered as `R10 >> 16` — 0 for a 20000-byte memory where wasmtime
         // answers 20000. Honoured where the CLI honours it (`relocatable`),
         // refused where the CLI refuses it — see `check_page_sizes`.
-        check_page_sizes(&module.memories, config.relocatable)?;
+        //
+        // RQ-89-IMPSIZE (#1339 residual): an IMPORTED memory is memory 0 when
+        // the module imports one, and its declaration is checked and read
+        // like a defined one's (both used to read the DEFINED list only).
+        check_page_sizes(&module.memory_index_space(), config.relocatable)?;
         let mem0_page_log2 = module
-            .memories
-            .first()
+            .memory0()
             .and_then(|m| m.page_size_log2)
             .unwrap_or(16);
         let derived;

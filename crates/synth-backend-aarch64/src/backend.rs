@@ -56,6 +56,27 @@ fn check_page_log2(idx: u32, log2: u32) -> Result<(), BackendError> {
     Err(BackendError::CompilationFailed(msg))
 }
 
+/// RQ-89-IMPSIZE (#1584): this backend BAKES memory 0's size into the code
+/// (`memory.size` is a constant, every access is bounded by a compile-time
+/// limit), while the host may supply an IMPORTED memory of any size its
+/// declared limits allow. A baked size is sound only when the import PINS it
+/// (maximum == minimum, the #642 imported-table rule), so any other imported
+/// memory 0 is refused on the published API as under `synth compile`.
+fn check_imported_memory0(module: &DecodedModule) -> Result<(), BackendError> {
+    match module.imported_memories.first() {
+        Some(m) if m.max_pages != Some(m.initial_pages) => {
+            Err(BackendError::CompilationFailed(format!(
+                "memory 0 is imported with limits min {} / max {:?} pages; the \
+                 AArch64 backend bakes memory 0's size into the code, which is \
+                 sound for an imported memory only when its maximum equals its \
+                 minimum. Refusing (#1584).",
+                m.initial_pages, m.max_pages
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn check_page_sizes(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Result<(), BackendError> {
     for mem in memories {
         if let Some(log2) = mem.page_size_log2 {
@@ -297,7 +318,10 @@ impl Backend for AArch64Backend {
         module: &DecodedModule,
         config: &CompileConfig,
     ) -> Result<CompilationResult, BackendError> {
-        check_page_sizes(&module.memories)?;
+        // RQ-89-IMPSIZE (#1584, #1339): an imported memory is in the index
+        // space too — an imported `(pagesize 1)` was invisible to this check.
+        check_page_sizes(&module.memory_index_space())?;
+        check_imported_memory0(module)?;
         // #851: to lower direct `call`, EVERY locally-defined function must be
         // placed in `.text` with a `func_N` symbol — a callee is often a
         // non-exported helper, and an R_AARCH64_CALL26 needs a symbol to resolve
