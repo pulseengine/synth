@@ -102,7 +102,15 @@ SCRUBBERS: list[tuple[str, str]] = [
     # was eaten first, the remaining `.yaml:28` no longer matched this pattern,
     # and the citation's line number reached the queue as a quantity -- 32 such
     # citations sat in the v0.87 round-1 record.
-    ("file-line", r"\b[\w./-]+\.[A-Za-z]{1,6}:\d+\b"),
+    # RANGED citations (#1575): `file.rs:3618-3633` / `:421-424`. The START
+    # line was always scrubbed with the citation; the END leaked as a quantity.
+    # Both ends go, so a range is treated exactly as a single citation is.
+    ("file-line", r"\b[\w./-]+\.[A-Za-z]{1,6}:\d+(?:[-\u2013]\d+)?\b"),
+    # FINDING LABELS (#1575): `R1-4`, `F3-2` (one capital letter + number + a
+    # dashed number) and `finding 2` / `Findings 11` name a finding; they are
+    # identifiers, not quantities. A bare `F3` is already unreachable by
+    # construction (no word boundary). Costs: "finding 3 hits" would be eaten.
+    ("finding-label", r"\b[A-Z]\d+(?:-\d+)+\b|\b[Ff]indings?\s+\d+\b"),
     # artifact ids: RQ-85-FALCON2, BR-001
     ("artifact-id", r"\b(?:RQ|BR|LS|VCR|GI)-[0-9A-Za-z-]+"),
     # runner names: ci-01-8, pulseengine-ci-01-10
@@ -150,7 +158,12 @@ def withheld_decimals(text: str) -> collections.Counter:
 # such tokens, from lists, tuples and quoted diff coordinates), so round 2 would
 # attack a figure that does not exist while missing the two that do; and it left a
 # TRAILING COMMA on `184,`, so the same quantity counted in two buckets.
-NUMBER = re.compile(r"\b\d{1,3}(?:,\d{3})+\b|\b\d+\b")
+#
+# HEX quantities (#1575): `0x10000`, `0xaaf6` are figures a record claims (page
+# sizes, masks) and were invisible because `x` is a word character, so neither
+# `0` nor the digits after it sit on a word boundary. The hex alternative comes
+# FIRST and keeps the `0x` prefix, so the token is the figure as written.
+NUMBER = re.compile(r"\b0[xX][0-9a-fA-F]+\b|\b\d{1,3}(?:,\d{3})+\b|\b\d+\b")
 
 # SPELLED-OUT NUMBERS (RQ-88-EXTRACTOR, #1553). This programme writes its
 # load-bearing counts as capitalised WORDS ("FOUR hits", "ELEVEN comments"), and
@@ -222,6 +235,13 @@ def self_test() -> int:
         # #1553: the scrubber-ORDER case. With artifact-id ahead of file-line
         # this left `28` behind.
         ("artifact-file-line", "RQ-87-MEMLAYER4.yaml:28 says exactly that"),
+        # #1575: a RANGED citation. The start line is scrubbed as part of the
+        # citation (as a single citation's line is), so the END must go with it.
+        ("file-line-range", "see src/lib.rs:3618-3633 for it"),
+        ("file-line-range-en", "see CHANGELOG.md:421\u2013424 for it"),
+        # #1575: FINDING LABELS are identifiers, not quantities.
+        ("label-r1", "as R1-4 and F3-2 recorded"),
+        ("label-finding", "finding 2 and Findings 11 say"),
     ]
     failures = []
     for name, sample in cases:
@@ -253,6 +273,13 @@ def self_test() -> int:
     # SCRUBBER strips it, so it was never a by-construction case, and dropping that
     # scrubber leaked `005` under this label — a misattributed diagnosis, found by
     # round 2. Both survivors have no word boundary before their digits.
+    # #1575: HEX quantities are claims (a page size, a mask) and must SURVIVE, as
+    # one token each; an unscrubbed-hex regression must not leak the bare digits.
+    hexgot = numbers("page 0x10000 and mask 0xaaf6 and 0XFF")
+    if sorted(hexgot) != ["0X" "FF", "0x10000", "0xaaf6"]:
+        failures.append(f"HEX: hex quantities not extracted whole: {dict(hexgot)}")
+    else:
+        print(f"  ok  hex-quantity   hex figures survive as ONE token: {sorted(hexgot)}")
     embedded = numbers("R11-active and x11y")
     if embedded:
         failures.append(f"BY-CONSTRUCTION: identifier digits leaked: {dict(embedded)}")
