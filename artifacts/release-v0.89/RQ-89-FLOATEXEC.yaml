@@ -55,7 +55,18 @@ artifacts:
         f32.wast add x158. A mutant in select_default.rs was tried first and was
         NOT reached (0 mismatches), which is consistent with select_default not
         being the shipped float path. (3) A NEW defect, #1614, was found on the
-        first run by the callee-saved check. Pins moved, each with a paired
+        first run by the callee-saved check. (4) The POISONED STACK is potent.
+        The four #1594 frame-home shapes (p_cond, p_brif, p_cond_early,
+        p_loop_late) and r_cond from float_local_zero_init_1594.wat were run
+        with --wast, 100 wasmtime-derived assertions x 2 targets, on a binary
+        built at ee994d6c^ (before the #1594 fix). Result: 45 mismatches. The
+        37 on the p_* shapes are wrong ONLY in the garbage state, with values
+        0x41414141, 0x7fc00001 or a random word, i.e. the stack poison patterns.
+        The 8 on r_cond, a register home, are wrong in both states. On the
+        7e170d62 binary all 200 are bit-identical. The oracle refuses to run
+        (harness-error) if the poison window is under 1 KiB or overlaps linear
+        memory or the R9 globals; the full run reports a minimum window of
+        0x2000 B. Pins moved, each with a paired
         control: the exact emulation floor rises by 58000 from the v0.89
         RQ-89-FALCONSTEP value 382834, to oracle_wiring_check.py's reported
         total (the new oracle declares emulations >= 58000; 61003 measured via
@@ -66,4 +77,12 @@ artifacts:
         touched. UNVERIFIED: the job's wall time on a GitHub ubuntu runner,
         measured locally at about 4 minutes plus the build; the m4f leg's f64
         functions are counted as f64-on-sp-target or symbol-missing, not
-        executed.
+        executed; the integer population's type-rec/type-subtyping
+        call_indirect type-mismatch non-traps (recorded, outside the float
+        scope) were not triaged. WHEN PR #1607 LANDS (not merged at
+        measurement), the rebase moves the following. The three #1603 KNOWN
+        entries VANISH and are deleted. known_open_pins goes 92 -> 89 with its
+        own waiver and known_open_pinned_cases 214 -> 156. The exact emulation
+        floor is re-derived as #1607's own total plus 58000, with the paired
+        control re-run. #1607 adds no KNOWN or PINNED table, so the count-eq
+        stays at 13.

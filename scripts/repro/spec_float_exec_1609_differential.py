@@ -97,9 +97,13 @@ counted as `reference-vs-literal`.
 GATED: every float-involved assertion, meaning one with a float param or result, or
 one calling a function that only the FPU target compiles. Recorded but never gating:
   * integer assertions. They are executed, because module state is shared, but
-    #197 owns them on cortex-m4. On these images they show the same envelope
-    classes #197 pins: memory.grow fails in fixed SRAM (#539), #1206, and the
-    OOB cascade.
+    #197 owns them on cortex-m4. At authoring they showed the memory.grow
+    fixed-SRAM class and #1206, which #197 PINS; the OOB state cascade, which
+    #197 records as informational; and type-rec/type-subtyping
+    `call_indirect` type-mismatch assertions that did not trap. #197 counts
+    those as its non-gating `trap-miss`, but they are NOT the bounds envelope:
+    the spec requires that trap. That class is recorded here and is outside
+    this oracle's float scope.
   * a mismatch after an `assert_trap "out of bounds"` that the default image did
     not take. That is the no-bounds-check envelope's state cascade.
   * `reference-vs-literal`. An action declined on BOTH engines left the module
@@ -176,6 +180,7 @@ M64 = (1 << 64) - 1
 RET = 0x00F0_0000
 INSN_LIMIT = 4_000_000
 POISON_WINDOW = 0x2000
+MIN_POISON = 0x400
 CORE_ARGS = [A.UC_ARM_REG_R0, A.UC_ARM_REG_R1, A.UC_ARM_REG_R2, A.UC_ARM_REG_R3]
 SREG = [getattr(A, f"UC_ARM_REG_S{i}") for i in range(32)]
 DREG = [getattr(A, f"UC_ARM_REG_D{i}") for i in range(16)]
@@ -394,6 +399,18 @@ class Image:
                        ([self.mem_base + self.mem_size] if self.mem_base + self.mem_size <= sp0 else []) +
                        [ram_lo])
         self.poison = (max(top_data, sp0 - POISON_WINDOW), sp0)
+        # The poisoned stack is half of the garbage state (#1594's frame-home
+        # class lived there), so an empty window, or one overlapping program
+        # state, must not pass quietly: either is a HARNESS error, never a
+        # green run that poisoned nothing.
+        plo, phi = self.poison
+        r9 = self.boot[A.UC_ARM_REG_R9]
+        if phi - plo < MIN_POISON:
+            raise RuntimeError(f"poison window {phi - plo:#x} B < {MIN_POISON:#x} below SP {sp0:#x}")
+        if self.mem_size and self.mem_base < phi and plo < self.mem_base + self.mem_size:
+            raise RuntimeError("poison window overlaps linear memory")
+        if plo <= r9 < phi:
+            raise RuntimeError("poison window overlaps the R9 globals area")
         self.trapped = False
         trap = self.syms.get("Trap_Handler", 0) & ~1
 
@@ -426,13 +443,17 @@ class Image:
     def call(self, fn, core, sregs, results, garbage: bool, rng: random.Random):
         """-> (('ok', value) | ('trap',) | ('fault', msg) | ('timeout',), [violations])"""
         mu = self.mu
+        lo, hi = self.poison
         if garbage:
-            lo, hi = self.poison
             pat = rng.randrange(3)
             if pat == 2:
                 mu.mem_write(lo, rng.randbytes(hi - lo))
             else:
                 mu.mem_write(lo, struct.pack("<I", (0x41414141, 0x7FC00001)[pat]) * ((hi - lo) // 4))
+        else:
+            # ZEROED means zeroed: a previous garbage call's poison must not
+            # leak into this state's stack.
+            mu.mem_write(lo, bytes(hi - lo))
         for i, r in enumerate(SREG):
             mu.reg_write(r, rng.getrandbits(32) if garbage else 0)
         for i in range(13):
@@ -541,6 +562,7 @@ class Run:
         self.after_trap_miss = False
         self.emulations = 0
         self.seconds = 0.0
+        self.poison_bytes = 0
 
 
 def classify(ty, expect, got):
@@ -593,6 +615,7 @@ def run_module(engine, target: str, file: str, idx: int, wat: str, actions: list
     try:
         img = Image(out)
         run.emulations += 1
+        run.poison_bytes = img.poison[1] - img.poison[0]
     except UcError as e:
         run.decline = f"boot-fault:{e}"
         return run
@@ -880,6 +903,8 @@ def main() -> int:
             print(f"  {t:12s} {f:34s} {c['gated']:6d} {fb:6d} {fn_:5d} "
                   f"{c['gated'] - fb - fn_ - c['MISMATCH']:5d} {c['MISMATCH']:5d} {c['skipped']:6d} "
                   f"{c['module-declined']:5d} {c['executed/integer']:6d}")
+    windows = [r.poison_bytes for r in runs if r.poison_bytes]
+    print(f"  poisoned stack window: min {min(windows, default=0):#x} B over {len(windows)} booted images")
     slow = sorted(((r.seconds, r.file) for r in runs if r.seconds), reverse=True)[:5]
     print("  slowest files: " + ", ".join(f"{f} {s:.0f}s" for s, f in slow))
     print(f"  mismatches: {len(lines)}")
