@@ -1472,8 +1472,14 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let (ops, op_offsets, block_arity, mut unsupported, declared_i64_locals) =
-                    decode_function_body(&body, &type_block_arity, &float_globals, &v128_globals)?;
+                let (
+                    ops,
+                    op_offsets,
+                    block_arity,
+                    mut unsupported,
+                    declared_i64_locals,
+                    declared_float_locals,
+                ) = decode_function_body(&body, &type_block_arity, &float_globals, &v128_globals)?;
                 // #680: a v128 param/result reaches the body only through
                 // type-agnostic ops (a `local.get 0` passthrough compiles to
                 // a 4-byte `mov`), so flag the SIGNATURE even when the body
@@ -1502,6 +1508,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     unsupported,
                     block_arity,
                     declared_i64_locals,
+                    declared_float_locals,
                 });
                 func_index += 1;
             }
@@ -1740,8 +1747,14 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let (ops, op_offsets, block_arity, mut unsupported, declared_i64_locals) =
-                    decode_function_body(&body, &type_block_arity, &float_globals, &v128_globals)?;
+                let (
+                    ops,
+                    op_offsets,
+                    block_arity,
+                    mut unsupported,
+                    declared_i64_locals,
+                    declared_float_locals,
+                ) = decode_function_body(&body, &type_block_arity, &float_globals, &v128_globals)?;
                 // #680: v128 param/result — see `decode_wasm_module`.
                 if unsupported.is_none()
                     && func_sig_has_v128
@@ -1767,6 +1780,7 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                     unsupported,
                     block_arity,
                     declared_i64_locals,
+                    declared_float_locals,
                 });
                 func_index += 1;
             }
@@ -1854,6 +1868,16 @@ pub struct FunctionOps {
     /// byte-for-byte. Empty on the lighter `decode_wasm_functions` callers
     /// that build the same vector — never hand-omitted.
     pub declared_i64_locals: Vec<bool>,
+    /// #1594: which NON-PARAM locals are DECLARED f32 / f64, by declaration
+    /// order (the [`declared_i64_locals`](Self::declared_i64_locals) layout):
+    /// `4` = f32, `8` = f64, `0` = any other type. The ARM selector births a
+    /// float local's VFP home (register or frame slot) at its first
+    /// `local.set`, so a float local that may be read before it is written on
+    /// SOME path needs its home reserved and zeroed at entry — and that needs
+    /// the local's type before the first write, which only the declaration
+    /// states. Empty on hand-built op streams (no entry zero-init: the
+    /// pre-#1594 behaviour).
+    pub declared_float_locals: Vec<u8>,
 }
 
 /// #509: `(param_count, result_count)` of a wasm blocktype, for the
@@ -1917,7 +1941,8 @@ fn eval_extended_const_i32_offset(mut ops: wasmparser::OperatorsReader<'_>) -> O
 }
 
 /// The per-function payload [`decode_function_body`] extracts: `(ops,
-/// op_offsets, block_arity, unsupported, declared_i64_locals)` — see the
+/// op_offsets, block_arity, unsupported, declared_i64_locals,
+/// declared_float_locals)` — see the
 /// matching [`FunctionOps`] fields for each component's contract.
 type DecodedBody = (
     Vec<WasmOp>,
@@ -1925,6 +1950,7 @@ type DecodedBody = (
     Vec<(u8, u8)>,
     Option<String>,
     Vec<bool>,
+    Vec<u8>,
 );
 
 /// Decode a single function body to WasmOp sequence.
@@ -1956,6 +1982,9 @@ fn decode_function_body(
     // #1214: same pass also records which locals are DECLARED i64, by
     // declaration order — see `FunctionOps::declared_i64_locals`.
     let mut declared_i64_locals: Vec<bool> = Vec::new();
+    // #1594: same pass, declared f32/f64 locals — see
+    // `FunctionOps::declared_float_locals`.
+    let mut declared_float_locals: Vec<u8> = Vec::new();
     for local in body.get_locals_reader()? {
         let (count, ty) = local.context("Failed to read local declaration")?;
         if unsupported.is_none() && count > 0 && ty == wasmparser::ValType::V128 {
@@ -1968,6 +1997,14 @@ fn decode_function_body(
         }
         declared_i64_locals.extend(std::iter::repeat_n(
             ty == wasmparser::ValType::I64,
+            count as usize,
+        ));
+        declared_float_locals.extend(std::iter::repeat_n(
+            match ty {
+                wasmparser::ValType::F32 => 4u8,
+                wasmparser::ValType::F64 => 8u8,
+                _ => 0u8,
+            },
             count as usize,
         ));
     }
@@ -2080,6 +2117,7 @@ fn decode_function_body(
         block_arity,
         unsupported,
         declared_i64_locals,
+        declared_float_locals,
     ))
 }
 

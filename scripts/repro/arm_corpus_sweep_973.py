@@ -235,6 +235,13 @@ EXPECTED_DECLINES = {
     # m7dp execution truth for all five lives in
     # vfp_local_pressure_1069_differential.py.
     "vfp_local_pressure_1069.wat": "f64 local shapes (live8d) on m4f",
+    # RQ-89-FLOATZERO (#1594): the f64 twin of the float-local zero-init
+    # fixture is ALL f64, which this sweep's single-precision m4f target
+    # declines by precision (GI-FPU-002 phase 2), so every function skips and
+    # the module fails via #952. Its f32 sibling compiles here. The execution
+    # truth for both — m7dp for f64, register and frame homes, zeroed and
+    # garbage machine state — is float_local_zero_init_1594_differential.py.
+    "float_local_zero_init_1594_f64.wat": "f64 shapes need a double-precision FPU (GI-FPU-002, #952)",
     # ra003_switch_1230.wat LEFT this table in v0.89 (RQ-89-BRVALUE, #1215).
     # Its VCR-RA-003 refusal was the direct selector's stack model at an
     # unreachable block join (dead code after a `br_table` left values on the

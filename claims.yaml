@@ -1862,9 +1862,32 @@ claims:
         # 16-arm `vfp_s_index`) became one 32-entry table read both ways; their
         # disagreement was the wide-file miscompile.
         # RQ-89-WIDESTAGE (#1593): 20524 -> 20532, a RISE of 8, waived below.
-        value: 20532
+        # RQ-89-FLOATZERO (#1594): 20532 -> 20635, waived below (chained
+        # after RQ-89-WIDESTAGE's waiver).
+        value: 20635
         baseline: 17897
         waivers:
+          - to: 20635
+            reason: >-
+              RQ-89-FLOATZERO (Refs #1594): 20532 -> 20635 (+103, about half of
+              it comment; first measured 20524 -> 20627 on d4c0b232, re-derived
+              after rebasing over #1595/#1592). ONE new lowering decision, replacing no arm: a float
+              (f32/f64) local in the #990 read-before-write set has its VFP home
+              reserved and zeroed at function entry in `select_with_stack`,
+              through the existing `local.set` lowering (so the register-vs-frame
+              residence choice is not duplicated), plus the
+              `declared_float_locals` field + setter that carries the declared
+              local types the decision needs. Previously such a home was born at
+              the first `local.set` in op order and read garbage on any path that
+              skipped that write — a silent wrong value on the base rung and on
+              the #1069 frame rung, shipped in v0.88.0. Gated by execution:
+              float_local_zero_init_1594_differential.py (13680 emulations,
+              zeroed + garbage stack/registers; 1362 of 10080 wrong and 4 shapes
+              declined on d4c0b232) and object byte-identity on every corpus
+              function without such a local (census outside the new fixtures:
+              12 symbol movements in 2 files — align f32_align_switch, and
+              loop.wast's call_indirect table literal shifted by a newly
+              accepted function — all executed correct vs wasmtime).
           - to: 20532
             reason: >-
               RQ-89-WIDESTAGE (Refs #1593): 20524 -> 20532. The wide-file
@@ -2947,7 +2970,10 @@ claims:
         # selector_lines_code, waived there) and +64 test module, the unit
         # test `wide_file_arg_staging_reads_s16_to_s31_in_a_32_word_area_1593`
         # (red on each half-fix). `direction: track` — no waiver.
-        value: 31222
+        # RQ-89-FLOATZERO (#1594): 31222 -> 31325, the same rise as
+        # selector_lines_code (waived there) plus the rebase; the oracle is a
+        # scripts/repro differential, outside this population. No waiver.
+        value: 31325
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4356,7 +4382,14 @@ claims:
     #   script) and is wired into the aarch64-oracle job. Paired control:
     #   `368815` rc=0 and `368677` rc=1 on this tree; `368815` rc=1 and
     #   `368677` rc=0 on main ce348045.
-    text: "--exact-emulation-floor 368815"
+    # v0.89 RQ-89-FLOATZERO (#1594): 368815 -> 382495 (first computed as
+    #   368467 -> 382147 on d4c0b232, re-derived after rebasing over #1595 and
+    #   #1592). The new float_local_zero_init_1594_differential.py declares
+    #   `emulations >= 13680` (13680 measured via oracle_run.py: 76 export x
+    #   config rows x 36 vectors x 5 machine states — zz 1, gz 3 stack
+    #   patterns, zg 1). Paired control: `382495` rc=0 and `368815` rc=1 on this
+    #   tree; `382495` rc=1 and `368815` rc=0 on main efb0f28a.
+    text: "--exact-emulation-floor 382495"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

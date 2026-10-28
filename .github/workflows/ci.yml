@@ -1213,7 +1213,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 368815 \
+            --exact-emulation-floor 382495 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2934,6 +2934,18 @@ jobs:
       # redefinition, so a STALE home read would make the two agree.
       - name: Run redefined frame-home VFP oracle (#881/#1069, m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_home_redef_881_differential.py
+      # RQ-89-FLOATZERO (#1594): a float local written on only SOME path (one
+      # `if` arm, skipped by a `br_if`, a loop accumulator) must read wasm's
+      # 0.0 at the join. Its home — base-rung VFP register or #1069 frame slot
+      # — is now reserved and zeroed at entry. f32 on m4f (rel + self-
+      # contained) and m7, f64 on m7dp (rel + self-contained); base, vfp-spill,
+      # vfp-frame-locals and (f32) vfp-wide-file rungs, every shape on
+      # its asserted rung (SYNTH_RECOVERY_STATS), executed vs wasmtime with a
+      # zeroed machine, a GARBAGE stack (the frame-home half — a zeroed-only
+      # oracle, like the #1069 one, is blind to it) and GARBAGE registers.
+      # Red on d4c0b232: 1362 of 10080 emulations wrong + 4 shapes declined.
+      - name: Run float-local zero-init oracle (#1594, m4f/m7/m7dp)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/float_local_zero_init_1594_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values
@@ -4604,8 +4616,22 @@ jobs:
           # the two hard-float legs only. PROVEN CORPUS GROWTH: main's binary
           # (bbda3f9e) over this tree, and this binary over main's tree, both
           # print 7367 / 8418 / 236409 exactly; `hits: 0` holds throughout.
-          grep -Eq '^functions audited: 7371$' haa1189.txt
-          grep -Eq '^homes watched: 8470$' haa1189.txt
+          #
+          # RQ-89-FLOATZERO (#1594): 7371 -> 7407, 8470 -> 8852 and (below)
+          # 237853 -> 240549, MEASURED, then DECOMPOSED by isolation. The fix's
+          # own codegen effect (this binary over main's tree; re-measured on efb0f28a
+          # after rebasing over #1595/#1592, unchanged from d4c0b232): 7375 /
+          # 8480 / 237921 — +4 functions that previously REFUSED and now compile
+          # on the cortex-m4f leg's two paths (local_get.wast `type-local-f32`,
+          # loop.wast `nesting`, both read-before-write float locals, both
+          # EXECUTED correct vs wasmtime incl. garbage stack/registers), their
+          # homes and instructions; the entry zero-init itself is unattributed.
+          # The rest is corpus growth from the two new fixtures
+          # (float_local_zero_init_1594{,_f64}.wat): main's (efb0f28a) binary over this tree
+          # prints 7395 / 8742 / 240049. Main's binary over main's tree prints
+          # the old 7371 / 8470 / 237853. `hits: 0` throughout.
+          grep -Eq '^functions audited: 7407$' haa1189.txt
+          grep -Eq '^homes watched: 8852$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -4620,7 +4646,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 237853 ' haa1189.txt
+          grep -Eq '^attributed instructions: 240549 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

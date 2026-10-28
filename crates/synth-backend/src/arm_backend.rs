@@ -196,6 +196,9 @@ impl Backend for ArmBackend {
             // reason; only a function that actually declares an i64 local
             // needs the extra clone.
             let declared_i64_locals = &func.declared_i64_locals;
+            // #1594: same guard shape — only a function declaring a float
+            // local needs the clone (the entry zero-init of its VFP home).
+            let declared_float_locals = &func.declared_float_locals;
             let func_config = if params.is_some()
                 || params_f32.is_some()
                 || params_f64.is_some()
@@ -204,6 +207,7 @@ impl Backend for ArmBackend {
                 || ret_f32
                 || ret_f64
                 || declared_i64_locals.iter().any(|&b| b)
+                || declared_float_locals.iter().any(|&w| w != 0)
             {
                 Some(CompileConfig {
                     current_func_params_i64: params.cloned().unwrap_or_default(),
@@ -213,6 +217,7 @@ impl Backend for ArmBackend {
                     current_func_ret_f64: ret_f64,
                     current_func_block_arity: func.block_arity.clone(),
                     current_func_declared_i64_locals: declared_i64_locals.clone(),
+                    current_func_declared_float_locals: declared_float_locals.clone(),
                     current_func_param_count: declared_params,
                     ..config.clone()
                 })
@@ -903,6 +908,10 @@ fn compile_wasm_to_arm(
         // `compute_local_layout`'s use of it. Empty ⇒ exactly the prior
         // dataflow-only width inference.
         selector.set_declared_i64_locals(config.current_func_declared_i64_locals.clone());
+        // #1594: THIS function's declared-float-local side-table — the entry
+        // zero-init of a read-before-write float local's VFP home. Empty ⇒
+        // no float zero-init (the pre-#1594 behaviour).
+        selector.set_declared_float_locals(config.current_func_declared_float_locals.clone());
         // Stack-pointer promotion is meaningful only under the native-pointer ABI;
         // gating here keeps every non-native compile (all frozen fixtures) on the
         // legacy R9 globals-table path, bit-identical.

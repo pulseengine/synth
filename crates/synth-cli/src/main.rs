@@ -2071,6 +2071,7 @@ fn compile_command(
     let mut single_func_linear_memory_bytes: u32 = 0;
     let mut current_func_block_arity: Vec<(u8, u8)> = Vec::new(); // #509: value-carrying branches
     let mut current_func_declared_i64_locals: Vec<bool> = Vec::new(); // #1214: declared local widths
+    let mut current_func_declared_float_locals: Vec<u8> = Vec::new(); // #1594: declared f32/f64 locals
     // VCR-PERF-002 Phase 1 (#494): loom `wsc.facts` premises — whole-module
     // table + this function's slice. Threaded to the CompileConfig; NOT yet
     // consumed by any codegen path (Phase 2 is the gated elision).
@@ -2253,6 +2254,7 @@ fn compile_command(
             current_func_param_count = module_func_arg_counts.get(func.index as usize).copied();
             current_func_block_arity = func.block_arity.clone();
             current_func_declared_i64_locals = func.declared_i64_locals.clone();
+            current_func_declared_float_locals = func.declared_float_locals.clone();
             // VCR-PERF-002 Phase 1 (#494): THIS function's facts slice, the
             // `current_func_params_i64` pattern (`compile_function` carries no
             // function index, so the driver filters by `func_index` up front).
@@ -2382,6 +2384,7 @@ fn compile_command(
         global_widths,
         current_func_block_arity,
         current_func_declared_i64_locals,
+        current_func_declared_float_locals,
         // VCR-PERF-002 Phase 1 (#494): threaded but not yet consumed (inert
         // plumbing, like volatile_segments was in #543 Phase 1). Phase 2 reads
         // `current_func_facts` in the selector behind SYNTH_FACT_SPEC.
@@ -5372,6 +5375,7 @@ fn compile_all_exports(
                 .unwrap_or(false);
             fc.current_func_block_arity = func.block_arity.clone();
             fc.current_func_declared_i64_locals = func.declared_i64_locals.clone();
+            fc.current_func_declared_float_locals = func.declared_float_locals.clone();
             // #1168: on the .wast merge, compile THIS function against ITS
             // module's signature tables. The merged config carries ONE
             // module's tables (max-imports, else first); a function merged
@@ -10883,6 +10887,7 @@ mod tests {
             unsupported: None,
             block_arity: Vec::new(),
             declared_i64_locals: Vec::new(),
+            declared_float_locals: Vec::new(),
         }
     }
 

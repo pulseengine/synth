@@ -342,6 +342,15 @@ pub struct CompileConfig {
     /// [`FunctionOps::declared_i64_locals`]: crate::wasm_decoder::FunctionOps::declared_i64_locals
     pub current_func_declared_i64_locals: Vec<bool>,
 
+    /// #1594: THIS function's declared-f32/f64-local side-table — see
+    /// [`FunctionOps::declared_float_locals`]. Set per function by the driver
+    /// loop (like [`current_func_declared_i64_locals`]). Empty ⇒ no entry
+    /// zero-init of float local homes (hand-built op streams / unit tests).
+    ///
+    /// [`FunctionOps::declared_float_locals`]: crate::wasm_decoder::FunctionOps::declared_float_locals
+    /// [`current_func_declared_i64_locals`]: Self::current_func_declared_i64_locals
+    pub current_func_declared_float_locals: Vec<u8>,
+
     /// #543 Phase 1 — integrator-marked volatile linear-memory segments (the DMA
     /// transfer window). Each range `[base, base+len)` names a region of the fused
     /// linear memory that an EXTERNAL agent (the DMA engine, modelled by gale as a
@@ -599,6 +608,9 @@ impl Default for CompileConfig {
             // #1214: empty ⇒ no declared-width correction (unit tests /
             // hand-built op streams); the driver loops fill it per function.
             current_func_declared_i64_locals: Vec::new(),
+            // #1594: empty ⇒ no float-home entry zero-init (unit tests /
+            // hand-built op streams); the driver loops fill it per function.
+            current_func_declared_float_locals: Vec::new(),
             // #543 Phase 1: no volatile segments unless the CLI flag names them.
             // Empty ⇒ inert ⇒ emitted bytes unchanged.
             volatile_segments: Vec::new(),
