@@ -58,6 +58,7 @@ COMPILE_PANIC=0
 COMPILE_ERROR=0
 COMPILE_NOEXPORT=0
 TOTAL_ASSERT_RETURN=0
+TOTAL_ASSERT_RETURN_DROPPED=0
 
 # Result arrays
 declare -a OK_FILES=()
@@ -128,6 +129,10 @@ for wast_file in "${FILES[@]}"; do
     ASSERT_RET=$(echo "$STATS" | grep "Assert_return:" | awk '{print $NF}')
     TEST_TOTAL=$(echo "$STATS" | grep "Total test cases:" | awk '{print $NF}')
     TOTAL_ASSERT_RETURN=$((TOTAL_ASSERT_RETURN + ASSERT_RET))
+    # #1570: assert_returns the parser could not represent (f32/f64/v128/ref
+    # values, non-invoke forms) are COUNTED, not silently absent.
+    ASSERT_RET_DROPPED=$(echo "$STATS" | grep "Assert_return dropped:" | awk '{print $NF}' || true)
+    TOTAL_ASSERT_RETURN_DROPPED=$((TOTAL_ASSERT_RETURN_DROPPED + ${ASSERT_RET_DROPPED:-0}))
 
     # Step 2: Attempt compilation
     COMPILE=$("$SYNTH_CLI" compile "$wast_file" -o "$OUTDIR/spec_${basename}.elf" \
@@ -188,6 +193,7 @@ echo -e "${RED}Compile ERROR:        $COMPILE_ERROR${NC}"
 echo -e "${CYAN}Compile NO_EXPORTS:   $COMPILE_NOEXPORT${NC}  (validation-only or all modules lack exports)"
 echo ""
 echo "Total assert_return tests parsed: $TOTAL_ASSERT_RETURN"
+echo "Total assert_return DROPPED (unrepresentable, not graded): $TOTAL_ASSERT_RETURN_DROPPED"
 echo ""
 
 if [ ${#PANIC_FILES[@]} -gt 0 ]; then
