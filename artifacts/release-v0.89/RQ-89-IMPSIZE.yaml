@@ -57,8 +57,13 @@ artifacts:
         aarch64-oracle job with grep pins on its count line and verdict; that job's
         ledger --min-oracles 18 -> 19; the exact emulation floor in ci.yml and
         claims.yaml moves by +138 to the total oracle_wiring_check.py reports, from
-        368467 (RQ-89-WIDEFILE11's value), paired: the new total rc=0 and the old one
-        rc=1 on this tree, and the reverse on main d4c0b232. Library red-first (the
+        368677 (RQ-89-WIDESTAGE's value, after rebasing over #1595; first derived
+        on d4c0b232 from RQ-89-WIDEFILE11's 368467), paired: the new total rc=0 and
+        the old one rc=1 on this tree, and the reverse on main ce348045. The
+        census pins were re-run live on the rebased binary (PASS); main changed
+        none of the census script, synth-cli, the decoder or the RV32/AArch64
+        backends after d4c0b232, so the base half of their pair is the d4c0b232
+        run. Library red-first (the
         backend sources reverted to d4c0b232, the tests unchanged):
         synth-backend tests/library_imported_pagesize_1339.rs fails 2 of 3,
         synth-backend-riscv tests/library_imported_memory_1584.rs 3 of 3,
