@@ -864,6 +864,8 @@ fn compile_wasm_to_arm(
         selector.set_self_contained_funcref_table(self_contained_table);
         // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
         selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
+        // #1580: the data regions a relocated constant must stay inside.
+        selector.set_npa_data_regions(config.npa_data_regions.clone());
         // VCR-MEM-002 phase 1 (#406): per-memory initial page counts — enables
         // the multi-memory arms (memory-0 lowering never reads it; empty ⇒
         // every multi-memory op declines loudly).

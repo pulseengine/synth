@@ -1213,7 +1213,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 382834 \
+            --exact-emulation-floor 382876 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3010,6 +3010,15 @@ jobs:
       # binary: 81 WRONG, 75 ok, 6 refused.
       - name: Run native-pointer constant-address matrix (#1574, cortex-m3/m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_const_addr_matrix_1568.py --expect ok=99,refused=63,guard=59,wrong=0
+      # #1580: WITH a stack-pointer global, a constant address plus a non-zero
+      # memarg offset is relocated on its EFFECTIVE address (the offset is
+      # folded into the constant), so the mixed split retargets it to the
+      # region holding C+offset. 42 calls vs wasmtime (i32 / narrow / i64 /
+      # f32 / f64 loads and stores, garbage registers and stack), plus 3
+      # refusal rows for a constant routed through a local whose offset
+      # leaves its region. RED on the pre-fix 7e170d62 binary: exit 1.
+      - name: Run native-pointer constant+offset cross-region oracle (#1580, cortex-m3/m7dp)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_offset_cross_segment_1580_differential.py
       # #746 (the #739 residual): the i64/WIDE static-region arms — i64.load/
       # i64.store pair accesses plus the i64 narrow loads/stores (load8/16/32,
       # store8/16/32) — get the #744 relocation treatment instead of the loud
@@ -3327,7 +3336,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 35
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 36
 
   instrument-independence-oracle:
     name: VCR-VER-004 instrument independence (#242, v0.53's mutation re-run)

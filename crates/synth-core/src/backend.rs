@@ -187,6 +187,16 @@ pub struct CompileConfig {
     /// → `[R11=0 + addr]`.
     pub linear_memory_bytes: u32,
 
+    /// #1580: memory 0's active data segments as `(offset, length)`, in
+    /// declaration order — the regions the mixed split gives their own
+    /// `__synth_wasm_seg_K` symbol. Under `native_pointer_abi` the selector
+    /// refuses a relocated constant reached through a local whose memarg
+    /// offset moves the access into a different region (the reloc would be
+    /// retargeted by the constant alone). Empty (the default) means no
+    /// segments: every address is the one zero reservation, which the mixed
+    /// split never retargets.
+    pub npa_data_regions: Vec<(u32, u32)>,
+
     /// VCR-MEM-002 phase 1 (#406): initial size in 64 KiB pages of EACH linear
     /// memory, indexed by memory index. Consulted only by the multi-memory
     /// lowering arms (loads/stores wrapped in `WasmOp::MultiMemory`,
@@ -571,6 +581,7 @@ impl Default for CompileConfig {
             linmem_base: OPTIMIZED_LINMEM_BASE,
             native_pointer_abi: false,
             linear_memory_bytes: 0,
+            npa_data_regions: Vec::new(),
             // #406: empty ⇒ no multi-memory context ⇒ multi-memory ops decline
             // loudly; memory-0 lowering never reads it.
             memory_pages: Vec::new(),

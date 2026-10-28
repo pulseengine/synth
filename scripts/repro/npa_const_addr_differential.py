@@ -51,14 +51,12 @@ NOT covered, and not catchable by this rule:
     with no stack-pointer global (#1568 shape 2) — measured, left to a
     maintainer decision (artifacts/release-v0.89/RQ-89-NPARESIDUE.yaml);
   - a constant address reaching the access through arithmetic, or through a
-    local that also has a non-constant definition;
-  - WITH a stack-pointer global, a relocated pointer constant plus a non-zero
-    memarg offset that leaves the constant's region:
-    `(global (mut i32) (i32.const 0x800)) (data (i32.const 0x2000) ..)`
-    `i32.const 0x1900 i32.load offset=0x704` reads the zero reservation (0x0
-    vs wasmtime 0x38373635), and `i32.const 0x900 i32.load offset=0x1704`
-    relocates both parts and faults. Pre-existing, found by this lane.
+    local that also has a non-constant definition.
 They still read the wrong address; they are reported, not pinned.
+(WITH a stack-pointer global, a relocated pointer constant plus a non-zero
+memarg offset that leaves the constant's region — found by this lane — is
+relocated on the effective address or refused since #1580:
+scripts/repro/npa_offset_cross_segment_1580_differential.py.)
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python scripts/repro/npa_const_addr_differential.py

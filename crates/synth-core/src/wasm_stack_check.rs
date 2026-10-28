@@ -108,6 +108,23 @@ pub fn max_depth_bound(wasm_ops: &[WasmOp]) -> u32 {
     u32::try_from(max).unwrap_or(u32::MAX)
 }
 
+/// #1580: the exact `(pops, pushes)` of a STRAIGHT-LINE op — `None` for every
+/// op this table does not model AND for every control-region op
+/// (`block`/`loop`/`if`/`else`/`end`/`br_if`), whose real effect depends on a
+/// block type (the table models those as neutral, which is an
+/// over-approximation, never an exact effect). A caller walking backwards
+/// from an operand to the op that produced it must stop at `None`.
+pub fn straight_line_stack_effect(op: &WasmOp) -> Option<(u32, u32)> {
+    use WasmOp::*;
+    if matches!(op, Block | Loop | If | Else | End | BrIf(_)) {
+        return None;
+    }
+    match stack_effect_or_bail(op) {
+        StackEffect::Modeled { pops, pushes } => Some((pops, pushes)),
+        StackEffect::Bail => None,
+    }
+}
+
 enum StackEffect {
     Modeled { pops: u32, pushes: u32 },
     Bail,

@@ -1,0 +1,108 @@
+artifacts:
+  - id: RQ-89-NPAOFFSET
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "A relocated constant plus a memarg offset is relocated on its effective address under --native-pointer-abi"
+    description: >
+        SILENT WRONG CODE under --native-pointer-abi in modules WITH a
+        stack-pointer global, the shape gale ships. The selector relocated a
+        constant address by ONE of its parts: a constant at or above the
+        stack-pointer init became __synth_wasm_data + C, and a memarg offset at
+        or above it became __synth_wasm_data + offset. The mixed split
+        retargets each relocation to the __synth_wasm_seg_K holding its
+        addend, which is that one part. When the memarg offset moved C + offset
+        out of that part's data region, the access read the wrong region. When
+        both parts qualified, both were relocated and the access faulted. With
+        C = 0 the addend already was the effective address, which is why that
+        form was always correct.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: compile the
+        #1580 repro with --native-pointer-abi --relocatable and execute it
+        against wasmtime; if `x` and `y` both return 0x38373635, report that
+        and close.
+        CITATION: #1580 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1580"
+      verification-track: manual
+      issue-scope: closes
+      landed: "#1580 - DELIVERED. The refuting command, run first on origin/main 7e170d62 with --target cortex-m3 --relocatable --native-pointer-abi, CONFIRMED the defect: `anchor` returned 0xddccbbaa (correct), `x` faulted on an unmapped read, and `y` returned 0x0 against wasmtime 0x38373635. FIX, a relocation on the effective address, not a refusal: npa_effective_addr_rewrite (crates/synth-synthesis/src/instruction_selector.rs, called first in select_with_stack) rewrites `i32.const C ... access offset=O` to `i32.const C+O ... access offset=0` when a stack-pointer global relocates a part (C at or above the init, or O at or above it with C != 0), O != 0, C + O does not wrap, and C + O is a static address. This is exact wasm: the effective address is unchanged, and the producer of the address operand is found by an exact backward stack walk over straight-line ops (synth_core::wasm_stack_check::straight_line_stack_effect), so this access is the constant's only consumer. The relocation then carries C + O and the existing rposition retarget picks the region holding it. It covers every scalar arm: i32, the narrow i32 loads and stores, i64 and its narrow forms, f32 and f64. It also covers a store whose value is computed, which the positional guard cannot see. A constant reached THROUGH A LOCAL cannot be folded, because other reads share its definition. npa_const_addr_guard now refuses it when the stack-pointer global relocates the local's constant and the offset moves the access into a different data region, with a #1580 diagnostic and no object. The regions are memory 0's active data segments, passed as CompileConfig::npa_data_regions; inside the constant's own region, such as the #757 `[src + 0x20]` field shape, nothing changes. Newly ACCEPTED: an f64 load or store at a constant base plus a static-region offset, which was declined as GI-FPU-002 #359 and now compiles and executes correctly. Newly REFUSED over the corpus: 0."
+      verified-by: >
+        DELIVERED. scripts/repro/npa_offset_cross_segment_1580_differential.py
+        executes 42 calls against wasmtime: 32 on cortex-m3 and 10 on
+        cortex-m7dp. The rows are the issue's x and y, rule 2 alone with
+        C = 4, a same-region no-regression row, two zero-reservation rows,
+        load8_u, load16_s, i32 store, store8, store16, a store with a computed
+        value, i64 load, load8_u, load32_s, store and store32, f32 and f64
+        loads and stores, and two same-region local rows that must stay
+        accepted. Every store is read back through `i32.const 0 ... offset=EFF`,
+        the C = 0 path, never through its own shape. R0-R10 and R12 are seeded
+        with garbage and the stack below SP is filled with a pattern before
+        every call. It also asserts 3 refusal rows (local.set/local.get and
+        local.tee on i32, and an i64 load). RED at 7e170d62: exit 1, with 29 of
+        32 cortex-m3 calls wrong, the cortex-m7dp module refused (f64ld and
+        f64st declined), and 0 of 3 refusals. Separately at 7e170d62 the f32
+        rows were wrong: f32ld returned 0x0 against 0x38373635, and f32st
+        faulted. At the new binary it exits 0, with 42 of 42 equal and 3 of 3
+        refused. Mutations, each red: disabling the rewrite gives 39
+        divergences; dropping rule 2 gives 1, the r2 row; dropping the region
+        check refuses the same-region locals, so the module fails and 32 rows
+        miss; dropping the local refusal gives 3 refusal misses. A synth-cli
+        test checks the relocation: x, y, an i64 narrow load and a store each
+        carry exactly one, to __synth_wasm_seg_1 + 4. Before, y carried
+        __synth_wasm_data + 0x1900, and x carried __synth_wasm_seg_0 + 0 and
+        __synth_wasm_data + 0x1704. The test also checks the local refusal and
+        the same-region acceptance. Byte sweep: 261 tracked .wat/.wasm inputs x
+        6 configurations, compiled with --all-exports --allow-skipped-exports.
+        The configurations are cortex-m3 and cortex-m7dp --relocatable with and
+        without --native-pointer-abi, plain cortex-m3, and cortex-m3
+        --native-pointer-abi. Of 1566 runs, 1226 compile; 0 moved, 0 changed
+        exit code and 0 newly skipped a function. A first version refused every
+        local-routed offset; it newly refused copy_peek in
+        scripts/repro/mem757_ptr_base_copy.wat, a correct same-region access,
+        and that is why the region check exists. Unchanged: the
+        npa_const_addr_matrix_1568.py --before/--after transition table is
+        99 ok->ok and 63 refused->refused, and the --expect
+        ok=99,refused=63,guard=59,wrong=0 pin holds. npa_const_addr_differential.py
+        is 38 of 38 with 13 refusals. Pins moved: the exact emulation floor
+        rises by the oracle's declared 42 over the superseded 382834 (v0.89
+        FALCONSTEP), to the total oracle_wiring_check.py reports; paired
+        control on this tree: the new total rc=0 and 382834 rc=1, and the
+        reverse on main 7e170d62. The trap-semantics-oracle
+        job's --min-oracles goes 35 -> 36. selector_lines_code goes
+        20635 -> 20812, waived, and selector_lines_total goes 31325 -> 31502.
+        The mutation ledger is re-anchored: 19 sites moved, 0 not found.
+        WHAT REMAINS, measured, not fixed: (1) a constant offset reached
+        through ARITHMETIC, `i32.const 0x1900 i32.const 0x704 i32.add i32.load`,
+        returns 0x0 against wasmtime 0x38373635 before and after. This is
+        #1568's documented class, and a local with a non-constant definition
+        belongs to it too. (2) A NEW pre-existing class, independent of the
+        memarg offset: an access whose bytes STRADDLE from the zero
+        reservation into a data segment reads the reservation. With
+        `i32.const 0x1ffe i32.load` and data at 0x2000, synth returns 0x0
+        against 0x32310000; the C = 0 form `offset=0x1ffe` gives the same
+        result. VCR-VER-003 validates only retargeted relocations, so it does
+        not see this. (3) Unrelated to --native-pointer-abi: `f64.load` followed
+        by `i64.reinterpret_f64` as an i64 result does not move the pair to
+        r0:r1. A plain --relocatable cortex-m7dp object emits
+        `vmov r3, r4, d0; mov r0, r5`. (4) The non-relocatable
+        --native-pointer-abi path may take the optimized selector, which this
+        rewrite does not touch; it is unmeasured. gale's composites were not
+        available here. Per the #1580 exposure check, every gale access that
+        leaves its region has C = 0, and the rewrite leaves that form alone.
+      done-when: >
+        manual:2027-03-31 a relocated constant plus a memarg offset is relocated
+        on its effective address under --native-pointer-abi, or refused loudly
+        — delivered with an execution-verified result where the lane is a
+        wrong-code fix, or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported either way

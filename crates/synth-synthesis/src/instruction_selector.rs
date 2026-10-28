@@ -6331,6 +6331,9 @@ pub struct InstructionSelector {
     /// relative (MOVW/MOVT), so a `base=0` host-pointer trampoline doesn't
     /// mis-address them.
     native_pointer_abi: bool,
+    /// #1580: memory 0's active data segments `(offset, length)` — the
+    /// regions the mixed split retargets static-data relocs into.
+    npa_data_regions: Vec<(u32, u32)>,
     /// VCR-MEM-002 phase 1 (#406): initial size in 64 KiB pages of each linear
     /// memory, indexed by memory index. Consulted ONLY by the multi-memory
     /// arms (`MultiMemory` wraps, `memory.size`/`grow` with index > 0):
@@ -6662,6 +6665,7 @@ impl InstructionSelector {
             reject_self_contained_call_indirect: false,
             self_contained_funcref_table: false,
             native_pointer_abi: false,
+            npa_data_regions: Vec::new(),
             memory_pages: Vec::new(),
             memory0_page_log2: 16,
             linear_memory_bytes: 0,
@@ -6720,6 +6724,7 @@ impl InstructionSelector {
             reject_self_contained_call_indirect: false,
             self_contained_funcref_table: false,
             native_pointer_abi: false,
+            npa_data_regions: Vec::new(),
             memory_pages: Vec::new(),
             memory0_page_log2: 16,
             linear_memory_bytes: 0,
@@ -7286,6 +7291,22 @@ impl InstructionSelector {
     pub fn set_native_pointer_abi(&mut self, enabled: bool, linear_memory_bytes: u32) {
         self.native_pointer_abi = enabled;
         self.linear_memory_bytes = linear_memory_bytes;
+    }
+
+    /// #1580: memory 0's active data segments `(offset, length)` in
+    /// declaration order (see `CompileConfig::npa_data_regions`).
+    pub fn set_npa_data_regions(&mut self, regions: Vec<(u32, u32)>) {
+        self.npa_data_regions = regions;
+    }
+
+    /// #1580: the region the mixed split retargets a static-data reloc with
+    /// addend `addr` into — the LAST-declared segment containing it (the
+    /// `rposition` rule of the ELF builder, #757), or `None` for the zero
+    /// reservation that stays under `__synth_wasm_data`.
+    fn npa_region_of(&self, addr: u32) -> Option<usize> {
+        self.npa_data_regions
+            .iter()
+            .rposition(|&(off, len)| addr >= off && addr - off < len)
     }
 
     /// VCR-MEM-002 phase 1 (#406): per-memory initial page counts, indexed by
@@ -8442,6 +8463,123 @@ impl InstructionSelector {
         Some(eff)
     }
 
+    /// #1580: the op that pushed the value at operand distance `back` (1 = the
+    /// operand pushed last) of the op at `idx`, found by walking backwards
+    /// over STRAIGHT-LINE ops with exact stack effects. `None` when the walk
+    /// meets a control-region op, a call, or anything unmodeled, or when the
+    /// value comes from an op that pushes more than one value.
+    fn npa_operand_producer(wasm_ops: &[WasmOp], idx: usize, back: u32) -> Option<usize> {
+        let mut d = back;
+        let mut j = idx;
+        while j > 0 {
+            j -= 1;
+            let (pops, pushes) =
+                synth_core::wasm_stack_check::straight_line_stack_effect(&wasm_ops[j])?;
+            if d <= pushes {
+                return (pushes == 1).then_some(j);
+            }
+            d = d - pushes + pops;
+        }
+        None
+    }
+
+    /// The memarg `offset` of a scalar memory-0 load or store, mutably.
+    fn npa_memarg_offset_mut(op: &mut WasmOp) -> Option<&mut u32> {
+        use WasmOp::*;
+        if let I32Load { offset, .. }
+        | I32Load8S { offset, .. }
+        | I32Load8U { offset, .. }
+        | I32Load16S { offset, .. }
+        | I32Load16U { offset, .. }
+        | I32Store { offset, .. }
+        | I32Store8 { offset, .. }
+        | I32Store16 { offset, .. }
+        | I64Load { offset, .. }
+        | I64Load8S { offset, .. }
+        | I64Load8U { offset, .. }
+        | I64Load16S { offset, .. }
+        | I64Load16U { offset, .. }
+        | I64Load32S { offset, .. }
+        | I64Load32U { offset, .. }
+        | I64Store { offset, .. }
+        | I64Store8 { offset, .. }
+        | I64Store16 { offset, .. }
+        | I64Store32 { offset, .. }
+        | F32Load { offset, .. }
+        | F64Load { offset, .. }
+        | F32Store { offset, .. }
+        | F64Store { offset, .. } = op
+        {
+            Some(offset)
+        } else {
+            None
+        }
+    }
+
+    /// #1580: under `--native-pointer-abi` WITH a stack-pointer global, fold a
+    /// memarg `offset` into the constant address feeding the access, so the
+    /// relocation carries the EFFECTIVE address.
+    ///
+    /// With a stack-pointer global a constant address is relocated by ONE of
+    /// its parts — `C >= wasm_data_base` by the `i32.const` handler (rule 1 of
+    /// [`Self::npa_baked_const_addr`]), a memarg `offset >= wasm_data_base` by
+    /// the #359/#739 dynamic path (rule 2) — and the mixed split retargets the
+    /// reloc to the `__synth_wasm_seg_K` holding that part. When `C + offset`
+    /// leaves that region the access read the wrong one (`i32.const 0x1900
+    /// i32.load offset=0x704`, data at 0x2000, read the zero reservation);
+    /// when both parts qualified both were relocated and the access faulted.
+    ///
+    /// `i32.const C … access offset=O` → `i32.const (C+O) … access offset=0`
+    /// is exact wasm: the effective address is unchanged, and the constant's
+    /// only consumer is this access (its producer is found by an exact
+    /// backward stack walk over straight-line ops). Applied only when a part
+    /// is relocated (rule 1, or rule 2 with `C != 0`), `O != 0`, `C + O` does
+    /// not wrap and is itself a static address. `None` = nothing rewritten.
+    pub(crate) fn npa_effective_addr_rewrite(&self, wasm_ops: &[WasmOp]) -> Option<Vec<WasmOp>> {
+        if !self.native_pointer_abi || self.sp_global.is_none() {
+            return None;
+        }
+        let mut out: Option<Vec<WasmOp>> = None;
+        for idx in 0..wasm_ops.len() {
+            let Some((_, operands, _)) = Self::npa_address_operands(&wasm_ops[idx]) else {
+                continue;
+            };
+            let Some(&(back, offset)) = operands.first() else {
+                continue;
+            };
+            // v128 and bulk accesses are left alone: no memarg to fold into
+            // (bulk) or an arm this lane does not execute (v128).
+            if offset == 0
+                || matches!(
+                    wasm_ops[idx],
+                    WasmOp::V128Load { .. } | WasmOp::V128Store { .. }
+                )
+            {
+                continue;
+            }
+            let Some(j) = Self::npa_operand_producer(wasm_ops, idx, back as u32) else {
+                continue;
+            };
+            let WasmOp::I32Const(c) = wasm_ops[j] else {
+                continue;
+            };
+            let Some(eff) = (c as u32).checked_add(offset) else {
+                continue;
+            };
+            let rule1 = self.static_data_addend(c as u32).is_some();
+            let rule2 = c != 0 && self.is_native_pointer_static_offset(offset);
+            if !(rule1 || rule2) || self.static_data_addend(eff).is_none() {
+                continue;
+            }
+            let ops = out.get_or_insert_with(|| wasm_ops.to_vec());
+            ops[j] = WasmOp::I32Const(eff as i32);
+            if let Some(o) = Self::npa_memarg_offset_mut(&mut ops[idx]) {
+                *o = 0;
+            }
+        }
+        out
+    }
+
     /// The address operands of a memory access, for the `--native-pointer-abi`
     /// constant-address rules: `(name, [(operand distance, memarg offset)],
     /// folds on the i32 arm)`. The operand distance counts from the top of the
@@ -8724,6 +8862,39 @@ impl InstructionSelector {
                     };
                     let relocated = plan.relocated.contains(l);
                     for v in values {
+                        // #1580: with a stack-pointer global a local's constant
+                        // `v` at or above the base is ALREADY relocated where it
+                        // is defined (`__synth_wasm_data + v`), and the mixed
+                        // split retargets it by `v` alone. When a non-zero
+                        // memarg offset moves the access into a different data
+                        // region than `v`'s, the offset cannot be folded into a
+                        // definition other reads share — so it is refused, never
+                        // guessed. Inside `v`'s own region (a struct field off a
+                        // static base, the #757 `[src + 0x20]` shape) the
+                        // relocation is exact and nothing changes.
+                        if self.sp_global.is_some()
+                            && offset != 0
+                            && self.static_data_addend(v as u32).is_some()
+                            && let Some(eff) = (v as u32)
+                                .checked_add(offset)
+                                .filter(|e| self.static_data_addend(*e).is_some())
+                            && self.npa_region_of(v as u32) != self.npa_region_of(eff)
+                        {
+                            return Err(synth_core::Error::synthesis(format!(
+                                "--native-pointer-abi: {name} at op {idx} addresses \
+                                 0x{v:x} + offset 0x{offset:x} = 0x{eff:x} through \
+                                 local {l} (set from i32.const 0x{v:x}). The \
+                                 stack-pointer global relocates that constant as \
+                                 __synth_wasm_data + 0x{v:x}, and the relocation is \
+                                 retargeted to the data region holding 0x{v:x}, not \
+                                 the one holding 0x{eff:x}, so the access could \
+                                 silently read or write the wrong region (#1580). A \
+                                 non-zero memarg offset on a constant routed through \
+                                 a local cannot be relocated soundly. Refusing. Fold \
+                                 the offset into the constant, address it \
+                                 positionally, or drop --native-pointer-abi"
+                            )));
+                        }
                         if relocated && self.static_data_addend(v as u32).is_some() {
                             continue; // defined as `__synth_wasm_data + v`
                         }
