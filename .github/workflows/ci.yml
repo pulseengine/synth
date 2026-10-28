@@ -1213,7 +1213,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 382495 \
+            --exact-emulation-floor 382594 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2987,6 +2987,16 @@ jobs:
       # loudly with no object written (counted, #1113 non-vacuity).
       - name: Run native-pointer constant-address oracle (cortex-m3/m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_const_addr_differential.py
+      # #1574 / #1568: the v0.88 NPACONST before/after figures, re-derived from
+      # a committed generator. 162 constant-address modules (19 access
+      # families; shapes le_fff/gt_fff/gt_ffff/off_gt_fff in the nosp and sp
+      # kinds, `sliver` only in spsliver; memory.* has no memarg so skips the
+      # offset shapes: 73 + 73 + 16) under --native-pointer-abi, executed
+      # against wasmtime. Pinned EXACT: 99 ok, 63 refused (59 by the
+      # npa_const_addr_guard needle), 0 wrong. RED on the pre-fix f982481f
+      # binary: 81 WRONG, 75 ok, 6 refused.
+      - name: Run native-pointer constant-address matrix (#1574, cortex-m3/m7dp)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_const_addr_matrix_1568.py --expect ok=99,refused=63,guard=59,wrong=0
       # #746 (the #739 residual): the i64/WIDE static-region arms — i64.load/
       # i64.store pair accesses plus the i64 narrow loads/stores (load8/16/32,
       # store8/16/32) — get the #744 relocation treatment instead of the loud
@@ -3304,7 +3314,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 33
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 34
 
   instrument-independence-oracle:
     name: VCR-VER-004 instrument independence (#242, v0.53's mutation re-run)

@@ -4389,7 +4389,13 @@ claims:
     #   config rows x 36 vectors x 5 machine states — zz 1, gz 3 stack
     #   patterns, zg 1). Paired control: `382495` rc=0 and `368815` rc=1 on this
     #   tree; `382495` rc=1 and `368815` rc=0 on main efb0f28a.
-    text: "--exact-emulation-floor 382495"
+    # v0.89 RQ-89-MATRIXGEN (#1574): 382495 -> 382594 (+99). The new
+    #   npa_const_addr_matrix_1568.py declares `emulations >= 99` (99 measured
+    #   via oracle_run.py at 9f123a65: the 99 compiled cells of its 162; the
+    #   63 refused cells emulate nothing and are pinned by its --expect).
+    #   Paired control: `382594` rc=0 and `382495` rc=1 on this tree;
+    #   `382594` rc=1 and `382495` rc=0 on main 9f123a65.
+    text: "--exact-emulation-floor 382594"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
