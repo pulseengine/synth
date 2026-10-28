@@ -4395,7 +4395,14 @@ claims:
     #   63 refused cells emulate nothing and are pinned by its --expect).
     #   Paired control: `382594` rc=0 and `382495` rc=1 on this tree;
     #   `382594` rc=1 and `382495` rc=0 on main 9f123a65.
-    text: "--exact-emulation-floor 382594"
+    # v0.89 RQ-89-FALCONSTEP (#1318): 382594 -> 382834 (+240; first computed
+    #   as 382495 -> 382735 on 9f123a65, re-derived after rebasing over #1598).
+    #   The new vfp_high_bank_restore_1318_differential.py declares
+    #   `emulations >= 240` (240 measured via oracle_run.py: 4 exports x 15
+    #   VALS x 2 machine states x cortex-m7 and cortex-m7dp). Paired control:
+    #   `382834` rc=0 and `382594` rc=1 on this tree; `382834` rc=1 and
+    #   `382594` rc=0 on main a28a09af.
+    text: "--exact-emulation-floor 382834"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

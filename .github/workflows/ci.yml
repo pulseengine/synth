@@ -1213,7 +1213,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 382594 \
+            --exact-emulation-floor 382834 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2946,6 +2946,19 @@ jobs:
       # Red on d4c0b232: 1362 of 10080 emulations wrong + 4 shapes declined.
       - name: Run float-local zero-init oracle (#1594, m4f/m7/m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/float_local_zero_init_1594_differential.py
+      # RQ-89-FALCONSTEP (#1318): VCR-RA-003 refused a CORRECT wide-file call
+      # staging. A live low S-register passed directly as a float argument is
+      # stored to its call-spill slot twice (preserve, then arg-stage) with
+      # the same untouched value; with an S16..S31 staging store between the
+      # two, the #881 slot check — which mapped only S0..S15 — widened the
+      # high-bank store to "every word redefined" and reported
+      # VfpSpillSlotAliased (the external reporter's `step`, slot 20). The
+      # validator now models S16..S31 (which also POLICES high-bank stores it
+      # used to skip); this oracle supplies the execution half: 4 exports x
+      # m7/m7dp, rung + re-store shape asserted, garbage and zeroed machine.
+      # Red on main 9f123a65: every export refused (VfpSpillSlotAliased).
+      - name: Run wide-file high-bank re-store oracle (#1318, m7 + m7dp)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_high_bank_restore_1318_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values
@@ -3314,7 +3327,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 34
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 35
 
   instrument-independence-oracle:
     name: VCR-VER-004 instrument independence (#242, v0.53's mutation re-run)
