@@ -1,0 +1,72 @@
+artifacts:
+  - id: RQ-89-CENSUSFLOAT
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "The spec-suite compile census compiles ARM float code: cortex-m4f and cortex-m7dp legs, exact-pinned"
+    description: >
+        The spec-suite compile census compiles its ARM leg with `--cortex-m`,
+        which is cortex-m3 with no FPU, so every f32/f64 function is declined
+        before its float code is lowered and no float codegen change on ARM can
+        move a census pin. #1594 and #1603 shipped while this leg was blind.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers. Compile the
+        257 spec files on cortex-m4, cortex-m4f and cortex-m7dp with the
+        census's own classify(). If the FPU targets move no file and no
+        function, the blind spot does not exist: report that and stop.
+        CITATION: #1609 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1609"
+      verification-track: manual
+      issue-scope: outlives
+      landed: "PR #PRNUM - #1609 - DELIVERED, the compile half. The refuting command was run first and CONFIRMED the blind spot, on main 7e170d62 with the census's own classify(). Buckets ok/partial/all_declined/module_decline and at-least-one-export: --cortex-m (m3) 16/27/92/103 and 43; cortex-m4 is identical (0 files differ); cortex-m4f 19/28/88/103 and 47; cortex-m7dp 22/28/85/103 and 50. panic and other_error are 0 on every leg. Per-function, about 233 functions are declined on cortex-m4 with a GI-FPU-002 no-FPU reason, and 171 of them compile on m7dp. The CLI's #952 machine text reports skipped exports 1563 (m3), 1489 (m4f) and 1401 (m7dp). scripts/spec_compile_census.py gains two legs, arm_m4f (-t cortex-m4f) and arm_m7dp (-t cortex-m7dp). Each carries exact bucket PINS, AT_LEAST_ONE_EXPORT, FAMILY_OK_PINS (MVP core 16/18; memory64 1/2, where the m7dp gain is f64.wast) and a new FPU-legs-only SKIPPED_FUNCTION_PINS of 1489/1401. A function pin is needed because every float-specific move between v0.88.0 and 7e170d62 (#1594's local_get type-local-f32/f64 and loop nesting) left every file bucket unchanged. A new structural guard reds any leg missing from a pin table, because report_by_family reads FAMILY_OK_PINS with .get(be, {}) and would otherwise silently skip the gate. The arm/riscv/aarch64 pins are untouched. Docs: the README row, the FEATURE_MATRIX template row and its rendered output, and SPEC_FAMILY_CENSUS.md, all bound by the new claim SYNTH-SPEC-SUITE-CENSUS-FPU."
+      verified-by: >
+        DELIVERED, compile half. Census rc 0 on this tree for all five legs
+        (about 5 s locally at -j 10). PAIRED CONTROLS:
+        (1) Planted f64 refusal: select_with_stack's double-precision gate is
+        forced on. Rebuilt, then reverted, with a clean git diff. Only arm_m7dp
+        reds: ok 22 to 19, all_declined 85 to 88, skipped 1401 to 1483, and
+        family MVP core 18 to 16, memory64 2 to 1. arm, riscv, aarch64 and
+        arm_m4f stay GREEN.
+        (2) Planted f32 refusal: the no-FPU f32 gate is forced on. arm_m4f
+        reds (ok 19 to 16, skipped 1489 to 1565) and arm_m7dp reds (ok 22 to
+        19, skipped 1401 to 1486). arm, riscv and aarch64 stay GREEN. The
+        pre-existing ARM leg is blind to both regressions, which is the gap
+        this closes.
+        (3) The v0.88.0 binary: the new legs red (arm_m4f ok 18, skipped 1506;
+        arm_m7dp ok 21, skipped 1419). That also reds the old legs for
+        non-float reasons (MEM64, IMPSIZE, BRVALUE), so it shows that the pins
+        move, not that they discriminate floats. Controls (1) and (2) are the
+        discriminating evidence.
+        NOT DONE, and the reason the issue outlives this artifact: the census
+        counts compiles, and #1594/#1603 were exit-0 wrong code that an FPU
+        compile leg would have reported as ok. No spec float assertion is
+        EXECUTED on any target. wast_conformance_928_differential.py and
+        selector_parity_197_differential.py both hardcode --target cortex-m4
+        and bucket f32/f64 as float-abi. On m7dp the ok/partial files carry
+        about 11570 float assert_return directives (directive-split regex
+        count). Executing them needs four things: keep float asserts in the
+        parsers, marshal AAPCS-VFP S/D registers with CPACR enabled under
+        unicorn (as in f32_vfp_619 and f64_369), use NaN-class-aware bitwise
+        comparison, and set --target cortex-m7dp.
+        Also not fixed, recorded in #1609: unreachable.wast
+        `(result f32) (unreachable)` compiles on m4 and is refused on m4f/m7dp
+        ("result reached the epilogue in a core register"). This is a loud
+        reach gap that only the FPU legs can see.
+      done-when: >
+        manual:2027-03-31 the spec-suite compile census compiles ARM float code
+        on a single- and a double-precision FPU target as exact-pinned legs,
+        with paired controls showing a float-only regression reds the new legs
+        while the existing legs stay green — or the blind spot REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN
+        FIRST and its result reported either way
