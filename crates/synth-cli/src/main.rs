@@ -5173,6 +5173,12 @@ fn compile_all_exports(
         // become __synth_wasm_data-relative across the whole linear memory.
         native_pointer_abi,
         linear_memory_bytes: memory0_baked_bytes,
+        // #1580: memory 0's data regions — the same list the mixed split
+        // retargets static-data relocs into.
+        npa_data_regions: all_data_segments
+            .iter()
+            .map(|(off, d)| (*off, d.len() as u32))
+            .collect(),
         // #1441: memory 0's DECLARED page size as a shift. R10 holds its size
         // in BYTES while `memory.size` must answer in DECLARED pages, so the
         // ARM lowering shifts by this instead of a literal 16. Absent

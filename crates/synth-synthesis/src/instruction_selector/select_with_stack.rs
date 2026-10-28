@@ -40,6 +40,12 @@ impl InstructionSelector {
         // RQ-89-NPARESIDUE (#1568): constants routed through a local are
         // resolved too — relocated at their definition when the local is used
         // only as an address, refused otherwise.
+        // #1580: first fold a memarg offset into the constant address feeding
+        // the access wherever a stack-pointer global would relocate only ONE
+        // part of `C + offset` — the relocation must carry the effective
+        // address so the mixed split retargets it to the right region.
+        let npa_rewritten = self.npa_effective_addr_rewrite(wasm_ops);
+        let wasm_ops: &[WasmOp] = npa_rewritten.as_deref().unwrap_or(wasm_ops);
         let npa_plan = self.npa_local_const_plan(wasm_ops, num_params);
         self.npa_const_addr_guard(wasm_ops, &npa_plan)?;
         self.npa_ptr_const_defs = npa_plan.rewrite;
