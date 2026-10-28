@@ -1,0 +1,69 @@
+artifacts:
+  - id: RQ-89-FLOATEXEC
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "The spec suite's float assertions are EXECUTED on an FPU target, bit-exactly, in garbage machine state"
+    description: >
+        No spec-testsuite assertion that passes or returns an f32/f64 was
+        executed on any target. The two spec-execution oracles, #928
+        (wast_conformance_928_differential.py) and #197
+        (selector_parity_197_differential.py), both hard-code --target
+        cortex-m4, which has no FPU. Both set float signatures aside as
+        float-abi. On cortex-m4 every float function is declined before its
+        float code is lowered. Two exit-0 wrong-code defects shipped in that
+        blind spot this window: #1594 (a float local not zero-initialised) and
+        #1603 (i64.reinterpret_f64 garbage).
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers. Grep
+        .github/workflows/ for a step that executes a spec-testsuite assertion
+        with an f32/f64 argument or result under an FPU-enabled emulator, and
+        read the --target of both spec-execution oracles. If such a step exists,
+        the gap is gone.
+        CITATION: #1609 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1609"
+      verification-track: manual
+      done-when: >
+        manual:2027-03-31 the spec suite's float assertions are executed on an
+        FPU target, bit-exactly, with every open mismatch pinned to an issue —
+        delivered with red-first evidence that the oracle catches a real and a
+        planted float miscompile, or REFUTED with the measurement that refutes
+        it; and the refuting command above is RUN FIRST and its result reported
+        either way
+      landed: "PR (this lane) - #1609 - DELIVERED. REFUTING COMMAND RUN FIRST on origin/main 7e170d62: NOT refuted. wast_conformance_928_differential.py and selector_parity_197_differential.py both pass `--target cortex-m4`; #928 buckets f32/f64 signatures as float-abi, and #197 raises Decl(\"float-abi\") on any f32.const/f64.const. No other workflow step executes a spec-suite float assertion. NEW: scripts/repro/spec_float_exec_1609_differential.py runs over the 257 spec files plus tests/wast on cortex-m7dp and cortex-m4f, self-contained, booted through each image's own Reset_Handler with the FPU on. Arguments are marshalled by synth's own AAPCS-VFP layout: an independent S0..S15 pool with back-fill; integer arguments take R0..R3 skipping float params. The expected value is the .wast literal, BIT-EXACT; literal bits come from wasmtime's WAT parser, never Python float(). NaN patterns are counted separately as nan-class. Every float-involved assertion runs twice from one memory snapshot. The zeroed state zeroes the core and VFP registers. The garbage state randomises R0..R12 (except the R9/R10/R11 contract and the argument registers) and S0..S31, and poisons the stack below the boot SP. Both runs must agree with the literal and leave the same linear memory. R4..R8, S16..S31, R9..R11 and SP are checked across every call. RESULT on main 7e170d62, both targets: 42307 actions executed. 17409 are gated float-involved assertions, of which 17249 have a float signature and 270 call a function only the FPU target compiles. Of the gated assertions, 15015 are bit-identical, 2228 nan-class, 98 trap-ok and 68 MISMATCH, all pinned. Skipped: symbol-missing 4923, f64-on-sp-target 694, ref-type 104, multi-value 84, named-module 28, stack-args 7, no-invoke 6, exhaustion 4. Module-level: synth declined 1369 modules (mostly SIMD), imports 150, wasmtime-instantiate 36, binary-module 18. Per file on cortex-m7dp, for example: f32 1620 = 1013 bits + 607 nan; f64 2500 = 1589 + 911; f32_cmp 2400; f64_cmp 2400; f32_bitwise 360; f64_bitwise 360; conversions 557 float-signature actions, of which 15 MISMATCH (#1603). The MISMATCH classes: #1614 (NEW, filed by this lane) is 10 pins, 5 spec functions x 2 targets. In br.wast/br_if.wast/br_table.wast type-f32-value and as-unary-operand, an f32 carried over br to a block join is stored at [sp,#0] with no frame reserved, so the saved-R4 slot is overwritten and the caller's R4 returns as the float's bits. Confirmed with a 2-function minimal module on both the 7e170d62 and PR #1607 binaries, self-contained and --relocatable; the value is right and wasmtime agrees with it. #1603 is 3 pins / 58 cases: conversions i64.reinterpret_f64 x15, endianness f64_load x4 (state-dependent memory), float_literals x39 (module wildcard). Informational, never gating: 249 integer-population mismatches (the #539 grow, #1206 countdown and OOB-envelope classes #197 owns on cortex-m4, plus type-rec/type-subtyping call_indirect type-mismatch non-traps), 3 after an OOB trap-miss, and 80 reference-vs-literal. Wired as the new ci.yml job spec-float-exec-oracle, with the same pinned wasmtime 48.0.0 and unicorn 2.1.4 as #197. Single-threaded by measurement: unicorn under Python threads is slower (full corpus 245 s at -j1 vs 965 s at -j8)."
+      verified-by: >
+        DELIVERED. Red-first with three controls. (1) A REAL shipped defect: on
+        the 7e170d62 binary (pre-#1607) the oracle names the #1603 class as 58
+        mismatches. One of them, i64.reinterpret_f64(+0.0), is wrong only in the
+        garbage state. On PR #1607's head binary (85e984dc), exactly those three
+        pins VANISH and the run shows 17438 gated, 15102 bit-identical, 2228
+        nan-class and 10 MISMATCH, all #1614. That is the expected post-rebase
+        movement: when #1607 lands, three VANISHED lines go red and the three
+        #1603 entries are deleted. (2) A PLANTED miscompile: lowering F32Add as
+        F32Sub in the shipped f32 binop arm (instruction_selector.rs) reds
+        f32.wast add x158. A mutant in select_default.rs was tried first and was
+        NOT reached (0 mismatches), which is consistent with select_default not
+        being the shipped float path. (3) A NEW defect, #1614, was found on the
+        first run by the callee-saved check. Pins moved, each with a paired
+        control: the exact emulation floor rises by 58000 from the v0.89
+        RQ-89-FALCONSTEP value 382834, to oracle_wiring_check.py's reported
+        total (the new oracle declares emulations >= 58000; 61003 measured via
+        oracle_run.py). On this tree the new total is rc 0 and 382834 rc 1. On
+        main 7e170d62 the new total is rc 1 and 382834 rc 0. known_open_pins 79 -> 92 with a waiver, 79 red on this
+        tree. known_open_pinned_cases 146 -> 214, 146 red. The KNOWN/PINNED
+        population count-eq 12 -> 13, 12 red. claim_check 75/75. No Rust was
+        touched. UNVERIFIED: the job's wall time on a GitHub ubuntu runner,
+        measured locally at about 4 minutes plus the build; the m4f leg's f64
+        functions are counted as f64-on-sp-target or symbol-missing, not
+        executed.
