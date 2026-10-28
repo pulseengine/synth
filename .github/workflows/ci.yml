@@ -3014,9 +3014,10 @@ jobs:
       # memarg offset is relocated on its EFFECTIVE address (the offset is
       # folded into the constant), so the mixed split retargets it to the
       # region holding C+offset. 42 calls vs wasmtime (i32 / narrow / i64 /
-      # f32 / f64 loads and stores, garbage registers and stack), plus 3
-      # refusal rows for a constant routed through a local whose offset
-      # leaves its region. RED on the pre-fix 7e170d62 binary: exit 1.
+      # f32 / f64 loads and stores, garbage registers and stack), plus 5
+      # refusal rows for a constant routed through a local (offset leaving
+      # the relocated part's region, or both parts relocated). RED on the
+      # pre-fix 7e170d62 binary: exit 1.
       - name: Run native-pointer constant+offset cross-region oracle (#1580, cortex-m3/m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_offset_cross_segment_1580_differential.py
       # #746 (the #739 residual): the i64/WIDE static-region arms — i64.load/

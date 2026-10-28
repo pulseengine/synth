@@ -36,7 +36,7 @@ artifacts:
       issue: "#1580"
       verification-track: manual
       issue-scope: closes
-      landed: "#1580 - DELIVERED. The refuting command, run first on origin/main 7e170d62 with --target cortex-m3 --relocatable --native-pointer-abi, CONFIRMED the defect: `anchor` returned 0xddccbbaa (correct), `x` faulted on an unmapped read, and `y` returned 0x0 against wasmtime 0x38373635. FIX, a relocation on the effective address, not a refusal: npa_effective_addr_rewrite (crates/synth-synthesis/src/instruction_selector.rs, called first in select_with_stack) rewrites `i32.const C ... access offset=O` to `i32.const C+O ... access offset=0` when a stack-pointer global relocates a part (C at or above the init, or O at or above it with C != 0), O != 0, C + O does not wrap, and C + O is a static address. This is exact wasm: the effective address is unchanged, and the producer of the address operand is found by an exact backward stack walk over straight-line ops (synth_core::wasm_stack_check::straight_line_stack_effect), so this access is the constant's only consumer. The relocation then carries C + O and the existing rposition retarget picks the region holding it. It covers every scalar arm: i32, the narrow i32 loads and stores, i64 and its narrow forms, f32 and f64. It also covers a store whose value is computed, which the positional guard cannot see. A constant reached THROUGH A LOCAL cannot be folded, because other reads share its definition. npa_const_addr_guard now refuses it when the stack-pointer global relocates the local's constant and the offset moves the access into a different data region, with a #1580 diagnostic and no object. The regions are memory 0's active data segments, passed as CompileConfig::npa_data_regions; inside the constant's own region, such as the #757 `[src + 0x20]` field shape, nothing changes. Newly ACCEPTED: an f64 load or store at a constant base plus a static-region offset, which was declined as GI-FPU-002 #359 and now compiles and executes correctly. Newly REFUSED over the corpus: 0."
+      landed: "#1580 - DELIVERED. The refuting command, run first on origin/main 7e170d62 with --target cortex-m3 --relocatable --native-pointer-abi, CONFIRMED the defect: `anchor` returned 0xddccbbaa (correct), `x` faulted on an unmapped read, and `y` returned 0x0 against wasmtime 0x38373635. FIX, a relocation on the effective address, not a refusal: npa_effective_addr_rewrite (crates/synth-synthesis/src/instruction_selector.rs, called first in select_with_stack) rewrites `i32.const C ... access offset=O` to `i32.const C+O ... access offset=0` when a stack-pointer global relocates a part (C at or above the init, or O at or above it with C != 0), O != 0, C + O does not wrap, and C + O is a static address. This is exact wasm: the effective address is unchanged, and the producer of the address operand is found by an exact backward stack walk over straight-line ops (synth_core::wasm_stack_check::straight_line_stack_effect), so this access is the constant's only consumer. The relocation then carries C + O and the existing rposition retarget picks the region holding it. It covers every scalar arm: i32, the narrow i32 loads and stores, i64 and its narrow forms, f32 and f64. It also covers a store whose value is computed, which the positional guard cannot see. A constant reached THROUGH A LOCAL cannot be folded, because other reads share its definition. npa_const_addr_guard now refuses it, with a #1580 diagnostic and no object, in three cases: both the local's constant and the offset would be relocated, which doubles the address; the constant is relocated and the offset moves the access out of its data region; or the offset alone is relocated and the constant moves the access out of the offset's region. The regions are memory 0's active data segments, passed as CompileConfig::npa_data_regions; inside the constant's own region, such as the #757 `[src + 0x20]` field shape, nothing changes. Newly ACCEPTED: an f64 load or store at a constant base plus a static-region offset, which was declined as GI-FPU-002 #359 and now compiles and executes correctly. Newly REFUSED over the corpus: 0."
       verified-by: >
         DELIVERED. scripts/repro/npa_offset_cross_segment_1580_differential.py
         executes 42 calls against wasmtime: 32 on cortex-m3 and 10 on
@@ -48,16 +48,23 @@ artifacts:
         accepted. Every store is read back through `i32.const 0 ... offset=EFF`,
         the C = 0 path, never through its own shape. R0-R10 and R12 are seeded
         with garbage and the stack below SP is filled with a pattern before
-        every call. It also asserts 3 refusal rows (local.set/local.get and
-        local.tee on i32, and an i64 load). RED at 7e170d62: exit 1, with 29 of
+        every call. It also asserts 5 refusal rows, all through a local:
+        local.set/local.get and local.tee on i32 and an i64 load leaving the
+        constant's region, rule 2 alone (`i32.const 4`, offset 0x1ffc), and both
+        parts relocated inside one region (stack-pointer init 0x4,
+        `i32.const 0x900`, offset 4). RED at 7e170d62: exit 1, with 29 of
         32 cortex-m3 calls wrong, the cortex-m7dp module refused (f64ld and
-        f64st declined), and 0 of 3 refusals. Separately at 7e170d62 the f32
+        f64st declined), and 0 of 5 refusals. Separately at 7e170d62 the f32
         rows were wrong: f32ld returned 0x0 against 0x38373635, and f32st
-        faulted. At the new binary it exits 0, with 42 of 42 equal and 3 of 3
+        faulted. At the new binary it exits 0, with 42 of 42 equal and 5 of 5
         refused. Mutations, each red: disabling the rewrite gives 39
         divergences; dropping rule 2 gives 1, the r2 row; dropping the region
         check refuses the same-region locals, so the module fails and 32 rows
-        miss; dropping the local refusal gives 3 refusal misses. A synth-cli
+        miss; dropping the local refusal gives 5 refusal misses; dropping the
+        doubled-address case and the rule-2 case each give 1. At 7e170d62 the
+        two rows a cold review added were silently wrong: the doubled address
+        faulted against wasmtime 0x2211ffee, and rule 2 through a local
+        returned 0x0 against 0x34333231. A synth-cli
         test checks the relocation: x, y, an i64 narrow load and a store each
         carry exactly one, to __synth_wasm_seg_1 + 4. Before, y carried
         __synth_wasm_data + 0x1900, and x carried __synth_wasm_seg_0 + 0 and
@@ -80,7 +87,7 @@ artifacts:
         control on this tree: the new total rc=0 and 382834 rc=1, and the
         reverse on main 7e170d62. The trap-semantics-oracle
         job's --min-oracles goes 35 -> 36. selector_lines_code goes
-        20635 -> 20812, waived, and selector_lines_total goes 31325 -> 31502.
+        20635 -> 20830, waived, and selector_lines_total goes 31325 -> 31520.
         The mutation ledger is re-anchored: 19 sites moved, 0 not found.
         WHAT REMAINS, measured, not fixed: (1) a constant offset reached
         through ARITHMETIC, `i32.const 0x1900 i32.const 0x704 i32.add i32.load`,

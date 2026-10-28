@@ -8862,33 +8862,51 @@ impl InstructionSelector {
                     };
                     let relocated = plan.relocated.contains(l);
                     for v in values {
-                        // #1580: with a stack-pointer global a local's constant
-                        // `v` at or above the base is ALREADY relocated where it
-                        // is defined (`__synth_wasm_data + v`), and the mixed
-                        // split retargets it by `v` alone. When a non-zero
-                        // memarg offset moves the access into a different data
-                        // region than `v`'s, the offset cannot be folded into a
-                        // definition other reads share — so it is refused, never
-                        // guessed. Inside `v`'s own region (a struct field off a
-                        // static base, the #757 `[src + 0x20]` shape) the
-                        // relocation is exact and nothing changes.
-                        if self.sp_global.is_some()
-                            && offset != 0
-                            && self.static_data_addend(v as u32).is_some()
-                            && let Some(eff) = (v as u32)
-                                .checked_add(offset)
-                                .filter(|e| self.static_data_addend(*e).is_some())
-                            && self.npa_region_of(v as u32) != self.npa_region_of(eff)
-                        {
+                        // #1580: with a stack-pointer global, `v` at or above
+                        // the base is ALREADY relocated where it is defined
+                        // (`__synth_wasm_data + v`, rule 1) and an offset at or
+                        // above it is relocated at the access (rule 2); the
+                        // mixed split retargets each by its own part. Through a
+                        // local the offset cannot be folded into a definition
+                        // other reads share, so the access is refused when (a)
+                        // BOTH parts are relocated (the address is doubled), or
+                        // (b) the relocated part's data region is not the one
+                        // holding the effective address. Inside the region (a
+                        // struct field off a static base, the #757
+                        // `[src + 0x20]` shape) the relocation is exact.
+                        let eff = (v as u32).checked_add(offset);
+                        let v_rel = self.static_data_addend(v as u32).is_some();
+                        let o_rel = self.is_native_pointer_static_offset(offset);
+                        let leaves = |part: u32| {
+                            eff.is_some_and(|e| {
+                                self.static_data_addend(e).is_some()
+                                    && self.npa_region_of(part) != self.npa_region_of(e)
+                            })
+                        };
+                        let why = if self.sp_global.is_none() || offset == 0 {
+                            None
+                        } else if v_rel && o_rel {
+                            Some(
+                                "both the constant and the offset are relocated, so the address is doubled",
+                            )
+                        } else if v_rel && leaves(v as u32) {
+                            Some(
+                                "the constant is relocated and retargeted to its own data region, not the one holding the effective address",
+                            )
+                        } else if !v_rel && v != 0 && o_rel && leaves(offset) {
+                            Some(
+                                "the offset is relocated and retargeted to its own data region, not the one holding the effective address",
+                            )
+                        } else {
+                            None
+                        };
+                        if let Some(why) = why {
                             return Err(synth_core::Error::synthesis(format!(
                                 "--native-pointer-abi: {name} at op {idx} addresses \
-                                 0x{v:x} + offset 0x{offset:x} = 0x{eff:x} through \
-                                 local {l} (set from i32.const 0x{v:x}). The \
-                                 stack-pointer global relocates that constant as \
-                                 __synth_wasm_data + 0x{v:x}, and the relocation is \
-                                 retargeted to the data region holding 0x{v:x}, not \
-                                 the one holding 0x{eff:x}, so the access could \
-                                 silently read or write the wrong region (#1580). A \
+                                 0x{v:x} + offset 0x{offset:x} through local {l} \
+                                 (set from i32.const 0x{v:x}) in a module with a \
+                                 stack-pointer global: {why}, so the access could \
+                                 silently read or write the wrong address (#1580). A \
                                  non-zero memarg offset on a constant routed through \
                                  a local cannot be relocated soundly. Refusing. Fold \
                                  the offset into the constant, address it \

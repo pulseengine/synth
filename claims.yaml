@@ -1864,15 +1864,15 @@ claims:
         # RQ-89-WIDESTAGE (#1593): 20524 -> 20532, a RISE of 8, waived below.
         # RQ-89-FLOATZERO (#1594): 20532 -> 20635, waived below (chained
         # after RQ-89-WIDESTAGE's waiver).
-        # RQ-89-NPAOFFSET (#1580): 20635 -> 20812, waived below.
-        value: 20812
+        # RQ-89-NPAOFFSET (#1580): 20635 -> 20830, waived below.
+        value: 20830
         baseline: 17897
         waivers:
-          - to: 20812
+          - to: 20830
             reason: >-
-              RQ-89-NPAOFFSET (Refs #1580): 20635 -> 20812 (+177 / -0 in
+              RQ-89-NPAOFFSET (Refs #1580): 20635 -> 20830 (+195 / -0 in
               instruction_selector.rs and select_with_stack.rs, DERIVED with
-              `git diff --unified=0` over this glob family: 128 code, 49
+              `git diff --unified=0` over this glob family: 144 code, 51
               comment). ONE new soundness decision, replacing no arm: under
               --native-pointer-abi WITH a stack-pointer global a constant
               address was relocated by ONE part (the constant, or a memarg
@@ -1883,11 +1883,12 @@ claims:
               `npa_effective_addr_rewrite` folds the offset into the constant
               feeding the access (exact wasm; producer found by a backward
               stack walk), so the reloc carries the effective address; a
-              constant routed through a local whose offset leaves its region is
-              refused. About a quarter of the code lines are the 23-variant
+              constant routed through a local is refused when both parts would
+              be relocated or the relocated part's region is not the effective
+              address's. About a quarter of the code lines are the 23-variant
               memarg enumeration. Execution-gated by
               scripts/repro/npa_offset_cross_segment_1580_differential.py (42
-              calls vs wasmtime + 3 refusals; exit 1 at 7e170d62). Byte sweep:
+              calls vs wasmtime + 5 refusals; exit 1 at 7e170d62). Byte sweep:
               261 inputs x 6 configurations (1566 runs, 1226 compiling), 0
               moved, 0 exit codes changed, 0 functions newly skipped. No
               wildcard arm added.
@@ -2997,9 +2998,9 @@ claims:
         # RQ-89-FLOATZERO (#1594): 31222 -> 31325, the same rise as
         # selector_lines_code (waived there) plus the rebase; the oracle is a
         # scripts/repro differential, outside this population. No waiver.
-        # RQ-89-NPAOFFSET (#1580): 31325 -> 31502, the same +177 as
+        # RQ-89-NPAOFFSET (#1580): 31325 -> 31520, the same +195 as
         # selector_lines_code (waived there); the tests live in synth-cli.
-        value: 31502
+        value: 31520
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4431,7 +4432,7 @@ claims:
     # v0.89 RQ-89-NPAOFFSET (#1580): 382834 -> 382876 (+42). The new
     #   npa_offset_cross_segment_1580_differential.py declares
     #   `emulations >= 42` (42 measured via oracle_run.py: 32 cortex-m3 + 10
-    #   cortex-m7dp calls; its 3 refusal rows are counted by the script).
+    #   cortex-m7dp calls; its 5 refusal rows are counted by the script).
     #   Paired control: `382876` rc=0 and `382834` rc=1 on this tree;
     #   `382876` rc=1 and `382834` rc=0 on main 7e170d62.
     text: "--exact-emulation-floor 382876"

@@ -45,10 +45,13 @@ Module `fp` (cortex-m7dp): f32/f64 load and store, read as integers.
                    in the constant's own region (the #757 `[src + 0x20]`
                    shape): relocated exactly, must stay ACCEPTED and equal.
 
-REFUSALS (must exit non-zero, name #1580, write no object): a rule-1 constant
-through `local.set`/`local.get` and through `local.tee`, with a non-zero
-offset that moves the access into a different data region, on an i32 and an
-i64 load.
+REFUSALS (must exit non-zero, name #1580, write no object), all through a
+local, where the offset cannot be folded into the shared definition: a
+relocated constant whose offset moves the access into a different data region
+(`local.set`/`local.get` and `local.tee`, i32 and i64 loads); a scalar
+constant whose relocated offset is retargeted into the wrong region (rule 2);
+and a relocated constant plus a relocated offset inside one region (both parts
+relocated — the address is doubled).
 
 Harness: the hand linker of npa_const_addr_differential.py (.text/.data/.bss
 at separate bases, R11 = 0), with R0-R10 and R12 seeded with garbage and the
@@ -152,13 +155,28 @@ FP_SEQ = ["anchor", "f32ld", "f64ld", "rd3000", "rd3004", "f32st", "rd3000",
 
 CASES = [("sp", SP, SP_SEQ, "cortex-m3"), ("fp", FP, FP_SEQ, "cortex-m7dp")]
 
+# A header whose stack-pointer init (0x4) is below a same-region offset, so
+# the offset alone is relocated too (rule 2) and the local's relocated
+# constant would be doubled although C + offset stays in C's region.
+HDR_LOW_SP = r"""(module (memory (export "mem") 1)
+  (global $sp (mut i32) (i32.const 0x4))
+  (data (i32.const 0x900) "\aa\bb\cc\dd\ee\ff\11\22")
+"""
+
 REFUSE = [
-    ("local_ld", "(result i32) (local i32) i32.const 0x1900 local.set 0 "
+    ("local_ld", HDR, "(result i32) (local i32) i32.const 0x1900 local.set 0 "
      "local.get 0 i32.load offset=0x704"),
-    ("local_tee", "(result i32) (local i32) i32.const 0x900 local.tee 0 "
+    ("local_tee", HDR, "(result i32) (local i32) i32.const 0x900 local.tee 0 "
      "i32.load offset=0x1704"),
-    ("local_i64", "(result i64) (local i32) i32.const 0x1900 local.set 0 "
+    ("local_i64", HDR, "(result i64) (local i32) i32.const 0x1900 local.set 0 "
      "local.get 0 i64.load offset=0x700"),
+    # rule 2 through a local: `v` = 4 is a scalar, the offset 0x1ffc is
+    # relocated and retargeted by itself (no segment), +4 lands in 0x2000's.
+    ("local_rule2", HDR, "(result i32) (local i32) i32.const 4 local.set 0 "
+     "local.get 0 i32.load offset=0x1ffc"),
+    # both parts relocated, same region: the address is doubled.
+    ("local_double", HDR_LOW_SP, "(result i32) (local i32) i32.const 0x900 "
+     "local.set 0 local.get 0 i32.load offset=4"),
 ]
 
 GARBAGE_REGS = [UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3,
@@ -193,9 +211,9 @@ def compile_obj(wat, tmp, label, target):
 
 def assert_refusals(tmp):
     bad = 0
-    for label, body in REFUSE:
+    for label, hdr, body in REFUSE:
         src = tmp / f"refuse_{label}.wat"
-        src.write_text(HDR + r"""  (func (export "anchor") (result i32) (i32.load (i32.const 0x900)))
+        src.write_text(hdr + r"""  (func (export "anchor") (result i32) (i32.load (i32.const 0x900)))
   (func (export "f") """ + body + "))")
         obj = tmp / f"refuse_{label}.o"
         r = subprocess.run(
