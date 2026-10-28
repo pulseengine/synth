@@ -5,6 +5,269 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.89.0] - 2026-10-28
+
+The theme of this release was solving serious issues. A module that compiles cleanly and returns a
+different answer from the reference is the defect this compiler exists to prevent, so this release
+handled those first. Each wrong-code fix below is execution-verified against wasmtime: red before,
+green after. The compiled code was executed in unicorn (ARM, RV32 and AArch64); no hardware was
+run. Where supporting an input is out of scope, the fix is a loud refusal
+with a diagnostic. Every refusal a fix added is counted below. Those counts cover this
+repository's own fixtures and the vendored spec suite. The 243-module acceptance-ladder corpus was
+not available on the measuring machine, so how many real-world modules newly refuse is **not
+measured**.
+
+### The falcon module compiles and runs (#1318)
+
+The external reporter's optimized `opt.wasm` (sha256 `7065f112…cfd00df`), built with the reporter's
+own command (`--target cortex-m7 --relocatable --all-exports --embedder-data-init
+--embedder-global-init`), now compiles all **17 of 17** functions with rc 0. v0.88.0 skipped one of
+them, `controller@0.10.0#step`. The object was linked against the stock hard-float libgcc and run
+under unicorn against wasmtime: `step` matches **1000 of 1000** calls with a garbage stack and
+1000 of 1000 with a zeroed stack, `configure` matches 42 of 42, and `cabi_realloc` matches 60 of 60.
+The same harness still catches the bug: the old object built at `d4c0b232` matches only 334 of
+1000 `step` calls. This was measured on the 0.89.0 release-prep binary, so it is an emulated
+result, not a run on the reporter's hardware.
+
+It took four changes, and the second one fixed a regression the first one introduced:
+
+- **#1439**: the `vfp-wide-file` recovery rung handed out S0..S15 under the names S16..S31. The
+  slot-to-register map wrapped modulo 16, so the 17th grant came back as S0, the parameter's home.
+  With the pool-grow retry applied to the v0.88 selector, a 60-local product returned 6 of 14 rows
+  wrong, each time in the sign bit. Both maps now read one 32-entry table, and the retry is back.
+  The extended #1069 differential runs 98 emulations, all bit-identical. The two 60-local shapes it
+  measures were declined by v0.88.0, not miscompiled.
+- **#1593, a v0.89 regression fixed before shipping**: that change made a second site of the same
+  wrap reachable. Float call arguments on the wide-file rung were staged from `s(n mod 16)`, into
+  slots past the 16-word staging area. On main, a synthetic module was wrong in 148 of 210 rows.
+  v0.88.0 refused the same shape. Arguments are now staged from the real S16..S31 into a 32-word
+  area, and the new differential passes 210 of 210. Narrowing: the synthetic 58- and 60-local
+  versions of the shape now refuse, because the larger area pushes a frame slot past the
+  1020-byte VSTR range. No corpus function newly refuses.
+- **#1594**: see the next section. On the reporter's module it left 32 of 1000 garbage-stack
+  `step` calls wrong after #1593 was fixed.
+- **VCR-RA-003 now models S16..S31** (#1318). Once the staging was correct, the spill-slot
+  validator refused it. Its register map had no entry for S16..S31, so it read a same-value
+  re-store as a second value. Mapping the high bank also lets the validator see a high-bank store
+  over a live slot, which it previously missed entirely. This change is to the validator only;
+  emitted bytes are identical across 1936 corpus and 1028 spec-suite compile configurations.
+
+### Wrong-code fixes
+
+- **A float local written on only one path read stale contents at the join** (#1594). WebAssembly
+  starts every non-parameter local at 0.0. synth zero-initialised integer locals that could be
+  read before they were written, but never float ones. A float local written in one `if` arm, or
+  skipped by a `br_if`, read whatever its VFP register or frame slot held: `r_cond(1.0, 0)`
+  returned 9.0 where wasmtime returns 4.5. **This was live in v0.88.0 on the default ARM path.**
+  The frame-slot half sits on the `vfp-frame-locals` rung, which has existed since v0.60; older
+  binaries were not re-measured. One spec-suite function was a live instance: `align.wast`
+  `f32_align_switch` was wrong in 12 of 140 runs with garbage registers. The new differential
+  covers 30 shapes in three machine states: 1362 of 10080 emulations wrong before, 13680 of 13680
+  correct after. Nothing newly refuses. Ten symbols that used to be refused now compile
+  (`local_get.wast` type-local-f32/-f64 and `loop.wast` nesting), and all of them execute
+  correctly.
+- **An integer local rewritten on one path of an `if`/`block` was read stale on the other**
+  (#1566). This is the integer twin of v0.88's #1436. The #989 copy ran inside the branch that
+  writes, so the path that skipped the write read a register that was never filled. Operand-stack
+  entries that name a local's home register are now copied at every `if`/`block`/`loop` entry.
+  Differential: 32 of 80 executed vectors wrong before, 88 of 88 after.
+- **A value-carrying `br`/`br_if`/`br_table` in an operand position gave wrong results** on both
+  selectors (#1215). There were two causes. Dead code after a branch left values on the simulated
+  stack. A function-level `br_table` edge overwrote the index in R0 before dispatching. Eleven
+  spec assertions across five functions were wrong on the default, `--no-optimize` and
+  `--relocatable` legs; the new differential goes from 57/144 to 144/144. Nothing newly refuses.
+  `labels.wast` now compiles fully, and three functions that used to be refused compile and
+  execute correctly.
+- **`--relocatable` was silently ignored on the ARM single-function path** (#1565). `-n`/`--func-index`
+  with `--relocatable` wrote an `ET_EXEC` image with its own `Reset_Handler`, byte-identical to the
+  same command without the flag. It now writes the `ET_REL` object `--all-exports --relocatable`
+  would produce for that one function. **Narrowing:** over 206 `scripts/repro` modules, 19 Cortex-M4
+  and 44 Cortex-R5 `-n --relocatable` compiles that used to exit 0 now refuse. Every one of them is
+  also refused by `--all-exports --relocatable`.
+- **`--native-pointer-abi`: a constant pointer routed through a local** (#1568, shape 1). In a module
+  with no stack-pointer global, such an access read raw linear memory: 7 of 7 probe rows were
+  wrong. It is now relocated when four conditions hold together, and refused on every other path
+  that would bake an address. The differential covers 38 calls, all matching after. 0 of the 180
+  inputs that compile under the flag newly refuse. **Still open:** shape 2, a dynamic access whose
+  `offset=` lands in the static region of a module with no stack-pointer global. Six options were
+  measured; none is both sound and narrow, so the choice is the maintainer's. This lane also found
+  a new wrong-code class in modules that DO have a stack-pointer global; it is #1580, fixed below.
+- **`--native-pointer-abi`: a relocated constant plus a memarg offset read the wrong region**
+  (#1580). In a module with a stack-pointer global (the shape gale ships), the selector relocated a
+  constant address by only one of its two parts. When the offset moved the access out of that
+  part's data region, it read the wrong region. When both parts qualified, both were relocated and
+  the access faulted. The constant and offset are now folded and relocated on the effective
+  address. A constant reached through a local, which cannot be folded, is refused when the offset
+  would leave its region. The new differential runs 42 calls. Before the fix, 29 of 32 cortex-m3
+  calls were wrong and the cortex-m7dp module was refused; after it, 42 of 42 match and 5 of 5
+  refusals hold. Nothing newly refuses over the corpus, and an f64 load or store at a constant
+  base plus offset now compiles. **Still open on #1568:** a constant offset reached through
+  arithmetic (`i32.const 0x1900 i32.const 0x704 i32.add i32.load` returns 0 where wasmtime
+  returns 0x38373635).
+- **`i64.reinterpret_f64` returned garbage, and an i64 local fed by a float conversion lost its
+  upper word** (#1603). **This was live in v0.88.0 on every cortex-m7dp path.** The direct selector
+  had no lowering for either f64/i64 bit-cast. Both fell to a fallback that moved the value into
+  registers the result was never read from, so a function returning `i64.reinterpret_f64` handed
+  back unrelated R0:R1. While mapping that, the lane found a second, older defect. An i64 local
+  written from `i64.reinterpret_f64`, or from any `i64.trunc`/`i64.trunc_sat` of a float, was
+  treated as 32-bit and lost its upper word; this was also live in v0.88.0, on cortex-m7dp and on
+  cortex-m7's AEABI conversion route. Both casts are now lowered as register pairs, and those nine
+  float-to-i64 producers make a local 64-bit. The new differential was 1128 wrong of 1652
+  emulations before and is 2512 of 2512 bit-identical after. **Narrowing:** `endianness.wast`
+  `f64_load` now refuses on cortex-m7dp, because it passes the cast as an i64 call argument, which
+  #929 refuses everywhere. Before, it compiled and returned 0 of 18 correct.
+- **An f32 carried over a branch was stored in an unreserved frame slot** (#1614). **Live in
+  v0.88.0 on cortex-m4f and cortex-m7dp, self-contained and `--relocatable`.** An f32 carried over
+  `br`/`br_if`/`br_table` to a block join goes through a frame slot, and that slot was drawn from a
+  spill pool the function had not reserved. In a function with no other frame use, the slot was
+  the prologue's saved R4, so the caller got callee-saved R4 back holding the float's bits. In a
+  function with a call before or after the join, it was a parameter-backing slot and the result
+  value was wrong (60 of 72 vectors per leg). The slot now comes only from a reserved pool, at a
+  cost of 64 bytes of frame in each such function. The new differential was 1784 of 3608 wrong
+  before and is 3608 of 3608 after. Nothing newly refuses or newly compiles over 28380 functions.
+- **An imported `memory64` compiled and was wrong** (#1209). A module that *defines* `(memory i64
+  1)` has been refused since v0.66. The *imported* form slipped past, because the decoder discarded
+  imported memory types. It compiled with rc 0 on 13 of 21 legs. A booted self-contained Cortex-M
+  image of it read 0 from an `i64.const 16` data segment where wasmtime reads 42, on both selectors.
+  It is now refused, and the diagnostic names the import. All 14 spec modules that import a
+  memory64 were already refused for another reason.
+- **Imported memory 0 plus defined memory 1 took memory 1's size** (#1582, found by the #1209
+  work). `memory.size 0` returned 2 where wasmtime returns 1, and out-of-bounds accesses under
+  bounds checking returned data. The module is now refused on every path except ARM
+  `--relocatable`, where the embedder's R10 already gave the right size. **Narrowing:** 17 spec
+  modules mix an imported memory with another. None of their 68 module-level legs went from
+  accepted to refused. On the merged `.wast` path, four spec files move to `module_decline` on
+  every backend. The one memory function that used to compile among them returned 4 where the
+  spec asserts 2.
+- **An imported memory 0 was sized as zero pages on RV32 and AArch64** (#1584). `memory.size`
+  returned 0 and bounds-checked accesses inside the memory trapped. On self-contained ARM, an
+  imported `(memory 2 2)` was given one page. The new differential found 41 disagreements before
+  the fix and 0 of 128 after. Memory 0 is now the true memory 0 of the wasm index space, which is
+  the import when there is one. **Narrowing:** RV32 and AArch64 bake memory 0's size into the
+  object, so an imported memory whose limits do not pin its size (no maximum, or max ≠ min) is
+  refused there. In the spec suite this moves `linking2.wast` from partial to `module_decline` on
+  riscv and aarch64. The one export that used to compile in that file returned the wrong value for
+  `grow(0)`. ARM is not refused. **How many real-world modules this refuses is unmeasured**, because
+  the 243-module corpus was not available.
+- **A custom page size was ignored by the published library API** (#1339). Calling
+  `Backend::compile_module` directly on a `(pagesize 1)` module returned Ok, with `memory.size`
+  computed as if pages were 64 KiB. The CLI had the same defect on `-b riscv --relocatable` and
+  `-b aarch64 --relocatable`, which emitted `memory.size = 0` where wasmtime answers 20000. ARM
+  `--relocatable` now honours `(pagesize 1)` through the API as well as the CLI. Every other path
+  refuses it, naming the page size. **Narrowing:** one repository fixture on the two non-ARM
+  relocatable paths. In the unwired custom-page-sizes spec proposal, `custom-page-sizes.4` refuses
+  on both of those paths and `custom-page-sizes.11` on RV32 `--relocatable`. An imported
+  `(pagesize 1)` memory is now refused or honoured exactly like a defined one (#1584). With both
+  halves in, every ask on #1339 is delivered, and the release record now authorises closing it.
+
+### Multi-memory under `--native-pointer-abi` (#1145)
+
+gale's two-domain modules have two memories and need `--native-pointer-abi`. The combination is
+now accepted on ARM `--relocatable`, layered per memory. Memory 0 stays native. Memory k stays a
+wasm offset into its own region. A new module-level pass tracks which values may be addresses in
+which memory, and refuses, by name, any value that may address both. Cross-memory `memory.copy`
+and `memory.fill` on memory k now lower on ARM `--relocatable`; this is the form `meld --memory
+multi` produces at a component boundary. A custom page size is honoured per memory under the
+layering: two `(pagesize 1)` memories report `__synth_mem_size_N` in bytes, and their MPU regions
+are aligned to their own sizes. The new differentials run 43 and 72 calls, all bit-identical to
+wasmtime, with every load and store checked to land in the memory its function is allowed to
+touch. On the build that lifted the refusal with no layering, 34 of 43 calls diverged or left
+their region.
+
+- **The opt-in `--embedder-copies-carry-no-pointers`.** The pass cannot tell which bytes of a memory
+  are pointers. So by default, a module that keeps pointers in both memories and copies across
+  them is refused. The flag asserts that no cross-memory copy carries a value later used as an
+  address in the destination memory. That is the Canonical ABI's property: meld adapters copy
+  payload bytes and re-derive pointers. **synth cannot check it.** The module's producer must
+  guarantee it, and if it is false a copied pointer is silently dereferenced in the wrong memory.
+  The obligation is written down in `docs/embedder-abi-relocatable-arm.md`. The flag is refused
+  without `--native-pointer-abi`.
+- **Envelope:** out-of-bounds `memory.copy` and `memory.fill` on memory k do not trap. That is the
+  same as memory 0 under the default `--safety-bounds none`, but memory k has no trapping mode at
+  all yet, because `software` and `mask` refuse every memory-k access (#1619, for v0.90). In the
+  spec suite, `memory_fill0.wast` `fill` now compiles on both relocatable legs. Its out-of-bounds
+  row writes where wasmtime traps, exactly as memory 0's fill does under the same default.
+- **Still open on #1145:** the reporter's own fused module, which is unpublished, was not compiled;
+  `__synth_mem_used_N`; the per-memory data-base contract (gale#398); and used-extent sizing,
+  which the reporter says is not needed if meld#530 declares exact extents through `(pagesize 1)`.
+
+### Known open: wrong code that ships in 0.89.0
+
+- **#1604, `--native-pointer-abi`:** an access whose bytes start in the zero reservation below a data
+  segment and run into it reads the reservation for the whole access. With data at `0x2000`,
+  `i32.const 0x1ffe i32.load` returns 0 where wasmtime returns `0x32310000`. It compiles with rc 0,
+  and the static-data validator does not see it. The refusal for it is carried to v0.90.
+
+### Refuted
+
+- **#1189** (an if/else join register aliasing a local's home): this was fixed in v0.64.0 and never
+  closed. Re-run on the 0.89.0 binary, the issue's own repro returns 9 where it used to return 18.
+  The #1189 differential matched 149 of 149 live vectors, and the class differential matched 999 of
+  999 with 0 known-open. #1566's fix did not move it.
+- **#1213** (an optimized-path i64 `select` feeding `i32.wrap_i64`): correct, because the optimized
+  path has declined the shape since v0.65 and the direct selector lowers it. The optimized lowering
+  was not repaired. The issue's distinguishing probe agrees with wasmtime in 18 of 18 rows; it was
+  re-checked at release prep.
+
+### Instruments
+
+- **The WAST parser now counts what it drops** (#1570). `synth_test::WastParser` used to discard
+  every `assert_return` it could not represent, without a counter. Over the 256 parseable spec
+  files that was **37,499 of 52,139** assertions: 24,085 involve v128, 13,135 involve f32/f64, 268
+  involve references and 11 are `exec get`. Every drop is now counted by reason, and `seen = kept +
+  dropped` holds by construction. Float assertions are still not kept, because no consumer has a
+  float calling convention yet.
+- **The #1568 matrix generator is committed** (#1574). The figures v0.88 published came from an
+  uncommitted script. `scripts/repro/npa_const_addr_matrix_1568.py` is the recovered generator; it
+  re-derives them exactly (162 cells: 81 wrong before; after the fix 0 wrong, 99 correct, 63
+  refused) and is now wired with exact expectations. The decomposition v0.88's notes gave for the
+  162 cells, 19 families × 4 shapes × 3 module kinds, **was false**. The real split is 73 + 73 + 16:
+  the three `memory.*` families take no memarg, and the third module kind uses a fifth shape. The
+  v0.88.0 section below is left as it shipped.
+- **The review number extractor** now reads hex quantities and stops leaking the end line of a
+  ranged citation and the digits of finding labels (#1575).
+
+### Blind spots in our own gates, for the record
+
+Each of these let a defect above through:
+
+- The #1069 VFP-pressure differential ran on a zeroed stack only. #1594's frame-slot half needs
+  garbage to show.
+- The #1439 execution check (wide60/wsum60) made no call, so it never exercised float
+  call-argument staging, where #1593 lived.
+- The ARM leg of the spec compile census compiles with `--cortex-m`, which is a Cortex-M3 with no
+  FPU, so the census never exercises the VFP register file.
+- VCR-RA-003 had no entry for S16..S31. It reported false positives on correct high-bank staging
+  and missed real high-bank aliasing.
+
+### Carried, and re-measured rather than carried
+
+- **npm** (#1460) is still not published: the registry's latest version is 0.69.0, and 0.86.0,
+  0.87.0 and 0.88.0 all return 404 (re-read 2026-10-29). The blocker has moved. The organisation's `NPM_TOKEN` was
+  replaced on 2026-10-22. The next Release NPM run got past the auth preflight and failed at
+  publish with `E403 E_STAGE_REQUIRED`: the new token can only publish to a staging area.
+- **Required checks for the wrong-code differentials** (#1573) is awaiting the maintainer's
+  decision. None of the v0.88 or v0.89 wrong-code oracles runs in one of the nine required contexts.
+- **Architecture model steps** (#1136) are filed for v0.89 and were not performed. spar#445 is
+  still open.
+
+### Gates and tooling
+
+- The issue-closure self-test's v0.70 held-open case read the live repository's artifacts, although
+  its docstring called it offline. It went red as soon as v0.89 delivered #1318. It now runs on a
+  frozen fixture, and added cases show the verdict moves only with a later delivery inside the
+  fixture.
+- The issue-closure gate now reports an issue a person closed as **not planned** as a named warning
+  (#1608), not as an unauthorised closure. A closer keyword closes as completed, and a not-planned
+  closure that overrides a release's `outlives` hold is still a failure.
+- The wasm-tools family moved to 0.262 (#1591). Over 965 compile jobs, every object is
+  byte-identical and every refusal is unchanged.
+- The maintainer tightened the CI workflows (#1606). npm now publishes only from a release run
+  started by a push to this repository. Fork PRs run on hosted runners. Actions in jobs that hold
+  secrets are pinned to commit SHAs. This does not change the npm publish blocker above.
+- Housekeeping: the v0.89 planning PR moved the anchor to v0.88.0 (#1576); rivet went from 0.40.0
+  to 0.41.1 (#1555, #1588); and taiki-e/install-action had two bumps (#1562, #1587).
+
 ## [0.88.0] - 2026-10-21
 
 ### Wrong-code fixes

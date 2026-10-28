@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-89-FALCON6
     type: system-req
     release: v0.89
-    status: proposed
+    status: implemented
     title: "The reporter's falcon blocker is re-measured on the current release from their own modules"
     description: >
         #1318 is an open externally reported blocker. Its figure goes stale with
@@ -26,6 +26,26 @@ artifacts:
       priority: must
       issue: "#1318"
       verification-track: manual
+      issue-scope: closes
+      landed: "PRs #1585, #1595, #1596 and #1600 - #1318 - DELIVERED: the reporter's opt.wasm compiles in full under their own command and executes bit-identical to wasmtime. Re-measured at the release-prep tree (origin/main 44cbfe12 plus the 0.89.0 version bump, synth 0.89.0) on 2026-10-28 from the reporter's own attachment, already on disk with its digest matched (opt.wasm sha256 7065f112fdaae127291f5f12cacc00619c55363e14a5141059dc2fcc6cfd00df; no re-fetch). `synth compile opt.wasm --target cortex-m7 --relocatable --all-exports --embedder-data-init --embedder-global-init`: rc 0, Compiled 17 functions, 0 skipped. The object is byte-identical to the RQ-89-FALCONSTEP fix object (sha256 db26e1d9...a3441c984). The last published figure, the v0.88.0 notes, was 16 of 17 with step skipped. The path, in order: #1585 RQ-89-WIDEFILE11 (#1439, the wide-file rung hands out real S16..S31 and gains its pool-grow retry, which is the rung step needs), #1595 RQ-89-WIDESTAGE (#1593, float call arguments staged from the real S16..S31, a v0.89 regression of #1585 found and fixed before shipping), #1596 RQ-89-FLOATZERO (#1594, a float local read before written is zeroed; it left 32 of 1000 garbage-stack step calls wrong after #1595) and #1600 RQ-89-FALCONSTEP (VCR-RA-003 models S16..S31, so the validator no longer refuses the now-correct staging)."
+      verified-by: >
+        DELIVERED, execution-verified, and stated about its substrate: wasmtime (the
+        reference) against the ARM object linked with arm-none-eabi-ld -Ttext=0 and the
+        stock thumb/v7e-m+fp/hard libgcc.a, executed in unicorn by the FALCON6 scratch
+        harness falcon_exec.py under the embedder contract in
+        docs/embedder-abi-relocatable-arm.md. No hardware was run and nothing runs
+        natively. Re-run on 2026-10-28 on the synth 0.89.0 binary built from this tree:
+        with a garbage stack, step 1000 of 1000, configure 42 of 42 and
+        cabi_realloc_wit_bindgen_0_41_0 60 of 60 match (49 ok and 11 traps, each trap
+        matched by wasmtime), 0 non-matching calls; with a zeroed stack, the same 1000 of
+        1000, 42 of 42 and 60 of 60. step executes 12294 of its 12996 instructions,
+        including 349 of 378 that name S16..S31. POSITIVE CONTROL, same harness, same
+        run: the old object linked at d4c0b232 (opt.elf sha256 5b8d9ebd...db11f95cf)
+        matches step 334 of 1000 with 666 mismatching, rc 1, so the harness still
+        detects the defect class. Carried from RQ-89-FALCONSTEP and NOT re-run here: the
+        uninitialised-read census of 0 sites, which replays recorded snapshots. The fused
+        module is byte-identical across the four PRs (RQ-89-FALCONSTEP). The reporter's
+        own hardware run is not part of this evidence.
       done-when: >
         manual:2027-03-31 the reporter's falcon blocker is re-measured on the
         current release from their own modules — delivered with an execution-

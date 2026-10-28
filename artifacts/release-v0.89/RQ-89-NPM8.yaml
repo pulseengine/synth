@@ -16,6 +16,33 @@ artifacts:
         positive control.
         CITATION: #1460 is where the matter was analysed. The number names where
         it was analysed, not an open scope.
+
+        RE-MEASURED AT RELEASE PREP, 2026-10-28T10:58Z, and STILL BLOCKED outside this
+        repository, but the blocker has MOVED. The registry, read with the User-Agent
+        `synth-release-check (+https://github.com/pulseengine/synth)`: dist-tags
+        latest 0.69.0 (39 versions, last modified 2026-09-18); 0.86.0, 0.87.0 and
+        0.88.0 each HTTP 404; the positive control 0.69.0 HTTP 200. The secret: the
+        repository has no NPM secret; the organisation's NPM_TOKEN (visibility all) was
+        updated 2026-10-22T18:10:53Z, after the v0.88 cut. The run that followed, Release
+        NPM 39835362813 (workflow_dispatch, 2026-10-22), got past the auth preflight and
+        failed in "Publish to npm" with `E403 ... This token can only publish to a staging
+        area. Run npm stage publish to publish this version, then approve it.
+        (E_STAGE_REQUIRED)`. So the token is no longer rejected outright; it is a
+        staged-publish token, and either the token type or the workflow's publish command
+        has to change. That is the maintainer's call, outside this release.
+
+        RE-MEASURED 2026-10-29T13:32Z, after #1606 (d5cf52b7): the registry is
+        unchanged. latest is 0.69.0, last modified 2026-09-18; 0.88.0 and 0.89.0
+        return HTTP 404; the 0.69.0 control returns 200. NPM_TOKEN is still the
+        2026-10-22T18:10:53Z secret, and no Release NPM run has happened since
+        39835362813. #1606 changes release-npm.yml in three ways. A workflow_run
+        trigger now publishes only for a successful Release run started by a push
+        to this repository (event push, head repository is this one). The tag
+        test is anchored (`^vX.Y.Z$`). checkout and setup-node are pinned to
+        commit SHAs. The publish command is still `npm publish --access public`,
+        so the E_STAGE_REQUIRED rejection of the staged-publish token is not
+        addressed. Still blocked: either the token type or the publish command
+        has to change.
     tags:
       - feature-loop
       - process
@@ -27,6 +54,7 @@ artifacts:
       priority: should
       issue: "#1460"
       verification-track: manual
+      disposition: blocked
       done-when: >
         manual:2027-03-31 the npm package publishes the release version, or its
         blocker is re-measured and named — delivered with an execution-verified

@@ -48,6 +48,15 @@ artifacts:
         counted. The parity oracle's full run on this lane's tree has no select.wast
         divergence other than the two pre-existing as-memory.grow-value assertions, which
         are a different matter (#539 envelope) and stay pinned under it.
+        RE-CHECKED AT RELEASE PREP, 2026-10-28, on the synth 0.89.0 debug binary built from
+        origin/main 44cbfe12 plus the version bump. No commit since 0161dee1 touches
+        optimizer_bridge.rs. SYNTH_PATH_DEBUG on a self-contained cortex-m4 compile of the
+        issue's probe (wrap of an i64 select of 0x1122334455667788 / 0x1899aabbccddeeff)
+        and of as-convert-operand still prints `direct (fallback: ... i64 select ...
+        issue #1213)` for both functions. As --relocatable objects, with and without
+        --no-optimize, under unicorn against wasmtime for conditions 0, 1 and 7: 12 rows,
+        12 agree. Both of those legs take the direct selector (#197), so they re-check
+        the lowering the fallback lands on, not a repaired optimized lowering.
       done-when: >
         manual:2027-03-31 the optimized path's i64 select feeding i32.wrap_i64
         returns the right value — delivered with an execution-verified result

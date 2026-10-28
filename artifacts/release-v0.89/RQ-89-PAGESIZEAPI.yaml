@@ -27,7 +27,7 @@ artifacts:
       priority: should
       issue: "#1339"
       verification-track: manual
-      issue-scope: outlives
+      issue-scope: closes
       landed: "PR #1586 - #1339 - DELIVERED. The refuting command, run FIRST through the published Backend API (not the CLI), CONFIRMED the defect: ArmBackend::compile_module on a decoded 20000-byte (pagesize 1) module returned Ok on every path with memory.size lowered as R10 >> 16, because CompileConfig::default() carries memory0_page_log2 16 and nothing derived it from the module; RiscVBackend and AArch64Backend returned Ok with memory.size = 20000 / 65536 = 0. The ARM backend now DERIVES memory 0's page size from the module it is handed and HONOURS (pagesize 1) where the CLI does (relocatable, the direct selector #1441 fixed), and refuses it naming the page size where the CLI does (off relocatable, in both compile_module and compile_function). RV32 and AArch64 refuse it in compile_module and compile_function. Measuring the CLI on the way found the same wrong code LIVE in the shipped binary: refuse_custom_page_size honoured (pagesize 1) on --relocatable for EVERY backend, so -b riscv --relocatable emitted li t0, 0 and -b aarch64 --relocatable emitted mov w9, #0, executed in unicorn as memory.size = 0 where wasmtime answers 20000. The CLI honour is narrowed to -b arm --relocatable. Nothing moves into the synth-core decoder (RQ-71-PAGELIB, RQ-81-PAGESIZE3): the decoder still reports every declaration and only a backend that cannot lower one refuses it."
       verified-by: >
         DELIVERED, red-first through the published API and execution-checked against
@@ -61,7 +61,7 @@ artifacts:
         IMPORTED (memory 20000 20000 (pagesize 1)) is still silently compiled on every path,
         because the decoder discards imported memory types; ARM --relocatable emits LSR #16
         and riscv/aarch64 emit 0. This needs the imported-memory type list of #1581 and must
-        land after it, so #1339 stays open by issue-scope outlives. KNOWN STALE HINT, kept
+        land after it, so #1339 was held open by issue-scope outlives (re-scoped below). KNOWN STALE HINT, kept
         byte-identical on purpose: the CLI refusal on -b riscv and -b aarch64 WITHOUT
         --relocatable still says "Add --relocatable". That advice now leads to the new
         refusal, not to wrong code. MC/DC (RQ-57-MCDC): the RV32 check_page_log2 is in the
@@ -81,6 +81,37 @@ artifacts:
         relocatable byte-paged memory returns -1, the pre-existing grow-fails envelope; and
         main.rs logs initial_pages * 64 KB, which overflows in a debug build on a 4294967295-page
         declaration (memory_max.1 still panics on -t cortex-m3 --relocatable in debug).
+        RE-SCOPED AT RELEASE PREP, 2026-10-28, from outlives to closes. The residual
+        named above, the IMPORTED (pagesize 1) memory, was delivered after this lane by
+        RQ-89-IMPSIZE (PR #1592, #1584): every per-memory page-size check now walks the
+        memory index space, so an imported (pagesize 1) is refused or honoured exactly like
+        a defined one. Its library tests are red-first: synth-backend
+        tests/library_imported_pagesize_1339.rs fails 2 of 3 on the d4c0b232 backend
+        sources and passes after. Its execution oracle, imported_memory_size_1584, has 0
+        disagreements after the change, where the imported 20000-byte (pagesize 1) memory
+        had compiled rc=0 on all 7 legs with ARM --relocatable answering memory.size 0.
+        Re-probed on the synth 0.89.0 debug binary: an imported (memory 20000 20000
+        (pagesize 1)) compiles on -b arm --relocatable to mov.w r0, r10, and returns 20000
+        under unicorn with R10 = 20000. It is refused, naming the page size, on ARM
+        self-contained and on riscv and aarch64, with and without --relocatable.
+        #1339's asks, read from its body and comments, and who delivered each.
+        (1) A caller of the published library must not have a custom page size silently
+        ignored: delivered for defined memories by THIS record (Backend::compile_module
+        and compile_function on ARM, RV32 and AArch64), and for imported memories by
+        RQ-89-IMPSIZE. The awsm and wasker Backend impls are stubs that return an error
+        for every module, so they ignore nothing.
+        (2) __synth_mem_size_N must not inherit the over-grant: the region table is
+        emitted only by synth-cli, not by any library backend. The CLI reports the
+        declared byte count since #1441, re-run here as pagesize_oracle_1441's 32
+        assertions, ACCEPTED size=20000 region=32768.
+        (3) Refused or honoured: gale (fathom, 2026-09-22) asked for honoured. It is
+        honoured where it is lowered (ARM --relocatable) and loudly refused everywhere
+        else, which is what the theme counts as delivered.
+        Not a remaining ask: the 2026-09-24 comment says "the refusal belongs at the
+        synth-core boundary". The published compile boundary is the Backend trait, and
+        that is where the refusal now sits. The decoder is unchanged on purpose
+        (RQ-71-PAGELIB, RQ-81-PAGESIZE3): it reports every declaration, and only a backend
+        that cannot lower one refuses it.
       done-when: >
         manual:2027-03-31 a custom page size is refused by the published synth-
         core API, not only by the CLI — delivered with an execution-verified

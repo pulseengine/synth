@@ -45,7 +45,7 @@ artifacts:
       priority: must
       issue: "#1318"
       verification-track: manual
-      issue-scope: outlives
+      issue-scope: closes
       done-when: >
         manual:2027-03-31 the reporter's step export compiles under their own
         command and runs bit-identical to wasmtime, with the VCR-RA-003 check

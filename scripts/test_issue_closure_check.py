@@ -187,12 +187,58 @@ def closewindow_tests() -> None:
     # (3) the flag must NOT suppress the falsehood the gate exists for. v0.70
     # held #1318 and #1331 open; an OPEN set containing only #1331 says #1318 is
     # not open, which is the HELD-OPEN-BUT-ALREADY-CLOSED shape.
-    f, _w, _a, held = C.check(root, "v0.70", {1321, 1333, 1334, 1335, 1337},
-                              open_issues={1331}, allow_vacuous=True)
+    #
+    # v0.89 release prep: THIS CASE WAS NOT OFFLINE, although the docstring
+    # above says the fixtures are. It called `C.check(root, "v0.70", ...)`,
+    # which loads EVERY live release file under artifacts/, and
+    # `later_attribution` reads the releases ABOVE v0.70. So the day a later
+    # release delivered #1318 (v0.89, RQ-89-FALCON6), the verdict this case
+    # asserts turned, correctly, into "HELD OPEN BY v0.70 BUT DELIVERED LATER",
+    # a warning, and the case went red. MEASURED: with RQ-89-FALCON6 flipped to
+    # implemented and this file unchanged, exactly one assertion in the whole
+    # file reds, this one. RQ-89-FALCONSTEP had set `issue-scope: outlives` on
+    # #1318 to keep this green, which is the tail wagging the dog: a self-test
+    # fixture deciding whether a reporter's issue may close.
+    #
+    # The fixture is now FROZEN in this file, in the shape v0.70 actually
+    # shipped (five delivered, #1331 and #1318 held open), and no release
+    # above v0.70 is in it, so nothing outside this file can move the verdict.
+    # The live v0.70 REPLAY at the end of main() stays live on purpose; that is
+    # the detector for edits to the shipped records, a different property.
+    v70 = ([art(f"RQ-70-D{n}", "implemented", f"#{n}", version=(0, 70))
+            for n in (1321, 1333, 1334, 1335, 1337)]
+           + [art("RQ-70-NPA", "implemented", "#1331", version=(0, 70),
+                  scope="outlives"),
+              art("RQ-70-FALCONCORPUS", "implemented", "#1318", version=(0, 70),
+                  scope="outlives")])
+
+    def _v70_check(artifacts, open_issues):
+        orig = C.load_release_artifacts
+        C.load_release_artifacts = lambda root, glob: (artifacts, [])
+        try:
+            return C.check(Path("."), "v0.70", {1321, 1333, 1334, 1335, 1337},
+                           open_issues=open_issues, allow_vacuous=True)
+        finally:
+            C.load_release_artifacts = orig
+
+    f, _w, _a, held = _v70_check(v70, {1331})
     check("closewindow: held-open-over-closed still FAILS with the flag set",
           any("HELD OPEN BUT ALREADY CLOSED: #1318" in x for x in f), str(f))
     check("closewindow: ...and the held-open set was non-empty, so (3) is not vacuous",
           1318 in held, str(sorted(held)))
+    # (3b) CONTROL: #1318 open, so nothing is falsely held. Without it a gate
+    # that reported every held-open issue as closed would pass (3).
+    f, _w, _a, _h = _v70_check(v70, {1331, 1318})
+    check("closewindow: ...and with #1318 OPEN there is no such failure",
+          not any("#1318" in x for x in f), str(f))
+    # (3c) the coupling, pinned as a FIXTURE property rather than left to the
+    # live tree: a LATER release that delivers #1318 turns (3)'s failure into
+    # DELIVERED LATER. This is what the live tree did to the old case.
+    f, w, _a, _h = _v70_check(
+        v70 + [art("RQ-89-LATER", "implemented", "#1318", version=(0, 89))], {1331})
+    check("closewindow: (3)'s verdict moves only with a later delivery IN THE FIXTURE",
+          not any("#1318" in x for x in f)
+          and any("DELIVERED LATER: #1318" in x for x in w), f"{f} / {w}")
 
     # (4) --from-anchor must track ANCHOR_TAG rather than mirror a version. A
     # hard-coded release in a CI step would become a seventh anchor site and
@@ -254,6 +300,84 @@ def closewindow_tests() -> None:
               f"only-in-gh={sorted(gh - api)[:6]}")
         check("closewindow: ...and the agreed set is NON-EMPTY, so (6) is not vacuous",
               len(api) > 0, str(len(api)))
+
+
+def notplanned_tests() -> None:
+    """v0.89 release prep (#1608): a closure the MAINTAINER marked not planned.
+
+    #1608 was opened and closed by the maintainer as `state_reason:
+    not_planned`, and the live gate reported it as `CLOSED BUT NOT AUTHORISED`,
+    the v0.69 shape. A closer keyword closes as COMPLETED; NOT_PLANNED is a
+    person's deliberate rejection. These fixtures are OFFLINE: the artifacts are
+    stubbed and the `gh api` answers are recorded.
+    """
+    import json as _json
+    import types
+
+    base = [art("RQ-71-X", "implemented", "#900", version=(0, 71))]
+
+    def _check(artifacts, closed, not_planned):
+        orig = C.load_release_artifacts
+        C.load_release_artifacts = lambda root, glob: (artifacts, [])
+        try:
+            return C.check(Path("."), "v0.71", set(closed), True, None,
+                           not_planned=not_planned)
+        finally:
+            C.load_release_artifacts = orig
+
+    # (a) not planned, unauthorised -> a WARNING naming the issue and its closer.
+    f, w, _a, _h = _check(base, {1608}, {1608: "avrabe"})
+    check("notplanned: (a) a not-planned closure is NOT a failure",
+          not any("#1608" in x for x in f), str(f))
+    check("notplanned: (a) ...and is a warning naming the issue and its closer",
+          any("CLOSED AS NOT PLANNED: #1608 by avrabe" in x for x in w), str(w))
+    # (b) the same issue closed as COMPLETED (no not-planned entry) -> v0.69 failure.
+    f, _w, _a, _h = _check(base, {1608}, {})
+    check("notplanned: (b) a completed unauthorised closure still FAILS",
+          any("CLOSED BUT NOT AUTHORISED: #1608" in x for x in f), str(f))
+    # (d) a not-planned closure of an issue this release HELD OPEN still fails:
+    # overriding a deliberate hold is not a rejection.
+    held = base + [art("RQ-71-H", "implemented", "#1608", version=(0, 71),
+                       scope="outlives")]
+    f, _w, _a, _h = _check(held, {1608}, {1608: "avrabe"})
+    check("notplanned: (d) not planned over THIS release's `outlives` still FAILS",
+          any("HELD OPEN BUT CLOSED: #1608" in x for x in f), str(f))
+    # ...and over an EARLIER release's `outlives`.
+    held_prior = base + [art("RQ-70-H", "implemented", "#1608", version=(0, 70),
+                             scope="outlives")]
+    f, _w, _a, _h = _check(held_prior, {1608}, {1608: "avrabe"})
+    check("notplanned: (d) not planned over an EARLIER release's `outlives` still FAILS",
+          any("HELD OPEN BY v0.70 BUT CLOSED: #1608" in x for x in f), str(f))
+
+    # (c) THE FETCH LAYER, strict: only an explicit "not_planned" counts. A
+    # missing, null or "completed" state_reason, a failed call and an
+    # unparseable body all leave the issue out, so (b)'s failure stands.
+    R = "pulseengine/synth"
+    answers = {
+        1608: (0, _json.dumps({"state_reason": "not_planned",
+                               "closed_by": {"login": "avrabe"}})),
+        1609: (0, _json.dumps({"state": "closed"})),            # field missing
+        1610: (0, _json.dumps({"state_reason": None})),
+        1611: (0, _json.dumps({"state_reason": "completed",
+                               "closed_by": {"login": "avrabe"}})),
+        1612: (1, ""),                                            # call failed
+        1613: (0, "not json"),
+    }
+    table = {("gh", "api", f"repos/{R}/issues/{n}"): v for n, v in answers.items()}
+    rec = _CwRecorder(table)
+    orig, C.subprocess = C.subprocess, types.SimpleNamespace(
+        run=rec, SubprocessError=subprocess.SubprocessError)
+    try:
+        got = C.not_planned_closures(set(answers), R)
+    finally:
+        C.subprocess = orig
+    check("notplanned: (c) only an explicit not_planned is read as one",
+          got == {1608: "avrabe"}, str(got))
+    check("notplanned: (c) ...and every issue was actually asked about",
+          len(rec.calls) == len(answers), str(len(rec.calls)))
+    f, _w, _a, _h = _check(base, {1609}, got)
+    check("notplanned: (c) a MISSING state_reason stays a FAILURE",
+          any("CLOSED BUT NOT AUTHORISED: #1609" in x for x in f), str(f))
 
 
 def next_release_tag_tests() -> None:
@@ -760,6 +884,7 @@ def main() -> int:
     r11conflict_tests()
     closed_since_tests()
     closewindow_tests()
+    notplanned_tests()
 
     print(f"issue-closure-tests: {FAILS} failure(s)")
     return 1 if FAILS else 0

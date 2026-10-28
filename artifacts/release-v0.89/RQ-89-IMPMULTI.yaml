@@ -1,0 +1,63 @@
+artifacts:
+  - id: RQ-89-IMPMULTI
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "An imported memory 0 beside a defined memory is refused loudly rather than sized from the defined one"
+    description: >
+        SILENT MISCOMPILE, found by the RQ-89-MEM64 lane and delivered inside its PR:
+        a module that IMPORTS memory 0 and DEFINES memory 1 passed the #406
+        multi-memory gate, which counted defined memories only, so memory 0 took
+        memory 1's size. The module compiled rc=0, memory.size 0 was wrong, and
+        out-of-bounds accesses under bounds checking returned data where wasmtime
+        traps.
+
+        This record exists so the release closure gate can see the delivery. The
+        gate authorises closure from an artifact's `issue:` field, and
+        RQ-89-MEM64's names #1209 only. The evidence below is RQ-89-MEM64's,
+        cited and not re-run; nothing new was built for this record.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: compile a
+        module that imports memory 0 as (memory 1) and defines memory 1 as
+        (memory 2), and execute `memory.size 0` against wasmtime; if it is
+        refused with a diagnostic, or returns 1, the defect is gone.
+        CITATION: #1582 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1582"
+      verification-track: manual
+      issue-scope: closes
+      landed: "PR #1581 - #1582 - DELIVERED as a LOUD REFUSAL, in the same PR as RQ-89-MEM64 (#1209), commit da0d41f5. Measured on the f9ca92de binary against wasmtime before the change: `memory.size 0` returned 2 where wasmtime returns 1, on self-contained Cortex-M, RV32, AArch64 and the single-function path. Under bounds checking (ARM --safety-bounds software, the AArch64 default), 3 of 3 out-of-range ARM accesses and 4 of 4 AArch64 accesses in [64 KiB, 128 KiB) returned data where wasmtime traps. refuse_imported_multi_memory now refuses an imported memory plus any other memory on every path except ARM --relocatable. That path is unchanged, because the embedder's R10 gives the correct size (1), as measured."
+      verified-by: >
+        DELIVERED, red to green, as a loud refusal. Cited from RQ-89-MEM64's verified-by,
+        not re-run here. crates/synth-cli/tests/refuses_imported_multi_memory_1582.rs is
+        red on the v0.88 gate (7 of 7 legs) and green after. Its imported-only,
+        defined-only, two-defined and relocatable controls are green on both. Newly
+        refused, over the repository corpus (2736 modules after the bbda3f9e rebase): 17
+        modules mix an imported memory with another, all in the spec suite, and 0 of
+        their 68 module-level legs went from accepted to refused. On the merged .wast
+        path the census moves 4 files to module_decline on every backend: imports1 and
+        imports4 from all_declined, memory_grow and memory_size_import from partial.
+        The partial losses removed only wrong code: the one memory function that
+        compiled, size1, returned 4 on the pre-fix image where the spec asserts 2. The
+        census pins and at-least-one-export moved 45/42/44 to 43/40/42, with paired
+        controls: the new pins pass on the fixed binary and fail 9 ways on f9ca92de,
+        and the old pins fail 9 ways on the fixed binary. Byte identity on the merged
+        tree: 828 compiles, 0 differences. NOT FIXED, and filed as #1584 then
+        delivered by RQ-89-IMPSIZE: with ONLY an imported memory, RV32 and AArch64
+        sized memory 0 as zero pages.
+      done-when: >
+        manual:2027-03-31 an imported memory 0 beside a defined memory is refused
+        loudly rather than sized from the defined one — delivered with an
+        execution-verified result where the lane is a wrong-code fix, or REFUTED
+        with the measurement that refutes it; and the refuting command above is
+        RUN FIRST and its result reported either way

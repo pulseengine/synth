@@ -239,6 +239,40 @@ def closed_since(tag: str, repo: str, until_tag: str | None = None) -> set[int]:
     return {int(r["number"]) for r in json.loads(out)}
 
 
+def not_planned_closures(numbers, repo: str) -> dict[int, str]:
+    """v0.89 release prep: which of `numbers` were closed as NOT PLANNED, and by whom.
+
+    MEASURED at the v0.89 cut: the maintainer opened #1608 (a proposal) and
+    closed it himself four minutes later with `state_reason: not_planned` and a
+    rationale comment. This gate then reported `CLOSED BUT NOT AUTHORISED: #1608`
+    and called it the v0.69 shape. It is not. A closer keyword in a commit, PR
+    body or comment closes with state_reason COMPLETED; NOT_PLANNED is set only
+    by a person choosing "close as not planned". A rejection needs no artifact.
+
+    STRICT BY CONSTRUCTION. Returns {issue: closer_login} for issues whose
+    `state_reason` is exactly "not_planned". A missing or null state_reason, a
+    failed call, an unparseable answer: the issue is simply absent, so the caller
+    keeps the FAILURE. Nothing here can turn a failure into a warning by
+    accident. Network (`gh api`); the tests drive it with a recorded response.
+    """
+    out: dict[int, str] = {}
+    for n in sorted(numbers):
+        try:
+            r = subprocess.run(
+                ["gh", "api", f"repos/{repo}/issues/{n}"],
+                capture_output=True, text=True)
+            if r.returncode != 0:
+                continue
+            d = json.loads(r.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
+        if not isinstance(d, dict) or d.get("state_reason") != "not_planned":
+            continue
+        who = (d.get("closed_by") or {}).get("login") or "an unknown account"
+        out[n] = who
+    return out
+
+
 def _open_issues_api(repo: str, token: str) -> set[int] | None:
     """Every OPEN issue via the REST API with NO `gh` binary — RQ-87-CLOSEWINDOW
     (#1478), and this is the PRIMARY path, not a fallback.
@@ -483,7 +517,8 @@ def fmt_release(v: tuple[int, int]) -> str:
 
 def check(root: Path, release: str, closed: set[int],
           allow_unclosed: bool = False, open_issues: set[int] | None = None,
-          allow_vacuous: bool = False):
+          allow_vacuous: bool = False,
+          not_planned: dict[int, str] | None = None):
     """Returns (failures, warnings, authorised, held_open).
 
     `closed` is the WINDOW — issues closed at or after the tag. `open_issues`,
@@ -615,6 +650,14 @@ def check(root: Path, release: str, closed: set[int],
                     f"{art} in {fmt_release(lv)}, a release LATER than "
                     f"{release}. Not a {release} closure, and NOT something to "
                     f"reopen")
+        elif n not in authorised and n in (not_planned or {}):
+            # v0.89 release prep (#1608). Reached ONLY after every hold-open
+            # branch above, so a not-planned closure of an issue some release
+            # declared `outlives` is still that branch's FAILURE: overriding a
+            # deliberate hold is not a rejection. See `not_planned_closures`.
+            warnings.append(
+                f"CLOSED AS NOT PLANNED: #{n} by {not_planned[n]} — a "
+                f"deliberate rejection, not a delivery; no artifact needed")
         elif n not in authorised:
             failures.append(
                 f"CLOSED BUT NOT AUTHORISED: #{n} — no delivered {release} "
@@ -739,6 +782,10 @@ def main() -> int:
             until = None
         print(f"  window: [{args.since_tag}, {until or 'now'})")
         closed = closed_since(args.since_tag, args.repo, until)
+    # #1608: only the LIVE window asks why an issue closed. `--closed` (offline)
+    # passes no reasons, so every unauthorised closure stays a failure there.
+    not_planned = (not_planned_closures(closed, args.repo)
+                   if args.closed is None else {})
 
     # STATE beats the window for the authorised / held-open directions (e).
     # `--open` lets the tests drive it offline; otherwise ask the API, and if
@@ -781,7 +828,7 @@ def main() -> int:
 
     failures, warnings, authorised, held_open = check(
         args.root, args.release, closed, args.allow_unclosed, open_issues,
-        allow_vacuous=args.allow_vacuous_authorised)
+        allow_vacuous=args.allow_vacuous_authorised, not_planned=not_planned)
 
     # RQ-76-CLOSUREMAIN (#1404): an EMPTY live-open set is not evidence.
     #
