@@ -79,9 +79,11 @@ artifacts:
         stay green on the fix binary: #1594 13680 of 13680, #1593, #1069, #881 redef,
         #1230 (TOTAL=0, 6 spec confirmations and 8 poisoned emulations) and the
         VCR-RA-003 phase-2 join/call check. The exact emulation floor rises by this
-        oracle's declared 240 over main 9f123a65's value, 382495 (superseded). Paired
+        oracle's declared 240 over main a28a09af's value, 382594 (superseded; first
+        computed over 9f123a65's 382495, re-derived after rebasing over #1598). Paired
         control: the summed value oracle_wiring_check.py reports gives rc 0 on this tree
-        and rc 1 on main 9f123a65, and 382495 gives rc 1 on this tree and rc 0 on main.
-        The mutation ledger was re-anchored with 2 sites moved and 0 not
-        found. Unchanged: the selector ratchets, status.json and the home-alias pins,
+        and rc 1 on main a28a09af, and 382594 gives rc 1 on this tree and rc 0 on main.
+        The trap-semantics-oracle job's evidence-ledger --min-oracles goes 34 -> 35 for
+        the one oracle this lane adds to it (the job runs 46 oracle_run.py steps). The
+        mutation ledger was re-anchored after the rebase. Unchanged: the selector ratchets, status.json and the home-alias pins,
         because no selector code moved and no emitted byte moved.
