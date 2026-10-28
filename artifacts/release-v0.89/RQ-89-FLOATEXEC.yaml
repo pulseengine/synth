@@ -68,10 +68,12 @@ artifacts:
         memory or the R9 globals; the full run reports a minimum window of
         0x2000 B. Pins moved, each with a paired
         control: the exact emulation floor rises by 58000 from the v0.89
-        RQ-89-FALCONSTEP value 382834, to oracle_wiring_check.py's reported
-        total (the new oracle declares emulations >= 58000; 61003 measured via
-        oracle_run.py). On this tree the new total is rc 0 and 382834 rc 1. On
-        main 7e170d62 the new total is rc 1 and 382834 rc 0. known_open_pins 79 -> 92 with a waiver, 79 red on this
+        RQ-89-NPAOFFSET value 382876 to oracle_wiring_check.py's reported total
+        (first computed over RQ-89-FALCONSTEP's 382834 on 7e170d62, and
+        re-derived after rebasing over #1602). The new oracle declares
+        emulations >= 58000; 61003 were measured via oracle_run.py. On this
+        tree the new total is rc 0 and 382876 rc 1. On main d048b523 the new
+        total is rc 1 and 382876 rc 0. known_open_pins 79 -> 92 with a waiver, 79 red on this
         tree. known_open_pinned_cases 146 -> 214, 146 red. The KNOWN/PINNED
         population count-eq 12 -> 13, 12 red. claim_check 75/75. No Rust was
         touched. UNVERIFIED: the job's wall time on a GitHub ubuntu runner,
