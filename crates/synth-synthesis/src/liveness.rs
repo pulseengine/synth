@@ -5961,8 +5961,9 @@ pub fn validate_final_allocation_in_areas_with_vfp_homes(
 /// def AND on the straight-line fall-through (we stop the forward scan at the
 /// first branch/label/call), so we never invent a cross-CF read.
 /// #881: the S-register WORD indices (0..=31; `S(k)` = word `k`, `D(i)` =
-/// words `2i`,`2i+1`) a [`crate::rules::VfpReg`] covers. `None` for the MVE
-/// Q-registers (not scalar VFP).
+/// words `2i`,`2i+1`) a [`crate::rules::VfpReg`] covers. Total over
+/// `VfpReg` (always `Some`; the `Option` is kept for the `?`-chaining
+/// callers). The MVE Q-registers are a separate type and never reach here.
 fn vfp_reg_words(r: &crate::rules::VfpReg) -> Option<[Option<usize>; 2]> {
     use crate::rules::VfpReg::*;
     Some(match r {
@@ -5982,6 +5983,33 @@ fn vfp_reg_words(r: &crate::rules::VfpReg) -> Option<[Option<usize>; 2]> {
         S13 => [Some(13), None],
         S14 => [Some(14), None],
         S15 => [Some(15), None],
+        // RQ-89-FALCONSTEP (#1318): the S16..S31 single forms. The wide-file
+        // rung (#1426/#1593) names them on plain `F32Store`/`F32Load`/arith,
+        // and before this they fell to the `None` arm below — so (1) an
+        // `F32Store` of S16..S31 to `[sp,#N]` never entered the #881 slot
+        // tracking at all (an S16+ store over a live slot was INVISIBLE), and
+        // (2) `vfp_word_effect` of ANY op naming one was `None`, which the slot
+        // check widens to "every word redefined": the preserve-then-arg-stage
+        // re-store of an untouched S5 behind an S16 staging store then read as
+        // a second value, refusing the reporter's `step` (VfpSpillSlotAliased,
+        // slot 20). The doc above already said 0..=31; D8..D15 and VPUSH/VPOP
+        // already model these words.
+        S16 => [Some(16), None],
+        S17 => [Some(17), None],
+        S18 => [Some(18), None],
+        S19 => [Some(19), None],
+        S20 => [Some(20), None],
+        S21 => [Some(21), None],
+        S22 => [Some(22), None],
+        S23 => [Some(23), None],
+        S24 => [Some(24), None],
+        S25 => [Some(25), None],
+        S26 => [Some(26), None],
+        S27 => [Some(27), None],
+        S28 => [Some(28), None],
+        S29 => [Some(29), None],
+        S30 => [Some(30), None],
+        S31 => [Some(31), None],
         D0 => [Some(0), Some(1)],
         D1 => [Some(2), Some(3)],
         D2 => [Some(4), Some(5)],
@@ -5998,7 +6026,11 @@ fn vfp_reg_words(r: &crate::rules::VfpReg) -> Option<[Option<usize>; 2]> {
         D13 => [Some(26), Some(27)],
         D14 => [Some(28), Some(29)],
         D15 => [Some(30), Some(31)],
-        _ => return None,
+        // RQ-89-FALCONSTEP: NO wildcard. `VfpReg` is S0..S31 + D0..D15 and
+        // nothing else (the MVE Q-registers are a separate `QReg`), so the
+        // former `_ => return None` arm could only ever catch a register this
+        // table FORGOT — which is exactly how S16..S31 went unmodelled. A new
+        // variant is now a compile error here, not a silent `None`.
     })
 }
 
@@ -19482,6 +19514,68 @@ mod tests {
                 RaFinalVerdict::Violation(RaFinalViolation::VfpSpillSlotAliased { slot: 0, .. })
             ),
             "a re-store after the source was redefined must be a violation"
+        );
+    }
+
+    /// RQ-89-FALCONSTEP (#1318) — GREEN, the reporter's `step` shape: the
+    /// wide-file call staging preserves S5 to `[sp,#20]`, stages an S16
+    /// argument (#1593) to `[sp,#64]`, then re-stores the UNTOUCHED S5 to
+    /// `[sp,#20]` as an argument. Before S16..S31 were modelled, the S16 store's
+    /// `vfp_word_effect` was `None`, the slot check widened it to "every word
+    /// redefined", and the benign re-store read as a second value:
+    /// `VfpSpillSlotAliased { slot: 20 }`, refusing a correct stream.
+    #[test]
+    fn ra003_vfp_slot_refresh_across_high_bank_store_benign_1318() {
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            f32c(VfpReg::S5),
+            f32c(VfpReg::S16),
+            f32st(VfpReg::S5, 20),  // preserve S5 across the call
+            f32st(VfpReg::S16, 64), // stage the S16 argument (#1593)
+            f32st(VfpReg::S5, 20),  // stage S5 as an argument — same bytes
+            f32ld(VfpReg::S1, 64),
+            f32ld(VfpReg::S2, 20),
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        assert!(
+            !matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::Violation(_)
+            ),
+            "an S16..S31 store between two same-value re-stores must not \
+             refuse the stream; got {:?}",
+            validate_final_allocation(&body)
+        );
+    }
+
+    /// RQ-89-FALCONSTEP (#1318) — RED, the direction that makes the
+    /// S16..S31 modelling a STRENGTHENING: an `F32Store` from a high-bank
+    /// S-register over a still-live slot. Before, `vfp_reg_words(S16)` was
+    /// `None`, so the S16 store never entered the slot tracking and this
+    /// genuine alias (the reload reads S16's value, not S5's) passed.
+    #[test]
+    fn ra003_vfp_slot_high_bank_store_alias_caught_1318() {
+        let body = vec![
+            push_prologue(vec![Reg::LR]),
+            f32c(VfpReg::S5),
+            f32c(VfpReg::S16),
+            f32st(VfpReg::S5, 20),  // value A
+            f32st(VfpReg::S16, 20), // a DIFFERENT value over the live A
+            f32ld(VfpReg::S2, 20),  // expects A
+            pop_epilogue(vec![Reg::PC]),
+        ];
+        assert!(
+            matches!(
+                validate_final_allocation(&body),
+                RaFinalVerdict::Violation(RaFinalViolation::VfpSpillSlotAliased {
+                    slot: 20,
+                    first_store: 3,
+                    overwriting_store: 4,
+                    stale_reload: 5,
+                })
+            ),
+            "an S16 store over a live slot must be caught; got {:?}",
+            validate_final_allocation(&body)
         );
     }
 

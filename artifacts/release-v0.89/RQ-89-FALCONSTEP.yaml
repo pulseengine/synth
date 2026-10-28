@@ -1,0 +1,89 @@
+artifacts:
+  - id: RQ-89-FALCONSTEP
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "VCR-RA-003 models S16..S31, so a correct wide-file call staging is no longer refused"
+    description: >
+        LOUD REFUSAL of correct code on main 9f123a65, not wrong code. The
+        external reporter's module (#1318) had its `step` export refused under
+        the reporter's own command. The validator reported VCR-RA-003
+        VfpSpillSlotAliased { slot: 20, first_store: 10139, overwriting_store:
+        10144, stale_reload: 10147 } on the vfp-wide-file+pool-grow(218) rung.
+        Bisected: ee994d6c (#1596 FLOATZERO) is the first refusing commit, and
+        ce348045 and efb0f28a compile it.
+
+        The emitted stream holds ONE value in slot 20, not two. 10139 stores
+        S5 to [sp,#20] (the caller-saved preserve before a bl). 10143 stores
+        S16 to [sp,#64] (the #1593 wide-file argument staging). 10144 stores
+        the untouched S5 to [sp,#20] again (S5 is also an argument). 10147
+        reloads it. The #881 slot check treats a same-word, same-version
+        re-store as benign. But liveness::vfp_reg_words mapped only S0..S15
+        and D0..D15, and fell to a `_ => return None` arm for S16..S31. So
+        vfp_word_effect of the S16 store was None, and the check widened that
+        to "every word redefined". The identical re-store then read as a second
+        value. The same gap had a real hole in the other direction: an
+        F32Store from S16..S31 never entered the slot tracking, so a high-bank
+        store over a live slot was invisible.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: compile the
+        reporter's module with `synth compile in.wasm --target cortex-m7
+        --relocatable --all-exports --embedder-data-init --embedder-global-init`;
+        if rc is 0 with all 17 functions and step runs bit-identical to
+        wasmtime on the reporter's workload, the refusal is gone.
+        CITATION: #1318 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1318"
+      verification-track: manual
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 the reporter's step export compiles under their own
+        command and runs bit-identical to wasmtime, with the VCR-RA-003 check
+        made more precise, never weaker — delivered with an execution-verified
+        result, or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported either way
+      landed: "PR #1600 - #1318 - DELIVERED: a validator precision fix that unblocks correct code. The refuting command was run first on main 9f123a65: rc 1, 16 of 17 functions, step refused with VfpSpillSlotAliased slot 20. Cause, crates/synth-synthesis/src/liveness.rs vfp_reg_words: the S16..S31 single forms fell to a wildcard None arm, so check_vfp_slot_aliasing widened every op naming one to a redefinition of all 32 words and refused a same-value re-store, while never tracking a high-bank store at all. Fix: vfp_reg_words maps S16..S31 to words 16..31, and the wildcard is deleted (VfpReg has no other variants, so a future one is a compile error, not a silent None). No allocation or selector change: the stream the validator sees is byte-identical. A debug dump of every function's final stream on the reporter's module, before validation, was identical between the main and fixed binaries. Byte census, main vs fix, over scripts/repro and tests (242 files on cortex-m4f, m7, m7dp and m4, relocatable and self-contained, 1936 configs) and the spec testsuite (257 wast files on m7 and m7dp, both paths, 1028 configs): 0 rc changes, 0 byte moves, 0 newly refused, 0 newly accepted. The reporter's fused module is byte-identical."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime. The new wired oracle
+        scripts/repro/vfp_high_bank_restore_1318_differential.py generates its fixture in
+        process: 56 live f32 locals, so the function lands on vfp-wide-file+pool-grow, and
+        argument temps reach S16..S31. One argument is a direct local.get of a
+        register-homed local that is also read after the call: rs1, rs3 and rs5, plus rsz,
+        a read-before-write local that #1594 homes and zeroes at entry. It runs on
+        cortex-m7 and cortex-m7dp. Gate 1 asserts the rung. Gate 2 asserts the refused
+        shape: a low vstr re-stored across a vstr s16..s31 before the bl. Gate 3 executes
+        with garbage registers and stack, and again zeroed, and checks the callee-saved
+        registers, SP and the caller's frame. Red on main 9f123a65: all 4 exports are
+        refused with VfpSpillSlotAliased at slots 12, 20, 28 and 16, so gate 1 fails.
+        Green on the fix: 240 of 240 emulations bit-identical. Two unit tests in
+        liveness.rs, both red on main. The first,
+        ra003_vfp_slot_refresh_across_high_bank_store_benign_1318, is the reporter's
+        shape and must not refuse. The second, ra003_vfp_slot_high_bank_store_alias_caught_1318,
+        has an S16 store over a live slot and must be caught. Main missed it, which makes
+        the change a strengthening. On the reporter's module, the fix compiles rc 0 with
+        17 of 17 functions and 3 of 3 exports. step runs 1000 of 1000 bit-identical with a
+        garbage stack and 1000 of 1000 with a zeroed stack. configure runs 42 of 42 and
+        cabi_realloc 60 of 60 in both states. The uninitialised-read census finds 0 sites,
+        and step executes 12294 of 12996 instructions. The positive control, the old
+        d4c0b232 object, still reads 334 of 1000 with 666 mismatching. Neighbour oracles
+        stay green on the fix binary: #1594 13680 of 13680, #1593, #1069, #881 redef,
+        #1230 (TOTAL=0, 6 spec confirmations and 8 poisoned emulations) and the
+        VCR-RA-003 phase-2 join/call check. The exact emulation floor rises by this
+        oracle's declared 240 over main a28a09af's value, 382594 (superseded; first
+        computed over 9f123a65's 382495, re-derived after rebasing over #1598). Paired
+        control: the summed value oracle_wiring_check.py reports gives rc 0 on this tree
+        and rc 1 on main a28a09af, and 382594 gives rc 1 on this tree and rc 0 on main.
+        The trap-semantics-oracle job's evidence-ledger --min-oracles goes 34 -> 35 for
+        the one oracle this lane adds to it (the job runs 46 oracle_run.py steps). The
+        mutation ledger was re-anchored after the rebase. Unchanged: the selector ratchets, status.json and the home-alias pins,
+        because no selector code moved and no emitted byte moved.
