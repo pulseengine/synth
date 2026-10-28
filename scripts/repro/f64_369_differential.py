@@ -4,8 +4,9 @@
 """#369 (GI-FPU-002 phases 2+3) — EXECUTION-validate scalar f64 on
 cortex-m7dp (double-precision VFP).
 
-Lowered set (still decode-dropped -> loud-skip: only i64<->f64 conversions
-and the f64<->i64 reinterprets, which need lowered pair plumbing):
+Lowered set (the i64<->f64 conversions landed with #869 and the f64<->i64
+reinterprets with #1603 — executed by i64_float_conv_869_differential.py and
+reinterpret_pair_1603_differential.py, not here):
   * f64.const            — full 64-bit pattern via 2x MOVW/MOVT + VMOV Dd,lo,hi
   * f64.promote_f32 / f32.demote_f64 — VCVT (round-to-nearest-even demote)
   * add/sub/mul/div      — VADD/VSUB/VMUL/VDIV .F64

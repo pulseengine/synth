@@ -1865,9 +1865,33 @@ claims:
         # RQ-89-FLOATZERO (#1594): 20532 -> 20635, waived below (chained
         # after RQ-89-WIDESTAGE's waiver).
         # RQ-89-NPAOFFSET (#1580): 20635 -> 20830, waived below.
-        value: 20830
+        # RQ-89-REINTERP (#1603): 20830 -> 20885, waived below (chained after
+        # RQ-89-NPAOFFSET's waiver).
+        value: 20885
         baseline: 17897
         waivers:
+          - to: 20885
+            reason: >-
+              RQ-89-REINTERP (Refs #1603): 20830 -> 20885 (+55, about a third
+              comment; first measured 20635 -> 20690 on 7e170d62, re-derived
+              after rebasing over #1602). Two lowering arms that did not
+              exist, replacing the register-blind `select_default` fallback
+              they used to fall into: `i64.reinterpret_f64` /
+              `f64.reinterpret_i64` in `try_lower_f64` (the operand's
+              D-register into a consecutive (lo, hi) pair pushed as i64, and
+              back), their two `is_scope_f64_op` entries, and nine float->i64
+              producers added to `infer_i64_locals`'s width model (an i64
+              local written from one was inferred i32 and promoted to a single
+              register). Both were SILENT wrong code shipped in v0.88.0 —
+              every `i64.reinterpret_f64` consumer read registers nothing had
+              written. Gated by execution:
+              reinterpret_pair_1603_differential.py (2512 emulations, m7dp rel
+              + self-contained + m7, zeroed and garbage machine; 1128 failures
+              over 1652 on 7e170d62) and a corpus byte-movement census (3968
+              module x leg pairs over 8 ARM legs: 14 moved symbols, 4 newly
+              compiled and 2 newly refused functions, all on cortex-m7dp in 3
+              files — every export of those files executed correct vs
+              wasmtime, 3136 emulations; the base binary got 108 wrong).
           - to: 20830
             reason: >-
               RQ-89-NPAOFFSET (Refs #1580): 20635 -> 20830 (+195 / -0 in
@@ -3000,7 +3024,10 @@ claims:
         # scripts/repro differential, outside this population. No waiver.
         # RQ-89-NPAOFFSET (#1580): 31325 -> 31520, the same +195 as
         # selector_lines_code (waived there); the tests live in synth-cli.
-        value: 31520
+        # RQ-89-REINTERP (#1603): 31520 -> 31647: +55 code (see
+        # selector_lines_code, waived there) and +72 test module (the two
+        # `_1603` unit tests, each red with the fix disabled). No waiver.
+        value: 31647
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -3114,7 +3141,10 @@ claims:
         # selector_wildcard_arms_code).
         # RQ-89-WIDEFILE11 (#1439): 93 -> 91, the two code-region arms above
         # (see selector_wildcard_arms_code).
-        value: 91
+        # RQ-89-REINTERP (#1603): 91 -> 93, the two `_ => None` arms of the
+        # `test_1603_i64_reinterpret_f64_is_a_pair` find_maps (test region;
+        # the directed code-region count is unchanged).
+        value: 93
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -4435,7 +4465,15 @@ claims:
     #   cortex-m7dp calls; its 5 refusal rows are counted by the script).
     #   Paired control: `382876` rc=0 and `382834` rc=1 on this tree;
     #   `382876` rc=1 and `382834` rc=0 on main 7e170d62.
-    text: "--exact-emulation-floor 382876"
+    # v0.89 RQ-89-REINTERP (#1603): 382876 -> 385388 (+2512; first computed
+    #   as 382834 -> 385346 on 7e170d62, re-derived after rebasing over
+    #   #1602). The new reinterpret_pair_1603_differential.py declares
+    #   `emulations >= 2512` (2512 measured via oracle_run.py: the compiled
+    #   exports of a 49-function inline module x vectors x zeroed/garbage
+    #   machine, m7dp rel + self-contained + m7). Paired control: `385388`
+    #   rc=0 and `382876` rc=1 on this tree; `385388` rc=1 and `382876` rc=0
+    #   on main d048b523.
+    text: "--exact-emulation-floor 385388"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

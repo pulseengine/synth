@@ -1213,7 +1213,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 382876 \
+            --exact-emulation-floor 385388 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2959,6 +2959,20 @@ jobs:
       # Red on main 9f123a65: every export refused (VfpSpillSlotAliased).
       - name: Run wide-file high-bank re-store oracle (#1318, m7 + m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_high_bank_restore_1318_differential.py
+      # RQ-89-REINTERP (#1603): the f64<->i64 bit-casts had no stack-aware
+      # lowering on the direct selector — both fell to the register-blind
+      # `select_default` fallback, so `i64.reinterpret_f64` returned a pair of
+      # registers nothing had written (`vmov r3,r4,d0; mov r0,r5`, rc=0) and
+      # `f64.reinterpret_i64` declined at its first f64 consumer. Also the
+      # i64-local width model counted no float->i64 producer (`infer_i64_locals`),
+      # dropping the upper word of an i64 local written from a bit-cast or a
+      # trunc{,_sat}. 49 exports x every position (result, call arg/result,
+      # store, arith, compare, local/tee, if, select, loop, round trip), m7dp
+      # rel + self-contained + the m7 single-precision control (incl. the #1069
+      # AEABI route), zeroed AND garbage machine vs wasmtime.
+      # Red on 7e170d62: 1128 failures over 1652 emulations.
+      - name: Run f64<->i64 bit-cast pair oracle (#1603, m7dp + m7)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/reinterpret_pair_1603_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values

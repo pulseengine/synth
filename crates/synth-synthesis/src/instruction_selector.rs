@@ -2804,6 +2804,20 @@ pub fn infer_i64_locals(
                 | I64Extend8S
                 | I64Extend16S
                 | I64Extend32S
+                // #1603 (RQ-89-REINTERP): the float->i64 producers. Absent,
+                // an i64 local fed by one was inferred i32 — promoted to a
+                // single callee-saved register / single-word slot, hi half
+                // dropped (executed: `local.set` of `i64.reinterpret_f64` or
+                // `i64.trunc_sat_f64_s` returned the wrong upper word).
+                | I64ReinterpretF64
+                | I64TruncF32S
+                | I64TruncF32U
+                | I64TruncF64S
+                | I64TruncF64U
+                | I64TruncSatF32S
+                | I64TruncSatF32U
+                | I64TruncSatF64S
+                | I64TruncSatF64U
         )
     };
 
@@ -4603,6 +4617,9 @@ fn is_scope_f64_op(op: &WasmOp) -> bool {
             | I64TruncF32U
             | I64TruncSatF32S
             | I64TruncSatF32U
+            // #1603: the f64<->i64 bit-casts (lowered in `try_lower_f64`).
+            | F64ReinterpretI64
+            | I64ReinterpretF64
     )
 }
 
@@ -6282,6 +6299,44 @@ fn try_lower_f64(
                 instructions,
                 reserved,
             )?;
+            stack.push(StackVal::Double { dreg: dd });
+            Ok(true)
+        }
+        // #1603 (RQ-89-REINTERP): the f64<->i64 bit-casts. Without these
+        // arms both fell to the main match's register-blind `select_default`
+        // fallback, which moved a D-register of ITS choosing into core
+        // registers of its choosing and pushed an unrelated i32 placeholder —
+        // every consumer of an `i64.reinterpret_f64` read garbage (rc=0).
+        // A pure 64-bit move each way (VMOV lo,hi,Dm / VMOV Dd,lo,hi), the
+        // i64 side as the `(lo, i64_pair_hi(lo))` pair every i64 op expects.
+        I64ReinterpretF64 => {
+            let dm = pop_double(stack)?;
+            let (lo, hi) =
+                alloc_consecutive_pair(next_temp, stack, instructions, spill, &[], reserved, idx)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::I64ReinterpretF64 {
+                    rdlo: lo,
+                    rdhi: hi,
+                    dm,
+                },
+                source_line: Some(idx),
+            });
+            free_vfp_dtemp(vfp_used, vfp_home, dm);
+            stack.push(StackVal::i64(lo));
+            Ok(true)
+        }
+        F64ReinterpretI64 => {
+            let lo = pop_operand(stack, next_temp, instructions, spill, reserved, idx)?;
+            let hi = i64_pair_hi(lo)?;
+            let dd = alloc_vfp_dtemp(vfp_used)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::F64ReinterpretI64 {
+                    dd,
+                    rmlo: lo,
+                    rmhi: hi,
+                },
+                source_line: Some(idx),
+            });
             stack.push(StackVal::Double { dreg: dd });
             Ok(true)
         }
@@ -11912,6 +11967,56 @@ mod tests {
                 r.as_ref()
                     .is_err_and(|e| e.to_string().contains("double-precision")),
                 "f64 on {name} must decline loudly: {r:?}"
+            );
+        }
+    }
+
+    /// #1603 (RQ-89-REINTERP): `i64.reinterpret_f64` moves the OPERAND's
+    /// D-register into a consecutive (lo, hi) pair and pushes that pair as
+    /// i64 — the AAPCS return then moves BOTH halves. Pre-fix it fell to the
+    /// register-blind `select_default` (D0 by counter, fresh R3:R4, an i32
+    /// placeholder R5 returned, R1 never written).
+    #[test]
+    fn test_1603_i64_reinterpret_f64_is_a_pair() {
+        let mut selector = fresh_selector();
+        selector.set_target(Some(FPUPrecision::Double), "cortex-m7dp");
+        // (f64.add 1.5 2.5) leaves its result in a D-temp other than D0.
+        let ops = vec![
+            WasmOp::F64Const(1.5),
+            WasmOp::F64Const(2.5),
+            WasmOp::F64Add,
+            WasmOp::I64ReinterpretF64,
+        ];
+        let instrs = selector
+            .select_with_stack(&ops, 0)
+            .expect("i64.reinterpret_f64 must lower on m7dp");
+        let add_dd = instrs
+            .iter()
+            .find_map(|i| match &i.op {
+                ArmOp::F64Add { dd, .. } => Some(*dd),
+                _ => None,
+            })
+            .expect("F64Add emitted");
+        let (lo, hi) = instrs
+            .iter()
+            .find_map(|i| match &i.op {
+                ArmOp::I64ReinterpretF64 { rdlo, rdhi, dm } if *dm == add_dd => {
+                    Some((*rdlo, *rdhi))
+                }
+                _ => None,
+            })
+            .expect("the cast must read the F64Add result register");
+        assert_eq!(
+            i64_pair_hi(lo).unwrap(),
+            hi,
+            "cast must write a consecutive pair"
+        );
+        for (dst, src) in [(Reg::R0, lo), (Reg::R1, hi)] {
+            assert!(
+                dst == src
+                    || instrs.iter().any(|i| matches!(&i.op,
+                        ArmOp::Mov { rd, op2: Operand2::Reg(r) } if *rd == dst && *r == src)),
+                "the return must move {src:?} into {dst:?}: {instrs:?}"
             );
         }
     }
@@ -17982,6 +18087,28 @@ mod tests {
         let ops = vec![WasmOp::I64Const(99), WasmOp::LocalTee(2), WasmOp::Drop];
         let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(i64_locals.contains(&2));
+    }
+
+    /// #1603 (RQ-89-REINTERP): every float->i64 producer is 64-bit to the
+    /// local-width model — absent, the local was promoted as i32 and its
+    /// upper word dropped (executed by reinterpret_pair_1603_differential).
+    #[test]
+    fn test_infer_i64_locals_float_to_i64_producers_1603() {
+        for op in [
+            WasmOp::I64ReinterpretF64,
+            WasmOp::I64TruncF32S,
+            WasmOp::I64TruncF32U,
+            WasmOp::I64TruncF64S,
+            WasmOp::I64TruncF64U,
+            WasmOp::I64TruncSatF32S,
+            WasmOp::I64TruncSatF32U,
+            WasmOp::I64TruncSatF64S,
+            WasmOp::I64TruncSatF64U,
+        ] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::LocalSet(1)];
+            let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
+            assert!(i64_locals.contains(&1), "{op:?} must make local 1 i64");
+        }
     }
 
     #[test]

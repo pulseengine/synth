@@ -1,0 +1,79 @@
+artifacts:
+  - id: RQ-89-REINTERP
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "The f64<->i64 bit-casts deliver their 64-bit pattern where the next consumer reads it"
+    description: >
+        SILENT MISCOMPILE, live in v0.88.0 on every cortex-m7dp path: a function
+        returning i64.reinterpret_f64 of an f64 value returned garbage in R0:R1.
+        The direct selector (select_with_stack, which every ARM f64 function
+        reaches) had no lowering for either bit-cast, so both fell to the
+        register-blind select_default fallback. That fallback moved a D-register
+        chosen by its own counter into core registers chosen by its own
+        allocator, then pushed an unrelated i32-tagged placeholder register.
+        The #1603 reproducer emitted `vmov r3, r4, d0` then `mov r0, r5`, with
+        R5 never written and R1 untouched.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers. Compile the
+        #1603 reproducer, `(func (export "ri") (param i32) (result i64)
+        (i64.reinterpret_f64 (f64.load (local.get 0))))`, with --target
+        cortex-m7dp --relocatable --all-exports. Execute ri against wasmtime
+        with garbage caller-saved registers. If R0:R1 equals the loaded 64-bit
+        pattern on every vector, the defect is gone.
+        CITATION: #1603 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1603"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 i64.reinterpret_f64 and f64.reinterpret_i64 deliver
+        their 64-bit pattern on cortex-m7dp in every position the value can flow
+        to, relocatable and self-contained. That is delivered with an
+        execution-verified result, or REFUTED with the measurement that refutes
+        it. The refuting command above is RUN FIRST and its result is reported
+        either way.
+      landed: "PR (this lane, v089-reinterp) - #1603 - DELIVERED: a wrong-code fix. The refuting command was run first and the defect was LIVE on 7e170d62. The reproducer disassembled exactly as filed (vmov r3, r4, d0; mov r0, r5) and returned wrong R0:R1 on 4 of 4 vectors, in both machine states, relocatable and self-contained. Root cause: neither bit-cast was in is_scope_f64_op or had an arm in try_lower_f64 (instruction_selector.rs). A mechanical diff of select_default's double-precision op list against the direct selector's coverage found exactly these two ops missing. They fell to the `_ =>` select_default fallback in select_with_stack.rs. Mapping the class surfaced a SECOND, older defect on the same i64-result path. infer_i64_locals, which decides whether a non-param local is 8 bytes wide, counted no float->i64 producer as 64-bit. An i64 local written from i64.reinterpret_f64 or from any i64.trunc{,_sat}_f{32,64}_{s,u} was therefore promoted to ONE register and its upper word dropped. That was also live in v0.88.0, on cortex-m7dp and on cortex-m7's #1069 AEABI route. Fix: two try_lower_f64 arms. i64.reinterpret_f64 moves the operand's D-register into a consecutive (lo, i64_pair_hi(lo)) pair from alloc_consecutive_pair and pushes it as i64. f64.reinterpret_i64 pops that pair into a fresh D-temp. Both ops are added to is_scope_f64_op, and the nine float->i64 producers to infer_i64_locals. The class map, base -> fix, over 49 exports on cortex-m7dp relocatable and self-contained. Every compiled i64.reinterpret_f64 position was WRONG and is now correct: function result from a param, the second param, a load, arithmetic, a constant and a call result; i64 add; hi-word extract; eq; lt_s; i64.store; local.set; local.tee; if result; select; loop accumulation; two live casts. Every f64.reinterpret_i64 position DECLINED loudly before, at its first f64 consumer, and now compiles correct: result, call argument, f64 arithmetic, eq, f64.store, local, select. The exception was the i64->f64->i64 round trip, which was silently wrong. Four positions stay refused, for reasons that a plain value of the same type hits identically: an i64 call argument (#929), an i64 value over br_if (#509), an f64 if result (#313), and an f64 value over br_if (#1318). The i64 call argument compiled on base only because the cast was mis-typed i32, and it returned wrong values. The f32<->i32 controls were correct before and after. Byte census, base vs fix, over the spec testsuite, tests/wast, tests/wat, tests/fixtures and scripts/repro/*.wat on 8 ARM legs: cortex-m7dp, cortex-m7, cortex-m4f and cortex-m4, each relocatable and self-contained. 496 files, 3968 module x leg pairs, 0 rc changes, 0 panics. Everything moved is on cortex-m7dp, in 3 files: 14 symbols moved, 4 newly compiled, 2 newly refused. The newly compiled are conversions.wast f64.reinterpret_i64 and endianness.wast f64_store, each on both paths. The newly refused are endianness.wast f64_load on both paths: it passes i64.reinterpret_f64 as an i64 call argument, which #929 refuses for every i64 argument. On base it compiled and returned 0 of 18 correct. RV32 shares infer_i64_locals but has no float lowering; every function containing a float->i64 op is refused there, so no RV32 output can move."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime-py (unicorn 2.1.4). New wired
+        oracle scripts/repro/reinterpret_pair_1603_differential.py: an inline 52-function
+        module (no .wat fixture, so the corpus audit populations do not grow). It runs on
+        cortex-m7dp relocatable and self-contained, plus cortex-m7 as the
+        single-precision control. Every f64 export there must decline loudly, while the
+        f32 controls and the #1069 AEABI trunc route compile; the builtin is a Python
+        stub that clobbers every caller-saved register. ELF symtab loader, local BLs
+        resolved from .rel.text, the self-contained image's R11 taken from
+        __linear_memory_base. Every vector runs zeroed and with garbage core/VFP
+        registers and stack. Red on the 7e170d62 binary: 1128 failures over 1652
+        emulations. Green on the fix: 2512 of 2512 bit-identical, exit 0. Every export
+        of the three byte-moved corpus files (conversions.wast, endianness.wast,
+        aarch64_divrem_851.wat) was executed on cortex-m7dp relocatable and
+        self-contained, zeroed and garbage. Fix: 3136 emulations, 0 wrong. Base: 108
+        wrong out of 3100, every one in a bit-cast function: conversions.wast
+        i64.reinterpret_f64, endianness.wast f64_load, aarch64_divrem_851.wat
+        i64_reinterpret_rt. Two unit tests in instruction_selector.rs:
+        test_1603_i64_reinterpret_f64_is_a_pair and
+        test_infer_i64_locals_float_to_i64_producers_1603. Both FAIL with the fix
+        disabled and pass with it. Pins moved, each with a paired control. The exact
+        emulation floor rises by this oracle's declared 2512 from the RQ-89-FALCONSTEP
+        value 382834. The summed value that oracle_wiring_check.py reports gives rc 0 on
+        this tree and rc 1 on main 7e170d62, and 382834 gives rc 1 on this tree and rc 0
+        on 7e170d62. selector_lines_code goes 20635 -> 20690 under a value-bound
+        waiver. selector_lines_total goes 31325 -> 31452, and
+        selector_wildcard_arms_total goes 91 -> 93 (two test-region find_map arms;
+        the directed code-region count is unchanged). The new ledger on main's tree
+        reds all three, and main's ledger on this tree reds all three. The home-alias audit (cortex-m4/m4f legs) and the ARM
+        corpus sweep (cortex-m4 default) compile nothing that moved: the census found
+        0 changes on every non-m7dp leg. The mutation ledger re-anchor moved 0 sites
+        and found 0 missing. The stale f64_369_differential.py docstring, which said
+        the reinterprets were still unlowered, is corrected.
