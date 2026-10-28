@@ -10,7 +10,26 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use synth_test::renode::RenodeController;
 use synth_test::runner::{NativeRunner, RunnerConfig, print_results};
-use synth_test::{GenerateOptions, RobotGenerator, SynthTestConfig, WastParser};
+use synth_test::{GenerateOptions, RobotGenerator, SynthTestConfig, WastParser, WastTestStats};
+
+/// #1570: say loudly, on stderr, how many directives the parser could not
+/// turn into test cases — so "0 tests" never reads as "nothing to test".
+fn warn_dropped(stats: &WastTestStats, wast: &std::path::Path) {
+    if stats.dropped_total() == 0 {
+        return;
+    }
+    eprintln!(
+        "warning: {}: {} of {} assert_return dropped (value type or execution form the \
+         test model cannot represent; not graded), {} directive(s) dropped in total:",
+        wast.display(),
+        stats.assert_return_dropped,
+        stats.assert_return_seen,
+        stats.dropped_total()
+    );
+    for (reason, n) in &stats.dropped_by_reason {
+        eprintln!("  dropped [{reason}]: {n}");
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "synth-test")]
@@ -101,10 +120,12 @@ fn main() -> Result<()> {
             let parsed = WastParser::parse_file(&wast)
                 .with_context(|| format!("Failed to parse WAST file: {}", wast.display()))?;
 
+            warn_dropped(&parsed.stats, &wast);
             println!(
-                "Running {} tests from {}",
+                "Running {} tests from {} ({} assert_return dropped, not run)",
                 parsed.test_cases.len(),
-                wast.display()
+                wast.display(),
+                parsed.stats.assert_return_dropped
             );
             println!("ELF: {}", elf.display());
             println!("Connecting to Renode on port {}...", port);
@@ -211,6 +232,11 @@ fn main() -> Result<()> {
                 "  Modules: {}, Assert_return: {}, Skipped: {}",
                 parsed.stats.modules_loaded, parsed.stats.assert_return_count, parsed.stats.skipped
             );
+            println!(
+                "  Assert_return seen: {}, dropped: {}",
+                parsed.stats.assert_return_seen, parsed.stats.assert_return_dropped
+            );
+            warn_dropped(&parsed.stats, &wast);
 
             Ok(())
         }
@@ -225,6 +251,25 @@ fn main() -> Result<()> {
             println!("  Invoke:             {}", parsed.stats.invoke_count);
             println!("  Skipped:            {}", parsed.stats.skipped);
             println!("  Total test cases:   {}", parsed.test_cases.len());
+            // #1570: the directives the parser could not represent, counted.
+            // Label kept distinct from `Assert_return:` — run_supported.sh
+            // greps that exact label for the KEPT count.
+            println!(
+                "  Assert_return seen:    {}",
+                parsed.stats.assert_return_seen
+            );
+            println!(
+                "  Assert_return dropped: {}",
+                parsed.stats.assert_return_dropped
+            );
+            println!(
+                "  Multi-value truncated: {}",
+                parsed.stats.assert_return_multi_value_truncated
+            );
+            println!("  Dropped (all kinds):   {}", parsed.stats.dropped_total());
+            for (reason, n) in &parsed.stats.dropped_by_reason {
+                println!("    dropped [{reason}]: {n}");
+            }
 
             Ok(())
         }

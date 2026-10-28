@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-89-WASTFLOAT
     type: system-req
     release: v0.89
-    status: proposed
+    status: implemented
     title: "synth-test's WAST parser counts the float assertions it cannot grade instead of dropping them"
     description: >
         synth_test::WastParser drops every assert_return whose arguments or
@@ -28,6 +28,23 @@ artifacts:
       priority: should
       issue: "#1570"
       verification-track: manual
+      landed: "PR #PRNUM - #1570 - DELIVERED (loud counter; floats NOT kept). REFUTING COMMAND RUN FIRST on origin/main 9f123a65: NOT refuted - tests/spec-testsuite/f32.wast has 2500 assert_return, WastParser kept 0, stats skipped 13, and no field of WastTestStats reported the 2500 (submodule read from the coordinator checkout at the same pin 345367358). Over the 256 parseable spec files (names.wast is unparseable by wast 262, a U+202E confusable): 52139 assert_return, 14640 kept, 37499 dropped invisibly across 133 files. WastTestStats now carries assert_return_seen, assert_return_dropped, assert_trap_dropped, invoke_dropped, assert_return_multi_value_truncated and a dropped_by_reason table keyed directive:cause:type, with seen = kept + dropped by construction; the stats/generate/run subcommands print the drops (generate and run on stderr as a warning) and run_supported.sh totals them. After: AST-seen 52139 = kept 14640 + dropped 37499, by reason arg v128 23508, arg f64 6206, arg f32 6121, result v128 577, result f64 430, result f32 378, result ref 213, arg ref 55, exec get 11; plus assert_trap drops 234 and invoke drops 23 counted; 53 kept assert_return are multi-value and graded on their first result only, now counted. Floats-kept is the follow-up: no consumer (Robot generator, NativeRunner) has a float calling convention, so adding F32/F64 to Value would only move the drop into them."
+      verified-by: >
+        DELIVERED. Red-first: the new unit test
+        unrepresentable_directives_are_counted_by_reason_1570 does not compile against
+        base (13 errors, the counters do not exist), which is the defect - the drop is
+        unobservable; it passes on the fix. Seven mutation controls on the fix each red
+        the test: removing the assert_return reason record, the dropped increment, the
+        seen increment, the invoke reason record, the multi-value increment, misnaming
+        f64 as f32, and naming exec get as invoke. Paired consumer controls over all 282
+        files (256+1 spec, 25 tests/wast), base binary vs fixed binary: list output
+        282 of 282 byte-identical, generated Robot files 281 of 281 byte-identical,
+        stats output a strict prefix 282 of 282, generate stdout a strict prefix (output path normalised) 282 of
+        282, and the Assert_return grep run_supported.sh reads matches exactly one
+        identical line 282 of 282; its new dropped line degrades to 0 on the base
+        binary under set -euo pipefail. No ci.yml step or claims.yaml pin consumes
+        WastParser output (the renode wast step builds no wast_test target), so no
+        pinned number moved.
       done-when: >
         manual:2027-03-31 synth-test's WAST parser counts the float assertions
         it cannot grade instead of dropping them — delivered with an execution-

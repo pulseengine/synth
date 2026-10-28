@@ -25,7 +25,7 @@ pub mod runner;
 use anyhow::{Context, Result};
 use object::{Object, ObjectSymbol};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use wast::core::{WastArgCore, WastRetCore};
 use wast::parser::{self, ParseBuffer};
@@ -129,6 +129,75 @@ fn convert_wast_ret_core_to_value(ret: &WastRetCore) -> Result<Value> {
     }
 }
 
+/// Name the value type of a WAST argument, for the drop-reason counters
+/// (#1570). Exhaustive over the core variants on purpose: a new `wast`
+/// variant must be named here, not folded into a catch-all.
+fn wast_arg_type_name(arg: &WastArg) -> &'static str {
+    match arg {
+        WastArg::Core(core) => match core {
+            WastArgCore::I32(_) => "i32",
+            WastArgCore::I64(_) => "i64",
+            WastArgCore::F32(_) => "f32",
+            WastArgCore::F64(_) => "f64",
+            WastArgCore::V128(_) => "v128",
+            WastArgCore::RefNull(_) | WastArgCore::RefExtern(_) | WastArgCore::RefHost(_) => "ref",
+        },
+        #[allow(unreachable_patterns)]
+        _ => "component",
+    }
+}
+
+/// Name the value type of a WAST expected result (see [`wast_arg_type_name`]).
+/// An f32/f64 NaN pattern (`nan:canonical` / `nan:arithmetic`) is an `f32` /
+/// `f64` result like any other float.
+fn wast_ret_type_name(ret: &WastRet) -> &'static str {
+    match ret {
+        WastRet::Core(core) => match core {
+            WastRetCore::I32(_) => "i32",
+            WastRetCore::I64(_) => "i64",
+            WastRetCore::F32(_) => "f32",
+            WastRetCore::F64(_) => "f64",
+            WastRetCore::V128(_) => "v128",
+            WastRetCore::RefNull(_)
+            | WastRetCore::RefExtern(_)
+            | WastRetCore::RefHost(_)
+            | WastRetCore::RefFunc(_)
+            | WastRetCore::RefAny
+            | WastRetCore::RefEq
+            | WastRetCore::RefArray
+            | WastRetCore::RefStruct
+            | WastRetCore::RefI31
+            | WastRetCore::RefI31Shared => "ref",
+            WastRetCore::Either(_) => "either",
+        },
+        #[allow(unreachable_patterns)]
+        _ => "component",
+    }
+}
+
+/// Name a non-invoke execution form (`assert_return (get ...)` etc.).
+fn wast_execute_kind(exec: &WastExecute) -> &'static str {
+    match exec {
+        WastExecute::Invoke(_) => "invoke",
+        WastExecute::Wat(_) => "wat",
+        WastExecute::Get { .. } => "get",
+    }
+}
+
+/// Convert every argument, or name the first one we cannot represent.
+fn convert_args(args: &[WastArg]) -> std::result::Result<Vec<Value>, &'static str> {
+    args.iter()
+        .map(|a| convert_wast_arg_to_value(a).map_err(|_| wast_arg_type_name(a)))
+        .collect()
+}
+
+/// Outcome of converting one directive into a test case: kept, or dropped
+/// with a machine-readable reason that the caller COUNTS (#1570).
+enum Converted {
+    Kept(WastTestCase),
+    Dropped(String),
+}
+
 /// A single test case extracted from a WAST file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WastTestCase {
@@ -164,6 +233,18 @@ pub enum WastTestType {
 }
 
 /// Statistics for test execution (from wrt2 pattern)
+///
+/// #1570: a directive the parser cannot turn into a test case is COUNTED,
+/// never silently dropped. `assert_return_count` is the number KEPT;
+/// `assert_return_seen` is the number of `assert_return` directives in the
+/// file, and `assert_return_seen == assert_return_count +
+/// assert_return_dropped` always holds. Every drop (assert_return,
+/// assert_trap and invoke alike) is also tallied in `dropped_by_reason` under
+/// a `<directive>:<cause>:<detail>` key — e.g. `assert_return:arg:f32`,
+/// `assert_return:result:f64`, `assert_return:exec:get`. Only the FIRST
+/// unsupported value of a directive names its reason (arguments are checked
+/// before results). So a consumer can tell "this file has no value-checking
+/// tests" from "every one of them was thrown away".
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct WastTestStats {
     pub modules_loaded: usize,
@@ -172,7 +253,44 @@ pub struct WastTestStats {
     pub invoke_count: usize,
     pub passed: usize,
     pub failed: usize,
+    /// Unsupported directives plus dropped `assert_trap`s (pre-#1570
+    /// meaning, unchanged). Dropped `assert_return`/`invoke` directives are
+    /// counted in their own fields below, not here.
     pub skipped: usize,
+    /// `assert_return` directives encountered (kept + dropped).
+    #[serde(default)]
+    pub assert_return_seen: usize,
+    /// `assert_return` directives that could NOT be turned into a test case
+    /// (non-i32/i64 value, or a non-invoke execution).
+    #[serde(default)]
+    pub assert_return_dropped: usize,
+    /// `assert_trap` directives that could not be turned into a test case
+    /// (also counted in `skipped`, as before #1570).
+    #[serde(default)]
+    pub assert_trap_dropped: usize,
+    /// Bare `invoke` directives that could not be turned into a test case.
+    #[serde(default)]
+    pub invoke_dropped: usize,
+    /// KEPT `assert_return`s whose expectation lists more than one result:
+    /// only the FIRST result is carried in `WastTestCase::expected`, so the
+    /// rest are not graded.
+    #[serde(default)]
+    pub assert_return_multi_value_truncated: usize,
+    /// Every dropped directive, tallied by reason (deterministic order).
+    #[serde(default)]
+    pub dropped_by_reason: BTreeMap<String, usize>,
+}
+
+impl WastTestStats {
+    /// Total directives dropped for an unrepresentable value or execution
+    /// form (assert_return + assert_trap + invoke).
+    pub fn dropped_total(&self) -> usize {
+        self.dropped_by_reason.values().sum()
+    }
+
+    fn record_drop(&mut self, reason: String) {
+        *self.dropped_by_reason.entry(reason).or_insert(0) += 1;
+    }
 }
 
 /// Parsed WAST file ready for test generation
@@ -221,6 +339,17 @@ impl WastParser {
             Self::process_directive(directive, &mut result, &mut test_counter)?;
         }
 
+        if result.stats.dropped_total() > 0 {
+            tracing::warn!(
+                "WAST: dropped {} directive(s) the test model cannot represent \
+                 ({} of {} assert_return): {:?}",
+                result.stats.dropped_total(),
+                result.stats.assert_return_dropped,
+                result.stats.assert_return_seen,
+                result.stats.dropped_by_reason
+            );
+        }
+
         Ok(result)
     }
 
@@ -251,28 +380,46 @@ impl WastParser {
             }
 
             WastDirective::AssertReturn { exec, results, .. } => {
-                if let Some(test_case) = Self::process_assert_return(&exec, &results, test_counter)?
-                {
-                    result.test_cases.push(test_case);
-                    result.stats.assert_return_count += 1;
+                result.stats.assert_return_seen += 1;
+                match Self::process_assert_return(&exec, &results, test_counter) {
+                    Converted::Kept(test_case) => {
+                        if results.len() > 1 {
+                            result.stats.assert_return_multi_value_truncated += 1;
+                        }
+                        result.test_cases.push(test_case);
+                        result.stats.assert_return_count += 1;
+                    }
+                    Converted::Dropped(reason) => {
+                        result.stats.assert_return_dropped += 1;
+                        result.stats.record_drop(format!("assert_return:{reason}"));
+                    }
                 }
             }
 
             WastDirective::AssertTrap { exec, message, .. } => {
-                if let Some(test_case) = Self::process_assert_trap(&exec, message, test_counter)? {
-                    result.test_cases.push(test_case);
-                    result.stats.assert_trap_count += 1;
-                } else {
-                    result.stats.skipped += 1;
+                match Self::process_assert_trap(&exec, message, test_counter) {
+                    Converted::Kept(test_case) => {
+                        result.test_cases.push(test_case);
+                        result.stats.assert_trap_count += 1;
+                    }
+                    Converted::Dropped(reason) => {
+                        result.stats.skipped += 1;
+                        result.stats.assert_trap_dropped += 1;
+                        result.stats.record_drop(format!("assert_trap:{reason}"));
+                    }
                 }
             }
 
-            WastDirective::Invoke(invoke) => {
-                if let Some(test_case) = Self::process_invoke(&invoke, test_counter)? {
+            WastDirective::Invoke(invoke) => match Self::process_invoke(&invoke, test_counter) {
+                Converted::Kept(test_case) => {
                     result.test_cases.push(test_case);
                     result.stats.invoke_count += 1;
                 }
-            }
+                Converted::Dropped(reason) => {
+                    result.stats.invoke_dropped += 1;
+                    result.stats.record_drop(format!("invoke:{reason}"));
+                }
+            },
 
             // Skip unsupported directives
             _ => {
@@ -287,35 +434,40 @@ impl WastParser {
         exec: &WastExecute,
         results: &[WastRet],
         test_counter: &mut usize,
-    ) -> Result<Option<WastTestCase>> {
+    ) -> Converted {
         let invoke = match exec {
             WastExecute::Invoke(inv) => inv,
-            _ => return Ok(None), // Skip non-invoke assertions
+            other => return Converted::Dropped(format!("exec:{}", wast_execute_kind(other))),
         };
 
         // Convert arguments
-        let args: Result<Vec<Value>> = invoke.args.iter().map(convert_wast_arg_to_value).collect();
-        let args = match args {
+        let args = match convert_args(&invoke.args) {
             Ok(a) => a,
-            Err(e) => {
-                tracing::debug!("Skipping test with unsupported arg type: {}", e);
-                return Ok(None);
+            Err(ty) => {
+                tracing::debug!("Dropping assert_return with unsupported {ty} arg");
+                return Converted::Dropped(format!("arg:{ty}"));
             }
         };
 
         // Convert expected results
-        let expected: Result<Vec<Value>> = results.iter().map(convert_wast_ret_to_value).collect();
-        let expected = match expected {
-            Ok(e) => e.into_iter().next(), // Only single return for now
-            Err(e) => {
-                tracing::debug!("Skipping test with unsupported return type: {}", e);
-                return Ok(None);
+        let mut expected = Vec::with_capacity(results.len());
+        for r in results {
+            match convert_wast_ret_to_value(r) {
+                Ok(v) => expected.push(v),
+                Err(_) => {
+                    let ty = wast_ret_type_name(r);
+                    tracing::debug!("Dropping assert_return with unsupported {ty} result");
+                    return Converted::Dropped(format!("result:{ty}"));
+                }
             }
-        };
+        }
+        // Only single return for now; a multi-value expectation is counted
+        // as truncated by the caller.
+        let expected = expected.into_iter().next();
 
         *test_counter += 1;
 
-        Ok(Some(WastTestCase {
+        Converted::Kept(WastTestCase {
             name: format!("{}_{}", invoke.name, test_counter),
             function: invoke.name.to_string(),
             args,
@@ -323,32 +475,31 @@ impl WastParser {
             expected_trap: None,
             source_offset: invoke.span.offset(),
             test_type: WastTestType::AssertReturn,
-        }))
+        })
     }
 
     fn process_assert_trap(
         exec: &WastExecute,
         message: &str,
         test_counter: &mut usize,
-    ) -> Result<Option<WastTestCase>> {
+    ) -> Converted {
         let invoke = match exec {
             WastExecute::Invoke(inv) => inv,
-            _ => return Ok(None), // Skip non-invoke assertions
+            other => return Converted::Dropped(format!("exec:{}", wast_execute_kind(other))),
         };
 
         // Convert arguments
-        let args: Result<Vec<Value>> = invoke.args.iter().map(convert_wast_arg_to_value).collect();
-        let args = match args {
+        let args = match convert_args(&invoke.args) {
             Ok(a) => a,
-            Err(e) => {
-                tracing::debug!("Skipping assert_trap with unsupported arg type: {}", e);
-                return Ok(None);
+            Err(ty) => {
+                tracing::debug!("Dropping assert_trap with unsupported {ty} arg");
+                return Converted::Dropped(format!("arg:{ty}"));
             }
         };
 
         *test_counter += 1;
 
-        Ok(Some(WastTestCase {
+        Converted::Kept(WastTestCase {
             name: format!("trap_{}_{}", invoke.name, test_counter),
             function: invoke.name.to_string(),
             args,
@@ -356,22 +507,18 @@ impl WastParser {
             expected_trap: Some(message.to_string()),
             source_offset: invoke.span.offset(),
             test_type: WastTestType::AssertTrap,
-        }))
+        })
     }
 
-    fn process_invoke(
-        invoke: &WastInvoke,
-        test_counter: &mut usize,
-    ) -> Result<Option<WastTestCase>> {
-        let args: Result<Vec<Value>> = invoke.args.iter().map(convert_wast_arg_to_value).collect();
-        let args = match args {
+    fn process_invoke(invoke: &WastInvoke, test_counter: &mut usize) -> Converted {
+        let args = match convert_args(&invoke.args) {
             Ok(a) => a,
-            Err(_) => return Ok(None),
+            Err(ty) => return Converted::Dropped(format!("arg:{ty}")),
         };
 
         *test_counter += 1;
 
-        Ok(Some(WastTestCase {
+        Converted::Kept(WastTestCase {
             name: format!("invoke_{}_{}", invoke.name, test_counter),
             function: invoke.name.to_string(),
             args,
@@ -379,7 +526,7 @@ impl WastParser {
             expected_trap: None,
             source_offset: invoke.span.offset(),
             test_type: WastTestType::Invoke,
-        }))
+        })
     }
 }
 
@@ -1047,9 +1194,12 @@ impl WastTestRunner {
         let parsed = WastParser::parse_file(wast_path)?;
 
         tracing::info!(
-            "Parsed WAST: {} modules, {} assert_return tests, {} skipped",
+            "Parsed WAST: {} modules, {} of {} assert_return tests kept ({} dropped: {:?}), {} skipped",
             parsed.stats.modules_loaded,
             parsed.stats.assert_return_count,
+            parsed.stats.assert_return_seen,
+            parsed.stats.assert_return_dropped,
+            parsed.stats.dropped_by_reason,
             parsed.stats.skipped
         );
 
@@ -1133,5 +1283,84 @@ mod tests {
         assert!(robot.contains("WAST add_1"));
         assert!(robot.contains("Should Be Equal As Integers"));
         assert!(robot.contains("Execute Function"));
+    }
+
+    /// #1570 red-first: every directive the test model cannot represent is
+    /// COUNTED by reason, and kept + dropped conserves the directive count.
+    /// On the pre-fix parser the f32/f64/v128/get assert_returns vanished
+    /// with no counter at all (`assert_return_count` 2, nothing else moved).
+    #[test]
+    fn unrepresentable_directives_are_counted_by_reason_1570() {
+        let wast = r#"
+(module
+  (global (export "g") i32 (i32.const 7))
+  (func (export "add") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.add)
+  (func (export "two") (result i32 i32) i32.const 1 i32.const 2)
+  (func (export "fneg") (param f32) (result f32) local.get 0 f32.neg)
+  (func (export "fconst") (param i32) (result f32) f32.const 1.5)
+  (func (export "dnan") (param i32) (result f64) f64.const nan)
+  (func (export "vid") (param v128) (result i32) i32.const 0)
+  (func (export "fdiv") (param f64) (result i32) i32.const 0))
+
+(assert_return (invoke "add" (i32.const 5) (i32.const 3)) (i32.const 8))
+(assert_return (invoke "two") (i32.const 1) (i32.const 2))
+(assert_return (invoke "fneg" (f32.const 1.0)) (f32.const -1.0))
+(assert_return (invoke "fneg" (f32.const 2.0)) (f32.const -2.0))
+(assert_return (invoke "fconst" (i32.const 0)) (f32.const 1.5))
+(assert_return (invoke "dnan" (i32.const 0)) (f64.const nan:canonical))
+(assert_return (invoke "dnan" (i32.const 1)) (f64.const nan:arithmetic))
+(assert_return (invoke "vid" (v128.const i32x4 0 0 0 0)) (i32.const 0))
+(assert_return (get "g") (i32.const 7))
+(assert_trap (invoke "fdiv" (f64.const 0.0)) "integer divide by zero")
+(invoke "fneg" (f32.const 3.0))
+(invoke "add" (i32.const 1) (i32.const 2))
+"#;
+        let parsed = WastParser::parse_str(wast).unwrap();
+        let st = &parsed.stats;
+
+        // Kept: the i32 add and the (truncated) multi-value case.
+        assert_eq!(st.assert_return_count, 2);
+        assert_eq!(st.assert_return_multi_value_truncated, 1);
+        // Seen = kept + dropped: nothing leaves without a trace.
+        assert_eq!(st.assert_return_seen, 9);
+        assert_eq!(st.assert_return_dropped, 7);
+        assert_eq!(
+            st.assert_return_seen,
+            st.assert_return_count + st.assert_return_dropped
+        );
+
+        let mut want = BTreeMap::new();
+        want.insert("assert_return:arg:f32".to_string(), 2);
+        want.insert("assert_return:result:f32".to_string(), 1);
+        want.insert("assert_return:result:f64".to_string(), 2);
+        want.insert("assert_return:arg:v128".to_string(), 1);
+        want.insert("assert_return:exec:get".to_string(), 1);
+        want.insert("assert_trap:arg:f64".to_string(), 1);
+        want.insert("invoke:arg:f32".to_string(), 1);
+        assert_eq!(st.dropped_by_reason, want);
+
+        // Per-directive totals agree with the reason table.
+        let by_prefix = |p: &str| -> usize {
+            st.dropped_by_reason
+                .iter()
+                .filter(|(k, _)| k.starts_with(p))
+                .map(|(_, v)| *v)
+                .sum()
+        };
+        assert_eq!(by_prefix("assert_return:"), st.assert_return_dropped);
+        assert_eq!(by_prefix("assert_trap:"), st.assert_trap_dropped);
+        assert_eq!(by_prefix("invoke:"), st.invoke_dropped);
+        assert_eq!(st.dropped_total(), 9);
+
+        // Pre-#1570 counters keep their meaning: the dropped assert_trap is
+        // still in `skipped`; dropped assert_return/invoke are not.
+        assert_eq!(st.skipped, 1);
+        assert_eq!(st.assert_trap_dropped, 1);
+        assert_eq!(st.invoke_count, 1);
+        assert_eq!(st.invoke_dropped, 1);
+        assert_eq!(parsed.test_cases.len(), 3);
     }
 }
