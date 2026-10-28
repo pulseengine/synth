@@ -322,6 +322,26 @@ jobs:
           python3 -c "import yaml" \
             || python3 -m pip install --user pyyaml \
             || python3 -m pip install --user --break-system-packages pyyaml
+      # RQ-89-SWEEPMUTANT (#1611): no mutation-survey mutant may be committed.
+      # Four v0.89 lanes found one in their tree after a local sweep's timeout
+      # killed the survey's wrapper shell (the survey ran on orphaned, or was
+      # SIGKILLed mid-mutant). The survey now mutates only a shadow copy; this
+      # is the commit-side guard that would have caught every incident anyway:
+      # every mutant and control `after` block the ledger catalogues, plus the
+      # survey's own probe/DROPMOV markers, must be ABSENT from the tree.
+      # stdlib-only, ~0.1 s. The self-test plants every control and the first
+      # mutant of each operator kind — chosen STRUCTURALLY from the live ledger,
+      # never by id, because a re-anchor renames ids (#1602) — plus a reach-probe
+      # and a DROPMOV marker into a scratch copy (each must red) before the real
+      # check, so a check that went blind fails here too. The `planted=` field is
+      # a floor of 2 (at least one control and one mutant).
+      - name: No mutation-survey mutant in the tree (RQ-89-SWEEPMUTANT, #1611)
+        run: |
+          set -euo pipefail
+          python3 scripts/mutant_residue_check.py --self-test | tee /tmp/mutres-self.log
+          grep -Eq '^MUTANT-RESIDUE-SELFTEST cases=[0-9]+ planted=([2-9]|[1-9][0-9]+) failures=0$' /tmp/mutres-self.log
+          python3 scripts/mutant_residue_check.py | tee /tmp/mutres.log
+          grep -Eq '^MUTANT-RESIDUE sites=[1-9][0-9]* rs-files=[1-9][0-9]* residue=0$' /tmp/mutres.log
       - name: Re-derive documentation claims (+ generated-artifact staleness + link surface)
         run: python3 scripts/claim_check.py claims.yaml
       # RQ-58-METRIC (#242) — THE SUBTRACTION METRIC. Epic #242 exists to
@@ -4797,6 +4817,9 @@ jobs:
           # See #1243. Exactness assertions stay exact; floors compare as
           # numbers and print the offending value instead of exiting silently.
           python3 scripts/ci_mutants_gate.py mutants-ci.txt
+          # RQ-89-SWEEPMUTANT (#1611): the replay mutated a SHADOW copy
+          # (target/mutation-shadow/src); the checkout must hold no mutant.
+          python3 scripts/mutant_residue_check.py
 
   watched-1189-oracle:
     name: "the survey's four UNTESTED mutants, watched (RQ-66-WATCHED, #1189)"
