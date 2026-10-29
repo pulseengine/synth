@@ -172,6 +172,15 @@ EXPECTED_DECLINES = {
     # which runs all six legs against wasmtime.
     # Not a regression and not about the narrowing this fixture exercises.
     "vfp_home_redef_881.wat": "f64 legs need a double-precision FPU (GI-FPU-002, #952)",
+    # RQ-89-GARBAGE1069 (#1613). The one-branch-written float-local fixture for
+    # the #1069 oracle's garbage modes. Its f64 export (`d_cond`) declines on
+    # this sweep's ARM target for the SAME pre-existing reason as `below_fp`
+    # above (scalar f64 needs a double-precision FPU, GI-FPU-002), so the module
+    # fails via #952; the two f32 exports compile, but a module on
+    # EXPECTED_DECLINES never reaches `objects`, so NOTHING of it executes here.
+    # Its execution coverage is vfp_local_pressure_1069_differential.py on
+    # cortex-m7dp (zeroed, garbage-stack and garbage-register states).
+    "vfp_local_pressure_1069_zeroinit.wat": "f64 export needs a double-precision FPU (GI-FPU-002, #952)",
     "aarch64_brtable_blockvals_851.wat": "i64/f32/f64 block result values",
     "aarch64_divrem_851.wat": "i64 f64-reinterpret round trip",
     "aarch64_float_completion_851.wat": "f32/f64 ceil/floor/trunc/nearest + i64<->float",
