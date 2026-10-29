@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 98
+# ci-checks: emulations >= 1120
 """#1069 (RQ-60-VFPPRESSURE increment 2) — EXECUTION-validate frame-homed
 VFP locals on cortex-m7dp under falcon's exact flags
 (`-t cortex-m7dp --relocatable`).
@@ -27,11 +27,24 @@ present:
          from SYNTH_RECOVERY_STATS so a ladder change that rescues them
          elsewhere cannot silently drop the rung's execution coverage.
 
+RQ-89-GARBAGE1069 (#1613): every vector runs in three machine states -- zz
+(zeroed stack and registers, the only state before), gz (GARBAGE stack:
+0x41414141 / a NaN word / seeded random) and zg (GARBAGE core+VFP registers).
+A zeroed-only run reads 0 from any uninitialised slot, which is the value wasm
+mandates for a local, so it cannot see #1594 (a float local written on one
+branch only, shipped v0.60-v0.88 on this very rung). The population is the 98
+original rows plus 126 rows of a small one-branch-written fixture
+(vfp_local_pressure_1069_zeroinit.wat: p_cond/p_brif f32, d_cond f64, gated
+onto the vfp-frame-locals rung): 224 vectors, 1120 emulations.
+Positive control: on a binary built from the commit before #1594's fix the zz
+rows are all green and 80 of the 378 gz rows are wrong.
+
 Run (needs wasmtime + unicorn + pyelftools + arm-none-eabi-ld):
   SYNTH=/path/to/synth python scripts/repro/vfp_local_pressure_1069_differential.py
 """
 
 import os
+import random
 import re
 import shutil
 import struct
@@ -42,10 +55,11 @@ from pathlib import Path
 
 import wasmtime
 from elftools.elf.elffile import ELFFile
-from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc
+from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc, arm_const
 from unicorn.arm_const import (
     UC_ARM_REG_D0,
     UC_ARM_REG_LR,
+    UC_ARM_REG_R0,
     UC_ARM_REG_S0,
     UC_ARM_REG_SP,
 )
@@ -57,6 +71,13 @@ except ImportError:  # older unicorn naming
     UC_ARM_REG_FPEXC = None
 
 WAT = Path(__file__).with_name("vfp_local_pressure_1069.wat")
+# RQ-89-GARBAGE1069: the one-branch-written float-local fixture (#1594 shape on
+# the vfp-frame-locals rung). Exports take (a, c: i32).
+WAT_ZI = Path(__file__).with_name("vfp_local_pressure_1069_zeroinit.wat")
+ZI_F32 = ["p_cond", "p_brif"]
+ZI_F64 = ["d_cond"]
+ZI_EXPORTS = ZI_F32 + ZI_F64
+CV = [0, 1, 200]  # the branch condition: probe unwritten / written / written
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 
 F32_EXPORTS = ["live13", "live14", "live16", "live24", "wide60", "wsum60"]
@@ -65,17 +86,32 @@ WIDE_FILE_EXPORTS = ["wide60", "wsum60"]
 F64_EXPORTS = ["live8d"]
 EXPORTS = F32_EXPORTS + F64_EXPORTS
 
+# RQ-89-GARBAGE1069: every vector runs in THREE machine states, the naming
+# float_local_zero_init_1594_differential.py uses:
+#   zz -- zeroed stack, zeroed core+VFP registers (the ONLY state this oracle
+#         ran before; blind to any read of an uninitialised frame slot or
+#         register, which then reads 0 by accident -- #1594 shipped from v0.60
+#         unseen by it);
+#   gz -- GARBAGE stack (0x41414141 / a 0x7FC00001 NaN / seeded random),
+#         zeroed registers -- exposes a FRAME home read before its write;
+#   zg -- zeroed stack, GARBAGE core+VFP registers (seeded random) -- exposes
+#         a REGISTER home's pre-birth contents.
+# What is compared (bit-identical to wasmtime, NaN==NaN) is unchanged.
+MODES = {"zz": (False, False), "gz": (True, False), "zg": (False, True)}
+STACK_PATS = (0, 1, 2)  # 0x41414141, 0x7FC00001, seeded random
+RNG = random.Random(0x1069)  # deterministic: same vectors every run
+
 
 def fail(msg):
     print(f"FAIL: {msg}")
     sys.exit(1)
 
 
-def compile_relocatable(tmp):
-    obj = str(Path(tmp) / "vfp1069.o")
+def compile_relocatable(tmp, wat=WAT, extra=()):
+    obj = str(Path(tmp) / f"{wat.stem}.o")
     r = subprocess.run(
-        [SYNTH, "compile", str(WAT), "-o", obj,
-         "-t", "cortex-m7dp", "--relocatable"],
+        [SYNTH, "compile", str(wat), "-o", obj,
+         "-t", "cortex-m7dp", "--relocatable", *extra],
         # ONE stream, so each `[recovery-stats]` line (stderr) stays after the
         # `Compiling function` line (log) it belongs to (#1439 gate 1b).
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -103,13 +139,13 @@ def rungs_by_function(log):
     return out
 
 
-def link(tmp, obj):
+def link(tmp, obj, entry="live13"):
     ld = shutil.which("arm-none-eabi-ld")
     if ld is None:
         fail("arm-none-eabi-ld not found")
-    out = str(Path(tmp) / "vfp1069.elf")
+    out = str(Path(tmp) / f"{Path(obj).stem}.elf")
     r = subprocess.run(
-        [ld, "-e", "live13", "-Ttext=0x0", obj, "-o", out],
+        [ld, "-e", entry, "-Ttext=0x0", obj, "-o", out],
         capture_output=True, text=True,
     )
     if r.returncode != 0 or r.stderr.strip():
@@ -161,7 +197,7 @@ def f64_bits_eq(got, want):
     return (got & ((1 << 64) - 1)) == (want & ((1 << 64) - 1))
 
 
-def new_uc(text, text_base):
+def new_uc(text, text_base, gs=False, gr=False, pat=0):
     uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
     try:
         from unicorn.arm_const import UC_CPU_ARM_MAX
@@ -173,25 +209,42 @@ def new_uc(text, text_base):
     uc.mem_map(map_base, max(size, 0x1000))
     uc.mem_write(text_base, text)
     uc.mem_map(0x30000, 0x10000)  # stack
+    if gs:  # garbage stack: every frame slot starts non-zero
+        if pat == 2:
+            uc.mem_write(0x30000, RNG.randbytes(0x10000))
+        else:
+            word = (0x41414141, 0x7FC00001)[pat]
+            uc.mem_write(0x30000, struct.pack("<I", word) * (0x10000 // 4))
     uc.reg_write(UC_ARM_REG_SP, 0x38000)
     if UC_ARM_REG_C1_C0_2 is not None:
         uc.reg_write(UC_ARM_REG_C1_C0_2, 0x00F00000)
     if UC_ARM_REG_FPEXC is not None:
         uc.reg_write(UC_ARM_REG_FPEXC, 0x40000000)
+    if gr:  # garbage core + VFP registers (argument registers re-written after)
+        for i in range(32):
+            uc.reg_write(getattr(arm_const, f"UC_ARM_REG_S{i}"),
+                         RNG.getrandbits(32))
+        for i in range(13):
+            uc.reg_write(getattr(arm_const, f"UC_ARM_REG_R{i}"),
+                         RNG.getrandbits(32))
     return uc
 
 
-def run_f32(text, base, addr, s0):
-    uc = new_uc(text, base)
+def run_f32(text, base, addr, s0, c=None, gs=False, gr=False, pat=0):
+    uc = new_uc(text, base, gs, gr, pat)
     uc.reg_write(UC_ARM_REG_S0, s0 & 0xFFFFFFFF)
+    if c is not None:
+        uc.reg_write(UC_ARM_REG_R0, c & 0xFFFFFFFF)
     uc.reg_write(UC_ARM_REG_LR, 0x38000 | 1)
     uc.emu_start(addr | 1, 0x38000, count=5000)
     return uc.reg_read(UC_ARM_REG_S0) & 0xFFFFFFFF
 
 
-def run_f64(text, base, addr, d0):
-    uc = new_uc(text, base)
+def run_f64(text, base, addr, d0, c=None, gs=False, gr=False, pat=0):
+    uc = new_uc(text, base, gs, gr, pat)
     uc.reg_write(UC_ARM_REG_D0, d0 & ((1 << 64) - 1))
+    if c is not None:
+        uc.reg_write(UC_ARM_REG_R0, c & 0xFFFFFFFF)
     uc.reg_write(UC_ARM_REG_LR, 0x38000 | 1)
     uc.emu_start(addr | 1, 0x38000, count=5000)
     return uc.reg_read(UC_ARM_REG_D0) & ((1 << 64) - 1)
@@ -362,23 +415,66 @@ def main():
     exp = inst.exports(store)
 
     checked = 0
+    per_mode = {m: 0 for m in MODES}
+
+    def sweep(kind, name, a, c, want, addr, txt, bs):
+        """One vector in every machine state; returns emulations run."""
+        n = 0
+        run = run_f32 if kind == "f32" else run_f64
+        eq = f32_bits_eq if kind == "f32" else f64_bits_eq
+        w = 8 if kind == "f32" else 16
+        for m, (gs, gr) in MODES.items():
+            for pat in (STACK_PATS if gs else (0,)):
+                got = run(txt, bs, addr, f32_bits(a) if kind == "f32"
+                          else f64_bits(a), c, gs, gr, pat)
+                if not eq(got, want):
+                    fail(f"{name}({a}{'' if c is None else f', {c}'}) "
+                         f"[{m} pat={pat}]: got {got:#0{w + 2}x}, "
+                         f"want {want:#0{w + 2}x}")
+                n += 1
+                per_mode[m] += 1
+        return n
+
     for name in F32_EXPORTS:
         for a in VALS:
             want = f32_bits(exp[name](store, a))
-            got = run_f32(text, base, syms[name], f32_bits(a))
-            if not f32_bits_eq(got, want):
-                fail(f"{name}({a}): got {got:#010x}, want {want:#010x}")
-            checked += 1
+            checked += sweep("f32", name, a, None, want,
+                             syms[name], text, base)
     for name in F64_EXPORTS:
         for a in VALS:
             want = f64_bits(exp[name](store, a))
-            got = run_f64(text, base, syms[name], f64_bits(a))
-            if not f64_bits_eq(got, want):
-                fail(f"{name}({a}): got {got:#018x}, want {want:#018x}")
-            checked += 1
+            checked += sweep("f64", name, a, None, want,
+                             syms[name], text, base)
+
+    # RQ-89-GARBAGE1069: the one-branch-written float-local fixture.
+    zobj, zlog = compile_relocatable(tmp, WAT_ZI, ("--all-exports",))
+    zstats = rungs_by_function(zlog)
+    for name in ZI_EXPORTS:
+        lines = zstats.get(name)
+        if not lines or lines[-1] != "[recovery-stats] rung=vfp-frame-locals result=ok":
+            fail(f"{name}: not produced by the vfp-frame-locals rung "
+                 f"({lines}) -- the zero-init fixture no longer exercises "
+                 f"the frame home it is here to cover")
+    print(f"PASS: {len(ZI_EXPORTS)} zero-init exports compiled on "
+          "vfp-frame-locals")
+    zelf = link(tmp, zobj, ZI_EXPORTS[0])
+    ztext, zbase, zsyms = load(zelf)
+    zmod = wasmtime.Module(eng, WAT_ZI.read_bytes())
+    for name in ZI_EXPORTS:
+        kind = "f32" if name in ZI_F32 else "f64"
+        bits = f32_bits if kind == "f32" else f64_bits
+        for a in VALS:
+            for c in CV:
+                zs = wasmtime.Store(eng)
+                zi = wasmtime.Instance(zs, zmod, [])
+                want = bits(zi.exports(zs)[name](zs, a, c))
+                checked += sweep(kind, name, a, c, want,
+                                 zsyms[name], ztext, zbase)
 
     print(f"PASS: {checked} emulations bit-identical to wasmtime "
-          "(frame-homed VFP locals round-trip bit-exactly)")
+          "(frame-homed VFP locals round-trip bit-exactly; zeroed/garbage "
+          "stack and registers: "
+          + ", ".join(f"{m}={n}" for m, n in per_mode.items()) + ")")
     print("RESULT: PASS")
 
 

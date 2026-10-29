@@ -1213,7 +1213,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 385388 \
+            --exact-emulation-floor 386410 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2909,6 +2909,11 @@ jobs:
       # nm -> T AND bit-identical to wasmtime under unicorn (a wrong-slot
       # reload is a plausible wrong float; every local feeds the product, so
       # any mixup flips result bits).
+      # RQ-89-GARBAGE1069 (#1613): every vector above now runs in three machine
+      # states -- zeroed, GARBAGE stack, GARBAGE core+VFP registers -- plus a
+      # one-branch-written float-local fixture on the frame-locals rung. A
+      # zeroed-only run cannot see #1594 (uninitialised read); positive control
+      # on the pre-#1594-fix binary: 0/126 zz wrong, 80/378 gz wrong.
       - name: Run frame-homed VFP locals oracle (#1069, m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/vfp_local_pressure_1069_differential.py
       # RQ-89-WIDESTAGE (#1593): the vfp-wide-file rung's CALL-ARGUMENT
@@ -4677,8 +4682,15 @@ jobs:
           # (float_local_zero_init_1594{,_f64}.wat): main's (efb0f28a) binary over this tree
           # prints 7395 / 8742 / 240049. Main's binary over main's tree prints
           # the old 7371 / 8470 / 237853. `hits: 0` throughout.
-          grep -Eq '^functions audited: 7407$' haa1189.txt
-          grep -Eq '^homes watched: 8852$' haa1189.txt
+          # RQ-89-GARBAGE1069 (#1613): 7407 -> 7411, 8852 -> 8908 and 240549 ->
+          # 240863. PROVEN CORPUS GROWTH, not a codegen effect: the new fixture
+          # scripts/repro/vfp_local_pressure_1069_zeroinit.wat (p_cond, p_brif,
+          # d_cond) adds +4 functions, +56 homes and +314 attributed
+          # instructions, MEASURED (d_cond declines without a double FPU). This binary with the fixture removed from the
+          # tree prints the previous 7407 / 8852 / 240549 exactly; no Rust is
+          # touched. `hits: 0` holds.
+          grep -Eq '^functions audited: 7411$' haa1189.txt
+          grep -Eq '^homes watched: 8908$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -4693,7 +4705,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 240549 ' haa1189.txt
+          grep -Eq '^attributed instructions: 240863 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

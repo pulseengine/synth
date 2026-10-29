@@ -4473,7 +4473,12 @@ claims:
     #   machine, m7dp rel + self-contained + m7). Paired control: `385388`
     #   rc=0 and `382876` rc=1 on this tree; `385388` rc=1 and `382876` rc=0
     #   on main d048b523.
-    text: "--exact-emulation-floor 385388"
+    # v0.89 RQ-89-GARBAGE1069 (#1613): 385388 -> 386410 (+1022). The #1069
+    #   oracle's floor goes 98 -> 1120 (every vector in zz/gz/zg states, plus
+    #   126 rows of the new zero-init fixture). Paired control: `386410` rc=0
+    #   and `385388` rc=1 on this tree; `386410` rc=1 and `385388` rc=0 on
+    #   main 8e1097f6.
+    text: "--exact-emulation-floor 386410"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
