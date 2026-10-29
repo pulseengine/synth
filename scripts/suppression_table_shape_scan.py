@@ -84,6 +84,7 @@ CLASSIFIED = {
     ("home_alias_class_1189_differential.py", "EXPECTED_SKIPS"): ("decline", "named EXCLUDED in CLAUDE.md"),
     ("join_alias_1189_differential.py", "LIVE_DECLINES"): ("decline", "pairs the live half must REFUSE, with the needle"),
     ("unreachable_665_differential.py", "RV32_MAY_DECLINE"): ("decline", "#343 arity decline; presence must still trap"),
+    ("reinterpret_pair_1603_differential.py", "EXPECTED_DECLINES"): ("decline", "loud refusals a plain value of the same type hits identically (#929/#509/#313/#1318); reds if one starts compiling"),
     ("litpool_islands_345_differential.py", "INTENDED_ACCEPTANCES"): ("decline", "declines with islands off, compiles with them on, by design"),
     ("home_alias_audit_corpus_1189.py", "PLANT_EXPECTED"): ("red-half", "DERIVED plant expectations, the potency evidence"),
     ("invalid_accept_1207_differential.py", "DECLINES"): ("red-half", "the exact-pin companion: expected verdict per cell, exact BOTH ways"),
