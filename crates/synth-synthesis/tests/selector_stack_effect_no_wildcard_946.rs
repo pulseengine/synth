@@ -28,7 +28,9 @@
 /// Bump when adding a `WasmOp` variant — and state its stack effect in
 /// `wasm_stack_effect`. Independently derived from the enum source below, so
 /// this constant and the parser disagree only if one went stale.
-const WASM_OP_VARIANT_COUNT: usize = 279;
+// #1145 (RQ-89-MEMLAYER6): +1, `MemoryCopyBetween` (3 pops, 0 pushes —
+// memory.copy's dst/src/len, stated in `wasm_stack_effect`).
+const WASM_OP_VARIANT_COUNT: usize = 280;
 
 const SELECTOR_SRC: &str = include_str!("../src/instruction_selector.rs");
 const WASM_OP_SRC: &str = include_str!("../../synth-core/src/wasm_op.rs");

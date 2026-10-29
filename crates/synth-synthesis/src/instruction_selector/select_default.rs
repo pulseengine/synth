@@ -440,6 +440,14 @@ impl InstructionSelector {
                 )));
             }
 
+            // #1145: never bare (the decoder wraps it in MultiMemory above).
+            MemoryCopyBetween { dst_mem, src_mem } => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "multi-memory: an unwrapped memory.copy {dst_mem} {src_mem} \
+                     reached select_default — declined (#406, #1145)"
+                )));
+            }
+
             // FIXME: select_default LocalGet/Set ignores index (hardcoded SP+0).
             // Currently unreachable because select_with_stack handles these ops.
             // See issue #72.

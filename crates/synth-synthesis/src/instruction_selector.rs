@@ -3028,7 +3028,7 @@ fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {
         // Bulk memory (#374): pop (dst, src/val, len), push nothing. The
         // former wildcard absorbed these as (0, 0) — three stale entries, the
         // same executed-miscompile class as the `br_if` condition (#946).
-        MemoryCopy | MemoryFill => (3, 0),
+        MemoryCopy | MemoryFill | MemoryCopyBetween { .. } => (3, 0),
 
         // v128 SIMD — enumerated, not wildcarded (#946): no lowering path
         // tracks SIMD yet (select_default loud-declines without Helium), but
@@ -6443,6 +6443,8 @@ pub struct InstructionSelector {
     /// pointer constant. Recomputed per function by
     /// [`Self::npa_local_const_plan`]; empty outside `--native-pointer-abi`.
     npa_ptr_const_defs: std::collections::HashSet<usize>,
+    /// #1145: window `i32.const`s that are memory-k offsets (`synth_core::npa_multi_memory`).
+    npa_raw_consts: std::collections::HashSet<usize>,
     /// #311: whether function `i` (full wasm index) returns i64.
     func_ret_i64: Vec<bool>,
     /// #311: whether type `i` returns i64 (`call_indirect`).
@@ -6740,6 +6742,7 @@ impl InstructionSelector {
             wasm_data_base: 0,
             sp_global: None,
             npa_ptr_const_defs: std::collections::HashSet::new(),
+            npa_raw_consts: std::collections::HashSet::new(),
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
             func_result_counts: Vec::new(),
@@ -6799,6 +6802,7 @@ impl InstructionSelector {
             wasm_data_base: 0,
             sp_global: None,
             npa_ptr_const_defs: std::collections::HashSet::new(),
+            npa_raw_consts: std::collections::HashSet::new(),
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
             func_result_counts: Vec::new(),
@@ -7411,9 +7415,6 @@ impl InstructionSelector {
     ///
     /// * not `--relocatable` → a self-contained image has exactly one runtime
     ///   linear-memory base (R11); nothing places a second region.
-    /// * `--native-pointer-abi` → the static-data classification
-    ///   (`static_data_addend`, `__synth_wasm_data` region layers #345/#354/
-    ///   #383/#678/#739) is memory-0-only; combining is a later phase.
     /// * unknown index → the module declared fewer memories (or the driver
     ///   never supplied the table — legacy/unit-test construction).
     fn multi_memory_pages(&self, memory: u32) -> synth_core::Result<u32> {
@@ -7426,14 +7427,6 @@ impl InstructionSelector {
                  --relocatable: the host-linked object addresses memory {memory} \
                  via its own `__synth_wasm_data_{memory}` region symbol, which \
                  the runtime places (VCR-MEM-002 phase 1, #406)"
-            )));
-        }
-        if self.native_pointer_abi {
-            return Err(synth_core::Error::synthesis(format!(
-                "multi-memory: an op on memory {memory} is not lowered under \
-                 --native-pointer-abi — the static-data region classification \
-                 (#345/#354/#678) is memory-0-only in phase 1 (#406). Drop \
-                 --native-pointer-abi or keep the module single-memory"
             )));
         }
         self.memory_pages
@@ -7525,6 +7518,11 @@ impl InstructionSelector {
     /// `declared_float_locals` field). Called per function by the backend.
     pub fn set_declared_float_locals(&mut self, declared_float_locals: Vec<u8>) {
         self.declared_float_locals = declared_float_locals;
+    }
+
+    /// #1145: see `CompileConfig::current_func_npa_raw_consts`.
+    pub fn set_npa_raw_consts(&mut self, ops: Vec<usize>) {
+        self.npa_raw_consts = ops.into_iter().collect();
     }
 
     /// GI-FPU-002 (#619/#369): register the declared f32-param mask of the
@@ -8683,6 +8681,15 @@ impl InstructionSelector {
             V128Store { offset, .. } => ("a v128 store", vec![(2, *offset)], false),
             MemoryFill => ("memory.fill (destination)", vec![(3, 0)], false),
             MemoryCopy => ("memory.copy", vec![(3, 0), (2, 0)], false),
+            // #1145: a cross-memory copy's memory-0 side(s).
+            MultiMemory { op, .. } => {
+                let MemoryCopyBetween { dst_mem, src_mem } = op.as_ref() else {
+                    return None;
+                };
+                let sides = [(3, *dst_mem), (2, *src_mem)].into_iter();
+                let zero = sides.filter(|&(_, m)| m == 0).map(|(back, _)| (back, 0));
+                ("memory.copy (memory-0 side)", zero.collect(), false)
+            }
             _ => return None,
         })
     }
@@ -8820,7 +8827,7 @@ impl InstructionSelector {
                     Self::npa_address_consumer(wasm_ops, u),
                     Some((j, 0)) if !matches!(
                         wasm_ops[j],
-                        V128Load { .. } | V128Store { .. } | MemoryFill | MemoryCopy
+                        V128Load { .. } | V128Store { .. } | MemoryFill | MemoryCopy | MultiMemory { .. }
                     )
                 )
             });

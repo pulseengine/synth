@@ -361,6 +361,16 @@ pub struct CompileConfig {
     /// [`current_func_declared_i64_locals`]: Self::current_func_declared_i64_locals
     pub current_func_declared_float_locals: Vec<u8>,
 
+    /// #1145 (RQ-89-MEMLAYER6): THIS function's `i32.const` op indices (into
+    /// the stream the driver hands the backend) that sit inside memory 0's
+    /// `--native-pointer-abi` static window but are memory-k OFFSETS — the
+    /// module-level provenance pass (`crate::npa_multi_memory`) proved they
+    /// may reach a memory-k address and never a memory-0 one, so they stay
+    /// raw instead of becoming `__synth_wasm_data + C`. Set per function by
+    /// the CLI loop for a multi-memory `--native-pointer-abi` module only;
+    /// empty everywhere else ⇒ byte-identical.
+    pub current_func_npa_raw_consts: Vec<usize>,
+
     /// #543 Phase 1 — integrator-marked volatile linear-memory segments (the DMA
     /// transfer window). Each range `[base, base+len)` names a region of the fused
     /// linear memory that an EXTERNAL agent (the DMA engine, modelled by gale as a
@@ -622,6 +632,8 @@ impl Default for CompileConfig {
             // #1594: empty ⇒ no float-home entry zero-init (unit tests /
             // hand-built op streams); the driver loops fill it per function.
             current_func_declared_float_locals: Vec::new(),
+            // #1145: empty ⇒ every static-window constant keeps the #237 rule.
+            current_func_npa_raw_consts: Vec::new(),
             // #543 Phase 1: no volatile segments unless the CLI flag names them.
             // Empty ⇒ inert ⇒ emitted bytes unchanged.
             volatile_segments: Vec::new(),

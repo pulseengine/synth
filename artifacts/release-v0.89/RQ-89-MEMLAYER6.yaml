@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-89-MEMLAYER6
     type: system-req
     release: v0.89
-    status: proposed
+    status: implemented
     title: "The reporter's multi-memory --native-pointer-abi blocker is re-measured from their latest comment"
     description: >
         #1145's reporter names --native-pointer-abi's missing per-memory
@@ -23,13 +23,150 @@ artifacts:
       - type: derives-from
         target: BR-001
     fields:
-      req-type: process
-      priority: should
+      req-type: functional
+      priority: must
       issue: "#1145"
       verification-track: manual
+      issue-scope: outlives
       done-when: >
         manual:2027-03-31 the reporter's multi-memory --native-pointer-abi
         blocker is re-measured from their latest comment — delivered with an
         execution-verified result where the lane is a wrong-code fix, or REFUTED
         with the measurement that refutes it; and the refuting command above is
         RUN FIRST and its result reported either way
+      landed: "PR #1605 - #1145 - DELIVERED: --native-pointer-abi is accepted on a multi-memory ARM --relocatable module, layered per memory. The refuting command was run first on main 7e170d62: the reporter's shape, synthesised as two memories with data in both and a memory-0 stack pointer, is REFUSED rc 1 at the CLI gate (memory-0-only in phase 1), and the single-memory control compiles. Design: memory 0 stays native; memory k stays a wasm offset through its own __synth_wasm_data_k region, lowered exactly as without the flag. A new module-level value-provenance pass, crates/synth-core/src/npa_multi_memory.rs, runs in the CLI before selection. It keeps every constant inside memory 0's static window that may reach a memory-k address RAW, via a per-function op-index set threaded through CompileConfig and remapped across the memory.grow(0) fold and fact-spec specialisation. It picks memory 0's stack pointer only among globals that never reach memory k, and refuses, naming it, any constant, stack pointer, export parameter or import result that may be an address in memory 0 AND memory k. Both refusals of the old gate (CLI main.rs and the selector's multi_memory_pages) are deleted. Byte census, base 7e170d62 vs lane, every repo .wat/.wasm outside the spec suite (261 files x 4 configs: cortex-m3 self-contained, relocatable, relocatable+NPA, cortex-m7dp relocatable+NPA = 1044 cells), measured at the shipped head: 1040 identical, 4 moved (re-measured against main 8e1097f6 after the rebase: 263 files x 4 configs, 1048 of 1052 identical, the same 4 moved), all four the two_mem_npa.wat and two_sp_npa.wat NPA cells (relocatable cortex-m3 and cortex-m7dp), refused before and now compiled and executed correct. mem406_multi_memory.wat stays refused under the flag (rc 1 on both binaries, so it counts as identical), now with the layering's message, because an export parameter is used as an address in both memories."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime (multi-memory and
+        custom-page-sizes on). New wired oracle
+        scripts/repro/npa_multi_memory_1145_differential.py: 43 calls over five
+        fixtures. pages: 1 and 2 pages, ONE stack pointer in memory 0, data in
+        both, memory-1 statics inside memory 0's window, a pointer through a
+        local (the #1568 shape), through a call, a block result, laundered
+        through memory 1, a compare, a function on the shadow stack that also
+        touches memory 1, and memory.size/grow per memory. pagesize1: the
+        reporter's measured combination, two DEFINED memories at (pagesize 1)
+        with 3000 and 6000 bytes, data in both. two_sp and two_sp_npa: one SP per
+        domain, memory 1's init larger. launder01: a raw memory-1 constant
+        through memory 0. Every section sits at a distinct, non-adjacent base
+        with the gaps unmapped. An access hook classifies every load and store
+        by region, and each export may touch only the memories it declares. Both
+        memories are compared byte for byte after every call, and caller-saved
+        registers and the stack hold garbage. Five refusals are asserted with
+        no object written, and the region table is pinned. RED: on 7e170d62 every fixture is refused at the gate.
+        On the no-layering lift (both refusals removed, no pass, the
+        RQ-88-MEMLAYER5 scratch build), 34 of 43 calls diverge or leave their
+        region, and all four value-layering refusals compile. GREEN on the lane:
+        43 of 43 calls, 6 of 6 refusals. Region table under (pagesize 1):
+        __synth_mem_size_0 = 3000 and __synth_mem_size_1 = 6000 BYTES,
+        __synth_mem_count = 2, __synth_mem_region_0 = 4096 and
+        __synth_mem_region_1 = 8192 (the PMSAv7 extents from mpu_region_align),
+        .synth.wasm_mem_1 aligned to 8192, __synth_mem_base_1 at the base of
+        .synth.wasm_mem_1, and no __synth_mem_base_0. --safety-bounds mpu
+        --embedder-mpu with --native-pointer-abi on the two-memory fixtures is
+        accepted, and the object is sha256-identical to the plain NPA object;
+        without --embedder-mpu it is refused as before. Existing oracles stay
+        green on the lane binary: npa_const_addr_differential (38),
+        npa_const_addr_matrix_1568 (--expect ok=99,refused=63,guard=59,wrong=0),
+        mem_isolation_red_1145, multi_memory_406_differential,
+        static_above_sp_739, multi_sp_707 and
+        native_pointer_shadow_stack. The exact emulation floor moves by +43 (this oracle's declared emulations),
+        with the paired control in claims.yaml. STILL REFUSED, by name: a value
+        used as an address in both memories (a constant, the SP, an export
+        parameter, an import result); a memory-0 pointer stored in memory 0 in
+        a module whose memory-0 contents reach a memory-k address (the pass is
+        field-insensitive per memory, so this refusal is imprecision);
+        --safety-bounds software|mask on any memory-k access;
+        --shadow-stack-size; a memory-0 static as a cross copy's memory-0 side in
+        a module with no stack-pointer global; an IMPORTED memory beside a defined one (the CLI
+        sizes memory 0's window from the defined list, so the pass refuses
+        rather than bound it by the wrong memory; that module shape already
+        failed on the plain multi-memory path, with "module context declares 1
+        memories"); and a .wast multi-module merge. The mutation ledger was
+        re-anchored by relocation only; mutants, controls and ci_subset are
+        unchanged, and the ci replay and mutants gate pass. BULK MEMORY ACROSS
+        MEMORIES, same lane, second commit series. memory.copy dst_mem src_mem
+        (0->k, k->0, k->k, j->k) and memory.fill on memory k now decode
+        (wrapped in MultiMemory, so every path without a multi-memory lowering
+        still declines them loudly). They lower on ARM --relocatable with and
+        without --native-pointer-abi: each side is rebased against its own
+        memory, and the byte loop picks its direction on absolute pointers.
+        That is the form meld --memory multi lowers a Component Model boundary
+        to; before it, the adapter function was loud-skipped and the compile
+        exited rc 1 under #952. New wired oracle
+        scripts/repro/multi_memory_bulk_1145_differential.py: 72 calls, two
+        fixtures, NPA and plain. The meld-adapter shape: tenant memory 0 with
+        the one stack pointer and a supervisor memory 1 with a bump allocator;
+        the argument buffer is copied 0->1, transformed in memory 1, and the
+        result copied 1->0 into the tenant's shadow-stack frame; plus fill on
+        memory 1, overlapping memory-1 copies both ways, a positional memory-0
+        static as the copy source, and edge-of-memory zero-length copies. A
+        three-memory fixture covers 0->1, 1->0, 2->1, 1->2 and overlapping 2->2
+        both ways. Every access is attributed to its FUNCTION by PC, and only
+        the adapter, whose body is the two copies and a call, may touch both
+        memories. RED at 7e170d62: every fixture fails to compile. A mutant
+        that aliases the memory-k side onto memory 0 failed all 68 calls the
+        oracle had at that point. GREEN: 72 of 72. The #1568 constant-address
+        guard now also sees a cross copy's memory-0 sides, so in a module with
+        no stack-pointer global a positional memory-0 static there is refused
+        by name; it had compiled silently as a baked raw address. Corpus census
+        at the new head is unchanged: 1040 of 1044 cells identical, no repo
+        fixture carries a multi-memory bulk op. Selector ratchet: +280 code
+        lines with a written waiver in claims.yaml, no wildcard added.
+        REBASED over #1602 (NPAOFFSET, d048b523) and #1607 (REINTERP,
+        8e1097f6). #1602 is the #1580 effective-address rewrite of a constant
+        plus memarg offset under --native-pointer-abi.
+        That rewrite folds an offset into the constant that feeds a
+        memory-0 access. Such a constant is charged to memory 0 by the
+        provenance pass, so it can never be one kept raw as a memory-k
+        offset. A guard makes that explicit: if the rewrite ever touched a
+        raw-kept constant, the function is refused. All #1145 oracles and
+        #1580's npa_offset_cross_segment_1580_differential (42 calls) pass on
+        the rebased tree. The home-register write audit's corpus pins move
+        (identical over d048b523 and 8e1097f6):
+        functions 7407 -> 7425, homes 8852 -> 8878, attributed instructions
+        240549 -> 240843, hits 0. That decomposes by isolation into codegen
+        (+6 / +18 / +130, the spec suite's multi-memory bulk-op functions
+        newly compiling on the relocatable legs) and fixture growth
+        (+12 / +8 / +164, the two flag fixtures).
+        THE OPT-IN ASSERTION, maintainer decision 2026-10-28. Under
+        --native-pointer-abi the provenance pass is field-insensitive per
+        memory, so a cross-memory copy joins the two memories' contents. A
+        module that stores pointers in BOTH memories and copies across them
+        is therefore refused by default, although no value is shared. That
+        default stays. The refusal now NAMES the escape hatch,
+        --embedder-copies-carry-no-pointers, and what it asserts: a
+        cross-memory memory.copy never carries a value later used as an
+        address in the DESTINATION memory. That is the Canonical-ABI
+        property; meld adapters copy payload bytes and re-derive pointers.
+        Under the flag the pass does not join contents at a cross-memory
+        copy, and nothing else changes: a value that addresses both memories
+        through any other route is still refused. The flag is named in the
+        --embedder-* family because, like --embedder-mpu and
+        --embedder-data-init, it records an obligation synth cannot check
+        and the producer of the module must meet. It is refused without
+        --native-pointer-abi. The obligation, who guarantees it, and the
+        failure mode if it is false (a copied pointer silently dereferenced
+        in the wrong memory) are documented in
+        docs/embedder-abi-relocatable-arm.md. EXECUTED in
+        npa_multi_memory_1145_differential.py.
+        scripts/repro/npa_xcopy_merge_1145.wat is the Rust-like adapter
+        module: a tenant keeping a static pointer in its frame, a supervisor
+        following a pointer in memory 1, and one memory.copy $m1 $m0.
+        Without the flag it is refused, and the message must name the flag.
+        With it, it executes bit-identical to wasmtime under the isolation
+        hook, 5 of 5 calls; memory 0 is compared pointer-aware, because a
+        stored memory-0 pointer is native by the ABI.
+        scripts/repro/npa_xcopy_violate_1145.wat VIOLATES the assertion: it
+        copies the tenant's static pointer into memory 1 and dereferences it
+        there. Without the flag it is refused. With the flag it diverges
+        from wasmtime, as the oracle requires: memory 1 holds the native
+        pointer, and the supervisor's read faults on an unmapped address
+        where wasmtime returns 0xa4a3a2a1. REMAINING on #1145, so it
+        outlives this release. First, the reporter's own fused module, which
+        is unpublished, was not compiled; whether its adapters meet the
+        assertion is meld's to guarantee and gale's to confirm. Second,
+        __synth_mem_used_N. Third, the per-memory data-base contract
+        (gale#398). Fourth, used-extent sizing as a fallback; the reporter's
+        2026-10-28 comment says it is not needed if meld#530 declares exact
+        extents through (pagesize 1), which this lane shows is honoured per
+        memory.

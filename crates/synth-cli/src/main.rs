@@ -430,6 +430,21 @@ enum Commands {
         #[arg(long)]
         embedder_mpu: bool,
 
+        /// #1145 (RQ-89-MEMLAYER6): under `--native-pointer-abi` on a
+        /// multi-memory module, ASSERT that a cross-memory `memory.copy` never
+        /// carries a value that is later used as an address in the DESTINATION
+        /// memory — the Canonical-ABI property: `meld` adapters copy payload
+        /// bytes and re-derive every pointer in the callee's memory. With it the
+        /// per-memory provenance pass does not join the two memories' contents
+        /// across such a copy; every other route a value takes is still
+        /// tracked, and a value that addresses both memories through one is
+        /// still refused. If the assertion is false, a pointer copied across
+        /// memories is silently dereferenced in the wrong representation.
+        /// Refused without `--native-pointer-abi`. Obligation:
+        /// docs/embedder-abi-relocatable-arm.md.
+        #[arg(long)]
+        embedder_copies_carry_no_pointers: bool,
+
         /// #237: native-pointer ABI for host-pointer drop-ins. Emits wasm function
         /// statics as a base-independent `.data` section (`__synth_wasm_data`,
         /// MOVW/MOVT-relocated), so a `linmem base = 0` native-pointer trampoline
@@ -819,6 +834,7 @@ fn main() -> Result<()> {
             embedder_data_init,
             embedder_global_init,
             embedder_mpu,
+            embedder_copies_carry_no_pointers,
             native_pointer_abi,
             no_bind_cabi_arena,
             sbom,
@@ -899,6 +915,15 @@ fn main() -> Result<()> {
                 &backend,
                 embedder_mpu,
             )?;
+            // #1145: the cross-copy assertion only means something to the
+            // native-pointer ABI's per-memory provenance pass.
+            if embedder_copies_carry_no_pointers && !native_pointer_abi {
+                anyhow::bail!(
+                    "--embedder-copies-carry-no-pointers asserts a property the \
+                     --native-pointer-abi per-memory provenance pass relies on; \
+                     without --native-pointer-abi it would mean nothing — refusing"
+                );
+            }
 
             // Resolve the CycloneDX SBOM destination. `--sbom` with no value
             // means "next to the ELF" (`<output>.cdx.json`); `--sbom PATH`
@@ -929,6 +954,7 @@ fn main() -> Result<()> {
                 embedder_data_init,
                 embedder_global_init,
                 embedder_mpu,
+                embedder_copies_carry_no_pointers,
                 native_pointer_abi,
                 no_bind_cabi_arena,
                 sbom_path,
@@ -1859,6 +1885,7 @@ fn compile_command(
     // RQ-68-MPUHONEST (#1284): `--embedder-mpu` — the embedder programs the
     // MPU; the only condition under which `--safety-bounds mpu` is accepted.
     embedder_mpu: bool,
+    embedder_copies_carry_no_pointers: bool,
     native_pointer_abi: bool,
     // #418: `--no-bind-cabi-arena` — keep the arena import an external symbol.
     no_bind_cabi_arena: bool,
@@ -1996,6 +2023,7 @@ fn compile_command(
             embedder_data_init,
             embedder_global_init,
             embedder_mpu,
+            embedder_copies_carry_no_pointers,
             native_pointer_abi,
             no_bind_cabi_arena,
             sbom_path,
@@ -3307,6 +3335,102 @@ fn extract_module_from_wast(contents: &str) -> Result<Vec<u8>> {
 /// the stack pointer sits at the top of the wasm address space. Returns
 /// `(index, init_value)`, or `None` if the module has no such global (in which
 /// case the legacy R9 globals-table path is used).
+/// #1145 (RQ-89-MEMLAYER6): run the module-level provenance pass
+/// (`synth_core::npa_multi_memory`) over every complete defined function and
+/// decide the per-memory layering — or the loud refusal text.
+fn npa_multi_memory_plan(
+    module: &synth_core::wasm_decoder::DecodedModule,
+    memory0_bytes: u32,
+    copies_carry_no_pointers: bool,
+) -> std::result::Result<synth_core::npa_multi_memory::NpaMultiMemoryPlan, String> {
+    use synth_core::npa_multi_memory::{NpaFunc, NpaGlobal, NpaModule, Provenance, plan};
+    // The window bound is memory 0's extent, and the CLI sizes memory 0 from
+    // the DEFINED list; with an imported memory that list is offset from the
+    // wasm memory index space, so the bound would name the wrong memory.
+    if !module.imported_memories.is_empty() {
+        return Err(format!(
+            "the module imports {} of its memories; per-memory layering sizes \
+             memory 0's static window from the defined memories, so an imported \
+             memory in a multi-memory module is not layered",
+            module.imported_memories.len()
+        ));
+    }
+    let funcs = module
+        .functions
+        .iter()
+        .filter(|f| f.unsupported.is_none())
+        .map(|f| NpaFunc {
+            index: f.index,
+            ops: &f.ops,
+            block_arity: &f.block_arity,
+            param_count: module
+                .func_arg_counts
+                .get(f.index as usize)
+                .copied()
+                .unwrap_or(0),
+            result_count: module
+                .func_result_counts
+                .get(f.index as usize)
+                .copied()
+                .unwrap_or(0),
+            exported: f.export_name.is_some(),
+        })
+        .collect();
+    let m = NpaModule {
+        funcs,
+        num_imported_funcs: module.num_imported_funcs,
+        func_arg_counts: &module.func_arg_counts,
+        func_result_counts: &module.func_result_counts,
+        type_arg_counts: &module.type_arg_counts,
+        type_result_counts: &module.type_result_counts,
+        elem_func_indices: &module.elem_func_indices,
+        memory_count: (module.memories.len() + module.imported_memories.len()) as u32,
+        cross_copies_carry_no_pointers: copies_carry_no_pointers,
+    };
+    let prov = Provenance::analyze(&m)?;
+    let globals: Vec<NpaGlobal> = module
+        .globals
+        .iter()
+        .map(|g| NpaGlobal {
+            index: g.index,
+            mutable: g.mutable,
+            init_i32: match g.init {
+                Some(GlobalInit::I32(v)) => Some(v),
+                _ => None,
+            },
+        })
+        .collect();
+    let out = plan(&prov, &globals, memory0_bytes).map_err(|why| {
+        if prov.joined_by_cross_copy() {
+            format!(
+                "{why}. The module copies across memories, and the pass joins the \
+                 two memories' contents at such a copy; if every cross-memory \
+                 memory.copy is a Canonical-ABI transfer (payload bytes only — \
+                 pointers are re-derived in the destination memory), pass \
+                 --embedder-copies-carry-no-pointers to ASSERT that no copied value \
+                 is later used as an address in the destination memory \
+                 (docs/embedder-abi-relocatable-arm.md); if the assertion is false \
+                 a copied pointer is silently dereferenced in the wrong memory"
+            )
+        } else {
+            why
+        }
+    })?;
+    for (idx, init, mems) in &out.excluded_stack_pointers {
+        info!(
+            "#1145: global {idx} (init 0x{init:x}) reaches memory {mems:?} — not \
+             memory 0's stack pointer; it stays a plain wasm-offset global"
+        );
+    }
+    let raw: usize = out.raw_consts.values().map(Vec::len).sum();
+    info!(
+        "#1145: --native-pointer-abi per-memory layering: memory-0 stack pointer \
+         {:?}, {raw} memory-k constant(s) inside memory 0's window kept as wasm offsets",
+        out.stack_pointer_global
+    );
+    Ok(out)
+}
+
 fn identify_stack_pointer_global(globals: &[WasmGlobal], linmem_bytes: u32) -> Option<(u32, i32)> {
     globals
         .iter()
@@ -4073,6 +4197,7 @@ fn compile_all_exports(
     // RQ-68-MPUHONEST (#1284): `--embedder-mpu` — the embedder programs the
     // MPU; the only condition under which `--safety-bounds mpu` is accepted.
     embedder_mpu: bool,
+    embedder_copies_carry_no_pointers: bool,
     native_pointer_abi: bool,
     // #418: `--no-bind-cabi-arena` — keep a sole `env::__cabi_arena_realloc`
     // import an external symbol instead of binding it in-image.
@@ -4186,6 +4311,11 @@ fn compile_all_exports(
 
     // Decode module(s) — for multi-module WAST files we merge exports across
     // all modules (see #1225 above for what the merge cannot represent).
+    // #1145 (RQ-89-MEMLAYER6): the per-memory layering of the native-pointer
+    // ABI for a multi-memory module — computed on the single-module path
+    // below, consumed at the #406 gate and per function.
+    let mut npa_mm_plan: Option<Result<synth_core::npa_multi_memory::NpaMultiMemoryPlan, String>> =
+        None;
     let (
         all_exports,
         all_origins, // #1168: per-function owning module + its import count (parallel to all_exports)
@@ -4601,6 +4731,22 @@ fn compile_all_exports(
         // is still whole (the `uses_*` flags are set below, from the op streams
         // this compile will actually feed the backend).
         let a64_inputs = synth_backend_aarch64::substrate::PlanInputs::from_module(&module);
+        if native_pointer_abi
+            && relocatable
+            && backend.name() == "arm"
+            && module.memories.len() + module.imported_memories.len() > 1
+        {
+            let linmem0 = module
+                .memories
+                .first()
+                .map(|m| m.initial_bytes())
+                .unwrap_or(0);
+            npa_mm_plan = Some(npa_multi_memory_plan(
+                &module,
+                linmem0,
+                embedder_copies_carry_no_pointers,
+            ));
+        }
         let func_arg_counts = module.func_arg_counts;
         let func_result_counts = module.func_result_counts; // #851
         let type_arg_counts = module.type_arg_counts;
@@ -4640,7 +4786,14 @@ fn compile_all_exports(
         // #237: identify the stack-pointer global for native-pointer promotion.
         // linmem extent gates the "plausible stack top" heuristic.
         let linmem_bytes = memories.first().map(|m| m.initial_bytes()).unwrap_or(0);
-        let sp_global = identify_stack_pointer_global(&module.globals, linmem_bytes);
+        // #1145: a multi-memory module under --native-pointer-abi gets the
+        // module-level provenance pass; its stack-pointer pick replaces the
+        // single-memory rule (a `meld --domain` module carries one stack
+        // pointer per domain, and the larger init may belong to memory 1).
+        let sp_global = match &npa_mm_plan {
+            Some(Ok(plan)) => plan.stack_pointer_global,
+            _ => identify_stack_pointer_global(&module.globals, linmem_bytes),
+        };
         // #643: per-global slot widths (4 = i32/f32, 8 = i64/f64, 16 = v128),
         // indexed by global index — the selector lays the R9 globals table out
         // by summing these, giving i64 globals room for both words and
@@ -4828,6 +4981,15 @@ fn compile_all_exports(
     if let Some(reason) = &multi_memory_decline {
         anyhow::bail!("multi-memory (#406): {reason}");
     }
+    // #1145: the layering's refusal applies whenever the pass ran — including
+    // a module whose memory 0 is imported, which the defined-list count below
+    // does not see as multi-memory.
+    if native_pointer_abi && let Some(Err(why)) = &npa_mm_plan {
+        anyhow::bail!(
+            "multi-memory (#406, #1145): --native-pointer-abi refused — {why}. \
+             Drop --native-pointer-abi or keep the value in one memory"
+        );
+    }
     if all_memories.len() > 1 {
         if backend.name() != "arm" {
             anyhow::bail!(
@@ -4850,13 +5012,18 @@ fn compile_all_exports(
                 all_memories.len()
             );
         }
+        // #1145 (RQ-89-MEMLAYER6): --native-pointer-abi is layered per memory
+        // (memory 0 native, memory k a wasm offset) by the provenance pass;
+        // what it cannot prove is refused here, naming the shape.
         if native_pointer_abi {
-            anyhow::bail!(
-                "multi-memory (#406): --native-pointer-abi is memory-0-only in \
-                 phase 1 — the static-data region classification \
-                 (#345/#354/#678/#739) has no per-memory layering. Drop \
-                 --native-pointer-abi or keep the module single-memory"
-            );
+            match &npa_mm_plan {
+                Some(_) => {} // an Err was refused above
+                None => anyhow::bail!(
+                    "multi-memory (#406, #1145): --native-pointer-abi per-memory \
+                     layering runs only on the single-module path; this input \
+                     (a multi-module .wast merge) is refused"
+                ),
+            }
         }
         if shadow_stack_size.is_some() {
             anyhow::bail!(
@@ -5382,6 +5549,13 @@ fn compile_all_exports(
             fc.current_func_block_arity = func.block_arity.clone();
             fc.current_func_declared_i64_locals = func.declared_i64_locals.clone();
             fc.current_func_declared_float_locals = func.declared_float_locals.clone();
+            // #1145: THIS function's memory-k constants inside memory 0's
+            // native-pointer window (empty unless multi-memory NPA).
+            if let Some(Ok(plan)) = &npa_mm_plan
+                && let Some(raw) = plan.raw_consts.get(&func.index)
+            {
+                fc.current_func_npa_raw_consts = raw.clone();
+            }
             // #1168: on the .wast merge, compile THIS function against ITS
             // module's signature tables. The merged config carries ONE
             // module's tables (max-imports, else first); a function merged
@@ -5518,6 +5692,25 @@ fn compile_all_exports(
         let (ops_for_compile, op_offsets_for_elf): (&[WasmOp], Vec<u32>) = match &spec {
             Some(s) => {
                 func_config.current_func_block_arity = s.block_arity.clone();
+                // #1145: re-key the raw constants into the specialized stream
+                // (`kept[new] = old`).
+                if !func_config.current_func_npa_raw_consts.is_empty() {
+                    let old = std::mem::take(&mut func_config.current_func_npa_raw_consts);
+                    func_config.current_func_npa_raw_consts = s
+                        .kept
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, o)| old.contains(o))
+                        .map(|(n, _)| n)
+                        .collect();
+                    if func_config.current_func_npa_raw_consts.len() != old.len() {
+                        anyhow::bail!(
+                            "#1145: a native-pointer raw-constant mark in function {} \
+                             was dropped by fact-spec specialization — refusing",
+                            func.index
+                        );
+                    }
+                }
                 // #494 phase 2b: certificate-discharged div/rem guard-elision
                 // marks, keyed by index into the rewritten stream the backend
                 // is about to consume.

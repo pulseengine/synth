@@ -125,6 +125,18 @@ pub fn straight_line_stack_effect(op: &WasmOp) -> Option<(u32, u32)> {
     }
 }
 
+/// `(pops, pushes)` of an op whose stack effect is fixed by the op alone, or
+/// `None` for the signature/blocktype-dependent and stack-polymorphic ops
+/// (`call`, `call_indirect`, control, terminators, SIMD …) — the same table
+/// [`check_no_underflow`] walks, exposed for the #1145 provenance pass
+/// (`crate::npa_multi_memory`), which models the `None` ops itself.
+pub fn fixed_stack_effect(op: &WasmOp) -> Option<(u32, u32)> {
+    match stack_effect_or_bail(op) {
+        StackEffect::Modeled { pops, pushes } => Some((pops, pushes)),
+        StackEffect::Bail => None,
+    }
+}
+
 enum StackEffect {
     Modeled { pops: u32, pushes: u32 },
     Bail,
@@ -222,7 +234,7 @@ fn stack_effect_or_bail(op: &WasmOp) -> StackEffect {
         // ---- bulk memory (#374) -----------------------------------------
         // memory.copy(dst, src, len) and memory.fill(dst, val, len) each pop
         // three i32 operands and push nothing.
-        MemoryCopy | MemoryFill => modeled(3, 0),
+        MemoryCopy | MemoryFill | MemoryCopyBetween { .. } => modeled(3, 0),
 
         // ---- multi-memory (#406) ----------------------------------------
         // A wrapped load/store has exactly its inner op's stack effect — the

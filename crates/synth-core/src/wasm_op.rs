@@ -120,6 +120,17 @@ pub enum WasmOp {
     // i32 operands and pushes nothing.
     MemoryCopy, // memory.copy: copy `len` bytes from `src` to `dst` (memmove semantics)
     MemoryFill, // memory.fill: set `len` bytes at `dst` to the low byte of `val`
+    /// #1145 (RQ-89-MEMLAYER6): `memory.copy dst_mem src_mem` with at least
+    /// one non-default memory (the cross-memory form `meld --memory multi`
+    /// lowers Component Model boundaries to). NEVER appears bare: the decoder
+    /// wraps it in [`WasmOp::MultiMemory`] (memory = the non-zero index), so
+    /// every path without a multi-memory lowering declines it loudly through
+    /// the existing wrapper arms. `memory.fill` on memory k > 0 is
+    /// `MultiMemory { memory: k, op: MemoryFill }`.
+    MemoryCopyBetween {
+        dst_mem: u32,
+        src_mem: u32,
+    },
 
     /// VCR-MEM-002 phase 1 (#406): a load/store whose `memarg` targets a
     /// NON-DEFAULT linear memory (`memidx > 0`, multi-memory proposal). The
@@ -132,6 +143,11 @@ pub enum WasmOp {
     /// selector) unwraps this and addresses via the per-memory base symbol
     /// (`__synth_wasm_data_<k>`), and every other path declines LOUDLY
     /// (never a silent alias).
+    ///
+    /// Since #1145 it also wraps the multi-memory BULK forms: `memory.fill`
+    /// on memory k (`op: MemoryFill`) and `memory.copy dst_mem src_mem` with
+    /// a non-default side (`op: MemoryCopyBetween`, `memory` = the non-zero
+    /// index).
     ///
     /// `memory.size`/`memory.grow` are NOT wrapped — their variants already
     /// carry the memory index. Invariant (decoder-enforced): `memory > 0` and

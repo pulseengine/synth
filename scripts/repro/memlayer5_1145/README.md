@@ -1,4 +1,12 @@
-# RQ-88-MEMLAYER5 (#1145) — why the `--native-pointer-abi` multi-memory refusal stays
+# RQ-88-MEMLAYER5 (#1145) — why the `--native-pointer-abi` multi-memory refusal stayed
+
+> **Superseded in v0.89 (RQ-89-MEMLAYER6).** The refusal is gone: the layering this
+> page says is needed — module-level provenance on rewritten values and a stack-pointer
+> pick that knows which memory each global belongs to — is
+> `crates/synth-core/src/npa_multi_memory.rs`. `two_mem_npa.wat` and `two_sp_npa.wat`
+> now compile and run correct; the wired gate is
+> `scripts/repro/npa_multi_memory_1145_differential.py`. The text below is the v0.88
+> measurement, kept as the record of why the gate existed.
 
 Evidence, not a CI gate. Measured 2026-10-20 with version-matched builds (`synth 0.87.0`).
 

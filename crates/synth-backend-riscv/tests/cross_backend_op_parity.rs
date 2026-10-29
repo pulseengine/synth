@@ -411,7 +411,9 @@ fn classify(op: &WasmOp) -> ParityClass {
         // decline discipline (#406), which is a separate lane. Exclude the
         // wrapper itself from the integer probe (constructing a valid multi-mem
         // module is module-level, not a self-contained op sequence).
-        MultiMemory { .. } => StructurallyExcluded(
+        // #1145: `MemoryCopyBetween` never appears bare — the decoder wraps
+        // it in `MultiMemory` — so it shares the wrapper's exclusion.
+        MultiMemory { .. } | MemoryCopyBetween { .. } => StructurallyExcluded(
             "multi-memory wrapper (#406) — parity follows the wrapped op + the \
              multi-memory decline discipline; module-level, not a self-contained \
              op-sequence probe",
@@ -746,6 +748,7 @@ fn all_wasm_op_representatives() -> Vec<WasmOp> {
         LocalGet(0), LocalSet(0), LocalTee(0), GlobalGet(0), GlobalSet(0),
         MemorySize(0), MemoryGrow(0), MemoryCopy, MemoryFill,
         MultiMemory { memory: 1, op: Box::new(I32Add) },
+        MemoryCopyBetween { dst_mem: 1, src_mem: 0 },
         Drop, Select, If, Else, End, Unreachable, Nop,
         // i64
         I64Add, I64Sub, I64Mul, I64DivS, I64DivU, I64RemS, I64RemU, I64And, I64Or, I64Xor,
@@ -1622,6 +1625,25 @@ fn a64_extended_surface(
                     op: Box::new(I32Load {
                         offset: 0,
                         align: 2,
+                    }),
+                },
+            ],
+            Err(MULTI_MEM),
+        ),
+        // #1145: the cross-memory copy (decoded wrapped in `MultiMemory`)
+        // declines on aarch64 exactly like every multi-memory op.
+        MemoryCopyBetween { .. } => some(
+            "multi-memory memory.copy",
+            0,
+            vec![
+                I32Const(0),
+                I32Const(0),
+                I32Const(0),
+                MultiMemory {
+                    memory: 1,
+                    op: Box::new(MemoryCopyBetween {
+                        dst_mem: 1,
+                        src_mem: 0,
                     }),
                 },
             ],
