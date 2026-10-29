@@ -219,18 +219,10 @@ KNOWN: dict[tuple[str, str, int, str, str], tuple[str, int]] = {
     ("cortex-m4f", "br_if.wast", 0, "type-f32-value", "contract-violation"): ("#1614", 1),
     ("cortex-m4f", "br_table.wast", 0, "type-f32-value", "contract-violation"): ("#1614", 1),
     ("cortex-m4f", "br_table.wast", 0, "as-unary-operand", "contract-violation"): ("#1614", 1),
-    # #1603 — `i64.reinterpret_f64` returned garbage (the high/low words of
-    # the D-register never reached R0:R1). Fixed by PR #1607 (RQ-89-REINTERP),
-    # which had NOT merged when this table was measured on main 7e170d62.
-    # Measured on PR #1607's head (85e984dc): EXACTLY these three pins vanish
-    # and nothing else moves — so when #1607 lands this oracle goes red with
-    # three VANISHED lines, and these three entries are deleted. float_literals
-    # reads every f64 literal back through `i64.reinterpret_f64` (39 functions,
-    # one class: the module wildcard); endianness's `f64_load` stores the
-    # reinterpreted bits, so its linear memory depends on the register garbage.
-    ("cortex-m7dp", "conversions.wast", 0, "i64.reinterpret_f64", "mismatch/value"): ("#1603", 15),
-    ("cortex-m7dp", "endianness.wast", 0, "f64_load", "state-dependent-memory"): ("#1603", 4),
-    ("cortex-m7dp", "float_literals.wast", 0, "*", "mismatch/value"): ("#1603", 39),
+    # #1603 (`i64.reinterpret_f64` garbage) was pinned here as 3 entries / 58
+    # cases (conversions x15, endianness f64_load x4, float_literals x39)
+    # until PR #1607 fixed it. Rebased over #1607 (8e1097f6), this oracle
+    # reported all three VANISHED and nothing else moved; they were deleted.
 }
 
 

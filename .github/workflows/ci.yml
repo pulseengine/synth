@@ -2133,7 +2133,7 @@ jobs:
     # Reset_Handler with the FPU on, AAPCS-VFP marshalling, garbage
     # caller-saved registers and a poisoned stack, held BIT-EXACTLY to the
     # .wast literal (NaN patterns counted separately). Every open mismatch is
-    # PINNED by exact count in the script's KNOWN table (#1614, #1603); a pin
+    # PINNED by exact count in the script's KNOWN table (#1614); a pin
     # that moves or vanishes is red.
     #
     # Same pinned reference engine and unicorn as the #197 job: the counts

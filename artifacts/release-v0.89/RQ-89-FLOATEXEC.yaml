@@ -67,24 +67,30 @@ artifacts:
         (harness-error) if the poison window is under 1 KiB or overlaps linear
         memory or the R9 globals; the full run reports a minimum window of
         0x2000 B. Pins moved, each with a paired
-        control: the exact emulation floor rises by 58000 from the v0.89
-        RQ-89-NPAOFFSET value 382876 to oracle_wiring_check.py's reported total
-        (first computed over RQ-89-FALCONSTEP's 382834 on 7e170d62, and
-        re-derived after rebasing over #1602). The new oracle declares
-        emulations >= 58000; 61003 were measured via oracle_run.py. On this
-        tree the new total is rc 0 and 382876 rc 1. On main d048b523 the new
-        total is rc 1 and 382876 rc 0. known_open_pins 79 -> 92 with a waiver, 79 red on this
-        tree. known_open_pinned_cases 146 -> 214, 146 red. The KNOWN/PINNED
-        population count-eq 12 -> 13, 12 red. claim_check 75/75. No Rust was
-        touched. UNVERIFIED: the job's wall time on a GitHub ubuntu runner,
-        measured locally at about 4 minutes plus the build; the m4f leg's f64
-        functions are counted as f64-on-sp-target or symbol-missing, not
-        executed; the integer population's type-rec/type-subtyping
-        call_indirect type-mismatch non-traps (recorded, outside the float
-        scope) were not triaged. WHEN PR #1607 LANDS (not merged at
-        measurement), the rebase moves the following. The three #1603 KNOWN
-        entries VANISH and are deleted. known_open_pins goes 92 -> 89 with its
-        own waiver and known_open_pinned_cases 214 -> 156. The exact emulation
-        floor is re-derived as #1607's own total plus 58000, with the paired
-        control re-run. #1607 adds no KNOWN or PINNED table, so the count-eq
-        stays at 13.
+        control: the exact emulation floor rises by 58000, from the v0.89
+        RQ-89-REINTERP value 385388 to oracle_wiring_check.py's reported total.
+        It was first computed over RQ-89-FALCONSTEP's 382834 on 7e170d62, then
+        over RQ-89-NPAOFFSET's 382876, and re-derived after each rebase. The new
+        oracle declares emulations >= 58000. oracle_run.py measured 61003 on
+        7e170d62 and 61061 on the rebased tree; the exact floor sums DECLARED
+        floors, not measurements. On this tree the new total is rc 0 and 385388 rc 1. On
+        main 8e1097f6 the new total is rc 1 and 385388 rc 0. known_open_pins
+        went 79 -> 92 with a waiver when the table landed, and 92 -> 89 with a
+        second waiver after the rebase over #1607. known_open_pinned_cases went
+        146 -> 214 -> 156. Each old value is red on this tree. The new values
+        89/156 are red on the pre-deletion tree (the rebased head with the
+        #1603 pins still present). The KNOWN/PINNED population count-eq went
+        12 -> 13, and 12 is red. claim_check 75/75. No Rust was touched. REBASED
+        OVER PR #1607 (8e1097f6), as predicted. On a binary built from the
+        rebased tree, the oracle with the three #1603 pins still present
+        reported exactly three PINNED MISMATCH VANISHED lines (conversions x15,
+        endianness f64_load x4, float_literals x39) and nothing else. That run
+        had 42336 actions executed and 17438 gated assertions: 15102
+        bit-identical, 2228 nan-class, 98 trap-ok, 10 MISMATCH, all #1614. The
+        three entries were then deleted, so the table holds the 10 #1614 pins.
+        UNVERIFIED: the job's wall time on the CI runner, measured locally at
+        about 4 minutes plus the build. The m4f leg's f64 functions are counted
+        as f64-on-sp-target or symbol-missing, not executed. The integer
+        population's type-rec/type-subtyping call_indirect type-mismatch
+        non-traps were recorded but not triaged; they are outside the float
+        scope.
