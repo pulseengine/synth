@@ -34,6 +34,13 @@ artifacts:
         wasmtime on the reporter's workload, the refusal is gone.
         CITATION: #1318 is where the matter was analysed. The number names where
         it was analysed, not an open scope.
+
+        HELD OPEN (maintainer decision, 2026-10-29): #1318 is not closed at the
+        v0.89.0 tag. The fix is delivered, but its execution evidence (step 1000
+        of 1000 against wasmtime) is not re-derivable from the tree, because the
+        harness falcon_exec.py and the reporter's module are not committed. v0.90
+        commits the harness first, then closes #1318. Only the closure is held;
+        the status stays delivered.
     tags:
       - feature-loop
       - bug
@@ -45,7 +52,7 @@ artifacts:
       priority: must
       issue: "#1318"
       verification-track: manual
-      issue-scope: closes
+      issue-scope: outlives
       done-when: >
         manual:2027-03-31 the reporter's step export compiles under their own
         command and runs bit-identical to wasmtime, with the VCR-RA-003 check
