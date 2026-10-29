@@ -142,7 +142,10 @@ jobs:
     # lean-mem 0/4, light 0/1 - while 56 of 65 job definitions (86.2%) queued
     # against the GitHub-hosted quota. An earlier point reading of 7/7 was a
     # merge-wave transient and is corrected on the issue.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    # Routes fork PRs to GitHub-hosted runners by default. This is NOT a security
+    # boundary: a fork PR can edit this file. Isolation is enforced by the org's
+    # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -213,7 +216,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: [self-hosted, linux, x64, light]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","light"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -234,7 +237,7 @@ jobs:
 
   pin-sweep:
     name: Version Pin Sweep
-    runs-on: [self-hosted, linux, x64, light]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","light"]') }}
     steps:
       - uses: actions/checkout@v7
       # Issue #145: fail at PR time if [workspace.package].version drifts from
@@ -303,7 +306,7 @@ jobs:
     # is the enforcement; run it live before retargeting any required context.
     # SAFETY: the job NAME must stay `Claim Check` — a renamed required
     # context never reports and DEADLOCKS all merges.
-    runs-on: [self-hosted, linux, x64, light]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","light"]') }}
     steps:
       # fetch-depth: 0 — the status-evidence gate (RQ-60-FLIPCOUPLE, #1064)
       # scans first-parent commit SUBJECTS for delivery commits ("RQ-N-FOO:
@@ -1331,12 +1334,12 @@ jobs:
     # required context deadlocks every merge until protection is updated).
     name: Rust-test Line Coverage (unit + integration only)
     needs: [test]
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -1346,7 +1349,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-coverage-
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2.87.31
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-llvm-cov
       - name: Generate coverage (LCOV)
@@ -1379,8 +1382,9 @@ jobs:
             echo "reported separately, in executed checks, by the"
             echo "\`oracle evidence ledger\` job. **Do not add them together.**"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload to Codecov
-        uses: codecov/codecov-action@v7
+      - if: github.event.pull_request.head.repo.fork != true
+        name: Upload to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: lcov.info
           fail_ci_if_error: false
@@ -1403,7 +1407,7 @@ jobs:
 
   rivet:
     name: Rivet Validation
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -1763,13 +1767,13 @@ jobs:
   # ---------------------------------------------------------------------------
   rivet-federated:
     name: Rivet Federated Graph (advisory)
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: Cache varve client binary (v0.33.0 floor — see varve.toml)
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.varve/bin/varve
           key: ${{ runner.os }}-varve-client-v0.33.0
@@ -2134,7 +2138,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -2209,7 +2213,7 @@ jobs:
     # context is not moved until this one has a full green cycle, because a
     # required check whose label no runner satisfies never runs and deadlocks
     # every merge in the repo.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -3470,7 +3474,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -3635,7 +3639,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -3697,7 +3701,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -3748,7 +3752,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -3803,7 +3807,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5817,7 +5821,7 @@ jobs:
     # a REQUIRED context that has run on this pool since increment 2. It is
     # NOT required, so the worst case of a pool problem here is a red to
     # revert, never a deadlocked merge.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5890,7 +5894,7 @@ jobs:
     # a REQUIRED context that has run on this pool since increment 2. It is
     # NOT required, so the worst case of a pool problem here is a red to
     # revert, never a deadlocked merge.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5949,7 +5953,7 @@ jobs:
     # a REQUIRED context that has run on this pool since increment 2. It is
     # NOT required, so the worst case of a pool problem here is a red to
     # revert, never a deadlocked merge.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -6892,7 +6896,7 @@ jobs:
     # `ubuntu-latest`, which RQ-61-CICAP and the v0.71 measurements both found
     # saturated while the self-hosted pool idled, would make the queue worse
     # for every other lane in this file.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -7043,7 +7047,7 @@ jobs:
     name: "Portable arm64 musl asset cross-builds and is static (#1349)"
     # SELF-HOSTED, per the RQ-72-CIPOOL ceiling: a new job defaulting to the
     # GitHub-hosted quota makes every other lane queue longer during a burst.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -7245,7 +7249,7 @@ jobs:
   advisories-and-vex:
     name: "Advisories are checked, and every not_affected is human-asserted (#1359)"
     # SELF-HOSTED, per the RQ-72-CIPOOL ceiling.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -7345,7 +7349,7 @@ jobs:
     # idle self-hosted machines, because the constraint is the GitHub-hosted
     # quota and not the fleet. A new job defaulting to ubuntu-latest makes that
     # worse for every other lane, so this one goes to the pool that has capacity.
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
