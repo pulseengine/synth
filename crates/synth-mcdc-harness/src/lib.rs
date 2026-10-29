@@ -677,6 +677,84 @@ pub extern "C" fn rv_page_size_gate(log2: i32) -> i32 {
     }
 }
 
+/// RQ-89-MEMLAYER6 (#1145): drives the per-memory layering DECISION of
+/// `synth_core::npa_multi_memory::plan` — the accept/raw/refuse rule that
+/// keeps a memory-0 native rewrite off every value used as a memory-k
+/// address (a missed condition there is a silent cross-memory miscompile).
+///
+/// One exported function with one parameter (a HOST value), one mutable i32
+/// global (the stack-pointer candidate) and one `i32.const` routed through a
+/// local. Each `*_reach` argument says which memories that value is used as
+/// an address in: 0 none, 1 memory 0, 2 memory 1, 3 both. `sp_init` and
+/// `c` are the global's initializer and the constant (memory 0 = 0x10000
+/// bytes). Returns 100 = refused, else bit 0 = a stack pointer was picked,
+/// bit 1 = the constant was kept raw.
+#[unsafe(no_mangle)]
+pub extern "C" fn npa_plan_gate(
+    param_reach: i32,
+    sp_init: i32,
+    sp_reach: i32,
+    c: i32,
+    const_reach: i32,
+) -> i32 {
+    use synth_core::npa_multi_memory::{NpaFunc, NpaGlobal, NpaModule, Provenance, plan};
+    let ld = WasmOp::I32Load {
+        offset: 0,
+        align: 2,
+    };
+    let ld1 = || WasmOp::MultiMemory {
+        memory: 1,
+        op: Box::new(ld.clone()),
+    };
+    let mut ops = vec![WasmOp::I32Const(c), WasmOp::LocalSet(1)];
+    for (reach, src) in [
+        (param_reach, WasmOp::LocalGet(0)),
+        (sp_reach, WasmOp::GlobalGet(0)),
+        (const_reach, WasmOp::LocalGet(1)),
+    ] {
+        if reach & 1 != 0 {
+            ops.extend([src.clone(), ld.clone(), WasmOp::Drop]);
+        }
+        if reach & 2 != 0 {
+            ops.extend([src.clone(), ld1(), WasmOp::Drop]);
+        }
+    }
+    ops.push(WasmOp::End);
+    let m = NpaModule {
+        funcs: vec![NpaFunc {
+            index: 0,
+            ops: &ops,
+            block_arity: &[],
+            param_count: 1,
+            result_count: 0,
+            exported: true,
+        }],
+        num_imported_funcs: 0,
+        func_arg_counts: &[1],
+        func_result_counts: &[0],
+        type_arg_counts: &[],
+        type_result_counts: &[],
+        elem_func_indices: &[],
+        memory_count: 2,
+        cross_copies_carry_no_pointers: false,
+    };
+    let Ok(prov) = Provenance::analyze(&m) else {
+        return 200;
+    };
+    let globals = [NpaGlobal {
+        index: 0,
+        mutable: true,
+        init_i32: Some(sp_init),
+    }];
+    match plan(&prov, &globals, 0x10000) {
+        Err(_) => 100,
+        Ok(p) => {
+            i32::from(p.stack_pointer_global.is_some())
+                | (i32::from(p.raw_consts.contains_key(&0)) << 1)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,6 +790,21 @@ mod tests {
         assert_eq!(sd_validate_served(4, 0), 0);
         assert!(sd_validate_served(0, 0) > 0);
         assert_eq!(sd_validate_served(4, 1), 0);
+
+        // #1145 npa plan: host param in both -> refused; sp in memory 0 ->
+        // picked; sp in memory 1 -> not picked; sp in both -> refused; sp
+        // init out of range -> not picked; window const in memory 1 only ->
+        // raw; in both -> refused; below the window -> untouched.
+        assert_eq!(npa_plan_gate(3, 0x1000, 1, 0x2000, 1), 100);
+        assert_eq!(npa_plan_gate(1, 0x1000, 1, 0x2000, 1), 1);
+        assert_eq!(npa_plan_gate(0, 0x1000, 2, 0x2000, 2), 0);
+        assert_eq!(npa_plan_gate(0, 0x1000, 3, 0x2000, 0), 100);
+        assert_eq!(npa_plan_gate(0, 0, 1, 0x2000, 2), 0);
+        assert_eq!(npa_plan_gate(0, 0x20000, 1, 0x2000, 2), 0);
+        assert_eq!(npa_plan_gate(0, 0x1000, 1, 0x2000, 2), 3);
+        assert_eq!(npa_plan_gate(0, 0x1000, 1, 0x2000, 3), 100);
+        assert_eq!(npa_plan_gate(0, 0x1000, 1, 0x800, 2), 1);
+        assert_eq!(npa_plan_gate(0, 0x1000, 1, 0x20000, 2), 1);
 
         // allocation validator: green and violating shapes both reachable.
         assert_eq!(ra_validate(1), 0);

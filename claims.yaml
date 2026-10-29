@@ -1050,7 +1050,10 @@ claims:
       - kind: count-eq
         pattern: '"modeled": false'
         glob: ['artifacts/proof-inventory.json']
-        expect: 137                          # 141 -> 137: Block/Loop/Br/End_ modeled (RQ-64-CFOBLIG)
+        # 137 -> 138: RQ-89-MEMLAYER6 (#1145) adds `MemoryCopyBetween`, a
+        # WasmOp with no Rocq constructor (the multi-memory forms are
+        # unmodeled, like `MultiMemory` itself).
+        expect: 138                          # 141 -> 137: Block/Loop/Br/End_ modeled (RQ-64-CFOBLIG)
       - kind: file-exists
         path: crates/synth-synthesis/tests/selector_stack_effect_no_wildcard_946.rs
 
@@ -1869,9 +1872,38 @@ claims:
         # RQ-89-NPAOFFSET's waiver).
         # RQ-89-BRF32 (#1614): 20885 -> 20898, waived below (chained after
         # RQ-89-REINTERP's waiver).
-        value: 20898
+        # RQ-89-MEMLAYER6 (#1145): 20898 -> 21193, waived below (chained
+        # after RQ-89-BRF32's waiver; first measured 20635 -> 20915 on
+        # 7e170d62, then re-derived over #1602, #1607 and #1618).
+        value: 21193
         baseline: 17897
         waivers:
+          - to: 21193
+            reason: >-
+              RQ-89-MEMLAYER6 (Refs #1145): 20898 -> 21193 (+295, measured after
+              cargo fmt on the tree rebased over #1618; paired control: 21193
+              holds and 20898 reds here, the reverse on main ff0b1395). +15 of it
+              is a guard over #1602's npa_effective_addr_rewrite: if that
+              rewrite ever touched a constant the multi-memory provenance pass
+              keeps raw as a memory-k offset, the function is refused rather
+              than relocated. The other +280 is a NEW lowering, replacing no arm: memory.copy across
+              memories (0->k, k->0, k->k, j->k) and memory.fill on memory k, in
+              select_with_stack's MultiMemory arm. Each side is rebased to an
+              absolute pointer against its own memory (R11 for memory 0,
+              __synth_wasm_data_<k> otherwise), and the #374 byte loop runs on
+              those pointers. Before this, the decoder marked these ops
+              unsupported, so the function was loud-skipped and the compile
+              exited rc 1 (#952); that is the form `meld --memory multi` lowers a
+              Component Model boundary to, so gale's two-domain module could not
+              compile. The rest of the growth: the #1568 constant-address guard
+              learns a cross-copy's memory-0 sides, without which a no-SP static
+              compiled silently baked, and select_default's loud decline of the
+              unwrapped op. No wildcard arm was added. Gated by execution:
+              multi_memory_bulk_1145_differential.py (72 calls, NPA and plain,
+              per-function isolation; RED at 7e170d62 on every fixture; an
+              alias-memory-k-to-memory-0 mutant fails 68 of the 68 calls it had
+              at the time), and object byte-identity on every corpus cell
+              without a multi-memory bulk op.
           - to: 20898
             reason: >-
               RQ-89-BRF32 (Refs #1614): 20885 -> 20898 (+13 / -0 in
@@ -3049,7 +3081,9 @@ claims:
         # RQ-89-BRF32 (#1614): 31647 -> 31678: +13 code (see
         # selector_lines_code, waived there) and +18 test module (the
         # `_1614` unit test). No waiver.
-        value: 31678
+        # RQ-89-MEMLAYER6 (#1145): 31678 -> 31973, the same +295 as
+        # selector_lines_code (all of it outside the test module).
+        value: 31973
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4501,7 +4535,19 @@ claims:
     #   machine states x m4f/m7dp x self-contained/--relocatable; 3608
     #   executed). Paired control: `388996` rc=0 and `385388` rc=1 on this
     #   tree; `388996` rc=1 and `385388` rc=0 on main 8e1097f6.
-    text: "--exact-emulation-floor 388996"
+    # v0.89 RQ-89-MEMLAYER6 (#1145): 388996 -> 389119 (+123). Two new
+    #   oracles: npa_multi_memory_1145_differential.py declares
+    #   `emulations >= 51` (43 calls over the pages/two_sp_npa/pagesize1/
+    #   two_sp/launder01 fixtures, 5 on the --embedder-copies-carry-no-pointers
+    #   adapter module, 3 on the module violating that assertion), and
+    #   multi_memory_bulk_1145_differential.py declares `emulations >= 72`
+    #   (18 adapter + 18 three-memory calls, each under --native-pointer-abi
+    #   and the plain embedder path); both measured via oracle_run.py. First
+    #   measured 382834 -> 382957 on 7e170d62, then 382876 -> 382999 over
+    #   #1602 and 385388 -> 385511 over #1607. Paired control: `389119` rc=0
+    #   and `388996` rc=1 on this tree; `389119` rc=1 and `388996` rc=0 on
+    #   main ff0b1395.
+    text: "--exact-emulation-floor 389119"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

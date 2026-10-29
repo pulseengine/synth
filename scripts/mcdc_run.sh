@@ -129,6 +129,23 @@ test -f "$WASM" || { echo "error: harness wasm not found at $WASM" >&2; exit 1; 
   --invoke-with-args 'rv_page_size_gate:16' \
   --invoke-with-args 'rv_page_size_gate:0' \
   --invoke-with-args 'rv_page_size_gate:5' \
+  `# RQ-89-MEMLAYER6 (#1145) npa_multi_memory::plan — args: host-param` \
+  `# reach, sp init, sp reach, constant, constant reach (reach: 1 = memory 0,` \
+  `# 2 = memory 1, 3 = both). Unique-cause pairs for the host-param refusal,` \
+  `# the sp range / memory-k / both-memories tests and the window/raw/refuse` \
+  `# tests on the constant.` \
+  --invoke-with-args 'npa_plan_gate:3,4096,1,8192,1' \
+  --invoke-with-args 'npa_plan_gate:1,4096,1,8192,1' \
+  --invoke-with-args 'npa_plan_gate:2,4096,1,8192,1' \
+  --invoke-with-args 'npa_plan_gate:0,4096,2,8192,2' \
+  --invoke-with-args 'npa_plan_gate:0,4096,3,8192,0' \
+  --invoke-with-args 'npa_plan_gate:0,0,1,8192,2' \
+  --invoke-with-args 'npa_plan_gate:0,131072,1,8192,2' \
+  --invoke-with-args 'npa_plan_gate:0,4096,1,8192,2' \
+  --invoke-with-args 'npa_plan_gate:0,4096,1,8192,3' \
+  --invoke-with-args 'npa_plan_gate:0,4096,1,2048,2' \
+  --invoke-with-args 'npa_plan_gate:0,4096,1,131072,2' \
+  --invoke-with-args 'npa_plan_gate:0,4096,1,8192,1' \
   -o "$OUT/run.json"
 
 "$WITNESS" report --input "$OUT/run.json" --format mcdc > "$OUT/report.txt"

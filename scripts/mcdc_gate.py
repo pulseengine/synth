@@ -112,7 +112,20 @@ from pathlib import Path
 # its own rows and its own re-measured dead ceiling, and doing it as a side
 # effect of a mirror collapse is the sloppiness this lane exists to stop.
 # Named as a follow-up, not smuggled in.
+# RQ-89-MEMLAYER6 (#1145): `npa_multi_memory::plan` joins the scored set on
+# the same criterion as the three classes above — it is a validator
+# accept/reject on a soundness bug class. Its rule (keep a memory-k offset
+# raw, refuse a value that addresses both memories, never pick another
+# domain's stack pointer) is what stands between a multi-memory
+# --native-pointer-abi module and a SILENT cross-memory miscompile; the
+# RQ-88-MEMLAYER5 scratch lift without it executed exactly that. ONE
+# function, not the module: the provenance WALK (`analyze`/`walk`) is a
+# large match-dispatch over every WasmOp whose arms no row set can make
+# a meaningful MC/DC claim about, and scoping it would trade the dead
+# ceiling for noise (the `wasm_op::` lesson above). The rows are the
+# `npa_plan_gate` block in scripts/mcdc_run.sh.
 SCORED_PREFIXES = (
+    "synth_core::npa_multi_memory::plan",
     "synth_core::static_data_addr::",
     "synth_core::wasm_op::count_params_heuristic",
     "synth_backend_riscv::alloc_validator::",
@@ -456,6 +469,11 @@ REPORT_SHAPE = {
 # repin ONLY with the diff in hand — a count that moved without a source
 # change to that function is witness#208 territory, not a repin.
 BRANCH_POPULATION = {
+    # NEW (RQ-89-MEMLAYER6, #1145): the per-memory layering rule — host
+    # value / stack-pointer / constant accept-raw-refuse. Driven by the
+    # npa_plan_gate rows. Value from the gate's own REPIN output (witness
+    # 0.42.0 / rustc 1.96.1, instrument side), not hand-counted.
+    "synth_core::npa_multi_memory::plan": 17,
     "synth_backend_riscv::alloc_validator::is_ret": 4,
     "synth_backend_riscv::alloc_validator::is_saved_by_pass": 1,
     "synth_backend_riscv::alloc_validator::is_straight_line": 52,

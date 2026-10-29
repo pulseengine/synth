@@ -45,6 +45,21 @@ impl InstructionSelector {
         // part of `C + offset` — the relocation must carry the effective
         // address so the mixed split retargets it to the right region.
         let npa_rewritten = self.npa_effective_addr_rewrite(wasm_ops);
+        // #1145: a constant the multi-memory provenance pass keeps raw (a
+        // memory-k offset) is never a memory-0 access's producer, so this
+        // rewrite must not touch one; refuse rather than relocate it if it did.
+        if let Some(r) = &npa_rewritten
+            && self
+                .npa_raw_consts
+                .iter()
+                .any(|&i| r.get(i) != wasm_ops.get(i))
+        {
+            return Err(synth_core::Error::synthesis(
+                "#1145: the #1580 effective-address rewrite reached a constant kept \
+                 raw as a memory-k offset — refusing"
+                    .to_string(),
+            ));
+        }
         let wasm_ops: &[WasmOp] = npa_rewritten.as_deref().unwrap_or(wasm_ops);
         let npa_plan = self.npa_local_const_plan(wasm_ops, num_params);
         self.npa_const_addr_guard(wasm_ops, &npa_plan)?;
@@ -1358,7 +1373,9 @@ impl InstructionSelector {
                     // RQ-89-NPARESIDUE (#1568): without one, a const that
                     // defines a local read ONLY as an address is relocated too
                     // (`npa_local_const_plan`) — no scalar ever observes it.
+                    // #1145: a memory-k offset in memory 0's window stays raw.
                     if (self.sp_global.is_some() || self.npa_ptr_const_defs.contains(&idx))
+                        && !self.npa_raw_consts.contains(&idx)
                         && let Some(addend) = self.static_data_addend(uval)
                     {
                         Self::emit_wasm_data_addr(&mut instructions, dst, addend, idx);
@@ -3924,6 +3941,269 @@ impl InstructionSelector {
                                 source_line: Some(idx),
                             });
                             cf.add_instructions(3);
+                        }
+                        // #1145 (RQ-89-MEMLAYER6): `memory.fill` on memory k
+                        // and `memory.copy dst_mem src_mem` across memories —
+                        // the bulk forms `meld --memory multi` lowers Component
+                        // Model boundaries to. Each side resolves against ITS
+                        // memory: memory 0 is `R11 + addr` (R11 = 0 under
+                        // --native-pointer-abi, so a native pointer), memory k
+                        // is `__synth_wasm_data_<k> + addr`. Inline bounds
+                        // checking was refused above for any memory-k op
+                        // (memory k has no size register), so this is the
+                        // unguarded #374 byte loop over ABSOLUTE pointers; the
+                        // copy direction is chosen on those pointers, so a
+                        // same-memory copy is memmove-correct and a cross-memory
+                        // copy (disjoint regions) is correct either way.
+                        MemoryFill | MemoryCopyBetween { .. } => {
+                            let sides: [u32; 2] =
+                                if let MemoryCopyBetween { dst_mem, src_mem } = inner_op.as_ref() {
+                                    [*dst_mem, *src_mem]
+                                } else {
+                                    [*memory, *memory]
+                                };
+                            for m in sides {
+                                if m != 0 {
+                                    self.multi_memory_pages(m)?;
+                                }
+                            }
+                            let is_copy = matches!(inner_op.as_ref(), MemoryCopyBetween { .. });
+                            let pop =
+                                |stack: &mut Vec<StackVal>,
+                                 next_temp: &mut u8,
+                                 instructions: &mut Vec<ArmInstruction>,
+                                 spill: &mut SpillState| {
+                                    pop_operand(
+                                        stack,
+                                        next_temp,
+                                        instructions,
+                                        spill,
+                                        &live_params,
+                                        idx,
+                                    )
+                                };
+                            let len =
+                                pop(&mut stack, &mut next_temp, &mut instructions, &mut spill)?;
+                            let mid =
+                                pop(&mut stack, &mut next_temp, &mut instructions, &mut spill)?;
+                            let dst =
+                                pop(&mut stack, &mut next_temp, &mut instructions, &mut spill)?;
+                            let mut reserve: Vec<Reg> = live_params.clone();
+                            reserve.extend([len, mid, dst]);
+                            let dst = bulk_mutable_operand(
+                                dst,
+                                &[mid, len],
+                                &live_params,
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &mut reserve,
+                                idx,
+                            )?;
+                            // `mid` is the copy source (mutated: walking
+                            // pointer) or the fill byte (only read).
+                            let mid = if is_copy {
+                                bulk_mutable_operand(
+                                    mid,
+                                    &[dst, len],
+                                    &live_params,
+                                    &mut stack,
+                                    &mut next_temp,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &mut reserve,
+                                    idx,
+                                )?
+                            } else {
+                                mid
+                            };
+                            // `len` becomes the copy's byte buffer.
+                            let len = if is_copy {
+                                bulk_mutable_operand(
+                                    len,
+                                    &[dst, mid],
+                                    &live_params,
+                                    &mut stack,
+                                    &mut next_temp,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &mut reserve,
+                                    idx,
+                                )?
+                            } else {
+                                len
+                            };
+                            let base = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &reserve,
+                                idx,
+                            )?;
+                            // Rebase each side to an absolute pointer.
+                            let rebased: Vec<(Reg, u32)> = if is_copy {
+                                vec![(dst, sides[0]), (mid, sides[1])]
+                            } else {
+                                vec![(dst, sides[0])]
+                            };
+                            for (reg, m) in rebased {
+                                cf.add_instructions(if m == 0 { 1 } else { 2 });
+                                let rn = if m == 0 {
+                                    Reg::R11
+                                } else {
+                                    Self::emit_sym_addr(
+                                        &mut instructions,
+                                        base,
+                                        &Self::wasm_data_symbol(m),
+                                        0,
+                                        idx,
+                                    );
+                                    base
+                                };
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Add {
+                                        rd: reg,
+                                        rn,
+                                        op2: Operand2::Reg(reg),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                            }
+                            let mut ops: Vec<ArmOp> = Vec::new();
+                            if !is_copy {
+                                let lp = self.alloc_label("mmfill_loop");
+                                let done = self.alloc_label("mmfill_done");
+                                ops.push(ArmOp::Add {
+                                    rd: Reg::R12,
+                                    rn: dst,
+                                    op2: Operand2::Reg(len),
+                                });
+                                ops.push(ArmOp::Label { name: lp.clone() });
+                                ops.push(ArmOp::Cmp {
+                                    rn: dst,
+                                    op2: Operand2::Reg(Reg::R12),
+                                });
+                                ops.push(ArmOp::Bcc {
+                                    cond: Condition::HS,
+                                    label: done.clone(),
+                                });
+                                ops.push(ArmOp::Strb {
+                                    rd: mid,
+                                    addr: MemAddr::imm(dst, 0),
+                                });
+                                ops.push(ArmOp::Add {
+                                    rd: dst,
+                                    rn: dst,
+                                    op2: Operand2::Imm(1),
+                                });
+                                ops.push(ArmOp::B { label: lp });
+                                ops.push(ArmOp::Label { name: done });
+                            } else {
+                                let src = mid;
+                                let fwd = self.alloc_label("mmcpy_fwd");
+                                let bwd = self.alloc_label("mmcpy_bwd");
+                                let bwd_loop = self.alloc_label("mmcpy_bwd_loop");
+                                let done = self.alloc_label("mmcpy_done");
+                                ops.push(ArmOp::Cmp {
+                                    rn: dst,
+                                    op2: Operand2::Reg(src),
+                                });
+                                ops.push(ArmOp::Bcc {
+                                    cond: Condition::HI,
+                                    label: bwd.clone(),
+                                });
+                                // forward: R12 = one past the last dst byte
+                                ops.push(ArmOp::Add {
+                                    rd: Reg::R12,
+                                    rn: dst,
+                                    op2: Operand2::Reg(len),
+                                });
+                                ops.push(ArmOp::Label { name: fwd.clone() });
+                                ops.push(ArmOp::Cmp {
+                                    rn: dst,
+                                    op2: Operand2::Reg(Reg::R12),
+                                });
+                                ops.push(ArmOp::Bcc {
+                                    cond: Condition::HS,
+                                    label: done.clone(),
+                                });
+                                ops.push(ArmOp::Ldrb {
+                                    rd: len,
+                                    addr: MemAddr::imm(src, 0),
+                                });
+                                ops.push(ArmOp::Strb {
+                                    rd: len,
+                                    addr: MemAddr::imm(dst, 0),
+                                });
+                                ops.push(ArmOp::Add {
+                                    rd: src,
+                                    rn: src,
+                                    op2: Operand2::Imm(1),
+                                });
+                                ops.push(ArmOp::Add {
+                                    rd: dst,
+                                    rn: dst,
+                                    op2: Operand2::Imm(1),
+                                });
+                                ops.push(ArmOp::B { label: fwd });
+                                // backward: R12 = lowest dst byte (exclusive
+                                // lower bound); walk down from one past the end
+                                ops.push(ArmOp::Label { name: bwd });
+                                ops.push(ArmOp::Mov {
+                                    rd: Reg::R12,
+                                    op2: Operand2::Reg(dst),
+                                });
+                                ops.push(ArmOp::Add {
+                                    rd: dst,
+                                    rn: dst,
+                                    op2: Operand2::Reg(len),
+                                });
+                                ops.push(ArmOp::Add {
+                                    rd: src,
+                                    rn: src,
+                                    op2: Operand2::Reg(len),
+                                });
+                                ops.push(ArmOp::Label {
+                                    name: bwd_loop.clone(),
+                                });
+                                ops.push(ArmOp::Cmp {
+                                    rn: dst,
+                                    op2: Operand2::Reg(Reg::R12),
+                                });
+                                ops.push(ArmOp::Bcc {
+                                    cond: Condition::LS,
+                                    label: done.clone(),
+                                });
+                                ops.push(ArmOp::Sub {
+                                    rd: dst,
+                                    rn: dst,
+                                    op2: Operand2::Imm(1),
+                                });
+                                ops.push(ArmOp::Sub {
+                                    rd: src,
+                                    rn: src,
+                                    op2: Operand2::Imm(1),
+                                });
+                                ops.push(ArmOp::Ldrb {
+                                    rd: len,
+                                    addr: MemAddr::imm(src, 0),
+                                });
+                                ops.push(ArmOp::Strb {
+                                    rd: len,
+                                    addr: MemAddr::imm(dst, 0),
+                                });
+                                ops.push(ArmOp::B { label: bwd_loop });
+                                ops.push(ArmOp::Label { name: done });
+                            }
+                            for op in ops {
+                                instructions.push(ArmInstruction {
+                                    op,
+                                    source_line: Some(idx),
+                                });
+                                cf.add_instruction();
+                            }
                         }
                         other => {
                             return Err(synth_core::Error::synthesis(format!(

@@ -1,10 +1,10 @@
 {
   "a32_tripwire_variants": "224",
   "a32_tripwire_variants_sp_leg": "224",
-  "aarch64_declined_ops": "`memory.copy`, `memory.fill`, `multi-memory wrapper`, `simd (grouped)`, `v128.and`, `v128.andnot`, `v128.const`, `v128.load`, `v128.not`, `v128.or`, `v128.store`, `v128.xor`",
-  "aarch64_ops_declined": 12,
+  "aarch64_declined_ops": "`memory.copy`, `memory.fill`, `multi-memory memory.copy`, `multi-memory wrapper`, `simd (grouped)`, `v128.and`, `v128.andnot`, `v128.const`, `v128.load`, `v128.not`, `v128.or`, `v128.store`, `v128.xor`",
+  "aarch64_ops_declined": 13,
   "aarch64_ops_lowered": 185,
-  "aarch64_ops_probed": 197,
+  "aarch64_ops_probed": 198,
   "arm_refinement_assumed_connection": 5,
   "arm_semantics_axioms": 72,
   "backends": [
@@ -23,7 +23,7 @@
   "mirror_obligation_files": 24,
   "mutants_untested": 4,
   "proof_inventory_rocq_qed": "645",
-  "proof_inventory_wasm_op_total": "279",
+  "proof_inventory_wasm_op_total": "280",
   "rocq_admit_tactics": 2,
   "rocq_admitted": 2,
   "rocq_axioms": 93,
@@ -33,12 +33,12 @@
   "sel_dsl_rule_qed": 80,
   "sel_dsl_rules": 80,
   "sel_rules_simplified_basis": 80,
-  "selector_lines_code": 20898,
-  "selector_lines_total": 31678,
+  "selector_lines_code": 21193,
+  "selector_lines_total": 31973,
   "selector_wildcard_arms_code": 53,
   "selector_wildcard_arms_total": 93,
   "version": "0.88.0",
   "verus_spec_fns": 8,
-  "wasm_op_variant_count_pin": "279",
+  "wasm_op_variant_count_pin": "280",
   "wasmcert_bridge_qed": 104
 }

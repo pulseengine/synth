@@ -308,9 +308,49 @@ fn multi_memory_self_contained_cortex_m_refuses() {
     assert_refused(&out, &["multi-memory", "#406"], "self-contained --cortex-m");
 }
 
-/// --native-pointer-abi: the static-region classification is memory-0-only.
+/// RQ-89-MEMLAYER6 (#1145): --native-pointer-abi is layered per memory —
+/// accepted on a multi-memory ARM --relocatable module. Memory k keeps its
+/// own region and symbol exactly as on the plain path; memory 0 gains the
+/// native `__synth_wasm_data` region. (Execution equivalence is
+/// scripts/repro/npa_multi_memory_1145_differential.py's job.)
 #[test]
-fn multi_memory_native_pointer_abi_refuses() {
+fn multi_memory_native_pointer_abi_layered_1145() {
+    // mem406_multi_memory.wat itself stays REFUSED under the flag (an export
+    // parameter is an address in both memories — the next test's class), so
+    // this uses RQ-88-MEMLAYER5's committed two-memory stand-in.
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("scripts/repro/memlayer5_1145/two_mem_npa.wat");
+    let bytes = compile_read(
+        &fixture,
+        &[
+            "--relocatable",
+            "--native-pointer-abi",
+            "--target",
+            "cortex-m3",
+        ],
+    );
+    let obj = object::File::parse(&*bytes).expect("parse ELF");
+    let mem1 = obj
+        .section_by_name(".synth.wasm_mem_1")
+        .expect("memory 1 reservation section");
+    assert_eq!(mem1.size(), 2 * 65536, "2 declared pages");
+    assert!(
+        obj.symbols()
+            .any(|s| s.name() == Ok("__synth_wasm_data_1") && !s.is_undefined()),
+        "memory 1 keeps its own defined region base"
+    );
+    assert!(
+        !obj.symbols().any(|s| s.name() == Ok("__synth_wasm_data_0")),
+        "memory 0 keeps the historical name — no _0 symbol"
+    );
+}
+
+/// RQ-89-MEMLAYER6 (#1145): the #406 fixture under the flag is refused — its
+/// `store_both_*` exports use ONE parameter as an address in both memories,
+/// and the host cannot pass a native pointer and a wasm offset at once.
+#[test]
+fn multi_memory_native_pointer_abi_host_param_refuses_1145() {
     let out = compile(
         &two_mem_fixture(),
         &[
@@ -322,8 +362,47 @@ fn multi_memory_native_pointer_abi_refuses() {
     );
     assert_refused(
         &out,
-        &["multi-memory", "#406", "--native-pointer-abi"],
-        "native-pointer ABI",
+        &[
+            "#1145",
+            "parameter 0 of exported function",
+            "no single representation",
+        ],
+        "an export parameter used in both memories",
+    );
+}
+
+/// RQ-89-MEMLAYER6 (#1145): what the layering cannot represent is refused,
+/// naming the value — one constant used as an address in BOTH memories.
+#[test]
+fn multi_memory_native_pointer_abi_both_memories_refuses_1145() {
+    let wat = wat_file(
+        "npa_both_1145.wat",
+        r#"(module (memory $m0 1 1) (memory $m1 1 1)
+          (global $sp (mut i32) (i32.const 0x800))
+          (data (memory $m0) (i32.const 0x1000) "\01")
+          (func (export "f") (result i32) (local i32)
+            (local.set 0 (i32.const 0x1000))
+            (i32.add (i32.load $m0 (local.get 0)) (i32.load $m1 (local.get 0)))))"#,
+    );
+    let out = compile(
+        &wat,
+        &[
+            "--relocatable",
+            "--native-pointer-abi",
+            "--target",
+            "cortex-m3",
+        ],
+    );
+    assert_refused(
+        &out,
+        &[
+            "multi-memory",
+            "#406",
+            "#1145",
+            "0x1000",
+            "no single representation",
+        ],
+        "a constant used in both memories",
     );
 }
 
@@ -342,8 +421,8 @@ fn multi_memory_shadow_stack_refuses() {
             "cortex-m3",
         ],
     );
-    // The native-pointer-abi gate may fire first — either way it must be a
-    // loud multi-memory refusal, and the flag combo must never compile.
+    // Since #1145 the native-pointer-abi gate passes this module, so this is
+    // the --shadow-stack-size refusal itself; the combo must never compile.
     assert_refused(&out, &["multi-memory", "#406"], "--shadow-stack-size combo");
 }
 
@@ -412,32 +491,95 @@ fn multi_memory_aarch64_refuses() {
     );
 }
 
-/// Cross-memory memory.copy has no phase-1 lowering: the function loud-skips
-/// naming the op, and a module with only that export fails (never a silent
-/// memory-0 copy).
+/// #1145 (RQ-89-MEMLAYER6): cross-memory memory.copy is lowered on ARM
+/// --relocatable — each side against its own memory (execution equivalence
+/// is scripts/repro/multi_memory_bulk_1145_differential.py's job). The
+/// object must reference memory 1's region symbol.
 #[test]
-fn cross_memory_copy_loud_skips() {
+fn cross_memory_copy_lowered_1145() {
     let wat = r#"(module
       (memory $a 1 1)
       (memory $b 1 1)
       (func (export "xcopy") (param $d i32) (param $s i32) (param $n i32)
         (memory.copy $b $a (local.get $d) (local.get $s) (local.get $n))))"#;
     let f = wat_file("cross_copy.wat", wat);
-    let out = compile(&f, &["--relocatable", "--target", "cortex-m3"]);
-    assert_refused(&out, &["memory.copy", "#406"], "cross-memory memory.copy");
+    let bytes = compile_read(&f, &["--relocatable", "--target", "cortex-m3"]);
+    let obj = object::File::parse(&*bytes).expect("parse ELF");
+    assert!(
+        obj.symbols().any(|s| s.name() == Ok("xcopy")),
+        "the cross-memory copy export is in the object"
+    );
+    assert!(
+        obj.symbols().any(|s| s.name() == Ok("__synth_wasm_data_1")),
+        "memory 1's side resolves through its own region symbol"
+    );
 }
 
-/// memory.fill on a non-default memory: same loud-skip contract.
+/// #1145: memory.fill on a non-default memory is lowered too.
 #[test]
-fn non_default_memory_fill_loud_skips() {
+fn non_default_memory_fill_lowered_1145() {
     let wat = r#"(module
       (memory $a 1 1)
       (memory $b 1 1)
       (func (export "fill1") (param $d i32) (param $v i32) (param $n i32)
         (memory.fill $b (local.get $d) (local.get $v) (local.get $n))))"#;
     let f = wat_file("fill1.wat", wat);
-    let out = compile(&f, &["--relocatable", "--target", "cortex-m3"]);
-    assert_refused(&out, &["memory.fill", "#406"], "non-default memory.fill");
+    let bytes = compile_read(&f, &["--relocatable", "--target", "cortex-m3"]);
+    let obj = object::File::parse(&*bytes).expect("parse ELF");
+    assert!(
+        obj.symbols().any(|s| s.name() == Ok("fill1")),
+        "the memory-1 fill export is in the object"
+    );
+}
+
+/// #1145: `--embedder-copies-carry-no-pointers` asserts a property only the
+/// native-pointer ABI's provenance pass uses — refused without it.
+#[test]
+fn copies_carry_no_pointers_needs_native_pointer_abi_1145() {
+    let out = compile(
+        &two_mem_fixture(),
+        &[
+            "--relocatable",
+            "--target",
+            "cortex-m3",
+            "--embedder-copies-carry-no-pointers",
+        ],
+    );
+    assert_refused(
+        &out,
+        &[
+            "--embedder-copies-carry-no-pointers",
+            "--native-pointer-abi",
+        ],
+        "the cross-copy assertion without the native-pointer ABI",
+    );
+}
+
+/// #1145: a multi-memory bulk op under an INLINE bounds mode is still the
+/// loud memory-k refusal (memory k has no size register).
+#[test]
+fn cross_memory_copy_software_bounds_refuses_1145() {
+    let wat = r#"(module
+      (memory $a 1 1)
+      (memory $b 1 1)
+      (func (export "xcopy") (param $d i32) (param $s i32) (param $n i32)
+        (memory.copy $b $a (local.get $d) (local.get $s) (local.get $n))))"#;
+    let f = wat_file("cross_copy_sw.wat", wat);
+    let out = compile(
+        &f,
+        &[
+            "--relocatable",
+            "--target",
+            "cortex-m3",
+            "--safety-bounds",
+            "software",
+        ],
+    );
+    assert_refused(
+        &out,
+        &["#406", "no size register"],
+        "software bounds on memory 1",
+    );
 }
 
 /// Phase-1 scope is the i32 access family: an i64 access on memory k > 0

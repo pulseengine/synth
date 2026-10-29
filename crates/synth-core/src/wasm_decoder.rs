@@ -2083,31 +2083,11 @@ fn decode_function_body(
             ops.push(wasm_op);
             op_offsets.push(offset as u32);
         } else if unsupported.is_none() && !is_intentionally_ignored(&op) {
-            // #406 phase 1: bulk-memory ops on a non-default memory (including
-            // the cross-memory `memory.copy` dst_mem != src_mem form) have no
-            // lowering yet — name the decline precisely instead of the generic
-            // dropped-op message.
-            unsupported = match &op {
-                wasmparser::Operator::MemoryCopy { dst_mem, src_mem }
-                    if *dst_mem != 0 || *src_mem != 0 =>
-                {
-                    Some(format!(
-                        "memory.copy dst_mem={dst_mem} src_mem={src_mem}: \
-                         cross-/non-default-memory memory.copy is not lowered \
-                         in multi-memory phase 1 (#406) — only memory-0 \
-                         memory.copy is supported"
-                    ))
-                }
-                wasmparser::Operator::MemoryFill { mem } if *mem != 0 => Some(format!(
-                    "memory.fill mem={mem}: non-default-memory memory.fill is \
-                     not lowered in multi-memory phase 1 (#406) — only \
-                     memory-0 memory.fill is supported"
-                )),
-                // The op was DROPPED by `convert_operator` (`_ => None`) and is
-                // not an intentional no-op (Nop) — record it so the function is
-                // loud-skipped rather than silently miscompiled (#369).
-                _ => Some(format!("{op:?}")),
-            };
+            // The op was DROPPED by `convert_operator` (`_ => None`) and is
+            // not an intentional no-op (Nop) — record it so the function is
+            // loud-skipped rather than silently miscompiled (#369). (The
+            // multi-memory bulk forms decode since #1145.)
+            unsupported = Some(format!("{op:?}"));
         }
     }
 
@@ -2469,6 +2449,19 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
             src_mem: 0,
         } => Some(WasmOp::MemoryCopy),
         MemoryFill { mem: 0 } => Some(WasmOp::MemoryFill),
+        // #1145 (RQ-89-MEMLAYER6): the multi-memory bulk forms, wrapped so
+        // every path without a multi-memory lowering declines them loudly.
+        MemoryCopy { dst_mem, src_mem } => Some(WasmOp::MultiMemory {
+            memory: if *dst_mem != 0 { *dst_mem } else { *src_mem },
+            op: Box::new(WasmOp::MemoryCopyBetween {
+                dst_mem: *dst_mem,
+                src_mem: *src_mem,
+            }),
+        }),
+        MemoryFill { mem } => Some(WasmOp::MultiMemory {
+            memory: *mem,
+            op: Box::new(WasmOp::MemoryFill),
+        }),
 
         // ========================================================================
         // v128 SIMD operations (WASM SIMD proposal, 0xFD prefix)

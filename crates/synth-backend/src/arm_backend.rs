@@ -356,6 +356,39 @@ fn effective_num_params(wasm_ops: &[WasmOp], config: &CompileConfig) -> u32 {
 /// here keeps the existing `rewrite_memory_grow_zero(...)` call sites working.
 use synth_core::rewrite_memory_grow_zero;
 
+/// #1145: map `i32.const` op indices of `old` onto `new`, where `new` differs
+/// from `old` only by dropped `i32.const 0` ops (the #539 fold). Each index
+/// must name a non-zero constant, and the same constant at the same ordinal
+/// in `new`.
+fn remap_nonzero_consts(
+    old: &[WasmOp],
+    new: &[WasmOp],
+    idx: &[usize],
+) -> Result<Vec<usize>, String> {
+    if idx.is_empty() || old.len() == new.len() {
+        return Ok(idx.to_vec());
+    }
+    let nz = |ops: &[WasmOp]| -> Vec<usize> {
+        (0..ops.len())
+            .filter(|&i| matches!(ops[i], WasmOp::I32Const(c) if c != 0))
+            .collect()
+    };
+    let (o, n) = (nz(old), nz(new));
+    idx.iter()
+        .map(|i| {
+            let k = o.binary_search(i).ok();
+            match k.and_then(|k| n.get(k).map(|&j| (k, j))) {
+                Some((_, j)) if old[*i] == new[j] => Ok(j),
+                _ => Err(format!(
+                    "#1145: native-pointer raw-constant mark at op {i} does not \
+                     survive the memory.grow(0) fold — refusing to key a rewrite \
+                     to the wrong op"
+                )),
+            }
+        })
+        .collect()
+}
+
 /// #509: does the op stream contain a `br`/`br_if`/`br_table` that CARRIES a
 /// value — i.e. one targeting a result-typed block/if (forward edge with
 /// results > 0) or a parameterized loop header (backward edge with loop
@@ -718,6 +751,13 @@ fn compile_wasm_to_arm(
         }
         (&[], &[], Vec::new())
     };
+    // #1145: the provenance pass keyed its raw constants by index into the
+    // DRIVER's stream; the fold above removes only `i32.const 0`, so the
+    // non-zero `i32.const`s correspond one-to-one by ordinal. Remap through
+    // that ordinal and check the op is the same constant — a mismatch is an
+    // internal error, never a silently mis-keyed rewrite.
+    let npa_raw_consts =
+        remap_nonzero_consts(wasm_ops, &rewritten, &config.current_func_npa_raw_consts)?;
     let wasm_ops: &[WasmOp] = &rewritten;
 
     // #457: `count_params` INFERS the param count from access patterns (a local
@@ -914,6 +954,8 @@ fn compile_wasm_to_arm(
         // zero-init of a read-before-write float local's VFP home. Empty ⇒
         // no float zero-init (the pre-#1594 behaviour).
         selector.set_declared_float_locals(config.current_func_declared_float_locals.clone());
+        // #1145: memory-k offsets inside memory 0's NPA window stay raw.
+        selector.set_npa_raw_consts(npa_raw_consts.clone());
         // Stack-pointer promotion is meaningful only under the native-pointer ABI;
         // gating here keeps every non-native compile (all frozen fixtures) on the
         // legacy R9 globals-table path, bit-identical.

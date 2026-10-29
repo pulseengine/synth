@@ -3,7 +3,7 @@
     "binding": "a theorem discharges a constructor when its STATEMENT applies exec_wasm_instr / compile_wasm_to_arm / singleton exec_wasm_seq to that constructor AND runs the ARM-side executor (exec_program / _br / _pc) \u2014 bound by what the statement APPLIES, never by deriving a name (the fused-vs-underscored naming split, brif_correct included, is deliberately irrelevant here)",
     "cross_check": {
       "rocq_qed_total": 645,
-      "wasm_op_total": 279
+      "wasm_op_total": 280
     },
     "generated_by": "scripts/proof_inventory.py (re-run it; do not hand-edit)",
     "honesty": [
@@ -1088,6 +1088,14 @@
       "constructor": null,
       "modeled": false,
       "op": "MemoryFill",
+      "result_correspondence": false,
+      "status": "unmodeled",
+      "theorems": []
+    },
+    {
+      "constructor": null,
+      "modeled": false,
+      "op": "MemoryCopyBetween",
       "result_correspondence": false,
       "status": "unmodeled",
       "theorems": []
@@ -3688,7 +3696,7 @@
     "modeled": 142,
     "qed": 138,
     "result_correspondence": 63,
-    "total": 279,
-    "unmodeled": 137
+    "total": 280,
+    "unmodeled": 138
   }
 }

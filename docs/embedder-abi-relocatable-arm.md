@@ -426,6 +426,87 @@ this table are currently the ONLY enforcement available for it. Pinned
 executable: `scripts/repro/mem_isolation_red_1145.py` (the decline needles +
 the landed cross-tenant write).
 
+### With `--native-pointer-abi` (RQ-89-MEMLAYER6, v0.89)
+
+`--native-pointer-abi` is accepted on a multi-memory module since v0.89, and
+it is layered per memory rather than applied to all of them:
+
+- **Memory 0 is native**, exactly as on a single-memory object: R11 is 0, its
+  statics live in the `__synth_wasm_data` reservation (`.bss`, plus the
+  retargeted `__synth_wasm_seg_K` init segments in `.data` on the mixed
+  split), its stack-pointer global is rebased on read, and a memory-0 pointer
+  crossing the host boundary is a NATIVE address.
+- **Memory k > 0 is a wasm offset**, exactly as without the flag: every
+  access is `__synth_wasm_data_<k> + addr`, its `.synth.wasm_mem_k` section,
+  `__synth_mem_base_k` and `__synth_mem_size_k` are unchanged, and a
+  memory-k pointer crossing the host boundary is a wasm OFFSET.
+
+The compiler enforces the split with a module-level value-provenance pass
+(`crates/synth-core/src/npa_multi_memory.rs`, run by the CLI before
+selection): a constant inside memory 0's static window that may be used as a
+memory-k address stays raw, memory 0's stack pointer is chosen only among
+globals that never reach memory k, and a value that may be used as an
+address in BOTH memory 0 and memory k — a constant, the stack pointer, an
+export parameter or an import result — is REFUSED, naming it. The pass is
+field-insensitive per memory (one node stands for everything stored in a
+memory), so a module that moves memory-0 contents into a memory-k address
+can be refused although no single value is actually shared; that refusal is
+imprecision, and is named as such in the oracle. Executed against wasmtime,
+with an access-region isolation hook, by
+`scripts/repro/npa_multi_memory_1145_differential.py`.
+
+Bulk memory across memories (v0.89, same lane): `memory.copy dst_mem src_mem`
+(0->k, k->0, k->k, j->k) and `memory.fill` on memory k are lowered on ARM
+`--relocatable`, with and without `--native-pointer-abi`. Each side resolves
+against its own memory (memory 0 at R11, memory k at `__synth_wasm_data_<k>`),
+and the byte loop picks its direction on the absolute pointers, so a
+same-memory copy is memmove-correct. Inline bounds checking
+(`--safety-bounds software|mask`) still refuses every memory-k op, these
+included. Under `--native-pointer-abi` the provenance pass charges each side
+to its memory and lets the copied bytes flow between the two memories'
+contents. Because it is field-insensitive, a module that stores pointers in
+BOTH memories and copies across them can be refused although no value is
+really shared. Executed by
+`scripts/repro/multi_memory_bulk_1145_differential.py`.
+
+#### `--embedder-copies-carry-no-pointers` — the Canonical-ABI assertion (opt-in)
+
+The pass treats each memory's contents as one value, so a cross-memory
+`memory.copy` joins the two memories' contents. A module that stores pointers
+in BOTH memories (every Rust tenant and supervisor) and copies across them is
+therefore refused by default, although no value is shared. The refusal message
+names this flag.
+
+- **What it asserts:** a cross-memory `memory.copy` never carries a value that
+  is later used as an address in the DESTINATION memory. This is the Canonical
+  ABI's own discipline: an adapter copies payload bytes and re-derives every
+  pointer by allocating in the callee's memory, so a copied word is data there.
+- **What synth does with it:** the provenance pass stops joining the two
+  memories' contents at a cross-memory copy. Nothing else changes. A value that
+  reaches an address in both memories by any OTHER route (a local, a call, a
+  global, a store and load in one memory, a compare) is still tracked, and it
+  is still refused. A same-memory copy is still tracked.
+- **Who guarantees it:** whoever produced the copies. For a `meld --memory multi`
+  fusion that is meld's adapter generator. For hand-written or other tooling,
+  it is the integrator passing the flag. synth cannot check it.
+- **If it is false:** a memory-0 pointer copied into memory k (or the reverse)
+  keeps its source memory's representation. Memory 0's is native
+  (`__synth_wasm_data + C`) and memory k's is a wasm offset. Dereferencing it in
+  the destination memory SILENTLY reads or writes the wrong address, out of
+  region or into another tenant. There is no trap: this is the failure the
+  default refusal exists to prevent. `scripts/repro/npa_multi_memory_1145_differential.py`
+  executes exactly that violation under the flag and requires it to diverge
+  from wasmtime.
+- The flag is refused without `--native-pointer-abi`, where it would mean
+  nothing.
+
+Region 0 under this flag is not the R11 value (R11 is 0): it is the linked
+`__synth_wasm_data` reservation plus the `.data` section that holds the
+retargeted init segments and `__synth_globals`. `__synth_mem_size_0` still
+reports memory 0's DECLARED bytes, which is what an embedder sizes a region
+from; the `.bss` reservation itself can be smaller (it covers the used
+extent).
+
 ### Conformance properties `verify-embedder` COULD check (named, not built)
 
 Stated so the obligation does not go ungated by omission (the #1131

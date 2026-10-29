@@ -1216,7 +1216,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 388996 \
+            --exact-emulation-floor 389119 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3135,6 +3135,33 @@ jobs:
       # phase 2") -> GREEN with the emission.
       - name: Run two-tenant isolation RED oracle + region-table pins (#1145, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/mem_isolation_red_1145.py
+      # RQ-89-MEMLAYER6 (#1145): --native-pointer-abi on a MULTI-MEMORY ARM
+      # --relocatable module, layered per memory (memory 0 native, memory k a
+      # wasm offset via __synth_wasm_data_<k>; the CLI provenance pass keeps
+      # memory-k constants inside memory 0's window raw and picks memory 0's
+      # stack pointer). Executed against wasmtime (multi-memory + custom page
+      # sizes) with every section at a distinct non-adjacent base, an
+      # access-region ISOLATION hook, both memories compared byte for byte,
+      # gale's (pagesize 1) byte extents + region table, the opt-in
+      # --embedder-copies-carry-no-pointers assertion (accepted and correct on
+      # a Canonical-ABI adapter module; a module VIOLATING it must diverge),
+      # and nine loud
+      # refusals. RED at 7e170d62 (refused at the gate); the no-layering lift
+      # (RQ-88-MEMLAYER5) diverges on 34 of 43 calls and accepts all 4 layering refusals.
+      - name: Run native-pointer multi-memory layering oracle (#1145, cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_multi_memory_1145_differential.py
+      # RQ-89-MEMLAYER6 (#1145): multi-memory BULK memory on ARM --relocatable
+      # — memory.copy across memories (0->k, k->0, k->k, j->k) and
+      # memory.fill on memory k, the ops `meld --memory multi` lowers a
+      # Component Model boundary to — with AND without --native-pointer-abi.
+      # A meld-adapter-shaped fixture (tenant memory 0, supervisor memory 1,
+      # args copied 0->1, transformed, result copied 1->0) and a three-memory
+      # fixture, executed against wasmtime; every access is attributed to its
+      # FUNCTION by PC and only the adapter (two copies and a call) may touch
+      # both memories. RED at 7e170d62: every fixture fails to compile (the
+      # adapter is loud-skipped, rc 1 via #952).
+      - name: Run multi-memory bulk-memory oracle (#1145, cortex-m3, NPA and plain)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/multi_memory_bulk_1145_differential.py
       # #758: the DEFAULT self-contained `--cortex-m` image (no --relocatable,
       # no native-pointer ABI) must SHIP active memory-0 data segments. Before
       # the fix `.linear_memory` was NoBits and the reset path had no copy loop,
@@ -4700,8 +4727,21 @@ jobs:
           # differs, 30032 vs 30104: the reserved frame's sub/add sp), and the
           # fixed binary with that fixture held aside prints the old 7407 /
           # 8852 / 240549 exactly. `hits: 0` on all three runs.
-          grep -Eq '^functions audited: 7443$' haa1189.txt
-          grep -Eq '^homes watched: 8916$' haa1189.txt
+          # RQ-89-MEMLAYER6 (#1145): 7443 -> 7461, 8916 -> 8942 and (below)
+          # 240971 -> 241265, RE-MEASURED on the tree rebased over ff0b1395 and
+          # DECOMPOSED by isolation. Codegen: this binary over main's
+          # (ff0b1395) tree prints 7449 / 8934 / 241101 — +6 functions, +18
+          # homes, +130 instructions. Those are three spec-testsuite functions
+          # that previously loud-skipped and now compile, each on the two
+          # --relocatable legs: memory_copy0.wast `copy` (memory.copy
+          # $mem3 $mem3), memory_copy1.wast `copy` (memory.copy $mem0 $mem3)
+          # and memory_fill0.wast `fill` (memory.fill $mem2). The rest is
+          # corpus growth from the two new fixtures (npa_xcopy_merge_1145.wat,
+          # npa_xcopy_violate_1145.wat): +12 / +8 / +164. Main's binary over
+          # main's tree prints the old 7443 / 8916 / 240971. `hits: 0`
+          # throughout.
+          grep -Eq '^functions audited: 7461$' haa1189.txt
+          grep -Eq '^homes watched: 8942$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -4716,7 +4756,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 240971 ' haa1189.txt
+          grep -Eq '^attributed instructions: 241265 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

@@ -186,6 +186,7 @@
     { "op": "memory.fill", "status": "declined", "reason": "unsupported wasm op for aarch64 subset: MemoryFill" },
     { "op": "memory.grow", "status": "lowered" },
     { "op": "memory.size", "status": "lowered" },
+    { "op": "multi-memory memory.copy", "status": "declined", "reason": "unsupported wasm op for aarch64 subset: MultiMemory { memory: 1, op: MemoryCopyBetween { dst_mem: 1, src_mem: 0 } }" },
     { "op": "multi-memory wrapper", "status": "declined", "reason": "unsupported wasm op for aarch64 subset: MultiMemory { memory: 1, op: I32Load { offset: 0, align: 2 } }" },
     { "op": "nop", "status": "lowered" },
     { "op": "return", "status": "lowered" },
