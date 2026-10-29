@@ -1213,7 +1213,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 385388 \
+            --exact-emulation-floor 388996 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2973,6 +2973,17 @@ jobs:
       # Red on 7e170d62: 1128 failures over 1652 emulations.
       - name: Run f64<->i64 bit-cast pair oracle (#1603, m7dp + m7)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/reinterpret_pair_1603_differential.py
+      # RQ-89-BRF32 (#1614): the #1318 f32 branch RENDEZVOUS slot was drawn
+      # from a spill pool the frame had not reserved, so it landed on the
+      # prologue's saved R4 (no `sub sp` at all: the caller got the float's
+      # bits back in R4) or, in a function with a call, on a #204 param-backing
+      # slot (a WRONG VALUE). 14 class rows + 2 controls x m4f/m7dp x
+      # self-contained/--relocatable, GARBAGE caller-saved registers and
+      # stack, random canaries in R4..R11 / S16..S31, SP and the caller's
+      # frame checked, result bit-exact vs wasmtime. Red on main d048b523:
+      # 1784 of 3608 emulations wrong (10 of 16 rows).
+      - name: Run f32 branch-rendezvous frame oracle (#1614, m4f + m7dp)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/rendezvous_frame_1614_differential.py
       # #782(b): float `select` + explicit float `return` — the dominant class
       # on the real falcon fused core (12/26 skips incl. run-stabilization was
       # "an integer operation popped an f32"): select over two f32/f64 values
@@ -4677,8 +4688,16 @@ jobs:
           # (float_local_zero_init_1594{,_f64}.wat): main's (efb0f28a) binary over this tree
           # prints 7395 / 8742 / 240049. Main's binary over main's tree prints
           # the old 7371 / 8470 / 237853. `hits: 0` throughout.
-          grep -Eq '^functions audited: 7407$' haa1189.txt
-          grep -Eq '^homes watched: 8852$' haa1189.txt
+          # RQ-89-BRF32 (#1614): 7407 -> 7443, 8852 -> 8916, attributed
+          # 240549 -> 240971. CORPUS GROWTH ONLY, by paired controls: the
+          # new fixture rendezvous_frame_1614.wat enters scripts/repro/*.wat;
+          # main 8e1097f6's binary over THIS tree prints the same 7443 / 8916
+          # / 240971 as the fixed binary (only the unpinned unattributed count
+          # differs, 30032 vs 30104: the reserved frame's sub/add sp), and the
+          # fixed binary with that fixture held aside prints the old 7407 /
+          # 8852 / 240549 exactly. `hits: 0` on all three runs.
+          grep -Eq '^functions audited: 7443$' haa1189.txt
+          grep -Eq '^homes watched: 8916$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -4693,7 +4712,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 240549 ' haa1189.txt
+          grep -Eq '^attributed instructions: 240971 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

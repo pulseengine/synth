@@ -1,0 +1,86 @@
+artifacts:
+  - id: RQ-89-BRF32
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "The f32 branch rendezvous slot lives inside a reserved frame"
+    description: >
+        SILENT MISCOMPILE, live in v0.88.0 on cortex-m4f and cortex-m7dp, both
+        self-contained and --relocatable. RQ-76-FALCON (#1318) carries an f32
+        over br/br_if/br_table to a block join through a frame slot: every edge
+        stores to it and the join reloads it. The slot came from the shared
+        spill pool via alloc_vfp_local_frame_slot, but compute_local_layout
+        reserves that pool only for a function that touches i64 or on a retry
+        rung. Otherwise the pool's base is just the end of the frame fields.
+        With no other frame use, no `sub sp` was emitted and the slot was the
+        prologue's saved R4, so the caller got R4 back holding the float's bits.
+        In a function with a call, the slot was a #204 param-backing slot, so
+        the result was a WRONG VALUE. With an odd number of 4-byte frame locals
+        the slot fell in the rounding padding and was correct by luck.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers. Compile the
+        #1614 reproducer (f/g) for cortex-m7dp --all-exports. Execute f() and
+        g(0)/g(1) under unicorn with R4..R8 canaried by the caller. If R4 comes
+        back unchanged and S0 matches wasmtime, the defect is gone.
+        CITATION: #1614 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1614"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 an f32 carried over br/br_if/br_table preserves every
+        AAPCS callee-saved register and the function's own frame contents, on
+        cortex-m4f and cortex-m7dp, self-contained and --relocatable. That is
+        delivered with an execution-verified result, or REFUTED with the
+        measurement that refutes it. The refuting command above is RUN FIRST and
+        its result is reported either way.
+      landed: "PR #1618 - #1614 - DELIVERED: a wrong-code fix. The refuting command was run first and the defect was LIVE on d048b523 and again on 8e1097f6. f() returned 1.0 in S0 and handed back R4 = 0x3f800000. Root cause: crates/synth-synthesis/src/instruction_selector.rs, alloc_vfp_local_frame_slot handed out spill-pool slots without checking SpillState::area_reserved. Its #1069 frame-home callers run only on rungs that force the area; the #1318 rendezvous (the branch-carry helper, block_labels[..].result_slot) runs on the base path and did not. Fix: the function now refuses an unreserved pool with the ladder-recoverable exhaustion Err that the #326 arg-move resolver and the call-result parker already use. The backend's first retry rung (spill) re-runs the function with the pool reserved, so the slot is inside a `sub sp` frame. The cost is that pool's 64 bytes of frame for each such function. CLASS MAP on the base binary: f32 via br, br_if, br_table, a unary consumer, a br_if out of a loop and two slots in one function all clobbered R4. With a call before or after the join the result VALUE was wrong (60 of 72 vectors per leg). With 1 or 3 i32 locals, or an f32 local, the slot fell in the padding and the result was correct by luck. An i64-touching function already had the pool and was correct. f64 and i64 carried over a branch are declined loudly (#1318, #509). A br into a result-typed if is declined (#509) and an f32 if/else result is declined (#313), so neither reaches the slot. Self-contained and --relocatable emit the same function bytes."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime-py (unicorn 2.1.4). New wired
+        oracle scripts/repro/rendezvous_frame_1614_differential.py with fixture
+        scripts/repro/rendezvous_frame_1614.wat: 14 class rows and 2 controls, on
+        cortex-m4f and cortex-m7dp, self-contained and --relocatable (linked with
+        arm-none-eabi-ld). It runs with garbage caller-saved registers and stack and
+        random canaries in R4..R11 and S16..S31. SP and the caller's stack above SP are
+        checked, and the result is compared bit-exact. Gate 2 requires every class row
+        to still contain an SP-relative vstr/vldr pair. Red on 8e1097f6 (and on
+        d048b523): 1784 of 3608 emulations wrong over 10 of 16 rows. 8 rows fail on
+        callee-saved R4 and 2 (call_brif, call_after) on a wrong value. Green on the
+        fix: 3608 of 3608. Unit test vfp_frame_slot_refuses_an_unreserved_pool_1614 pins
+        the refusal substring. Reach, base 8e1097f6 vs fix: a symtab byte census over
+        2375 modules (spec testsuite, tests/wast, scripts/repro/*.wat, tests/**/*.wat),
+        on m4f and m7dp, self-contained and --relocatable. 28380 functions were compared,
+        with 0 rc changes, 0 newly refused and 0 newly compiled. 196 functions moved,
+        all of them executed. 84 are in the new fixture. 24 are in
+        carried_float_branch_1318.wat, 6 in falcon_opt_1318.wat and 6 in
+        aarch64_brtable_blockvals_851.wat; those were executed with this oracle's
+        harness, 2928 runs, wrong on base 2928 (every one an R4 clobber) and wrong on the
+        fix 0. 76 are in spec br/br_if/br_table.wast module 0, which the RQ-89-FLOATEXEC
+        oracle from PR #1617 executed on both FPU targets with callee-saved checks. On
+        base it reports 10 MISMATCH, all #1614 contract violations. On the fix it
+        reports MISMATCH 0, bit-identical 15102 -> 15112. Exactly its 10 #1614 KNOWN
+        pins vanish and nothing new appears. Pins moved, each with a paired control. The
+        exact emulation floor rises by this oracle's declared 3608 from the
+        RQ-89-REINTERP value 385388. The summed value that oracle_wiring_check.py
+        reports gives rc 0 on this tree and rc 1 on main 8e1097f6, while 385388 gives
+        rc 1 here and rc 0 on main. The home-alias audit
+        goes 7407/8852/240549 -> 7443/8916/240971 from corpus growth only. Main's binary
+        over this tree prints the same new figures, the fixed binary with the fixture
+        held aside prints the old ones, and hits stay 0. The old greps fail on the new
+        output. selector_lines_code goes 20885 -> 20898 under a value-bound waiver
+        chained after RQ-89-REINTERP's, and selector_lines_total goes 31647 -> 31678.
+        The mutation ledger re-anchor moved 0 sites and found 0 missing. The ARM corpus
+        sweep (#973, cortex-m4f) compiles the new fixture whole and passes with 3678
+        vectors and 0 mismatches. The related float oracles pass on the fix:
+        #1594, #1318 carried-branch, #1318 high-bank, #1069, #1593, #881, falcon_opt,
+        AEABI #1069 and callee-saved #490.

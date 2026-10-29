@@ -3365,6 +3365,19 @@ pub const VFP_FRAME_HOME_SLOT_EXHAUSTION: &str =
 /// freed — the local's value lives there, stores at every `local.set`, loads
 /// at every `local.get`). `Err` is the ladder-recoverable grow trigger above.
 fn alloc_vfp_local_frame_slot(spill: &mut SpillState, is_double: bool) -> Result<i32> {
+    // RQ-89-BRF32 (#1614): an UNRESERVED pool is not in the frame — its slot 0
+    // was the saved R4, or a #204 param-backing slot when the function calls.
+    // The #1318 f32 branch rendezvous reaches here on the base path. Same
+    // ladder-recoverable Err as the #326 resolver (SUBSTRING IS CONTROL FLOW:
+    // the first retry rung re-runs with the pool reserved).
+    if !spill.area_reserved {
+        return Err(synth_core::Error::synthesis(
+            "register exhaustion: all allocatable registers are live on the stack — \
+             #1614: a VFP frame slot (the f32 branch rendezvous) needs the spill \
+             area but none is reserved"
+                .to_string(),
+        ));
+    }
     let slot = spill.alloc().ok_or_else(|| {
         synth_core::Error::synthesis(format!(
             // RQ-77-FALCON2 (#1318): the CITATION moved from #1069 to #1426.
@@ -10144,6 +10157,24 @@ pub struct SelectionStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1614 (RQ-89-BRF32): a VFP frame slot is never handed out of a pool
+    /// the frame did not reserve — that slot 0 was the prologue's saved R4.
+    /// The refusal must carry the substring the backend's spill rung matches.
+    #[test]
+    fn vfp_frame_slot_refuses_an_unreserved_pool_1614() {
+        let mut spill = SpillState::new(0);
+        spill.area_reserved = false;
+        let e = alloc_vfp_local_frame_slot(&mut spill, false).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("all allocatable registers are live on the stack"),
+            "{e}"
+        );
+        assert!(spill.used.iter().all(|u| !u), "no slot consumed on refusal");
+        spill.area_reserved = true;
+        assert_eq!(alloc_vfp_local_frame_slot(&mut spill, false).unwrap(), 0);
+    }
 
     /// #1439 (RQ-89-WIDEFILE11): with the wide file on, the 17th S-register
     /// grant must be S16 — a REAL callee-saved register — never S0. Before the

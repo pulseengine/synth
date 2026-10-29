@@ -1867,9 +1867,28 @@ claims:
         # RQ-89-NPAOFFSET (#1580): 20635 -> 20830, waived below.
         # RQ-89-REINTERP (#1603): 20830 -> 20885, waived below (chained after
         # RQ-89-NPAOFFSET's waiver).
-        value: 20885
+        # RQ-89-BRF32 (#1614): 20885 -> 20898, waived below (chained after
+        # RQ-89-REINTERP's waiver).
+        value: 20898
         baseline: 17897
         waivers:
+          - to: 20898
+            reason: >-
+              RQ-89-BRF32 (Refs #1614): 20885 -> 20898 (+13 / -0 in
+              instruction_selector.rs, DERIVED with `git diff --unified=0`:
+              8 code, 5 comment). ONE new soundness guard, replacing no arm:
+              `alloc_vfp_local_frame_slot` refuses to hand out a slot from a
+              spill pool the frame did not reserve, with the ladder-recoverable
+              exhaustion Err the #326 arg-move resolver and the call-result
+              parker already use, so the spill rung re-runs the function with
+              the pool reserved. Before it, the #1318 f32 branch rendezvous
+              wrote the saved-R4 slot (or a #204 param-backing slot when the
+              function calls, a wrong value). Execution-gated by
+              scripts/repro/rendezvous_frame_1614_differential.py (3608
+              emulations, canaried callee-saved registers; 1784 wrong on
+              8e1097f6). Byte census over 2375 modules x 4 configurations:
+              196 functions moved, every one executed; 0 newly refused. No
+              wildcard arm added.
           - to: 20885
             reason: >-
               RQ-89-REINTERP (Refs #1603): 20830 -> 20885 (+55, about a third
@@ -3027,7 +3046,10 @@ claims:
         # RQ-89-REINTERP (#1603): 31520 -> 31647: +55 code (see
         # selector_lines_code, waived there) and +72 test module (the two
         # `_1603` unit tests, each red with the fix disabled). No waiver.
-        value: 31647
+        # RQ-89-BRF32 (#1614): 31647 -> 31678: +13 code (see
+        # selector_lines_code, waived there) and +18 test module (the
+        # `_1614` unit test). No waiver.
+        value: 31678
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4473,7 +4495,13 @@ claims:
     #   machine, m7dp rel + self-contained + m7). Paired control: `385388`
     #   rc=0 and `382876` rc=1 on this tree; `385388` rc=1 and `382876` rc=0
     #   on main d048b523.
-    text: "--exact-emulation-floor 385388"
+    # v0.89 RQ-89-BRF32 (#1614): 385388 -> 388996 (+3608). The new
+    #   rendezvous_frame_1614_differential.py declares `emulations >= 3608`
+    #   (derived in-script from its row table: 451 argument tuples x 2
+    #   machine states x m4f/m7dp x self-contained/--relocatable; 3608
+    #   executed). Paired control: `388996` rc=0 and `385388` rc=1 on this
+    #   tree; `388996` rc=1 and `385388` rc=0 on main 8e1097f6.
+    text: "--exact-emulation-floor 388996"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
