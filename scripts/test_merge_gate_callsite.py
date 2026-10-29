@@ -352,7 +352,7 @@ def main() -> int:
     # `_provenance.command` and commit the result.
     try:
         import datetime as _dt
-        age = (_dt.datetime.now(_dt.UTC)
+        age = (_dt.datetime.now(_dt.timezone.utc)
                - _dt.datetime.fromisoformat(
                    prov["captured_at"].replace("Z", "+00:00"))).days
         print(f"  ...capture age: {age} day(s) — disclosed, not gated")

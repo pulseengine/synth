@@ -55,6 +55,8 @@ while still printing PASS.
 Run:  python3 scripts/repro/pagesize_oracle_1441.py
 """
 
+from __future__ import annotations
+
 import os
 import re
 import subprocess

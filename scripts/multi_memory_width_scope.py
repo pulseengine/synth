@@ -72,6 +72,8 @@ a sound outcome and not the one the control was written to expect, and it is
 recorded here because an unexecuted control would have shipped the wrong claim
 about its own mechanism.
 """
+
+from __future__ import annotations
 import argparse
 import re
 import sys

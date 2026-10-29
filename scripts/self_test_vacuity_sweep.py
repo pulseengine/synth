@@ -41,6 +41,8 @@ all, which is the cleanest form of that lesson.
 NOT a CI gate. It mutates files in the working tree and restores them, so it is
 run deliberately, in a disposable checkout, and never against uncommitted work.
 """
+
+from __future__ import annotations
 import argparse
 import ast
 import glob

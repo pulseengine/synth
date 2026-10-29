@@ -24,6 +24,8 @@ Stdlib `unittest` only.
     python3 scripts/test_mcdc_gate.py       (wired in the mcdc CI job)
 """
 
+from __future__ import annotations
+
 import json
 import pathlib
 import subprocess

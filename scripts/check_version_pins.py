@@ -19,7 +19,13 @@ from __future__ import annotations
 import glob
 import re
 import sys
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11, e.g. macOS /usr/bin/python3 (3.9)
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        sys.exit("check_version_pins.py: needs Python 3.11+ (tomllib) or the tomli package")
 from pathlib import Path
 
 VERSION_RE = re.compile(r'version\s*=\s*"([^"]+)"')
