@@ -4727,10 +4727,21 @@ jobs:
           # differs, 30032 vs 30104: the reserved frame's sub/add sp), and the
           # fixed binary with that fixture held aside prints the old 7407 /
           # 8852 / 240549 exactly. `hits: 0` on all three runs.
-          # RQ-89-MEMLAYER6 (#1145): RE-MEASURED on the tree rebased over
-          # ff0b1395 (MEMLAYER6_AUDIT_PLACEHOLDER).
-          grep -Eq '^functions audited: MLF$' haa1189.txt
-          grep -Eq '^homes watched: MLH$' haa1189.txt
+          # RQ-89-MEMLAYER6 (#1145): 7443 -> 7461, 8916 -> 8942 and (below)
+          # 240971 -> 241265, RE-MEASURED on the tree rebased over ff0b1395 and
+          # DECOMPOSED by isolation. Codegen: this binary over main's
+          # (ff0b1395) tree prints 7449 / 8934 / 241101 — +6 functions, +18
+          # homes, +130 instructions. Those are three spec-testsuite functions
+          # that previously loud-skipped and now compile, each on the two
+          # --relocatable legs: memory_copy0.wast `copy` (memory.copy
+          # $mem3 $mem3), memory_copy1.wast `copy` (memory.copy $mem0 $mem3)
+          # and memory_fill0.wast `fill` (memory.fill $mem2). The rest is
+          # corpus growth from the two new fixtures (npa_xcopy_merge_1145.wat,
+          # npa_xcopy_violate_1145.wat): +12 / +8 / +164. Main's binary over
+          # main's tree prints the old 7443 / 8916 / 240971. `hits: 0`
+          # throughout.
+          grep -Eq '^functions audited: 7461$' haa1189.txt
+          grep -Eq '^homes watched: 8942$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -4745,7 +4756,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: MLA ' haa1189.txt
+          grep -Eq '^attributed instructions: 241265 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

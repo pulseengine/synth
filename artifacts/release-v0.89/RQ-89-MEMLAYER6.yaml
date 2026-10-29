@@ -121,13 +121,29 @@ artifacts:
         offset. A guard makes that explicit: if the rewrite ever touched a
         raw-kept constant, the function is refused. All #1145 oracles and
         #1580's npa_offset_cross_segment_1580_differential (42 calls) pass on
-        the rebased tree. The home-register write audit's corpus pins move
-        (identical over d048b523 and 8e1097f6):
-        functions 7407 -> 7425, homes 8852 -> 8878, attributed instructions
-        240549 -> 240843, hits 0. That decomposes by isolation into codegen
-        (+6 / +18 / +130, the spec suite's multi-memory bulk-op functions
-        newly compiling on the relocatable legs) and fixture growth
-        (+12 / +8 / +164, the two flag fixtures).
+        the rebased tree. The home-register write audit's corpus pins are
+        re-measured on each base. Over ff0b1395 (#1618 BRF32) they are
+        functions 7443 -> 7461, homes 8916 -> 8942 and attributed
+        instructions 240971 -> 241265, with hits 0. Decomposed by isolation:
+        codegen accounts for +6 / +18 / +130, the spec suite's memory_copy0
+        `copy`, memory_copy1 `copy` and memory_fill0 `fill`, each newly
+        compiling on the two relocatable legs; fixture growth (the two flag
+        fixtures) accounts for +12 / +8 / +164. Those three spec functions
+        were EXECUTED against wasmtime using the .wast's own rows, on both
+        relocatable legs.
+        memory_copy0 `copy` (plain): 9 rows, 7 bit-identical and 2 trap rows
+        not trapped (zero-length copies at 0x10001, memories unchanged).
+        memory_copy1 `copy` (plain): 7 rows, 5 bit-identical and 2 trap rows
+        not trapped the same way. Both modules are refused under
+        --native-pointer-abi by the existing #1041 data-segment refusal.
+        memory_fill0 `fill` (NPA and plain): 6 rows, 3 bit-identical and 3
+        divergent, all caused by the out-of-bounds row fill(0xff00, 1,
+        0x101). wasmtime traps and writes nothing; synth writes 0x100
+        in-bounds bytes and one byte past memory 2. That is the documented
+        default no-trap envelope (--safety-bounds none): main's memory-0
+        fill diverges on exactly the same rows. Memory k has no
+        trap-preserving bounds mode, because software/mask refuse every
+        memory-k op.
         THE OPT-IN ASSERTION, maintainer decision 2026-10-28. Under
         --native-pointer-abi the provenance pass is field-insensitive per
         memory, so a cross-memory copy joins the two memories' contents. A
