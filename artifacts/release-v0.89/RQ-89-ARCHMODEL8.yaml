@@ -15,6 +15,15 @@ artifacts:
         step performed, the lane is satisfied.
         CITATION: #1136 is where the matter was analysed. The number names where
         it was analysed, not an open scope.
+
+        RE-MEASURED AT RELEASE PREP, 2026-10-28: FILED, NOT PERFORMED.
+        scripts/recurring_na_filing_check.py, rc 0, failures 0, finds this artifact as
+        the visible v0.89 filing. It passes BECAUSE this record exists, so it says the
+        N/A is visible, not that the step was done. No spar AADL model and no derived WIT
+        was produced in v0.89. The step's blocker, spar#445 (undeclared property sets
+        are accepted silently), is OPEN and was last updated 2026-09-03. #1136 is OPEN
+        and its last comment is from 2026-09-22. Awaited: spar#445 upstream, or a
+        maintainer decision to model without it.
     tags:
       - feature-loop
       - process
@@ -28,6 +37,7 @@ artifacts:
       priority: should
       issue: "#1136"
       verification-track: manual
+      disposition: deferred
       done-when: >
         manual:2027-03-31 the architecture model step of the feature loop is
         filed or performed, not waived again — delivered with an execution-

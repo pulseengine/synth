@@ -28,6 +28,21 @@ artifacts:
       priority: must
       issue: "#1189"
       verification-track: manual
+      disposition: refuted
+      issue-scope: closes
+      landed: "#1189 - REFUTED: the refuting command, run first, found the defect gone. It was fixed by PR #1190 (v0.64.0, a fresh temp for the then-arm value of an if/else join on the ARM direct selector), and the class audit that followed (PR #1227, RQ-65-ALIASCLASS) left the issue open. RQ-89-INTALIAS (#1566) did not move it: that lane measured the #1189 reproducer already green on its base 0161dee1. Re-run on 2026-10-28 on the synth 0.89.0 debug binary built from the release-prep tree (origin/main 44cbfe12 plus the version bump). Nothing was built."
+      verified-by: >
+        REFUTED, by execution against wasmtime. scripts/repro/join_alias_1189_differential.py
+        through oracle_run.py, rc 0: the issue's own repro ir0 returns 0x9 for ir0(0) on
+        the else path, wasmtime 0x9, on arm-reloc, arm-self and rv32-reloc (the issue
+        reported 18). Live vectors 149 matched, 0 diverged; 223 emulations against a
+        declared floor of 223. Its 14 silent-wrong vectors are the PINNED red half, the
+        frozen pre-fix objects, which still read 0x12 where wasmtime reads 0x9, so the
+        oracle still sees the defect class. The home-alias class differential
+        scripts/repro/home_alias_class_1189_differential.py, rc 0: 999 live vectors
+        matched and 0 diverged, 0 known-open vectors, 1629 emulations, floor 1629. The
+        corpus audit's hits were 0 at RQ-89-FLOATZERO's re-measure and are pinned at 0
+        in ci.yml.
       done-when: >
         manual:2027-03-31 an if/else join register no longer aliases a local's
         home register — delivered with an execution-verified result where the

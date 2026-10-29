@@ -19,6 +19,22 @@ artifacts:
         is moot.
         CITATION: #1573 is where the matter was analysed. The number names where
         it was analysed, not an open scope.
+
+        RE-MEASURED AT RELEASE PREP, 2026-10-28, and NOT moot. The required contexts are
+        nine: Format, Clippy, Test, Z3 Verification, Claim Check, Version Pin Sweep,
+        Bazel Build & Proofs, Kani Verification, Rivet Validation. Every occurrence of
+        the four gates in .github/workflows/: vfp_home_alias_1436_differential.py and
+        island_offset_invariant_345.py run only in the ci.yml job litpool-islands-345
+        ("Constant islands place a reachable literal pool"), and
+        verwidth_1563_differential.py and npa_const_addr_differential.py only in
+        trap-semantics-oracle ("trap-semantics oracle (#665 unreachable + #666 rem_s)").
+        Neither job is a required context, so all four can still be red on a merged PR.
+        The v0.89 wrong-code oracles sit in the same kind of place, each found by every
+        `<name>.py` occurrence in the workflows: trap-semantics-oracle (#1439's extended
+        vfp_local_pressure_1069, #1593, #1594, #1318 high bank, #1565, the #1568
+        matrix), litpool-islands-345 (#1566), repro-sweep-selector-oracle (#1215) and
+        aarch64-oracle (#1584). None of them is a required context. #1573 is open with
+        no comments; the decision is the maintainer's and is awaited.
     tags:
       - feature-loop
       - process
@@ -30,6 +46,7 @@ artifacts:
       priority: should
       issue: "#1573"
       verification-track: manual
+      disposition: blocked
       done-when: >
         manual:2027-03-31 decide whether the wrong-code differentials become
         required checks — delivered with an execution-verified result where the

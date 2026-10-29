@@ -144,6 +144,21 @@ artifacts:
         fill diverges on exactly the same rows. Memory k has no
         trap-preserving bounds mode, because software/mask refuse every
         memory-k op.
+        RE-RUN AT RELEASE PREP, 2026-10-29, on the synth 0.89.0 debug binary
+        built from main 9032f76a plus the version bump, with this lane's
+        execution script and the spec suite at the pinned submodule. The
+        result is the same on cortex-m4 and cortex-m4f --relocatable, and it
+        includes the supporting load8_u rows the paragraph above leaves out.
+        memory_copy0: copy 9 rows (7 bit-identical, 2 trap rows not trapped),
+        load8_u 19 of 19 bit-identical. memory_copy1: copy 7 rows (5 and 2),
+        load8_u 6 of 6. memory_fill0, plain and NPA: fill 6 rows (3
+        bit-identical, 3 divergent), and the follow-on load8_u 9 rows (7
+        bit-identical, 2 divergent, at 0xff00 and 0xffff, reading the bytes
+        the untrapped out-of-bounds fill wrote). Both modules are refused
+        under --native-pointer-abi, as stated above. memory-multi.wast is NOT
+        among the newly compiling functions the audit counts. The missing trap
+        mode for memory-k
+        bulk ops is filed as #1619 for v0.90.
         THE OPT-IN ASSERTION, maintainer decision 2026-10-28. Under
         --native-pointer-abi the provenance pass is field-insensitive per
         memory, so a cross-memory copy joins the two memories' contents. A
