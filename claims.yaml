@@ -456,6 +456,14 @@ status_fields:
       - file: scripts/repro/self_contained_boot_sweep_1189_differential.py
         name: KNOWN
         cases_at: 1
+      # RQ-89-FLOATEXEC (#1609): the first EXECUTION of the spec suite's
+      # float assertions on any target (cortex-m7dp + cortex-m4f). Its first
+      # run FOUND #1614 (10 pins) and re-measured #1603 (3 pins, 58 cases,
+      # closed when PR #1607 landed and deleted in the rebase). `(issue, count)`-shaped like
+      # the parity table, '*' module wildcard included.
+      - file: scripts/repro/spec_float_exec_1609_differential.py
+        name: KNOWN
+        cases_at: 1
   # The same tables summed by pinned CASE — pinned `track` beside the entry
   # ceiling because the parity oracle accepts one '*' wildcard pin per
   # (file, module, kind): merging three per-function pins into one would
@@ -3296,9 +3304,35 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 79
+        value: 89
         baseline: 27
         waivers:
+          - to: 89
+            reason: >-
+              RQ-89-FLOATEXEC rebased over PR #1607 (#1603): 92 -> 89. This is not a
+              growth waiver. THREE pins were CLOSED BY A FIX; none was deleted or
+              merged without one. The spec float execution oracle's three #1603
+              entries (conversions i64.reinterpret_f64 x15, endianness f64_load x4,
+              float_literals x39 = 58 cases) were reported VANISHED by the oracle
+              itself on a binary built from the rebased tree (8e1097f6 + this lane),
+              with nothing else moving: 17438 gated assertions, 10 MISMATCH, all
+              #1614. They were then deleted. #1607 lowers the f64<->i64 bit-casts as
+              register pairs. An entry is still required because 89 remains above
+              the baseline of 27.
+          - to: 92
+            reason: >-
+              RQ-89-FLOATEXEC (#1609): 79 -> 92 (+13). The pin debt did not grow --
+              its MEASUREMENT did. scripts/repro/spec_float_exec_1609_differential.py
+              is the first oracle to EXECUTE any spec-testsuite float assertion on
+              any target; the #928 and #197 oracles hard-code cortex-m4 (no FPU) and
+              set float signatures aside. Its first run found #1614 (an f32 carried
+              over br/br_if/br_table is stored into the saved-R4 slot, so the
+              caller's R4 comes back as the float's bits): 5 spec functions x 2
+              targets = 10 pins, 10 cases. It also re-measured #1603
+              (i64.reinterpret_f64 garbage) as 3 pins / 58 cases. #1603 is fixed by
+              PR #1607, which had not merged at measurement; on that PR's head
+              binary exactly those 3 pins vanish and nothing else moves, so its
+              landing takes this to 89 and needs its own entry.
           - to: 79
             reason: >-
               RQ-89-BRVALUE (#1215): 84 -> 79. Not a growth waiver — FIVE pins
@@ -3437,7 +3471,10 @@ claims:
         direction: track
         # RQ-89-BRVALUE (#1215): 157 -> 146, the five closed #1215 pins'
         # 1 + 2 + 2 + 5 + 1 = 11 cases.
-        value: 146
+        # RQ-89-FLOATEXEC (#1609): 146 -> 214, the new table's 10 #1614
+        # cases + 58 #1603 cases (15 + 4 + 39); then 214 -> 156 when the
+        # rebase over #1607 closed the three #1603 pins (58 cases).
+        value: 156
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the six tables in the
       # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in
@@ -3468,7 +3505,7 @@ claims:
       - kind: count-eq
         pattern: '^(?:KNOWN|PINNED)[A-Z0-9_]*\s*(?::[^=\n]*)?=\s*\{'
         glob: ['scripts/repro/**/*.py']
-        expect: 12
+        expect: 13
       - kind: verbatim                       # the prose names what is OUT
         text: "EXCLUDED, by design"
       - kind: count-eq                       # the derivation exists…
@@ -4473,7 +4510,17 @@ claims:
     #   machine, m7dp rel + self-contained + m7). Paired control: `385388`
     #   rc=0 and `382876` rc=1 on this tree; `385388` rc=1 and `382876` rc=0
     #   on main d048b523.
-    text: "--exact-emulation-floor 385388"
+    # v0.89 RQ-89-FLOATEXEC (#1609): 385388 -> 443388 (+58000; first computed
+    #   as 382834 -> 440834 on 7e170d62, then 382876 -> 440876 over #1602,
+    #   re-derived after rebasing over #1607). The new
+    #   spec_float_exec_1609_differential.py declares `emulations >= 58000`
+    #   (61003 measured via oracle_run.py: the spec suite's float-involved
+    #   assertions on cortex-m7dp + cortex-m4f, each run in a zeroed AND a
+    #   garbage machine state, the integer ones once, plus one Reset_Handler
+    #   boot per (module, target)). Paired control: `443388` rc=0 and
+    #   `385388` rc=1 on this tree; `443388` rc=1 and `385388` rc=0 on main
+    #   8e1097f6.
+    text: "--exact-emulation-floor 443388"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
