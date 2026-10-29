@@ -52,7 +52,7 @@ if [ ! -d "$HOME/.opam" ]; then
 else
     echo "OPAM already initialized"
 fi
-eval $(opam env)
+eval "$(opam env)"
 echo "✓ OPAM initialized"
 echo ""
 
@@ -63,7 +63,7 @@ if ! opam switch list | grep -q "4.14.0"; then
 else
     echo "OCaml 4.14.0 switch already exists"
 fi
-eval $(opam env)
+eval "$(opam env)"
 echo "✓ OCaml switch created"
 echo ""
 

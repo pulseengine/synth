@@ -60,6 +60,8 @@ controls, rather than the platform setting, which it should not relax.
 NOT a CI gate — the report samples the live API and is window-dependent by
 construction. CI gates the SELF-TEST.
 """
+
+from __future__ import annotations
 import argparse
 import json
 import os

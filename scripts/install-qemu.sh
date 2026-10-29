@@ -26,8 +26,8 @@ echo -e "${YELLOW}Checking build dependencies...${NC}"
 MISSING_DEPS=()
 
 check_command() {
-    if ! command -v $1 &> /dev/null; then
-        MISSING_DEPS+=($1)
+    if ! command -v "$1" &> /dev/null; then
+        MISSING_DEPS+=("$1")
     fi
 }
 
@@ -40,7 +40,7 @@ check_command ninja
 check_command pkg-config
 
 if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
-    echo -e "${RED}Missing dependencies: ${MISSING_DEPS[@]}${NC}"
+    echo -e "${RED}Missing dependencies: ${MISSING_DEPS[*]}${NC}"
     echo ""
     echo "Please install them first:"
     echo "  sudo apt-get install build-essential python3-pip ninja-build pkg-config libglib2.0-dev libpixman-1-dev"
@@ -90,7 +90,7 @@ echo ""
 # Build
 echo ""
 echo -e "${YELLOW}Building QEMU (this may take 10-20 minutes)...${NC}"
-make -j$(nproc)
+make -j"$(nproc)"
 
 # Install
 echo ""

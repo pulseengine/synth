@@ -91,7 +91,6 @@ for component in anti_pinch_v2_component motor_driver_v2_component soft_start_st
     # Compile through synth with double-precision FPU target
     ELF="$TMPDIR/${component}.elf"
     if "$SYNTH" compile "$WASM" -o "$ELF" --target "$TARGET" --all-exports 2>/dev/null; then
-        FUNCS=$(grep -c "INFO.*bytes of machine code" <<< "$("$SYNTH" compile "$WASM" -o "$ELF" --target "$TARGET" --all-exports 2>&1)" || echo "?")
         echo "OK ($(wc -c < "$ELF" | tr -d ' ') byte ELF, target: ${TARGET})"
         PASS=$((PASS + 1))
     else

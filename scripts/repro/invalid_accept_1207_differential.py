@@ -79,6 +79,8 @@ Usage:
   python3 scripts/repro/invalid_accept_1207_differential.py [--synth PATH]
 """
 
+from __future__ import annotations
+
 import argparse
 import subprocess
 import sys

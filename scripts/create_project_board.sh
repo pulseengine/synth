@@ -36,6 +36,9 @@ echo -e "${BLUE}Step 1: Creating Project${NC}"
 echo "----------------------------------------"
 
 # Create project (Projects v2)
+# The GraphQL attempt's output is not used: the CLI fallback below creates
+# the project. Kept so a working mutation can be wired in later.
+# shellcheck disable=SC2034
 PROJECT_ID=$(gh api graphql -f query='
   mutation {
     createProjectV2(input: {
