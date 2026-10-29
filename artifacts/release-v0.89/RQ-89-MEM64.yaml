@@ -78,9 +78,18 @@ artifacts:
         in the spec suite, and 0 of their 68 module-level legs went from accepted
         to refused. On the merged .wast path the census moves 4 files to
         module_decline on every backend: imports1 and imports4 from all_declined,
-        memory_grow and memory_size_import from partial. The partial losses removed
-        only wrong code: the one memory function that compiled, size1, returned 4
-        on the pre-fix image where the spec asserts 2. Census PINS and
+        memory_grow and memory_size_import from partial. Before the fix 3
+        functions in those 2 files compiled on every backend:
+        memory_size_import size1, and memory_grow size1 and grow1 (the module at
+        line 81, which defines its own memories). Both size1s returned 4 where
+        the spec asserts 2 and 1. grow1 returned -1 for every delta, which wasm
+        permits but which differs from wasmtime and breaks synth's #539 rule
+        that grow(0) equals size. Executed on Cortex-M under unicorn against
+        wasmtime at 92c3e377 (da0d41f5^) in the v0.89 review corrections. The
+        memory_size_import shape compiled on its own gave rc 0 on all 3
+        backends there, so the refusal replaced wrong code that shipped. The
+        memory_grow functions compiled only inside the merged spec file, where
+        #952 refused the partial object. Census PINS and
         at-least-one-export moved 45/42/44 to 43/40/42 (README, FEATURE_MATRIX and
         its template, SPEC_FAMILY_CENSUS, claims.yaml). Paired control: the new pins
         pass on the fixed binary and fail 9 ways on f9ca92de; the old pins fail 9

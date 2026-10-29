@@ -38,8 +38,8 @@ artifacts:
       verified-by: >
         DELIVERED, execution-verified against wasmtime (multi-memory and
         custom-page-sizes on). New wired oracle
-        scripts/repro/npa_multi_memory_1145_differential.py: 43 calls over five
-        fixtures. pages: 1 and 2 pages, ONE stack pointer in memory 0, data in
+        scripts/repro/npa_multi_memory_1145_differential.py: 51 calls over seven
+        fixture modules, 43 of them over the five original fixtures. pages: 1 and 2 pages, ONE stack pointer in memory 0, data in
         both, memory-1 statics inside memory 0's window, a pointer through a
         local (the #1568 shape), through a call, a block result, laundered
         through memory 1, a compare, a function on the shadow stack that also
@@ -47,16 +47,22 @@ artifacts:
         reporter's measured combination, two DEFINED memories at (pagesize 1)
         with 3000 and 6000 bytes, data in both. two_sp and two_sp_npa: one SP per
         domain, memory 1's init larger. launder01: a raw memory-1 constant
-        through memory 0. Every section sits at a distinct, non-adjacent base
+        through memory 0. xcopy_merge_flag (5 calls): the Canonical-ABI adapter
+        module under --embedder-copies-carry-no-pointers. xcopy_violate_flag
+        (3 calls): a module that breaks that assertion, of which 2 calls are
+        REQUIRED to diverge from wasmtime (the oracle fails if they match).
+        Every section sits at a distinct, non-adjacent base
         with the gaps unmapped. An access hook classifies every load and store
         by region, and each export may touch only the memories it declares. Both
         memories are compared byte for byte after every call, and caller-saved
-        registers and the stack hold garbage. Five refusals are asserted with
+        registers and the stack hold garbage. 9 refusals are asserted with
         no object written, and the region table is pinned. RED: on 7e170d62 every fixture is refused at the gate.
         On the no-layering lift (both refusals removed, no pass, the
-        RQ-88-MEMLAYER5 scratch build), 34 of 43 calls diverge or leave their
-        region, and all four value-layering refusals compile. GREEN on the lane:
-        43 of 43 calls, 6 of 6 refusals. Region table under (pagesize 1):
+        RQ-88-MEMLAYER5 scratch build), 34 of the 43 original-fixture calls
+        diverge or leave their region, and all four value-layering refusals
+        compile (not re-derived: that build is not in the repository). GREEN at
+        the release commit: 51 calls, of which 49 match wasmtime and the 2
+        xcopy_violate_flag calls diverge as required, and 9 of 9 refusals. Region table under (pagesize 1):
         __synth_mem_size_0 = 3000 and __synth_mem_size_1 = 6000 BYTES,
         __synth_mem_count = 2, __synth_mem_region_0 = 4096 and
         __synth_mem_region_1 = 8192 (the PMSAv7 extents from mpu_region_align),
@@ -69,8 +75,9 @@ artifacts:
         npa_const_addr_matrix_1568 (--expect ok=99,refused=63,guard=59,wrong=0),
         mem_isolation_red_1145, multi_memory_406_differential,
         static_above_sp_739, multi_sp_707 and
-        native_pointer_shadow_stack. The exact emulation floor moves by +43 (this oracle's declared emulations),
-        with the paired control in claims.yaml. STILL REFUSED, by name: a value
+        native_pointer_shadow_stack. The exact emulation floor moves by +123: this oracle declares 51 emulations
+        and its sibling multi_memory_bulk_1145_differential.py declares 72, with
+        the paired control in claims.yaml. STILL REFUSED, by name: a value
         used as an address in both memories (a constant, the SP, an export
         parameter, an import result); a memory-0 pointer stored in memory 0 in
         a module whose memory-0 contents reach a memory-k address (the pass is

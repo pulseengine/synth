@@ -29,6 +29,12 @@ The same harness still catches the bug: the old object built at `d4c0b232` match
 1000 `step` calls. This was measured on the 0.89.0 release-prep binary, so it is an emulated
 result, not a run on the reporter's hardware.
 
+**The execution figures above cannot be re-derived from this repository.** The sandboxed harness
+(`falcon_exec.py`) and the reporter's module are not committed. The compile figure can be
+re-derived: the cold review re-ran the reporter's attached `opt.wasm` with their command, and
+v0.88.0 exits rc 1 where 0.89.0 compiles 17 of 17. **#1318 stays open** (maintainer decision,
+2026-10-29). It closes once the execution harness is committed, which is planned for v0.90.
+
 It took four changes, and the second one fixed a regression the first one introduced:
 
 - **#1439**: the `vfp-wide-file` recovery rung handed out S0..S15 under the names S16..S31. The
@@ -63,9 +69,13 @@ It took four changes, and the second one fixed a regression the first one introd
   binaries were not re-measured. One spec-suite function was a live instance: `align.wast`
   `f32_align_switch` was wrong in 12 of 140 runs with garbage registers. The new differential
   covers 30 shapes in three machine states: 1362 of 10080 emulations wrong before, 13680 of 13680
-  correct after. Nothing newly refuses. Ten symbols that used to be refused now compile
-  (`local_get.wast` type-local-f32/-f64 and `loop.wast` nesting), and all of them execute
-  correctly.
+  correct after. Nothing newly refuses. 3 spec-suite symbols that used to be refused now compile
+  (`local_get.wast` type-local-f32/-f64 and `loop.wast` nesting): 14 symbol×leg pairs over
+  cortex-m4f, cortex-m7 and cortex-m7dp, each self-contained and `--relocatable` (10 of them on
+  m4f and m7dp, the scope the lane measured, and 4 on cortex-m7). Execution against wasmtime
+  covers all 14, from three sources: the lane ran the 10 on m4f and m7dp, the cold review ran the
+  2 cortex-m7 `--relocatable` legs, and the review corrections ran all 7 self-contained legs at
+  the release commit (the 2 on cortex-m7 for the first time). Every run was correct.
 - **An integer local rewritten on one path of an `if`/`block` was read stale on the other**
   (#1566). This is the integer twin of v0.88's #1436. The #989 copy ran inside the branch that
   writes, so the path that skipped the write read a register that was never filled. Operand-stack
@@ -137,8 +147,15 @@ It took four changes, and the second one fixed a regression the first one introd
   `--relocatable`, where the embedder's R10 already gave the right size. **Narrowing:** 17 spec
   modules mix an imported memory with another. None of their 68 module-level legs went from
   accepted to refused. On the merged `.wast` path, four spec files move to `module_decline` on
-  every backend. The one memory function that used to compile among them returned 4 where the
-  spec asserts 2.
+  every backend. Before the fix, 3 functions in 2 of those files compiled on every backend:
+  `memory_size_import.wast` `size1`, and `memory_grow.wast` `size1` and `grow1` (the module at
+  line 81, which defines its own memories). Both `size1`s were wrong: they returned 4 where the
+  spec asserts 2 and 1. `grow1` returned -1 for every delta, which wasm permits but which differs
+  from wasmtime and breaks synth's own #539 rule that `grow(0)` equals `size`. Executed on Cortex-M
+  under unicorn against wasmtime. The `memory_size_import` shape, compiled on its own, gave rc 0
+  on all 3 backends before the fix, so the refusal replaced wrong code that shipped. The
+  `memory_grow` functions compiled only inside the merged spec file, where #952 already refused
+  the partial object.
 - **An imported memory 0 was sized as zero pages on RV32 and AArch64** (#1584). `memory.size`
   returned 0 and bounds-checked accesses inside the memory trapped. On self-contained ARM, an
   imported `(memory 2 2)` was given one page. The new differential found 41 disagreements before
@@ -169,10 +186,14 @@ which memory, and refuses, by name, any value that may address both. Cross-memor
 and `memory.fill` on memory k now lower on ARM `--relocatable`; this is the form `meld --memory
 multi` produces at a component boundary. A custom page size is honoured per memory under the
 layering: two `(pagesize 1)` memories report `__synth_mem_size_N` in bytes, and their MPU regions
-are aligned to their own sizes. The new differentials run 43 and 72 calls, all bit-identical to
-wasmtime, with every load and store checked to land in the memory its function is allowed to
-touch. On the build that lifted the refusal with no layering, 34 of 43 calls diverged or left
-their region.
+are aligned to their own sizes. The new differentials run 51 and 72 calls, with every load and
+store checked to land in the memory its function is allowed to touch. All 72 bulk calls and 49 of
+the 51 layering calls match wasmtime bit for bit. The other 2 are required to diverge: they run a
+module that breaks the `--embedder-copies-carry-no-pointers` assertion, and the oracle fails if
+they match. The layering oracle also asserts 9 refusals. Together the two oracles move the exact
+emulation floor by +123 (51 + 72). On the build that lifted the refusal with no layering, 34 of
+the 43 calls over the five original fixtures diverged or left their region. That build is not in
+the repository, so this figure was not re-derived.
 
 - **The opt-in `--embedder-copies-carry-no-pointers`.** The pass cannot tell which bytes of a memory
   are pointers. So by default, a module that keeps pointers in both memories and copies across
