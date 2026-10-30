@@ -753,8 +753,10 @@ jobs:
           # MATCHED. The real check now lives in the script, which refuses
           # unless the release being cut is ANCHOR_TAG's successor — so this
           # grep goes back to asserting the line's SHAPE, which is all a regex
-          # here can honestly do.
-          grep -qE '^issue-scope: v[0-9]+\.[0-9]+ over [0-9]+ artifact\(s\) — [0-9]+ issue\(s\) authorised for closure by a delivered artifact, [0-9]+ held open' \
+          # here can honestly do. The optional `.Z` is a PATCH release's own
+          # cut (`issue-scope: v0.89.1 over ...`, v0.89.1 PATCHVER, #1622);
+          # without it this shape pin reds every patch release's tree.
+          grep -qE '^issue-scope: v[0-9]+\.[0-9]+(\.[0-9]+)? over [0-9]+ artifact\(s\) — [0-9]+ issue\(s\) authorised for closure by a delivered artifact, [0-9]+ held open' \
             /tmp/status-evidence.log
           # #1133 (RQ-62-ROADMAPGATE): the programme-status scan must have
           # RUN and covered a real population — a checker edit that drops

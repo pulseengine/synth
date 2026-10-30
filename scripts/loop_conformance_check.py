@@ -119,7 +119,12 @@ except ImportError:  # pragma: no cover
 # Re-deriving it here would be the hand-written mirror the North Star forbids,
 # and `issue_closure_check` already imports `authorised_close_set` the same way.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from status_evidence_check import previous_release_tag  # noqa: E402
+from status_evidence_check import (  # noqa: E402
+    fmt_release,
+    parse_release,
+    previous_release_tag,
+    release_key,
+)
 
 REPO_DEFAULT = "pulseengine/synth"
 # The release that introduces this gate; the step-7 review record and this
@@ -288,9 +293,12 @@ def workspace_version(cargo_text: str) -> str | None:
 def release_scope(version: str) -> str:
     """`v0.65.0` -> `v0.65` — the value artifacts carry in their `release:`
     field. The conformance check is invoked with a full vX.Y.Z tag; artifacts
-    are scoped per minor release."""
-    m = re.match(r"^v?(\d+\.\d+)", str(version).strip())
-    return f"v{m.group(1)}" if m else str(version).strip()
+    are scoped per release: a .0 tag is its minor, and a PATCH tag
+    (`v0.89.1`) is its own release, `v0.89.1` — truncating it to the minor
+    scoped a patch's conformance to the minor's records (v0.89.1 PATCHVER,
+    #1622). Same key as `status_evidence_check.release_key`, imported."""
+    key = parse_release(str(version).strip())
+    return fmt_release(key) if key is not None else str(version).strip()
 
 
 def find_filed_steps12_decision(
@@ -494,8 +502,13 @@ class Check:
             raise SystemExit(f"loop-conformance: version must be vX.Y.Z, got {version!r}")
         self.version = version
         self.bare_version = version[1:]
-        self.majmin = (int(m.group(1)), int(m.group(2)))
-        self.rid = f"v{m.group(1)}.{m.group(2)}"
+        # The RELEASE key, not a bare major.minor: (0, 89) for v0.89.0 and
+        # (0, 89, 1) for the patch v0.89.1, so `rid` names the patch's own
+        # `artifacts/release-v0.89.1/` and `previous_release_tag` opens the
+        # patch window at v0.89.0 (v0.89.1 PATCHVER, #1622). Byte-identical
+        # for every vX.Y.0.
+        self.majmin = release_key(m.group(1), m.group(2), m.group(3))
+        self.rid = fmt_release(self.majmin)
         self.repo = repo
         self.findings: list[tuple[str, str, str, str, tuple[str, ...]]] = []
         # (step, label, status, detail, source) -- see SOURCES

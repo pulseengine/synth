@@ -1065,16 +1065,70 @@ ID_ANYWHERE = re.compile(r"\bRQ-\d+-[A-Z0-9]+\b")
 # acknowledgment demand as R4, and `_acknowledge` can only match a `landed:` entry
 # when the SUBJECT carries the PR. Without it a lane commit reds its own artifact
 # before the squash appends the number — measured on this very commit.
+#
+# The optional `.Z` after the minor (v0.89.1 PATCHVER, #1622): a PATCH release's
+# lane subject is `v0.89.1 MEMK64 (#1622): ...`, and without it the subject
+# matched nothing, so a patch's delivery commit was invisible to R4-lane and
+# R10-lane alike. The artifact id stays `RQ-<minor>-<ID>` — that is how the
+# patch's own records are named — and R10-lane still reds an id no release
+# file defines.
 LANE_SUBJECT = re.compile(
-    r"^v\d+\.(\d+) ([A-Z][A-Z0-9]*)(?: lane)?(?: \(#\d+\))?:")
+    r"^v\d+\.(\d+)(?:\.\d+)? ([A-Z][A-Z0-9]*)(?: lane)?(?: \(#\d+\))?:")
 
 
 def lane_artifact_id(subject: str) -> str | None:
-    """`v0.79 PAGESIZE lane: ...` -> "RQ-79-PAGESIZE", else None."""
+    """`v0.79 PAGESIZE lane: ...` -> "RQ-79-PAGESIZE"; `v0.89.1 MEMK64 (#1622):
+    ...` -> "RQ-89-MEMK64"; else None."""
     m = LANE_SUBJECT.match(subject)
     return f"RQ-{m.group(1)}-{m.group(2)}" if m else None
 ISSUE_ANYWHERE = re.compile(r"#(\d+)\b")
-RELEASE_VERSION = re.compile(r"release-v(\d+)\.(\d+)")
+# The optional third group is a PATCH release's own directory (v0.89.1
+# PATCHVER, #1622): `release-v0.89.1/` was read as v0.89 and its records were
+# folded into the minor's close-set, window and census.
+RELEASE_VERSION = re.compile(r"release-v(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+# ONE canonical release key, shared by every script that groups or compares
+# releases (issue_closure_check and loop_conformance_check import it rather than
+# re-deriving it). vX.Y and vX.Y.0 are the SAME release and key as (X, Y); a
+# patch vX.Y.P with P >= 1 keys as (X, Y, P). The 2-tuple form is deliberate:
+# every existing two-part release keeps the key it always had, so comparisons
+# against (X, Y) literals elsewhere stay byte-identical, and tuple ordering
+# gives (0, 89) < (0, 89, 1) < (0, 90) — a patch sorts after its minor and
+# before the next one. A fixed 3-arity key would make (0, 89, 0) != (0, 89),
+# and every caller still holding a 2-tuple would silently select NOTHING.
+def release_key(major, minor, patch=None) -> tuple:
+    p = int(patch) if patch is not None else 0
+    if p == 0:
+        return (int(major), int(minor))
+    return (int(major), int(minor), p)
+
+
+RELEASE_TEXT = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def parse_release(text: str) -> tuple | None:
+    """'v0.89' / 'v0.89.0' -> (0, 89); 'v0.89.1' -> (0, 89, 1); else None."""
+    m = RELEASE_TEXT.fullmatch(str(text).strip())
+    return release_key(*m.groups()) if m else None
+
+
+def fmt_release(key: tuple) -> str:
+    """(0, 89) -> 'v0.89'; (0, 89, 1) -> 'v0.89.1'."""
+    return "v" + ".".join(str(x) for x in key)
+
+
+def expected_cut(anchor_tag: str, present=()) -> tuple:
+    """The release being cut, from the anchor (the last SHIPPED release).
+
+    The successor MINOR (X, Y+1) — unless the anchor's successor PATCH
+    (X, Y, P+1) is among the `present` release keys, i.e. a patch release's
+    own directory exists. One answer, never a set: a set would let a pre-scoped
+    minor directory steal `_cut` during a patch window and still match.
+    """
+    x, y, p = (list(parse_release(anchor_tag)) + [0])[:3]
+    patch = release_key(x, y, p + 1)
+    return patch if patch in set(present) else release_key(x, y + 1)
 
 # R8: the artifact's own `release:` field — the side rivet's readiness query
 # reads. vX.Y or vX.Y.Z; anything else is red, not skipped.
@@ -1141,7 +1195,7 @@ def load_release_artifacts(root: Path, release_glob: str):
         rel = path.relative_to(root).as_posix() if path.is_relative_to(root) \
             else path.name
         m = RELEASE_VERSION.search(rel)
-        version = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+        version = release_key(*m.groups()) if m else (0, 0)
         doc = yaml.load(path.read_text(encoding="utf-8"), Loader=StrictLoader)
         if path.name == "_release.yaml":
             # Comments-only metadata file for the directory layout. Any
@@ -1276,7 +1330,23 @@ def git_history_state(root: Path) -> str:
 
 def previous_release_tag(root: Path, version: tuple) -> str | None:
     """Highest vX.(Y-1).* tag, so evidence shipped in the previous minor's
-    PATCH releases is caught too. None when no such tag is visible."""
+    PATCH releases is caught too. None when no such tag is visible.
+
+    For a PATCH release (X, Y, P) the previous release is the highest
+    vX.Y.Z with Z < P — for v0.89.1, v0.89.0. Truncating to (X, Y) would
+    open the window at v0.88.x: the MINOR's window, true about the wrong
+    release (v0.89.1 PATCHVER, #1622)."""
+    if len(version) == 3:
+        x, y, p = version
+        rc, out = _git(root, "tag", "-l", f"v{x}.{y}.*")
+        if rc != 0:
+            return None
+        tags = []
+        for t in out.split():
+            m = re.fullmatch(rf"v{x}\.{y}\.(\d+)", t)
+            if m and int(m.group(1)) < p:
+                tags.append((int(m.group(1)), t))
+        return max(tags)[1] if tags else None
     x, y = version
     if y == 0:
         return None
@@ -1289,6 +1359,14 @@ def previous_release_tag(root: Path, version: tuple) -> str | None:
         if m:
             tags.append((int(m.group(1)), t))
     return max(tags)[1] if tags else None
+
+
+def _prev_tag_shape(version: tuple) -> str:
+    """The tag family `previous_release_tag` searched, for the R7-SKIP line."""
+    if len(version) == 3:
+        x, y, p = version
+        return f"v{x}.{y}.Z (Z < {p})"
+    return f"v{version[0]}.{version[1] - 1}.*"
 
 
 def introducing_commit(root: Path, kind: str, path: str,
@@ -1872,12 +1950,12 @@ def check(root: Path, release_glob: str, subjects: list[str],
                 f"query reads this field; it must be a version"
             )
             continue
-        fv = (int(m.group(1)), int(m.group(2)))
+        fv = release_key(m.group(1), m.group(2), m.group(3))
         patch = m.group(3)
         if fv == version:
             continue
-        if (patch is not None and int(patch) >= 1
-                and fv == (version[0], version[1] - 1)):
+        if (patch is not None and int(patch) >= 1 and len(version) == 2
+                and fv[:2] == (version[0], version[1] - 1)):
             # The one STATED allowance: a PATCH release of the previous
             # minor, written up in the file of the minor under development
             # (the 6 measured v0.56.1/v0.56.2-in-release-v0.57.yaml cases).
@@ -2094,7 +2172,7 @@ def check(root: Path, release_glob: str, subjects: list[str],
             if prev_tag is None:
                 r7_skipped += 1
                 warnings.append(
-                    f"R7-SKIP {art_id}: no v{version[0]}.{version[1] - 1}.* "
+                    f"R7-SKIP {art_id}: no {_prev_tag_shape(version)} "
                     f"tag visible (tags not fetched?) — evidence-release "
                     f"scoping NOT verified"
                 )
@@ -2449,8 +2527,7 @@ def main() -> int:
     # reaches into an unrelated tree all show up HERE, as a `_cut` that is not
     # the successor — which is exactly the class the population count was meant
     # to catch and could not.
-    _anchor_mm = tuple(int(x) for x in ANCHOR_TAG.lstrip("v").split(".")[:2])
-    _expected_cut = (_anchor_mm[0], _anchor_mm[1] + 1)
+    _expected_cut = expected_cut(ANCHOR_TAG, {a[1] for a in artifacts})
     if _cut is None:
         failures.append(
             "CENSUS: no artifacts were loaded at all, so the issue-scope "
@@ -2459,9 +2536,9 @@ def main() -> int:
         )
     elif _cut != _expected_cut:
         failures.append(
-            f"CENSUS: the release being cut reads as v{_cut[0]}.{_cut[1]}, but "
+            f"CENSUS: the release being cut reads as {fmt_release(_cut)}, but "
             f"ANCHOR_TAG is {ANCHOR_TAG} so it must be "
-            f"v{_expected_cut[0]}.{_expected_cut[1]}. Either a release "
+            f"{fmt_release(_expected_cut)}. Either a release "
             f"directory outside this release is being globbed (which STEALS "
             f"`_cut` and silently re-points the whole close-set derivation at "
             f"a release nobody is cutting), or the anchor was not moved in the "
@@ -2504,7 +2581,7 @@ def main() -> int:
         f"checks ({r7_skipped} skipped), {len(failures)} failures"
     )
     print(
-        f"issue-scope: v{_cut[0]}.{_cut[1]} over {_pop} artifact(s) — "
+        f"issue-scope: {fmt_release(_cut)} over {_pop} artifact(s) — "
         f"{len(_auth)} issue(s) authorised for closure by a "
         f"delivered artifact, {len(_held)} held open by `issue-scope: outlives` "
         f"(authorised: {' '.join('#' + str(n) for n in sorted(_auth)) or '-'})"

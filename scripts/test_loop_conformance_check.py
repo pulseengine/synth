@@ -143,8 +143,22 @@ class PureHelpers(unittest.TestCase):
 
     def test_release_scope_normalises_the_tag(self):
         self.assertEqual(lcc.release_scope("v0.65.0"), "v0.65")
-        self.assertEqual(lcc.release_scope("0.65.1"), "v0.65")
-        self.assertEqual(lcc.release_scope("v1.10.3"), "v1.10")
+        self.assertEqual(lcc.release_scope("v0.65"), "v0.65")
+        # A PATCH tag is its OWN release (v0.89.1 PATCHVER, #1622). This
+        # assertion used to pin the fold — "0.65.1" -> "v0.65" — which is
+        # exactly how a patch's conformance was scoped to the minor's records.
+        self.assertEqual(lcc.release_scope("0.65.1"), "v0.65.1")
+        self.assertEqual(lcc.release_scope("v1.10.3"), "v1.10.3")
+
+    def test_release_id_of_a_patch_tag_is_the_patch(self):
+        # v0.89.1 PATCHVER (#1622): `rid` names the directory step 3 reads
+        # and `majmin` is the key `previous_release_tag` opens the window
+        # from. Truncated, a patch's step 3 read release-v0.89/ and its
+        # step-7 prior-release bar was v0.88.x.
+        c = lcc.Check("v0.89.1", "pulseengine/synth")
+        self.assertEqual((c.rid, c.majmin), ("v0.89.1", (0, 89, 1)))
+        c0 = lcc.Check("v0.89.0", "pulseengine/synth")
+        self.assertEqual((c0.rid, c0.majmin), ("v0.89", (0, 89)))
 
     def test_done_when_census(self):
         docs = [

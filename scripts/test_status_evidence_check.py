@@ -213,9 +213,11 @@ class Fixture:
         p.parent.mkdir(parents=True, exist_ok=True)
         m = RELEASE_VERSION.search(name)
         if stamp and m:
+            # The whole matched version, so a PATCH directory
+            # (release-v0.89.1/) stamps v0.89.1 (v0.89.1 PATCHVER, #1622).
             for a in artifacts:
                 if isinstance(a, dict) and "release" not in a:
-                    a["release"] = f"v{m.group(1)}.{m.group(2)}"
+                    a["release"] = "v" + m.group(0)[len("release-v"):]
         p.write_text(yaml.safe_dump({"artifacts": artifacts}), encoding="utf-8")
         return p
 
@@ -943,14 +945,202 @@ class R8ReleaseField(unittest.TestCase):
         self.assertTrue(has(fx.run([]), "R8 RQ-59-X"))
 
     def test_matching_field_green_incl_own_patch(self):
-        # vX.Y in release-vX.Y.yaml, and vX.Y.Z in its OWN minor's file,
-        # both agree.
+        # vX.Y in release-vX.Y.yaml agrees, and so does vX.Y.0 — the SAME
+        # release spelled with its patch.
         fx = Fixture()
         fx.release("release-v0.57.yaml", [
             art("RQ-57-A", "implemented", release="v0.57"),
-            art("RQ-57-B", "implemented", release="v0.57.1"),
+            art("RQ-57-C", "implemented", release="v0.57.0"),
         ])
         self.assertEqual(fails(fx.run([])), [])
+
+    def test_own_patch_in_the_minor_file_is_now_red(self):
+        # CHANGED by v0.89.1 PATCHVER (#1622). This used to be GREEN: `vX.Y.Z`
+        # in its own minor's file "agreed", because the checker keyed every
+        # release as (X, Y) and so could not tell a patch from its minor. A
+        # patch now has its own directory and key, so `release: v0.57.1` in
+        # release-v0.57.yaml is the R8 shape exactly — rivet counts it in
+        # v0.57.1's scope while this checker (and the close-set) would count
+        # it in v0.57's. Never present on the live tree (measured: the only
+        # three-part `release:` fields are v0.24.0 in the roadmap and the six
+        # v0.56.1/v0.56.2 previous-minor allowances in release-v0.57.yaml).
+        fx = Fixture()
+        fx.release("release-v0.57.yaml", [
+            art("RQ-57-B", "implemented", release="v0.57.1"),
+        ])
+        r = fx.run([])
+        self.assertTrue(has(r, "R8 RQ-57-B"), fails(r))
+        self.assertTrue(has(r, "bypass"), fails(r))
+
+
+class PatchRelease1622(unittest.TestCase):
+    """v0.89.1 PATCHVER (#1622): a PATCH release's records live in their own
+    `artifacts/release-v0.89.1/` and must be read as v0.89.1 — never folded
+    into v0.89's close-set, window or census. Measured on main before the
+    fix: the loader keyed `release-v0.89.1/` as (0, 89), so v0.89's
+    close-set gained the patch's issue; the lane subject `v0.89.1 MEMK64
+    (#1622): ...` matched nothing, so the delivery commit was invisible to
+    R4-lane/R10-lane; and `previous_release_tag` could not take a patch."""
+
+    def _fx(self):
+        fx = Fixture()
+        fx.raw("release-v0.89/_release.yaml", "# comments only\n")
+        fx.release("release-v0.89/RQ-89-A.yaml",
+                   [art("RQ-89-A", "implemented", issue="#1500")])
+        fx.raw("release-v0.89.1/_release.yaml", "# comments only\n")
+        fx.release("release-v0.89.1/RQ-89-MEMK64.yaml",
+                   [art("RQ-89-MEMK64", "implemented", issue="#1622")])
+        return fx
+
+    def _keys(self, fx):
+        arts, _bad = load_release_artifacts(fx.root, RELEASE_GLOB)
+        return {a[2]: a[1] for a in arts}, arts
+
+    def test_patch_directory_keys_as_its_own_release(self):
+        keys, _ = self._keys(self._fx())
+        self.assertEqual(keys["RQ-89-A"], (0, 89))
+        self.assertEqual(keys["RQ-89-MEMK64"], (0, 89, 1))
+
+    def test_minor_close_set_does_not_absorb_the_patch(self):
+        _, arts = self._keys(self._fx())
+        auth_minor, _ = sec.authorised_close_set(arts, (0, 89))
+        auth_patch, _ = sec.authorised_close_set(arts, (0, 89, 1))
+        self.assertEqual(sorted(auth_minor), [1500])
+        self.assertEqual(sorted(auth_patch), [1622])
+
+    def test_two_part_release_keys_are_unchanged(self):
+        # Byte-identity for every existing release: vX.Y and vX.Y.0 are the
+        # SAME key as before, and the flat-file layout still keys (X, Y).
+        rk = getattr(sec, "release_key", None)
+        pr = getattr(sec, "parse_release", None)
+        self.assertIsNotNone(rk)
+        self.assertIsNotNone(pr)
+        self.assertEqual(rk(0, 89), (0, 89))
+        self.assertEqual(rk(0, 89, 0), (0, 89))
+        self.assertEqual(pr("v0.89"), pr("v0.89.0"))
+        self.assertEqual(pr("v0.89.1"), (0, 89, 1))
+        self.assertIsNone(pr("main"))
+        self.assertLess((0, 89), pr("v0.89.1"))
+        self.assertLess(pr("v0.89.1"), (0, 90))
+        fx = Fixture()
+        fx.release("release-v0.57.yaml", [art("RQ-57-X", "implemented")])
+        keys, _ = self._keys(fx)
+        self.assertEqual(keys["RQ-57-X"], (0, 57))
+
+    def test_lane_subject_with_a_patch_version(self):
+        self.assertEqual(
+            sec.lane_artifact_id("v0.89.1 MEMK64 (#1622): lower i64"),
+            "RQ-89-MEMK64")
+        self.assertEqual(
+            sec.lane_artifact_id("v0.79 PAGESIZE lane: x"), "RQ-79-PAGESIZE")
+        # Planning commits stay OUT (lower-case suffix), patch or not.
+        self.assertIsNone(sec.lane_artifact_id("v0.89.1 plan: scope it"))
+
+    def test_patch_lane_commit_is_attributed_in_the_window(self):
+        fx = self._fx()
+        r = fx.run([], window=["v0.89.1 MEMK64 (#1622): lower i64 (#1700)"])
+        self.assertEqual((r[8], r[9]), (1, 1), fails(r))
+        self.assertEqual([f for f in fails(r) if "R10" in f], [])
+
+    def test_patch_lane_commit_for_an_unknown_id_reds(self):
+        fx = self._fx()
+        r = fx.run([], window=["v0.89.1 NOSUCH (#1622): x (#1701)"])
+        self.assertTrue(has(r, "R10-lane"), fails(r))
+        self.assertTrue(has(r, "RQ-89-NOSUCH"), fails(r))
+
+    def test_previous_release_tag_of_a_patch_is_its_own_minor(self):
+        fx = Fixture()
+        fx.git("init", "-q", "-b", "main")
+        fx.evidence("README.md", "seed\n")
+        fx.git("add", "-A")
+        fx.git("commit", "-q", "-m", "seed")
+        for t in ("v0.88.0", "v0.89.0", "v0.89.1"):
+            fx.git("tag", t)
+        self.assertEqual(sec.previous_release_tag(fx.root, (0, 89)),
+                         "v0.88.0")
+        self.assertEqual(sec.previous_release_tag(fx.root, (0, 89, 1)),
+                         "v0.89.0")
+        self.assertEqual(sec.previous_release_tag(fx.root, (0, 89, 2)),
+                         "v0.89.1")
+        self.assertIsNone(sec.previous_release_tag(fx.root, (0, 90, 1)))
+
+    def test_r7_patch_evidence_before_its_minor_tag_is_a_previous_release(self):
+        # For v0.89.1 the previous release is v0.89.0: evidence that shipped
+        # in v0.89.0 is mis-scoped in the patch, and with no v0.89.0 tag the
+        # skip names the tag family it looked for.
+        fx = Fixture()
+        fx.git("init", "-q", "-b", "main")
+        fx.evidence("scripts/repro/gate.py", "needle\n")
+        fx.git("add", "-A")
+        fx.git("commit", "-q", "-m", "gate")
+        fx.release("release-v0.89.1/RQ-89-P.yaml", [art(
+            "RQ-89-P", "implemented",
+            {"done-when": "contains:scripts/repro/gate.py:needle"})])
+        r = fx.run([])
+        self.assertTrue(any("R7-SKIP RQ-89-P" in w and "v0.89.Z (Z < 1)" in w
+                            for w in r[3]), r[3])
+        fx.git("tag", "v0.88.0")
+        fx.git("tag", "v0.89.0")
+        r = fx.run([])
+        self.assertTrue(has(r, "ANCESTOR of v0.89.0"), fails(r))
+
+    def test_r8_patch_field_parked_in_the_minor_dir_reds(self):
+        # `release: v0.89.1` inside release-v0.89/ used to compare as (0, 89)
+        # and pass silently, while rivet counted it in v0.89.1's scope.
+        fx = Fixture()
+        fx.release("release-v0.89/RQ-89-SNEAK.yaml",
+                   [art("RQ-89-SNEAK", "proposed", release="v0.89.1")])
+        r = fx.run([])
+        self.assertTrue(has(r, "R8 RQ-89-SNEAK"), fails(r))
+
+    def test_r8_patch_dir_agrees_only_with_its_own_patch(self):
+        fx = Fixture()
+        fx.release("release-v0.89.1/RQ-89-OK.yaml",
+                   [art("RQ-89-OK", "proposed")])
+        self.assertEqual([f for f in fails(fx.run([])) if "R8" in f], [])
+        fx2 = Fixture()
+        fx2.release("release-v0.89.1/RQ-89-MINOR.yaml",
+                    [art("RQ-89-MINOR", "proposed", release="v0.89")])
+        self.assertTrue(has(fx2.run([]), "R8 RQ-89-MINOR"))
+
+    def _main_output(self, fx, anchor):
+        import contextlib
+        import io
+        subj = fx.root / "subjects.txt"
+        subj.write_text("", encoding="utf-8")
+        argv = ["status_evidence_check.py", "--root", str(fx.root),
+                "--subjects-file", str(subj), "--delivery-floor", "0"]
+        buf = io.StringIO()
+        with mock.patch.object(sec, "ANCHOR_TAG", anchor), \
+                mock.patch.object(sys, "argv", argv), \
+                contextlib.redirect_stdout(buf):
+            try:
+                sec.main()
+            except SystemExit:
+                pass
+        return buf.getvalue()
+
+    def test_main_names_the_patch_in_census_and_issue_scope(self):
+        # The printed census is what CI's grep pin and the closure step read.
+        # Anchor at the shipped minor v0.89.0 with release-v0.89.1/ present:
+        # the patch IS the release being cut, and the line says so.
+        out = self._main_output(self._fx(), "v0.89.0")
+        self.assertIn("issue-scope: v0.89.1 over 1 artifact(s)", out)
+        self.assertNotIn("CENSUS:", out)
+        # Anchor one release behind: the census refuses, NAMING the patch.
+        out = self._main_output(self._fx(), "v0.88.0")
+        self.assertIn("CENSUS: the release being cut reads as v0.89.1, but "
+                      "ANCHOR_TAG is v0.88.0 so it must be v0.89.", out)
+
+    def test_expected_cut_names_the_patch_only_when_it_is_present(self):
+        ec = getattr(sec, "expected_cut", None)
+        self.assertIsNotNone(ec)
+        self.assertEqual(ec("v0.88.0", {(0, 88), (0, 89)}), (0, 89))
+        self.assertEqual(ec("v0.89.0", {(0, 89), (0, 89, 1)}), (0, 89, 1))
+        self.assertEqual(ec("v0.89.0", {(0, 89)}), (0, 90))
+        self.assertEqual(ec("v0.89.1", {(0, 89, 1), (0, 90)}), (0, 90))
+        self.assertEqual(sec.fmt_release((0, 89, 1)), "v0.89.1")
+        self.assertEqual(sec.fmt_release((0, 89)), "v0.89")
 
 
 class R9CrateSource(unittest.TestCase):
