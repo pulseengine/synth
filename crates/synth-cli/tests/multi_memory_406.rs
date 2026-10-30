@@ -20,7 +20,8 @@
 //! | multi-memory × `--safety-bounds mpu`   | refuse without --embedder-mpu  |
 //! | multi-memory on riscv / aarch64        | refuse (no per-memory base)    |
 //! | cross-/non-default memory.copy/fill    | loud-skip naming the op        |
-//! | i64/f32 access on memory k > 0         | loud-skip (i32 family only)    |
+//! | i64 access on memory k > 0 (#1622)     | GREEN (execution differential) |
+//! | f32/f64 access on memory k > 0         | loud-skip (integer family only)|
 //! | non-const data-segment offset on mem k | refuse at decode               |
 //!
 //! Execution ground truth: `scripts/repro/multi_memory_406_differential.py`
@@ -582,21 +583,86 @@ fn cross_memory_copy_software_bounds_refuses_1145() {
     );
 }
 
-/// Phase-1 scope is the i32 access family: an i64 access on memory k > 0
-/// loud-skips its function (never aliases or truncates).
+/// #1622: the i64 integer access family on memory k > 0 is LOWERED (gale's
+/// two-domain supervisor: `i64.load/store 1` at align=4 and the narrow
+/// forms), through memory k's own region symbol, under the native-pointer
+/// ABI and without it. Execution equivalence is
+/// scripts/repro/memk_i64_1622_differential.py's job.
 #[test]
-fn wide_access_on_non_default_memory_loud_skips() {
+fn i64_access_on_non_default_memory_lowered_1622() {
+    let wat = r#"(module
+      (memory $a 1 1)
+      (memory $b 1 1)
+      (func (export "ld") (param $p i32) (result i64)
+        (i64.load $b offset=8 align=4 (local.get $p)))
+      (func (export "ld32u") (param $p i32) (result i64)
+        (i64.load32_u $b offset=24 (local.get $p)))
+      (func (export "ld8s") (param $p i32) (result i64)
+        (i64.load8_s $b (local.get $p)))
+      (func (export "st") (param $p i32) (param $v i64)
+        (i64.store $b offset=108 (local.get $p) (local.get $v)))
+      (func (export "st16") (param $p i32) (param $v i64)
+        (i64.store16 $b offset=2 (local.get $p) (local.get $v))))"#;
+    let f = wat_file("wide_i64_1622.wat", wat);
+    for extra in [&[][..], &["--native-pointer-abi"][..]] {
+        let mut args = vec!["--relocatable", "--target", "cortex-m3"];
+        args.extend_from_slice(extra);
+        let bytes = compile_read(&f, &args);
+        let obj = object::File::parse(&*bytes).expect("parse ELF");
+        for name in ["ld", "ld32u", "ld8s", "st", "st16", "__synth_wasm_data_1"] {
+            assert!(
+                obj.symbols().any(|s| s.name() == Ok(name)),
+                "{name} missing from the object ({extra:?})"
+            );
+        }
+    }
+}
+
+/// #1622 keeps the compliance envelope: an i64 access on memory k under an
+/// INLINE bounds mode is still the loud memory-k refusal (no size register).
+#[test]
+fn i64_access_on_non_default_memory_inline_bounds_refuses_1622() {
     let wat = r#"(module
       (memory $a 1 1)
       (memory $b 1 1)
       (func (export "w") (param $p i32) (result i64)
         (i64.load $b (local.get $p))))"#;
+    let f = wat_file("wide_i64_bounds_1622.wat", wat);
+    for mode in ["software", "mask"] {
+        let out = compile(
+            &f,
+            &[
+                "--relocatable",
+                "--target",
+                "cortex-m3",
+                "--safety-bounds",
+                mode,
+            ],
+        );
+        assert_refused(
+            &out,
+            &["#406", "no size register"],
+            &format!("{mode} bounds on an i64 memory-1 access"),
+        );
+    }
+}
+
+/// The non-default-memory scope is the INTEGER access family: a float
+/// access on memory k > 0 loud-skips its function (never aliases memory 0)
+/// and the refusal names what IS lowered.
+#[test]
+fn wide_access_on_non_default_memory_loud_skips() {
+    let wat = r#"(module
+      (memory $a 1 1)
+      (memory $b 1 1)
+      (func (export "w") (param $p i32) (result f64)
+        (f64.load $b (local.get $p))))"#;
     let f = wat_file("wide1.wat", wat);
     let out = compile(&f, &["--relocatable", "--target", "cortex-m3"]);
-    assert_refused(&out, &["#406"], "i64 access on memory 1");
+    assert_refused(&out, &["#406", "F64Load"], "f64 access on memory 1");
     assert!(
-        stderr(&out).contains("i32 load/store family"),
-        "must name the phase-1 scope.\nstderr: {}",
+        stderr(&out).contains("i32 and i64 integer load/store families"),
+        "must name the lowered scope.\nstderr: {}",
         stderr(&out)
     );
 }

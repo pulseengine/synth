@@ -3796,9 +3796,10 @@ impl InstructionSelector {
                 //     ADD  base, base, addr
                 //     LDR/STR[B/H] value, [base]
                 //
-                // Phase-1 scope: the i32 access family only. i64/f32/f64/v128
-                // accesses and `--safety-bounds` on memory k decline LOUDLY
-                // (typed Err → loud-skip), never alias memory 0.
+                // Scope: the i32 and i64 (#1622) integer access families and
+                // the bulk forms. f32/f64/v128 accesses and inline
+                // `--safety-bounds` on memory k decline LOUDLY (typed Err →
+                // loud-skip), never alias memory 0.
                 MultiMemory {
                     memory,
                     op: inner_op,
@@ -3935,6 +3936,164 @@ impl InstructionSelector {
                                     addr: mem,
                                 },
                                 _ => unreachable!(),
+                            };
+                            instructions.push(ArmInstruction {
+                                op: store_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instructions(3);
+                        }
+                        // #1622: the i64 access family on memory k — the same
+                        // `__synth_wasm_data_<k> + offset + addr` base the i32
+                        // family gets, with memory 0's #746 static-offset pair
+                        // forms: `I64Ldr`/`I64Str` (two word accesses, never
+                        // LDRD/STRD, so an align=4 or unaligned i64 is fine on
+                        // Cortex-M3) and, for the narrow loads, a sign/zero
+                        // high-word fill. The base temp is disjoint from the
+                        // value/result pair: `I64Ldr` reads it for BOTH halves.
+                        I64Load { offset, .. }
+                        | I64Load8S { offset, .. }
+                        | I64Load8U { offset, .. }
+                        | I64Load16S { offset, .. }
+                        | I64Load16U { offset, .. }
+                        | I64Load32S { offset, .. }
+                        | I64Load32U { offset, .. } => {
+                            let addr = pop_operand(
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &[addr],
+                                &live_params,
+                                idx,
+                            )?;
+                            let base = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &[live_params.as_slice(), &[addr, dst_lo, dst_hi]].concat(),
+                                idx,
+                            )?;
+                            Self::emit_sym_addr(&mut instructions, base, &sym, *offset as i32, idx);
+                            let mem = MemAddr::imm(base, 0);
+                            let mut ops = vec![ArmOp::Add {
+                                rd: base,
+                                rn: base,
+                                op2: Operand2::Reg(addr),
+                            }];
+                            let (rd, addr) = (dst_lo, mem.clone());
+                            // An if-chain, not a `_ =>` arm: the outer arm
+                            // already restricts `op` to the seven i64 loads.
+                            let op = inner_op.as_ref();
+                            let narrow = if matches!(op, I64Load8S { .. }) {
+                                Some((ArmOp::Ldrsb { rd, addr }, true))
+                            } else if matches!(op, I64Load8U { .. }) {
+                                Some((ArmOp::Ldrb { rd, addr }, false))
+                            } else if matches!(op, I64Load16S { .. }) {
+                                Some((ArmOp::Ldrsh { rd, addr }, true))
+                            } else if matches!(op, I64Load16U { .. }) {
+                                Some((ArmOp::Ldrh { rd, addr }, false))
+                            } else if matches!(op, I64Load32S { .. }) {
+                                Some((ArmOp::Ldr { rd, addr }, true))
+                            } else if matches!(op, I64Load32U { .. }) {
+                                Some((ArmOp::Ldr { rd, addr }, false))
+                            } else {
+                                None
+                            };
+                            match narrow {
+                                Some((load, true)) => ops.extend([
+                                    load,
+                                    ArmOp::Asr {
+                                        rd: dst_hi,
+                                        rn: dst_lo,
+                                        shift: 31,
+                                    },
+                                ]),
+                                Some((load, false)) => ops.extend([
+                                    load,
+                                    ArmOp::Mov {
+                                        rd: dst_hi,
+                                        op2: Operand2::Imm(0),
+                                    },
+                                ]),
+                                None => ops.push(ArmOp::I64Ldr {
+                                    rdlo: dst_lo,
+                                    rdhi: dst_hi,
+                                    addr: mem,
+                                }),
+                            }
+                            cf.add_instructions(1 + ops.len());
+                            for op in ops {
+                                instructions.push(ArmInstruction {
+                                    op,
+                                    source_line: Some(idx),
+                                });
+                            }
+                            stack.push(StackVal::i64(dst_lo));
+                        }
+                        I64Store { offset, .. }
+                        | I64Store8 { offset, .. }
+                        | I64Store16 { offset, .. }
+                        | I64Store32 { offset, .. } => {
+                            // WASM store pops: value (an i64 pair) first.
+                            let value_lo = pop_operand(
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            let addr = pop_operand(
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            let value_hi = i64_pair_hi(value_lo)?;
+                            let base = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &[live_params.as_slice(), &[addr, value_lo, value_hi]].concat(),
+                                idx,
+                            )?;
+                            Self::emit_sym_addr(&mut instructions, base, &sym, *offset as i32, idx);
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Add {
+                                    rd: base,
+                                    rn: base,
+                                    op2: Operand2::Reg(addr),
+                                },
+                                source_line: Some(idx),
+                            });
+                            // Narrow stores write the LOW word only (wrap).
+                            let (rd, addr) = (value_lo, MemAddr::imm(base, 0));
+                            let op = inner_op.as_ref();
+                            let store_op = if matches!(op, I64Store { .. }) {
+                                ArmOp::I64Str {
+                                    rdlo: value_lo,
+                                    rdhi: value_hi,
+                                    addr,
+                                }
+                            } else if matches!(op, I64Store8 { .. }) {
+                                ArmOp::Strb { rd, addr }
+                            } else if matches!(op, I64Store16 { .. }) {
+                                ArmOp::Strh { rd, addr }
+                            } else {
+                                ArmOp::Str { rd, addr } // I64Store32
                             };
                             instructions.push(ArmInstruction {
                                 op: store_op,
@@ -4208,9 +4367,10 @@ impl InstructionSelector {
                         other => {
                             return Err(synth_core::Error::synthesis(format!(
                                 "multi-memory: {other:?} on memory {memory} is not \
-                                 lowered in phase 1 — only the i32 load/store \
-                                 family is (#406); wider/float accesses on a \
-                                 non-default memory decline loudly"
+                                 lowered — on a non-default memory only the i32 \
+                                 and i64 integer load/store families, memory.fill \
+                                 and memory.copy are (#406, #1622); float/v128 \
+                                 accesses on a non-default memory decline loudly"
                             )));
                         }
                     }

@@ -1875,9 +1875,32 @@ claims:
         # RQ-89-MEMLAYER6 (#1145): 20898 -> 21193, waived below (chained
         # after RQ-89-BRF32's waiver; first measured 20635 -> 20915 on
         # 7e170d62, then re-derived over #1602, #1607 and #1618).
-        value: 21193
+        # MEMK64 (#1622, v0.89.1): 21193 -> 21360, waived below (chained
+        # after RQ-89-MEMLAYER6's waiver).
+        value: 21360
         baseline: 17897
         waivers:
+          - to: 21360
+            reason: >-
+              MEMK64 (Refs #1622): 21193 -> 21360 (+167, measured after cargo
+              fmt on dd2b791a; paired control: 21360 holds and 21193 reds here,
+              the reverse on main dd2b791a). A NEW lowering, replacing no arm:
+              the i64 load/store family (i64.load/store, load8/16/32_s/u,
+              store8/16/32) on a non-default memory, in select_with_stack's
+              MultiMemory arm, on the i32 family's `__synth_wasm_data_<k> +
+              offset + addr` base with memory 0's #746 I64Ldr/I64Str pair forms.
+              Before it, every such access was a loud decline and gale's
+              two-domain image (12 wide accesses on memory 1) could not
+              compile (#952/#1102). +7 is a width-inference fix found by the new
+              oracle: `infer_i64_locals` did not unwrap MultiMemory, so an
+              `i64.load 1` feeding `local.set` promoted the local as i32 and
+              dropped the high word (executed: 96 wrong results over the first 5388-call
+              fixture set). The narrow
+              forms are an if-chain, so no wildcard arm was added. Gated by
+              execution: memk_i64_1622_differential.py (5484 calls, NPA and
+              plain, every memory and the callee-saved registers compared after
+              each call; RED at dd2b791a on every fixture; a word-swapped
+              memory-k i64 store mutant reds 2796 calls).
           - to: 21193
             reason: >-
               RQ-89-MEMLAYER6 (Refs #1145): 20898 -> 21193 (+295, measured after
@@ -3083,7 +3106,10 @@ claims:
         # `_1614` unit test). No waiver.
         # RQ-89-MEMLAYER6 (#1145): 31678 -> 31973, the same +295 as
         # selector_lines_code (all of it outside the test module).
-        value: 31973
+        # MEMK64 (#1622): 31973 -> 32163: +167 code (see selector_lines_code,
+        # waived there) and +23 test module (the `_1622` width-inference unit
+        # test, red with the MultiMemory unwrap removed). No waiver.
+        value: 32163
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4547,7 +4573,14 @@ claims:
     #   #1602 and 385388 -> 385511 over #1607. Paired control: `389119` rc=0
     #   and `388996` rc=1 on this tree; `389119` rc=1 and `388996` rc=0 on
     #   main ff0b1395.
-    text: "--exact-emulation-floor 389119"
+    # v0.89.1 MEMK64 (#1622): 389119 -> 394603 (+5484). The new
+    #   memk_i64_1622_differential.py declares `emulations >= 5484` (5484
+    #   measured via oracle_run.py: 457 calls x gale/paged fixtures x
+    #   npa/plain x cortex-m3/m4f/m7; the three targets' .text is
+    #   byte-identical, so the target legs re-execute one lowering). Paired
+    #   control: `394603` rc=0 and `389119` rc=1 on this tree; `394603` rc=1
+    #   and `389119` rc=0 on main dd2b791a.
+    text: "--exact-emulation-floor 394603"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

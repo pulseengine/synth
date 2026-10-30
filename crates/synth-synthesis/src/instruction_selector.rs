@@ -2771,6 +2771,13 @@ pub fn infer_i64_locals(
     let mut vstack: Vec<bool> = Vec::new(); // true = i64
 
     let is_i64_producer = |op: &WasmOp| -> bool {
+        // #1622: a memory-k load is the wrapped op's width — unwrapped, an
+        // `i64.load 1` feeding `local.set` inferred the local i32 (single
+        // register, hi half dropped; executed by memk_i64_1622_differential).
+        let op = match op {
+            MultiMemory { op, .. } => op.as_ref(),
+            other => other,
+        };
         matches!(
             op,
             I64Add
@@ -18146,6 +18153,29 @@ mod tests {
             let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::LocalSet(1)];
             let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
             assert!(i64_locals.contains(&1), "{op:?} must make local 1 i64");
+        }
+    }
+
+    /// #1622: a memory-k i64 load (`MultiMemory`-wrapped) is an i64
+    /// producer; a memory-k i32 load is not.
+    #[test]
+    fn test_infer_i64_locals_memory_k_load_width_1622() {
+        let mm = |op| WasmOp::MultiMemory {
+            memory: 1,
+            op: Box::new(op),
+        };
+        let wide = mm(WasmOp::I64Load32U {
+            offset: 24,
+            align: 2,
+        });
+        let narrow = mm(WasmOp::I32Load {
+            offset: 0,
+            align: 2,
+        });
+        for (op, is_i64) in [(wide, true), (narrow, false)] {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::LocalSet(1)];
+            let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
+            assert_eq!(i64_locals.contains(&1), is_i64, "{op:?}");
         }
     }
 

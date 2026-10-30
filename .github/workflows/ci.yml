@@ -1216,7 +1216,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 389119 \
+            --exact-emulation-floor 394603 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3162,6 +3162,23 @@ jobs:
       # adapter is loud-skipped, rc 1 via #952).
       - name: Run multi-memory bulk-memory oracle (#1145, cortex-m3, NPA and plain)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/multi_memory_bulk_1145_differential.py
+      # MEMK64 (#1622): the i64 load/store family on a NON-DEFAULT memory
+      # (i64.load/store at align=4 and natural, load8/16/32_s/u,
+      # store8/16/32) at gale's offsets 0/8/16/24/28/48/108 — the 12 accesses
+      # in gale's fused supervisor domain — under --native-pointer-abi AND the
+      # plain embedder path, on (pagesize 1) byte extents and 64 KiB pages,
+      # cortex-m3/m4f/m7. Memory 1 is seeded from its own data segment and
+      # BOTH memories are compared byte for byte with wasmtime after every
+      # call; every access must land inside memory 1's region. RED at v0.89.0
+      # dd2b791a: every fixture fails to compile (the memory-k i64 decline).
+      # Every call also checks R4-R11, SP and the caller's frame are
+      # preserved, and four functions touch i64 ONLY through memory 1 (six
+      # live pairs that spill, six through locals, select, a call result).
+      # Potency: swapping the two words of the memory-k i64 store reds 2796
+      # of 5484 calls; dropping the #1622 width-inference unwrap reds it too
+      # (rev6 then refuses to compile on every leg).
+      - name: Run memory-k i64 load/store oracle (#1622, cortex-m3/m4f/m7, NPA and plain)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/memk_i64_1622_differential.py
       # #758: the DEFAULT self-contained `--cortex-m` image (no --relocatable,
       # no native-pointer ABI) must SHIP active memory-0 data segments. Before
       # the fix `.linear_memory` was NoBits and the reset path had no copy loop,
@@ -4740,8 +4757,19 @@ jobs:
           # npa_xcopy_violate_1145.wat): +12 / +8 / +164. Main's binary over
           # main's tree prints the old 7443 / 8916 / 240971. `hits: 0`
           # throughout.
-          grep -Eq '^functions audited: 7461$' haa1189.txt
-          grep -Eq '^homes watched: 8942$' haa1189.txt
+          # MEMK64 (#1622, v0.89.1): 7461 -> 7587, 8942 -> 9088 and (below)
+          # 241265 -> 241739. CODEGEN ONLY, by paired control: no fixture
+          # enters the corpus (the #1622 oracle generates its modules), and
+          # main's (dd2b791a) binary over THIS tree prints the old 7461 / 8942
+          # / 241265 exactly. The growth is spec-testsuite functions holding
+          # an i64 access on a non-default memory that previously loud-skipped
+          # and now compile on the --relocatable legs (address1.wast,
+          # float_memory0.wast, memory_trap1.wast, store0.wast, traps0.wast);
+          # their .wast rows were executed against wasmtime on the plain and
+          # native-pointer paths, 236 of 236 in-bounds rows bit-identical with
+          # every memory compared. `hits: 0` on both runs.
+          grep -Eq '^functions audited: 7587$' haa1189.txt
+          grep -Eq '^homes watched: 9088$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -4756,7 +4784,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 241265 ' haa1189.txt
+          grep -Eq '^attributed instructions: 241739 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
