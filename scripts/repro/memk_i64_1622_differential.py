@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 5388
+# ci-checks: emulations >= 5484
 """MEMK64 (#1622) — the i64 load/store family on a NON-DEFAULT memory, on ARM
 `--relocatable`, with AND without `--native-pointer-abi` — execution
 differential vs wasmtime with a per-FUNCTION isolation check.
@@ -71,8 +71,10 @@ from unicorn import (UC_ARCH_ARM, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE,
                      UC_MODE_THUMB, Uc, UcError)
 from unicorn.arm_const import (UC_ARM_REG_LR, UC_ARM_REG_R0, UC_ARM_REG_R1,
                                UC_ARM_REG_R2, UC_ARM_REG_R3, UC_ARM_REG_R4,
-                               UC_ARM_REG_R9, UC_ARM_REG_R10, UC_ARM_REG_R11,
-                               UC_ARM_REG_R12, UC_ARM_REG_PC, UC_ARM_REG_SP)
+                               UC_ARM_REG_R5, UC_ARM_REG_R6, UC_ARM_REG_R7,
+                               UC_ARM_REG_R8, UC_ARM_REG_R9, UC_ARM_REG_R10,
+                               UC_ARM_REG_R11, UC_ARM_REG_R12, UC_ARM_REG_PC,
+                               UC_ARM_REG_SP)
 
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 R_ARM_ABS32 = 2
@@ -82,6 +84,9 @@ BASES = {".text": 0x0010_0000, ".bss": 0x0040_0000, ".data": 0x0080_0000,
 GLOBALS_BASE = 0x0300_0000
 STACK_BASE, STACK_SIZE = 0x0200_0000, 0x1_0000
 GARBAGE = 0xDEADBEEF
+CALLEE_SAVED = [UC_ARM_REG_R4, UC_ARM_REG_R5, UC_ARM_REG_R6, UC_ARM_REG_R7,
+                UC_ARM_REG_R8, UC_ARM_REG_R9, UC_ARM_REG_R10, UC_ARM_REG_R11]
+CALLEE_SAVED_NAMES = ["R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11"]
 MODES = {
     "npa": ["--native-pointer-abi"],
     "plain": ["--embedder-data-init", "--embedder-global-init"],
@@ -140,6 +145,38 @@ def build_fixture(mem0_decl, mem1_decl, mem1_bytes):
                '(i64.store $m0 offset=8 (local.get $p0) (i64.load $m1 offset=24 align=4 (local.get $p1))))')
     funcs["x01"] = {0, 1}
     funcs["x10"] = {0, 1}
+    # i64 ONLY through memory 1 (no i64 in the signature, no memory-0 i64):
+    # six memory-1 i64 values live at once on the operand stack (12 words >
+    # the 9 allocatable registers, so pairs spill), six through locals stored
+    # back reversed, two memory-1 i64 values through `select`, and one
+    # returned from an internal call and stored by its caller. (An i64 carried
+    # over br/br_if/br_table is the #509 loud decline and an i64 call ARGUMENT
+    # the #929 loud decline, on EVERY memory, so neither is a memory-k shape.)
+    nest = "(i64.load $m1 offset=40 (local.get $p))"
+    for k in range(4, -1, -1):
+        nest = f"(i64.add (i64.load $m1 offset={8 * k} align=4 (local.get $p)) {nest})"
+    fns.append(f'(func (export "sum6") (param $p i32) (i64.store $m1 offset=48 (local.get $p) {nest}))')
+    funcs["sum6"] = {1}
+    locs = " ".join(f"(local $l{k} i64)" for k in range(6))
+    sets = " ".join(f"(local.set $l{k} (i64.load $m1 offset={8 * k} (local.get $p)))" for k in range(6))
+    puts = " ".join(f"(i64.store $m1 offset={8 * k} align=4 (local.get $p) (local.get $l{5 - k}))"
+                    for k in range(6))
+    fns.append(f'(func (export "rev6") (param $p i32) {locs} {sets} {puts})')
+    funcs["rev6"] = {1}
+    fns.append('(func (export "selv") (param $p i32) (param $c i32) (result i32) (local $x i64) '
+               '(local.set $x (select (i64.load $m1 offset=8 (local.get $p)) '
+               '(i64.load $m1 offset=24 align=4 (local.get $p)) (local.get $c))) '
+               '(i64.store $m1 offset=32 (local.get $p) (local.get $x)) '
+               '(i32.xor (i32.wrap_i64 (local.get $x)) (i32.wrap_i64 (i64.shr_u (local.get $x) (i64.const 32)))))')
+    funcs["selv"] = {1}
+    getk = f"func_{len(fns) + 1}"  # defined right after `cres`
+    fns.append('(func (export "cres") (param $p i32) '
+               '(i64.store $m1 offset=40 (local.get $p) '
+               '(i64.xor (call $getk (local.get $p)) (i64.const -1))))')
+    fns.append('(func $getk (param $p i32) (result i64) '
+               '(i64.load $m1 offset=8 align=4 (local.get $p)))')
+    funcs["cres"] = {1}
+    funcs[getk] = {1}
     wat = ("(module\n"
            f"  (memory $m0 {mem0_decl})\n"
            f"  (memory $m1 {mem1_decl})\n"
@@ -177,7 +214,12 @@ def build_fixture(mem0_decl, mem1_decl, mem1_bytes):
               ("x01", [("n0", 0x104), ("i32", 0x200)], None),
               ("x01", [("n0", 0x115), ("i32", 0x301)], None),
               ("ld64_o16_a8", [("i32", 0x200)], "i64"),
-              ("ld64_o16_a8", [("i32", 0x301)], "i64")]
+              ("ld64_o16_a8", [("i32", 0x301)], "i64"),
+              ("sum6", [("i32", 0x10)], None), ("sum6", [("i32", 0x23)], None),
+              ("rev6", [("i32", 0x80)], None), ("rev6", [("i32", 0x95)], None),
+              ("selv", [("i32", 0x10), ("i32", 0)], "i32"),
+              ("selv", [("i32", 0x23), ("i32", 1)], "i32"),
+              ("cres", [("i32", 0x40)], None), ("cres", [("i32", 0x51)], None)]
     return wat, funcs, calls
 
 
@@ -322,6 +364,9 @@ class Linked:
         for lo, hi, name in self.funcs:
             if lo <= pc < hi and not name.startswith("func_"):
                 return name
+        for lo, hi, name in self.funcs:
+            if lo <= pc < hi:
+                return name
         return f"pc@{pc:#x}"
 
     def native0(self, off):
@@ -355,16 +400,31 @@ class Linked:
         self.mu.reg_write(UC_ARM_REG_R11, 0 if self.mode == "npa" else BASES[".bss"])
         self.mu.reg_write(UC_ARM_REG_R10, self.mem0_size)
         self.mu.mem_write(STACK_BASE, bytes([0xA5]) * (STACK_SIZE - 0x100))
-        self.mu.reg_write(UC_ARM_REG_SP, STACK_BASE + STACK_SIZE - 0x100)
+        sp0 = STACK_BASE + STACK_SIZE - 0x100
+        # The caller's frame above SP carries a canary the callee must not touch.
+        self.mu.mem_write(sp0, bytes((0x3C + i) & 0xFF for i in range(0x100)))
+        self.mu.reg_write(UC_ARM_REG_SP, sp0)
         self.mu.reg_write(UC_ARM_REG_LR, self.ret | 1)
+        saved = [self.mu.reg_read(r) for r in CALLEE_SAVED]
         self.accesses = []
+        self.abi_bad = []
         try:
             self.mu.emu_start((BASES[sec] + val) | 1, self.ret, timeout=10_000_000)
         except UcError as ex:
             return f"FAULT {ex}"
+        # AAPCS: R4-R11 and SP are preserved, and the caller's frame is intact.
+        for r, name, v in zip(CALLEE_SAVED, CALLEE_SAVED_NAMES, saved):
+            if self.mu.reg_read(r) != v:
+                self.abi_bad.append(name)
+        if self.mu.reg_read(UC_ARM_REG_SP) != sp0:
+            self.abi_bad.append("SP")
+        if bytes(self.mu.mem_read(sp0, 0x100)) != bytes((0x3C + i) & 0xFF for i in range(0x100)):
+            self.abi_bad.append("caller-frame")
         lo = self.mu.reg_read(UC_ARM_REG_R0)
         if ret == "i64":
             return lo | (self.mu.reg_read(UC_ARM_REG_R1) << 32)
+        if ret == "i32":
+            return lo
         return None
 
     def mem_image(self, k, n):
@@ -410,7 +470,7 @@ def run(label, wat, funcs, calls, extent1, mode, target, tmp):
     for fn, args, ret in calls:
         try:
             res = ex[fn](st, *[v for _, v in args])
-            exp = None if res is None else res & 0xFFFF_FFFF_FFFF_FFFF
+            exp = None if res is None else res & (0xFFFF_FFFF if ret == "i32" else 0xFFFF_FFFF_FFFF_FFFF)
         except wasmtime.Trap:
             exp = "trap"
         got = ln.call(fn, args, ret)
@@ -430,7 +490,8 @@ def run(label, wat, funcs, calls, extent1, mode, target, tmp):
         sizes = [w.data_len(st) for w in wm]
         same = [ln.mem_image(k, sizes[k]) == bytes(wm[k].read(st, 0, sizes[k]))
                 for k in range(2)]
-        good = ok and not breach and all(same)
+        abi = [] if isinstance(got, str) else ln.abi_bad
+        good = ok and not breach and all(same) and not abi
         compared += 1
         fails += not good
         if not good:
@@ -439,7 +500,8 @@ def run(label, wat, funcs, calls, extent1, mode, target, tmp):
                   f"(wasmtime {exp if exp in (None, 'trap') else hex(exp)})"
                   f"{'  RESULT' if not ok else ''}"
                   f"{'  ISOLATION ' + ','.join(sorted(set(breach))[:4]) if breach else ''}"
-                  + "".join(f"  MEM{k}" for k in range(2) if not same[k]))
+                  + "".join(f"  MEM{k}" for k in range(2) if not same[k])
+                  + (f"  ABI {','.join(abi)}" if abi else ""))
     print(f"  {label}/{mode}/{target}: {compared} calls, {fails} mismatch(es)")
     return compared, fails, ln.text
 
@@ -461,7 +523,7 @@ def main():
                 same = len(set(texts.values())) == 1
                 print(f"  {label}/{mode}: .text byte-identical across "
                       f"{'/'.join(TARGETS)}: {'yes' if same else 'no'}")
-    if total < 5388:
+    if total < 5484:
         print(f"VACUOUS: compared {total} calls")
         return 1
     print(f"\ncompared: {total}")

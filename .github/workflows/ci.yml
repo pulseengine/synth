@@ -1216,7 +1216,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 394507 \
+            --exact-emulation-floor 394603 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3171,8 +3171,12 @@ jobs:
       # BOTH memories are compared byte for byte with wasmtime after every
       # call; every access must land inside memory 1's region. RED at v0.89.0
       # dd2b791a: every fixture fails to compile (the memory-k i64 decline).
-      # Potency: swapping the two words of the memory-k i64 store reds 2700
-      # of 5388 calls; dropping the #1622 width-inference unwrap reds 96.
+      # Every call also checks R4-R11, SP and the caller's frame are
+      # preserved, and four functions touch i64 ONLY through memory 1 (six
+      # live pairs that spill, six through locals, select, a call result).
+      # Potency: swapping the two words of the memory-k i64 store reds 2796
+      # of 5484 calls; dropping the #1622 width-inference unwrap reds it too
+      # (rev6 then refuses to compile on every leg).
       - name: Run memory-k i64 load/store oracle (#1622, cortex-m3/m4f/m7, NPA and plain)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/memk_i64_1622_differential.py
       # #758: the DEFAULT self-contained `--cortex-m` image (no --relocatable,

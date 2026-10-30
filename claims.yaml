@@ -1894,12 +1894,13 @@ claims:
               compile (#952/#1102). +7 is a width-inference fix found by the new
               oracle: `infer_i64_locals` did not unwrap MultiMemory, so an
               `i64.load 1` feeding `local.set` promoted the local as i32 and
-              dropped the high word (executed, 96 of 5388 calls). The narrow
+              dropped the high word (executed: 96 wrong results over the first 5388-call
+              fixture set). The narrow
               forms are an if-chain, so no wildcard arm was added. Gated by
-              execution: memk_i64_1622_differential.py (5388 calls, NPA and
-              plain, every memory compared with wasmtime after each call; RED at
-              dd2b791a on every fixture; a word-swapped memory-k i64 store
-              mutant reds 2700 calls).
+              execution: memk_i64_1622_differential.py (5484 calls, NPA and
+              plain, every memory and the callee-saved registers compared after
+              each call; RED at dd2b791a on every fixture; a word-swapped
+              memory-k i64 store mutant reds 2796 calls).
           - to: 21193
             reason: >-
               RQ-89-MEMLAYER6 (Refs #1145): 20898 -> 21193 (+295, measured after
@@ -4572,14 +4573,14 @@ claims:
     #   #1602 and 385388 -> 385511 over #1607. Paired control: `389119` rc=0
     #   and `388996` rc=1 on this tree; `389119` rc=1 and `388996` rc=0 on
     #   main ff0b1395.
-    # v0.89.1 MEMK64 (#1622): 389119 -> 394507 (+5388). The new
-    #   memk_i64_1622_differential.py declares `emulations >= 5388` (5388
-    #   measured via oracle_run.py: 449 calls x gale/paged fixtures x
+    # v0.89.1 MEMK64 (#1622): 389119 -> 394603 (+5484). The new
+    #   memk_i64_1622_differential.py declares `emulations >= 5484` (5484
+    #   measured via oracle_run.py: 457 calls x gale/paged fixtures x
     #   npa/plain x cortex-m3/m4f/m7; the three targets' .text is
     #   byte-identical, so the target legs re-execute one lowering). Paired
-    #   control: `394507` rc=0 and `389119` rc=1 on this tree; `394507` rc=1
+    #   control: `394603` rc=0 and `389119` rc=1 on this tree; `394603` rc=1
     #   and `389119` rc=0 on main dd2b791a.
-    text: "--exact-emulation-floor 394507"
+    text: "--exact-emulation-floor 394603"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
