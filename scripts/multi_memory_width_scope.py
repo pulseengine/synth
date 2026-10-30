@@ -186,8 +186,9 @@ def report() -> int:
     print(f"UNEXERCISED REACH (phase one covers, reporter never uses): "
           f"{len(family - set(used))} op(s)")
     print("\nTHE TWO REFUSALS ARE NOT SYMMETRIC:")
-    print("  width refusal  -- non-i32 on memory k declines loudly; reporter uses "
-          f"{sum(1 for v in used if not v.startswith('I32'))} such access(es)")
+    print("  width refusal  -- float/v128 on memory k declines loudly (the i64 "
+          "family is lowered since #1622); reporter uses "
+          f"{sum(1 for v in used if not v.startswith(('I32', 'I64')))} such access(es)")
     print("  bounds refusal -- --safety-bounds software|mask declines for ANY "
           "memory-k access, width-independent (the guard reads R10 = memory 0's size)")
     print("\nSCOPING CONCLUSION: the lift to cost is a per-memory size source "
@@ -236,9 +237,15 @@ def self_test() -> int:
     # self-test ERRORS rather than FAILS. Both red CI, so the gate is potent
     # either way -- but the claim "if the slice over-reads, this reds" was not
     # the behaviour, and an unexecuted control is how that goes unnoticed.
-    ok(not any(v.startswith(("I64", "F32", "F64", "V128")) for v in family),
+    # MEMK64 (#1622, v0.89.1) moved the i64 integer family INSIDE the arm, so
+    # the declining widths are now the float/v128 ones; the i64 family is
+    # asserted present below, so this control moved with the scope, not away.
+    ok(not any(v.startswith(("F32", "F64", "V128")) for v in family),
        "NEGATIVE CONTROL: the derived family contains no declining width (and "
        "removing the `other =>` cut makes the derivation RAISE, not over-read)")
+    ok({"I64Load", "I64Load32U", "I64Store", "I64Store32"} <= family,
+       "#1622: the i64 integer family (gale's supervisor-domain widths) is "
+       "inside the arm's reach")
 
     # POSITIVE CONTROL that the family derivation reads the SOURCE and is not a
     # constant: the i32 family must contain the sign-extending loads, which no

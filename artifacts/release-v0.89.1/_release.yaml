@@ -1,0 +1,17 @@
+# v0.89.1 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS, in either spelling. A figure parked here is a
+# second copy of a measured number, and a second copy is how a number goes stale.
+# The release's numbers live in the artifact records that measured them and in the
+# CHANGELOG section that cites those records. Re-derive; do not read a count here.
+#
+# A PATCH RELEASE, by maintainer decision (2026-10-30): one downstream blocker, shipped
+# without waiting for the next minor. The predecessor's theme carries unchanged — wrong
+# code first, a refusal is a correct outcome, a silent wrong answer never is.
+#
+# SCOPE: the reporter's last wall on the two-domain image (#1622). The i64 load/store
+# family on a non-default memory, which the multi-memory selector arm declined, so the
+# functions holding those accesses were loud-skipped and the object was refused.
+#
+# The version bump and the CHANGELOG section ship in a SEPARATE assembly pull request
+# after the fix lands, in the shape of the v0.56.2 patch assembly.

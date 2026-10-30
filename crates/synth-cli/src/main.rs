@@ -4962,12 +4962,15 @@ fn compile_all_exports(
                 .max_pages
                 .map(|m| format!("{}", m))
                 .unwrap_or_else(|| "unlimited".to_string());
+            // #1622: size from the DECLARED page size — a `(pagesize 1)`
+            // memory's pages are bytes, not 64 KiB.
             info!(
-                "  memory[{}]: {} initial pages, {} max pages ({}KB initial)",
+                "  memory[{}]: {} initial pages, {} max pages of {} B ({} bytes initial)",
                 mem.index,
                 mem.initial_pages,
                 max_str,
-                mem.initial_pages * 64
+                mem.page_bytes(),
+                mem.initial_bytes()
             );
         }
     }

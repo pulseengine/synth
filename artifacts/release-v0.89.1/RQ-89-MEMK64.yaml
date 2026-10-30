@@ -1,0 +1,95 @@
+artifacts:
+  - id: RQ-89-MEMK64
+    type: system-req
+    release: v0.89.1
+    status: implemented
+    title: "The i64 load/store family is lowered on a non-default memory"
+    description: >
+        LOUD DECLINE, the last wall on gale's two-domain image (#1622, measured
+        by the reporter on synth 0.89.0 + meld 0.66.0). The multi-memory
+        selector arm lowered only the i32 load/store family on memory k > 0;
+        every i64 access there was refused ("only the i32 load/store family is
+        (#406)"). gale's fused supervisor domain holds 12 such accesses on
+        memory 1 (i64.load/i64.store offset=8 align=4, i64.load32_u at 24/28/48,
+        i64.store at 0/16/24/108), so 4 functions were loud-skipped, six
+        retained callers referenced them, and #1102/#952 refused the object.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers. Compile a
+        two-memory (pagesize 1) module holding gale's 12 accesses with
+        `--target cortex-m3 --all-exports --relocatable --native-pointer-abi`.
+        If it compiles with 0 declines and __synth_mem_size_N equals the
+        declared extents, the defect is gone.
+        CITATION: #1622 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1622"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 i64.load, i64.store, i64.load8/16/32_s/u and
+        i64.store8/16/32 on a non-default memory compile on ARM --relocatable,
+        with and without --native-pointer-abi, through that memory's own region
+        symbol, and execute bit-identical to wasmtime with every access inside
+        that memory's region. That is delivered with an execution-verified
+        result, or REFUTED with the measurement that refutes it. The refuting
+        command above is RUN FIRST and its result is reported either way.
+      landed: "MEMK64 lane PR - #1622 - DELIVERED: the memory-k i64 family is lowered. The refuting command was run first on v0.89.0 dd2b791a: a two-memory (pagesize 1) module, extents 2080 / 5376 bytes, holding gale's 12 accesses in 11 exported functions, compiled with --target cortex-m3 --all-exports --relocatable --native-pointer-abi, skipped 11 of 12 functions with the #406 decline and exited rc 1 via #952. LIVE. On the fix it compiles 12 of 12 with 0 declines, and __synth_mem_size_0 = 0x820 and __synth_mem_size_1 = 0x1500, the declared extents. Change, crates/synth-synthesis/src/instruction_selector/select_with_stack.rs, the MultiMemory arm: the i64 loads and stores use the i32 family's `__synth_wasm_data_<k> + offset + addr` base with memory 0's #746 pair forms. I64Ldr and I64Str are two word accesses, never LDRD or STRD, so align=4 and byte-unaligned i64 accesses are correct on Cortex-M3. A narrow load fills the high word by sign or zero extension, and a narrow store writes the low word. Inline --safety-bounds software|mask still refuses any memory-k access, i64 included, because memory k has no size register. f32/f64/v128 on memory k still decline, and the decline now names what is lowered. A SECOND DEFECT, found by the new oracle: infer_i64_locals (crates/synth-synthesis/src/instruction_selector.rs) did not unwrap MultiMemory, so an `i64.load 1` feeding local.set promoted the local as i32 and dropped the high word. It now reads the wrapped op's width. Cosmetic: the CLI's memory INFO line printed initial pages times 64 KiB for a (pagesize 1) memory; it now prints the declared page size and initial bytes."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime (multi-memory and
+        custom-page-sizes on, unicorn 2.1.4). New wired oracle
+        scripts/repro/memk_i64_1622_differential.py: 449 calls per leg over every
+        i64 width at gale's offsets 0/8/16/24/28/48/108, i64.load and i64.store at
+        align=4 and natural alignment, word-aligned, byte-unaligned and
+        end-of-memory addresses, stores of 0x8000_0001_FFFF_FFFE and
+        0x7FFF_FFFF_8000_0080, a read-modify-write that keeps a memory-1 i64 in a
+        local, and two cross-memory transfers. Fixtures gale ((pagesize 1),
+        2080 / 5376 bytes) and paged (64 KiB), each under --native-pointer-abi and
+        the plain embedder path, on cortex-m3, cortex-m4f and cortex-m7: 5388 calls.
+        The three targets emit byte-identical .text for both fixtures, so the
+        target legs re-execute one lowering. Memory 1 is seeded from its own data
+        segment, both memories are compared byte for byte after every call, and
+        every access must fall inside memory 1's region. Red at dd2b791a: every
+        fixture refuses to compile and the oracle executes 0 calls. Green on the
+        fix: 5388 of 5388. Potency: swapping the two words of the memory-k i64
+        store reds 2700 of 5388 calls; removing the MultiMemory unwrap from
+        infer_i64_locals reds 96 (8 per leg, the read-modify-write row and the
+        state it leaves). Unit test
+        test_infer_i64_locals_memory_k_load_width_1622 is red with the unwrap
+        removed. crates/synth-cli/tests/multi_memory_406.rs: an i64 family
+        positive test (plain and NPA), an i64 software/mask bounds refusal, and
+        the width decline retargeted to f64. Reach, base dd2b791a vs fix: a
+        symtab byte census over 2704 modules (spec testsuite, tests/wast,
+        scripts/repro, tests/**/*.wat) on cortex-m3 --relocatable, plain and
+        NPA: 0 newly refused, 0 functions moved bytes, single-memory modules
+        byte-identical in all 5266 cells. Newly compiled, all of them in five
+        spec files with an i64 access on a non-default memory: address1.wast,
+        float_memory0.wast, memory_trap1.wast, store0.wast and traps0.wast. Their
+        .wast rows were executed against wasmtime on both paths: 236 of 236
+        in-bounds rows bit-identical with every memory compared; 208 assert_trap
+        rows are out-of-bounds accesses, which the default configuration does not
+        trap (the documented envelope, unchanged). Pins moved, each with a paired
+        control. The exact emulation floor rises by this oracle's declared 5388
+        from the RQ-89-MEMLAYER6 value 389119. The summed value that
+        oracle_wiring_check.py reports gives rc 0 on this tree and rc 1 on main
+        dd2b791a, while 389119 gives rc 1 here and rc 0 on main. Home-alias audit 7461 / 8942 /
+        241265 -> 7587 / 9088 / 241739, codegen only: main's binary over this
+        tree prints the old figures, and hits stay 0. selector_lines_code
+        21193 -> 21360 under a waiver chained after RQ-89-MEMLAYER6's, and
+        selector_lines_total 31973 -> 32163; main derives 21193 and 31973. The
+        multi-memory width scope pin's negative control moves with the scope
+        (float/v128 still declining, the i64 family asserted present); it reds
+        on main's selector. The mutation ledger re-anchor moved 9 sites and
+        found 0 missing; main's ledger leaves 9 sites stale on this tree. The
+        ARM corpus sweep (#973) is unchanged: 191 of 212 compiled, 3678 vectors,
+        on both binaries. MC/DC is unmoved, since the harness does not link
+        synth-synthesis. The #406, #1145 isolation, NPA layering and bulk
+        oracles pass on the fix.
