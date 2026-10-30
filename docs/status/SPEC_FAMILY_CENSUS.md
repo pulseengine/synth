@@ -15,7 +15,8 @@ the census's per-family output and its row is pinned by `claims.yaml`
 ## Why this document exists
 
 The census publishes ONE derived figure per backend — `at-least-one-export`,
-currently **47 / 43 / 47**. That number is correct and CI-gated, and it is the
+currently **43 / 39 / 41** (re-read at v0.89 RQ-89-CENSUSFLOAT; it was
+47 / 43 / 47 when this was written). That number is correct and CI-gated, and it is the
 wrong number to plan from, because it averages two populations that should
 never be averaged: families synth **targets**, and families synth has **never
 implemented**.
@@ -29,12 +30,34 @@ implemented**.
 | multi-memory | 39 | 1 / 3 | 0 / 2 | 1 / 0 |
 | reference types | 23 | 0 / 3 | 0 / 3 | 0 / 0 |
 | GC | 16 | 0 / 2 | 0 / 2 | 0 / 0 |
-| memory64 | 14 | 2 / 1 | 0 / 1 | 2 / 3 |
+| memory64 | 14 | 1 / 0 | 0 / 0 | 2 / 0 |
 | bulk memory | 11 | 1 / 0 | 0 / 1 | 0 / 1 |
 | relaxed SIMD | 7 | 0 / 0 | 0 / 0 | 0 / 0 |
 | exception handling | 4 | 0 / 0 | 0 / 0 | 0 / 0 |
 | tail call | 3 | 0 / 0 | 0 / 0 | 0 / 0 |
 | multi-value | 1 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+## The ARM FPU legs (v0.89, RQ-89-CENSUSFLOAT, #1609)
+
+The `arm` column above is `--cortex-m`, which is **cortex-m3: no FPU**. Every
+function touching f32/f64 is declined there (GI-FPU-002) before its float code
+is lowered, so until v0.89 this census never compiled synth's float lowering on
+ARM. Two legs were ADDED beside it, same self-contained image, on a VFP target.
+Measured on main `7e170d62`; pinned in `FAMILY_OK_PINS` like the columns above.
+Only the rows that differ from `arm` are shown (every other family is
+identical):
+
+| family | files | arm (m3) | arm_m4f | arm_m7dp |
+|--------|-------|----------|---------|----------|
+| **MVP core** | 80 | **13** / 19 | **16** / 20 | **18** / 20 |
+| memory64 | 14 | 1 / 0 | 1 / 0 | 2 / 0 |
+
+The MVP-core gain is `f32_bitwise`, `f32_cmp`, `memory_redundancy` (m4f) and
+`f64_bitwise`, `f64_cmp` (m7dp); `f32` and `float_misc` move all_declined ->
+partial on m4f. memory64's m7dp gain is `f64.wast` — the `64\.wast$`
+filename mis-attribution noted above, an MVP-core numeric file. These are
+compile counts only: no spec float assertion is executed on any target today
+(see #1609).
 
 ## What changed since v0.63, and why the MVP-core row went DOWN
 
