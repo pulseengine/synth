@@ -481,5 +481,220 @@ class RetiredLedgerValidation(unittest.TestCase):
         self.assertEqual(ms.drawn_counts(led), (2, 1, 1))
 
 
+class ShadowTree(unittest.TestCase):
+    """RQ-89-SWEEPMUTANT (#1611): a mutant is applied only to a shadow copy, so
+    no kill — of the survey, or of the shell that started it — can leave one
+    in the live tree. Driven without cargo: a fixture git repo is the live
+    tree, a child python process applies the mutant with the real `Edit`."""
+
+    SITE = {"id": "T/REG/lib.rs:2:0", "file": "crates/x/src/lib.rs", "start": 2, "end": 2,
+            "before": "    Reg::R10", "after": "    Reg::R9"}
+    LIB = "fn f() {\n    Reg::R10\n}\n"
+
+    def setUp(self):
+        import subprocess
+        import tempfile
+        self._td = tempfile.TemporaryDirectory()
+        self.td = Path(self._td.name)
+        self.live = self.td / "live"
+        (self.live / "crates/x/src").mkdir(parents=True)
+        (self.live / "crates/x/src/lib.rs").write_text(self.LIB)
+        (self.live / "scripts").mkdir()
+        (self.live / "scripts/tool.sh").write_text("#!/bin/sh\n")
+        os.chmod(self.live / "scripts/tool.sh", 0o755)
+        (self.live / ".gitignore").write_text("target\n*.log\n")
+        (self.live / "target/debug").mkdir(parents=True)
+        (self.live / "target/debug/synth").write_text("live binary")
+        (self.live / "ignored.log").write_text("x")
+        env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
+        subprocess.run(["git", "init", "-q", str(self.live)], check=True, env=env)
+        subprocess.run(["git", "-C", str(self.live), "add", "crates", ".gitignore"], check=True, env=env)
+        # scripts/tool.sh stays UNTRACKED: a lane's uncommitted file is surveyed too
+        self.src = self.td / "shadow/src"
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _child(self, body):
+        """A python child that imports the real module and runs `body`."""
+        script = self.td / "child.py"
+        script.write_text(
+            "import importlib.util, os, sys, time\n"
+            f"spec = importlib.util.spec_from_file_location('ms', {str(ROOT / 'scripts/mutation_survey.py')!r})\n"
+            "ms = importlib.util.module_from_spec(spec); spec.loader.exec_module(ms)\n"
+            f"SITE = {self.SITE!r}\n"
+            f"open({str(self.td / 'pid')!r}, 'w').write(str(os.getpid()))\n" + body)
+        return script
+
+    def _wait_for(self, pred, timeout=20.0):
+        import time
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if pred():
+                return True
+            time.sleep(0.1)
+        return False
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        # a zombie still answers kill(0); ask ps for its state
+        import subprocess
+        st = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        return bool(st) and not st.startswith("Z")
+
+    def test_sync_copies_the_tree_but_never_target_or_git(self):
+        rewritten, removed = ms.sync_shadow(self.live, self.src)
+        self.assertEqual((self.src / "crates/x/src/lib.rs").read_text(), self.LIB)
+        self.assertTrue((self.src / "scripts/tool.sh").is_file(), "an untracked file is surveyed too")
+        self.assertEqual((self.src / "scripts/tool.sh").stat().st_mode & 0o777, 0o755)
+        self.assertFalse((self.src / "target").exists())
+        self.assertFalse((self.src / ".git").exists())
+        self.assertFalse((self.src / "ignored.log").exists())
+        self.assertTrue((self.src / ms.SHADOW_MARKER).is_file())
+        self.assertEqual((rewritten, removed), (3, 0))
+        self.assertEqual(ms.sync_shadow(self.live, self.src), (0, 0), "an unchanged tree rewrites nothing")
+
+    def test_sync_rewrites_a_left_mutant_with_a_fresh_mtime(self):
+        ms.sync_shadow(self.live, self.src)
+        lib = self.src / "crates/x/src/lib.rs"
+        lib.write_text(self.LIB.replace("R10", "R9"))  # what a kill leaves in the shadow
+        os.utime(lib, (1, 1))
+        (self.src / "stray.txt").write_text("a step's transcript")
+        self.assertEqual(ms.sync_shadow(self.live, self.src), (1, 1))
+        self.assertEqual(lib.read_text(), self.LIB)
+        # cargo decides freshness by mtime; a restored file older than the
+        # mutant build would let it reuse the MUTANT binary
+        self.assertGreater(lib.stat().st_mtime, 1e9)
+        self.assertFalse((self.src / "stray.txt").exists())
+
+    def test_edit_refuses_a_live_tree(self):
+        with self.assertRaises(RuntimeError) as cm:
+            with ms.Edit(self.SITE, "after", root=self.live):
+                pass
+        self.assertIn("REFUSING", str(cm.exception))
+        self.assertEqual((self.live / "crates/x/src/lib.rs").read_text(), self.LIB)
+
+    def test_edit_applies_and_restores_in_a_shadow(self):
+        ms.sync_shadow(self.live, self.src)
+        with ms.Edit(self.SITE, "after", root=self.src) as ed:
+            self.assertIn("Reg::R9", (self.src / "crates/x/src/lib.rs").read_text())
+            self.assertFalse(ed.restored())
+        self.assertTrue(ed.restored())
+
+    def test_sigkill_mid_mutant_leaves_the_live_tree_untouched(self):
+        import signal
+        import subprocess
+        ms.sync_shadow(self.live, self.src)
+        ready = self.td / "ready"
+        child = self._child(
+            f"with ms.Edit(SITE, 'after', root={str(self.src)!r}):\n"
+            f"    open({str(ready)!r}, 'w').write('1')\n"
+            "    time.sleep(120)\n")
+        p = subprocess.Popen([sys.executable, str(child)])
+        try:
+            self.assertTrue(self._wait_for(ready.exists), "child never applied its mutant")
+            self.assertIn("Reg::R9", (self.src / "crates/x/src/lib.rs").read_text())
+            p.send_signal(signal.SIGKILL)  # no handler can run
+            p.wait(10)
+        finally:
+            if p.poll() is None:
+                p.kill()
+        self.assertEqual((self.live / "crates/x/src/lib.rs").read_text(), self.LIB,
+                         "the LIVE tree must never have held the mutant")
+        self.assertIn("Reg::R9", (self.src / "crates/x/src/lib.rs").read_text(),
+                      "SIGKILL leaves the mutant in the SHADOW (control: the kill was real)")
+        self.assertEqual(ms.sync_shadow(self.live, self.src), (1, 0))
+        self.assertEqual((self.src / "crates/x/src/lib.rs").read_text(), self.LIB)
+
+    def test_a_dead_parent_stops_the_survey_and_unwinds_its_edit(self):
+        """The sweep-timeout shape: SIGKILL lands on the WRAPPER shell, python
+        is reparented. The watchdog must notice and unwind (restoring the
+        shadow file) instead of running on as an orphan."""
+        import signal
+        import subprocess
+        ms.sync_shadow(self.live, self.src)
+        ready = self.td / "ready"
+        child = self._child(
+            "ms.install_lifecycle_guards(interval=0.2)\n"
+            f"with ms.Edit(SITE, 'after', root={str(self.src)!r}):\n"
+            f"    open({str(ready)!r}, 'w').write('1')\n"
+            "    time.sleep(120)\n")
+        # `| cat` forces bash to FORK python rather than exec it — the
+        # `python3 scripts/mutation_survey.py ci | tee` shape of ci.yml
+        w = subprocess.Popen(["bash", "-c", f"{sys.executable} {child} | cat"])
+        pid = None
+        try:
+            self.assertTrue(self._wait_for(ready.exists), "child never applied its mutant")
+            pid = int((self.td / "pid").read_text())
+            self.assertNotEqual(pid, w.pid)
+            w.send_signal(signal.SIGKILL)  # what subprocess.run(timeout=) does
+            w.wait(10)
+            self.assertTrue(self._wait_for(lambda: not self._alive(pid), timeout=15),
+                            "the survey kept running after its parent died")
+        finally:
+            if pid and self._alive(pid):
+                os.kill(pid, signal.SIGKILL)
+        self.assertEqual((self.src / "crates/x/src/lib.rs").read_text(), self.LIB,
+                         "the watchdog's SIGTERM must unwind the Edit")
+
+    def test_main_routes_every_building_command_through_the_shadow(self):
+        self.assertEqual(set(ms.SHADOWED_CMDS), {"baseline", "l2", "run", "controls", "ci", "reach"})
+
+
+class MutantResidueCheck(unittest.TestCase):
+    """RQ-89-SWEEPMUTANT (#1611): the commit-side guard."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("mrc", ROOT / "scripts/mutant_residue_check.py")
+        cls.mrc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mrc)
+
+    def test_whole_line_match_only(self):
+        f = self.mrc.find_block
+        self.assertEqual(f("a\n    if x >= 0 {\nb", "    if x >= 0 {"), [2])
+        self.assertEqual(f("a\n    if x >= 0 {y\nb", "    if x >= 0 {"), [])
+        self.assertEqual(f("a\nb\nc\nb\nc", "b\nc"), [2, 4])
+
+    def test_catalogue_covers_mutants_and_controls_not_retired(self):
+        led = {"mutants": [{"id": "m", "file": "a.rs", "after": "x"}],
+               "controls": [{"id": "c", "file": "b.rs", "after": "y"}],
+               "retired": [{"id": "r"}]}
+        self.assertEqual([i for i, _, _ in self.mrc.catalogue(led)], ["m", "c"])
+
+    def test_plants_are_chosen_by_structure_not_by_id(self):
+        # #1602 re-anchored arm_backend.rs:1805:36 to :1807:36 and the
+        # id-naming self-test raised KeyError in a REQUIRED job; renaming every
+        # id must not change which sites are planted
+        import json
+        led = json.loads((ROOT / "docs/status/mutation_survey.json").read_text())
+        plants, problems = self.mrc.select_plants(led, ROOT)
+        self.assertEqual(problems, [])
+        self.assertGreaterEqual(len(plants), 2)
+        for i, m in enumerate(led["mutants"] + led["controls"]):
+            m["id"] = ("CONTROL/" if m in led["controls"] else "") + f"renamed-{i:03d}"
+        again, _ = self.mrc.select_plants(led, ROOT)
+        self.assertEqual([(p["file"], p["before"]) for p in again],
+                         [(p["file"], p["before"]) for p in plants])
+
+    def test_an_unusable_catalogue_is_a_plain_rc2_not_a_traceback(self):
+        plants, problems = self.mrc.select_plants({"mutants": [], "controls": []}, ROOT)
+        self.assertEqual(plants, [])
+        self.assertEqual(len(problems), 2)
+        stale = {"mutants": [{"id": "x", "op": "REG", "file": "crates/nope.rs", "before": "a", "after": "b"}],
+                 "controls": [{"id": "CONTROL/y", "file": "Cargo.toml", "before": "no such line", "after": "z"}]}
+        self.assertEqual(len(self.mrc.select_plants(stale, ROOT)[1]), 2)
+
+    def test_red_first_and_clean(self):
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.mrc.self_test(), 0)
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])
