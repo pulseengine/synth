@@ -72,7 +72,8 @@ first measured on objects nothing was silently dropped from.
 
 Usage:
   python3 scripts/spec_compile_census.py [--synth PATH] [--suite DIR]
-                                         [--backend arm|riscv|aarch64] [-j N]
+                                         [--backend arm|riscv|aarch64|arm_m4f|arm_m7dp]
+                                         [-j N]
 
 ci-status: wired — .github/workflows/spec-suite.yml runs this on every PR/push
 """
@@ -97,6 +98,16 @@ BACKENDS = {
     "arm": ["--cortex-m"],
     "riscv": ["-b", "riscv"],
     "aarch64": ["-b", "aarch64"],
+    # RQ-89-CENSUSFLOAT (#1609): the FPU legs. `--cortex-m` above is
+    # cortex-m3 (TargetSpec::cortex_m3, no FPU), so the `arm` leg declines EVERY
+    # function that touches f32/f64 with GI-FPU-002 — the float lowering was
+    # never compiled by this census at all. Measured on 7e170d62: 233 functions
+    # are declined on `arm` (and identically on cortex-m4: 0 files differ) for
+    # want of an FPU. These two legs are the SAME self-contained image
+    # (`-t cortex-m*` implies --cortex-m) on a single-precision and a
+    # double-precision VFP target. They ADD pins; the `arm` leg is unchanged.
+    "arm_m4f": ["-t", "cortex-m4f"],
+    "arm_m7dp": ["-t", "cortex-m7dp"],
 }
 
 BUCKETS = [
@@ -253,7 +264,29 @@ PINS = {
     "aarch64": dict(ok=21, partial=20, all_declined=78, module_decline=119,
                     no_module=9, no_exports=9, parse_fail=1, panic=0,
                     other_error=0),
+    # RQ-89-CENSUSFLOAT (#1609): measured on 7e170d62. Against `arm`, EXACTLY
+    # these files move (nothing else; module_decline and below are identical):
+    #   arm -> arm_m4f:  f32_bitwise, f32_cmp, memory_redundancy -> ok;
+    #                    f32, float_misc all_declined -> partial
+    #                    (float_misc/f32 keep VRINT trunc/nearest + f64 declines)
+    #   arm_m4f -> arm_m7dp: f64, f64_bitwise, f64_cmp all_declined -> ok
+    "arm_m4f": dict(ok=19, partial=28, all_declined=88, module_decline=103,
+                    no_module=9, no_exports=9, parse_fail=1, panic=0,
+                    other_error=0),
+    "arm_m7dp": dict(ok=22, partial=28, all_declined=85, module_decline=103,
+                     no_module=9, no_exports=9, parse_fail=1, panic=0,
+                     other_error=0),
 }
+
+# RQ-89-CENSUSFLOAT (#1609): a FUNCTION-level pin, FPU legs only. A file
+# bucket cannot see a float function move inside a file that stays `partial` —
+# measured: every float-specific move between v0.88.0 and 7e170d62 (#1594's
+# local_get `type-local-f32`/`type-local-f64` and loop `nesting`) left every
+# file bucket unchanged. This counts the exports the CLI ITSELF reports as
+# skipped, from its machine text only (`#952: N of M requested export(s)` and
+# `no functions compiled successfully (N skipped)`), never from log lines.
+# Exact, like PINS: a float function that starts or stops compiling moves it.
+SKIPPED_FUNCTION_PINS = {"arm_m4f": 1489, "arm_m7dp": 1401}
 
 # Doc-cited derived figure, re-asserted at runtime against the pins above so
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:
@@ -261,7 +294,8 @@ PINS = {
 # memory64 files' ok+partial losses above, see the PINS comment; RQ-89-MEM64
 # #1582: 45/42/44 -> 43/40/42, the two imported-memory `partial` files above;
 # RQ-89-IMPSIZE #1584: 43/40/42 -> 43/39/41, linking2.wast above)
-AT_LEAST_ONE_EXPORT = {"arm": 43, "riscv": 39, "aarch64": 41}
+AT_LEAST_ONE_EXPORT = {"arm": 43, "riscv": 39, "aarch64": 41,
+                       "arm_m4f": 47, "arm_m7dp": 50}
 
 
 def classify(output: str, rc: int) -> str:
@@ -301,9 +335,22 @@ def classify(output: str, rc: int) -> str:
     return "other_error"
 
 
+def skipped_functions(output: str) -> int:
+    """RQ-89-CENSUSFLOAT: the number of functions the CLI reports it skipped,
+    read from its machine text (#952 / "no functions compiled") — 0 for an
+    `ok` file and for a whole-module refusal (nothing was attempted)."""
+    m = re.search(r"#952: (\d+) of \d+ requested export", output)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"no functions compiled successfully \((\d+) skipped\)",
+                  output)
+    return int(m.group(1)) if m else 0
+
+
 def run_backend(synth: Path, backend: str, files, jobs: int):
     counts = {b: 0 for b in BUCKETS}
     examples = {}  # bucket -> first (file, message) for the report
+    skipped = 0
 
     def one(wast: Path):
         with tempfile.TemporaryDirectory() as td:
@@ -313,14 +360,16 @@ def run_backend(synth: Path, backend: str, files, jobs: int):
                  "--all-exports", *BACKENDS[backend]],
                 capture_output=True, text=True, timeout=300,
             )
-        return wast.name, classify(p.stdout + p.stderr, p.returncode), \
-            (p.stdout + p.stderr).strip().splitlines()[:1]
+        out_text = p.stdout + p.stderr
+        return wast.name, classify(out_text, p.returncode), \
+            out_text.strip().splitlines()[:1], skipped_functions(out_text)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
-        for name, bucket, msg in ex.map(one, files):
+        for name, bucket, msg, nskip in ex.map(one, files):
             counts[bucket] += 1
+            skipped += nskip
             examples.setdefault(bucket, []).append((name, msg))
-    return counts, examples
+    return counts, examples, skipped
 
 
 
@@ -435,6 +484,17 @@ FAMILY_OK_PINS = {
                 "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                 "memory64": 2, "bulk memory": 0, "reference types": 0,
                 "multi-value": 0},
+    # RQ-89-CENSUSFLOAT (#1609): `memory_redundancy` (MVP core) and the
+    # f32/f64 files; `memory64` gains f64.wast on m7dp (the `64\.wast$`
+    # mis-attribution noted above, exactly as on aarch64).
+    "arm_m4f":  {"MVP core": 16, "multi-memory": 1, "SIMD": 0, "GC": 0,
+                 "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
+                 "memory64": 1, "bulk memory": 1, "reference types": 0,
+                 "multi-value": 0},
+    "arm_m7dp": {"MVP core": 18, "multi-memory": 1, "SIMD": 0, "GC": 0,
+                 "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
+                 "memory64": 2, "bulk memory": 1, "reference types": 0,
+                 "multi-value": 0},
 }
 
 
@@ -484,6 +544,20 @@ def main() -> int:
                 fails.append(
                     f"PINS[{be!r}][{never!r}] = {pins[never]} — this pin may "
                     f"never be raised above 0; fix the defect instead")
+    # Structural guard (RQ-89-CENSUSFLOAT): every leg carries every pin table.
+    # `report_by_family` reads FAMILY_OK_PINS with `.get(backend, {})`, so a
+    # leg missing there would run with its family gate SILENTLY off.
+    for be in BACKENDS:
+        for tname, table in (("PINS", PINS),
+                             ("AT_LEAST_ONE_EXPORT", AT_LEAST_ONE_EXPORT),
+                             ("FAMILY_OK_PINS", FAMILY_OK_PINS)):
+            if be not in table:
+                fails.append(f"backend {be!r} has no {tname} entry — a leg "
+                             f"without pins is unmeasured, not passing")
+    if fails:
+        for f in fails:
+            print(f"FAIL: {f}")
+        return 1
     # Structural guard: the doc-cited derived figure must equal ok+partial.
     for be, pins in PINS.items():
         derived = pins["ok"] + pins["partial"]
@@ -521,7 +595,7 @@ def main() -> int:
 
     backends = args.backend or sorted(BACKENDS)
     for be in backends:
-        counts, examples = run_backend(synth, be, files, args.jobs)
+        counts, examples, skipped = run_backend(synth, be, files, args.jobs)
         print(f"\n== {be} census over {len(files)} files ==")
         for b in BUCKETS:
             marker = ""
@@ -536,6 +610,10 @@ def main() -> int:
         alo = counts["ok"] + counts["partial"]
         print(f"  at-least-one-export = {alo} "
               f"(doc-cited {AT_LEAST_ONE_EXPORT[be]})")
+        print(f"  skipped functions   = {skipped}")
+        if be in SKIPPED_FUNCTION_PINS and skipped != SKIPPED_FUNCTION_PINS[be]:
+            fails.append(f"{be}: skipped functions = {skipped}, pin = "
+                         f"{SKIPPED_FUNCTION_PINS[be]}")
         # RQ-63-SPECFAM: the same measurement, split by family. Reporting only.
         per_file = {name: b for b, rows in examples.items() for name, _ in rows}
         fails.extend(report_by_family(be, per_file))

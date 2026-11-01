@@ -36,6 +36,28 @@ implemented**.
 | tail call | 3 | 0 / 0 | 0 / 0 | 0 / 0 |
 | multi-value | 1 | 0 / 0 | 0 / 0 | 0 / 0 |
 
+## The ARM FPU legs (v0.89, RQ-89-CENSUSFLOAT, #1609)
+
+The `arm` column above is `--cortex-m`, which is **cortex-m3: no FPU**. Every
+function touching f32/f64 is declined there (GI-FPU-002) before its float code
+is lowered, so until v0.89 this census never compiled synth's float lowering on
+ARM. Two legs were ADDED beside it, same self-contained image, on a VFP target.
+Measured on main `7e170d62`; pinned in `FAMILY_OK_PINS` like the columns above.
+Only the rows that differ from `arm` are shown (every other family is
+identical):
+
+| family | files | arm (m3) | arm_m4f | arm_m7dp |
+|--------|-------|----------|---------|----------|
+| **MVP core** | 80 | **13** / 19 | **16** / 20 | **18** / 20 |
+| memory64 | 14 | 1 / 0 | 1 / 0 | 2 / 0 |
+
+The MVP-core gain is `f32_bitwise`, `f32_cmp`, `memory_redundancy` (m4f) and
+`f64_bitwise`, `f64_cmp` (m7dp); `f32` and `float_misc` move all_declined ->
+partial on m4f. memory64's m7dp gain is `f64.wast` — the `64\.wast$`
+filename mis-attribution noted above, an MVP-core numeric file. These are
+compile counts only: no spec float assertion is executed on any target today
+(see #1609).
+
 ## What changed since v0.63, and why the MVP-core row went DOWN
 
 v0.63 published **MVP core 14 / 114 arm, 11 riscv, 21 aarch64**. Both numbers

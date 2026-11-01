@@ -1191,9 +1191,50 @@ claims:
         glob: ['.github/workflows/spec-suite.yml']
         min: 1
 
+  # RQ-89-CENSUSFLOAT (#1609). The `arm` leg above is `--cortex-m`, i.e.
+  # cortex-m3 with NO FPU, so it declines every f32/f64 function and the
+  # census never compiled synth's float lowering on ARM. Two legs were ADDED
+  # (the arm/riscv/aarch64 pins are untouched): cortex-m4f (single-precision
+  # VFP) and cortex-m7dp (double-precision). Paired controls at authoring: a
+  # planted f64 refusal reds ONLY arm_m7dp, a planted f32 refusal reds arm_m4f
+  # and arm_m7dp, and arm/riscv/aarch64 stay green under both — the blindness
+  # this closes, measured.
+  - id: SYNTH-SPEC-SUITE-CENSUS-FPU
+    doc: README.md
+    text: "full-module compile 19 cortex-m4f / 22 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0"
+    evidence:
+      - kind: count-eq                       # the legs exist and name the FPU targets
+        pattern: '"arm_m4f": \["-t", "cortex-m4f"\]'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '"arm_m7dp": \["-t", "cortex-m7dp"\]'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # arm_m4f bucket pins
+        pattern: 'ok=19, partial=28'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # arm_m7dp bucket pins
+        pattern: 'ok=22, partial=28'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # doc-cited ok+partial figures
+        pattern: '"arm_m4f": 47, "arm_m7dp": 50'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-eq                       # function-level pin (file buckets miss in-file float moves)
+        pattern: 'SKIPPED_FUNCTION_PINS = \{"arm_m4f": 1489, "arm_m7dp": 1401\}'
+        glob: ['scripts/spec_compile_census.py']
+        expect: 1
+      - kind: count-min                      # the job runs the census (all legs by default)
+        pattern: 'run: python3 scripts/spec_compile_census.py$'
+        glob: ['.github/workflows/spec-suite.yml']
+        min: 1
+
   - id: SYNTH-SPEC-SUITE-CENSUS-MATRIX
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
+    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0; ARM with an FPU (#1609 — the ARM leg above is `--cortex-m` = cortex-m3, which declines every f32/f64 function): full-module compile 19 cortex-m4f / 22 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
     evidence:
       - kind: count-eq                       # same script pins as the README leg
         pattern: 'ok=16, partial=27'

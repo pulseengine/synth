@@ -53,6 +53,10 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth (riscv feature covers all three census backends)
         run: cargo build --features riscv --bin synth
+      # RQ-89-CENSUSFLOAT (#1609): "all backends" includes two ARM FPU legs
+      # (arm_m4f, arm_m7dp). The `arm` leg is --cortex-m = cortex-m3, NO FPU,
+      # which declines every f32/f64 function, so without these legs no float
+      # lowering on ARM is ever compiled here. Same binary, no new deps.
       - name: Run spec-suite compile census (exact-pinned, all backends)
         run: python3 scripts/spec_compile_census.py
       # RQ-65-MVPCORE (#1017) / #1225: the census above measures the
