@@ -49,6 +49,76 @@ def art(art_id: str, status: str, issue: str, version=(0, 71), scope=None,
             version, art_id, status, fields, [], f"v{version[0]}.{version[1]}")
 
 
+def patchver_tests() -> None:
+    """v0.89.1 PATCHVER (#1622): `--release v0.89.1 --since-tag v0.89.0` must
+    audit the PATCH's own close-set. Measured on main before the fix:
+    `parse_version("v0.89.1")` returned (0, 89), so the patch run reported
+    v0.89's issues. Driven through the REAL loader over real files, so the
+    key the loader gives `release-v0.89.1/` and the key `parse_version` gives
+    `v0.89.1` are tested against EACH OTHER, not each against a constant."""
+    check("PATCHVER: parse_version keeps the patch",
+          C.parse_version("v0.89.1") == (0, 89, 1), repr(C.parse_version("v0.89.1")))
+    check("PATCHVER: v0.89, v0.89.0 and V0.89 are the SAME release key",
+          C.parse_version("v0.89") == C.parse_version("v0.89.0")
+          == C.parse_version("V0.89") == (0, 89))
+    check("PATCHVER: a patch prints as itself",
+          C.fmt_release((0, 89, 1)) == "v0.89.1" and C.fmt_release((0, 89)) == "v0.89")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        for rel, aid, issue, release in (
+                ("release-v0.89", "RQ-89-A", "#1500", "v0.89"),
+                ("release-v0.89.1", "RQ-89-MEMK64", "#1622", "v0.89.1")):
+            d = root / "artifacts" / rel
+            d.mkdir(parents=True)
+            (d / f"{aid}.yaml").write_text(
+                "artifacts:\n"
+                f"  - id: {aid}\n"
+                "    type: system-req\n"
+                f"    release: {release}\n"
+                "    status: implemented\n"
+                "    fields:\n"
+                f"      issue: \"{issue}\"\n", encoding="utf-8")
+        f, _w, auth, _h = C.check(root, "v0.89.1", {1622}, open_issues=set())
+        check("PATCHVER: v0.89.1 authorises ONLY the patch's own issue",
+              sorted(auth) == [1622], repr(sorted(auth)))
+        check("PATCHVER: closing the patch's issue in the patch window is clean",
+              f == [], str(f))
+        _f, _w, auth89, _h = C.check(root, "v0.89", {1500}, open_issues=set())
+        check("PATCHVER: v0.89's close-set does NOT absorb the patch's issue",
+              sorted(auth89) == [1500], repr(sorted(auth89)))
+        f2, w2, a2, _h = C.check(root, "v0.89.1", {1500, 1622}, open_issues=set())
+        check("PATCHVER: a minor's issue closed in the patch window is "
+              "ATTRIBUTED TO v0.89, the PRIOR release, not authorised by v0.89.1",
+              f2 == [] and sorted(a2) == [1622]
+              and any(x.startswith("ATTRIBUTED TO v0.89: #1500") for x in w2),
+              f"{f2} {w2} {sorted(a2)}")
+        # --from-anchor derives the release being cut with the CENSUS's own
+        # `expected_cut`: once the anchor is v0.89.0 and release-v0.89.1/
+        # exists, the patch is being cut — not v0.90, which on main made the
+        # CI live-tree closure step audit an EMPTY release during a patch
+        # window and pass it as vacuous-allowed. Offline: --closed/--open.
+        import contextlib
+        import io
+        for anchor, want in (("v0.89.0", "v0.89.1"), ("v0.88.0", "v0.89")):
+            orig_anchor, orig_argv = C.ANCHOR_TAG, sys.argv
+            C.ANCHOR_TAG = anchor
+            sys.argv = ["issue_closure_check.py", "--from-anchor", "--root",
+                        str(root), "--closed", "", "--open", "",
+                        "--allow-vacuous-authorised"]
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf):
+                    C.main()
+            except SystemExit:
+                pass
+            finally:
+                C.ANCHOR_TAG, sys.argv = orig_anchor, orig_argv
+            line = f"release DERIVED from ANCHOR_TAG {anchor}: {want}\n"
+            check(f"PATCHVER: --from-anchor at {anchor} with release-v0.89.1/ "
+                  f"present derives {want}",
+                  line in buf.getvalue(), buf.getvalue()[:300])
+
+
 def run(artifacts, closed, allow_unclosed=False, open_issues=None):
     """Drive C.check without touching disk, by stubbing the loader.
 
@@ -881,6 +951,7 @@ def main() -> int:
           any("DELIVERED LATER: #1331" in x and "v0.75" in x for x in w), str(w))
 
     next_release_tag_tests()
+    patchver_tests()
     r11conflict_tests()
     closed_since_tests()
     closewindow_tests()

@@ -50,20 +50,30 @@ from status_evidence_check import (  # noqa: E402
     ANCHOR_TAG,
     CLAIMING,
     authorised_close_set,
+    expected_cut,
+    fmt_release as _fmt_key,
     load_release_artifacts,
+    parse_release,
 )
 
 RELEASE_GLOB = "artifacts/release-v*/*.yaml"
 
 
-def parse_version(release: str) -> tuple[int, int]:
-    """'v0.71' -> (0, 71). Raises on anything else, deliberately: a silently
-    unparsed release would scope the check to nothing and pass vacuously."""
-    txt = release.strip().lstrip("vV")
-    parts = txt.split(".")
-    if len(parts) < 2:
-        raise ValueError(f"unparseable release {release!r} — want vMAJOR.MINOR")
-    return (int(parts[0]), int(parts[1]))
+def parse_version(release: str) -> tuple:
+    """'v0.71' / 'v0.71.0' -> (0, 71); 'v0.89.1' -> (0, 89, 1). Raises on
+    anything else, deliberately: a silently unparsed release would scope the
+    check to nothing and pass vacuously.
+
+    The key is `status_evidence_check.release_key`'s, imported rather than
+    re-derived, so it is the SAME key the loader gives `release-v0.89.1/`.
+    It used to truncate to MAJOR.MINOR, so `--release v0.89.1` audited v0.89's
+    close-set — a verdict true about the wrong release (v0.89.1 PATCHVER,
+    #1622)."""
+    key = parse_release(release.strip().lstrip("vV"))
+    if key is None:
+        raise ValueError(f"unparseable release {release!r} — want "
+                         f"vMAJOR.MINOR or vMAJOR.MINOR.PATCH")
+    return key
 
 
 def tag_commit_date(tag: str, repo: str) -> str:
@@ -511,8 +521,8 @@ def later_attribution(artifacts, version: tuple[int, int]):
     return found
 
 
-def fmt_release(v: tuple[int, int]) -> str:
-    return f"v{v[0]}.{v[1]}"
+def fmt_release(v: tuple) -> str:
+    return _fmt_key(v)
 
 
 def check(root: Path, release: str, closed: set[int],
@@ -763,8 +773,12 @@ def main() -> int:
     if args.from_anchor:
         if args.release:
             sys.exit("--from-anchor and --release are mutually exclusive")
-        mm = tuple(int(x) for x in ANCHOR_TAG.lstrip("v").split(".")[:2])
-        args.release = f"v{mm[0]}.{mm[1] + 1}"
+        # A PATCH successor is chosen only when its own release directory is
+        # present — `expected_cut`, the function the CENSUS uses, so the two
+        # cannot name different releases (v0.89.1 PATCHVER, #1622).
+        _arts, _ = load_release_artifacts(args.root, RELEASE_GLOB)
+        args.release = fmt_release(
+            expected_cut(ANCHOR_TAG, {a[1] for a in _arts}))
         print(f"  release DERIVED from ANCHOR_TAG {ANCHOR_TAG}: {args.release}")
     elif not args.release:
         sys.exit("one of the arguments --release --from-anchor is required")
