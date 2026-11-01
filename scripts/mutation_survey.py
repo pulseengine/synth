@@ -115,6 +115,14 @@ Usage:
   python3 scripts/mutation_survey.py report                # markdown tables
 Env: CARGO_TARGET_DIR (default target/), SYNTH_MUTANTS_LEDGER (default
 docs/status/mutation_survey.json).
+
+WHERE MUTANTS LAND (RQ-89-SWEEPMUTANT, #1611): `baseline`, `l2`, `run`,
+`controls`, `ci` and `reach` copy the tree to
+$CARGO_TARGET_DIR/mutation-shadow/src and re-execute there, building into
+$CARGO_TARGET_DIR/mutation-shadow/target. The checkout you run it from is never
+mutated and its target/debug/synth is never overwritten by a mutant build; the
+ledger is the only file of the checkout these commands write. A dead parent
+stops the survey. `scripts/mutant_residue_check.py` is the commit-side guard.
 """
 
 import argparse
@@ -142,6 +150,18 @@ CI_YML = ROOT / ".github/workflows/ci.yml"
 DEFAULT_LEDGER = ROOT / "docs/status/mutation_survey.json"
 TARGET_DIR = Path(os.environ.get("CARGO_TARGET_DIR") or (ROOT / "target")).resolve()
 BIN = TARGET_DIR / "debug" / "synth"
+
+# RQ-89-SWEEPMUTANT (#1611): every command that builds or mutates runs in a
+# SHADOW COPY of the tree, never in the checkout it was invoked from. When this
+# process runs inside the shadow, SHADOW_ENV names the live checkout it was
+# copied from (the ledger and `git` still belong to that one).
+SHADOW_ENV = "SYNTH_MUTANT_SHADOW_OF"
+SHADOW_MARKER = ".synth-mutation-shadow"
+ALLOW_LIVE_ENV = "SYNTH_MUTANT_ALLOW_LIVE_TREE"
+LIVE_ROOT = Path(os.environ[SHADOW_ENV]).resolve() if os.environ.get(SHADOW_ENV) else ROOT
+# The subcommands that build synth or apply a mutation. The rest only read the
+# tree or the ledger and run where they were invoked.
+SHADOWED_CMDS = ("baseline", "l2", "run", "controls", "ci", "reach")
 
 # ---------------------------------------------------------------------------
 # The frame: five regions, located by function anchor.
@@ -576,14 +596,51 @@ def sample_sites(sites, seed, per_region, oversample):
 # ---------------------------------------------------------------------------
 # Applying and restoring edits
 # ---------------------------------------------------------------------------
+#
+# RQ-89-SWEEPMUTANT (#1611) — WHERE a mutant is applied. Until v0.89 `Edit`
+# wrote the mutant into the checkout the survey was started from, and restored
+# it on the way out. Two kills defeat that restore, and both happened to four
+# lanes in one release:
+#   * a sweep's per-command timeout SIGKILLs the `bash -c "python3 … | tee"`
+#     WRAPPER, not python. The survey is reparented to pid 1 and keeps applying
+#     mutants to the live tree while the lane goes on to `git add` (measured:
+#     an orphan held a probe in arm_backend.rs for 32.7 s after its wrapper
+#     died);
+#   * SIGKILL of the survey itself (or of the orphan) mid-`Edit` runs no
+#     handler, so the mutant stays on disk for good.
+# A restore can only be made robust against the kills it gets to see. So the
+# mutant is no longer applied where a restore is needed: `main()` re-executes
+# every building/mutating subcommand inside a shadow copy of the tree
+# (`enter_shadow`), and `Edit` REFUSES a tree that is not a shadow. Whatever a
+# kill leaves behind is left in the shadow, and `sync_shadow` rewrites every
+# file that differs from the live tree at the start of the next run.
+def refuse_live_tree(root):
+    if (Path(root) / SHADOW_MARKER).exists() or os.environ.get(ALLOW_LIVE_ENV) == "1":
+        return
+    raise RuntimeError(
+        f"REFUSING to apply a mutant in {root}: it is not a mutation shadow tree "
+        f"(no {SHADOW_MARKER}). A mutant written into a live checkout survives any "
+        f"kill its restore never sees (RQ-89-SWEEPMUTANT, #1611). Run the survey "
+        f"through `main()`, which copies the tree first, or set {ALLOW_LIVE_ENV}=1 "
+        f"to accept that risk for a one-off manual edit.")
+
+
 class Edit:
-    def __init__(self, site, text_key):
+    def __init__(self, site, text_key, root=None):
         self.site = site
-        self.path = ROOT / site["file"]
+        self.root = Path(root) if root is not None else ROOT
+        self.path = self.root / site["file"]
         self.original = None
         self.text = site[text_key]
 
+    def restored(self):
+        """True when the file holds exactly the bytes it held before the edit
+        (replaces a `git diff --quiet`, which inside a shadow under target/
+        would ask the LIVE repository about an ignored path and always pass)."""
+        return self.original is not None and self.path.read_text() == self.original
+
     def __enter__(self):
+        refuse_live_tree(self.root)
         self.original = self.path.read_text()
         lines = self.original.split("\n")
         s, e = self.site["start"], self.site["end"]
@@ -606,9 +663,151 @@ class Edit:
         return False
 
 
-def git_clean(rel):
-    r = subprocess.run(["git", "diff", "--quiet", "--", rel], cwd=ROOT)
-    return r.returncode == 0
+# ---------------------------------------------------------------------------
+# The shadow tree (RQ-89-SWEEPMUTANT, #1611)
+# ---------------------------------------------------------------------------
+def shadow_paths(target_dir=None):
+    base = Path(target_dir or TARGET_DIR) / "mutation-shadow"
+    return base, base / "src", base / "target"
+
+
+def _skip_rel(rel_parts):
+    return (not rel_parts) or rel_parts[0] == "target" or ".git" in rel_parts
+
+
+def tree_files(live):
+    """Relative paths of every file the live tree holds that git does not
+    ignore — tracked AND untracked, so a lane's uncommitted edit is surveyed
+    exactly as `Edit` used to see it — plus a populated submodule's files.
+    Never target/ and never any .git."""
+    live = Path(live)
+    r = subprocess.run(["git", "-C", str(live), "ls-files", "-z", "-c", "-o", "--exclude-standard"],
+                       capture_output=True, check=True)
+    out = set()
+    for rel in r.stdout.decode().split("\0"):
+        if not rel or _skip_rel(Path(rel).parts):
+            continue
+        p = live / rel
+        if p.is_symlink() or p.is_file():
+            out.add(rel)
+        elif p.is_dir():  # a submodule gitlink: copy what is checked out
+            for dirpath, dirnames, filenames in os.walk(p):
+                dirnames[:] = [d for d in dirnames if d != ".git"]
+                for f in filenames:
+                    sub = Path(dirpath) / f
+                    if sub.is_file() or sub.is_symlink():
+                        out.add(str(sub.relative_to(live)))
+    return sorted(out)
+
+
+def sync_shadow(live, src):
+    """Make `src` a byte-exact copy of the live tree's files. Only a file whose
+    bytes, mode or link target differ is rewritten — that gives it a fresh mtime,
+    so cargo rebuilds exactly what changed (a mutant a kill left in the shadow
+    is older than the build that compiled it; preserving the live mtime on the
+    restored file would let cargo reuse the MUTANT binary). Files absent from
+    the live tree are removed; target/ (ensure_symlink's) is left alone.
+    Returns (rewritten, removed)."""
+    live, src = Path(live), Path(src)
+    src.mkdir(parents=True, exist_ok=True)
+    want = tree_files(live)
+    rewritten = 0
+    for rel in want:
+        a, b = live / rel, src / rel
+        if a.is_symlink():
+            link = os.readlink(a)
+            if b.is_symlink() and os.readlink(b) == link:
+                continue
+            b.parent.mkdir(parents=True, exist_ok=True)
+            if b.is_symlink() or b.exists():
+                b.unlink()
+            os.symlink(link, b)
+            rewritten += 1
+            continue
+        data = a.read_bytes()
+        mode = a.stat().st_mode & 0o777
+        if b.is_file() and not b.is_symlink() and (b.stat().st_mode & 0o777) == mode and b.read_bytes() == data:
+            continue
+        b.parent.mkdir(parents=True, exist_ok=True)
+        if b.is_symlink() or b.exists():
+            b.unlink()
+        b.write_bytes(data)
+        os.chmod(b, mode)
+        rewritten += 1
+    keep = set(want) | {SHADOW_MARKER}
+    removed = 0
+    for dirpath, dirnames, filenames in os.walk(src, topdown=True):
+        rel_dir = Path(dirpath).relative_to(src)
+        dirnames[:] = [d for d in dirnames if not _skip_rel((rel_dir / d).parts)]
+        for f in filenames:
+            rel = str(rel_dir / f) if rel_dir.parts else f
+            if rel not in keep:
+                (Path(dirpath) / f).unlink()
+                removed += 1
+    (src / SHADOW_MARKER).write_text(
+        f"mutation_survey shadow of {live}\n"
+        "Mutants are applied HERE, never in the live tree (RQ-89-SWEEPMUTANT, #1611).\n")
+    return rewritten, removed
+
+
+def enter_shadow(argv, ledger_path):
+    """Re-execute this survey inside the shadow tree. Never returns. The lock
+    is an flock on an fd inherited across exec, so it is held for exactly as
+    long as the survey process lives — a killed survey releases it."""
+    import fcntl
+
+    base, src, tgt = shadow_paths()
+    base.mkdir(parents=True, exist_ok=True)
+    fd = os.open(base / "lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(f"REFUSING TO RUN: another mutation survey holds {base} — two surveys "
+                 f"would apply mutants to the same shadow tree")
+    os.set_inheritable(fd, True)
+    t0 = time.time()
+    rewritten, removed = sync_shadow(ROOT, src)
+    log(f"shadow tree {src}: {rewritten} file(s) refreshed, {removed} removed "
+        f"({time.time() - t0:.1f}s) — mutants are applied there, never in {ROOT} (#1611)")
+    env = dict(os.environ)
+    env[SHADOW_ENV] = str(ROOT)
+    env["CARGO_TARGET_DIR"] = str(tgt)
+    env["SYNTH_MUTANTS_LEDGER"] = str(Path(ledger_path).resolve())
+    env["SYNTH_MUTANT_SHADOW_LOCK_FD"] = str(fd)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execve(sys.executable, [sys.executable, str(src / "scripts" / "mutation_survey.py"), *argv], env)
+
+
+def install_lifecycle_guards(interval=1.0, grace=60.0):
+    """SIGTERM/SIGHUP become SystemExit, so every `with Edit(...)` unwinds and
+    every `subprocess.run` kills its child. A watchdog thread stops the survey
+    when its parent dies: a sweep timeout that SIGKILLs the wrapper shell
+    reparents python, and an orphaned survey must not go on building, running
+    oracles and writing the ledger behind the lane's back (#1611)."""
+    import signal
+    import threading
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda n, _f: sys.exit(128 + n))
+    ppid0 = os.getppid()
+    if ppid0 == 1:
+        return  # started detached on purpose; there is no parent to outlive
+
+    def watch():
+        while True:
+            time.sleep(interval)
+            if os.getppid() != ppid0:
+                try:
+                    print(f"[mutants] parent pid {ppid0} is gone: stopping so the survey cannot "
+                          f"run orphaned (RQ-89-SWEEPMUTANT, #1611)", file=sys.stderr, flush=True)
+                except Exception:
+                    pass
+                os.kill(os.getpid(), signal.SIGTERM)
+                time.sleep(grace)
+                os._exit(143)  # the unwind hung; the shadow is re-synced next run
+
+    threading.Thread(target=watch, name="parent-watchdog", daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -1058,7 +1257,7 @@ def save_ledger(path, ledger):
 
 
 def head_commit():
-    return subprocess.run(["git", "rev-parse", "--short=8", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["git", "rev-parse", "--short=8", "HEAD"], cwd=LIVE_ROOT, capture_output=True, text=True).stdout.strip()
 
 
 # RQ-66-POTENCY (#1189): the fields that describe HOW a sample was drawn —
@@ -1111,7 +1310,7 @@ def evaluate(site, ledger, text_key="after", run_oracles=True, log_prefix="", wi
     rec = {k: site[k] for k in ("id", "region", "op", "file", "start", "end", "before", "after")}
     t0 = time.time()
     base = ledger["baseline"]["corpus"]
-    with Edit(site, text_key):
+    with Edit(site, text_key) as ed:
         ok, err, bt = build_synth()
         if not ok:
             rec.update(status="uncompilable", classification="UNCOMPILABLE", build_error=err[:300])
@@ -1133,7 +1332,7 @@ def evaluate(site, ledger, text_key="after", run_oracles=True, log_prefix="", wi
                                           " — every CI job times out"})
         elif changed and run_oracles:
             rec.update(run_suite(ledger, log_prefix, l1=l1))
-    assert git_clean(site["file"]), f"tree not restored: {site['file']}"
+    assert ed.restored(), f"tree not restored: {site['file']}"
     if not changed:
         rec.update(reach_probe(site, ledger, wide=wide))
     elif not run_oracles:
@@ -1181,7 +1380,7 @@ def reach_probe(site, ledger, wide=False):
     reachable sites (RQ-66-DELETE)."""
     if not site.get("probe"):
         return {"status": "identical", "reach": "no-probe", "classification": "UNRESOLVED"}
-    with Edit(site, "probe"):
+    with Edit(site, "probe") as ed:
         ok, err, _ = build_synth()
         if not ok:
             res = {"status": "identical", "reach": "unknown", "classification": "UNRESOLVED", "probe_error": err[:200]}
@@ -1196,7 +1395,7 @@ def reach_probe(site, ledger, wide=False):
             if wide:
                 res["reach_wide"] = wide_res
                 res["reach_wide_at"] = head_commit()
-    assert git_clean(site["file"]), f"tree not restored after probe: {site['file']}"
+    assert ed.restored(), f"tree not restored after probe: {site['file']}"
     return res
 
 
@@ -1795,7 +1994,7 @@ def cmd_ci(args):
             continue
         t0 = time.time()
         if expect["classification"] == "KILLED":
-            with Edit(site, "after"):
+            with Edit(site, "after") as ed:
                 ok, err, _ = build_synth()
                 if not ok:
                     failures.append(f"{sid}: expected KILLED but no longer compiles: {err[:120]}")
@@ -1816,7 +2015,7 @@ def cmd_ci(args):
                 else:
                     green, failing, _, dt = run_l2(ledger["suite"]["l2"])
                     verdict = "SURVIVED" if green else "KILLED"
-            assert git_clean(site["file"])
+            assert ed.restored()
             print(f"{sid}: expect KILLED by {killer['job']}/{killer['step'][:40]} -> {verdict} ({time.time() - t0:.0f}s)")
             if verdict != "KILLED":
                 failures.append(f"{sid}: a mutation the ledger records as KILLED now SURVIVES its killer — the oracle lost its power")
@@ -2067,9 +2266,11 @@ def main():
     # A SIGTERM (a harness killed mid-mutant) must still restore the working
     # tree: turn it into SystemExit so every `with Edit(...)` unwinds. Measured
     # once the hard way — a killed run left a mutated selector on disk.
-    import signal
-
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    # RQ-89-SWEEPMUTANT (#1611): that covered the one kill it could see. SIGHUP
+    # is handled the same way, a dead PARENT now stops the survey, and — the
+    # part that does not depend on seeing the kill at all — every building or
+    # mutating subcommand is re-executed in a shadow copy below.
+    install_lifecycle_guards()
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--ledger", type=Path, default=Path(os.environ.get("SYNTH_MUTANTS_LEDGER") or DEFAULT_LEDGER))
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -2110,6 +2311,8 @@ def main():
     p.add_argument("--full", action="store_true", help="also re-run the suite for UNTESTED entries")
     sub.add_parser("report")
     args = ap.parse_args()
+    if args.cmd in SHADOWED_CMDS and not os.environ.get(SHADOW_ENV):
+        enter_shadow(sys.argv[1:], args.ledger)  # does not return
     {"sites": cmd_sites, "sample": cmd_sample, "baseline": cmd_baseline, "run": cmd_run,
      "controls": cmd_controls, "l2": cmd_l2, "attribute": cmd_attribute, "reanchor": cmd_reanchor, "retire": cmd_retire,
      "pin-subset": cmd_pin_subset, "ci": cmd_ci, "report": cmd_report, "reach": cmd_reach}[args.cmd](args)

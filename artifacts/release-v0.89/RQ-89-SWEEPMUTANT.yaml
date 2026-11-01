@@ -1,0 +1,75 @@
+artifacts:
+  - id: RQ-89-SWEEPMUTANT
+    type: system-req
+    release: v0.89
+    status: implemented
+    title: "mutation_survey.py applies mutants only to a shadow copy, stops when its parent dies, and a residue check keeps a mutant from being committed"
+    description: >
+        In v0.89, four lanes found a mutation_survey.py mutant in their working tree
+        after a local CI sweep's per-command timeout killed the survey's wrapper shell.
+        One example was encode_thumb2_movw(10, ...) changed to 9 in
+        crates/synth-cli/src/main.rs, which is the CONTROL/startup-r10-seeded-into-r9
+        mutant; arm_backend.rs was hit too. The survey wrote each mutant into the live
+        checkout and relied on a SIGTERM handler to restore it. Two kills bypass that
+        handler. First, a sweep timeout SIGKILLs only the bash wrapper, so python is
+        orphaned and keeps mutating the live tree. Second, a SIGKILL that lands
+        mid-Edit runs no handler at all. A committed mutant that the suite does not
+        kill passes CI silently.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A refutation is a
+        legitimate outcome and is reported with numbers. Start
+        `bash -c "python3 scripts/mutation_survey.py reach --only <site> | tee ..."`.
+        As soon as the first mutant is on disk, SIGKILL the bash wrapper, which is what
+        subprocess.run(timeout=) does. If no orphan survives and the tree is clean,
+        the lane is moot.
+        CITATION: #1611 is where the matter was analysed. The number names where it
+        was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1611"
+      verification-track: manual
+      landed: "PR #1612 - #1611 - DELIVERED. The refuting command was run first on origin/main 7e170d62 and did NOT refute. The first mutant was on disk 0.5 s after start (arm_backend.rs:1805, the reach probe). Two seconds after the wrapper bash was SIGKILLed, the survey was still running with ppid 1 (pid 74956), and it held the probe in the LIVE tree for another 32.7 s before it restored the file. In a second run the orphan (pid 80048) was SIGKILLed mid-mutant, and git diff --stat still showed arm_backend.rs 2 +- afterwards, so the mutant was left for good. The fix has two parts. First, baseline, l2, run, controls, ci and reach now re-exec themselves inside a shadow copy at $CARGO_TARGET_DIR/mutation-shadow/src (tracked plus untracked non-ignored files, never target/ or .git). They build into a separate shadow target dir and hold an flock, and Edit refuses any tree that is not a shadow. Second, a parent-death watchdog plus SIGTERM/SIGHUP handlers stop an orphaned survey. Copying was chosen over a journalled restore for three reasons. It is the only option that also fixes the orphan case, which is still mutating, not waiting to be restored. Its cost was measured at 0.4 s to sync 1724 files (25 MB) plus one cold synth-cli build (18.6 s locally). And re-executing the whole survey inside the copy keeps the derived suite's five in-tree cargo build steps (one --features riscv) and L2 cargo test building the mutant, exactly as before. sync_shadow rewrites only files that differ, giving them a fresh mtime, so cargo cannot reuse a mutant binary. A new commit-side guard, scripts/mutant_residue_check.py, checks every mutants/controls `after` block in the ledger (whole-line match anywhere in the file) plus the SYNTH-MUTANT-REACHED and /* MUTANT: markers. It is wired as an early step of the required Claim Check job and again after the mutation-survey replay."
+      verified-by: >
+        DELIVERED. Red-first for the guard: its --self-test plants cases into a
+        scratch copy. They are chosen STRUCTURALLY from the live ledger: every control
+        that resolves in the tree, plus the first mutant of each operator kind (ordered by file and text, not by id).
+        On main d048b523 that is 9 plants, among them the incident control
+        CONTROL/startup-r10-seeded-into-r9 and the arm_backend.rs BOUND mutant, plus a
+        reach-probe marker and a DROPMOV marker. Each gives rc=1; the clean and
+        restored copies give rc=0 and an empty catalogue gives rc=2
+        (MUTANT-RESIDUE-SELFTEST cases=14 planted=9 failures=0). The first version
+        named two ledger ids. #1602's re-anchor renamed one of them (:1805:36 became
+        :1807:36), and the required Claim Check raised KeyError on the PR's merge
+        ref. Ids are no longer named: a unit test renames every id and asserts the
+        same sites are planted, and a catalogue with nothing resolvable gives a
+        plain rc=2. The live tree reads sites=37 residue=0. At authoring, 0 of the 37
+        catalogued `after` blocks occurred in the clean tree. Unit tests in
+        scripts/test_mutation_survey.py (CI-wired) cover the following without cargo:
+        the sync excludes target/.git and ignored files and rewrites a left mutant
+        with a fresh mtime; Edit refuses a live tree; a SIGKILL mid-Edit leaves the
+        live fixture untouched; and SIGKILLing the wrapper bash makes the child
+        unwind and exit. The negative control for that last test, with the watchdog
+        call removed, reds with "the survey kept running after its parent died".
+        Mutation gate, paired on the same machine: `mutation_survey.py ci` on base
+        printed MUTANTS-CI subset=10 controls=3 non-killed=7 failures=0 and
+        MUTANTS-REACH-WIDE entries=4 reached=4 unreached=0, rc=0, in 13:46. The fixed
+        script printed the same two lines, rc=0, in 15:29. Every verdict line (14 of
+        them) was identical after timings were stripped, changed=9 and changed=56
+        were unchanged, the shadow's cold build took about 21 s, and
+        ci_mutants_gate.py passes both runs. Repro rerun on the fixed script, with
+        the same wrapper SIGKILL: the mutant lands only in the shadow (0 polls of
+        the live tree ever dirty), the survey is gone 0.5 s after its wrapper died,
+        and the shadow file is restored. SIGKILLing the survey itself mid-mutant
+        leaves the mutant in the SHADOW and the live tree clean. Residual, stated
+        plainly: the watchdog is disabled when the survey starts already
+        reparented (ppid 1 at start, a wrapper that died before python ran). Such
+        a survey runs on, but only inside the shadow, and the ledger is its only
+        live write.
+      done-when: "contains:scripts/mutation_survey.py:def enter_shadow("
