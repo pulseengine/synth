@@ -49,7 +49,7 @@ identical):
 
 | family | files | arm (m3) | arm_m4f | arm_m7dp |
 |--------|-------|----------|---------|----------|
-| **MVP core** | 80 | **13** / 19 | **16** / 20 | **18** / 20 |
+| **MVP core** | 80 | **13** / 19 | **16** / 20 | **19** / 20 |
 | memory64 | 14 | 1 / 0 | 1 / 0 | 2 / 0 |
 
 The MVP-core gain is `f32_bitwise`, `f32_cmp`, `memory_redundancy` (m4f) and

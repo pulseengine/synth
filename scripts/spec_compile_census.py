@@ -273,7 +273,7 @@ PINS = {
     "arm_m4f": dict(ok=19, partial=28, all_declined=88, module_decline=103,
                     no_module=9, no_exports=9, parse_fail=1, panic=0,
                     other_error=0),
-    "arm_m7dp": dict(ok=22, partial=28, all_declined=85, module_decline=103,
+    "arm_m7dp": dict(ok=23, partial=27, all_declined=85, module_decline=103,
                      no_module=9, no_exports=9, parse_fail=1, panic=0,
                      other_error=0),
 }
@@ -286,7 +286,7 @@ PINS = {
 # skipped, from its machine text only (`#952: N of M requested export(s)` and
 # `no functions compiled successfully (N skipped)`), never from log lines.
 # Exact, like PINS: a float function that starts or stops compiling moves it.
-SKIPPED_FUNCTION_PINS = {"arm_m4f": 1489, "arm_m7dp": 1401}
+SKIPPED_FUNCTION_PINS = {"arm_m4f": 1489, "arm_m7dp": 1400}
 
 # Doc-cited derived figure, re-asserted at runtime against the pins above so
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:
@@ -491,7 +491,7 @@ FAMILY_OK_PINS = {
                  "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                  "memory64": 1, "bulk memory": 1, "reference types": 0,
                  "multi-value": 0},
-    "arm_m7dp": {"MVP core": 18, "multi-memory": 1, "SIMD": 0, "GC": 0,
+    "arm_m7dp": {"MVP core": 19, "multi-memory": 1, "SIMD": 0, "GC": 0,
                  "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                  "memory64": 2, "bulk memory": 1, "reference types": 0,
                  "multi-value": 0},
