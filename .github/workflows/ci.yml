@@ -31,7 +31,7 @@ jobs:
     env:
       RUSTFLAGS: -Dwarnings
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Install llvm-dwarfdump (independent DWARF parser gate, #394)
         # The `--debug-line` DWARF gate's Oracle I
@@ -45,7 +45,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends llvm
           llvm-dwarfdump --version
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -147,7 +147,7 @@ jobs:
     # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -190,7 +190,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           rustc --version
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -218,12 +218,12 @@ jobs:
     name: Format
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","light"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -239,7 +239,7 @@ jobs:
     name: Version Pin Sweep
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","light"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Issue #145: fail at PR time if [workspace.package].version drifts from
       # any intra-workspace path-dep `version =` pin or MODULE.bazel — the
       # v0.7.0-class desync that breaks release.yml + publish at tag-push time.
@@ -314,7 +314,7 @@ jobs:
       # would scan one subject and pass vacuously; the gate's in-script
       # delivery floor (28) turns that into a RED, and this line is what
       # keeps it green the honest way.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       # Guarded either way; the second fallback exists because a self-hosted
@@ -1313,10 +1313,10 @@ jobs:
       # include path. Set explicitly so the system-link path is unambiguous.
       Z3_SYS_Z3_HEADER: /usr/include/z3.h
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -1418,7 +1418,7 @@ jobs:
     # table). Move once smithy ships kani-verifier + CBMC.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Kani
         run: cargo install --locked kani-verifier && cargo kani setup
       - name: Run Kani proofs
@@ -1429,7 +1429,7 @@ jobs:
     name: Rivet Validation
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       # Cache the rivet-cli BINARY keyed on its pinned version, NOT on Cargo.lock.
       # The old key (hashFiles Cargo.lock) invalidated on every release version
@@ -1438,7 +1438,7 @@ jobs:
       # (No space left on device). Version-keying means a Cargo.lock change no
       # longer triggers the rebuild; the cached binary is reused.
       - name: Cache rivet-cli binary
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cargo/bin/rivet
           key: ${{ runner.os }}-rivet-cli-v0.37.0
@@ -1962,9 +1962,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Nix
-        uses: cachix/install-nix-action@v31
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
       - name: Setup Bazel
@@ -2043,10 +2043,10 @@ jobs:
     # C-library build graph.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -2057,7 +2057,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -2101,12 +2101,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -2117,7 +2117,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps (reference engine PINNED)
@@ -2160,10 +2160,10 @@ jobs:
     # revert.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -2174,7 +2174,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -2235,10 +2235,10 @@ jobs:
     # every merge in the repo.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -2287,10 +2287,10 @@ jobs:
     # ported to 26.04 — tracked as its own issue.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -2301,7 +2301,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -2614,10 +2614,10 @@ jobs:
     # host-native backend (the unicorn job above is the host-independent partner).
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -2660,7 +2660,7 @@ jobs:
           objcopy/objdump/synth extraction likely broke, or an op that used to \
           compile now declines"; exit 1
           fi
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install wasmtime python bindings
@@ -2702,10 +2702,10 @@ jobs:
     # feature-matrix row cites.
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -2720,7 +2720,7 @@ jobs:
         run: cargo build -p synth-cli
       - name: Install host linker (lld, clang, llvm-objcopy)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lld clang llvm
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install oracle deps
@@ -2766,10 +2766,10 @@ jobs:
     # emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -2780,7 +2780,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -3459,10 +3459,10 @@ jobs:
     # tree and rebuilds, then always restores it.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -3471,7 +3471,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Build synth
@@ -3540,10 +3540,10 @@ jobs:
     # revert.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -3594,7 +3594,7 @@ jobs:
       # pre-tag push catches script/CLI drift instead of the release run.
       - name: Green leg — release smoke gate passes on the verify binary
         run: bash scripts/release_verify_smoke.sh target/debug/synth
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -3705,10 +3705,10 @@ jobs:
     # revert.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -3731,7 +3731,7 @@ jobs:
         run: cargo test -p synth-cli --features verify --test proven_safe_bounds_901
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -3767,10 +3767,10 @@ jobs:
     # revert.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -3781,7 +3781,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -3818,10 +3818,10 @@ jobs:
     # revert.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -3832,7 +3832,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -3873,10 +3873,10 @@ jobs:
     # revert.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -3887,7 +3887,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -3922,10 +3922,10 @@ jobs:
     # wasmtime ground truth. Isolated job: emulation deps pip-installed here.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -3936,7 +3936,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -3977,10 +3977,10 @@ jobs:
     # read the callee's leftover a0). Isolated job: emulation deps here only.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -3991,7 +3991,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -4024,10 +4024,10 @@ jobs:
     # Isolated job: emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4038,7 +4038,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -4072,10 +4072,10 @@ jobs:
     # emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4086,7 +4086,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -4122,10 +4122,10 @@ jobs:
     # selector); its decline paths are unit-gated in synth-core/synth-synthesis.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4136,7 +4136,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -4173,10 +4173,10 @@ jobs:
     # pinned by the frozen-fixture job and the #642/#594/#597 oracles.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4187,7 +4187,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -4229,10 +4229,10 @@ jobs:
     # #642/#650/#594/#597 oracles.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4243,7 +4243,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -4285,10 +4285,10 @@ jobs:
     # `synth_core::referenced_locals`.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4299,7 +4299,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -4341,10 +4341,10 @@ jobs:
     # per backend, per the #970 two-leg precedent.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4355,7 +4355,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -4395,10 +4395,10 @@ jobs:
     # asserted wrong, per "do not manufacture a wrong answer".
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4409,7 +4409,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -4461,10 +4461,10 @@ jobs:
     # recorded decline, not manufactured into a wrong answer.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4475,7 +4475,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth (riscv feature — the RV32 leg needs it)
         run: cargo build --features riscv -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -4540,12 +4540,12 @@ jobs:
     # without it fails loudly at 0 audited, never 0/0.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4556,7 +4556,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: "Run the home-register write audit sweep (RQ-65-ALIASCLASS)"
@@ -4865,10 +4865,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4879,7 +4879,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth (the unmutated baseline)
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -4960,10 +4960,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -4974,7 +4974,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5030,10 +5030,10 @@ jobs:
     # Declines per leg are pinned EXACTLY (reach moved = red).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5044,7 +5044,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth (riscv feature — the RV32 leg needs it)
         run: cargo build --features riscv -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5102,10 +5102,10 @@ jobs:
     # #642/#650/#664/#594/#597 oracles.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5116,7 +5116,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5158,10 +5158,10 @@ jobs:
     #     ISAs.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5172,7 +5172,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5211,10 +5211,10 @@ jobs:
     # deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5225,7 +5225,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5260,10 +5260,10 @@ jobs:
     # emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5274,7 +5274,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5311,10 +5311,10 @@ jobs:
     # pressure. Isolated job: emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5325,7 +5325,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5360,10 +5360,10 @@ jobs:
     # emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5374,7 +5374,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5423,10 +5423,10 @@ jobs:
     # emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5437,7 +5437,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5481,10 +5481,10 @@ jobs:
     # job: emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5495,7 +5495,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5532,10 +5532,10 @@ jobs:
     # Isolated job: emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5546,7 +5546,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5593,10 +5593,10 @@ jobs:
     # Isolated job: emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5607,7 +5607,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5641,10 +5641,10 @@ jobs:
     # br_table lowering. Isolated job: emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5655,7 +5655,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5690,10 +5690,10 @@ jobs:
     # emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5704,7 +5704,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5739,10 +5739,10 @@ jobs:
     # deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5753,7 +5753,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5790,10 +5790,10 @@ jobs:
     # tests. Isolated job: emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5804,7 +5804,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5842,10 +5842,10 @@ jobs:
     name: "#418 arena-bind self-contained execution oracle"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5856,7 +5856,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -5914,10 +5914,10 @@ jobs:
     # revert, never a deadlocked merge.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -5987,10 +5987,10 @@ jobs:
     # revert, never a deadlocked merge.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -6046,10 +6046,10 @@ jobs:
     # revert, never a deadlocked merge.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -6101,12 +6101,12 @@ jobs:
     # not fixed, per this lane's mandate.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -6117,7 +6117,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth (riscv feature is default; aarch64 backend is unconditional)
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -6205,10 +6205,10 @@ jobs:
     env:
       SYNTH: ./target/debug/synth
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -6219,7 +6219,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -6403,10 +6403,10 @@ jobs:
     env:
       SYNTH: ./target/debug/synth
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -6417,7 +6417,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -6499,10 +6499,10 @@ jobs:
     env:
       SYNTH: ./target/debug/synth
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -6513,7 +6513,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -6612,10 +6612,10 @@ jobs:
     env:
       SYNTH: ./target/debug/synth
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -6626,7 +6626,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       # Deliberately NO wabt. Both oracles here assemble `.wat` with wasmtime's
@@ -6668,10 +6668,10 @@ jobs:
     env:
       SYNTH: ${{ github.workspace }}/target/debug/synth
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -6682,7 +6682,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -6759,7 +6759,7 @@ jobs:
     # state the new baseline — never lower a floor to go green.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # PINNED, deliberately, unlike every other job here: the floors are counts
       # of decisions and conditions RECONSTRUCTED FROM LOWERED WASM, so they are
       # sensitive to how `std` inlines. `@stable` is a moving target and a Rust
@@ -6777,7 +6777,7 @@ jobs:
         with:
           targets: wasm32-wasip1
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -6786,7 +6786,7 @@ jobs:
           key: ${{ runner.os }}-mcdc-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-mcdc-
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install witness (pinned)
@@ -6842,7 +6842,7 @@ jobs:
             cat /tmp/mcdc.log 2>/dev/null || echo "(gate did not run)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: mcdc-evidence
@@ -6879,10 +6879,10 @@ jobs:
     # merges); it is the evidence the feature-matrix row cites.
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -6893,7 +6893,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
       - name: Install oracle deps
@@ -6989,9 +6989,9 @@ jobs:
     # for every other lane in this file.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: litpool-islands
       # Self-hosted distro python can be PEP 668 externally-managed, where a
@@ -7140,11 +7140,11 @@ jobs:
     # GitHub-hosted quota makes every other lane queue longer during a burst.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-musl, x86_64-unknown-linux-gnu
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: arm64-musl-portable
       # WHY THIS JOB EXISTS BEFORE THE RELEASE-MATRIX ENTRY. `create-release`
@@ -7277,11 +7277,11 @@ jobs:
     # RQ-72-CIPOOL applies to the four required contexts it declined to move.
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           # Keyed by ARCH: the x86_64 jobs' `target/` is not reusable here.
           key: arm64-musl-native-${{ runner.arch }}
@@ -7342,9 +7342,9 @@ jobs:
     # SELF-HOSTED, per the RQ-72-CIPOOL ceiling.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: advisories-vex
       - name: Install cargo-deny
@@ -7442,11 +7442,11 @@ jobs:
     # worse for every other lane, so this one goes to the pool that has capacity.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: musl-portable
       # `musl-gcc` is the linker driver rustc invokes for this target IF it is
@@ -7527,7 +7527,7 @@ jobs:
     name: Script portability (shellcheck + Python 3.9 floor)
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","light"]') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # SHELLCHECK_SHA256 is the release asset's `digest` for
       # shellcheck-v0.11.0.linux.x86_64.tar.gz from
