@@ -313,13 +313,20 @@ def closewindow_tests() -> None:
     # (4) --from-anchor must track ANCHOR_TAG rather than mirror a version. A
     # hard-coded release in a CI step would become a seventh anchor site and
     # would keep checking the PREVIOUS release while reading green.
-    mm = tuple(int(x) for x in C.ANCHOR_TAG.lstrip("v").split(".")[:2])
+    # The successor is the next MINOR, unless the anchor's next PATCH has its
+    # own release directory (v0.89.1 PATCHVER, #1622). Derived here from the
+    # directory listing, independently of `expected_cut`, so the test does not
+    # merely re-run the function it checks.
+    _x, _y, _p = (list(int(x) for x in C.ANCHOR_TAG.lstrip("v").split(".")) + [0])[:3]
+    _patch_dir = root / "artifacts" / f"release-v{_x}.{_y}.{_p + 1}"
+    want_cut = (f"v{_x}.{_y}.{_p + 1}" if _patch_dir.is_dir()
+                else f"v{_x}.{_y + 1}")
     r = subprocess.run(
         [sys.executable, str(root / "scripts" / "issue_closure_check.py"),
          "--from-anchor", "--closed", "", "--no-state", "--allow-vacuous-authorised"],
         capture_output=True, text=True, cwd=root, timeout=300)
     check("closewindow: --from-anchor derives ANCHOR_TAG's successor",
-          f"release DERIVED from ANCHOR_TAG {C.ANCHOR_TAG}: v{mm[0]}.{mm[1] + 1}"
+          f"release DERIVED from ANCHOR_TAG {C.ANCHOR_TAG}: {want_cut}"
           in r.stdout, r.stdout[:200])
 
     # (5) FAIL CLOSED when state is unreadable. `--no-state` is the deterministic

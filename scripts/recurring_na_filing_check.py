@@ -58,16 +58,20 @@ def artifact_docs() -> list[tuple[str, dict]]:
     return out
 
 
-def releases_in(docs) -> set[tuple[int, int]]:
+def releases_in(docs) -> set[tuple]:
+    """Release KEYS, via status_evidence_check's canonical key (v0.89.1 PATCHVER,
+    #1622): `v0.89` and `v0.89.0` key as (0, 89), a patch `v0.89.1` as
+    (0, 89, 1). The old (major, minor) truncation folded a patch into its minor,
+    so the cut could never be a patch and a patch's filing could never count."""
+    sec = _load("sec_keys", "scripts/status_evidence_check.py")
     rel = set()
     for _f, d in docs:
         for a in (d or {}).get("artifacts", []) or []:
             if not isinstance(a, dict):
                 continue
-            r = str(a.get("release") or "").strip().lstrip("v")
-            parts = r.split(".")
-            if len(parts) >= 2 and all(p.isdigit() for p in parts[:2]):
-                rel.add((int(parts[0]), int(parts[1])))
+            key = sec.parse_release(str(a.get("release") or "").strip())
+            if key is not None:
+                rel.add(key)
     return rel
 
 
@@ -80,18 +84,19 @@ def release_under_cut(docs) -> tuple[str, list[str]]:
     release's filing discharge this one's, which is the whole defect #1136 names.
     """
     sec = _load("sec_anchor", "scripts/status_evidence_check.py")
-    a_major, a_minor = (int(x) for x in sec.ANCHOR_TAG.lstrip("v").split(".")[:2])
-    from_anchor = (a_major, a_minor + 1)
     rels = releases_in(docs)
     if not rels:
         return "", ["no artifact carries a `release:` — a derived population of "
                     "zero is a refusal, not a pass"]
+    # anchor+1 is the successor MINOR, or the successor PATCH when that patch's
+    # own records are present — the same single answer the CENSUS uses.
+    from_anchor = sec.expected_cut(sec.ANCHOR_TAG, rels)
     from_tree = max(rels)
     if from_anchor != from_tree:
         return "", [f"the release under cut is ambiguous: anchor+1 says "
-                    f"v{from_anchor[0]}.{from_anchor[1]} while the artifact tree's max "
-                    f"says v{from_tree[0]}.{from_tree[1]} — refusing rather than guessing"]
-    return f"v{from_anchor[0]}.{from_anchor[1]}", []
+                    f"{sec.fmt_release(from_anchor)} while the artifact tree's max "
+                    f"says {sec.fmt_release(from_tree)} — refusing rather than guessing"]
+    return sec.fmt_release(from_anchor), []
 
 
 def check(docs) -> list[str]:
