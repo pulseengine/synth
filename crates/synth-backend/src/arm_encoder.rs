@@ -3585,7 +3585,15 @@ impl ArmEncoder {
                         Ok(bytes)
                     }
                 } else {
-                    Ok(vec![0xBF, 0x00])
+                    // #1206 audit: this `else` returned a 16-bit NOP as `Ok` for a
+                    // shifted-register operand — the #1272/#615 silent-NOP class,
+                    // which the exhaustive estimator↔encoder sweep found as the one
+                    // length it could not agree with. No emitter builds this
+                    // shape; refuse it like CMP/MOV do.
+                    Err(synth_core::Error::synthesis(format!(
+                        "Thumb-2 CMN with operand {op2:?} has no Thumb-2 encoding here (Imm and Reg \
+                         are encoded) — refusing to emit a silent NOP (#1206, the #1272 class)"
+                    )))
                 }
             }
 

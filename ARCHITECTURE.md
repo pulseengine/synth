@@ -58,12 +58,16 @@ It carries **four backends**:
   i64 read-before-write local not zero-initialised) are fixed outright;
   #1209 (memory64) is loudly REFUSED rather than fixed, since no synth
   backend implements i64 linear-memory addressing. What remains pinned is
-  named, not hidden: two optimized-path classes (#1204 an unsaved R11
-  write, #1206 a loop-carried non-param local) and one still-unaddressed
-  both-selectors-wrong mechanism, #1215's residual — a `br_table`/`br_if`
-  whose index or condition operand is ITSELF a nested branch instruction
-  carrying a value out, which neither this release's fixes nor RQ-65-DECLINE
-  touch.
+  named, not hidden — and, measured at EST1206 (v0.89.2), no
+  optimized-path class remains pinned IN THE PARITY TABLE (#1204 is still
+  pinned by the boot-sweep and i64-result-pair oracles): #1204's entry vanished in v0.67 (the optimized
+  path now saves the reserved registers it writes), #1215's pins closed in
+  v0.89 (RQ-89-BRVALUE), and #1206 — first described as a misplaced loop
+  label, actually a back-edge sized by a branch-size estimator that
+  under-counted a high-register `SetCond`/`cmp.w` — was fixed at that root,
+  with every Thumb-2 estimator-resolved branch now checked against the real
+  encoder at compile time. The parity table's remaining entries are the
+  `#539-grow-fails` envelope (`memory.grow` on a fixed-size memory).
 
 ### Synth and Loom
 

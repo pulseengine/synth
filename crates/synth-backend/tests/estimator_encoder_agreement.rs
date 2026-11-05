@@ -1,905 +1,555 @@
-//! #498 / #242 (VCR-ORACLE-001) — estimator↔encoder agreement oracle.
+//! #498 / #242 (VCR-ORACLE-001), #1206 — estimator↔encoder agreement oracle.
 //!
 //! The optimized ARM path (`synth_synthesis::optimizer_bridge::ir_to_arm`)
 //! resolves branch displacements by summing a hand-maintained *byte-size
-//! estimator* (`estimate_arm_byte_size`) over the instruction stream. That
-//! estimator is a mirror of the Thumb-2 encoder
-//! (`synth_backend::ArmEncoder::encode`), kept by hand only because
-//! synth-synthesis cannot depend on synth-backend (the encoder lives
-//! downstream) — the structural cause behind #498. When the mirror drifts from
-//! the encoder, a forward branch spanning the drifting op lands at the wrong
-//! byte: under-estimate → short (the #483-class miscompile), over-estimate →
-//! long.
+//! estimator* (`estimate_arm_byte_size`) over the instruction stream, and the
+//! post-allocation passes in `liveness.rs` reconstruct branch targets and
+//! freeze span sizes with the same estimator. It is a mirror of the Thumb-2
+//! encoder (`synth_backend::ArmEncoder::encode`), kept by hand only because
+//! synth-synthesis cannot depend on synth-backend. When the mirror drifts, a
+//! branch spanning the drifting op lands on the wrong instruction:
+//! under-estimate → short, over-estimate → long.
 //!
-//! This crate sits downstream of synth-synthesis and so can see BOTH the
-//! estimator and the real encoder. This oracle pins one against the other for
-//! every op the optimized path emits, at the operand shapes it emits them in.
+//! ## #1206: why the old oracle was green over a live miscompile
 //!
-//! ## Scope — the gap allowlist is EMPTY: every on-path op agrees exactly.
+//! The old oracle was a hand-written table of ~90 representative cases and
+//! asserted exact agreement "for EVERY case". Its `SetCond` case used `rd: r0`
+//! and its `Cmp`-immediate case `rn: R1`. On the default optimized path a
+//! loop condition allocated to R8 is `ite; mov.w r8,#1; mov.w r8,#0; cmp.w
+//! r8,#0` — 10 + 4 bytes that the estimator sized 6 + 2 — so every `br_if`
+//! back-edge over it landed 6 bytes short, after the loop's increment, and the
+//! loop never terminated (#1206). The table was right about every row it had;
+//! its rows were a sample, and the defect lived in the operand classes it did
+//! not sample.
 //!
-//! The #498 estimator-alignment step corrected every gap that was a pure
-//! estimator under/over-count against a CORRECT encoder length (estimator-only
-//! edits — no emitted `.text` change, only the branch-displacement bookkeeping
-//! the estimator feeds). The follow-up (#498/#500 lane) closed the two former
-//! `KNOWN_GAP` survivors as well, so the oracle now asserts EXACT agreement for
-//! EVERY case: a NEW estimator drift (an added op left at the `_ => 2` default,
-//! or a changed encoding) fails loudly, and a divergence that genuinely cannot
-//! be closed must be reintroduced here as a documented, pinned exception — not
-//! silently tolerated.
+//! ## What this oracle asserts now
 //!
-//! ## Findings recorded here (correct + extend #498's original report)
-//! - #498 claimed `Cmp` high-reg drifts. It does NOT: the 16-bit CMP (T2,
-//!   `0x45xx`) encodes high registers, so `cmp r10, r8` is 2 bytes and the
-//!   estimator's default is right. The real high-reg drifts were `Cmn`/`Adds`/
-//!   `Subs` (no 16-bit high-reg form / flag-setting) → 4 bytes, est 2.
-//!   CLOSED: the estimator now guards the high-reg reg-form (and the
-//!   always-32-bit imm form) of all three.
-//! - `Popcnt` was absent from the estimator entirely → `_ => 2`, but the
-//!   encoder expands it to a fixed bit-twiddle sequence = 84 body + 2 for the
-//!   `rd != rm` MOV. CLOSED: estimator now mirrors `if rd != rm { 86 } else
-//!   { 84 }`.
-//! - The i64 long-sequence estimates `I64DivU/RemU/DivS/RemS` (100/100/150/150),
-//!   `I64Popcnt` (200) and `I64Extend32S` (8) OVER-estimated. CLOSED: pinned to
-//!   the exact encoder lengths (74/78/126/124, 172, 6). (#610 later wrapped the
-//!   div/rem and rot expansions in the fixed-ABI marshal/restore + zero-divisor
-//!   trap — now 120/124 and 102; #633 added the div_s INT64_MIN/-1 overflow
-//!   guard and #632 the popcnt result-carry, so div_s/rem_s/popcnt sit at
-//!   194/170/180 — still exact-pinned here.)
-//! - CLOSED (was the structural survivor): far branches (`BOffset`/
-//!   `BCondOffset` beyond the 2-byte short form) — the estimator is now
-//!   offset-sensitive, mirroring the encoder's exact range split (B.N imm11 /
-//!   B<cond>.N imm8 → 2, `.w` → 4). Production behavior is unchanged: the
-//!   bridge sizes branches on the offset-0 PLACEHOLDER (always short), and its
-//!   resolution pass now DECLINES any displacement that outgrows the short
-//!   form (#498 far-branch guard in `ir_to_arm`) instead of letting the wide
-//!   encoding silently shift the layout — the chicken-and-egg is resolved by
-//!   refusing the egg, loudly.
-//! - CLOSED (was the encoder-side survivor): `Mov` with a negative (or wider
-//!   than 0xFFFF) immediate. The encoder's signed `*imm <= 255` test emitted a
-//!   wrong-VALUE 2-byte `MOVS Rd, #(imm & 0xFF)` for negative imm, and MOVW
-//!   truncated positives above 16 bits. The encoder now splits on the unsigned
-//!   value (imm8 MOVS / imm16 MOVW / full-width MOVW+MOVT = 8 bytes) and the
-//!   estimator mirrors it. No emitter produces the wide shape (both selectors
-//!   materialize wide constants as explicit Movw/Movt or Movw+Mvn), so shipped
-//!   bytes are unchanged — verified by the frozen anchors.
+//! `domain()` generates every `OnPath` variant across its operand classes:
+//! all thirteen allocatable registers R0–R12 (plus SP where an op takes a base
+//! or frame operand, and LR/PC where it is a link operand) in every position
+//! for ops with up to three register operands; low/high representatives
+//! (R0, R7, R8, R12) in every position for the multi-register i64 expansions;
+//! every immediate-width class (imm3 / imm8 / imm12 / imm16 / wide / negative)
+//! for immediates; every scaled-offset class for loads and stores; every shift
+//! amount 0..=32; register-offset addressing with and without an immediate;
+//! every condition; near and far branch displacements. The estimator must equal
+//! the real encoder's byte length for EVERY op in that domain the encoder
+//! accepts — no allowlist, no exception table. Ops the encoder REFUSES are
+//! not compared (they cannot ship) but are counted, and each variant must
+//! compare a non-zero number of ops, so a domain that the encoder rejects
+//! wholesale cannot pass vacuously.
+//!
+//! The #1206 audit, run with this domain against `main`'s estimator and
+//! encoder before the fix, found more than #1206's two sizes. Every row was
+//! fixed in the estimator:
+//!
+//! | op / operand class                                   | estimator | encoder   |
+//! |------------------------------------------------------|-----------|-----------|
+//! | `SetCond` high rd                                    | 6         | 10        |
+//! | `Cmp #imm` high rn; low rn with imm < 0 or > 255     | 2         | 4         |
+//! | `I64SetCond` high rd                                 | 12        | 16        |
+//! | `I64SetCondZ` high rd                                | 12        | 18        |
+//! | `I64Extend32S` with rdlo == rnlo                     | 6         | 4         |
+//! | `Asr`/`Lsr` high reg, or shift 0 / 32                | 2         | 4         |
+//! | `Lsl` high reg; `Ror` always                         | 2         | 4         |
+//! | `Add`/`Sub` low regs with imm > 7; `Sub` imm; SP     | 2         | 4         |
+//! | `Ldr`/`Str` register offset with a high offset reg   | 2         | 4         |
+//! | any load/store, register offset PLUS an immediate    | 2 or 4    | 8, 12, 16 |
+//! | `Ldrb`/`Strb`/`Ldrh`/`Strh` low regs, short offset   | 4         | 2         |
+//! | `MemorySize` (reads R10)                             | 2         | 4         |
+//! | `Push`/`Pop` with any of R8–R12                      | 2         | 4         |
+//! | `Cmn` shifted-register operand                       | 4         | 2 (NOP)   |
+//!
+//! The last row was an encoder defect, not an estimator one: the 16-bit
+//! "encoding" was a NOP (the #1272/#615 silent-NOP class). It is now refused.
+//! An every-op census of the optimized path's FINAL Thumb streams (spec
+//! suite + repro corpus, cortex-m3/m4/m4f/m7/m7dp) found these rows live on
+//! shipped code: `SetCond`/`Cmp` high (#1206), `I64SetCond` high rd,
+//! `MemorySize`, and — outside every branch span — `Push`/`Pop` and the
+//! `sub sp, sp, #frame` adjust. The only MIS-LANDED branches it found were
+//! the #1206 class; a `memory.size` inside a loop is a second one, added to
+//! the execution differential.
+//!
+//! Operand classes the encoder accepts but encodes WRONGLY are outside what a
+//! length oracle can see: `Add`/`Sub` with a shifted-register operand fall back
+//! to `ADD/SUB rd, rn, #0`, and a negative `Add`/`Sub` immediate with low
+//! registers takes the 16-bit `#imm3` form with an overflowing field. Neither
+//! is constructed by any emitter today (measured: `i32.add x, -1` materializes
+//! the constant); both are reported on #1206, not fixed here.
 
+use std::collections::BTreeMap;
 use synth_backend::ArmEncoder;
-use synth_synthesis::{ArmOp, Condition, MemAddr, Operand2, Reg, estimate_arm_byte_size};
+use synth_synthesis::{
+    ArmOp, Condition, MemAddr, Operand2, Reg, ShiftType, estimate_arm_byte_size,
+};
 
-fn mem(base: Reg) -> MemAddr {
-    MemAddr {
-        base,
-        offset: 0,
-        offset_reg: None,
+const LOW_HIGH: [Reg; 13] = [
+    Reg::R0,
+    Reg::R1,
+    Reg::R2,
+    Reg::R3,
+    Reg::R4,
+    Reg::R5,
+    Reg::R6,
+    Reg::R7,
+    Reg::R8,
+    Reg::R9,
+    Reg::R10,
+    Reg::R11,
+    Reg::R12,
+];
+/// Low/high boundary representatives, for ops with four or more register
+/// operands (the full 13^6 product is 4.8M ops per i64 variant).
+const REPS: [Reg; 4] = [Reg::R0, Reg::R7, Reg::R8, Reg::R12];
+const CONDS: [Condition; 10] = [
+    Condition::EQ,
+    Condition::NE,
+    Condition::LT,
+    Condition::LE,
+    Condition::GT,
+    Condition::GE,
+    Condition::LO,
+    Condition::LS,
+    Condition::HI,
+    Condition::HS,
+];
+/// Every immediate-width class an encoder split tests: imm3 (0..=7), imm8,
+/// imm12, imm16, wider, ThumbExpandImm-shaped, and negatives.
+const IMMS: [i32; 31] = [
+    0,
+    1,
+    2,
+    3,
+    7,
+    8,
+    31,
+    32,
+    100,
+    255,
+    256,
+    257,
+    0x3FC,
+    1020,
+    1023,
+    1024,
+    4095,
+    4096,
+    0xFF00,
+    0xFFFF,
+    0x10000,
+    0x12345,
+    0x00FF_00FF,
+    0x7FFF_FFFF,
+    -1,
+    -2,
+    -8,
+    -255,
+    -256,
+    -4096,
+    i32::MIN,
+];
+/// Load/store offsets: every alignment (1/2/4) at each scaled-imm5 boundary
+/// (byte 31, half 62, word 124) and beyond, imm8/imm12 edges, negatives.
+const OFFSETS: [i32; 22] = [
+    0, 1, 2, 3, 4, 31, 62, 64, 124, 126, 128, 252, 256, 1020, 1024, 4095, 4096, -1, -4, -255, -256,
+    -257,
+];
+
+fn with_sp(regs: &[Reg]) -> Vec<Reg> {
+    let mut v = regs.to_vec();
+    v.push(Reg::SP);
+    v
+}
+
+fn operand2s() -> Vec<Operand2> {
+    let mut v: Vec<Operand2> = with_sp(&LOW_HIGH).into_iter().map(Operand2::Reg).collect();
+    v.extend(IMMS.iter().map(|&i| Operand2::Imm(i)));
+    for rm in REPS {
+        for shift in [ShiftType::LSL, ShiftType::ASR] {
+            for amount in [0u32, 1, 31] {
+                v.push(Operand2::RegShift { rm, shift, amount });
+            }
+        }
     }
+    v
 }
 
-/// One oracle case: a representative instruction at an operand shape the
-/// optimized path actually emits. Estimator and encoder must agree exactly.
-struct Case {
-    label: &'static str,
-    op: ArmOp,
+fn addrs() -> Vec<MemAddr> {
+    let mut v = Vec::new();
+    for base in with_sp(&LOW_HIGH) {
+        for offset in OFFSETS {
+            v.push(MemAddr {
+                base,
+                offset,
+                offset_reg: None,
+            });
+        }
+    }
+    for base in REPS {
+        for off_reg in REPS {
+            for offset in [0, 4, -4, 255, 4096, 0x12345] {
+                v.push(MemAddr {
+                    base,
+                    offset,
+                    offset_reg: Some(off_reg),
+                });
+            }
+        }
+    }
+    v
 }
 
-fn agree(label: &'static str, op: ArmOp) -> Case {
-    Case { label, op }
-}
-
-/// The agreement cases. Operand shapes mirror what `ir_to_arm` emits: sub-word
-/// memory ops use a HIGH base (`r11`/`ip`, the #483 invariant), data-processing
-/// ops appear in both low- and high-reg forms, branches in near and far forms.
-fn cases() -> Vec<Case> {
+/// The sweep domain: every `OnPath` variant across its operand classes.
+fn domain() -> Vec<ArmOp> {
     use ArmOp::*;
-    let r0 = Reg::R0;
-    vec![
-        // --- data-processing, agreement (low-reg + always-32-bit forms) ---
-        agree(
-            "Add_lo",
-            Add {
-                rd: r0,
-                rn: Reg::R1,
-                op2: Operand2::Reg(Reg::R2),
-            },
-        ),
-        agree(
-            "Add_hi",
-            Add {
-                rd: Reg::R10,
-                rn: Reg::R10,
-                op2: Operand2::Reg(Reg::R8),
-            },
-        ),
-        // #377: the software bounds guard's end-address compute
-        // (`ADD R12, Raddr, #off+size-1`) — high rd forces the 32-bit ADD.W
-        // regardless of the immediate. Previously an estimator hole (`_ => 2`).
-        agree(
-            "Add_imm_hi_small",
-            Add {
-                rd: Reg::R12,
-                rn: r0,
-                op2: Operand2::Imm(3),
-            },
-        ),
-        agree(
-            "Add_imm_hi_large",
-            Add {
-                rd: Reg::R12,
-                rn: Reg::R4,
-                op2: Operand2::Imm(0x103),
-            },
-        ),
-        // Low-reg small-imm ADD stays 16-bit (`ADDS #imm3`) — pin that the new
-        // high-rd arm did not disturb it.
-        agree(
-            "Add_imm_lo_small",
-            Add {
-                rd: r0,
-                rn: Reg::R1,
-                op2: Operand2::Imm(7),
-            },
-        ),
-        agree(
-            "Sub_lo",
-            Sub {
-                rd: r0,
-                rn: Reg::R1,
-                op2: Operand2::Reg(Reg::R2),
-            },
-        ),
-        agree(
-            "Sub_hi",
-            Sub {
-                rd: Reg::R10,
-                rn: Reg::R10,
-                op2: Operand2::Reg(Reg::R8),
-            },
-        ),
-        agree(
-            "Adds_lo",
-            Adds {
-                rd: r0,
-                rn: Reg::R1,
-                op2: Operand2::Reg(Reg::R2),
-            },
-        ),
-        agree(
-            "Subs_lo",
-            Subs {
-                rd: r0,
-                rn: Reg::R1,
-                op2: Operand2::Reg(Reg::R2),
-            },
-        ),
-        agree(
-            "Adc",
-            Adc {
-                rd: r0,
-                rn: Reg::R1,
-                op2: Operand2::Reg(Reg::R2),
-            },
-        ),
-        agree(
-            "Sbc",
-            Sbc {
-                rd: r0,
-                rn: Reg::R1,
-                op2: Operand2::Reg(Reg::R2),
-            },
-        ),
-        agree(
-            "And",
-            And {
-                rd: r0,
-                rn: Reg::R1,
-                op2: Operand2::Reg(Reg::R2),
-            },
-        ),
-        agree(
-            "Orr",
-            Orr {
-                rd: r0,
-                rn: Reg::R1,
-                op2: Operand2::Reg(Reg::R2),
-            },
-        ),
-        agree(
-            "Eor",
-            Eor {
-                rd: r0,
-                rn: Reg::R1,
-                op2: Operand2::Reg(Reg::R2),
-            },
-        ),
-        agree(
-            "Mul",
-            Mul {
-                rd: r0,
-                rn: Reg::R1,
-                rm: Reg::R2,
-            },
-        ),
-        agree(
-            "Mls",
-            Mls {
-                rd: r0,
-                rn: Reg::R1,
-                rm: Reg::R2,
-                ra: Reg::R3,
-            },
-        ),
-        agree(
-            "Sdiv",
-            Sdiv {
-                rd: r0,
-                rn: Reg::R1,
-                rm: Reg::R2,
-            },
-        ),
-        agree(
-            "Udiv",
-            Udiv {
-                rd: r0,
-                rn: Reg::R1,
-                rm: Reg::R2,
-            },
-        ),
-        agree(
-            "Rsb",
-            Rsb {
-                rd: r0,
-                rn: Reg::R1,
-                imm: 32,
-            },
-        ),
-        agree(
-            "AsrReg",
-            AsrReg {
-                rd: r0,
-                rn: Reg::R1,
-                rm: Reg::R2,
-            },
-        ),
-        agree(
-            "LslReg",
-            LslReg {
-                rd: r0,
-                rn: Reg::R1,
-                rm: Reg::R2,
-            },
-        ),
-        agree(
-            "LsrReg",
-            LsrReg {
-                rd: r0,
-                rn: Reg::R1,
-                rm: Reg::R2,
-            },
-        ),
-        agree(
-            "RorReg",
-            RorReg {
-                rd: r0,
-                rn: Reg::R1,
-                rm: Reg::R2,
-            },
-        ),
-        agree(
-            "Clz",
-            Clz {
-                rd: r0,
-                rm: Reg::R1,
-            },
-        ),
-        agree(
-            "Rbit",
-            Rbit {
-                rd: r0,
-                rm: Reg::R1,
-            },
-        ),
-        agree(
-            "Sxtb_lo",
-            Sxtb {
-                rd: r0,
-                rm: Reg::R1,
-            },
-        ),
-        agree(
-            "Sxtb_hi",
-            Sxtb {
-                rd: Reg::R9,
-                rm: Reg::R10,
-            },
-        ),
-        agree(
-            "Sxth_lo",
-            Sxth {
-                rd: r0,
-                rm: Reg::R1,
-            },
-        ),
-        agree(
-            "Uxtb_lo",
-            Uxtb {
-                rd: r0,
-                rm: Reg::R1,
-            },
-        ),
-        agree(
-            "Uxth_lo",
-            Uxth {
-                rd: r0,
-                rm: Reg::R1,
-            },
-        ),
-        // --- moves ---
-        agree(
-            "Mov_lo_imm",
-            Mov {
-                rd: r0,
-                op2: Operand2::Imm(5),
-            },
-        ),
-        agree(
-            "Mov_hi",
-            Mov {
-                rd: Reg::R10,
-                op2: Operand2::Imm(5),
-            },
-        ),
-        agree(
-            "Mov_imm_big",
-            Mov {
-                rd: r0,
-                op2: Operand2::Imm(300),
-            },
-        ),
-        agree(
-            "Mov_reg",
-            Mov {
-                rd: r0,
-                op2: Operand2::Reg(Reg::R1),
-            },
-        ),
-        agree(
-            "Movw",
-            Movw {
-                rd: r0,
-                imm16: 0x1234,
-            },
-        ),
-        agree(
-            "Movt",
-            Movt {
-                rd: r0,
-                imm16: 0x1234,
-            },
-        ),
-        // --- compares ---
-        agree(
-            "Cmp_lo",
-            Cmp {
-                rn: Reg::R1,
-                op2: Operand2::Reg(Reg::R2),
-            },
-        ),
-        agree(
-            "Cmp_hi",
-            Cmp {
-                rn: Reg::R10,
-                op2: Operand2::Reg(Reg::R8),
-            },
-        ),
-        agree(
-            "Cmp_imm",
-            Cmp {
-                rn: Reg::R1,
-                op2: Operand2::Imm(5),
-            },
-        ),
-        agree(
-            "Cmn_lo",
-            Cmn {
-                rn: Reg::R1,
-                op2: Operand2::Reg(Reg::R2),
-            },
-        ),
-        // --- loads/stores: word (offset/base shapes) + sub-word (HIGH base) ---
-        agree(
-            "Ldr_lo",
-            Ldr {
-                rd: r0,
-                addr: mem(Reg::R1),
-            },
-        ),
-        agree(
-            "Ldr_hibase",
-            Ldr {
-                rd: r0,
-                addr: mem(Reg::R11),
-            },
-        ),
-        agree(
-            "Ldr_offbig",
-            Ldr {
-                rd: r0,
-                addr: MemAddr {
-                    base: Reg::R1,
-                    offset: 200,
-                    offset_reg: None,
-                },
-            },
-        ),
-        agree(
-            "Str_lo",
-            Str {
-                rd: r0,
-                addr: mem(Reg::R1),
-            },
-        ),
-        agree(
-            "Str_hibase",
-            Str {
-                rd: r0,
-                addr: mem(Reg::R11),
-            },
-        ),
-        agree(
-            "Ldrb_hi",
-            Ldrb {
-                rd: r0,
-                addr: mem(Reg::R11),
-            },
-        ),
-        agree(
-            "Ldrh_hi",
-            Ldrh {
-                rd: r0,
-                addr: mem(Reg::R11),
-            },
-        ),
-        agree(
-            "Ldrsb_hi",
-            Ldrsb {
-                rd: r0,
-                addr: mem(Reg::R11),
-            },
-        ),
-        agree(
-            "Ldrsh_hi",
-            Ldrsh {
-                rd: r0,
-                addr: mem(Reg::R11),
-            },
-        ),
-        agree(
-            "Strb_hi",
-            Strb {
-                rd: r0,
-                addr: mem(Reg::R11),
-            },
-        ),
-        agree(
-            "Strh_hi",
-            Strh {
-                rd: r0,
-                addr: mem(Reg::R11),
-            },
-        ),
-        // --- branches/control + select ---
-        agree("BOffset_near", BOffset { offset: 4 }),
-        agree(
-            "BCondOffset_near",
-            BCondOffset {
-                cond: Condition::EQ,
-                offset: 4,
-            },
-        ),
-        agree("Bx", Bx { rm: Reg::LR }),
-        agree(
-            "Bl",
-            Bl {
-                label: "f".to_string(),
-            },
-        ),
-        agree("Udf", Udf { imm: 0 }),
-        agree(
-            "SetCond",
-            SetCond {
-                rd: r0,
-                cond: Condition::EQ,
-            },
-        ),
-        agree(
-            "SelectMove",
-            SelectMove {
-                rd: r0,
-                rm: Reg::R1,
-                cond: Condition::EQ,
-            },
-        ),
-        // --- i64 long sequences that the estimator sizes EXACTLY ---
-        agree(
-            "I64SetCond",
-            I64SetCond {
-                rd: r0,
-                rn_lo: Reg::R1,
-                rn_hi: Reg::R2,
-                rm_lo: Reg::R3,
-                rm_hi: Reg::R4,
-                cond: Condition::EQ,
-            },
-        ),
-        agree(
-            "I64SetCondZ",
-            I64SetCondZ {
-                rd: r0,
-                rn_lo: Reg::R1,
-                rn_hi: Reg::R2,
-            },
-        ),
-        agree(
-            "I64Mul",
-            I64Mul {
-                rd_lo: r0,
-                rd_hi: Reg::R1,
-                rn_lo: Reg::R2,
-                rn_hi: Reg::R3,
-                rm_lo: Reg::R4,
-                rm_hi: Reg::R5,
-            },
-        ),
-        agree(
-            "I64Shl",
-            I64Shl {
-                rd_lo: r0,
-                rd_hi: Reg::R1,
-                rn_lo: Reg::R2,
-                rn_hi: Reg::R3,
-                rm_lo: Reg::R4,
-                rm_hi: Reg::R5,
-            },
-        ),
-        agree(
-            "I64ShrU",
-            I64ShrU {
-                rd_lo: r0,
-                rd_hi: Reg::R1,
-                rn_lo: Reg::R2,
-                rn_hi: Reg::R3,
-                rm_lo: Reg::R4,
-                rm_hi: Reg::R5,
-            },
-        ),
-        agree(
-            "I64ShrS",
-            I64ShrS {
-                rd_lo: r0,
-                rd_hi: Reg::R1,
-                rn_lo: Reg::R2,
-                rn_hi: Reg::R3,
-                rm_lo: Reg::R4,
-                rm_hi: Reg::R5,
-            },
-        ),
-        // #916 — HIGH-DESTINATION shift/bit-count shapes. The zeroed half is
-        // `MOVS Rd,#0` (2 bytes) only for R0-R7; a 3-bit Rd field means R8-R12
-        // must take the 32-bit `MOV.W`, so these expansions are 2 bytes LONGER
-        // (38->40, 24->26, 32->34) and the estimator has to know it. Without
-        // these cases the oracle only ever saw the low-reg shapes and would
-        // have stayed green while the estimator under-counted every high-reg
-        // i64 shift by 2 — drifting each branch that spans one (the #483 class).
-        // The allocator pool is R0-R8, so R8 is producible today.
-        agree(
-            "I64Shl_hi_rd_lo",
-            I64Shl {
-                rd_lo: Reg::R8,
-                rd_hi: Reg::R1,
-                rn_lo: Reg::R2,
-                rn_hi: Reg::R3,
-                rm_lo: Reg::R4,
-                rm_hi: Reg::R5,
-            },
-        ),
-        agree(
-            "I64ShrU_hi_rd_hi",
-            I64ShrU {
-                rd_lo: r0,
-                rd_hi: Reg::R8,
-                rn_lo: Reg::R2,
-                rn_hi: Reg::R3,
-                rm_lo: Reg::R4,
-                rm_hi: Reg::R5,
-            },
-        ),
-        // I64ShrS sign-fills with the 32-bit ASR.W (4-bit Rd) — no 16-bit form
-        // to widen, so it must stay 40 bytes at a high destination too.
-        agree(
-            "I64ShrS_hi_rd_hi",
-            I64ShrS {
-                rd_lo: r0,
-                rd_hi: Reg::R8,
-                rn_lo: Reg::R2,
-                rn_hi: Reg::R3,
-                rm_lo: Reg::R4,
-                rm_hi: Reg::R5,
-            },
-        ),
-        agree(
-            "I64Clz_hi_rnhi",
-            I64Clz {
-                rd: r0,
-                rnlo: Reg::R1,
-                rnhi: Reg::R8,
-            },
-        ),
-        agree(
-            "I64Ctz_hi_rnhi",
-            I64Ctz {
-                rd: r0,
-                rnlo: Reg::R1,
-                rnhi: Reg::R8,
-            },
-        ),
-        agree(
-            "I64Rotl",
-            I64Rotl {
-                rdlo: r0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                shift: Reg::R4,
-            },
-        ),
-        agree(
-            "I64Rotr",
-            I64Rotr {
-                rdlo: r0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                shift: Reg::R4,
-            },
-        ),
-        agree(
-            "I64Clz",
-            I64Clz {
-                rd: r0,
-                rnlo: Reg::R1,
-                rnhi: Reg::R2,
-            },
-        ),
-        agree(
-            "I64Ctz",
-            I64Ctz {
-                rd: r0,
-                rnlo: Reg::R1,
-                rnhi: Reg::R2,
-            },
-        ),
-        agree(
-            "I64Extend8S",
-            I64Extend8S {
-                rdlo: r0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-            },
-        ),
-        agree(
-            "I64Extend16S",
-            I64Extend16S {
-                rdlo: r0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-            },
-        ),
-        // === #498 closed gaps: estimator now mirrors the encoder exactly ===
-        // High-reg flag-setting / no-16-bit-form ops: the encoder uses the
-        // 32-bit `.w` form (4 bytes); the estimator now guards the high-reg
-        // reg-form (and the always-32-bit imm form) instead of defaulting to 2.
-        agree(
-            "Cmn_hi",
-            Cmn {
-                rn: Reg::R10,
-                op2: Operand2::Reg(Reg::R8),
-            },
-        ),
-        agree(
-            "Adds_hi",
-            Adds {
-                rd: Reg::R10,
-                rn: Reg::R10,
-                op2: Operand2::Reg(Reg::R8),
-            },
-        ),
-        agree(
-            "Subs_hi",
-            Subs {
-                rd: Reg::R10,
-                rn: Reg::R10,
-                op2: Operand2::Reg(Reg::R8),
-            },
-        ),
-        // Popcnt: the estimator now sizes the encoder's fixed bit-twiddle
-        // sequence (84 body + 2 for the rd!=rm MOV = 86).
-        agree(
-            "Popcnt",
-            Popcnt {
-                rd: Reg::R0,
-                rm: Reg::R1,
-            },
-        ),
-        // i64 long sequences: estimator now pinned to the exact encoder lengths.
-        agree(
-            "I64Popcnt",
-            I64Popcnt {
-                rd: Reg::R0,
-                rnlo: Reg::R1,
-                rnhi: Reg::R2,
-            },
-        ),
-        agree(
-            "I64Extend32S",
-            I64Extend32S {
-                rdlo: Reg::R0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-            },
-        ),
-        agree(
-            "I64DivU",
-            I64DivU {
-                rdlo: Reg::R0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                rmlo: Reg::R4,
-                rmhi: Reg::R5,
-                elide_zero_guard: false,
-            },
-        ),
-        agree(
-            "I64RemU",
-            I64RemU {
-                rdlo: Reg::R0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                rmlo: Reg::R4,
-                rmhi: Reg::R5,
-                elide_zero_guard: false,
-            },
-        ),
-        agree(
-            "I64DivS",
-            I64DivS {
-                rdlo: Reg::R0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                rmlo: Reg::R4,
-                rmhi: Reg::R5,
-                elide_zero_guard: false,
-                elide_overflow_guard: false,
-            },
-        ),
-        agree(
-            "I64RemS",
-            I64RemS {
-                rdlo: Reg::R0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                rmlo: Reg::R4,
-                rmhi: Reg::R5,
-                elide_zero_guard: false,
-            },
-        ),
-        // #494 phase 2b: the guard-elided forms must track the encoder too —
-        // the zero guard is 8 bytes (ORRS.W + BNE + UDF), the #633 div_s
-        // overflow guard 22 bytes, and they elide INDEPENDENTLY (two separate
-        // proof obligations; divisor-nonzero alone keeps the overflow guard).
-        agree(
-            "I64DivU_zero_elided",
-            I64DivU {
-                rdlo: Reg::R0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                rmlo: Reg::R4,
-                rmhi: Reg::R5,
-                elide_zero_guard: true,
-            },
-        ),
-        agree(
-            "I64RemU_zero_elided",
-            I64RemU {
-                rdlo: Reg::R0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                rmlo: Reg::R4,
-                rmhi: Reg::R5,
-                elide_zero_guard: true,
-            },
-        ),
-        agree(
-            "I64DivS_zero_elided_ovf_retained",
-            I64DivS {
-                rdlo: Reg::R0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                rmlo: Reg::R4,
-                rmhi: Reg::R5,
-                elide_zero_guard: true,
-                elide_overflow_guard: false,
-            },
-        ),
-        agree(
-            "I64DivS_both_elided",
-            I64DivS {
-                rdlo: Reg::R0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                rmlo: Reg::R4,
-                rmhi: Reg::R5,
-                elide_zero_guard: true,
-                elide_overflow_guard: true,
-            },
-        ),
-        agree(
-            "I64RemS_zero_elided",
-            I64RemS {
-                rdlo: Reg::R0,
-                rdhi: Reg::R1,
-                rnlo: Reg::R2,
-                rnhi: Reg::R3,
-                rmlo: Reg::R4,
-                rmhi: Reg::R5,
-                elide_zero_guard: true,
-            },
-        ),
-        // === Former KNOWN_GAP survivors, now CLOSED (#498/#500 lane) ===
-        // Far branches: estimator now offset-sensitive, mirroring the
-        // encoder's short/`.w` range split. (Production only ever feeds the
-        // short form: the bridge sizes offset-0 placeholders and its
-        // resolution pass declines displacements that outgrow them.)
-        agree("BOffset_far", BOffset { offset: 5000 }),
-        agree(
-            "BCondOffset_far",
-            BCondOffset {
-                cond: Condition::EQ,
-                offset: 5000,
-            },
-        ),
-        agree(
-            "BCondOffset_far_neg",
-            BCondOffset {
-                cond: Condition::NE,
-                offset: -200,
-            },
-        ),
-        // Negative / wide MOV immediates: the encoder now emits the
-        // full-value MOVW+MOVT pair (8 bytes) instead of the wrong-value
-        // 2-byte MOVS #(imm&0xFF) (negative) or a truncated MOVW (>0xFFFF);
-        // the estimator mirrors the three-way imm8/imm16/full split.
-        agree(
-            "Mov_imm_neg",
-            Mov {
-                rd: Reg::R0,
-                op2: Operand2::Imm(-1),
-            },
-        ),
-        agree(
-            "Mov_imm_wide",
-            Mov {
-                rd: Reg::R0,
-                op2: Operand2::Imm(0x12345),
-            },
-        ),
-    ]
+    let mut ops = Vec::new();
+    let op2s = operand2s();
+    let rd_rn = with_sp(&LOW_HIGH);
+    type Op2Ctor = fn(Reg, Reg, Operand2) -> ArmOp;
+    let op2_ctors: [Op2Ctor; 9] = [
+        |rd, rn, op2| Add { rd, rn, op2 },
+        |rd, rn, op2| Sub { rd, rn, op2 },
+        |rd, rn, op2| Adds { rd, rn, op2 },
+        |rd, rn, op2| Subs { rd, rn, op2 },
+        |rd, rn, op2| Adc { rd, rn, op2 },
+        |rd, rn, op2| Sbc { rd, rn, op2 },
+        |rd, rn, op2| And { rd, rn, op2 },
+        |rd, rn, op2| Orr { rd, rn, op2 },
+        |rd, rn, op2| Eor { rd, rn, op2 },
+    ];
+    for mk in op2_ctors {
+        for &rd in &rd_rn {
+            for &rn in &rd_rn {
+                for op2 in &op2s {
+                    ops.push(mk(rd, rn, op2.clone()));
+                }
+            }
+        }
+    }
+    for &rn in &rd_rn {
+        for op2 in &op2s {
+            ops.push(Cmp {
+                rn,
+                op2: op2.clone(),
+            });
+            ops.push(Cmn {
+                rn,
+                op2: op2.clone(),
+            });
+        }
+    }
+    for rd in [LOW_HIGH.as_slice(), &[Reg::SP, Reg::LR]].concat() {
+        for op2 in &op2s {
+            ops.push(Mov {
+                rd,
+                op2: op2.clone(),
+            });
+        }
+    }
+    type R3Ctor = fn(Reg, Reg, Reg) -> ArmOp;
+    let r3_ctors: [R3Ctor; 7] = [
+        |rd, rn, rm| Mul { rd, rn, rm },
+        |rd, rn, rm| Sdiv { rd, rn, rm },
+        |rd, rn, rm| Udiv { rd, rn, rm },
+        |rd, rn, rm| AsrReg { rd, rn, rm },
+        |rd, rn, rm| LslReg { rd, rn, rm },
+        |rd, rn, rm| LsrReg { rd, rn, rm },
+        |rd, rn, rm| RorReg { rd, rn, rm },
+    ];
+    for mk in r3_ctors {
+        for rd in LOW_HIGH {
+            for rn in LOW_HIGH {
+                for rm in LOW_HIGH {
+                    ops.push(mk(rd, rn, rm));
+                }
+            }
+        }
+    }
+    for rd in REPS {
+        for rn in REPS {
+            for rm in REPS {
+                for ra in REPS {
+                    ops.push(Mls { rd, rn, rm, ra });
+                }
+            }
+        }
+    }
+    for rd in LOW_HIGH {
+        for rn in LOW_HIGH {
+            for shift in 0..=32u32 {
+                ops.push(Asr { rd, rn, shift });
+                ops.push(Lsl { rd, rn, shift });
+                ops.push(Lsr { rd, rn, shift });
+                ops.push(Ror { rd, rn, shift });
+            }
+            for imm in IMMS {
+                ops.push(Rsb {
+                    rd,
+                    rn,
+                    imm: imm as u32,
+                });
+            }
+        }
+    }
+    type R2Ctor = fn(Reg, Reg) -> ArmOp;
+    let r2_ctors: [R2Ctor; 7] = [
+        |rd, rm| Clz { rd, rm },
+        |rd, rm| Rbit { rd, rm },
+        |rd, rm| Popcnt { rd, rm },
+        |rd, rm| Sxtb { rd, rm },
+        |rd, rm| Sxth { rd, rm },
+        |rd, rm| Uxtb { rd, rm },
+        |rd, rm| Uxth { rd, rm },
+    ];
+    for mk in r2_ctors {
+        for rd in LOW_HIGH {
+            for rm in LOW_HIGH {
+                ops.push(mk(rd, rm));
+            }
+        }
+    }
+    for rd in LOW_HIGH {
+        for imm16 in [0u16, 1, 255, 256, 0xFFFF] {
+            ops.push(Movw { rd, imm16 });
+            ops.push(Movt { rd, imm16 });
+        }
+        for page_log2 in [0u32, 1, 16, 31] {
+            ops.push(MemorySize { rd, page_log2 });
+        }
+    }
+    type MemCtor = fn(Reg, MemAddr) -> ArmOp;
+    let mem_ctors: [MemCtor; 8] = [
+        |rd, addr| Ldr { rd, addr },
+        |rd, addr| Str { rd, addr },
+        |rd, addr| Ldrb { rd, addr },
+        |rd, addr| Ldrh { rd, addr },
+        |rd, addr| Ldrsb { rd, addr },
+        |rd, addr| Ldrsh { rd, addr },
+        |rd, addr| Strb { rd, addr },
+        |rd, addr| Strh { rd, addr },
+    ];
+    let addrs = addrs();
+    for mk in mem_ctors {
+        for rd in LOW_HIGH {
+            for addr in &addrs {
+                ops.push(mk(rd, addr.clone()));
+            }
+        }
+    }
+    // Every register subset of R0-R12 up to 4 registers, plus every 7th mask
+    // beyond, each with and without the link register.
+    for mask in 0u32..(1 << 13) {
+        if mask.count_ones() > 4 && mask % 7 != 0 {
+            continue;
+        }
+        let regs: Vec<Reg> = LOW_HIGH
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| mask & (1 << i) != 0)
+            .map(|(_, r)| *r)
+            .collect();
+        ops.push(Push { regs: regs.clone() });
+        ops.push(Pop { regs: regs.clone() });
+        ops.push(Push {
+            regs: [regs.as_slice(), &[Reg::LR]].concat(),
+        });
+        ops.push(Pop {
+            regs: [regs.as_slice(), &[Reg::PC]].concat(),
+        });
+    }
+    for offset in [
+        -2000i32,
+        -1026,
+        -1024,
+        -256,
+        -130,
+        -128,
+        -2,
+        0,
+        2,
+        126,
+        128,
+        254,
+        256,
+        1022,
+        1024,
+        5000,
+        1 << 20,
+    ] {
+        ops.push(BOffset { offset });
+        for cond in CONDS {
+            ops.push(BCondOffset { cond, offset });
+        }
+    }
+    for rm in [LOW_HIGH.as_slice(), &[Reg::LR]].concat() {
+        ops.push(Bx { rm });
+    }
+    ops.push(Bl {
+        label: "func_1".to_string(),
+    });
+    for imm in [0u8, 1, 255] {
+        ops.push(Udf { imm });
+    }
+    for rd in LOW_HIGH {
+        for cond in CONDS {
+            ops.push(SetCond { rd, cond });
+            for rm in LOW_HIGH {
+                ops.push(SelectMove { rd, rm, cond });
+            }
+        }
+    }
+    for a in REPS {
+        for b in REPS {
+            for c in REPS {
+                ops.push(I64SetCondZ {
+                    rd: a,
+                    rn_lo: b,
+                    rn_hi: c,
+                });
+                ops.push(I64Clz {
+                    rd: a,
+                    rnlo: b,
+                    rnhi: c,
+                });
+                ops.push(I64Ctz {
+                    rd: a,
+                    rnlo: b,
+                    rnhi: c,
+                });
+                ops.push(I64Popcnt {
+                    rd: a,
+                    rnlo: b,
+                    rnhi: c,
+                });
+                ops.push(I64Extend8S {
+                    rdlo: a,
+                    rdhi: b,
+                    rnlo: c,
+                });
+                ops.push(I64Extend16S {
+                    rdlo: a,
+                    rdhi: b,
+                    rnlo: c,
+                });
+                ops.push(I64Extend32S {
+                    rdlo: a,
+                    rdhi: b,
+                    rnlo: c,
+                });
+                for d in REPS {
+                    for e in REPS {
+                        for cond in CONDS {
+                            ops.push(I64SetCond {
+                                rd: a,
+                                rn_lo: b,
+                                rn_hi: c,
+                                rm_lo: d,
+                                rm_hi: e,
+                                cond,
+                            });
+                        }
+                        ops.push(I64Rotl {
+                            rdlo: a,
+                            rdhi: b,
+                            rnlo: c,
+                            rnhi: d,
+                            shift: e,
+                        });
+                        ops.push(I64Rotr {
+                            rdlo: a,
+                            rdhi: b,
+                            rnlo: c,
+                            rnhi: d,
+                            shift: e,
+                        });
+                        for f in REPS {
+                            ops.push(I64Mul {
+                                rd_lo: a,
+                                rd_hi: b,
+                                rn_lo: c,
+                                rn_hi: d,
+                                rm_lo: e,
+                                rm_hi: f,
+                            });
+                            ops.push(I64Shl {
+                                rd_lo: a,
+                                rd_hi: b,
+                                rn_lo: c,
+                                rn_hi: d,
+                                rm_lo: e,
+                                rm_hi: f,
+                            });
+                            ops.push(I64ShrU {
+                                rd_lo: a,
+                                rd_hi: b,
+                                rn_lo: c,
+                                rn_hi: d,
+                                rm_lo: e,
+                                rm_hi: f,
+                            });
+                            ops.push(I64ShrS {
+                                rd_lo: a,
+                                rd_hi: b,
+                                rn_lo: c,
+                                rn_hi: d,
+                                rm_lo: e,
+                                rm_hi: f,
+                            });
+                            for z in [false, true] {
+                                ops.push(I64DivU {
+                                    rdlo: a,
+                                    rdhi: b,
+                                    rnlo: c,
+                                    rnhi: d,
+                                    rmlo: e,
+                                    rmhi: f,
+                                    elide_zero_guard: z,
+                                });
+                                ops.push(I64RemU {
+                                    rdlo: a,
+                                    rdhi: b,
+                                    rnlo: c,
+                                    rnhi: d,
+                                    rmlo: e,
+                                    rmhi: f,
+                                    elide_zero_guard: z,
+                                });
+                                ops.push(I64RemS {
+                                    rdlo: a,
+                                    rdhi: b,
+                                    rnlo: c,
+                                    rnhi: d,
+                                    rmlo: e,
+                                    rmhi: f,
+                                    elide_zero_guard: z,
+                                });
+                                for o in [false, true] {
+                                    ops.push(I64DivS {
+                                        rdlo: a,
+                                        rdhi: b,
+                                        rnlo: c,
+                                        rnhi: d,
+                                        rmlo: e,
+                                        rmhi: f,
+                                        elide_zero_guard: z,
+                                        elide_overflow_guard: o,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ops
+}
+
+fn variant_name(op: &ArmOp) -> String {
+    format!("{op:?}")
+        .chars()
+        .take_while(|c| c.is_alphanumeric())
+        .collect()
 }
 
 /// Every `ArmOp` variant, classified as emitted by the optimized path
@@ -910,15 +560,21 @@ fn cases() -> Vec<Case> {
 ///
 /// What this guarantees and what it does NOT:
 /// - It DOES force every new `ArmOp` variant to be classified OnPath/OffPath.
-/// - It does NOT force an agreement case: a variant classified `OnPath` with
-///   nothing added to `cases()` still passes vacuously. Adding the OnPath
-///   variant's agreement case is a *manual* step this match cannot enforce
-///   (closing that would mean restructuring so the per-variant match itself
-///   returns the sample + expectation — out of scope here).
-/// - It cannot catch an existing `OffPath` op later being wired into
-///   `ir_to_arm` (the classification is a hand-asserted claim).
+/// - `every_on_path_variant_is_swept` checks that `ON_PATH_VARIANTS` and the
+///   variants `domain()` generates agree in BOTH directions, and the main test
+///   asserts `coverage(op) == OnPath` for every generated op. A variant newly
+///   classified `OnPath` here but added to neither the list nor `domain()`
+///   still passes: naming it in `ON_PATH_VARIANTS` is a manual step, after
+///   which a missing domain reds.
+/// - It cannot catch an existing `OffPath` op later being wired into the
+///   optimized path (the classification is a claim). That residual is what
+///   the compile-time branch-landing check in `arm_backend.rs`
+///   (`validate_estimated_branch_landings`, #1206) covers: it sizes every
+///   shipped estimator-resolved branch span with the REAL encoder and refuses
+///   the compile on a mis-landing, whatever op caused it.
 ///
-/// So: a compile-time prompt to classify, not a proof of coverage.
+/// So: a compile-time prompt to classify, backed by an execution-free check
+/// on every compiled function for what the classification gets wrong.
 #[derive(PartialEq, Debug)]
 enum Coverage {
     OnPath,
@@ -993,36 +649,41 @@ fn coverage(op: &ArmOp) -> Coverage {
         | I64DivU { .. }
         | I64RemU { .. }
         | I64DivS { .. }
-        | I64RemS { .. } => OnPath,
+        | I64RemS { .. }
+        // #1206 audit, MEASURED (an every-op census of the optimized path's
+        // FINAL Thumb streams over the spec suite + repro corpus, five
+        // targets): the immediate shifts reach the final stream through the
+        // post-allocation imm-shift fold (`fold_immediate_shifts`), and
+        // `MemorySize` / `Push` / `Pop` are emitted there too. They were filed
+        // OffPath below while the estimator sized them at `_ => 2`; `Ror` is
+        // classified with its siblings (the estimator is exact for it).
+        | Lsl { .. }
+        | Lsr { .. }
+        | Ror { .. }
+        | MemorySize { .. }
+        | Push { .. }
+        | Pop { .. } => OnPath,
 
         // NOT emitted by ir_to_arm:
-        //  - imm shifts / Mvn / Umull / Mla: direct-selector-only (#209/#257) or
-        //    folded by peephole; not produced by the optimized lowering.
-        //  - sym-loads (--native-pointer-abi), Memory*, Push/Pop (inserted
-        //    post-resolution), Label/Nop/B/Bcc/Bhs/Blo/Blx (path uses the
-        //    resolved BOffset/BCondOffset forms), pseudo Local*/Global*/Select/
-        //    Call*/BrTable (lowered to primitives upstream).
+        //  - Mvn / Umull / Mla: direct-selector-only (#209/#257).
+        //  - sym-loads (--native-pointer-abi), MemoryGrow, Label/Nop/B/Bcc/Bhs/
+        //    Blo/Blx (path uses the resolved BOffset/BCondOffset forms), pseudo
+        //    Local*/Global*/Select/Call*/BrTable (lowered to primitives upstream).
         //  - i64 BINOPS (Add/Sub/And/Or/Xor/Eq..GeU/Const/Ldr/Str/ExtendI32*/
         //    I32WrapI64): lowered to 32-bit op pairs upstream, never appear as
         //    I64* in arm_instrs (which is why the estimator lists only the
         //    SURVIVING i64 ops above).
         //  - all F32*/F64* scalar VFP (dropped at the decoder today, #369) and
         //    all Mve* vector ops (not on the scalar integer path).
-        Lsl { .. }
-        | Lsr { .. }
-        | Ror { .. }
-        | Mvn { .. }
+        Mvn { .. }
         | Umull { .. }
         | Mla { .. }
         | MovwSym { .. }
         | MovtSym { .. }
         | LdrSym { .. }
-        | MemorySize { .. }
         | MemoryGrow { .. }
         | Label { .. }
         | Nop
-        | Push { .. }
-        | Pop { .. }
         | B { .. }
         | Bcc { .. }
         | Bhs { .. }
@@ -1177,41 +838,197 @@ fn coverage(op: &ArmOp) -> Coverage {
     }
 }
 
-/// The estimator must agree with the encoder EXACTLY for every op the
-/// optimized path emits. The gap allowlist is empty (#498 closed); a genuine
-/// new divergence must be fixed in the estimator or reintroduced here as a
-/// documented, pinned exception.
+/// The estimator must equal the real encoder's byte length for EVERY op in
+/// the sweep domain the encoder accepts. No allowlist: a genuine new
+/// divergence is fixed in the estimator (or the encoder), never tolerated.
 #[test]
 fn estimator_encoder_agreement() {
     let enc = ArmEncoder::new_thumb2();
-    let mut surprises = Vec::new();
+    // variant -> (compared, refused by the encoder)
+    let mut per_variant: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut drift: BTreeMap<(String, usize, usize), (usize, String)> = BTreeMap::new();
 
-    for case in cases() {
-        // Every case must be an op the optimized path actually emits.
+    for op in domain() {
         assert_eq!(
-            coverage(&case.op),
+            coverage(&op),
             Coverage::OnPath,
-            "{}: oracle case is for an OffPath op — remove it or reclassify",
-            case.label
+            "{op:?}: sweep domain contains an OffPath op — remove it or reclassify"
         );
-
-        let est = estimate_arm_byte_size(&case.op);
-        let real = enc
-            .encode(&case.op)
-            .unwrap_or_else(|e| panic!("{}: encoder rejected the op: {e:?}", case.label))
-            .len();
-
-        if est != real {
-            surprises.push(format!(
-                "NEW DRIFT {}: estimator {est} != encoder {real} (fix the estimator)",
-                case.label
-            ));
+        let name = variant_name(&op);
+        let entry = per_variant.entry(name.clone()).or_default();
+        let Ok(bytes) = enc.encode(&op) else {
+            entry.1 += 1;
+            continue;
+        };
+        entry.0 += 1;
+        let est = estimate_arm_byte_size(&op);
+        if est != bytes.len() {
+            let d = drift
+                .entry((name, est, bytes.len()))
+                .or_insert((0, format!("{op:?}")));
+            d.0 += 1;
         }
     }
 
+    let vacuous: Vec<&String> = per_variant
+        .iter()
+        .filter(|(_, (compared, _))| *compared == 0)
+        .map(|(v, _)| v)
+        .collect();
     assert!(
-        surprises.is_empty(),
-        "estimator↔encoder drift:\n{}",
-        surprises.join("\n")
+        vacuous.is_empty(),
+        "variants the encoder refused for EVERY op in the domain (nothing compared): {vacuous:?}"
     );
+
+    assert!(
+        drift.is_empty(),
+        "estimator↔encoder drift (fix the estimator, never allowlist):\n{}",
+        drift
+            .iter()
+            .map(|((v, est, real), (n, ex))| format!(
+                "  {v}: estimator {est} != encoder {real} on {n} op(s), e.g. {ex}"
+            ))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// Every variant `coverage()` classifies `OnPath` must have an operand domain
+/// in `domain()`. The old hand-written case table could not enforce this: a
+/// variant classified `OnPath` with no case passed vacuously.
+#[test]
+fn every_on_path_variant_is_swept() {
+    let swept: std::collections::BTreeSet<String> = domain().iter().map(variant_name).collect();
+    // One instance of every variant `coverage()` names, in declaration order.
+    // `coverage()` is a no-wildcard match, so a new `ArmOp` variant fails to
+    // compile there; this list is where it must then be named so its
+    // classification is checked against the domain.
+    let on_path: Vec<String> = ON_PATH_VARIANTS.iter().map(|s| s.to_string()).collect();
+    let missing: Vec<&String> = on_path.iter().filter(|v| !swept.contains(*v)).collect();
+    assert!(
+        missing.is_empty(),
+        "OnPath variants with no sweep domain: {missing:?}"
+    );
+    let unlisted: Vec<&String> = swept.iter().filter(|v| !on_path.contains(v)).collect();
+    assert!(
+        unlisted.is_empty(),
+        "swept variants missing from ON_PATH_VARIANTS: {unlisted:?}"
+    );
+}
+
+/// The `OnPath` variants, by name. Kept equal to `coverage()`'s `OnPath` arm
+/// by `every_on_path_variant_is_swept` (both directions) and by the
+/// `coverage(&op) == OnPath` assertion over the whole domain.
+const ON_PATH_VARIANTS: [&str; 70] = [
+    "Add",
+    "Sub",
+    "Adds",
+    "Subs",
+    "Adc",
+    "Sbc",
+    "Mul",
+    "Mls",
+    "Sdiv",
+    "Udiv",
+    "And",
+    "Orr",
+    "Eor",
+    "Asr",
+    "AsrReg",
+    "LslReg",
+    "LsrReg",
+    "RorReg",
+    "Rsb",
+    "Clz",
+    "Rbit",
+    "Popcnt",
+    "Sxtb",
+    "Sxth",
+    "Uxtb",
+    "Uxth",
+    "Mov",
+    "Movw",
+    "Movt",
+    "Cmp",
+    "Cmn",
+    "Ldr",
+    "Str",
+    "Ldrb",
+    "Ldrh",
+    "Ldrsb",
+    "Ldrsh",
+    "Strb",
+    "Strh",
+    "BOffset",
+    "BCondOffset",
+    "Bx",
+    "Bl",
+    "Udf",
+    "SetCond",
+    "SelectMove",
+    "I64SetCond",
+    "I64SetCondZ",
+    "I64Mul",
+    "I64Shl",
+    "I64ShrU",
+    "I64ShrS",
+    "I64Rotl",
+    "I64Rotr",
+    "I64Clz",
+    "I64Ctz",
+    "I64Popcnt",
+    "I64Extend8S",
+    "I64Extend16S",
+    "I64Extend32S",
+    "I64DivU",
+    "I64RemU",
+    "I64DivS",
+    "I64RemS",
+    "Lsl",
+    "Lsr",
+    "Ror",
+    "MemorySize",
+    "Push",
+    "Pop",
+];
+
+/// #1206, named: the two sizes behind the hanging back-edge. A loop condition
+/// allocated to R8 is `ite; mov.w r8,#1; mov.w r8,#0` then `cmp.w r8,#0`.
+#[test]
+fn high_register_setcond_and_cmp_imm_1206() {
+    let enc = ArmEncoder::new_thumb2();
+    for (op, want) in [
+        (
+            ArmOp::SetCond {
+                rd: Reg::R8,
+                cond: Condition::LO,
+            },
+            10,
+        ),
+        (
+            ArmOp::Cmp {
+                rn: Reg::R8,
+                op2: Operand2::Imm(0),
+            },
+            4,
+        ),
+        (
+            ArmOp::SetCond {
+                rd: Reg::R7,
+                cond: Condition::LO,
+            },
+            6,
+        ),
+        (
+            ArmOp::Cmp {
+                rn: Reg::R7,
+                op2: Operand2::Imm(0),
+            },
+            2,
+        ),
+    ] {
+        let real = enc.encode(&op).expect("encodable").len();
+        assert_eq!(real, want, "{op:?}: encoder length moved");
+        assert_eq!(estimate_arm_byte_size(&op), want, "{op:?}: estimator");
+    }
 }

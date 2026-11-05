@@ -1503,9 +1503,14 @@ claims:
         # optimized path started saving the reserved callee-saved registers it
         # writes — the parity oracle failed in the FIXING direction on it. The
         # remaining 1 is #1206, still open.
+        # EST1206 (#1206): 1 -> 0. The #1206 `opt-wrong` entry (control_loop
+        # countdown, 2 assertions) VANISHED when the branch-size estimator
+        # stopped under-sizing a high-register SetCond / cmp.w; the parity
+        # oracle failed in the FIXING direction on it and the pin was removed.
+        # No optimized-path wrong answer remains pinned there (ARCHITECTURE.md).
         pattern: "parity-divergence/opt-wrong'\\): \\('#"
         glob: ['scripts/repro/selector_parity_197_differential.py']
-        expect: 1
+        expect: 0
       - kind: verbatim
         text: "pinned there by exact count with its issue"
 
@@ -3419,9 +3424,22 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 79
+        value: 78
         baseline: 27
         waivers:
+          - to: 78
+            reason: >-
+              EST1206 (#1206): 79 -> 78. Not a growth waiver — ONE pin CLOSED BY
+              A FIX, not deleted or merged: the parity oracle's `#1206` entry
+              (control_loop.wast countdown, 2 assertions) is `ok` because the
+              optimized path's branch-size estimator now sizes a high-register
+              `SetCond` (10) and `cmp.w rX,#imm` (4) as the encoder emits them,
+              so the do-while back-edge lands on its loop head. Executed, red on
+              main df847a16 and green on the fix, by the parity oracle with the
+              pin removed and by
+              scripts/repro/optloop_backedge_1206_differential.py on
+              cortex-m3/m4/m4f/m7/m7dp. An entry is still required because 78
+              remains above the baseline of 27.
           - to: 79
             reason: >-
               RQ-89-BRVALUE (#1215): 84 -> 79. Not a growth waiver — FIVE pins
@@ -3560,7 +3578,8 @@ claims:
         direction: track
         # RQ-89-BRVALUE (#1215): 157 -> 146, the five closed #1215 pins'
         # 1 + 2 + 2 + 5 + 1 = 11 cases.
-        value: 146
+        # EST1206 (#1206): 146 -> 144, the closed #1206 pin's 2 cases.
+        value: 144
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the six tables in the
       # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in
@@ -4621,7 +4640,13 @@ claims:
     #   byte-identical, so the target legs re-execute one lowering). Paired
     #   control: `394603` rc=0 and `389119` rc=1 on this tree; `394603` rc=1
     #   and `389119` rc=0 on main dd2b791a.
-    text: "--exact-emulation-floor 394603"
+    # v0.89.2 EST1206 (#1206): 394603 -> 397803 (+3200). The new
+    #   optloop_backedge_1206_differential.py declares `emulations >= 3200`
+    #   (3200 measured via oracle_run.py: 8 exports x 80 vectors x
+    #   cortex-m3/m4/m4f/m7/m7dp, self-contained default image). Paired
+    #   control: `397803` rc=0 and `394603` rc=1 on this tree; `397803` rc=1
+    #   and `394603` rc=0 on main df847a16.
+    text: "--exact-emulation-floor 397803"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

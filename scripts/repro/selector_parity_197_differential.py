@@ -107,9 +107,11 @@ RQ-65-DECLINE (v0.65) then CONVERTED the three optimized-path-only classes
 whose shapes the direct selector already lowers correctly — #1208 (nine
 narrow i64 memory forms), #1213 (i64 select), #1205 (value-`if` with a
 computed condition) — into declines with a machine reason, so their pins
-below moved to `ok` and were removed; #1204/#1206 stay pinned (not
+below moved to `ok` and were removed; #1204/#1206 stayed pinned (not
 decline-shaped: a register-contract fix and a class without a statable
-predicate), and the both-selectors-wrong classes stay pinned. An open finding
+predicate), and the both-selectors-wrong classes stay pinned. #1206 was then
+FIXED at its root (EST1206: a branch-size estimator drift, not a label
+placement) and its pin removed. An open finding
 is pinned in KNOWN below as (file, module, function, kind) -> (issue, count):
 the oracle is RED when a pinned count MOVES in either direction — the fix
 landed (move the pin, close the issue on the release) or a new instance
@@ -223,9 +225,11 @@ KNOWN: dict[tuple[str, int, str, str], tuple[str, int]] = {
     # condition compared the constants and selected between the condition's
     # operands. CONVERTED to a decline in v0.65 (RQ-65-DECLINE): the shape
     # falls back to the direct selector, its 9 pinned wrong answers are `ok`.
-    # #1206 — optimized path: loop label placed after the decrement of a
-    # pre-loop-defined local; countdown(5)/(10) never terminate.
-    ('control_loop.wast', 0, 'countdown', 'parity-divergence/opt-wrong'): ('#1206', 2),
+    # #1206 — FIXED (EST1206): the label was placed correctly; the back-edge
+    # displacement was 6 bytes short because the branch-size estimator sized
+    # the loop condition's R8 `SetCond` and `cmp.w r8,#0` as low-register
+    # forms. countdown(5)/(10) now terminate; the 2 pinned assertions are
+    # `ok`. Execution oracle: optloop_backedge_1206_differential.py.
     # #1208 — optimized path lowered i64.load8/16/32_{s,u} to an EMPTY body
     # (bx lr) and i64.store8/16/32 to a dropped store. CONVERTED to a decline
     # in v0.65 (RQ-65-DECLINE, the #372 guard extended to the nine narrow
