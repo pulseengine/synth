@@ -8090,7 +8090,14 @@ fn const_units(seg: &[ArmInstruction]) -> Vec<ConstUnit> {
 ///     carries a foreign value live across the window ⇒ reject;
 ///   - a *def* of the candidate at or below `hi` ⇒ the hoisted value would be
 ///     clobbered before its last use ⇒ reject; a def strictly above `hi` ⇒ the
-///     candidate is safely reusable there ⇒ accept (stop scanning).
+///     candidate is safely reusable there ⇒ accept (stop scanning);
+///   - NEITHER before the segment ends ⇒ reject. #1635: the scan sees only this
+///     straight-line segment, so a candidate it never touches may still carry a
+///     value read AFTER the segment — a register-homed param read past a forward
+///     join (cpetig's sret pointer in r0: the hoist parked `#0` in it, and the
+///     trailing `str` through the pointer wrote linear memory 0/4), a promoted
+///     local, a value live across the branch, or the return value. Only a
+///     redefinition inside the segment proves the old value dead.
 ///
 /// `avoid` excludes the destination register(s) already in play and any register
 /// pinned by an earlier hoist in the same segment. Returns `None` if none free —
@@ -8116,10 +8123,11 @@ fn free_reg_over(
                 if k <= hi {
                     continue 'cand;
                 }
-                break;
+                return Some(p);
             }
         }
-        return Some(p);
+        // #1635: fell off the segment with `p` neither read nor redefined —
+        // possibly live-out, so not provably free.
     }
     None
 }
@@ -15422,7 +15430,9 @@ mod tests {
         // the SAME register, so Pass 1 misses it (no register
         // holds 500 at the reuse). The extending-alias hoist pins 500 in a FREE
         // register (r0), drops the repeat, and retargets both uses. r2 is redefined
-        // at the end (#1) so its value is local.
+        // at the end (#1) so its value is local, and r0 is redefined after the
+        // last use (#2) — which is what PROVES it free (#1635: untouched-in-
+        // segment is not enough, see the live-out test below).
         let add = |rd, rn| {
             ins(ArmOp::Add {
                 rd,
@@ -15450,6 +15460,10 @@ mod tests {
                 rd: Reg::R2,
                 imm16: 1,
             }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 2,
+            }),
         ];
         let (out, removed) = apply_const_cse(&seq);
         assert_eq!(removed, 1, "the repeat `movw r2,#500` is dropped");
@@ -15474,6 +15488,69 @@ mod tests {
                 .count(),
             2,
             "both `add _,500,500` uses retargeted to the hoisted register"
+        );
+    }
+
+    /// #1635 (cpetig): a register the segment never touches is NOT free — it
+    /// may carry a value read after the segment ends. Reporter's shape: the
+    /// sret out-pointer param in r0 is read only after a forward join; pre-fix
+    /// `free_reg_over` returned r0 (no use, no def before the segment's end)
+    /// and the hoisted `#500` overwrote the pointer, so the post-join `str`
+    /// wrote linear memory 0. RED-FIRST: removed == 1, holder r0, pre-fix.
+    #[test]
+    fn const_cse_hoist_declines_holder_live_past_segment_end_1635() {
+        let add = |rd, rn| {
+            ins(ArmOp::Add {
+                rd,
+                rn,
+                op2: Operand2::Reg(rn),
+            })
+        };
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R3, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 9,
+            }),
+            add(Reg::R4, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R5, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 1,
+            }),
+            // Segment ends at the forward branch; r0 (a live param) is read
+            // only at the join.
+            ins(ArmOp::B {
+                label: "join".to_string(),
+            }),
+            ins(ArmOp::Label {
+                name: "join".to_string(),
+            }),
+            ins(ArmOp::Str {
+                rd: Reg::R3,
+                addr: MemAddr::imm(Reg::R0, 0),
+            }),
+        ];
+        let (out, removed) = apply_const_cse(&seq);
+        assert_eq!(
+            removed, 0,
+            "every candidate holder is either busy in the window or untouched \
+             (possibly live-out, like r0 here) — the hoist must decline"
+        );
+        assert_eq!(out, seq, "declined hoist leaves the stream untouched");
+        assert!(
+            !out[..7]
+                .iter()
+                .any(|i| reg_effect(&i.op).is_some_and(|e| e.defs.contains(&Reg::R0))),
+            "nothing before the join may define r0, which the join reads"
         );
     }
 

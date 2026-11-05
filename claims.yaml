@@ -4621,7 +4621,13 @@ claims:
     #   byte-identical, so the target legs re-execute one lowering). Paired
     #   control: `394603` rc=0 and `389119` rc=1 on this tree; `394603` rc=1
     #   and `389119` rc=0 on main dd2b791a.
-    text: "--exact-emulation-floor 394603"
+    # v0.89.2 R0CLOBBER (#1635): 394603 -> 394667 (+64). The new
+    #   r0_clobber_1635_differential.py declares `emulations >= 64` (64
+    #   measured via oracle_run.py: 8 vectors x 8 legs — cortex-m3/m4f/m7/
+    #   m7dp/m55 --relocatable, m7 --no-optimize, m3/m7dp self-contained).
+    #   Paired control: `394667` rc=0 and `394603` rc=1 on this tree;
+    #   `394667` rc=1 and `394603` rc=0 on main 69de522a.
+    text: "--exact-emulation-floor 394667"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

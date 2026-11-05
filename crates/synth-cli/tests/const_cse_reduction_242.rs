@@ -81,8 +81,15 @@ const GOLDEN_OFF_TEXT_LEN: usize = 576;
 /// `const_cse.wat` (const-CSE on). Pinned at flip time, AFTER
 /// `const_cse_differential.py` re-ran green on these exact bytes.
 /// RE-PIN (#1203): same one startup byte as above; see that note.
-const GOLDEN_DEFAULT_TEXT_FNV1A: u64 = 0x1ae8_eb2b_ba6c_99b6;
-const GOLDEN_DEFAULT_TEXT_LEN: usize = 452;
+/// RE-PIN (#1635): 452 -> 468 B. The extending-alias hoist no longer homes a
+/// constant in a register merely UNTOUCHED to the end of its segment (that
+/// register may be live-out — cpetig's sret pointer in r0). Three functions
+/// here relied on that at the function's final segment and keep their
+/// materializations instead: large3 +6, neg +8, small3 +2; `mixed` changes
+/// holder register only. `const_cse_differential.py` re-ran green on these
+/// bytes, as did the self-contained boot sweep (both legs of this fixture).
+const GOLDEN_DEFAULT_TEXT_FNV1A: u64 = 0x2cb8_9ec3_ff81_78b7;
+const GOLDEN_DEFAULT_TEXT_LEN: usize = 468;
 
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
