@@ -5,9 +5,9 @@ artifacts:
     status: proposed
     title: "Most GitHub Actions references are pinned to commit SHAs, and dependabot groups version-locked families into one PR each"
     description: >
-        Three CI-configuration changes landed on main after the v0.89.0 tag and
-        therefore ship in v0.89.1. None touches the compiler (no file under
-        crates/). They are recorded here because one of them carries a
+        Three CI-configuration PRs landed on main after the v0.89.0 tag and
+        therefore ship in v0.89.1, and a fourth configuration change ships
+        inside PR #1624. None touches the compiler (no file under crates/). They are recorded here because one of them carries a
         delivery-typed subject (`fix(dependabot): ...`), which the release
         window's attribution rule (R10) requires to name a release artifact,
         and because the patch notes describe them.
@@ -19,9 +19,14 @@ artifacts:
         the organisation rule. PR #1625 adds dependabot `groups:` so a
         version-locked family (wasm-tools, wasmtime) and all github-actions
         pins each arrive as one PR instead of one per directory. PR #1627
-        drops `package-ecosystem` from the actions group, which dependabot's
-        validator rejects inside `groups:`, and scopes the group by name shape
-        instead.
+        dropped `package-ecosystem` from the actions group, which dependabot's
+        validator rejects inside `groups:`, and scoped that group by name shape
+        (`^[^@]+/`); that config still did not parse, because dependabot
+        rejects a top-level `groups:` key. What ships is the third commit of
+        PR #1624 (89f4c37c, folded in from PR #1628): each group is defined
+        under the updates entry it belongs to, `github-actions-all` (pattern
+        `"*"`) under github-actions, and `wasm-tools-family` (now including
+        `wast`) and `wasmtime` under cargo.
 
         REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
         refutation is a legitimate outcome, reported with numbers: grep
@@ -46,9 +51,9 @@ artifacts:
       done-when: >
         manual:2026-12-31 every remote `uses:` in .github/workflows is pinned
         to a commit SHA and dependabot accepts the grouped configuration
-      landed: "PR #1626 (6cb48875), PR #1625 (8002a8dd), PR #1627 (df847a16) - #965 (citation only, closed) - PARTIAL: workflow and dependabot configuration only; no file under crates/ changes (`git diff --stat v0.89.0 origin/main -- crates/` lists only the #1623 files)."
+      landed: "PR #1626 (6cb48875), PR #1625 (8002a8dd), PR #1627 (df847a16), and the dependabot.yml commit 89f4c37c squashed into PR #1624 (from PR #1628) - #965 (citation only, closed) - PARTIAL: workflow and dependabot configuration only; none of the four changes a file under crates/ (`git diff --stat C^ C -- crates/` is empty for each of 6cb48875, 8002a8dd, df847a16 and 89f4c37c). On the shipped tree `git diff --stat v0.89.0 69de522a -- crates/` lists 14 files: the 4 of #1623 and the 10 crates/*/Cargo.toml version pins of the 0.89.1 bump (019f0473, squashed into PR #1624)."
       verified-by: >
-        PARTIAL, by inspection only, and the refuting command REFUTES the
+        PARTIAL, by inspection and GitHub API reads, and the refuting command REFUTES the
         complete form of the claim. Run at patch prep on the assembly branch
         (rebased on df847a16): `grep -rhnE '^\s*-?\s*uses:' .github/workflows`
         minus local `./` actions gives 223 references pinned to a 40-hex SHA and
@@ -59,6 +64,11 @@ artifacts:
         bazel-contrib/setup-bazel@0.19.1. Those two are left as found; this
         record does not change workflow files. That every pinned SHA is the
         commit its `# vN` comment names was NOT re-derived. Dependabot's
-        acceptance of the grouped configuration after PR #1627 is NOT verified
-        by any gate in this repository: the validator runs on GitHub's side and
-        no run of it was read for this record.
+        acceptance of the grouped configuration is checked by no gate in this
+        repository (the validator runs on GitHub's side), but its
+        `.github/dependabot.yml` check run was read through the GitHub API
+        (commits/<sha>/check-runs, app dependabot): completed/failure at
+        8002a8dd (#1625) and df847a16 (#1627), completed/success at 69de522a,
+        the shipped configuration. So the done-when's second clause is met;
+        its first is not (the two tag refs above), and the record stays
+        PARTIAL.
