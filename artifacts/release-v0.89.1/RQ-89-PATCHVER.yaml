@@ -1,0 +1,60 @@
+artifacts:
+  - id: RQ-89-PATCHVER
+    type: system-req
+    release: v0.89.1
+    status: implemented
+    title: "The release tooling reads a patch release (vX.Y.P, P >= 1) as its own release, not as its minor"
+    description: >
+        The v0.89.1 patch ships #1622 to gale with its own records in
+        artifacts/release-v0.89.1/. Four release gates could not read that
+        directory: each keyed a release by (major, minor) only, so a patch was
+        folded into its minor. A patch's records would have been audited, closed
+        and windowed as v0.89's.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: with a record
+        in artifacts/release-v0.89.1/, run status_evidence_check.py,
+        issue_closure_check.py --release v0.89.1 and loop_conformance_check.py
+        v0.89.1 on main dd2b791a and report which release each one reads.
+        CITATION: #1622 is the patch this tooling was fixed for. The number names
+        where it was analysed, not an open scope. The compiler change
+        delivered for #1622 is RQ-89-MEMK64; this record is the tooling that lets
+        the patch carry that record, so it declares no separate scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1622"
+      verification-track: manual
+      done-when: "contains:scripts/status_evidence_check.py:def release_key("
+      landed: "PR #1624 - #1622 - DELIVERED. The refuting command was run first on main dd2b791a with the MEMK64 record in artifacts/release-v0.89.1/ and CONFIRMED four mis-parses: status_evidence_check keyed release-v0.89.1/ as (0, 89), so `issue-scope: v0.89` authorised #1622 as a v0.89 closure; its LANE_SUBJECT did not match `v0.89.1 MEMK64 (#1622): ...`, so that delivery was invisible to R4-lane and R10-lane; issue_closure_check.parse_version truncated v0.89.1 to (0, 89), so --release v0.89.1 audited v0.89's close-set; loop_conformance_check truncated its rid and release_scope to v0.89. FIX: one canonical release key in status_evidence_check (release_key / parse_release / fmt_release), imported by issue_closure_check and loop_conformance_check. vX.Y and vX.Y.0 key as (X, Y) exactly as before; a patch vX.Y.P with P >= 1 keys as (X, Y, P), so tuple order is (0, 89) < (0, 89, 1) < (0, 90). The 2-tuple form for .0 is deliberate: a fixed 3-arity key would make (0, 89, 0) != (0, 89) and silently empty every caller still passing a 2-tuple. Also: previous_release_tag of a patch is the highest vX.Y.Z with Z < P (v0.89.0 for v0.89.1); R8 keys the release: field the same way, so a patch field parked in its minor's directory now reds; the CENSUS and --from-anchor share one expected_cut that names the patch only when its directory is present; the ci.yml issue-scope grep pin accepts vX.Y.Z. Tooling only: no file under crates/ changes."
+      verified-by: >
+        DELIVERED, red-first. New tests, each run against main's scripts and red
+        there: PatchRelease1622 in scripts/test_status_evidence_check.py,
+        patchver_tests() in scripts/test_issue_closure_check.py, and
+        test_release_id_of_a_patch_tag_is_the_patch in
+        scripts/test_loop_conformance_check.py. Thirteen mutants each revert one
+        fix and each is killed by a named test (the loader regex, LANE_SUBJECT,
+        previous_release_tag, the R8 key, expected_cut, parse_version,
+        fmt_release, --from-anchor, the issue-scope print, the CENSUS input, the
+        R7-SKIP text, rid/majmin and release_scope); listed in PR #1624. Two
+        existing assertions changed because they pinned the fold:
+        release_scope("0.65.1") is now "v0.65.1", and a release: v0.57.1 field
+        inside release-v0.57.yaml now reds R8 (not on the live tree).
+        BYTE-IDENTITY of every existing two-part release's gate output, measured
+        in PR #1624 by cmp of edited tree vs base on dd2b791a: claim_check,
+        status_evidence_check, verdict_prose_check, issue_closure_check
+        --release v0.89 and --release v0.89.0 --since-tag v0.88.0,
+        issue_closure_check --from-anchor, and loop_conformance_check v0.89.0.
+        LIVE POSITIVE CONTROL: the squashed #1623 subject `v0.89.1 MEMK64
+        (#1622): ...` is on main; lane_artifact_id returns None for it on main's
+        scripts and RQ-89-MEMK64 on these. With this release directory present
+        the gates read v0.89.1 as itself: the issue-scope line names v0.89.1,
+        the delivery window opens at v0.89.0, and issue_closure_check --release
+        v0.89.1 authorises the patch's own close-set. The live figures are in
+        the gate output of the assembly PR, not restated here.

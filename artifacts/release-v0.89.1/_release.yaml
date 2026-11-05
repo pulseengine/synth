@@ -1,0 +1,28 @@
+# v0.89.1 patch release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS, in either spelling. A figure parked here is a
+# second copy of a measured number, and a second copy is how a number goes stale.
+# The patch's numbers live in the artifact records that measured them and in the
+# CHANGELOG section that cites those records. Re-derive; do not read a count here.
+#
+# WHY A PATCH. A downstream image was blocked by a loud decline: the wide-integer load
+# and store family on a non-default memory was not lowered, so the functions holding
+# those accesses were skipped and the object was refused. The fix found a second,
+# silent defect on the way, and both are execution-verified against the reference
+# runtime. That is the whole reason for this release; it is cut from main as it
+# stands, so it also carries the tooling and CI changes that landed after the
+# predecessor's tag, and the notes say which of those touch the compiler (none).
+#
+# WHAT THIS RELEASE IS NOT. It moves no compliance envelope, adds no default-on
+# lowering beyond the memory-k family named above, and closes no issue that a
+# record here does not deliver. Lanes planned for the next minor stay planned
+# there.
+#
+# THE RELEASE TOOLING READS A PATCH AS ITS OWN RELEASE. Before this patch, every
+# gate that keys a release folded a patch directory into its minor. That fix
+# ships here, with its own record, because this directory is the first input it
+# was written for.
+#
+# The anchor moves to the predecessor's tag in this pull request, across every
+# site the ledger pins, with the counts read off the gate's own printed anchor
+# line.

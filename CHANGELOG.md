@@ -5,6 +5,104 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.89.1] - 2026-11-05
+
+A patch release for one downstream user. gale's two-domain image (#1622) was refused by 0.89.0;
+it compiles with 0.89.1, and the code it produces was executed against wasmtime. Every other
+change since 0.89.0 is tooling or CI configuration: apart from the version bump in each crate's
+`Cargo.toml`, the only crate files that changed are the four in the #1622 change
+(`git diff --stat v0.89.0 HEAD -- 'crates/**/*.rs'`). The compliance envelope is
+unchanged: the default build still emits no out-of-bounds trap, and memory k > 0 still cannot be
+bounds-checked inline on any profile.
+
+### For gale: i64 loads and stores on a non-default memory now compile (#1622)
+
+gale fuses a supervisor domain into memory 1 and compiles with `--relocatable
+--native-pointer-abi`. That domain has 12 i64 accesses on memory 1. 0.89.0 lowered only the i32
+load/store family on memory k > 0, so the functions holding those accesses were skipped and the
+object was refused (#952). Measured in PR #1623 on v0.89.0 (dd2b791a): a two-memory
+`(pagesize 1)` module with gale's 12 accesses in 11 exports skipped 11 of 12 functions and exited
+rc 1. With the change all 12 compile with 0 declines, and `__synth_mem_size_0` /
+`__synth_mem_size_1` are `0x820` / `0x1500`, the declared extents.
+
+- **What now lowers on memory k:** `i64.load`, `i64.store`, `i64.load8/16/32_s/u` and
+  `i64.store8/16/32`, on the same `__synth_wasm_data_<k> + offset + addr` base as the i32 family.
+  Each i64 access is two word accesses, never LDRD/STRD, so `align=4` and byte-unaligned i64
+  accesses are correct on Cortex-M3. A narrow load fills the high word by sign or zero extension.
+- **A second defect, silent wrong code, found by the new oracle and corrected in the same
+  change:** `infer_i64_locals` did not look inside a multi-memory access, so an `i64.load` from
+  memory 1 feeding `local.set` promoted the local as i32 and **dropped the high word**. On 0.89.0
+  every function that could reach it holds a memory-k i64 access, and was refused before this
+  point.
+- **Still refused, by name:** inline `--safety-bounds software|mask` on any memory-k access, i64
+  included (memory k has no size register), and f32, f64 and v128 on memory k. The f32/f64/v128
+  decline message now says what is lowered.
+- **Cosmetic:** the CLI's memory INFO line prints the declared page size and the initial size in
+  bytes, instead of pages x 64 KiB.
+
+**Execution evidence.** The new wired oracle `scripts/repro/memk_i64_1622_differential.py` runs
+gale's `(pagesize 1)` shape and a 64 KiB-paged one, under `--native-pointer-abi` and the plain
+embedder path, on cortex-m3, cortex-m4f and cortex-m7, in unicorn against wasmtime. After every
+call it compares both memories byte for byte, requires every access to land inside memory 1's
+region, and requires R4-R11, SP and the caller's frame to be preserved. Re-run for this release on
+the `synth 0.89.1` debug binary:
+
+    SYNTH=./target/debug/synth python3 scripts/repro/memk_i64_1622_differential.py
+    compared: 5484
+    ORACLE: PASS
+
+The CLI tests in `crates/synth-cli/tests/multi_memory_406.rs` pass 23 of 23 on the same tree
+(`cargo test -p synth-cli --test multi_memory_406`), including the two #1622 tests: the i64
+family lowers on memory 1, and inline bounds checking on it is refused.
+
+0.89.0 is RED on the same oracle: every fixture refuses to compile and 0 calls execute (PR #1623).
+In PR #1623, a store mutant with its two words swapped failed 2796 of 5484 calls, and removing the
+`infer_i64_locals` change made a function refuse on every leg. An i64 carried over `br`/`br_if`
+(#509) and an i64 call argument (#929) are loud declines on every memory, so the oracle does not
+test them.
+
+**Reach, measured in PR #1623** by a symtab byte census over 2704 modules (the spec testsuite,
+`tests/` and `scripts/repro`) on cortex-m3 `--relocatable`, plain and NPA:
+
+- **0 newly refused.** 0 functions changed bytes; all 5266 single-memory cells are identical.
+- **65 newly compiling spec functions per path**, all in five spec files with an i64 access on a
+  non-default memory. Each file's own rows, plus one direct in-bounds call where no row ran in
+  bounds, were executed against wasmtime on both paths: **268 of 268 bit-identical**, covering 58
+  of the 65. The other 7 are `address1`'s `*_bad` exports, whose offset 4294967295 puts every call
+  out of bounds, so none can run in bounds.
+- 208 out-of-bounds `assert_trap` rows do not trap in the default configuration. That is the
+  documented no-trap envelope the i32 memory-k family already has, not a change.
+
+These census figures were not re-run for this release; they are cited from PR #1623.
+
+**What this does not do.** #1145 (per-memory isolation) stays open: its remaining obligations are
+recorded in `RQ-89-MEMLAYER6` and are not touched here.
+
+Record: `artifacts/release-v0.89.1/RQ-89-MEMK64.yaml`.
+
+### Other changes since 0.89.0
+
+None of these changes compiler output.
+
+- **The release tooling reads a patch release as its own release** (`RQ-89-PATCHVER`, PR #1624).
+  `status_evidence_check`, `issue_closure_check`, `loop_conformance_check` and
+  `recurring_na_filing_check` keyed a release by major and minor only, so `release-v0.89.1/` was
+  read as v0.89. They now share one release key: `vX.Y` and `vX.Y.0` behave exactly as before,
+  and `vX.Y.P` with P >= 1 is its own release, with its window opening at `vX.Y.0`.
+- **`mutation_survey.py` no longer mutates the working tree** (`RQ-89-SWEEPMUTANT`, #1611, PR
+  #1612). Mutants are applied only to a shadow copy, an orphaned survey stops when its parent
+  dies, and a residue check keeps a surviving mutant from being committed.
+- **The spec-suite compile census covers ARM float code** (`RQ-89-CENSUSFLOAT`, #1609, PR #1610):
+  new cortex-m4f and cortex-m7dp legs with exact pins. #1609 stays open for its execution half.
+- **CI configuration** (`RQ-89-ACTIONPIN`): most GitHub Actions references are pinned to commit
+  SHAs (PR #1626), and dependabot groups version-locked families and all action pins into one PR
+  each (PR #1625, PR #1627). Two release tags are still referenced by tag; the record lists them.
+  As merged, that config did not parse: Dependabot rejects a top-level `groups:` key, so every
+  commit after #1625 carried a failing `.github/dependabot.yml` check and no grouped update applied.
+  This release defines each group under the updates entry it belongs to (`github-actions-all`
+  under github-actions; `wasm-tools-family`, now including `wast`, and `wasmtime` under cargo), and
+  Dependabot's own check parses it (folded in from PR #1628).
+
 ## [0.89.0] - 2026-10-28
 
 The theme of this release was solving serious issues. A module that compiles cleanly and returns a

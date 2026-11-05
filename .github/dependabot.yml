@@ -3,27 +3,6 @@ version: 2
 # (wasm-tools, wasmtime) and all github-actions pins in / must not split into
 # one PR per directory. (Learned from loom/witness/mcp/relay/rules_wasm_component,
 # where one release arrived as 4-8 PRs.)
-groups:
-  wasm-tools-family:
-    patterns:
-      - "wasmparser"
-      - "wasm-encoder"
-      - "wasmprinter"
-      - "wit-component"
-      - "wit-parser"
-      - "wasm-metadata"
-      - "wat"
-      - "walrus"
-  wasmtime:
-    patterns:
-      - "wasmtime"
-      - "wasmtime-*"
-  github-actions-all:
-    # groups cannot be scoped by package-ecosystem; action names are
-    # owner/name (contain a slash, never start with @), which cargo crates
-    # and unscoped npm packages never match.
-    patterns:
-      - "^[^@]+/"
 updates:
   - package-ecosystem: github-actions
     directory: /
@@ -41,9 +20,33 @@ updates:
       # so dependabot must not touch this action. (Its other refs here are
       # @stable/@nightly, which dependabot never bumps anyway.)
       - dependency-name: dtolnay/rust-toolchain
+    groups:
+      # All github-actions pins in / arrive as ONE PR. Groups are per
+      # updates-entry (dependabot rejects a top-level `groups:`), and a group
+      # inherits its entry's ecosystem, so no package-ecosystem key here.
+      github-actions-all:
+        patterns:
+          - "*"
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     labels:
       - dependencies
+    groups:
+      # Version-locked families: one PR per release, not one per crate.
+      wasm-tools-family:
+        patterns:
+          - "wasmparser"
+          - "wasm-encoder"
+          - "wasmprinter"
+          - "wit-component"
+          - "wit-parser"
+          - "wasm-metadata"
+          - "wat"
+          - "wast"
+          - "walrus"
+      wasmtime:
+        patterns:
+          - "wasmtime"
+          - "wasmtime-*"

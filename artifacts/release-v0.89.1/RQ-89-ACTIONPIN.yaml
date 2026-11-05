@@ -1,0 +1,64 @@
+artifacts:
+  - id: RQ-89-ACTIONPIN
+    type: system-req
+    release: v0.89.1
+    status: proposed
+    title: "Most GitHub Actions references are pinned to commit SHAs, and dependabot groups version-locked families into one PR each"
+    description: >
+        Three CI-configuration changes landed on main after the v0.89.0 tag and
+        therefore ship in v0.89.1. None touches the compiler (no file under
+        crates/). They are recorded here because one of them carries a
+        delivery-typed subject (`fix(dependabot): ...`), which the release
+        window's attribution rule (R10) requires to name a release artifact,
+        and because the patch notes describe them.
+
+        PR #1626 rewrites tag-pinned `uses:` references in .github/workflows
+        (its description says every one; verified-by below measures two it
+        missed) to a
+        commit SHA with the version as a comment (`owner/action@<sha> # vN`),
+        the organisation rule. PR #1625 adds dependabot `groups:` so a
+        version-locked family (wasm-tools, wasmtime) and all github-actions
+        pins each arrive as one PR instead of one per directory. PR #1627
+        drops `package-ecosystem` from the actions group, which dependabot's
+        validator rejects inside `groups:`, and scopes the group by name shape
+        instead.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: grep
+        .github/workflows for a `uses:` reference that is not pinned to a
+        40-hex SHA, excluding local `./` actions.
+        CITATION: no issue tracks these three pull requests. #965 is where this
+        repository's dependabot policy was last analysed (the 0.x-minor hold);
+        it is CLOSED, so citing it here authorises nothing that is still open.
+        The number names where it was analysed, not an open scope.
+    tags:
+      - process
+      - ci
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#965"
+      verification-track: manual
+      disposition: partial
+      done-when: >
+        manual:2026-12-31 every remote `uses:` in .github/workflows is pinned
+        to a commit SHA and dependabot accepts the grouped configuration
+      landed: "PR #1626 (6cb48875), PR #1625 (8002a8dd), PR #1627 (df847a16) - #965 (citation only, closed) - PARTIAL: workflow and dependabot configuration only; no file under crates/ changes (`git diff --stat v0.89.0 origin/main -- crates/` lists only the #1623 files)."
+      verified-by: >
+        PARTIAL, by inspection only, and the refuting command REFUTES the
+        complete form of the claim. Run at patch prep on the assembly branch
+        (rebased on df847a16): `grep -rhnE '^\s*-?\s*uses:' .github/workflows`
+        minus local `./` actions gives 223 references pinned to a 40-hex SHA and
+        72 that are not. 70 of the 72 are dtolnay/rust-toolchain selected by
+        channel or version (@stable 68, @nightly 1, @1.96.1 1), a branch name
+        rather than a release tag. The other 2 are release TAGS that PR #1626
+        did not rewrite: taiki-e/install-action@v2.87.31 and
+        bazel-contrib/setup-bazel@0.19.1. Those two are left as found; this
+        record does not change workflow files. That every pinned SHA is the
+        commit its `# vN` comment names was NOT re-derived. Dependabot's
+        acceptance of the grouped configuration after PR #1627 is NOT verified
+        by any gate in this repository: the validator runs on GitHub's side and
+        no run of it was read for this record.
