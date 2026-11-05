@@ -1795,7 +1795,11 @@ impl ArmEncoder {
             // Branch instructions
             ArmOp::B { label: _ } => {
                 // B encoding: cond(4) | 1010 | offset(24)
-                // Simplified: branch to offset 0 (will be patched by linker/resolver)
+                // SIZE PROBE ONLY (#1639): imm24 = 0 is `b pc+8`, wrong code.
+                // `arm_backend::resolve_a32_branches` rewrites every label
+                // branch to `BOffset` in A32 word units before the emit loop,
+                // and `validate_a32_branch_targets` refuses any survivor —
+                // nothing (no resolver, no relocation) patches this word later.
                 0xEA000000
             }
 
@@ -1814,31 +1818,35 @@ impl ArmEncoder {
                     Condition::GT => 0xC,
                     Condition::LE => 0xD,
                 };
-                // B<cond> with offset 0 (will be patched)
+                // B<cond> imm24 = 0: SIZE PROBE ONLY, see `B { label }` (#1639).
                 (cond_bits << 28) | 0x0A000000
             }
 
             // BHS (Branch if Higher or Same) - used for bounds checking
             ArmOp::Bhs { label: _ } => {
                 // BHS encoding: cond(2=HS) | 1010 | offset(24)
-                0x2A000000 // BHS with offset 0
+                0x2A000000 // imm24 = 0: SIZE PROBE ONLY, see `B { label }` (#1639)
             }
 
             // BLO (Branch if Lower) - complementary to BHS
             ArmOp::Blo { label: _ } => {
                 // BLO encoding: cond(3=LO) | 1010 | offset(24)
-                0x3A000000 // BLO with offset 0
+                0x3A000000 // imm24 = 0: SIZE PROBE ONLY, see `B { label }` (#1639)
             }
 
-            // Branch with numeric offset (in instructions)
-            // ARM32 B instruction: offset is in instructions, stored as words
-            // The offset is relative to PC+8 (due to ARM pipeline)
+            // Branch with numeric offset.
+            // UNITS (#1639): on A32 the `offset` field is the signed distance
+            // from THIS branch to its target in A32 WORDS,
+            // `offset = (target - branch) / 4`. The encoder subtracts the 2-word
+            // PC+8 pipeline bias itself: imm24 = offset - 2, so
+            // target = branch + 8 + 4 * imm24 = branch + 4 * offset.
+            // A forward skip over N instructions is offset = N + 1, a backward
+            // branch to N instructions before this one is offset = -N, and a
+            // branch to itself is offset = 0. This is NOT the Thumb unit
+            // (`(target - branch - 4) / 2` halfwords) the selectors write;
+            // `arm_backend::resolve_a32_branches` converts before encoding.
             ArmOp::BOffset { offset } => {
                 // B encoding: cond(4) | 1010 | offset(24)
-                // Offset is signed, in words (4-byte units)
-                // ARM adds PC+8 to the offset, so we need to adjust:
-                // target = PC + 8 + (offset * 4)
-                // For backward branch of N instructions: offset = -(N + 2)
                 // wrapping_sub keeps the encoder total under fuzzing (#186): an
                 // extreme i32::MIN offset would otherwise overflow-panic; for any
                 // real branch offset this is identical to `- 2`.
@@ -1863,6 +1871,7 @@ impl ArmEncoder {
                     Condition::LE => 0xD,
                 };
                 // B<cond> encoding: cond(4) | 1010 | offset(24)
+                // Same A32 word units as `BOffset` above (#1639).
                 // wrapping_sub: total under fuzzing (#186), identical for real offsets.
                 let adjusted_offset = offset.wrapping_sub(2); // Account for PC+8
                 let offset_bits = (adjusted_offset as u32) & 0x00FFFFFF;

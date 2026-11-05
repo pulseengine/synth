@@ -1238,7 +1238,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 398507 \
+            --exact-emulation-floor 398768 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -6518,6 +6518,15 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends binutils-arm-none-eabi
       - name: post-link static-data placement oracle (#359)
         run: PATH=$PWD/target/debug:$PATH python scripts/oracle_run.py scripts/repro/postlink_359_oracle.py
+      - name: A32 control-flow + guard-branch execution differential (#1639/#1641, cortex-r5 + no-target)
+        # Every A32 label branch shipped as a zero-displacement `b pc+8` with
+        # no relocation (#1639), and every selector-written numeric branch
+        # (--safety-bounds software guards #1641, i32 div/rem trap guards,
+        # optimized-path branches) was read in Thumb units by the A32 encoder
+        # — `offset: 0` became a branch to itself. RED on main df847a16: 142 of
+        # the 191 A32 vectors wrong/hung; the cortex-m4 controls green throughout.
+        # Needs arm-none-eabi-ld (installed above): the objects are LINKED.
+        run: python scripts/oracle_run.py scripts/repro/a32_control_flow_1639_differential.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
       # met its declared floor AND that the expected number of them
       # reported at all — a step deleted, commented out, or skipped by an
