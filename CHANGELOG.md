@@ -5,6 +5,127 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.89.2] - 2026-11-05
+
+A patch release for two silent wrong-code defects on the Cortex-M path. In both, the compile
+exited 0 with no warning and the program computed the wrong thing. Both were executed against
+wasmtime before and after the fix. No other compiler change ships: the only crate files that
+changed besides the version bump are the ones in these two fixes (`git diff --stat v0.89.1 HEAD -- 'crates/**/*.rs'`).
+The compliance envelope is unchanged: the default build still emits no out-of-bounds trap.
+
+### A parameter register was reused for a constant while the parameter was still live (#1635)
+
+Reported by cpetig on 0.88.0 and 0.89.0. In a function whose first parameter (r0) is read only
+after a forward branch rejoins, for example a Rust function returning its result through an sret
+pointer, 0.89.1 and earlier could write a constant into r0 before that read. The stores through
+the pointer then landed at linear-memory address 0 and 4 instead of the caller's slot.
+
+- **Cause.** The constant-reuse pass (const-CSE) looks for a free register to hold a repeated
+  constant. It accepted any register that was not read or redefined before the end of the
+  straight-line segment. The reporter's segment ends at a forward branch, so r0 looked free while
+  the code after the join still read it. A register is now free only if the segment redefines it
+  after the constant's last use. The selector's parameter reservation was correct.
+- **Where.** ARM only: const-CSE runs only in the ARM backend. The new oracle was red on every leg
+  it runs: cortex-m3, m4f, m7, m7dp and m55 `--relocatable` with the embedder flags, cortex-m7
+  `--no-optimize`, and cortex-m3 and m7dp self-contained. The pass runs on every Cortex-M target,
+  so other profiles (cortex-m4, for example) change bytes too.
+- **Workaround for older versions:** `SYNTH_CONST_CSE=0`. On the 0.89.1 binary the oracle passes
+  64 of 64 with it set.
+
+**Execution evidence.** `scripts/repro/r0_clobber_1635_differential.py` (new, wired in CI) runs the
+reporter's `bump` from their bump.wasm, unchanged except for an added export, plus the reporter's
+reduced `min`. Each runs on 8 legs x 8 vectors in unicorn against wasmtime, comparing all of linear
+memory after every call. Re-run for this release:
+
+    synth 0.89.1 (v0.89.1 tag):  #1635 differential: 32 of 64 mismatched
+    synth 0.89.2:                #1635 differential: all 64 green
+
+**Changed code.** PR #1637 measured 242 in-repo modules x 8 configurations: no module changed
+compile status, and 29 functions changed bytes. Only three grow (`const_cse.wat` `large3`, `neg`,
+`small3`); the rest use a different holder register. 28 of the 29 were executed against
+wasmtime. The 29th, `store_below`, calls an import and was checked by diff only. This release
+re-measured a different population: 552 in-repo source files x 13 configurations, see
+`RQ-89-R0CLOBBER`. There, 29 distinct Thumb functions change from this fix:
+
+- 26 change on self-contained images. They were executed on cortex-m4 self-contained against
+  wasmtime, with return values compared.
+- 3 change only under `--native-pointer-abi` (`anti_pinch` `init` and `set_target`,
+  `stack_canary_687` `set_canary`). These were checked by diff only: each holder moves into a
+  register the function saves and restores.
+
+### Do-while loops whose condition landed in a high register hung (#1206)
+
+On the default optimized path (self-contained cortex-m3, m4, m4f, m7 and m7dp), a do-while loop's
+back-edge landed 6 bytes short whenever the loop condition was allocated to R8. It landed after
+the loop's increment, so any loop that needed a second iteration never terminated.
+
+- **Cause.** The optimized path places branches by summing an estimate of each instruction's
+  size. That estimate is a hand-written copy of the encoder's rules, and it under-counted the wide
+  forms: it sized a high-register `SetCond` at 6 bytes (the encoder emits 10) and `cmp r8, #0` at
+  2 (the encoder emits 4).
+- **Fix.** An exhaustive operand-class sweep compared the estimate with the real encoder. It
+  covered about 258k instructions: every variant, every register, every immediate and offset
+  class. It found further disagreements, and the estimator is now exact for every one of them
+  (`crates/synth-backend/tests/estimator_encoder_agreement.rs`, no allowlist).
+- **New compile-time check.** Every branch whose displacement came from the estimate is now
+  checked against the real encoder's layout. If a branch would not reach the instruction it was
+  resolved to, the compile is refused instead of shipping a misplaced branch. On the fixed tree
+  the check fires 0 times across the corpus (PR #1646).
+
+**Execution evidence.** `scripts/repro/optloop_backedge_1206_differential.py` (new, wired in CI)
+runs 8 exports x 80 vectors x 5 targets on the self-contained default image. Every export is
+asserted to take the optimized path, and each run has a 100k-instruction budget. Re-run for this
+release:
+
+    synth 0.89.1 (v0.89.1 tag):  FAIL: 1595 of 3200 emulations differ from wasmtime or hang
+    synth 0.89.2:                PASS: 3200 emulations match wasmtime
+
+The spec-suite parity oracle had pinned this defect as a known wrong answer
+(`control_loop.wast` `countdown`). That pin is removed. In PR #1646 the oracle failed with the pin
+still in place, because the pinned wrong answer had vanished. It passes without the pin
+(re-run for this release).
+
+**Changed code.** Measured for this release (552 files x 13 configurations): with
+`SYNTH_CONST_CSE=0` on both sides, exactly 8 functions change on each self-contained Cortex-M
+target, cortex-m55 included: `countdown` and the 7 loop shapes of the new oracle. The new oracle
+executes the 7 loop shapes on cortex-m3, m4, m4f, m7 and m7dp, and the parity oracle executes
+`countdown` on cortex-m4. Neither runs cortex-m55. PR #1646 measured 0 changed functions on
+cortex-m4 `--relocatable`, RV32 and AArch64.
+
+**WCET.** In PR #1646, of 530 `--emit-wcet` sidecars, 6 functions' bounds rose by 10 cycles and
+none fell. Each contains an i64 comparison into a high register, which the old estimate sized at
+12 bytes against an encoded 16. Those earlier bounds were computed from an under-sized
+expansion. Whether one was exceeded at run time was not measured.
+
+Re-measured for this release, both fixes together: 910 sidecars over the 552 files on cortex-m3
+and cortex-m4, self-contained and `--relocatable`. 900 are identical, and no bound fell.
+
+- From #1206: 5 functions rise by 10 cycles each (`select_i64cmp_973.wat`'s four, and
+  `vcr_reach_001_i64_pair.wat` `cmp64`).
+- From #1635: `const_cse.wat` `neg` rises 21 -> 23 cycles and `small3` rises 25 -> 26. In both,
+  a constant is now materialized again where the hoist was declined.
+
+### Also in this release
+
+- **A new compile-time refusal:** Thumb-2 `CMN` with a shifted-register operand used to encode as
+  a 16-bit NOP. It is now refused. No code path in synth builds that form today, so no module is
+  affected. Measured for this release: 0 modules and 0 functions newly refuse, across the 13
+  configurations.
+- **cortex-r5 (A32) is not fixed.** Both fixes change A32 bytes:
+  - #1206's 8 functions are wrong on A32 both before and after. PR #1646 traced this to the
+    optimized path's numeric branch offset, which is a Thumb halfword count that the A32 encoder
+    encodes as a word count. That PR judged it distinct from #1639 (A32 label branches) and did not
+    file it.
+  - #1635's change removes the same r0 clobber on A32 and changes 20 A32 functions, none of them
+    executed.
+
+  A32 control flow is wrong for separate reasons: see #1639, #1640 and #1645.
+- **Release tooling.** The status-evidence anchor moves to v0.89.1. The spec-parity pin for #1206
+  is removed, and `stale_pin_check.py` now books a suppression table whose every entry carries a
+  declared reason. Previously, closing the last issue-charged pin in a table turned it red.
+
+Records: `artifacts/release-v0.89.2/RQ-89-R0CLOBBER.yaml`, `RQ-89-EST1206.yaml`.
+
 ## [0.89.1] - 2026-11-05
 
 A patch release for one downstream user. gale's two-domain image (#1622) was refused by 0.89.0;

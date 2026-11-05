@@ -185,11 +185,17 @@ def entry_issues(path: pathlib.Path, name: str) -> collections.Counter:
 
     found: collections.Counter = collections.Counter()
     found.reasoned = 0  # entries carrying no issue (a documented reason slug)
+    # EST1206 (#1206): of the `reasoned` entries, how many carry a DECLARED
+    # REASON_STRINGS slug (as opposed to a bare value with nothing in it). A
+    # table whose every entry is declared-reason-charged is fully accounted
+    # for; it is NOT a table "carrying no issue" that needs an `issue:`.
+    found.declared_reasons = 0
     if not isinstance(node, ast.Dict):
         return found
     for value in node.values:
         parts = elements(value)
         hit = False
+        reason_hit = False
         for part in parts:
             if isinstance(part, str):
                 t = part.strip()
@@ -197,7 +203,9 @@ def entry_issues(path: pathlib.Path, name: str) -> collections.Counter:
                 if m:
                     found[int(m.group(1))] += 1
                     hit = True
-                elif t not in REASON_STRINGS:
+                elif t in REASON_STRINGS:
+                    reason_hit = True
+                else:
                     # NOT an exact issue reference and NOT a declared reason.
                     #
                     # (v0.73 cold review round 2, finding 1) This condition used
@@ -225,6 +233,7 @@ def entry_issues(path: pathlib.Path, name: str) -> collections.Counter:
                     )
         if not hit:
             found.reasoned += 1
+            found.declared_reasons += reason_hit
     return found
 
 
@@ -247,6 +256,15 @@ def attribute(root: pathlib.Path) -> dict[int, list[tuple[str, int]]]:
             continue  # an empty suppression list is the goal state
 
         issues = entry_issues(root / rel, name)
+        if not issues and issues.declared_reasons == n:
+            # EST1206 (#1206): every live pin names a DECLARED reason (the
+            # parity table, once its last issue-charged pin closed, holds only
+            # the `#539-grow-fails` envelope). Nothing to check for staleness,
+            # and nothing unaccounted: book them as reason-charged. Before this
+            # branch the table fell into the `issue:` refusal below, so closing
+            # a table's LAST issue pin turned this gate red.
+            reasoned += n
+            continue
         if not issues:
             declared = t.get("issue")
             if declared is None:

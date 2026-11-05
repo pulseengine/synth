@@ -409,8 +409,16 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
     };
 
     match op {
-        // SetCond: ITE + MOV #1 + MOV #0 = 2 + 2 + 2 = 6 bytes
-        ArmOp::SetCond { .. } => 6,
+        // SetCond: ITE + MOV #1 + MOV #0. The 16-bit MOVS has a 3-bit Rd
+        // field, so a HIGH rd takes two 32-bit MOV.W: 2 + 4 + 4 = 10, not 6
+        // (#1206 — the back-edge over an R8 SetCond landed 4 bytes short).
+        ArmOp::SetCond { rd, .. } => {
+            if reg_num(rd) < 8 {
+                6
+            } else {
+                10
+            }
+        }
         // SelectMove: IT + MOV = 2 + 2 = 4 bytes
         ArmOp::SelectMove { .. } => 4,
         // 32-bit Thumb-2 instructions (always 4 bytes)
@@ -485,12 +493,26 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
             let rm_bits = reg_num(rm);
             if rd_bits < 8 && rm_bits < 8 { 2 } else { 4 }
         }
-        // I64SetCond: multi-instruction sequence (12 bytes for all conditions)
+        // I64SetCond: multi-instruction sequence, 12 bytes for a LOW rd
         // EQ/NE: CMP(2) + IT EQ(2) + CMP(2) + ITE(2) + MOV(2) + MOV(2)
         // LT/GT: CMP(2) + SBCS(4) + ITE(2) + MOV(2) + MOV(2)
-        ArmOp::I64SetCond { .. } => 12,
-        // I64SetCondZ: ORR.W(4) + CMP(2) + ITE(2) + MOV(2) + MOV(2)
-        ArmOp::I64SetCondZ { .. } => 12,
+        // A HIGH rd widens both MOVs to MOV.W (+4) — the #1206 class.
+        ArmOp::I64SetCond { rd, .. } => {
+            if reg_num(rd) < 8 {
+                12
+            } else {
+                16
+            }
+        }
+        // I64SetCondZ: ORR.W(4) + CMP(2) + ITE(2) + MOV(2) + MOV(2) = 12; a HIGH
+        // rd takes CMP.W(4) and two MOV.W(4): 4 + 4 + 2 + 4 + 4 = 18.
+        ArmOp::I64SetCondZ { rd, .. } => {
+            if reg_num(rd) < 8 {
+                12
+            } else {
+                18
+            }
+        }
         // I64Mul: MUL(4) + MLA(4) + UMULL(4) + ADD(2) = 14 bytes
         ArmOp::I64Mul { .. } => 14,
         // I64Shl/ShrU (#1048 R12-only rewrite): AND.W(4) + SUBS.W(4) + BPL(2)
@@ -529,9 +551,16 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         // I64 sign extension: SXTB/SXTH/ASR + ASR.
         ArmOp::I64Extend8S { .. } => 8,
         ArmOp::I64Extend16S { .. } => 8,
-        // I64Extend32S: MOV (lo passthrough) + ASR (sign-fill hi) = 6 bytes
-        // (#498: measured 6, was an 8-byte over-estimate).
-        ArmOp::I64Extend32S { .. } => 6,
+        // I64Extend32S: MOV (lo passthrough) + ASR.W (sign-fill hi) = 6 bytes
+        // (#498: measured 6, was an 8-byte over-estimate). The encoder omits
+        // the MOV when rdlo == rnlo, leaving the 4-byte ASR.W alone.
+        ArmOp::I64Extend32S { rdlo, rnlo, .. } => {
+            if reg_num(rdlo) == reg_num(rnlo) {
+                4
+            } else {
+                6
+            }
+        }
         // I64 division: #610 fixed-ABI wrapper (PUSH r0-r3(2) + 4×STR(16) +
         // 4×POP(8) + zero-trap(8) + 2×MOV(4) + 4×restore(8) = 46) around the
         // pre-#610 cores (74/78/126/124, the #498 exact measurements).
@@ -560,41 +589,53 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         } => 170 - if *elide_zero_guard { 8 } else { 0 },
         // AND/OR/XOR: encoder always uses 32-bit Thumb-2 (.W) encoding
         ArmOp::And { .. } | ArmOp::Orr { .. } | ArmOp::Eor { .. } => 4,
-        // LDR/STR with high base register or large offset need 32-bit
-        ArmOp::Ldr { rd, addr } => {
-            let rd_bits = reg_num(rd);
-            let base_bits = reg_num(&addr.base);
-            let offset = addr.offset as u32;
-            if rd_bits < 8 && base_bits < 8 && (offset & 0x3) == 0 && offset <= 124 {
-                2
+        // Loads/stores. The 16-bit T1 immediate forms need a LOW rd and base
+        // and a small scaled offset: word imm5*4 (<= 124, 4-aligned), halfword
+        // imm5*2 (<= 62, 2-aligned), byte imm5 (<= 31); LDRSB/LDRSH have no
+        // 16-bit immediate form. A register offset is 16-bit only for LDR/STR
+        // with three low registers; a register offset PLUS an immediate is the
+        // encoder's `ADD r12, Roff, #imm` + 32-bit register-form pair, where the
+        // ADD is one ADDW for imm <= 0xFFF and MOVW (+ MOVT) + ADD.W beyond.
+        // #1206 audit: the old arms sized every sub-word access 4 (the 16-bit
+        // low-base forms are 2 — an over-estimate lands a branch LONG) and a
+        // register-offset LDR/STR with a high offset register 2 (it is 4).
+        ArmOp::Ldr { rd, addr }
+        | ArmOp::Str { rd, addr }
+        | ArmOp::Ldrb { rd, addr }
+        | ArmOp::Strb { rd, addr }
+        | ArmOp::Ldrh { rd, addr }
+        | ArmOp::Strh { rd, addr }
+        | ArmOp::Ldrsb { rd, addr }
+        | ArmOp::Ldrsh { rd, addr } => {
+            let word = matches!(op, ArmOp::Ldr { .. } | ArmOp::Str { .. });
+            let low = reg_num(rd) < 8 && reg_num(&addr.base) < 8;
+            if let Some(off_reg) = &addr.offset_reg {
+                if addr.offset != 0 {
+                    let imm = addr.offset as u32;
+                    let add = if imm <= 0xFFF {
+                        4
+                    } else if imm >> 16 != 0 {
+                        12
+                    } else {
+                        8
+                    };
+                    add + 4
+                } else if word && low && reg_num(off_reg) < 8 {
+                    2
+                } else {
+                    4
+                }
             } else {
-                4
+                let offset = addr.offset as u32;
+                let short = match op {
+                    ArmOp::Ldr { .. } | ArmOp::Str { .. } => offset & 0x3 == 0 && offset <= 124,
+                    ArmOp::Ldrh { .. } | ArmOp::Strh { .. } => offset & 0x1 == 0 && offset <= 62,
+                    ArmOp::Ldrb { .. } | ArmOp::Strb { .. } => offset <= 31,
+                    _ => false,
+                };
+                if low && short { 2 } else { 4 }
             }
         }
-        ArmOp::Str { rd, addr } => {
-            let rd_bits = reg_num(rd);
-            let base_bits = reg_num(&addr.base);
-            let offset = addr.offset as u32;
-            if rd_bits < 8 && base_bits < 8 && (offset & 0x3) == 0 && offset <= 124 {
-                2
-            } else {
-                4
-            }
-        }
-        // #483: half/byte loads and stores. The optimized path always
-        // materializes a memory access against a HIGH base register
-        // (`ip`/r12 for a const address, r11 for the base-CSE linmem
-        // anchor), so the encoder always emits the 32-bit `.w` form — the
-        // 16-bit Thumb T1 encoding (low base + small aligned offset) is
-        // never produced here. Sizing these as the default 2 (the bug)
-        // drifts `byte_offsets` and miscompiles any branch that spans the
-        // access (the i32.store16 in the #483 `block`/`br_if` repro).
-        ArmOp::Strh { .. }
-        | ArmOp::Strb { .. }
-        | ArmOp::Ldrh { .. }
-        | ArmOp::Ldrsh { .. }
-        | ArmOp::Ldrb { .. }
-        | ArmOp::Ldrsb { .. } => 4,
         // BL is always 32-bit
         ArmOp::Bl { .. } => 4,
         // Branches: 2-byte short forms when the halfword displacement fits
@@ -641,31 +682,72 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
             }
         }
         ArmOp::Mov { .. } => 2,
-        // SUB/ADD with high registers need 32-bit encoding
-        ArmOp::Sub {
-            rd,
+        // ADD/SUB (non-flag-setting ops; the encoder emits the flag-setting
+        // 16-bit forms). Register form: 16-bit only with three low registers.
+        // Immediate form: 16-bit `ADDS/SUBS #imm3` only with a low rd AND rn
+        // and imm <= 7; otherwise ADD.W/ADDW (#377 — the bounds guard's
+        // `ADD R12, Raddr, #k`). #1206 audit: the old arms sized a LOW-register
+        // `#imm > 7`, any `SUB #imm`, and SP operands 2 — they are 4.
+        ArmOp::Add { rd, rn, op2 } | ArmOp::Sub { rd, rn, op2 } => {
+            let low = reg_num(rd) < 8 && reg_num(rn) < 8;
+            match op2 {
+                Operand2::Reg(rm) if low && reg_num(rm) < 8 => 2,
+                Operand2::Imm(imm) if low && *imm <= 7 => 2,
+                _ => 4,
+            }
+        }
+        // CMP: `CMP Rn, #imm8` is 16-bit only for a LOW rn and 0..=255; else
+        // CMP.W (#1206: `cmp.w r8, #0` was sized 2). The register form is
+        // always 16-bit (T1 low / T2 high-register encoding).
+        ArmOp::Cmp {
             rn,
-            op2: Operand2::Reg(rm),
-        } if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 => 4,
-        ArmOp::Add {
-            rd,
-            rn,
-            op2: Operand2::Reg(rm),
-        } if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 => 4,
-        // #377: ADD rd, rn, #imm with a HIGH rd — always the 32-bit ADD.W form
-        // (the encoder's 16-bit `ADDS #imm3` requires rd AND rn low AND
-        // imm <= 7). The software bounds guard's end-address compute
-        // (`ADD R12, Raddr, #off+size-1`) is this shape; without this arm it
-        // fell to the `_ => 2` default and drifted every spanning branch by 2
-        // bytes. Scoped to high-rd so pre-existing low-reg imm-ADD sizing is
-        // untouched (the low-reg imm > 7 form remains a known gap of the
-        // `_ => 2` default — no optimized-path site emits it).
-        ArmOp::Add {
-            rd,
-            op2: Operand2::Imm(_),
-            ..
-        } if reg_num(rd) > 7 => 4,
-        // Most 16-bit Thumb instructions (MOV low, CMP low, B, etc.)
+            op2: Operand2::Imm(imm),
+        } => {
+            if reg_num(rn) < 8 && (0..=255).contains(imm) {
+                2
+            } else {
+                4
+            }
+        }
+        // Immediate shifts: 16-bit LSLS/LSRS/ASRS need low rd and rn; LSR/ASR
+        // #0 is not encodable 16-bit (imm5 = 0 means shift-by-32), so the
+        // encoder takes the 32-bit form there. ROR #imm has no 16-bit form.
+        // #1206 audit: these sat at `_ => 2` while the imm-shift fold places
+        // them on the optimized path.
+        ArmOp::Lsl { rd, rn, .. } => {
+            if reg_num(rd) < 8 && reg_num(rn) < 8 {
+                2
+            } else {
+                4
+            }
+        }
+        ArmOp::Lsr { rd, rn, shift } | ArmOp::Asr { rd, rn, shift } => {
+            if reg_num(rd) < 8 && reg_num(rn) < 8 && shift & 0x1F != 0 {
+                2
+            } else {
+                4
+            }
+        }
+        ArmOp::Ror { .. } => 4,
+        // memory.size reads R10 (a high register), so the encoder always takes
+        // the 32-bit LSR.W / MOV.W form. #1206 audit: was `_ => 2`.
+        ArmOp::MemorySize { .. } => 4,
+        // PUSH/POP: 16-bit only when every register is R0-R7 (+ LR / + PC).
+        ArmOp::Push { regs } => {
+            if regs.iter().all(|r| reg_num(r) < 8 || *r == Reg::LR) {
+                2
+            } else {
+                4
+            }
+        }
+        ArmOp::Pop { regs } => {
+            if regs.iter().all(|r| reg_num(r) < 8 || *r == Reg::PC) {
+                2
+            } else {
+                4
+            }
+        }
+        // Most 16-bit Thumb instructions (MOV low, CMP register, B, etc.)
         _ => 2,
     }
 }
