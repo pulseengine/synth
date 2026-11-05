@@ -43,7 +43,7 @@ artifacts:
         to wasmtime, whole linear memory compared, on every Cortex-M leg of
         the new differential, which is red before the fix; and the refuting
         command above is RUN FIRST and its result reported either way
-      landed: "PR #1637 (head 66167571; commit ca9b7866 in the v0.89.2 assembly) - #1635 - DELIVERED. The refuting command was run first in PR #1637 on v0.89.0 and main and CONFIRMED the defect: the disassembly matches the report (`movw r0, #0` at 0x74, then `add.w ip, r0, #4` / `str.w r3, [fp, r0]`), and executed under unicorn 32 of 64 vectors write the result at 0/4 instead of the out pointer. With SYNTH_CONST_CSE=0 the same binary emits no r0 def and runs green, so the selector's param reservation (#193/#663) was correct and the defect is in the post-selection const-CSE extending-alias hoist: liveness::free_reg_over accepted a holder register that was neither read nor redefined before the END of its straight-line segment, and that segment ended at the forward branch while r0 was still read after the join. Fix: a holder is free only if the segment redefines it after the window's last use; falling off the segment end declines. ARM only (apply_const_cse runs only from arm_backend.rs); every leg of the differential was red before the fix: cortex-m3/m4f/m7/m7dp/m55 --relocatable, cortex-m7 --no-optimize, and cortex-m3/m7dp self-contained."
+      landed: "PR #1637 (head 66167571), squashed into the v0.89.2 assembly PR #1650 (branch commit ca9b7866) - #1635 - DELIVERED. The refuting command was run first in PR #1637 on v0.89.0 and main and CONFIRMED the defect: the disassembly matches the report (`movw r0, #0` at 0x74, then `add.w ip, r0, #4` / `str.w r3, [fp, r0]`), and executed under unicorn 32 of 64 vectors write the result at 0/4 instead of the out pointer. With SYNTH_CONST_CSE=0 the same binary emits no r0 def and runs green, so the selector's param reservation (#193/#663) was correct and the defect is in the post-selection const-CSE extending-alias hoist: liveness::free_reg_over accepted a holder register that was neither read nor redefined before the END of its straight-line segment, and that segment ended at the forward branch while r0 was still read after the join. Fix: a holder is free only if the segment redefines it after the window's last use; falling off the segment end declines. ARM only (apply_const_cse runs only from arm_backend.rs); every leg of the differential was red before the fix: cortex-m3/m4f/m7/m7dp/m55 --relocatable, cortex-m7 --no-optimize, and cortex-m3/m7dp self-contained."
       verified-by: >
         DELIVERED, execution-verified against wasmtime under unicorn. New
         wired oracle scripts/repro/r0_clobber_1635_differential.py (ci.yml,
@@ -105,4 +105,11 @@ artifacts:
         distinct A32 functions (same counting) change bytes from this fix,
         none executed. A32 is not
         an oracle leg: its label branches execute wrongly for an unrelated
-        reason (#1639, open).
+        reason (#1639, open). WCET, measured at release prep: --emit-wcet
+        sidecars, v0.89.1 tag binary vs the assembly's, over the same 552
+        files on cortex-m3 and cortex-m4, self-contained and --relocatable:
+        910 sidecars compared, 900 identical. From this fix, const_cse.wat
+        neg rose 21 -> 23 cycles and small3 25 -> 26 (self-contained
+        cortex-m3/m4; the hoist is declined, so a constant is materialized
+        again). No bound fell and no function changed bounded/declined
+        status.

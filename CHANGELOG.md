@@ -92,10 +92,18 @@ executes the 7 loop shapes on cortex-m3, m4, m4f, m7 and m7dp, and the parity or
 `countdown` on cortex-m4. Neither runs cortex-m55. PR #1646 measured 0 changed functions on
 cortex-m4 `--relocatable`, RV32 and AArch64.
 
-**WCET.** Cited from PR #1646, not re-measured. Of 530 `--emit-wcet` sidecars, 6 functions'
-bounds rose by 10 cycles and none fell. Each contains an i64 comparison into a high register,
-which the old estimate sized at 12 bytes against an encoded 16. Those earlier bounds were computed
-from an under-sized expansion. Whether one was exceeded at run time was not measured.
+**WCET.** In PR #1646, of 530 `--emit-wcet` sidecars, 6 functions' bounds rose by 10 cycles and
+none fell. Each contains an i64 comparison into a high register, which the old estimate sized at
+12 bytes against an encoded 16. Those earlier bounds were computed from an under-sized
+expansion. Whether one was exceeded at run time was not measured.
+
+Re-measured for this release, both fixes together: 910 sidecars over the 552 files on cortex-m3
+and cortex-m4, self-contained and `--relocatable`. 900 are identical, and no bound fell.
+
+- From #1206: 5 functions rise by 10 cycles each (`select_i64cmp_973.wat`'s four, and
+  `vcr_reach_001_i64_pair.wat` `cmp64`).
+- From #1635: `const_cse.wat` `neg` rises 21 -> 23 cycles and `small3` rises 25 -> 26. In both,
+  a constant is now materialized again where the hoist was declined.
 
 ### Also in this release
 
