@@ -1,0 +1,29 @@
+# v0.89.2 patch release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS, in either spelling. A figure parked here is a
+# second copy of a measured number, and a second copy is how a number goes stale.
+# The patch's numbers live in the artifact records that measured them and in the
+# CHANGELOG section that cites those records. Re-derive; do not read a count here.
+#
+# WHY A PATCH. Silent wrong code on the default Cortex-M path, from unrelated
+# defects, each execution-verified against the reference runtime before and
+# after its fix.
+#
+# From an external reporter: a constant-reuse rewrite parked a constant in a
+# parameter register that was still live past a forward branch, so the stores
+# through that parameter landed at linear-memory address zero.
+#
+# Found internally: the optimized path's branch-size estimator
+# under-counted the wide forms of a few instructions, so a do-while loop whose
+# condition sat in a high register branched back to the wrong place and hung.
+# The estimator was made exact, and every estimator-resolved branch landing is
+# now checked against the real encoder at compile time.
+#
+# WHAT THIS RELEASE IS NOT. It moves no compliance envelope, adds no lowering,
+# and closes no issue that a record here does not deliver. It does not fix the
+# ARM-state (Cortex-R) branch defects; the ARM-state bytes of the affected
+# functions change here and are still wrong. Lanes planned for the next minor stay planned there.
+#
+# The anchor moves to the predecessor's tag in this pull request, across every
+# site the ledger pins, with the counts read off the gate's own printed anchor
+# line.

@@ -1,0 +1,96 @@
+artifacts:
+  - id: RQ-89-EST1206
+    type: system-req
+    release: v0.89.2
+    status: implemented
+    title: "The optimized path's branch-size estimator agrees with the encoder on every operand class, and every estimator-resolved branch landing is validated at compile time"
+    description: >
+        #1206: on the default optimized Thumb-2 path (self-contained
+        cortex-m3/m4/m4f/m7/m7dp), a do-while `br_if` back-edge landed 6 bytes
+        short whenever the loop condition's SetCond was allocated to R8. The
+        branch landed after the loop's increment, so any loop needing a second
+        iteration hung, and the compile exited 0 with no warning. ir_to_arm
+        resolves branch displacements by summing estimate_arm_byte_size, a
+        hand-written copy of the encoder's size rules; it sized `SetCond
+        { rd: R8 }` at 6 bytes against the encoder's 10 (`ite; mov.w; mov.w`)
+        and `cmp r8, #0` at 2 against 4 (`cmp.w`).
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: on the
+        v0.89.1 binary, run scripts/repro/optloop_backedge_1206_differential.py
+        (do-while loops on the self-contained default image, cortex-m3/m4/m4f/
+        m7/m7dp, against wasmtime) and report how many runs hang or differ.
+        CITATION: #1206 is where the matter was analysed. The cortex-r5 (A32)
+        bytes this change moves are wrong before and after it; PR #1646 traced
+        that to the optimized path's numeric BOffset/BCondOffset (a Thumb
+        halfword displacement the A32 encoder encodes as a word count), judged
+        it distinct from #1639 (A32 label branches) and did not file it. This
+        record closes neither. The numbers name where each matter was
+        analysed, not an open scope.
+    tags:
+      - feature-loop
+      - codegen
+      - wrong-code
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1206"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2026-12-31 every optimized-path do-while back-edge lands on its
+        loop head on every Thumb-2 Cortex-M profile, executed against wasmtime
+        by a wired differential that is red before the fix; the estimator
+        agrees with the encoder on an exhaustive operand-class sweep; and the
+        refuting command above is RUN FIRST and its result reported either way
+      landed: "PR #1646 (head 0641694f; commit 46e7a4c8 in the v0.89.2 assembly) - #1206 - DELIVERED. The refuting command was run first, at release prep on the v0.89.1 tag's binary (000187e8), and CONFIRMED the defect: 1595 of 3200 runs hang or differ. PR #1646 had confirmed it on main df847a16 the same way (1595 of 3200), and with the #1206 pin removed the parity oracle reds there on control_loop.wast countdown (countdown(5) and countdown(10) time out). An exhaustive operand-class sweep of estimator against encoder found further under- and over-counts (high-rd I64SetCond/I64SetCondZ, Cmp imm out of the 8-bit form, Asr/Lsl/Lsr/Ror wide forms, Add/Sub imm and SP forms, register-offset loads/stores, sub-word short forms, I64Extend32S, MemorySize, Push/Pop with R8-R12, Cmn shifted-register); every row is now exact. Fix: estimate_arm_byte_size is exact for every row; estimator_encoder_agreement.rs replaces its hand table with the sweep (no allowlist; a variant comparing zero ops fails); the encoder REFUSES Cmn with a shifted-register operand instead of emitting a 16-bit NOP (no emitter builds that form); and the new validate_estimated_branch_landings (arm_backend.rs) refuses any compile whose estimator-resolved Thumb branch does not reach the instruction it was resolved to in the real encoder's layout. Branch sizes still come from the estimator; the new check is what makes a future size disagreement a refusal instead of a misplaced branch. scripts/stale_pin_check.py books a table whose every entry carries a declared reason slug as reason-charged, because removing #1206's pin left the parity table charged to no issue and the old gate refused it."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime under unicorn. New
+        wired oracle scripts/repro/optloop_backedge_1206_differential.py
+        (ci.yml trap-semantics-oracle job, routed through oracle_run.py): 8
+        exports x 80 vectors x cortex-m3/m4/m4f/m7/m7dp on the self-contained
+        default image, every export asserted to take the OPTIMIZED path, each
+        run under a 100k-instruction budget. RED in PR #1646 on main df847a16:
+        1595 of 3200 hang; the R7 control export passes 400 of 400. GREEN in
+        PR #1646: 3200 of 3200. RE-RUN AT RELEASE PREP, 2026-11-05, on the
+        v0.89.2 assembly branch, both fixes together: the assembly's debug
+        binary prints `PASS: 3200 emulations match wasmtime`, rc 0; the
+        v0.89.1 tag's binary (000187e8) on the same oracle prints `FAIL: 1595
+        of 3200`, rc 1. crates/synth-backend/tests/estimator_encoder_agreement.rs
+        (the exhaustive sweep plus the named case
+        high_register_setcond_and_cmp_imm_1206) is red on main and green on
+        the fix. selector_parity_197_differential.py: with the #1206 pin
+        still present the fix reds it ("PINNED DIVERGENCE VANISHED ...
+        #1206"); with the pin removed it passes, and main with the pin removed
+        reds on countdown. Potency, from PR #1646: reverting the SetCond arm
+        makes the landing check refuse 7 of 8 exports; reverting only the
+        MemorySize arm refuses msize_loop; reverting SetCond with the landing
+        check disabled gives 1420 of 3200 hangs. REACH, measured in PR #1646
+        over the spec suite and the in-repo corpora: on each of
+        cortex-m3/m4/m4f/m7/m7dp 8 functions change bytes and 0 newly refuse,
+        all 8 executed (7 by the new oracle, control_loop countdown by the
+        parity oracle); cortex-m4 --relocatable, RV32 and AArch64 change 0.
+        cortex-r5 (A32) changes the same 8 functions, which are wrong before
+        and after this change (see the CITATION). RE-MEASURED AT RELEASE PREP
+        for both fixes together (552 in-repo source files: the spec suite's
+        top-level .wast, tests/, scripts/repro, examples; v0.89.1 tag binary
+        vs the assembly's): with SYNTH_CONST_CSE=0 on both sides, exactly
+        these 8 functions differ on each of cortex-m3/m4/m4f/m7/m7dp/m55
+        self-contained and on cortex-r5, so every other changed function in
+        that census belongs to RQ-89-R0CLOBBER; 0 modules and 0 functions
+        newly refuse on any of the 13 configurations measured. WCET: of 530 --emit-wcet
+        sidecars compared in PR #1646 on cortex-m3/m4, 6 functions' bounds rose
+        by 10 cycles each and none fell (cited from PR #1646, not re-measured
+        here); all 6 contain a high-rd I64SetCond
+        that the previous estimator priced at 12 bytes against an encoded 16,
+        so the earlier bounds were computed from an under-sized expansion.
+        Whether an earlier bound was exceeded at run time was not measured.
+        Pins moved with paired controls in PR #1646 and re-derived for both
+        fixes together in the assembly PR: known_open_pins and
+        known_open_pinned_cases (the #1206 pin closed), the
+        SYNTH-ARCH-LOUD-DECLINE opt-wrong count, the oracle wiring check's
+        exact emulation floor, the home-alias audit (fixture growth only) and
+        the mutation ledger's anchors.

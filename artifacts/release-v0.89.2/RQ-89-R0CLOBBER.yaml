@@ -1,0 +1,108 @@
+artifacts:
+  - id: RQ-89-R0CLOBBER
+    type: system-req
+    release: v0.89.2
+    status: implemented
+    title: "The const-CSE hoist never parks a constant in a register that is live past its straight-line segment"
+    description: >
+        #1635's reporter (cpetig) compiled a Rust sret function (param 0 = the
+        out-pointer, in r0) with --target cortex-m7 --relocatable --all-exports
+        --embedder-data-init --embedder-global-init on 0.88.0 and 0.89.0. r0 is
+        read only after a forward block join, and the emitted code wrote
+        `movw r0, #0` before it, so the trailing i32.store pair landed at
+        linear-memory 0/4 instead of the caller's slot. Silent wrong code: the
+        compile exited 0.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: compile the
+        reporter's bump.wasm (from the issue's bump.zip) on v0.89.0 with the
+        command above, disassemble `func_0`, and execute it under unicorn
+        against wasmtime with a non-zero out pointer, comparing linear memory;
+        then repeat with SYNTH_CONST_CSE=0.
+        CITATION: #1635 is where the matter was analysed. #663 (param liveness
+        across loop back-edges) was the reporter's hypothesis and is NOT the
+        mechanism; it is not reopened by this record. #1639 is where the
+        ARM-state (cortex-r5) branch defect that keeps A32 out of the oracle
+        was analysed; this record does not close it. The numbers name where
+        each matter was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - codegen
+      - wrong-code
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1635"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2026-12-31 the reporter's bump function executes bit-identical
+        to wasmtime, whole linear memory compared, on every Cortex-M leg of
+        the new differential, which is red before the fix; and the refuting
+        command above is RUN FIRST and its result reported either way
+      landed: "PR #1637 (head 66167571; commit ca9b7866 in the v0.89.2 assembly) - #1635 - DELIVERED. The refuting command was run first in PR #1637 on v0.89.0 and main and CONFIRMED the defect: the disassembly matches the report (`movw r0, #0` at 0x74, then `add.w ip, r0, #4` / `str.w r3, [fp, r0]`), and executed under unicorn 32 of 64 vectors write the result at 0/4 instead of the out pointer. With SYNTH_CONST_CSE=0 the same binary emits no r0 def and runs green, so the selector's param reservation (#193/#663) was correct and the defect is in the post-selection const-CSE extending-alias hoist: liveness::free_reg_over accepted a holder register that was neither read nor redefined before the END of its straight-line segment, and that segment ended at the forward branch while r0 was still read after the join. Fix: a holder is free only if the segment redefines it after the window's last use; falling off the segment end declines. ARM only (apply_const_cse runs only from arm_backend.rs); every leg of the differential was red before the fix: cortex-m3/m4f/m7/m7dp/m55 --relocatable, cortex-m7 --no-optimize, and cortex-m3/m7dp self-contained."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime under unicorn. New
+        wired oracle scripts/repro/r0_clobber_1635_differential.py (ci.yml,
+        routed through oracle_run.py): the reporter's rustc bump verbatim
+        (fixture scripts/repro/r0_clobber_1635.wat, only an export added) plus
+        the reporter's reduced min, 8 vectors x 8 legs (cortex-m3/m4f/m7/m7dp/
+        m55 --relocatable with the embedder flags, cortex-m7 --no-optimize,
+        cortex-m3/m7dp self-contained), the whole linear memory compared after
+        every call. RED in PR #1637 on v0.89.0 and main 69de522a: 32 of 64
+        mismatch. GREEN in PR #1637: 64 of 64. Potency, from PR #1637:
+        re-accepting the segment fall-off reds the differential 32 of 64 and
+        reds the unit test
+        const_cse_hoist_declines_holder_live_past_segment_end_1635
+        (crates/synth-synthesis/src/liveness.rs). RE-RUN AT RELEASE PREP,
+        2026-11-05, on the v0.89.2 assembly branch, both fixes together: the
+        assembly's debug binary prints `all 64 green`, rc 0; the v0.89.1 tag's
+        binary (000187e8) on the same oracle prints `32 of 64 mismatched`,
+        rc 1, and the same v0.89.1 binary with SYNTH_CONST_CSE=0 (the
+        workaround for earlier versions) prints `all 64 green`, rc 0. REACH,
+        measured in PR #1637 over 242 in-repo modules x 8
+        configs, base vs change: 0 compile-status flips; 29 functions change
+        bytes, of which only const_cse.wat large3/neg/small3 grow (+6/+8/+2
+        B, the hoist declined at the function's final segment) and the rest
+        change only which holder register they use; 28 of the 29 were
+        executed against wasmtime, and the 29th (`store_below` in
+        aarch64_call_valstack_rq63, which calls an import) was checked by
+        diff only: its holder moves r1 -> r5, and r5 is redefined by the
+        following ldr. The const_cse_reduction_242 default golden was
+        re-pinned after const_cse_differential.py re-ran green on the new
+        bytes. Pins moved with paired controls in PR #1637 and re-derived for
+        both fixes together in the assembly PR: the oracle wiring check's
+        exact emulation floor, the home-alias audit's three population pins
+        (fixture growth only), and the mutation ledger's anchors. REACH,
+        RE-MEASURED AT RELEASE PREP for both fixes together over a different
+        population (552 in-repo source files: the spec suite's top-level
+        .wast, tests/, scripts/repro, examples; 13 configurations: cortex-m3/
+        m4/m4f/m7/m7dp/m55 self-contained, cortex-m4 and cortex-m7 --no-optimize,
+        cortex-m4 --relocatable, cortex-m7 --relocatable with the embedder
+        flags with and without --no-optimize, cortex-m4f --relocatable
+        --native-pointer-abi, cortex-r5; v0.89.1 tag binary vs the
+        assembly's): 0 modules and 0 functions newly refuse. Every changed
+        function outside RQ-89-EST1206's 8 is unchanged with SYNTH_CONST_CSE=0
+        on both sides, so it belongs to this fix. Counted once per function
+        (a .wat and its .wasm twin, a .wast and its example copy, and a
+        func_N alias of an export are one), 29 distinct Thumb functions
+        change. 26 change on the self-contained images and were executed on
+        cortex-m4 self-contained against wasmtime, return values compared
+        (the self-contained boot sweep for the scripts/repro ones, RESULT:
+        PASS; the same harness over the tests/ and examples/ modules, 624
+        vectors, 0 mismatch, 30 out-of-bounds trap-miss rows inside the
+        documented no-trap envelope). The other 3 (anti_pinch init and
+        set_target, stack_canary_687 set_canary) change only under
+        --native-pointer-abi and were checked by diff only: the holder moves
+        from r0 to r4/r5 (init, set_target), or from r0/r3 to r6/r7 with one
+        re-materialization (set_canary), each a register the function saves
+        and restores. anti_pinch tick also changes on the relocatable legs,
+        where it was likewise checked by diff only (holder r1 -> r4).
+        cortex-r5 (A32) emits the same clobber and the fix removes it; 20
+        distinct A32 functions (same counting) change bytes from this fix,
+        none executed. A32 is not
+        an oracle leg: its label branches execute wrongly for an unrelated
+        reason (#1639, open).

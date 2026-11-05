@@ -1,0 +1,52 @@
+artifacts:
+  - id: RQ-89-ARCHMODEL10
+    type: system-req
+    release: v0.89.2
+    status: proposed
+    title: "The architecture model step of the feature loop is filed for the v0.89.2 patch, not inherited from v0.89.1"
+    description: >
+        The feature loop's architecture steps (spar AADL model and the WIT
+        derived from it) have been marked not applicable release after release;
+        a recurring not-applicable is a backlog item, not an exemption. The
+        release tooling reads a patch as its own release (RQ-89-PATCHVER), so
+        v0.89.1's filing (RQ-89-ARCHMODEL9) does not discharge v0.89.2's slot,
+        and this record re-files it for this patch.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Run the
+        recurring-filing check and loop_conformance_check.py v0.89.2; if either
+        finds a current filing or the step performed, the lane is satisfied.
+        CITATION: #1136 is where the matter was analysed. The number names where
+        it was analysed, not an open scope.
+
+        RE-MEASURED AT PATCH PREP, 2026-11-05: FILED, NOT PERFORMED. The
+        patch's compiler changes (RQ-89-R0CLOBBER, RQ-89-EST1206) correct a
+        post-selection rewrite and a branch-size estimator, and add a
+        compile-time branch-landing check inside the existing ARM backend;
+        they add no component, interface or connection an architecture model
+        would carry. No spar AADL model and no derived WIT was produced in
+        v0.89.2. The step's blocker, spar#445 (undeclared property sets are
+        accepted silently), is OPEN; `gh -R pulseengine/spar issue view 445`
+        reports it last updated 2026-09-03. #1136 is OPEN; `gh issue view 1136`
+        reports it last updated 2026-09-22. Awaited: spar#445 upstream, or a
+        maintainer decision to model without it.
+    tags:
+      - feature-loop
+      - process
+      - aadl
+      - spar
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1136"
+      verification-track: manual
+      disposition: deferred
+      done-when: >
+        manual:2027-03-31 the architecture model step of the feature loop is
+        filed or performed, not waived again — delivered with an execution-
+        verified result where the lane is a wrong-code fix, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN FIRST
+        and its result reported either way
