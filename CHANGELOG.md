@@ -97,6 +97,11 @@ None of these changes compiler output.
 - **CI configuration** (`RQ-89-ACTIONPIN`): most GitHub Actions references are pinned to commit
   SHAs (PR #1626), and dependabot groups version-locked families and all action pins into one PR
   each (PR #1625, PR #1627). Two release tags are still referenced by tag; the record lists them.
+  As merged, that config did not parse: Dependabot rejects a top-level `groups:` key, so every
+  commit after #1625 carried a failing `.github/dependabot.yml` check and no grouped update applied.
+  This release defines each group under the updates entry it belongs to (`github-actions-all`
+  under github-actions; `wasm-tools-family`, now including `wast`, and `wasmtime` under cargo), and
+  Dependabot's own check parses it (folded in from PR #1628).
 
 ## [0.89.0] - 2026-10-28
 
