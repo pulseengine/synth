@@ -1542,6 +1542,10 @@ fn compile_wasm_to_arm(
     // machinery actually shaped (bridge-reported). Everything else — the
     // direct path, non-exhausted optimized functions — stays byte-identical
     // flag-on (the `vcr_ver_001_gate_242` lock's contract).
+    // #1206: set when `ir_to_arm` produced this stream, i.e. when its numeric
+    // branch displacements were resolved by summing `estimate_arm_byte_size`.
+    // `validate_estimated_branch_landings` checks exactly those branches.
+    let estimator_resolved = std::cell::Cell::new(false);
     let (arm_instrs, post_exhaust) = if config.no_optimize
         || config.relocatable
         || has_br_table
@@ -1624,6 +1628,7 @@ fn compile_wasm_to_arm(
             .and_then(|(opt_ir, _cfg, _stats)| bridge.ir_to_arm(&opt_ir, num_params as usize))
         {
             Ok(arm_ops) => {
+                estimator_resolved.set(true);
                 if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
                     eprintln!(
                         "[path-debug] optimized (ir_to_arm ok) func={}",
@@ -1970,8 +1975,18 @@ fn compile_wasm_to_arm(
     // re-deciding, so the offsets branches were resolved against and the
     // offsets the stream actually gets are the same numbers by construction.
     let (arm_instrs, planned_islands) = if use_thumb2 {
+        // #1206: snapshot the estimator's layout of the optimized path's numeric
+        // branches BEFORE the fixed point, so the landing check below can compare
+        // the instruction each branch was resolved to against the instruction it
+        // actually reaches in the real-encoder layout.
+        let estimated = estimator_resolved
+            .get()
+            .then(|| EstimatedBranches::snapshot(&arm_instrs));
         let (resolved, islands) =
             place_literal_islands_fixedpoint(arm_instrs, &encoder, !islands_disabled)?;
+        if let Some(estimated) = &estimated {
+            validate_estimated_branch_landings(estimated, &resolved, &encoder, !islands_disabled)?;
+        }
         // SC-5 (#740/#930): hard-gate every branch target onto the
         // instruction-start set of the final stream — both codegen paths
         // funnel through here. See `validate_branch_targets`.
@@ -3098,6 +3113,124 @@ fn validate_branch_targets(
                 positions[i], target
             ));
         }
+    }
+    Ok(())
+}
+
+/// #1206: the optimized path's numeric branches, as `ir_to_arm` sized them.
+///
+/// `ir_to_arm` resolves every branch displacement by summing
+/// `synth_synthesis::estimate_arm_byte_size`, a separate hand-written sizing
+/// of the Thumb-2 encoder's output (synth-synthesis cannot see the encoder,
+/// which lives here).
+/// When the mirror under-sizes an instruction inside a branch span, the branch
+/// lands on the WRONG INSTRUCTION START — the #1206 back-edge landed 6 bytes
+/// short, after the loop's increment, and the loop never terminated. The SC-5
+/// gate cannot see that: the wrong target is still an instruction boundary.
+struct EstimatedBranches {
+    /// Estimated byte position of each instruction, plus the end position.
+    est_pos: Vec<i64>,
+    /// (instruction index, halfword displacement) of each numeric branch.
+    branches: Vec<(usize, i32)>,
+}
+
+impl EstimatedBranches {
+    fn snapshot(instrs: &[ArmInstruction]) -> Self {
+        let mut est_pos = Vec::with_capacity(instrs.len() + 1);
+        let mut branches = Vec::new();
+        let mut cur = 0i64;
+        for (i, ins) in instrs.iter().enumerate() {
+            est_pos.push(cur);
+            cur += match &ins.op {
+                ArmOp::Label { .. } => 0,
+                op => synth_synthesis::estimate_arm_byte_size(op) as i64,
+            };
+            if let ArmOp::BOffset { offset } | ArmOp::BCondOffset { offset, .. } = &ins.op {
+                branches.push((i, *offset));
+            }
+        }
+        est_pos.push(cur);
+        Self { est_pos, branches }
+    }
+}
+
+/// #1206: every estimator-resolved branch must reach, in the REAL-ENCODER
+/// layout of the stream that is emitted, the instruction it was resolved to.
+///
+/// This derives the check from the shipped bytes rather than trusting the
+/// mirror: positions come from `island_walk`, the walk the emit loop obeys,
+/// so a mirror drift on ANY op — including one outside the exhaustive
+/// `estimator_encoder_agreement` sweep's domain — refuses the compile instead
+/// of shipping a branch to the wrong instruction. Instruction indices are
+/// stable across the label/island fixed point (it rewrites ops in place).
+fn validate_estimated_branch_landings(
+    estimated: &EstimatedBranches,
+    resolved: &[ArmInstruction],
+    encoder: &ArmEncoder,
+    islands_enabled: bool,
+) -> Result<(), String> {
+    if estimated.branches.is_empty() {
+        return Ok(());
+    }
+    let n = resolved.len();
+    if estimated.est_pos.len() != n + 1 {
+        return Err(format!(
+            "#1206 branch-landing check: the stream changed length across label \
+             resolution ({} -> {n} instructions) — refusing to emit unchecked branches",
+            estimated.est_pos.len() - 1
+        ));
+    }
+    let (pos, _) = island_walk(resolved, encoder, islands_enabled)?;
+    let mut real: Vec<i64> = pos.iter().map(|&p| p as i64).collect();
+    let end = match resolved.last() {
+        Some(last) => {
+            let len = encoder
+                .encode(&last.op)
+                .map_err(|e| format!("#1206 branch-landing size probe failed: {e}"))?
+                .len();
+            real.last().copied().unwrap_or(0) + len as i64
+        }
+        None => 0,
+    };
+    real.push(end);
+    for &(i, offset) in &estimated.branches {
+        // Thumb branch semantics: target = branch_pc + 4 + 2*offset.
+        let est_target = estimated.est_pos[i] + 4 + 2 * offset as i64;
+        let real_target = real[i] + 4 + 2 * offset as i64;
+        let intended: Vec<usize> = (0..=n)
+            .filter(|&j| estimated.est_pos[j] == est_target)
+            .collect();
+        if intended.iter().any(|&j| real[j] == real_target) {
+            continue;
+        }
+        let (lo, hi) = match intended.first() {
+            Some(&j) if j > i => (i, j),
+            Some(&j) => (j, i),
+            None => (i, i),
+        };
+        let drift: Vec<String> = (lo..hi.min(n))
+            .filter_map(|k| {
+                let est = estimated.est_pos[k + 1] - estimated.est_pos[k];
+                let got = real[k + 1] - real[k];
+                (est != got).then(|| format!("{:?} sized {est}, encodes {got}", resolved[k].op))
+            })
+            .collect();
+        return Err(format!(
+            "#1206 branch-landing check: the optimized-path branch at byte 0x{:x} was \
+             resolved against the size estimator to {} but reaches 0x{real_target:x} in \
+             the encoded stream — the estimator mis-sizes an instruction it spans ({}). \
+             Refusing to emit a branch to the wrong instruction.",
+            real[i],
+            match intended.first() {
+                Some(&j) => format!("instruction {j} (0x{:x})", real[j]),
+                None => format!("estimated byte 0x{est_target:x}, not an instruction start"),
+            },
+            if drift.is_empty() {
+                "no per-instruction drift found inside the span".to_string()
+            } else {
+                drift.join("; ")
+            }
+        ));
     }
     Ok(())
 }

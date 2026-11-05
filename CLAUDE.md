@@ -393,8 +393,9 @@ frozen and oracle-gated every step:
   (v0.47): canonical const-bound counted loops (const init/step/bound, head- or
   bottom-test, nested-multiplicative, memory-writing bodies) are PROVEN by a
   conservative symbolic walk over the final stream (`wcet_loops.rs`, real-
-  encoder byte layout — NOT the estimator, whose high-reg `SetCond` sizes
-  drift) and bounded `trip × per-op worst cases`; `--wcet-hints`
+  encoder byte layout — NOT the estimator, which drifted on high-reg
+  `SetCond` until EST1206 (#1206) made it exhaustively encoder-checked) and
+  bounded `trip × per-op worst cases`; `--wcet-hints`
   (`synth-wcet-hints-v1`, UNTRUSTED scry seam) entries are verified against
   synth's own derived trip and REJECTED with machine reasons
   (`hint-below-derived-trip` / `hint-unverifiable-induction`) otherwise —

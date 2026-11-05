@@ -364,11 +364,13 @@ pub(crate) fn analyze_loops(
 ) -> LoopAnalysis {
     // Byte positions from the REAL encoder — the SAME source of truth
     // `resolve_label_branches` computed the `BOffset`/`BCondOffset` halfword
-    // displacements against. (The `estimate_arm_byte_size` estimator is NOT
-    // exact for every op — e.g. a high-register `SetCond` widens its IT-block
-    // MOVs to 10 bytes where the estimate is 6 — and a drifted layout would
-    // reconstruct branch targets off-by-N, so the estimator must not be used
-    // here.) Any op the encoder refuses → conservatively unproven.
+    // displacements against. (The `estimate_arm_byte_size` estimator was NOT
+    // exact for every op — a high-register `SetCond` was sized 6 where the
+    // encoder emits 10, the #1206 hang — and a drifted layout would
+    // reconstruct branch targets off-by-N. EST1206 made it agree with the
+    // encoder over an exhaustive operand-class sweep, but only for the ops
+    // that sweep covers; the real encoder stays the source here.) Any op the
+    // encoder refuses → conservatively unproven.
     let n = instrs.len();
     let encoder = crate::arm_encoder::ArmEncoder::new_thumb2();
     let mut sizes: Vec<i64> = Vec::with_capacity(n);
