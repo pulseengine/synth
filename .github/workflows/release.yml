@@ -101,11 +101,14 @@ jobs:
             os: ubuntu-24.04-arm
             archive: tar.gz
             musl: true
-          # x86_64-apple-darwin cross-compiles on the arm64 macos-14
+          # x86_64-apple-darwin cross-compiles on the arm64 macos-15
+          # runner (macos-14 was retired by GitHub: on 2026-11-06 the v0.89.2
+          # Release run was refused with "The configuration
+          # 'macos-14-arm64-us-default' is not supported" on two attempts)
           # runner — matches pulseengine/rivet and pulseengine/witness
           # (both Rust-workspace CLIs, the closest analogs to synth).
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             archive: tar.gz
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -202,7 +205,7 @@ jobs:
       # Execution per target, re-derived when the arm64 musl entry landed
       # rather than carried: linux-x86_64-gnu, linux-x86_64-musl,
       # linux-aarch64-MUSL and both macOS tarballs run NATIVELY
-      # (x86_64-apple-darwin under Rosetta 2 on the arm64 macos-14 runner,
+      # (x86_64-apple-darwin under Rosetta 2 on the arm64 macos-15 runner,
       # aarch64-linux-musl on the arm64 runner its matrix entry names); only
       # the cross-built aarch64-linux-GNU tarball needs qemu-user, against
       # the gcc-aarch64-linux-gnu sysroot its glibc link requires. All SIX
