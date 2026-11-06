@@ -17,7 +17,7 @@ reinterpret_pair_1603_differential.py, not here):
   * eq/ne/lt/le/gt/ge    — VCMP.F64 + VMRS + IT (NaN-audited ordered set)
   * f64.convert_i32_s/u  — VCVT staged through the dest's own S-alias
   * i32.trunc_f64_s/u    — #709-twin domain guard: TRAPS (UDF) out of range
-  * f64.load/f64.store   — two PROVEN bounds-checked 4-byte integer accesses
+  * f64.load/f64.store   — two 4-byte integer accesses (a store's ONE guard covers all 8 bytes, #1642)
   * f64 live ACROSS calls, f64 PARAMS in AAPCS-VFP D-homes (back-fill
     layout), and the marshalled call boundary (D0/D1 args, D0 results)
 

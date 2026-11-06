@@ -1238,7 +1238,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 449329 \
+            --exact-emulation-floor 449416 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -2841,6 +2841,15 @@ jobs:
       # #752 top-of-space rows) x BOTH codegen paths, wasmtime ground truth.
       - name: Run software-bounds wraparound oracle (#752/#377, thumb2 both paths)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/safety_bounds_377_differential.py
+      # #1642: an out-of-bounds f64.store must write NOTHING before it traps.
+      # cortex-m7dp lowered it as two 4-byte stores, each behind its own guard,
+      # so a store straddling the end of memory wrote its low word and THEN
+      # trapped. 29 vectors (straddles size-7..size-1, through offset=4 and a
+      # MOVW-materialized offset=4096, fully-OOB, wraparound, plus f64.load and
+      # i64.store controls) x 3 images, trap AND the whole memory image vs
+      # wasmtime; the base binary got 24 of 87 wrong.
+      - name: Run f64.store partial-write oracle (#1642, cortex-m7dp, 3 images)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/f64_store_partial_1642_differential.py
       - name: Run bulk-memory operand-clobber oracle (#677, thumb2)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/bulk_local_clobber_677_differential.py
       - name: Run bulk-memory mask-coverage oracle (#679, thumb2)

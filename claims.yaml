@@ -3453,9 +3453,23 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 133
+        value: 131
         baseline: 27
         waivers:
+          - to: 131
+            reason: >-
+              RQ-90-F64STORE (#1642): 133 -> 131. Not a growth waiver — TWO
+              pins CLOSED BY A FIX, not deleted or merged: the
+              spec-execution baseline's 2 `#1642` entries (memory_trap.wast
+              269 and 282, cortex-m7dp, --safety-bounds software) each
+              reported BASELINE ENTRY NOW PASSES on the fix, because
+              f64.store's ONE bounds guard now covers all 8 bytes before
+              either word is written, so a straddling store traps with memory
+              untouched and both reads are pass:value. Executed, red on main
+              c365a154 (24 of 87) and green on the fix (87 of 87), by
+              scripts/repro/f64_store_partial_1642_differential.py against
+              wasmtime. An entry is still required because 131 remains above
+              the baseline of 27.
           - to: 133
             reason: >-
               RQ-90-CALLINDTYPE (#1643): 145 -> 133. Not a growth waiver —
@@ -3648,7 +3662,9 @@ claims:
         # entries at one directive each.
         # RQ-90-CALLINDTYPE (#1643): 211 -> 199, the 12 closed `#1643`
         # spec-execution entries at one directive each.
-        value: 199
+        # RQ-90-F64STORE (#1642): 199 -> 197, the 2 closed `#1642`
+        # spec-execution entries at one directive each.
+        value: 197
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the six tables in the
       # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in
@@ -4764,7 +4780,14 @@ claims:
     #   both legs instead of executing as missing-trap failures. Net
     #   449173 -> 449329 (+156). Paired control: `449329` rc=0 and `449173`
     #   rc=1 on this tree; `449329` rc=1 and `449173` rc=0 on main e318b728.
-    text: "--exact-emulation-floor 449329"
+    # v0.90 F64STORE (#1642): 449329 -> 449416 (+87, re-derived on the tree
+    #   rebased over CALLINDTYPE). f64_store_partial_1642_differential.py
+    #   declares `emulations >= 87` (87 measured via oracle_run.py: 29 vectors
+    #   x 3 cortex-m7dp images); spec_exec_1636_differential.py's declared
+    #   floor is unchanged (49121, measured on the branch binary).
+    #   Paired control: `449416` rc=0 and `449329` rc=1 on this tree;
+    #   `449416` rc=1 and `449329` rc=0 on main c365a154.
+    text: "--exact-emulation-floor 449416"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'
