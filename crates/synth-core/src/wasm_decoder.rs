@@ -332,6 +332,16 @@ pub struct CallIndirectGuards {
     /// The expected-type immediate the dispatch compares against. Empty
     /// when `type_ids_byte_offset` is `None` (no sidecar — never consulted).
     pub type_class_ids: Vec<u32>,
+    /// #1643: per expected type index, `Some(reason)` when the runtime
+    /// type check (an EQUALITY compare of class ids — the #676 sidecar CMP
+    /// on ARM, every aarch64 dispatch) would be UNSOUND for that type: some
+    /// initialized slot of the funcref region holds a function whose type
+    /// is a STRICT declared subtype of it (GC `sub`), which the call must
+    /// REACH (WASM 3.0 §4.4.8 checks `<:`, not `=`), but whose class id
+    /// differs. Such a dispatch declines loudly instead of false-trapping.
+    /// `None` / an out-of-range index = equality is exact for that type
+    /// (always the case in a module that declares no supertypes).
+    pub runtime_check_reject: Vec<Option<String>>,
 }
 
 impl CallIndirectGuards {
@@ -502,6 +512,17 @@ pub struct DecodedModule {
     /// check, which must compare SIGNATURES, not raw type indices (a module
     /// may carry structurally-identical duplicate types).
     pub type_signatures: Vec<String>,
+    /// #1643: per type index, the dense canonical class ids (the same ids
+    /// [`Self::structural_type_class_ids`] yields) of its STRICT declared
+    /// supertypes, nearest first — the GC proposal's `sub $t` chain, as
+    /// canonicalised by wasmparser's validator. Empty for a type with no
+    /// declared supertype (every pre-GC type).
+    pub type_strict_supers: Vec<Vec<u32>>,
+    /// #1643: why the type section could not be canonicalised (iso-recursive
+    /// type equivalence needs a VALID type section) — `Some` makes every
+    /// `call_indirect` decline loudly: without canonical ids no type check,
+    /// compile-time or runtime, is sound for rec groups / declared subtypes.
+    pub type_canon_error: Option<String>,
     /// #851 lane L3: result (return-value) count per FUNCTION TYPE, indexed by
     /// type index — the `call_indirect` analogue of [`Self::func_result_counts`].
     /// An indirect call's callee is known only by its static type, so the
@@ -570,7 +591,20 @@ impl DecodedModule {
     /// [`CallIndirectGuards::type_class_ids`] exposes this only when the ARM
     /// heterogeneous-table sidecar exists; the aarch64 dispatch type-checks
     /// UNCONDITIONALLY, so it reads the ids from here.
+    ///
+    /// #1643: the class is the type's CANONICAL identity under the WASM 3.0
+    /// (GC proposal) iso-recursive type equivalence — `type_signatures`
+    /// holds wasmparser's canonical type id for every type when the type
+    /// section validates, so two `(func)` types in different `rec` groups,
+    /// or a `sub` (non-final) and a `final` `(func)`, are DIFFERENT classes,
+    /// while equivalent rec groups share one. For a pre-GC type section
+    /// (singleton groups, final, no supertypes) this partition is exactly
+    /// the structural one. When canonicalisation failed every id is 0, which
+    /// no dispatch accepts as an expected class (both lowerings decline).
     pub fn structural_type_class_ids(&self) -> Vec<u32> {
+        if self.type_canon_error.is_some() {
+            return vec![0; self.type_signatures.len()];
+        }
         let mut class_of_sig: std::collections::HashMap<&str, u32> =
             std::collections::HashMap::new();
         let mut ids: Vec<u32> = Vec::with_capacity(self.type_signatures.len());
@@ -579,6 +613,74 @@ impl DecodedModule {
             ids.push(*class_of_sig.entry(sig.as_str()).or_insert(next));
         }
         ids
+    }
+
+    /// #1643: `sub <: sup` for two type indices — the WASM 3.0 `call_indirect`
+    /// type check (§4.4.8 checks the callee's type is a SUBTYPE of the
+    /// expected one, reflexively). Equal canonical classes, or `sup`'s class
+    /// on `sub`'s declared supertype chain. `false` for an unknown index.
+    pub fn type_is_subtype(&self, sub: u32, sup: u32, class: &[u32]) -> bool {
+        let (Some(&cs), Some(&cp)) = (class.get(sub as usize), class.get(sup as usize)) else {
+            return false;
+        };
+        if cs == 0 || cp == 0 {
+            return false;
+        }
+        cs == cp
+            || self
+                .type_strict_supers
+                .get(sub as usize)
+                .is_some_and(|s| s.contains(&cp))
+    }
+
+    /// #1643: see [`CallIndirectGuards::runtime_check_reject`] — per expected
+    /// type, `Some(reason)` when an initialized funcref-region slot holds a
+    /// STRICT subtype of it (an equality compare would false-trap a call the
+    /// spec must make). Over-approximates across ALL tables (sound: it only
+    /// adds declines, and only in modules that declare supertypes).
+    pub fn runtime_check_reject(&self) -> Vec<Option<String>> {
+        let class = self.structural_type_class_ids();
+        let slot_types: Vec<u32> = self
+            .funcref_region_slots()
+            .iter()
+            .flatten()
+            .filter_map(|&f| self.func_type_indices.get(f as usize).copied())
+            .collect();
+        (0..self.type_signatures.len() as u32)
+            .map(|t| {
+                slot_types
+                    .iter()
+                    .find(|&&s| class.get(s as usize) != class.get(t as usize)
+                        && self.type_is_subtype(s, t, &class))
+                    .map(|&s| {
+                        format!(
+                            "a table slot holds a function of type {s}, a strict                              declared subtype of expected type {t}: the call must                              reach it (§4.4.8 checks `<:`), but the runtime type                              check compares one class id for equality (#1643)"
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    /// #1643: the EXPECTED-type class id for a dispatch that type-checks by an
+    /// EQUALITY compare (every aarch64 `call_indirect`): the canonical class,
+    /// or 0 — which the lowering declines loudly — for a type with a strict
+    /// declared subtype in the funcref region (see
+    /// [`Self::runtime_check_reject`]). Identical to
+    /// [`Self::structural_type_class_ids`] in any module declaring no
+    /// supertypes.
+    pub fn dispatch_type_class_ids(&self) -> Vec<u32> {
+        let reject = self.runtime_check_reject();
+        self.structural_type_class_ids()
+            .into_iter()
+            .enumerate()
+            .map(|(t, c)| {
+                if reject.get(t).is_some_and(|r| r.is_some()) {
+                    0
+                } else {
+                    c
+                }
+            })
+            .collect()
     }
 
     /// #851 lane L3: the structural class id of every funcref-region slot, in
@@ -620,15 +722,25 @@ impl DecodedModule {
         // module does not declare) poisons EVERY table: `table.init` (itself
         // an unsupported op) or a computed offset could land its entries
         // anywhere, so no table's image is verifiable.
-        let global_poison: Option<&'static str> = self
-            .elem_segments
-            .iter()
-            .any(|seg| seg.offset.is_none() || seg.table_index as usize >= self.table_sizes.len())
-            .then_some(
-                "element segment is not statically verifiable (passive/declared \
-                 segment, non-const offset, out-of-range table, or non-`ref.func` \
-                 entry)",
-            );
+        let canon_poison: Option<String> = self.type_canon_error.as_ref().map(|e| {
+            format!(
+                "the type section could not be canonicalised (iso-recursive type \
+                 equivalence, #1643): {e}"
+            )
+        });
+        let global_poison: Option<String> = canon_poison.or_else(|| {
+            self.elem_segments
+                .iter()
+                .any(|seg| {
+                    seg.offset.is_none() || seg.table_index as usize >= self.table_sizes.len()
+                })
+                .then(|| {
+                    "element segment is not statically verifiable (passive/declared \
+                     segment, non-const offset, out-of-range table, or non-`ref.func` \
+                     entry)"
+                        .to_string()
+                })
+        });
 
         // #676: structural signature classes — see
         // [`Self::structural_type_class_ids`]. These feed the type-id sidecar
@@ -646,8 +758,13 @@ impl DecodedModule {
         let mut base_words: Option<u32> = Some(0);
         for (n, &size) in self.table_sizes.iter().enumerate() {
             let base_byte_offset = base_words.and_then(|w| w.checked_mul(4));
-            let (type_reject, has_null_slots, slot_class_ids) =
-                self.table_type_reject(n as u32, size, global_poison, n_types, &type_class_ids);
+            let (type_reject, has_null_slots, slot_class_ids) = self.table_type_reject(
+                n as u32,
+                size,
+                global_poison.as_deref(),
+                n_types,
+                &type_class_ids,
+            );
             // #676: heterogeneous = the image is statically known and its
             // INITIALIZED slots span >= 2 distinct structural classes (null
             // slots — id 0 — don't count; a sparse homogeneous table stays
@@ -705,6 +822,11 @@ impl DecodedModule {
             type_ids_image,
             type_class_ids: if type_ids_byte_offset.is_some() {
                 type_class_ids
+            } else {
+                Vec::new()
+            },
+            runtime_check_reject: if type_ids_byte_offset.is_some() {
+                self.runtime_check_reject()
             } else {
                 Vec::new()
             },
@@ -838,10 +960,13 @@ impl DecodedModule {
                             "table {n} entry references function {f} with no known type"
                         ));
                     };
-                    if self.type_signatures.get(fty as usize) != self.type_signatures.get(t) {
+                    // #1643: §4.4.8 (WASM 3.0) — the callee's type must be a
+                    // SUBTYPE of the expected type (reflexive): canonical
+                    // class equality, or a declared supertype chain.
+                    if !self.type_is_subtype(fty, t as u32, type_class_ids) {
                         return Some(format!(
-                            "table {n} entry (function {f}, type {fty}) has a different \
-                             signature than expected type {t}"
+                            "table {n} entry (function {f}, type {fty}) is not a \
+                             subtype of expected type {t}"
                         ));
                     }
                 }
@@ -864,6 +989,61 @@ impl DecodedModule {
             .collect();
         (rejects, has_null_slots, slot_class_ids)
     }
+}
+
+/// #1643: canonicalise a type section's contents under the WASM 3.0 (GC
+/// proposal) iso-recursive type equivalence — wasmparser's validator, the
+/// same canonicalisation wasmtime's type check rests on, never a hand
+/// mirror. The section is validated ALONE (a module of just this type
+/// section), so the rest of the module's validity cannot move the verdict.
+///
+/// Returns, per type index, a dense 1-based canonical class id
+/// (first-occurrence order: equivalent types — e.g. structurally identical
+/// rec groups — share one) and the dense ids of its strict declared
+/// supertypes, nearest first. `Err` = the section does not validate; the
+/// caller then declines every `call_indirect` (no type check is sound).
+pub fn canonicalize_types(
+    section: &[u8],
+) -> std::result::Result<(Vec<u32>, Vec<Vec<u32>>), String> {
+    let mut module = Vec::with_capacity(section.len() + 16);
+    module.extend_from_slice(b"\0asm\x01\0\0\0");
+    module.push(1); // type section id
+    let mut len = u32::try_from(section.len()).map_err(|_| "type section too large".to_string())?;
+    loop {
+        let byte = (len & 0x7f) as u8;
+        len >>= 7;
+        if len == 0 {
+            module.push(byte);
+            break;
+        }
+        module.push(byte | 0x80);
+    }
+    module.extend_from_slice(section);
+    let types = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&module)
+        .map_err(|e| e.to_string())?;
+    let types = types.as_ref();
+    let n = types.core_type_count_in_module();
+    let mut dense: HashMap<wasmparser::types::CoreTypeId, u32> = HashMap::new();
+    let mut intern = |id| {
+        let next = dense.len() as u32 + 1;
+        *dense.entry(id).or_insert(next)
+    };
+    let ids_raw: Vec<_> = (0..n).map(|i| types.core_type_at_in_module(i)).collect();
+    let ids: Vec<u32> = ids_raw.iter().map(|&id| intern(id)).collect();
+    let supers = ids_raw
+        .iter()
+        .map(|&id| {
+            let mut chain = Vec::new();
+            let mut cur = types.supertype_of(id);
+            while let Some(s) = cur {
+                chain.push(intern(s));
+                cur = types.supertype_of(s);
+            }
+            chain
+        })
+        .collect();
+    Ok((ids, supers))
 }
 
 /// Decode a WASM binary and extract functions, memory, and data segments
@@ -921,6 +1101,10 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     let mut elem_segments: Vec<ElemSegmentInfo> = Vec::new();
     let mut func_type_indices: Vec<u32> = Vec::new();
     let mut type_signatures: Vec<String> = Vec::new();
+    // #1643: canonical (iso-recursive) type identity — see `canonicalize_types`.
+    let mut type_strict_supers: Vec<Vec<u32>> = Vec::new();
+    let mut type_canon_error: Option<String> = None;
+    let mut type_canon: Option<(Vec<u32>, Vec<Vec<u32>>)> = None;
     // #394 Tier-1.x: function index → developer-facing name from the wasm
     // `name` custom section (function-names subsection). Applied to
     // `FunctionOps.debug_name` after the parse loop — the custom section
@@ -957,6 +1141,16 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
 
         match payload {
             Payload::TypeSection(reader) => {
+                // #1643: canonicalise the whole section first (iso-recursive
+                // equivalence needs every rec group at once).
+                match canonicalize_types(
+                    wasm_bytes
+                        .get(reader.range().start as usize..reader.range().end as usize)
+                        .unwrap_or_default(),
+                ) {
+                    Ok(c) => type_canon = Some(c),
+                    Err(e) => type_canon_error = Some(e),
+                }
                 // Record the parameter count of each function type so calls can
                 // marshal the right number of arguments (issue #195).
                 for rec_group in reader {
@@ -1048,13 +1242,39 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         // #642: canonical structural signature for the
                         // closed-world call_indirect type check (compares
                         // SIGNATURES so duplicate types stay interchangeable).
-                        type_signatures.push(match &sub_ty.composite_type.inner {
-                            wasmparser::CompositeInnerType::Func(f) => {
+                        //
+                        // #1643: when the type section canonicalises, the
+                        // signature IS the canonical class (WASM 3.0 type
+                        // equality is iso-recursive, not structural: a
+                        // `(func)` in a different rec group, or a `sub`
+                        // non-final one, is a DIFFERENT type).
+                        let k = type_signatures.len();
+                        type_signatures.push(match (&type_canon, &sub_ty.composite_type.inner) {
+                            (Some((ids, _)), _) if k < ids.len() => format!("canon:{}", ids[k]),
+                            (_, wasmparser::CompositeInnerType::Func(f)) => {
                                 format!("{:?}->{:?}", f.params(), f.results())
                             }
-                            other => format!("non-func:{other:?}"),
+                            (_, other) => format!("non-func:{other:?}"),
                         });
+                        type_strict_supers.push(
+                            type_canon
+                                .as_ref()
+                                .and_then(|(_, s)| s.get(k).cloned())
+                                .unwrap_or_default(),
+                        );
                     }
+                }
+                // #1643: the canonical table must cover EXACTLY the types the
+                // reader yielded — otherwise some signature fell back to the
+                // structural string, which is not sound for GC types.
+                if let Some((ids, _)) = &type_canon
+                    && ids.len() != type_signatures.len()
+                {
+                    type_canon_error = Some(format!(
+                        "canonicalised {} types but the section holds {}",
+                        ids.len(),
+                        type_signatures.len()
+                    ));
                 }
             }
             Payload::ImportSection(reader) => {
@@ -1596,6 +1816,8 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         func_type_indices,
         type_result_counts: type_block_arity.iter().map(|&(_p, r)| r as u32).collect(),
         type_signatures,
+        type_strict_supers,
+        type_canon_error,
         wsc_facts: wsc_facts.unwrap_or_default(),
         start_function,
     })
@@ -4538,5 +4760,113 @@ mod tests {
              preceding table's size is unknown (#650)"
         );
         assert_eq!(guards.tables[1].table_size, Some(1));
+    }
+
+    // ---- #1643: iso-recursive type equivalence + declared subtyping ----
+
+    fn classes_1643(wat: &str) -> (DecodedModule, Vec<u32>) {
+        let m = decode_wasm_module(&wat::parse_str(wat).expect("parse")).expect("decode");
+        assert_eq!(m.type_canon_error, None);
+        let c = m.structural_type_class_ids();
+        (m, c)
+    }
+
+    /// type-rec.wast:170 — EQUIVALENT rec groups share a class (the call
+    /// must succeed); 179/188 — the same `(func)` at a different position
+    /// in its group, or in a group of a different shape, is a DIFFERENT
+    /// class (the call must trap).
+    #[test]
+    fn test_1643_rec_group_canonical_classes() {
+        let (_, c) = classes_1643(
+            "(module (rec (type $f1 (func)) (type (struct))) \
+                     (rec (type $f2 (func)) (type (struct))))",
+        );
+        assert_eq!(c[0], c[2], "equivalent rec groups: same class");
+        let (_, c) = classes_1643(
+            "(module (rec (type $f1 (func)) (type (struct))) \
+                     (rec (type (struct)) (type $f2 (func))))",
+        );
+        assert_ne!(c[0], c[3], "different position in group: different class");
+        let (_, c) = classes_1643(
+            "(module (rec (type $f1 (func)) (type (struct))) (rec (type $f2 (func))))",
+        );
+        assert_ne!(c[0], c[2], "different group shape: different class");
+        // Two `(func)` in ONE group are distinct types (positions differ).
+        let (_, c) = classes_1643("(module (rec (type $a (func)) (type $b (func))))");
+        assert_ne!(c[0], c[1]);
+        // A singleton explicit rec group IS the plain type.
+        let (_, c) = classes_1643("(module (type (func)) (rec (type (func))))");
+        assert_eq!(c[0], c[1]);
+    }
+
+    /// Pre-GC modules keep the structural partition AND its first-occurrence
+    /// numbering (the #676 sidecar ids — byte identity by construction).
+    #[test]
+    fn test_1643_pre_gc_classes_unchanged() {
+        let (_, c) = classes_1643(
+            "(module (type (func (param i32) (result i32))) (type (func)) \
+                     (type (func (param i32) (result i32))) (type (func (param f64))) \
+                     (type (func)))",
+        );
+        assert_eq!(c, vec![1, 2, 1, 3, 2]);
+    }
+
+    /// type-subtyping.wast:290 — `sub` (non-final) and `sub final` `(func)`
+    /// are different types; 318 — a declared chain: `$t3 <: $t2 <: $t1`.
+    #[test]
+    fn test_1643_subtyping() {
+        let (m, c) = classes_1643("(module (type $t1 (sub (func))) (type $t2 (sub final (func))))");
+        assert_ne!(c[0], c[1]);
+        assert!(!m.type_is_subtype(1, 0, &c) && !m.type_is_subtype(0, 1, &c));
+        let (m, c) = classes_1643(
+            "(module (type $t1 (sub (func))) (type $t2 (sub $t1 (func))) \
+                     (type $t3 (sub $t2 (func))) (type $t4 (sub final (func))))",
+        );
+        assert!(m.type_is_subtype(1, 0, &c) && m.type_is_subtype(2, 0, &c));
+        assert!(m.type_is_subtype(2, 1, &c) && m.type_is_subtype(2, 2, &c));
+        assert!(!m.type_is_subtype(1, 2, &c) && !m.type_is_subtype(0, 1, &c));
+        assert!(!m.type_is_subtype(1, 3, &c) && !m.type_is_subtype(3, 0, &c));
+    }
+
+    /// The guards the ARM lowering consumes for type-subtyping.wast:318's
+    /// module: a closed world under `<:` for $t1/$t2 (no runtime check), a
+    /// runtime EQUALITY check for $t3/$t4 (exact: no slot is a strict
+    /// subtype of them), and the equality reject is raised only where a
+    /// strict subtype sits in the table.
+    #[test]
+    fn test_1643_guards_subtype_closed_world() {
+        let (m, _) = classes_1643(
+            "(module (type $t1 (sub (func))) (type $t2 (sub $t1 (func))) \
+                     (type $t3 (sub $t2 (func))) (type $t4 (sub final (func))) \
+                     (func $f2 (type $t2)) (func $f3 (type $t3)) \
+                     (table (ref null $t2) (elem $f2 $f3)))",
+        );
+        let g = m.call_indirect_guards();
+        let tr = &g.tables[0].type_reject;
+        assert_eq!(tr[0], None, "$t2,$t3 <: $t1");
+        assert_eq!(tr[1], None, "$t2,$t3 <: $t2");
+        assert!(tr[2].is_some() && tr[3].is_some());
+        assert!(g.tables[0].runtime_type_check, "two classes in the table");
+        assert!(g.runtime_check_reject[0].is_some() && g.runtime_check_reject[1].is_some());
+        assert_eq!(g.runtime_check_reject[2], None);
+        assert_eq!(g.runtime_check_reject[3], None);
+        let d = m.dispatch_type_class_ids();
+        assert_eq!((d[0], d[1]), (0, 0), "aarch64 declines $t1/$t2");
+        assert!(d[2] != 0 && d[3] != 0);
+    }
+
+    /// type-rec.wast:179 — a homogeneous table whose only slot is a
+    /// structurally identical `(func)` of a DIFFERENT rec group no longer
+    /// verifies (pre-#1643 it did, and the call ran).
+    #[test]
+    fn test_1643_guards_rec_group_mismatch_rejects() {
+        let (m, _) = classes_1643(
+            "(module (rec (type $f1 (func)) (type (struct))) \
+                     (rec (type (struct)) (type $f2 (func))) \
+                     (table funcref (elem $f1)) (func $f1 (type $f1)))",
+        );
+        let g = m.call_indirect_guards();
+        assert_eq!(g.tables[0].type_reject[0], None);
+        assert!(g.tables[0].type_reject[3].is_some());
     }
 }

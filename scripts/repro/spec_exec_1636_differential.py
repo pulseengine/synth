@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 49125
+# ci-checks: emulations >= 49121
 """RQ-90-SPECEXEC (#1636) — the official spec suite's `assert_return` and
 `assert_trap` directives, EXECUTED on Cortex-M images under unicorn and held to
 the spec's own expected results, against an exact ratchet baseline.
@@ -186,30 +186,22 @@ CONTRACT = [(A.UC_ARM_REG_R9, "R9"), (A.UC_ARM_REG_R10, "R10"), (A.UC_ARM_REG_R1
 # ---------------------------------------------------------------------------
 SUITE_FILES = 257
 DIRECTIVES_TOTAL = 57588
-EXECUTED_FLOOR = {"cortex-m4": 11636, "cortex-m7dp": 24044}
+# RQ-90-CALLINDTYPE (#1643): 11636 -> 11634 and 24044 -> 24042. The fix
+# makes type-rec.wast:183/192 (`run`) a LOUD closed-world decline on both
+# legs (notrep:symbol-missing), where they had executed as missing-trap
+# failures: the two directives per leg left the executed set for a named
+# decline, not for a silent skip, and their 4 KNOWN entries left with them.
+EXECUTED_FLOOR = {"cortex-m4": 11634, "cortex-m7dp": 24042}
 
 # ---------------------------------------------------------------------------
 # KNOWN — the ratchet baseline of FAILING directives.
 # (leg, file, line, col, outcome) -> issue. Exact both directions.
 # ---------------------------------------------------------------------------
 KNOWN = {
-    # #1643 (found by RQ-90-SPECEXEC) — WRONG CODE: synth's call_indirect signature check
-    # compares function types STRUCTURALLY. Under the GC proposal's iso-
-    # recursive types, `(func)` in two different rec groups, or a supertype
-    # in a `sub` chain, is a DIFFERENT type and the call must trap "indirect
-    # call type mismatch". synth accepts these modules and makes the call.
-    ('cortex-m4', 'type-rec.wast', 183, 1, 'fail:missing-trap'): '#1643',  # run
-    ('cortex-m4', 'type-rec.wast', 192, 1, 'fail:missing-trap'): '#1643',  # run
-    ('cortex-m4', 'type-subtyping.wast', 314, 1, 'fail:missing-trap'): '#1643',  # fail1
-    ('cortex-m4', 'type-subtyping.wast', 315, 1, 'fail:missing-trap'): '#1643',  # fail2
-    ('cortex-m4', 'type-subtyping.wast', 345, 1, 'fail:missing-trap'): '#1643',  # fail1
-    ('cortex-m4', 'type-subtyping.wast', 346, 1, 'fail:missing-trap'): '#1643',  # fail2
-    ('cortex-m7dp', 'type-rec.wast', 183, 1, 'fail:missing-trap'): '#1643',  # run
-    ('cortex-m7dp', 'type-rec.wast', 192, 1, 'fail:missing-trap'): '#1643',  # run
-    ('cortex-m7dp', 'type-subtyping.wast', 314, 1, 'fail:missing-trap'): '#1643',  # fail1
-    ('cortex-m7dp', 'type-subtyping.wast', 315, 1, 'fail:missing-trap'): '#1643',  # fail2
-    ('cortex-m7dp', 'type-subtyping.wast', 345, 1, 'fail:missing-trap'): '#1643',  # fail1
-    ('cortex-m7dp', 'type-subtyping.wast', 346, 1, 'fail:missing-trap'): '#1643',  # fail2
+    # #1643's 12 entries (type-rec.wast 183/192, type-subtyping.wast
+    # 314/315/345/346, both legs) LEFT with RQ-90-CALLINDTYPE: the four
+    # type-subtyping directives are pass:trap, the two type-rec `run`
+    # directives a loud closed-world decline (notrep:symbol-missing).
     # #1642 (found by RQ-90-SPECEXEC) — WRONG CODE under --safety-bounds software:
     # f64.store is lowered as two 32-bit stores, EACH with its own guard, and
     # the low word is stored before the high word's guard runs. An f64.store

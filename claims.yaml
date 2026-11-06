@@ -1931,9 +1931,26 @@ claims:
         # 7e170d62, then re-derived over #1602, #1607 and #1618).
         # MEMK64 (#1622, v0.89.1): 21193 -> 21360, waived below (chained
         # after RQ-89-MEMLAYER6's waiver).
-        value: 21360
+        # RQ-90-CALLINDTYPE (#1643): 21360 -> 21373, waived below (chained
+        # after MEMK64's waiver).
+        value: 21373
         baseline: 17897
         waivers:
+          - to: 21373
+            reason: >-
+              RQ-90-CALLINDTYPE (Refs #1643): 21360 -> 21373 (+13, measured
+              after cargo fmt on c20d37b2; paired control: 21373 holds and
+              21360 reds here, the reverse on main c20d37b2). A NEW soundness
+              decision, replacing no arm and adding no wildcard: the #676
+              runtime type check is an EQUALITY compare of one class id, and
+              WASM 3.0 §4.4.8 checks SUBTYPING, so resolve_runtime_type_check
+              now refuses loudly when the expected type has a strict declared
+              subtype in the funcref region (the decoder computes the verdict;
+              the selector only reads it). Without it a GC `sub` callee that
+              the spec must reach would trap. Gated by execution:
+              call_indirect_type_1643_differential.py (146 calls vs wasmtime
+              with GC on, 3 legs; dropping this refusal reds 8), and the
+              selector unit test test_1643_call_indirect_equality_unsound_declines.
           - to: 21360
             reason: >-
               MEMK64 (Refs #1622): 21193 -> 21360 (+167, measured after cargo
@@ -3163,7 +3180,11 @@ claims:
         # MEMK64 (#1622): 31973 -> 32163: +167 code (see selector_lines_code,
         # waived there) and +23 test module (the `_1622` width-inference unit
         # test, red with the MultiMemory unwrap removed). No waiver.
-        value: 32163
+        # RQ-90-CALLINDTYPE (#1643): 32163 -> 32234: +13 code (see
+        # selector_lines_code, waived there) and +58 test module (the
+        # `_1643` equality-refusal unit test, plus the `runtime_check_reject`
+        # field in three existing #676 test literals). No waiver.
+        value: 32234
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -3432,9 +3453,24 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 145
+        value: 133
         baseline: 27
         waivers:
+          - to: 133
+            reason: >-
+              RQ-90-CALLINDTYPE (#1643): 145 -> 133. Not a growth waiver —
+              TWELVE pins CLOSED BY A FIX, not deleted or merged: the
+              spec-execution baseline's 12 `#1643` entries (type-rec.wast
+              183/192 and type-subtyping.wast 314/315/345/346, on cortex-m4
+              and cortex-m7dp) each reported BASELINE ENTRY NOW PASSES on the
+              fix, because call_indirect now compares canonical iso-recursive
+              type identities and checks declared subtyping. The four
+              type-subtyping directives per leg are pass:trap; the two
+              type-rec `run` directives per leg are a loud closed-world
+              decline (notrep:symbol-missing). Executed, red on main e318b728
+              and green on the fix, by scripts/repro/call_indirect_type_1643_differential.py
+              against wasmtime with GC on (95 divergences -> 0). An entry is
+              still required because 133 remains above the baseline of 27.
           - to: 145
             reason: >-
               RQ-90-SPECEXEC (#1636): 78 -> 145 (+67, re-derived on the tree rebased over EST1206). THE PIN DEBT DID NOT
@@ -3610,7 +3646,9 @@ claims:
         # EST1206 (#1206): 146 -> 144, the closed #1206 pin's 2 cases.
         # RQ-90-SPECEXEC (#1636): 144 -> 211, the spec-execution baseline's
         # entries at one directive each.
-        value: 211
+        # RQ-90-CALLINDTYPE (#1643): 211 -> 199, the 12 closed `#1643`
+        # spec-execution entries at one directive each.
+        value: 199
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the six tables in the
       # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in
@@ -4714,7 +4752,19 @@ claims:
     #   executed action over the 257-file spec suite on cortex-m4 and
     #   cortex-m7dp, float-involved actions in two machine states; seeded, so
     #   deterministic). Paired control in the PR body.
-    text: "--exact-emulation-floor 449173"
+    # v0.90 RQ-90-CALLINDTYPE (#1643): 449173 -> 449329 (+156, re-derived on
+    #   the tree rebased over SPECEXEC). The new
+    #   call_indirect_type_1643_differential.py declares `emulations >= 160`
+    #   (160 measured via oracle_run.py: 146 graded calls + 14 self-contained
+    #   boots — 7 modules x cortex-m4/cortex-m7dp; its 10 loud declines are an
+    #   exact table in the script) and is wired into the self-contained
+    #   call_indirect job. The same fix moves spec_exec_1636_differential.py's
+    #   declared floor 49125 -> 49121 (-4, measured via oracle_run.py on the
+    #   branch binary): type-rec.wast:183/192 now decline loudly (notrep) on
+    #   both legs instead of executing as missing-trap failures. Net
+    #   449173 -> 449329 (+156). Paired control: `449329` rc=0 and `449173`
+    #   rc=1 on this tree; `449329` rc=1 and `449173` rc=0 on main e318b728.
+    text: "--exact-emulation-floor 449329"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

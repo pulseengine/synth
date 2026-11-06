@@ -7126,6 +7126,19 @@ impl InstructionSelector {
                  a compile-time constant — #676"
                 ))
             })?;
+        // #1643: the CMP below is an EQUALITY test; §4.4.8 (WASM 3.0) checks
+        // SUBTYPING. Where a slot holds a strict declared subtype of the
+        // expected type, equality would trap a call the spec makes — decline.
+        if let Some(Some(reason)) = self
+            .call_indirect_guards
+            .runtime_check_reject
+            .get(type_index as usize)
+        {
+            return Err(synth_core::Error::synthesis(format!(
+                "call_indirect (expected type {type_index}, table {table_index}): \
+                 {reason}; refusing to emit an equality-only type check"
+            )));
+        }
         let expected_id = self
             .call_indirect_guards
             .type_class_ids
@@ -12657,6 +12670,7 @@ mod tests {
             type_ids_byte_offset: Some(20), // 5 pointer words
             type_ids_image: vec![1, 2, 1, 0, 0],
             type_class_ids: vec![1, 2],
+            runtime_check_reject: Vec::new(),
         });
         let wasm_ops = vec![
             WasmOp::I32Const(1),
@@ -12680,6 +12694,61 @@ mod tests {
             )),
             "the pseudo-op must carry the runtime type check: {arm:#?}"
         );
+    }
+
+    /// #1643: the runtime check is an EQUALITY compare; §4.4.8 (WASM 3.0)
+    /// checks `<:`. An expected type with a strict declared subtype in the
+    /// table must decline loudly rather than emit a compare that would trap
+    /// a call the spec makes — and the other expected type, whose equality
+    /// is exact, still lowers through the check.
+    #[test]
+    fn test_1643_call_indirect_equality_unsound_declines() {
+        let db = RuleDatabase::new();
+        let guards = synth_core::CallIndirectGuards {
+            tables: vec![synth_core::TableGuards {
+                table_size: Some(2),
+                base_byte_offset: Some(0),
+                type_reject: vec![
+                    Some("mixed signatures".to_string()),
+                    Some("mixed signatures".to_string()),
+                ],
+                has_null_slots: false,
+                runtime_type_check: true,
+            }],
+            type_ids_byte_offset: Some(8),
+            type_ids_image: vec![2, 3],
+            type_class_ids: vec![1, 2],
+            runtime_check_reject: vec![Some("strict subtype in table".to_string()), None],
+        };
+        let ops = |ti| {
+            vec![
+                WasmOp::I32Const(0),
+                WasmOp::CallIndirect {
+                    type_index: ti,
+                    table_index: 0,
+                },
+            ]
+        };
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(Vec::new(), vec![0, 0]);
+        selector.set_call_indirect_guards(guards.clone());
+        let err = selector
+            .select_with_stack(&ops(0), 0)
+            .expect_err("equality is unsound for type 0: must decline");
+        assert!(err.to_string().contains("strict subtype in table"), "{err}");
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(Vec::new(), vec![0, 0]);
+        selector.set_call_indirect_guards(guards);
+        let arm = selector
+            .select_with_stack(&ops(1), 0)
+            .expect("type 1's equality check is exact");
+        assert!(arm.iter().any(|i| matches!(
+            &i.op,
+            ArmOp::CallIndirect {
+                type_check: Some((2, 8)),
+                ..
+            }
+        )));
     }
 
     /// #676: the runtime check declines LOUDLY past its encoding ranges — a
@@ -12712,6 +12781,7 @@ mod tests {
             type_ids_byte_offset: Some(3000), // 3000 + 2000 > 4095
             type_ids_image: vec![1, 2],
             type_class_ids: vec![1],
+            runtime_check_reject: Vec::new(),
         });
         let err = selector
             .select_with_stack(&ops, 0)
@@ -12729,6 +12799,7 @@ mod tests {
             type_ids_byte_offset: Some(8),
             type_ids_image: vec![1, 300],
             type_class_ids: vec![300],
+            runtime_check_reject: Vec::new(),
         });
         let err = selector
             .select_with_stack(&ops, 0)

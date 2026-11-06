@@ -2703,9 +2703,10 @@ pub fn select_typed_cf_calls(
                 let expected = ctx.type_class_ids.get(ti).copied().unwrap_or(0);
                 if expected == 0 {
                     return Err(SelectError(format!(
-                        "call_indirect type {ti} has no structural class id — the \
-                         §4.4.8 signature check cannot be encoded; loud-declining \
-                         (#851)"
+                        "call_indirect type {ti} has no structural class id, or a \
+                         strict declared subtype of it sits in the table (#1643) — \
+                         the §4.4.8 signature check cannot be encoded as one \
+                         compare; loud-declining (#851)"
                     )));
                 }
                 // RQ-61-IMMRANGE (#1072): `expected` is the type guard's CMP
