@@ -1,0 +1,47 @@
+artifacts:
+  - id: RQ-90-BRLANDING
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "validate_estimated_branch_landings has a red-first test"
+    description: >
+        The v0.89.2 cold review (section 7, row 16) found the compile-time
+        branch-landing check that v0.89.2 added survives deletion: removing
+        its call leaves the #1206 differential at PASS and turns nothing red.
+        It needs a test that feeds it a deliberately mis-sized span and
+        asserts the refusal, red with the call removed.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: `git grep
+        -n validate_estimated_branch_landings -- crates`. Any call from a
+        test, or a test that reds when the production call is deleted, refutes
+        it.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree: LIVE. Three hits, all in
+        crates/synth-backend: the definition (src/arm_backend.rs:3166), its
+        one production call (src/arm_backend.rs:1988), and a doc-comment
+        mention (tests/estimator_encoder_agreement.rs:572). No test calls it;
+        it is a private function.
+
+        CITATION: #1656 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1656"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 a test feeds validate_estimated_branch_landings a
+        mis-sized span and asserts the refusal, and deleting the production
+        call turns a required check red — delivered with an execution-verified
+        result where the lane is a wrong-code fix, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN
+        FIRST and its result reported either way

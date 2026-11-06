@@ -1,0 +1,53 @@
+artifacts:
+  - id: RQ-90-NPASTRADDLE
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "A native-pointer-abi access that straddles the zero reservation into a data segment reads both regions"
+    description: >
+        SILENT MISCOMPILE under --native-pointer-abi. An access whose bytes
+        start in the zero reservation below a data segment and run into that
+        segment reads the reservation for the whole access. VCR-VER-003 checks
+        only retargeted relocations, so it cannot see it. PR #1616 (the
+        refusal) was CLOSED UNMERGED on 2026-11-01, so nothing on main
+        addresses this.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: With the
+        committed harness scripts/repro/npa_const_addr_differential.py
+        (h.Linked: cortex-m3 --relocatable --native-pointer-abi, R11 = 0),
+        compile and run `(module (memory (export "mem") 1) (data (i32.const
+        0x2000) "12345678") (func (export "anchor") (result i32) (i32.load
+        (i32.const 0x2000))) (func (export "s_const") (result i32) (i32.load
+        (i32.const 0x1ffe))) (func (export "s_off") (result i32) (i32.load
+        offset=0x1ffe (i32.const 0))))` against wasmtime. If s_const and s_off
+        return 0x32310000, or the compile refuses them, it is gone.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree: LIVE. anchor 0x34333231 = wasmtime
+        (the harness is sound); s_const 0x0 and s_off 0x0 against wasmtime
+        0x32310000; compile clean.
+
+        CITATION: #1604 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1604"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 an access straddling the reservation/segment
+        boundary under --native-pointer-abi returns the reference value or is
+        refused loudly, with an execution differential that covers loads and
+        stores of every width across the boundary, from both a constant
+        address and a constant offset — delivered with an execution-verified
+        result where the lane is a wrong-code fix, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN
+        FIRST and its result reported either way

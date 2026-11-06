@@ -1,0 +1,54 @@
+artifacts:
+  - id: RQ-90-NASELFTEST
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "The recurring-filing check's self-test exercises the patch-release key"
+    description: >
+        The v0.89.1 cold review (G10) found `recurring_na_filing_check.py
+        --self-test` inert to the patch-key class: it stays rc 0 under both
+        the release_key fold and the local key truncation, because it tests
+        the ambiguity refusal, not the patch key. It needs a patch-release
+        case that a key mutant reds.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Apply each
+        mutant to the working tree in turn (release_key in
+        scripts/status_evidence_check.py returning (major, minor) for every
+        patch, and the local `[:2]` truncation the review named) and run
+        `python3 scripts/recurring_na_filing_check.py --self-test`. rc 1 under
+        both mutants refutes it.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree, with this planning PR's v0.90
+        records present (without them the unmutated self-test is itself rc 1,
+        which makes a mutant run discriminate nothing): LIVE, in part.
+        Unmutated, the self-test is rc 0 (6 ok). The local truncation
+        (`parse_release(...)[:2]` in releases_in) leaves BOTH the self-test and
+        the live check at rc 0: inert. The release_key fold (`if p == 0:` ->
+        `if True:`) reds the self-test, but only through its live-tree case
+        (`FAIL the live tree passes`, with the anchor v0.89.2 folded to v0.89);
+        no synthetic case carries a patch release, so the catch depends on the
+        tree's current anchor.
+
+        CITATION: #1653 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1653"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 the self-test carries a patch-release case, and each
+        key mutant the review named turns it red, executed and recorded —
+        delivered with an execution-verified result where the lane is a
+        wrong-code fix, or REFUTED with the measurement that refutes it; and
+        the refuting command above is RUN FIRST and its result reported either
+        way

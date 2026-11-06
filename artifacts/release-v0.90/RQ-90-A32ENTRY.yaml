@@ -1,0 +1,54 @@
+artifacts:
+  - id: RQ-90-A32ENTRY
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "Self-contained A32 images enter A32 code in ARM state"
+    description: >
+        SILENT MISCOMPILE. Self-contained A32 images set the Thumb bit on A32
+        function bodies: on `--target cortex-r5` the entry point and every
+        FUNC symbol are odd, and the default no-target build emits a Cortex-M
+        vector table and a Thumb Reset_Handler that enters the A32 bodies
+        through odd addresses. #598 fixed the Thumb bit on --relocatable
+        objects only. A fix may instead refuse self-contained A32 images, if
+        booting them is out of scope; either way no execution oracle boots one
+        today.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Compile
+        `(module (func (export "add1") (param i32) (result i32) (i32.add
+        (local.get 0) (i32.const 1))))` with `-b arm --target cortex-r5
+        --all-exports` and again with `-b arm --all-exports` (no target), then
+        read `arm-none-eabi-readelf -h -s`. If the entry point and the add1
+        symbol are even on both images (or both refuse), it is gone.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree: LIVE on both. cortex-r5: rc 0,
+        Entry point 0x8001, `add1` FUNC at 0x00008001. No target: rc 0, Entry
+        point 0x81 (Reset_Handler, Thumb), `add1` FUNC at 0x000000a1, and its
+        20 body bytes are A32 words (e92d4070 push, e3a04001, e0805004,
+        e1a00005, e8bd8070).
+
+        CITATION: #1640 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1640"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 a self-contained A32 image enters every A32 body in
+        ARM state (even entry and symbol addresses, an ARM-state reset path),
+        or self-contained A32 is refused loudly, and an oracle boots the
+        cortex-r5 image from its reset entry and checks results against
+        wasmtime — delivered with an execution-verified result where the lane
+        is a wrong-code fix, or REFUTED with the measurement that refutes it;
+        and the refuting command above is RUN FIRST and its result reported
+        either way

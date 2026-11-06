@@ -1,0 +1,51 @@
+artifacts:
+  - id: RQ-90-SPECEXEC
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "The spec suite executes its assert_return and assert_trap directives against an exact ratchet baseline"
+    description: >
+        spec-suite.yml is a compile census over the 257 spec files: it
+        executes none of their directives, so execution correctness has no
+        external oracle in CI. PR #1638 adds an executing runner with an exact
+        baseline. Its draft record is the id this file reserves. PR #1638
+        rebases onto this planning PR and writes its record over this file.
+        Its draft says `issue-scope: outlives`; that value is legal only
+        beside a claiming status, and #1636's last acceptance criterion
+        (required once green on main) is a maintainer decision, so the
+        delivering PR states which.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: `grep -c
+        spec_exec .github/workflows/spec-suite.yml .github/workflows/ci.yml`
+        and `git ls-files scripts/repro | grep -c spec_exec`. Any executing
+        step refutes it.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree: LIVE. Both workflow counts are 0
+        and no spec_exec script is tracked. The runner at pr/1638@5b94dead
+        does execute: on this tree's binary it found the #1642 and #1643
+        defects above.
+
+        CITATION: #1636 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1636"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 the spec suite's assert_return and assert_trap
+        directives are executed against an exact baseline with the executed
+        count asserted non-zero, and whether the job joins the required checks
+        is decided by the maintainer and recorded — delivered with an
+        execution-verified result where the lane is a wrong-code fix, or
+        REFUTED with the measurement that refutes it; and the refuting command
+        above is RUN FIRST and its result reported either way

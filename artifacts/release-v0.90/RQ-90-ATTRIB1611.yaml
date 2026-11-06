@@ -1,0 +1,52 @@
+artifacts:
+  - id: RQ-90-ATTRIB1611
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "A record delivered after its release's tag is attributed to a release that authorises its issue"
+    description: >
+        #1611 is delivered (RQ-89-SWEEPMUTANT, `release: v0.89`, implemented)
+        but OPEN, and no audited release closes it: the record merged after
+        the v0.89.0 tag, so v0.89's ritual ran before it existed, and v0.89.1
+        and v0.89.2 exclude it because it is keyed v0.89. The closure gate
+        reports it only as a WARN. The same shape applies to
+        RQ-89-CENSUSFLOAT, whose `outlives` loses nothing. This lane decides
+        the attribution (relabel, or let the next audited release authorise
+        it) and makes the gap a failure rather than a WARN, or records why
+        not.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: `gh api
+        repos/pulseengine/synth/issues/1611 --jq .state`, `git merge-base
+        --is-ancestor f35d8606 v0.89.0`, and issue_closure_check for v0.89
+        (since v0.88.0), v0.89.1 (since v0.89.0) and v0.89.2 (since v0.89.1),
+        each with --allow-unclosed.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree: LIVE. #1611 is open. f35d8606 is
+        not an ancestor of v0.89.0 (rc 1). The v0.89 audit, rc 0, prints `WARN
+        AUTHORISED BUT STILL OPEN: #1611 — RQ-89-SWEEPMUTANT is delivered`;
+        v0.89.1 (1 authorised) and v0.89.2 (2 authorised) do not name #1611;
+        all three exit 0.
+
+        CITATION: #1611 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1611"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 #1611's closure is authorised by an audited release,
+        and a delivered record that no audited release authorises fails a gate
+        instead of warning — delivered with an execution-verified result where
+        the lane is a wrong-code fix, or REFUTED with the measurement that
+        refutes it; and the refuting command above is RUN FIRST and its result
+        reported either way
