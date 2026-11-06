@@ -202,14 +202,10 @@ KNOWN = {
     # 314/315/345/346, both legs) LEFT with RQ-90-CALLINDTYPE: the four
     # type-subtyping directives are pass:trap, the two type-rec `run`
     # directives a loud closed-world decline (notrep:symbol-missing).
-    # #1642 (found by RQ-90-SPECEXEC) — WRONG CODE under --safety-bounds software:
-    # f64.store is lowered as two 32-bit stores, EACH with its own guard, and
-    # the low word is stored before the high word's guard runs. An f64.store
-    # straddling the end of memory (0xfff9..0xfffc on a 1-page memory) writes
-    # 4 bytes and THEN traps; the spec forbids a partial write. i64.store is
-    # guarded once and is correct (same module, same addresses, no failure).
-    ('cortex-m7dp', 'memory_trap.wast', 269, 1, 'fail:wrong-value'): '#1642',  # i64.load
-    ('cortex-m7dp', 'memory_trap.wast', 282, 1, 'fail:wrong-value'): '#1642',  # f64.load
+    # #1642's 2 entries (memory_trap.wast 269/282, cortex-m7dp) LEFT with
+    # RQ-90-F64STORE: f64.store's ONE bounds guard now covers all 8 bytes
+    # before either word is written, so the reads after the straddling store
+    # see untouched memory and both directives are pass:value.
     # #539-grow-fails — the fixed-SRAM image cannot grow linear memory, so
     # memory.grow returns -1. The spec PERMITS a failing grow; the spec SCRIPT
     # assumes success. An envelope, pinned (as #197 pins it) because each entry

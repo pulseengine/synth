@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-F64STORE
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "An out-of-bounds f64.store under --safety-bounds software writes nothing before it traps"
     description: >
         SILENT MISCOMPILE (a partial write). Under --safety-bounds software an
@@ -36,6 +36,7 @@ artifacts:
     tags:
       - feature-loop
       - bug
+      - wrong-code
     links:
       - type: derives-from
         target: BR-001
@@ -53,3 +54,73 @@ artifacts:
         wrong-code fix, or REFUTED with the measurement that refutes it; and
         the refuting command above is RUN FIRST and its result reported either
         way
+      landed: "PR #1659 (branch f64store) - #1642 - DELIVERED. The refuting command was run first, on main c20d37b2 with a debug build of that tree, and CONFIRMED the defect: PR #1638's runner (5b94dead) `--only memory_trap.wast` executed 180 directives on cortex-m7dp, pass 178 + fail 2 (wrong-value at lines 269 and 282, both baseline entries), and the static disassembly showed the low word's `str.w r2, [fp, r0]` between the `offset+4` guard and the `offset+8` guard. SCOPE, measured: cortex-m7dp is the only target that accepts scalar f64 (cortex-m3/m4/m4f/m7/m55/r5 decline it, #369); every f64 function takes the direct selector on all three invocations (self-contained, --relocatable, --no-optimize; the optimized path declines float ops, #120), and all three emitted the split. f64.load is split the same way but a load that traps on its second guard has no side effect, so it was not wrong and is left unchanged. i64.store on ARM (all three legs) and on RV32 (software and mask) is guarded once; AArch64 stores an f64 with one `str d` behind one guard; memory.fill and memory.copy guard the whole range before the loop. FIX (crates/synth-synthesis/src/instruction_selector/select_with_stack.rs, the F64Store arm): the low word's store carries ONE guard for all 8 bytes (`generate_store_with_bounds_check(.., 8)`, i.e. `software_bounds_guard(addr, offset, 8)`, the same guard i64.store uses), and the high word's store is unguarded behind it. The trap condition is unchanged (the old high-word guard was already `offset+8`); only its position moves, before either word is written. --safety-bounds none and mpu are byte-identical (no guard is emitted there; mpu measured on the --relocatable --embedder-mpu object, the only form it is accepted in). --safety-bounds mask still REFUSES f64.load and f64.store, unchanged: lifting that decline would be new reach and needs its own differential. Selector non-test line count unchanged (net zero)."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime under unicorn. New
+        wired oracle scripts/repro/f64_store_partial_1642_differential.py
+        (ci.yml, routed through oracle_run.py, `emulations >= 87`): 29 vectors
+        (f64.store at offset 0 in bounds, at the exact boundary, every
+        straddle size-7 .. size-1, fully out of bounds, and the wraparound
+        addresses 0xFFFFFFF9/0xFFFFFFFC/0xFFFFFFFF; the straddle reached
+        through offset=4 and through offset=4096, which materializes the
+        guard constant with MOVW; f64.load and i64.store as controls) x 3
+        cortex-m7dp images (self-contained, --relocatable, --no-optimize),
+        comparing the trap, the whole linear memory, the page after it, and
+        the load result. Every stored value differs from the prefill byte at
+        each of its 8 positions, so a partial write is always visible. RED on
+        main c20d37b2: 24 of 87 mismatch, 8 per image, each "trap, but memory
+        differs at 4 bytes" on the straddled low word. GREEN on the branch:
+        87 of 87. Potency: restoring the two 4-byte guards reds it 24 of 87;
+        dropping the 8-byte guard to 4 bytes (high word unguarded) reds it 24
+        of 87 with the trap missing. The --safety-bounds mask decline is
+        pinned in the same script. REFUTING COMMAND, GREEN HALF: PR #1638's
+        runner on the branch binary, `--only memory_trap.wast`, cortex-m7dp
+        180 = pass 180 + fail 0; the runner then reports its two #1642
+        baseline entries as passing, which is the expected red of that table.
+        #1638 merged first, so THIS PR drops those two entries: rebased onto
+        main c365a154 and run as spec-suite.yml's job runs it (oracle_run.py,
+        both legs, 57588 directives), the branch binary reports exactly two
+        BASELINE ENTRY NOW PASSES (memory_trap.wast 269 and 282, cortex-m7dp)
+        and nothing else; with them removed it is green, baseline 55 -> 53
+        entries, executed counts and declared floor (emulations 49121)
+        unchanged. known_open_pins 133 -> 131 (waiver: two pins closed by the
+        fix) and known_open_pinned_cases 199 -> 197, each with a paired
+        control. The same runner over the whole
+        corpus on the cortex-m7dp leg (24044 directives executed) fails 32 on
+        the branch, all other baseline entries, and its only reds are those
+        two entries; on main c20d37b2 the same leg fails 34, and across all
+        57588 ledger rows the only two outcomes that differ between main and
+        the branch are memory_trap.wast 269 and 282 (fail:wrong-value ->
+        pass:value). REACH, measured over 2358 modules (scripts/repro/*.wat
+        and every text module of tests/spec-testsuite and tests/wast) x 12
+        configurations (cortex-m7dp and cortex-m4, software and none,
+        self-contained, --relocatable and --no-optimize), main c20d37b2 vs the
+        branch. 2358 is the INPUT set; most of it does not compile for these
+        targets, and the compiled populations in the configurations whose
+        bytes moved are 1021 modules (7705 functions) self-contained and
+        --no-optimize and 926 modules (7486 functions) --relocatable. 0
+        modules newly refused, 0 functions lost or gained, and bytes change
+        ONLY on cortex-m7dp under software. There, 41 distinct
+        functions shrink (16 B per f64.store; 80 B for align.wast's
+        f64_align_switch, which has five), and for every one of the 117
+        (function, image) rows a structural check confirms the whole change is
+        the removed low-word guard with the low-word str moved after the
+        unchanged 8-byte guard. The other changed functions have identical
+        instructions and differ only in a branch target or an absolute
+        address literal (the function table moved 16 B down). Executed: the
+        29 changed functions of scripts/repro/f64_369.wat, through
+        f64_369_differential.py's own vectors compiled with --safety-bounds
+        software, 339 of 339 bit-exact against wasmtime; the 11 changed
+        spec-suite functions are executed by the full cortex-m7dp leg
+        above: 6 are graded directly (29 directives, all pass), and the other
+        5 (float_memory's three f64.store, float_exprs' f64 init and run) run
+        as bare state invokes whose stores the graded f64.load and check
+        directives after them read back (all pass). One function,
+        f64_mem_rt in aarch64_float_completion_851.wat, was checked by the
+        structural diff only. Pins moved, with paired controls: the oracle
+        wiring check's exact emulation floor (+87 over main c365a154's, equal to
+        the new declared floor; re-derived after the rebase onto c365a154,
+        where the new value passes and the old one fails on this branch, and
+        the reverse holds on main c365a154). On c365a154 the new oracle is
+        RED 24 of 87 and GREEN 87 of 87 on the branch. The mutation ledger reanchors
+        with 0 sites moved, and the selector line count is unchanged.

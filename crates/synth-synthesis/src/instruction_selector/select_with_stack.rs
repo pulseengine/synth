@@ -2797,10 +2797,9 @@ impl InstructionSelector {
                     stack.push(StackVal::Double { dreg: dd });
                 }
 
-                // GI-FPU-002 phase 2 (#369): `f64.store` — `VMOV lo, hi, Dm`
-                // then two PROVEN 4-byte integer stores. Mirrors `F64Load`'s
-                // declines (masking / native-pointer static / const static
-                // address / offset overflow).
+                // GI-FPU-002 phase 2 (#369): `f64.store` = `VMOV lo, hi, Dm`; the lo store's
+                // guard covers ALL 8 bytes (#1642: a trapping store writes nothing), the hi
+                // store is unguarded. Declines mirror `F64Load`'s (mask/static/offset).
                 F64Store { offset, .. } => {
                     if self.bounds_check == BoundsCheckConfig::Masking {
                         return Err(synth_core::Error::synthesis(
@@ -2879,14 +2878,15 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     free_vfp_dtemp(&mut vfp_used, &vfp_home, dval);
-                    for (src, off) in [(rlo, *offset as i32), (rhi, *offset as i32 + 4)] {
-                        for op in self.generate_store_with_bounds_check(src, addr, off, 4) {
-                            instructions.push(ArmInstruction {
-                                op,
-                                source_line: Some(idx),
-                            });
-                        }
-                    }
+                    let lo = self.generate_store_with_bounds_check(rlo, addr, *offset as i32, 8);
+                    let hi = ArmOp::Str {
+                        rd: rhi,
+                        addr: MemAddr::reg_imm(Reg::R11, addr, *offset as i32 + 4),
+                    };
+                    instructions.extend(lo.into_iter().chain([hi]).map(|op| ArmInstruction {
+                        op,
+                        source_line: Some(idx),
+                    }));
                     // Store pushes nothing.
                 }
 
