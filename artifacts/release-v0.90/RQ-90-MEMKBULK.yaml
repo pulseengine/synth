@@ -121,13 +121,32 @@ artifacts:
         mpu+--embedder-mpu stays byte-identical to none, so its byte loop
         still writes the in-region bytes it reaches before the first
         out-of-region byte faults; only software gives the no-write trap.
-        Pins moved with paired controls (each holds here and reds on main
-        c20d37b2, the main value the reverse): the selector line ratchet
-        21360 -> 21462 (waiver chained after MEMK64's) and the whole-file count
-        32163 -> 32265; the exact emulation floor, +218 (the new oracle's 214 and
-        mem_isolation_red_1145's +4, as oracle_wiring_check.py reports it); the new
-        claim SYNTH-MEMK-SOFTWARE-BOUNDS-1619 (reds on main's tree). The
-        mutation ledger was re-anchored (two select_with_stack sites moved,
-        0 not found; mutants, controls, ci_subset and UNTESTED unchanged).
+        Pins moved with paired controls, RE-DERIVED on the tree rebased over
+        main bd4d70fc (#1644, #1638, #1658, #1659; each holds here and reds on
+        bd4d70fc, the main value the reverse): the selector line ratchet
+        21373 -> 21475 (+102, waiver chained after RQ-90-CALLINDTYPE's) and the
+        whole-file count 32234 -> 32336; the exact emulation floor
+        +218 over v0.90 F64STORE's (the new oracle's 214 and mem_isolation_red_1145's
+        +4, as oracle_wiring_check.py reports it); the new claim
+        SYNTH-MEMK-SOFTWARE-BOUNDS-1619 (reds on bd4d70fc's tree).
+        known_open_pins (131) and known_open_pinned_cases (197) do not move.
+        The mutation ledger was re-anchored on c20d37b2 (two select_with_stack
+        sites moved, 0 not found; mutants, controls, ci_subset and UNTESTED
+        unchanged); reanchor over bd4d70fc moved 0 more. The spec-execution
+        runner (spec_exec_1636_differential.py, cortex-m4 and cortex-m7dp,
+        default bounds) was run on the rebased branch binary as its spec-suite.yml
+        job runs it: RESULT PASS, 35676 directives executed across the two legs
+        (cortex-m4 11634, cortex-m7dp 24042), measured 49121 = its declared
+        floor; 53 failures, all 53 exact baseline entries, so 0 entries leave
+        the baseline (the runner uses the default bounds mode, which this
+        change leaves byte-identical) and 0 new failures. The byte census was
+        re-run against bd4d70fc over the 268 repo .wat/.wasm files on
+        cortex-m4 (--relocatable none, none+NPA, mpu+--embedder-mpu, mask,
+        software, software+NPA, and self-contained software): every object
+        whose skip set is unchanged is byte-identical, 0 new refusals;
+        under software 6 files and under software+NPA 3 lose memory-k skips.
+        The three oracles that landed on main since c20d37b2 pass on the
+        rebased binary at their declared floors (f64_store_partial_1642 87,
+        call_indirect_type_1643 160, a32_control_flow_1639 1541).
         #1145 is NOT closed by this record: its per-memory isolation
         obligations are carried by RQ-89-MEMLAYER6.

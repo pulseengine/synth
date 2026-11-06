@@ -1986,9 +1986,14 @@ claims:
               three memories of three sizes, every memory and a canary band
               after each end compared with wasmtime; RED at c20d37b2, both
               software legs refused at compile; seven planted mutants each red
-              it, 2 to 70 calls). Object bytes are identical to c20d37b2 under
+              it, 2 to 70 calls). Object bytes were identical to c20d37b2 under
               none, mpu, mask and self-contained software over 295 repo files
-              and 257 spec files.
+              and 257 spec files; re-run against bd4d70fc over the 268 repo
+              .wat/.wasm files on cortex-m4: identical under none, none+NPA,
+              mpu, mask and self-contained software, and under software and
+              software+NPA the only change is functions that newly compile
+              (6 and 3 files, 0 new refusals; every object whose skip set is
+              unchanged is byte-identical).
           - to: 21373
             reason: >-
               RQ-90-CALLINDTYPE (Refs #1643): 21360 -> 21373 (+13, measured
