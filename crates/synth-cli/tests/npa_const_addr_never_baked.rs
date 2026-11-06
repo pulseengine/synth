@@ -281,3 +281,171 @@ fn stack_pointer_modules_relocate_a_local_pointer_and_refuse_the_local_sliver() 
         "the sliver through a local must be refused:\n{log}"
     );
 }
+
+/// RQ-90-NPASHAPE2 (#1568 shape 2): compile with the native-pointer flags plus
+/// `extra`; return (success, whether ANY file exists at `-o`, the log). The
+/// output path is removed first, so an existing file is this run's.
+fn compile_s2(tag: &str, wat: &str, extra: &[&str]) -> (bool, bool, String) {
+    let src = wat_file(&format!("s2_{tag}.wat"), wat);
+    let out = src.with_extension("o");
+    let _ = std::fs::remove_file(&out);
+    let o = Command::new(synth())
+        .args([
+            "compile",
+            src.to_str().unwrap(),
+            "--target",
+            "cortex-m3",
+            "--all-exports",
+            "--relocatable",
+            "--native-pointer-abi",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .args(extra)
+        .output()
+        .expect("run synth");
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    (o.status.success(), out.exists(), log)
+}
+
+/// One segment at 0x1000 in a one-page memory: static region [0x1000, 0x10000).
+fn s2_module(funcs: &str, sp: bool) -> String {
+    let sp = if sp {
+        "(global $sp (mut i32) (i32.const 0x800))"
+    } else {
+        ""
+    };
+    format!(
+        r#"(module (memory (export "mem") 1) {sp}
+  (data (i32.const 0x1000) "\11\22\33\44")
+  (func (export "anchor") (result i32) (i32.load (i32.const 0x1000)))
+  {funcs})"#
+    )
+}
+
+const S2_NEEDLE: &str = "npa-dynamic-static-offset (#1568)";
+
+/// POSITIVE CONTROL (gale's requirement on #1568): a dynamic access whose
+/// memarg offset lands in the static region of a module with no
+/// stack-pointer global refuses the WHOLE module — non-zero exit, no object,
+/// a diagnostic naming the function, the offset and the region bounds — and
+/// `--allow-skipped-exports` does not turn it into a skipped function.
+#[test]
+fn dynamic_offset_into_the_static_region_refuses_the_module() {
+    let wat = s2_module(
+        r#"(func (export "dyn") (param i32) (result i32) local.get 0 i32.load offset=0x1000)"#,
+        false,
+    );
+    for extra in [&[][..], &["--allow-skipped-exports"][..]] {
+        let (ok, wrote, log) = compile_s2("positive", &wat, extra);
+        assert!(!ok, "{extra:?}: must exit non-zero:\n{log}");
+        assert!(!wrote, "{extra:?}: no object may be written:\n{log}");
+        for want in [
+            S2_NEEDLE,
+            "function 'dyn'",
+            "offset 0x1000",
+            "[0x1000, 0x10000)",
+        ] {
+            assert!(log.contains(want), "{extra:?}: missing {want:?}:\n{log}");
+        }
+        assert!(
+            !log.contains(NEEDLE),
+            "{extra:?}: must not be the constant-address guard:\n{log}"
+        );
+        assert!(
+            !log.contains("skipping function"),
+            "{extra:?}: must be a module refusal, not a skip:\n{log}"
+        );
+    }
+}
+
+/// NEAR MISS: one byte below the region (a 4-byte access ending at 0xFFF)
+/// and an offset at the region's upper bound still compile; one byte further
+/// in (0xFFD, straddling into 0x1000) refuses. The execution side is
+/// `scripts/repro/npa_const_addr_differential.py` (`shape2_near`).
+#[test]
+fn dynamic_offset_near_miss_compiles_and_the_edge_refuses() {
+    for (tag, off) in [("below", "0xffc"), ("upper_bound", "0x10000")] {
+        let wat = s2_module(
+            &format!(
+                r#"(func (export "nm") (param i32) (result i32) local.get 0 i32.load offset={off})"#
+            ),
+            false,
+        );
+        let (ok, wrote, log) = compile_s2(tag, &wat, &[]);
+        assert!(ok && wrote, "{tag}: the near miss must compile:\n{log}");
+    }
+    let wat = s2_module(
+        r#"(func (export "edge") (param i32) (result i32) local.get 0 i32.load offset=0xffd)"#,
+        false,
+    );
+    let (ok, wrote, log) = compile_s2("edge", &wat, &[]);
+    assert!(
+        !ok && !wrote && log.contains(S2_NEEDLE) && log.contains("offset 0xffd"),
+        "a 4-byte access straddling into the region must refuse:\n{log}"
+    );
+}
+
+/// The refusal cannot fire in a module WITH a stack-pointer global (positive
+/// init): there the #739 rule relocates an offset at or above the init, and
+/// the same access compiles. Nor on a constant base, which the const-address
+/// fold relocates (`i32.const 0 ... offset=0x1000`).
+#[test]
+fn dynamic_offset_refusal_spares_sp_modules_and_constant_bases() {
+    let dynf =
+        r#"(func (export "dyn") (param i32) (result i32) local.get 0 i32.load offset=0x1000)"#;
+    let (ok, wrote, log) = compile_s2("sp_twin", &s2_module(dynf, true), &[]);
+    assert!(
+        ok && wrote,
+        "with a stack-pointer global it must compile:\n{log}"
+    );
+    let constf = r#"(func (export "c") (result i32) i32.const 0 i32.load offset=0x1000)"#;
+    let (ok, wrote, log) = compile_s2("const_base", &s2_module(constf, false), &[]);
+    assert!(ok && wrote, "a constant base must compile:\n{log}");
+}
+
+/// A memarg offset of 0 bakes nothing — the address is the base alone, the
+/// native-pointer seam — so a dynamic access at offset 0 compiles even when a
+/// data segment starts at address 0 (static region [0x0, 0x10000)); a
+/// non-zero offset in that module still refuses.
+#[test]
+fn dynamic_offset_zero_is_never_refused() {
+    let module = |body: &str| {
+        format!(
+            r#"(module (memory (export "mem") 1)
+  (data (i32.const 0) "\11\22\33\44")
+  (func (export "anchor") (result i32) (i32.load (i32.const 0)))
+  (func (export "f") (param i32) (result i32) {body}))"#
+        )
+    };
+    let (ok, wrote, log) = compile_s2("seg0_off0", &module("local.get 0 i32.load"), &[]);
+    assert!(ok && wrote, "offset 0 must compile:\n{log}");
+    let (ok, wrote, log) = compile_s2("seg0_off4", &module("local.get 0 i32.load offset=4"), &[]);
+    assert!(
+        !ok && !wrote && log.contains(S2_NEEDLE) && log.contains("[0x0, 0x10000)"),
+        "offset 4 into a segment at 0 must refuse:\n{log}"
+    );
+}
+
+/// An IMPORTED memory 0 bounds the region by its declared minimum too, not by
+/// the end of its segments: offset 0x2000 past a 4-byte segment at 0x1000 in a
+/// one-page imported memory refuses with region [0x1000, 0x10000).
+#[test]
+fn dynamic_offset_region_uses_an_imported_memory_declaration() {
+    let wat = r#"(module (import "env" "mem" (memory 1))
+  (data (i32.const 0x1000) "\11\22\33\44")
+  (func (export "anchor") (result i32) (i32.load (i32.const 0x1000)))
+  (func (export "dyn") (param i32) (result i32) local.get 0 i32.load offset=0x2000))"#;
+    let (ok, wrote, log) = compile_s2("imported_mem", wat, &["--embedder-data-init"]);
+    assert!(
+        !ok && !wrote
+            && log.contains(S2_NEEDLE)
+            && log.contains("offset 0x2000")
+            && log.contains("[0x1000, 0x10000)"),
+        "imported memory 0 must bound the region by its declaration:\n{log}"
+    );
+}

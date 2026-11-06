@@ -1239,7 +1239,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 449140 \
+            --exact-emulation-floor 449149 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3059,6 +3059,11 @@ jobs:
       # relocate any static address (executed against wasmtime here, incl.
       # multi_segment_static_data.wat); the non-folding arms must refuse
       # loudly with no object written (counted, #1113 non-vacuity).
+      # RQ-90-NPASHAPE2 (#1568 shape 2): a DYNAMIC access whose memarg offset
+      # lands in the static region of a module with no stack-pointer global
+      # refuses the WHOLE module (20 rows, plain and --allow-skipped-exports,
+      # no object); the near miss and the stack-pointer twin execute against
+      # wasmtime. RED at c20d37b2: the positive control compiles, exit 0.
       - name: Run native-pointer constant-address oracle (cortex-m3/m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_const_addr_differential.py
       # #1574 / #1568: the v0.88 NPACONST before/after figures, re-derived from

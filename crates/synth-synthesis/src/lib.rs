@@ -22,8 +22,8 @@ pub use control_flow::{
     resolve_branches,
 };
 pub use instruction_selector::{
-    ArmInstruction, BoundsCheckConfig, InstructionSelector, RegisterState, SelectionStats,
-    infer_i64_locals, read_before_write_locals, validate_instructions,
+    ArmInstruction, BoundsCheckConfig, InstructionSelector, NpaStaticOffsetHit, RegisterState,
+    SelectionStats, infer_i64_locals, read_before_write_locals, validate_instructions,
     validate_instructions_with_helium,
 };
 pub use optimizer_bridge::{
