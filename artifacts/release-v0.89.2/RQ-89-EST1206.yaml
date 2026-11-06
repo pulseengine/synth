@@ -6,7 +6,8 @@ artifacts:
     title: "The optimized path's branch-size estimator agrees with the encoder on every operand class, and every estimator-resolved branch landing is validated at compile time"
     description: >
         #1206: on the default optimized Thumb-2 path (self-contained
-        cortex-m3/m4/m4f/m7/m7dp), a do-while `br_if` back-edge landed 6 bytes
+        cortex-m3/m4/m4f/m7/m7dp/m55, every Thumb-2 Cortex-M profile --target
+        accepts), a do-while `br_if` back-edge landed 6 bytes
         short whenever the loop condition's SetCond was allocated to R8. The
         branch landed after the loop's increment, so any loop needing a second
         iteration hung, and the compile exited 0 with no warning. ir_to_arm
@@ -19,13 +20,15 @@ artifacts:
         refutation is a legitimate outcome, reported with numbers: on the
         v0.89.1 binary, run scripts/repro/optloop_backedge_1206_differential.py
         (do-while loops on the self-contained default image, cortex-m3/m4/m4f/
-        m7/m7dp, against wasmtime) and report how many runs hang or differ.
+        m7/m7dp/m55, against wasmtime) and report how many runs hang or differ.
         CITATION: #1206 is where the matter was analysed. The cortex-r5 (A32)
-        bytes this change moves are wrong before and after it; PR #1646 traced
-        that to the optimized path's numeric BOffset/BCondOffset (a Thumb
-        halfword displacement the A32 encoder encodes as a word count), judged
-        it distinct from #1639 (A32 label branches) and did not file it. This
-        record closes neither. The numbers name where each matter was
+        bytes this change moves are wrong before and after it. The cause is
+        the optimized path's numeric BOffset/BCondOffset (a Thumb halfword
+        displacement the A32 encoder reads as a word count), which is the
+        offset-unit mismatch #1641 names; open PR #1644 (Refs #1639 #1641)
+        retargets these numeric branches. PR #1646 judged it distinct from
+        #1639 and did not file it, but #1641 already tracked the mechanism.
+        This record delivers neither #1639 nor #1641. The numbers name where each matter was
         analysed, not an open scope.
     tags:
       - feature-loop
@@ -51,8 +54,9 @@ artifacts:
         DELIVERED, execution-verified against wasmtime under unicorn. New
         wired oracle scripts/repro/optloop_backedge_1206_differential.py
         (ci.yml trap-semantics-oracle job, routed through oracle_run.py): 8
-        exports x 80 vectors x cortex-m3/m4/m4f/m7/m7dp on the self-contained
-        default image, every export asserted to take the OPTIMIZED path, each
+        exports x 80 vectors x cortex-m3/m4/m4f/m7/m7dp (cortex-m55 added by
+        the cold-review corrections, below) on the self-contained default
+        image, every export asserted to take the OPTIMIZED path, each
         run under a 100k-instruction budget. RED in PR #1646 on main df847a16:
         1595 of 3200 hang; the R7 control export passes 400 of 400. GREEN in
         PR #1646: 3200 of 3200. RE-RUN AT RELEASE PREP, 2026-11-05, on the
@@ -101,3 +105,19 @@ artifacts:
         SYNTH-ARCH-LOUD-DECLINE opt-wrong count, the oracle wiring check's
         exact emulation floor, the home-alias audit (fixture growth only) and
         the mutation ledger's anchors.
+        COLD-REVIEW CORRECTIONS, 2026-11-06 (docs/reviews/v0.89.2-cold-review.md
+        F2): cortex-m55 hung too and no wired oracle ran it, so the done-when
+        ("every Thumb-2 Cortex-M profile") was not met by wired evidence. The
+        differential gained a cortex-m55 leg and declares `emulations >=
+        3840`; the exact emulation floor rose by 640 (oracle_wiring_check.py's
+        reported total, pinned in claims.yaml). Re-run on
+        binaries built from 000187e8 (v0.89.1) and 14dbc9ed: `FAIL: 1914 of
+        3840`, rc 1 (319 of 640 hangs on each of the six targets, the R7
+        control 480 of 480), and `PASS: 3840 emulations match wasmtime`, rc
+        0. --target accepts six Thumb-2 Cortex-M profiles (m3, m4, m4f, m7,
+        m7dp, m55; the LLVM-triple aliases map onto these), so the wired
+        oracle now runs all of them. A32, F3: this release's fixture on
+        cortex-r5 (self-contained, entered at each symbol, not booted; a
+        scratch harness not in the repo, see the review's disposition) is
+        wrong on 383 of 640 runs on both binaries and on 0 of 640 with PR
+        #1644's code commit 9c2f4b9f applied to 14dbc9ed.

@@ -1238,7 +1238,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 397867 \
+            --exact-emulation-floor 398507 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3117,10 +3117,13 @@ jobs:
       # bytes short, after the increment, and hung (exit 0). 8 exports (count-
       # up/down, const + param bounds, #1206's countdown, a `memory.size`
       # body — a second drift row — and an R7 control) x 80 vectors x
-      # cortex-m3/m4/m4f/m7/m7dp, self-contained default image, every export
-      # asserted on the OPTIMIZED path, executed vs wasmtime under a 100k-insn
-      # budget so a hang is a FAIL. Red on main df847a16: 1595 of 3200 hang.
-      - name: Run optimized-path back-edge oracle (#1206, cortex-m3/m4/m4f/m7/m7dp)
+      # cortex-m3/m4/m4f/m7/m7dp/m55, self-contained default image, every
+      # export asserted on the OPTIMIZED path, executed vs wasmtime under a
+      # 100k-insn budget so a hang is a FAIL. Red on main df847a16: 1595 of
+      # 3200 hang (five targets). The cortex-m55 leg was added by the v0.89.2
+      # cold-review corrections: on the v0.89.1 tag's binary 1914 of 3840 hang
+      # (319 of 640 on each of the six targets).
+      - name: Run optimized-path back-edge oracle (#1206, cortex-m3/m4/m4f/m7/m7dp/m55)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/optloop_backedge_1206_differential.py
       # #930: sibling of #740 on the SAME SC-5 sentence ("branch offset
       # calculation shall account for Thumb instruction alignment and variable
