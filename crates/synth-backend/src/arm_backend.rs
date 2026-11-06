@@ -1993,7 +1993,18 @@ fn compile_wasm_to_arm(
         validate_branch_targets(&resolved, &encoder, !islands_disabled)?;
         (resolved, islands)
     } else {
-        (arm_instrs, std::collections::BTreeMap::new())
+        // #1639 / #1641: A32 (Cortex-R5, and every ARM build with no
+        // `--target`). Before this, the A32 stream went to the encoder with
+        // its label branches still placeholders (`bne pc+8`, no relocation)
+        // and its numeric branches still in the producers' THUMB units (a
+        // `--safety-bounds software` / div-guard `offset: 0` encoded as a
+        // branch to itself). Both are translated to A32 word units here and
+        // then gated. No literal islands: A32 has no `LdrSym` lowering at all
+        // (the encoder refuses it, and the post-loop pool refuses it again).
+        let thumb_sizer = ArmEncoder::new_thumb2_with_fpu(config.target.fpu);
+        let resolved = resolve_a32_branches(arm_instrs, &encoder, &thumb_sizer)?;
+        validate_a32_branch_targets(&resolved, &encoder)?;
+        (resolved, std::collections::BTreeMap::new())
     };
 
     // #778: capture the FINAL Thumb-2 instruction stream (post label-resolution,
@@ -3057,8 +3068,9 @@ fn resolve_label_branches(
 ///    relocation, but a `.L` label is only ever defined in this same stream,
 ///    so an unresolved one is a dropped label (#930), not an external.
 ///
-/// A32 (Cortex-R5) is fixed-width, so the mid-instruction class needs no gate
-/// there (and its branches do not flow through the Thumb-2 resolver).
+/// A32 (Cortex-R5) branches do not flow through this gate: they are resolved
+/// in A32 word units by `resolve_a32_branches` and gated by
+/// `validate_a32_branch_targets` (#1639).
 fn validate_branch_targets(
     instrs: &[ArmInstruction],
     encoder: &ArmEncoder,
@@ -3235,6 +3247,266 @@ fn validate_estimated_branch_landings(
     Ok(())
 }
 
+/// #1639 / #1641: resolve every A32 branch to its A32 word displacement.
+///
+/// UNITS. The A32 `BOffset`/`BCondOffset` encoder arms read the offset field
+/// as `(target - branch) / 4` WORDS and subtract 2 themselves for the PC+8
+/// pipeline offset, so `imm24 = (target - (branch + 8)) / 4`. The Thumb-2
+/// resolver (`place_literal_islands_fixedpoint`) and every numeric-offset
+/// PRODUCER in the selectors (div/rem trap guards, `--safety-bounds software`
+/// guards, the optimized path's pre-resolved branches) write the field in
+/// THUMB units, `(target - branch - 4) / 2` halfwords, sized against Thumb
+/// encodings. Neither may reach the A32 encoder unconverted:
+///
+/// * a LABEL branch (`B`/`Bcc`/`Bhs`/`Blo`) is resolved against the A32 byte
+///   position of its `.L` label. A32 is fixed-width, so no fixed point is
+///   needed: a branch is 4 bytes whatever its displacement.
+/// * a NUMERIC branch is RETARGETED: its Thumb-unit offset is decoded into a
+///   target INSTRUCTION INDEX by walking the span with the real Thumb-2
+///   encoder's sizes (the geometry its producer wrote it against, and the one
+///   `validate_branch_targets` proves on Thumb), then re-expressed as the A32
+///   word distance to that same instruction. A Thumb target that is not an
+///   instruction boundary, or a span whose Thumb size is not fixed (it crosses
+///   an unresolved label branch, whose Thumb size the Thumb fixed point would
+///   decide), is a hard error rather than a guess.
+///
+/// Thumb geometry is read from the INPUT stream, a frozen snapshot: a numeric
+/// branch already rewritten to A32 units would size differently under the
+/// Thumb encoder, so no span walk ever sees a rewritten op.
+fn resolve_a32_branches(
+    instrs: Vec<ArmInstruction>,
+    a32: &ArmEncoder,
+    thumb: &ArmEncoder,
+) -> Result<Vec<ArmInstruction>, String> {
+    use std::collections::HashMap;
+    use synth_synthesis::Condition;
+
+    let n = instrs.len();
+    // A32 byte position of every element, plus the end of the stream.
+    let mut apos: Vec<i64> = Vec::with_capacity(n + 1);
+    let mut p: i64 = 0;
+    for ins in &instrs {
+        apos.push(p);
+        let len = a32
+            .encode(&ins.op)
+            .map_err(|e| format!("A32 branch resolution (#1639): size probe failed: {}", e))?
+            .len() as i64;
+        if len % 4 != 0 {
+            return Err(format!(
+                "A32 branch resolution (#1639): {:?} encodes to {} bytes, not a \
+                 whole number of A32 words",
+                ins.op, len
+            ));
+        }
+        p += len;
+    }
+    apos.push(p);
+
+    let mut labels: HashMap<&str, usize> = HashMap::new();
+    for (i, ins) in instrs.iter().enumerate() {
+        if let ArmOp::Label { name } = &ins.op
+            && labels.insert(name.as_str(), i).is_some()
+        {
+            return Err(format!(
+                "A32 branch resolution (#1639): label '{}' is defined twice; a \
+                 branch to it has no single target. Refusing to guess.",
+                name
+            ));
+        }
+    }
+
+    let is_label_branch = |op: &ArmOp| {
+        matches!(
+            op,
+            ArmOp::B { .. } | ArmOp::Bcc { .. } | ArmOp::Bhs { .. } | ArmOp::Blo { .. }
+        )
+    };
+    let mut tsize_cache: Vec<Option<i64>> = vec![None; n];
+    let mut tsize = |k: usize| -> Result<i64, String> {
+        if let Some(s) = tsize_cache[k] {
+            return Ok(s);
+        }
+        if is_label_branch(&instrs[k].op) {
+            return Err(format!(
+                "A32 branch resolution (#1639): a numeric (Thumb-unit) branch \
+                 spans the unresolved label branch {:?}, whose Thumb size is \
+                 decided by the Thumb fixed point, not fixed. The span's Thumb \
+                 geometry is ambiguous; refusing to retarget it.",
+                instrs[k].op
+            ));
+        }
+        let s = thumb
+            .encode(&instrs[k].op)
+            .map_err(|e| {
+                format!(
+                    "A32 branch resolution (#1639): {:?} inside a numeric branch \
+                     span has no Thumb-2 size ({}), so the producer's Thumb-unit \
+                     offset cannot be decoded",
+                    instrs[k].op, e
+                )
+            })?
+            .len() as i64;
+        tsize_cache[k] = Some(s);
+        Ok(s)
+    };
+
+    let mut out = instrs.clone();
+    for i in 0..n {
+        let target_idx = match &instrs[i].op {
+            ArmOp::BOffset { offset } | ArmOp::BCondOffset { offset, .. } => {
+                // Thumb semantics: target = branch + 4 + 2*offset.
+                let own = tsize(i)?;
+                let delta = 4 + 2 * (*offset as i64);
+                let mut k;
+                let mut rel;
+                if delta >= own {
+                    k = i + 1;
+                    rel = own;
+                    while rel < delta {
+                        if k >= n {
+                            return Err(format!(
+                                "A32 branch resolution (#1639): numeric branch at \
+                                 index {} (Thumb offset {}) targets past the end \
+                                 of the function",
+                                i, offset
+                            ));
+                        }
+                        rel += tsize(k)?;
+                        k += 1;
+                    }
+                } else if delta == 0 {
+                    k = i;
+                    rel = 0;
+                } else if delta > 0 {
+                    return Err(format!(
+                        "A32 branch resolution (#1639): numeric branch at index {} \
+                         (Thumb offset {}) targets the middle of itself",
+                        i, offset
+                    ));
+                } else {
+                    k = i;
+                    rel = 0;
+                    while rel > delta {
+                        if k == 0 {
+                            return Err(format!(
+                                "A32 branch resolution (#1639): numeric branch at \
+                                 index {} (Thumb offset {}) targets before the \
+                                 start of the function",
+                                i, offset
+                            ));
+                        }
+                        k -= 1;
+                        rel -= tsize(k)?;
+                    }
+                }
+                if rel != delta {
+                    return Err(format!(
+                        "A32 branch resolution (#1639): numeric branch at index {} \
+                         (Thumb offset {}) does not land on a Thumb instruction \
+                         boundary, so it names no instruction to retarget to",
+                        i, offset
+                    ));
+                }
+                k
+            }
+            ArmOp::B { label }
+            | ArmOp::Bcc { label, .. }
+            | ArmOp::Bhs { label }
+            | ArmOp::Blo { label } => match labels.get(label.as_str()) {
+                Some(&j) => j,
+                // Not defined here: left for `validate_a32_branch_targets`,
+                // which refuses it (A32 records no relocation for a label
+                // branch, so it would encode as a silent `b pc+8`).
+                None => continue,
+            },
+            _ => continue,
+        };
+        let word_offset = ((apos[target_idx] - apos[i]) / 4) as i32;
+        out[i].op = match &instrs[i].op {
+            ArmOp::BOffset { .. } | ArmOp::B { .. } => ArmOp::BOffset {
+                offset: word_offset,
+            },
+            ArmOp::BCondOffset { cond, .. } | ArmOp::Bcc { cond, .. } => ArmOp::BCondOffset {
+                cond: *cond,
+                offset: word_offset,
+            },
+            ArmOp::Bhs { .. } => ArmOp::BCondOffset {
+                cond: Condition::HS,
+                offset: word_offset,
+            },
+            ArmOp::Blo { .. } => ArmOp::BCondOffset {
+                cond: Condition::LO,
+                offset: word_offset,
+            },
+            _ => unreachable!("only branch ops reach the rewrite"),
+        };
+    }
+    Ok(out)
+}
+
+/// #1639: the A32 counterpart of `validate_branch_targets`, run on the FINAL
+/// A32 stream (after `resolve_a32_branches`). Total over local control flow:
+///
+/// 1. NO label branch survives. A32 records no relocation for a `B`/`Bcc`
+///    to a label, so a survivor encodes as the placeholder `b pc+8` — the
+///    exact #1639 miscompile. `.L` or not, it is refused.
+/// 2. every numeric target `branch + 4*offset` is an A32 instruction start
+///    (or the end of the function), and the encoded `imm24 = offset - 2`
+///    fits the signed 24-bit field the encoder would otherwise silently mask.
+fn validate_a32_branch_targets(instrs: &[ArmInstruction], a32: &ArmEncoder) -> Result<(), String> {
+    use std::collections::HashSet;
+
+    let mut positions: Vec<i64> = Vec::with_capacity(instrs.len());
+    let mut p: i64 = 0;
+    for ins in instrs {
+        positions.push(p);
+        p += a32
+            .encode(&ins.op)
+            .map_err(|e| format!("A32 branch gate (#1639): size probe failed: {}", e))?
+            .len() as i64;
+    }
+    let mut starts: HashSet<i64> = positions.iter().copied().collect();
+    starts.insert(p);
+
+    for (i, ins) in instrs.iter().enumerate() {
+        let offset = match &ins.op {
+            ArmOp::BOffset { offset } | ArmOp::BCondOffset { offset, .. } => *offset as i64,
+            ArmOp::B { label }
+            | ArmOp::Bcc { label, .. }
+            | ArmOp::Bhs { label }
+            | ArmOp::Blo { label } => {
+                return Err(format!(
+                    "A32 branch gate (#1639): branch label '{}' (byte offset \
+                     0x{:x}) is not defined in this function and A32 records no \
+                     relocation for a label branch — it would encode as a \
+                     zero-displacement `b pc+8` placeholder. Refusing to emit a \
+                     miscompiled object.",
+                    label, positions[i]
+                ));
+            }
+            _ => continue,
+        };
+        let imm24 = offset - 2;
+        if !(-(1i64 << 23)..(1i64 << 23)).contains(&imm24) {
+            return Err(format!(
+                "A32 branch gate (#1639): branch at byte offset 0x{:x} needs a \
+                 displacement of {} words, outside the signed 24-bit B field",
+                positions[i], imm24
+            ));
+        }
+        let target = positions[i] + 4 * offset;
+        if !starts.contains(&target) {
+            return Err(format!(
+                "A32 branch gate (#1639): branch at byte offset 0x{:x} targets \
+                 0x{:x}, which is not an A32 instruction start. Refusing to emit \
+                 a miscompiled object.",
+                positions[i], target
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3276,6 +3548,157 @@ mod tests {
             ]),
             vec![WasmOp::LocalGet(0), WasmOp::MemorySize(0), WasmOp::I32Add]
         );
+    }
+
+    /// #1639: A32 label branches resolve in A32 WORD units, forward and
+    /// backward, and encode to the right `imm24`. Red on main: the A32 arm of
+    /// the emit pipeline never resolved labels, so these encoded as
+    /// `1a000000` / `ea000000` (`b pc+8`).
+    #[test]
+    fn test_resolve_a32_label_branches_word_units_1639() {
+        use synth_synthesis::Condition;
+        let a32 = ArmEncoder::new_arm32();
+        let thumb = ArmEncoder::new_thumb2();
+        let ins = |op: ArmOp| ArmInstruction {
+            op,
+            source_line: None,
+        };
+        let mov = || {
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            })
+        };
+        // 0 L0 | 0 mov | 4 bne L0 | 8 mov | 12 b L1 | 16 mov | 20 L1 | 20 mov
+        let stream = vec![
+            ins(ArmOp::Label {
+                name: ".L0".to_string(),
+            }),
+            mov(),
+            ins(ArmOp::Bcc {
+                cond: Condition::NE,
+                label: ".L0".to_string(),
+            }),
+            mov(),
+            ins(ArmOp::B {
+                label: ".L1".to_string(),
+            }),
+            mov(),
+            ins(ArmOp::Label {
+                name: ".L1".to_string(),
+            }),
+            mov(),
+        ];
+        let out = resolve_a32_branches(stream, &a32, &thumb).unwrap();
+        // back-edge from 4 to 0: one word back.
+        assert_eq!(
+            out[2].op,
+            ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: -1
+            }
+        );
+        // forward from 12 to 20: two words.
+        assert_eq!(out[4].op, ArmOp::BOffset { offset: 2 });
+        validate_a32_branch_targets(&out, &a32).unwrap();
+        // imm24 = offset - 2. bne at 4: imm24 = -3, target 4 + 8 - 12 = 0.
+        // b at 12: imm24 = 0, target 12 + 8 = 20.
+        assert_eq!(
+            a32.encode(&out[2].op).unwrap(),
+            0x1AFF_FFFDu32.to_le_bytes()
+        );
+        assert_eq!(
+            a32.encode(&out[4].op).unwrap(),
+            0xEA00_0000u32.to_le_bytes()
+        );
+    }
+
+    /// #1641 (and the i32 div/rem guards): a selector-written NUMERIC branch is
+    /// in Thumb units. `BNE offset 0` over a `udf` means "skip the udf" on
+    /// Thumb (pc+4 past a 2-byte branch and a 2-byte udf); on A32 the same
+    /// field read as words was a branch to ITSELF (`1afffffe`). Retargeted, it
+    /// becomes 2 words: past the 4-byte udf.
+    #[test]
+    fn test_resolve_a32_numeric_guard_retarget_1641() {
+        use synth_synthesis::Condition;
+        let a32 = ArmEncoder::new_arm32();
+        let thumb = ArmEncoder::new_thumb2();
+        let ins = |op: ArmOp| ArmInstruction {
+            op,
+            source_line: None,
+        };
+        let stream = vec![
+            ins(ArmOp::Cmp {
+                rn: Reg::R1,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            }),
+            ins(ArmOp::Udf { imm: 0 }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let out = resolve_a32_branches(stream, &a32, &thumb).unwrap();
+        assert_eq!(
+            out[1].op,
+            ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 2
+            }
+        );
+        validate_a32_branch_targets(&out, &a32).unwrap();
+        assert_eq!(
+            a32.encode(&out[1].op).unwrap(),
+            0x1A00_0000u32.to_le_bytes()
+        );
+    }
+
+    /// #1639: the A32 gate refuses what the A32 encoder would silently get
+    /// wrong — a surviving label branch (`.L` or external: A32 records no
+    /// relocation for it), a target that is not an instruction start, and an
+    /// imm24 overflow.
+    #[test]
+    fn test_validate_a32_branch_targets_refusals_1639() {
+        let a32 = ArmEncoder::new_arm32();
+        let ins = |op: ArmOp| ArmInstruction {
+            op,
+            source_line: None,
+        };
+        let mov = || {
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            })
+        };
+        for label in [".Lgone", "Trap_Handler"] {
+            let s = vec![
+                ins(ArmOp::B {
+                    label: label.to_string(),
+                }),
+                mov(),
+            ];
+            let e = validate_a32_branch_targets(&s, &a32).unwrap_err();
+            assert!(e.contains("#1639") && e.contains(label), "{e}");
+            // The resolver leaves an undefined label alone; the gate is what
+            // refuses it, so a resolve+validate pipeline is refused too.
+            let r = resolve_a32_branches(s, &a32, &ArmEncoder::new_thumb2()).unwrap();
+            assert!(validate_a32_branch_targets(&r, &a32).is_err());
+        }
+        // past the end: 0 b | 4 mov | end 8; offset 3 -> 12.
+        let past = vec![ins(ArmOp::BOffset { offset: 3 }), mov()];
+        let e = validate_a32_branch_targets(&past, &a32).unwrap_err();
+        assert!(e.contains("not an A32 instruction start"), "{e}");
+        // end of function is a legal target (offset 2 -> 8).
+        let end = vec![ins(ArmOp::BOffset { offset: 2 }), mov()];
+        validate_a32_branch_targets(&end, &a32).unwrap();
+        // imm24 overflow.
+        let far = vec![ins(ArmOp::BOffset { offset: 1 << 24 }), mov()];
+        let e = validate_a32_branch_targets(&far, &a32).unwrap_err();
+        assert!(e.contains("24-bit"), "{e}");
     }
 
     /// SC-5 (#740/#930): the branch-target boundary gate. Every emitted branch
