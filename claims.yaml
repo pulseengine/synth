@@ -4889,7 +4889,24 @@ claims:
     #   contiguous one-PROGBITS image; its 255 refusal rows are counted by the
     #   script). Paired control: `449722` rc=0 and `449634` rc=1 on this tree;
     #   `449722` rc=1 and `449634` rc=0 on main 175af4f3.
-    text: "--exact-emulation-floor 449722"
+    # v0.90 A32CALL (#1645, #1640): 449722 -> 449140 (-582), RE-DERIVED by
+    #   oracle_wiring_check on the tree rebased onto NPASTRADDLE (a5cfda5c), the
+    #   sum of two moves. (a) +54: the new a32_image_1645_1640_differential.py
+    #   declares `emulations >= 54` (54 measured via oracle_run.py: entry/
+    #   callsq/chain/sumsq x 6 vectors on the cortex-r5 self-contained image,
+    #   optimized and --no-optimize, plus `twice` x 6 on the cortex-r5
+    #   single-function image). (b) -636: a32_control_flow_1639_differential.py
+    #   1541 -> 905. Its notgt-image-1206 leg (640) is DROPPED: #1640 refuses
+    #   every no-target self-contained image, and its eight function bodies
+    #   were byte-identical to the r5-image-1206 leg's on f28f29b0, so a
+    #   cortex-r5 retarget would only run that leg twice. `callsum` (4
+    #   vectors, a call inside a loop) joins its r5-image leg now that the
+    #   image patches the `bl` (3 of 4 hang on f28f29b0's binary). A shrink,
+    #   so stated: 640 emulations are gone, and what they executed is
+    #   executed by r5-image-1206 on byte-identical bodies. Paired control:
+    #   `449140` rc=0 and `449722` rc=1 on this tree; `449140` rc=1 and
+    #   `449722` rc=0 on main a5cfda5c.
+    text: "--exact-emulation-floor 449140"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

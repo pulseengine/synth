@@ -177,8 +177,9 @@ fi
 # Build the ELF first (without --sign-output) so we can compare on-disk state
 # before/after the signing attempt.
 ELF="$WORKDIR/add.elf"
-note "Compiling WAT to ELF: $SYNTH compile $WAT -o $ELF"
-if ! "$SYNTH" compile "$WAT" -o "$ELF" > "$WORKDIR/case2.compile.stdout" 2>&1; then
+# #1640: an explicit target — a no-target self-contained A32 image is refused.
+note "Compiling WAT to ELF: $SYNTH compile $WAT -o $ELF --target cortex-r5"
+if ! "$SYNTH" compile "$WAT" -o "$ELF" --target cortex-r5 > "$WORKDIR/case2.compile.stdout" 2>&1; then
   cat "$WORKDIR/case2.compile.stdout" >&2
   fail "Case 2: synth compile (unsigned) failed"
 fi
@@ -190,7 +191,7 @@ note "Case 2: unsigned ELF hash: $ELF_HASH_BEFORE"
 # ELF signing — synth must exit non-zero and surface the rejection.
 note "Case 2: $SYNTH compile $WAT -o $ELF --sign-output  (expecting non-zero exit; contract gap)"
 SIGN_EXIT=0
-"$SYNTH" compile "$WAT" -o "$ELF" --sign-output \
+"$SYNTH" compile "$WAT" -o "$ELF" --target cortex-r5 --sign-output \
   > "$WORKDIR/case2.sign.stdout" 2> "$WORKDIR/case2.sign.stderr" || SIGN_EXIT=$?
 
 note "Case 2: synth --sign-output exit code = $SIGN_EXIT"

@@ -1239,7 +1239,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 449722 \
+            --exact-emulation-floor 449140 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -6442,6 +6442,12 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/loop_param_bound_663_differential.py
       - name: const-CSE hoist live-out param clobber differential (#1635)
         run: python scripts/oracle_run.py scripts/repro/r0_clobber_1635_differential.py
+      # #1645 + #1640: the self-contained cortex-r5 (A32) image, entered at
+      # the addresses the ELF declares (no `sym & ~1`), every internal `bl`
+      # executed, against wasmtime; plus the loud refusals (single-function
+      # A32 call, no-target self-contained A32).
+      - name: self-contained A32 image call + entry-state differential (#1645, #1640)
+        run: python scripts/oracle_run.py scripts/repro/a32_image_1645_1640_differential.py
       - name: arg-move-cycle-under-pressure differential (#326)
         run: |
           ./target/debug/synth compile scripts/repro/mutex_pressure.wat -o /tmp/mp.elf --target cortex-m4 --all-exports --relocatable

@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-A32CALL
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "A self-contained cortex-r5 image patches every internal A32 bl, or refuses"
     description: >
         HANG, exit 0. The self-contained `--target cortex-r5` builder ships
@@ -29,11 +29,14 @@ artifacts:
         is 14 words, and the twelfth (offset 0x2c) is 0xebfffffe: 1 unpatched
         bl.
 
-        CITATION: #1645 is where the matter was analysed. The number names
-        where it was analysed, not an open scope.
+        CITATION: #1645 is where the matter was analysed. #1639 (A32 label
+        branches, PR #1644) is where the branch defect that a call inside a
+        loop also depends on was analysed. The numbers name where each matter
+        was analysed, not an open scope.
     tags:
       - feature-loop
       - bug
+      - wrong-code
     links:
       - type: derives-from
         target: BR-001
@@ -41,7 +44,7 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1645"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
       done-when: >
         manual:2027-03-31 every internal A32 call in a self-contained
@@ -51,3 +54,42 @@ artifacts:
         with an execution-verified result where the lane is a wrong-code fix,
         or REFUTED with the measurement that refutes it; and the refuting
         command above is RUN FIRST and its result reported either way
+      landed: "PR #1662 (branch a32image, rebased onto f28f29b0 after PR #1644) - #1645 - DELIVERED: a wrong-code fix. The refuting command was RUN FIRST on main c20d37b2 and the defect was LIVE: rc 0, `Internal calls: 1 resolved in place (standalone executable)`, .text 14 words with 0xebfffffe at offset 0x2c (1 unpatched bl); --func-name callsq also rc 0 with a 36-byte image that does not contain the callee. Fix, in crates/synth-cli/src/main.rs: build_multi_func_simple_elf (the self-contained builder for a non-Cortex-M ARM target) now reads func.relocations and PATCHES or REFUSES every one. An ArmCall relocation is resolved against the callee's laid-out address (by export name or func_N) and rewritten by the new encode_a32_bl, imm24 = (target - (bl + 8)) / 4 with a ±32 MiB range check, checked against arm-none-eabi-as forward, backward and far. The site must hold the `bl .` placeholder (0xebfffffe) or the build refuses; any other relocation kind, or a callee not in the image, is refused. The builder returns how many it patched, the Cortex-M builder now does the same, and the driver ensures that count equals the relocation total before it prints `resolved in place`. The single-function A32 path (build_simple_elf) holds only one function, so a function that carries a relocation is refused there, as the #871/#1017 single-function guards already do for RV32 and AArch64, pointing to --all-exports. After the fix the refuting command reads 0 words equal to 0xebfffffe, the bl at 0x802c is ebfffff3 (to func_0 at 0x8000), and callsq(3, 0) = 10."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime on the tree rebased
+        onto f28f29b0 (main with PR #1644's A32 branch fix), and again on the
+        tree rebased onto 8c96a104. Wired oracle
+        scripts/repro/a32_image_1645_1640_differential.py (ci.yml, through
+        oracle_run.py, `emulations >= 54`), shared with RQ-90-A32ENTRY,
+        enters every function at its STT_FUNC value as emitted and compares
+        against wasmtime. Calls covered, the done-when's two legs included:
+        a direct call (forward `bl` from the e_entry function to two later
+        functions; backward `bl` callsq -> sq, the #1645 reproducer), nesting
+        (chain -> entry -> sq/twice, chain -> callsq -> sq), and a call
+        inside a loop (sumsq: a counted loop bounded by `n & 15` calling sq
+        every iteration), on cortex-r5 --all-exports optimized and
+        --no-optimize, plus a refusal leg for --func-name callsq. Each image
+        is also checked for any leftover 0xebfffffe word. RED on main
+        c20d37b2, f28f29b0 and 8c96a104: 75 failures, every one of the 54
+        emulations wrong or hung (12 of them sumsq), 6 unpatched `bl .` per
+        image, and the single-function call compile accepted. GREEN on the
+        rebased branch: 54 of 54. The loop leg needs both fixes: on the
+        branch before the rebase (without #1644), 10 sumsq rows were wrong
+        from #1639's zero displacement branches. The same patch is also
+        exercised by a32_control_flow_1639_differential.py, whose cortex-r5
+        image leg now includes `callsum` (a call inside a loop; 3 of its 4
+        vectors hang on f28f29b0's binary, all 4 green here). Potency, each
+        a planted source mutant rebuilt and run with the entry-state fix
+        kept in place: an A32 pipeline bias of +4 instead of +8 reds r5 and
+        r5-noopt (46 failures); skipping the patch reds them with hangs at
+        the `bl` and the leftover-placeholder check (48); removing the
+        single-function guard reds r5-single-call. Unit tests:
+        encode_a32_bl_matches_gas_1645,
+        a32_simple_image_patches_calls_and_clears_thumb_bit_1645_1640 and
+        a32_simple_image_refuses_unpatchable_relocations_1645. REACH over
+        every tracked .wat/.wasm (268 files), base f28f29b0 vs the rebased
+        branch, identical against 8c96a104: 30 cortex-r5 self-contained images change .text, exactly 44
+        words, every one a former 0xebfffffe, and no ET_EXEC image keeps
+        one; 48 cortex-r5 single-function compiles of a calling export are
+        newly refused; every Thumb-2 output and every A32 --relocatable
+        object is byte-identical.
