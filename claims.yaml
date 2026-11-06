@@ -4963,7 +4963,16 @@ claims:
     #   shape-2 module-refusal rows are counted by the script). Paired
     #   control: `449149` rc=0 and `449140` rc=1 on this tree; `449149` rc=1
     #   and `449140` rc=0 on main 78e686f6.
-    text: "--exact-emulation-floor 449149"
+    # v0.90 COVFIX (#1654): 449149 -> 449389 (+240; first derived 449140 ->
+    #   449380 on FALCON7 72a6b132, re-derived after NPASHAPE2 839d4b26).
+    #   memk_i64_1622_differential.py gains the gale-min/paged-min fixtures
+    #   (the minimal `local.set (i64.load 1 ..)` / `local.get` shape, alone in
+    #   its module) and declares `emulations >= 5724` (5724 measured via
+    #   oracle_run.py on the rebased tree: 457 calls per gale/paged leg plus
+    #   20 per minimal leg, x npa/plain x cortex-m3/m4f/m7). Paired control:
+    #   `449389` rc=0 and `449149` rc=1 on this tree; `449389` rc=1 and `449149`
+    #   rc=0 on main 839d4b26.
+    text: "--exact-emulation-floor 449389"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-MEMKFIXTURE
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "The memory-k i64 differential catches a dropped high word by value"
     description: >
         The v0.89.1 cold review found the memory-k i64 differential catches
@@ -38,6 +38,42 @@ artifacts:
       issue: "#1654"
       verification-track: manual
       issue-scope: closes
+      landed: "PR #1665 - #1654 - DELIVERED: scripts/repro/memk_i64_1622_differential.py gains two fixtures, gale-min (2080/5376 B, pagesize 1) and paged-min (one 64 KiB page each), each a module holding ONLY four minimal functions of the shape `(local $x i64) (local.set $x (<i64 load> $m1 ..)) (local.get $x)` (i64.load at offset=8 align=4 and offset 0, i64.load32_s, i64.load8_u), built by build_fixture over FIXTURES and executed against wasmtime on npa/plain x cortex-m3/m4f/m7. They sit in their own module because the infer_i64_locals mutant makes rev6 refuse and the whole full-fixture module fail to compile, so a function added there would never run under the mutant. Declared floor 5484 -> 5724; the exact emulation floor (oracle_wiring_check.py's reported sum) rises by 240 (re-derived on the tree rebased onto 72a6b132, over A32CALL's 449140). No compiler change: a test-coverage lane, not a wrong-code fix."
+      verified-by: >
+        DELIVERED, execution-verified. REFUTING COMMAND, run first on the lane
+        branch at f28f29b0 before any edit: build_fixture over FIXTURES gave 2
+        fixtures, 198 functions, 0 of the minimal shape; the pattern matched 1
+        planted line (positive control). LIVE. Re-run after the change: 4
+        fixtures, 206 functions, 4 of the minimal shape (the two i64.load
+        functions per minimal fixture; the census regex names `i64.load`, so
+        the load32_s/load8_u siblings are not counted), control 1. Through
+        oracle_run.py on the unmutated build: ORACLE PASS, measured=5724,
+        compiles=24, every minimal leg 20 calls / 0 mismatches. POTENCY, the
+        review's mutant rebuilt (the 4-line MultiMemory unwrap removed from
+        infer_i64_locals in crates/synth-synthesis/src/instruction_selector.rs,
+        binary sha1 70782ca7 vs clean 21990c1f): rc 1; the 12 full-fixture legs
+        refuse to compile (rev6, "no high register available for R8"), and the
+        12 minimal legs compile at rc 0 and fail 192 of their 240 calls by
+        VALUE with RESULT mismatches, the low word in both halves (e.g.
+        ldloc_o8_a4(0) -> 0x18f3cea918f3cea9, wasmtime 0xac8762bd18f3cea9).
+        The 48 that pass are the end-of-memory address, which reads unseeded
+        zeros. The minimal fixtures alone, through the script's own run():
+        clean 240 compared / 0 fails / 0 refused legs; mutant 240 / 192 / 0
+        refused legs: red by value with no refusal anywhere. Mutant reverted,
+        `git diff -- crates` empty. REBASED onto main 72a6b132 and every
+        number re-measured there: oracle_run.py measured=5724 (exit 0); the
+        census 4 fixtures / 206 functions / 4 minimal; the mutant rebuilt on
+        the rebased tree reds the full run (12 legs refuse) and the minimal
+        fixtures alone fail 192 of 240 by value with 0 refused legs, clean
+        240 / 0. Floor pin paired control on the rebased tree: the new
+        summed value rc 0 and the superseded A32CALL value 449140 rc 1; the
+        new value rc 1 and 449140 rc 0 on main 72a6b132 (via
+        `oracle_wiring_check.py --exact-emulation-floor`); claim_check on a
+        copy of claims.yaml carrying the old pin reds
+        SYNTH-ORACLE-CHECK-FLOORS-910-CI on the branch, and the new pin reds
+        it on 72a6b132. issue-scope stays `closes`: the done-when (the
+        fixture, and the mutant red by a wrong value, not a refusal) is met as
+        written.
       done-when: >
         manual:2027-03-31 the differential carries the minimal i64-local
         memory-1 fixture, and the review's infer_i64_locals mutant reds it by

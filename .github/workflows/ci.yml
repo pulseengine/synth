@@ -1239,7 +1239,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 449149 \
+            --exact-emulation-floor 449389 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3240,8 +3240,11 @@ jobs:
       # preserved, and four functions touch i64 ONLY through memory 1 (six
       # live pairs that spill, six through locals, select, a call result).
       # Potency: swapping the two words of the memory-k i64 store reds 2796
-      # of 5484 calls; dropping the #1622 width-inference unwrap reds it too
-      # (rev6 then refuses to compile on every leg).
+      # of the 5484 full-fixture calls (v0.89.1 measurement). Dropping the
+      # #1622 width-inference unwrap makes rev6 refuse on every full leg, and
+      # (RQ-90-MEMKFIXTURE, #1654) the gale-min/paged-min legs, which hold
+      # ONLY the minimal `local.set (i64.load 1 ..)` / `local.get` shape,
+      # compile at rc 0 and fail 192 of their 240 calls by VALUE.
       - name: Run memory-k i64 load/store oracle (#1622, cortex-m3/m4f/m7, NPA and plain)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/memk_i64_1622_differential.py
       # MEMKBULK (#1619): under --safety-bounds software an out-of-bounds

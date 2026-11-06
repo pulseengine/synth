@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 5484
+# ci-checks: emulations >= 5724
 """MEMK64 (#1622) — the i64 load/store family on a NON-DEFAULT memory, on ARM
 `--relocatable`, with AND without `--native-pointer-abi` — execution
 differential vs wasmtime with a per-FUNCTION isolation check.
@@ -43,6 +43,12 @@ FIXTURES x MODES x TARGETS.
   gale   memory 0 = 2,080 B and memory 1 = 5,376 B declared `(pagesize 1)` —
          the meld#530 byte extents gale measured on #1622
   paged  two ordinary one-page (64 KiB) memories
+  gale-min / paged-min  the same memories, holding ONLY the minimal
+         `(local.set $x (i64.load $m1 ..)) (local.get $x)` functions
+         (RQ-90-MEMKFIXTURE, #1654) — in their own module so a register-
+         pressure refusal elsewhere cannot hide a wrong value here. The
+         `infer_i64_locals` MultiMemory-unwrap mutant compiles them at rc 0
+         and fails 192 of their 240 calls by VALUE (lo word in R0 and R1).
   npa    `--relocatable --native-pointer-abi`
   plain  `--relocatable --embedder-data-init --embedder-global-init`
   cortex-m3 / cortex-m4f / cortex-m7
@@ -51,6 +57,8 @@ Every load width at gale's offsets (0, 8, 16, 24, 28, 48, 108), i64.load and
 i64.store at align=4 AND natural alignment, at word-aligned, byte-unaligned and
 end-of-memory addresses; stores of 0x8000_0001_FFFF_FFFE and
 0x7FFF_FFFF_8000_0080 (distinct words, every narrow sign bit exercised).
+
+5724 calls: 457 per gale/paged leg, 20 per minimal leg, x 2 modes x 3 targets.
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python3 scripts/repro/memk_i64_1622_differential.py
@@ -109,8 +117,48 @@ def esc(b):
     return "".join(f"\\{x:02x}" for x in b)
 
 
-def build_fixture(mem0_decl, mem1_decl, mem1_bytes):
+MIN_LOADS = [  # (name, the memory-1 i64 load feeding `local.set $x`)
+    ("ldloc_o8_a4", "i64.load $m1 offset=8 align=4"),
+    ("ldloc_o0_a8", "i64.load $m1"),
+    ("ldloc32s_o24", "i64.load32_s $m1 offset=24"),
+    ("ldloc8u_o48", "i64.load8_u $m1 offset=48"),
+]
+
+
+def build_minimal(mem0_decl, mem1_decl, mem1_bytes):
+    """RQ-90-MEMKFIXTURE (#1654): the minimal shape, ALONE in its module.
+
+    `(local.set $x (i64.load $m1 ...)) (local.get $x)` and nothing else — the
+    shape that exposed the `infer_i64_locals` defect fixed in v0.89.1 (#1622):
+    without the MultiMemory unwrap the local is inferred i32 and the function
+    returns the LOW word in both R0 and R1. The full fixture only catches that
+    mutant because `rev6` then runs out of registers and the WHOLE module
+    refuses to compile; a function added to that module would never execute
+    under the mutant. Here there is no `rev6` and nothing else that can
+    exhaust registers, so the mutant compiles at rc 0 and is caught by VALUE.
+    At the four seeded addresses the two words differ (`seed_bytes`), so
+    lo-in-both is visible; the end-of-memory address reads unseeded zeros and
+    checks the address arithmetic only.
+    """
+    fns, funcs = [], {}
+    for name, load in MIN_LOADS:
+        fns.append(f'(func (export "{name}") (param $p i32) (result i64) (local $x i64) '
+                   f'(local.set $x ({load} (local.get $p))) (local.get $x))')
+        funcs[name] = {1}
+    wat = ("(module\n"
+           f"  (memory $m0 {mem0_decl})\n"
+           f"  (memory $m1 {mem1_decl})\n"
+           f'  (data (memory $m1) (i32.const 0x0) "{esc(seed_bytes(0x81))}")\n'
+           + "".join(f"  {f}\n" for f in fns) + ")")
+    calls = [(name, [("i32", p)], "i64") for name, _ in MIN_LOADS
+             for p in (0, 3, 0x41, 0xA7, mem1_bytes - 64)]
+    return wat, funcs, calls
+
+
+def build_fixture(mem0_decl, mem1_decl, mem1_bytes, minimal=False):
     """Generate the module and its call list. Returns (wat, funcs, calls)."""
+    if minimal:
+        return build_minimal(mem0_decl, mem1_decl, mem1_bytes)
     fns, funcs, calls = [], {}, []
     for off in OFFSETS:
         for al, aname in ((2, "a4"), (3, "a8")):
@@ -223,9 +271,11 @@ def build_fixture(mem0_decl, mem1_decl, mem1_bytes):
     return wat, funcs, calls
 
 
-FIXTURES = [
-    ("gale", "2080 2080 (pagesize 1)", "5376 5376 (pagesize 1)", 5376),
-    ("paged", "1 1", "1 1", 65536),
+FIXTURES = [  # (label, memory 0, memory 1, memory-1 extent, minimal)
+    ("gale", "2080 2080 (pagesize 1)", "5376 5376 (pagesize 1)", 5376, False),
+    ("paged", "1 1", "1 1", 65536, False),
+    ("gale-min", "2080 2080 (pagesize 1)", "5376 5376 (pagesize 1)", 5376, True),
+    ("paged-min", "1 1", "1 1", 65536, True),
 ]
 
 
@@ -509,8 +559,8 @@ def run(label, wat, funcs, calls, extent1, mode, target, tmp):
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="memk_i64_1622_"))
     total = fails = 0
-    for label, d0, d1, extent1 in FIXTURES:
-        wat, funcs, calls = build_fixture(d0, d1, extent1)
+    for label, d0, d1, extent1, minimal in FIXTURES:
+        wat, funcs, calls = build_fixture(d0, d1, extent1, minimal)
         for mode in MODES:
             texts = {}
             for target in TARGETS:
@@ -523,7 +573,7 @@ def main():
                 same = len(set(texts.values())) == 1
                 print(f"  {label}/{mode}: .text byte-identical across "
                       f"{'/'.join(TARGETS)}: {'yes' if same else 'no'}")
-    if total < 5484:
+    if total < 5724:
         print(f"VACUOUS: compared {total} calls")
         return 1
     print(f"\ncompared: {total}")
