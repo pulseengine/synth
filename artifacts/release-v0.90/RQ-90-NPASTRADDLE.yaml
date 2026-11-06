@@ -2,15 +2,15 @@ artifacts:
   - id: RQ-90-NPASTRADDLE
     type: system-req
     release: v0.90
-    status: proposed
-    title: "A native-pointer-abi access that straddles the zero reservation into a data segment reads both regions"
+    status: implemented
+    title: "A native-pointer-abi access whose bytes span two data regions is refused loudly"
     description: >
         SILENT MISCOMPILE under --native-pointer-abi. An access whose bytes
         start in the zero reservation below a data segment and run into that
         segment reads the reservation for the whole access. VCR-VER-003 checks
         only retargeted relocations, so it cannot see it. PR #1616 (the
         refusal) was CLOSED UNMERGED on 2026-11-01, so nothing on main
-        addresses this.
+        addressed this; the maintainer decided on 2026-11-06 to revive it.
 
         REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
         refutation is a legitimate outcome, reported with numbers: With the
@@ -41,7 +41,63 @@ artifacts:
       priority: must
       issue: "#1604"
       verification-track: manual
-      issue-scope: closes
+      issue-scope: outlives
+      landed: "PR (this lane) - #1604 - DELIVERED AS A LOUD REFUSAL, the refusal of PR #1616 (closed unmerged, no recorded reason) revived onto main c20d37b2 at the maintainer's 2026-11-06 decision. #1616's head ref was force-reset to a main commit after it closed, so its commits were recovered by sha: 76de72cc (the fix; parent d048b523) and eb86fc47 (its landed-field record), eb86fc47 being the commit the PR's own `referenced` event names. The refuting command was RUN FIRST on main c20d37b2 with a fresh debug build: LIVE, anchor 0x34333231 = wasmtime, s_const 0x0 and s_off 0x0 against wasmtime 0x32310000, compile rc 0. On this branch both are refused with the (#1604) diagnostic and the compile exits non-zero (#952); anchor still compiles. PORT: the guard (npa_region_straddle_guard in crates/synth-synthesis/src/instruction_selector.rs, called from select_with_stack after npa_const_addr_guard) and the five vcr_ver_003_addr_777 assertion edits applied cleanly; claims.yaml, ci.yml, status.json and the mutation ledger were NOT carried over from #1616 but re-derived on c20d37b2. The selector diff is byte-identical to #1616's: +149 / -0 (105 code, 42 comment, 2 blank). No behaviour change to the guard. Interactions with what landed after d048b523 were re-derived, not assumed: (a) MEMLAYER6 (#1605) and MEMK64 (#1622): a memory-k access reaches the selector as WasmOp::MultiMemory, for which npa_address_operands returns None except a cross-memory memory.copy's memory-0 side, and memory k ships as one contiguous `.synth.wasm_mem_k` section, so memory k has no split to straddle; a two-memory fixture with a memory-1 segment at 0x800 and memory-1 loads at 0x7fe / offset=0x7fe / i64 at 0x7fc compiles byte-identically on c20d37b2 and on this branch (with --embedder-global-init, because that global is not memory 0's stack pointer). (b) When the stack-pointer global belongs to memory k (gale's 0.89.1 image: `not memory 0's stack pointer`), stack_pointer_global is None for memory 0 in the CLI and the selector alike, so wasm_data_base is 0 on both sides and the guard's mirror of mixed_separable agrees with the ELF builder. (c) #1580's effective-address fold runs before the guard, as on d048b523. (d) #1635 and #1206 act after selection and do not touch the pre-flight. NEWLY REFUSED, base c20d37b2 vs this branch, every input compiled with --relocatable --native-pointer-abi --all-exports --allow-skipped-exports on cortex-m3 and cortex-m7dp: the repo corpus (every .wat/.wasm/.wast in the worktree outside target/: 579 inputs, of which 284 are the spec suite below; 1158 cells, 646 objects on the branch) moves 2 cells, both scripts/repro/self_contained_data_758.wat, whose `hi` (an i32 load at 0x104 spanning segment 0 and the overlapping segment 1) was ALREADY refused on c20d37b2 by VCR-VER-003's whole-compile span error and is now refused earlier by (#1604), so the object of the other 5 functions is emitted under --allow-skipped-exports: loud before, loud now. Run alone, the official spec suite (tests/spec-testsuite at 34536735, 284 inputs, 568 cells, 128 objects) moves 0 and refuses 0 by (#1604). The spec compile census (scripts/spec_compile_census.py) passes no --native-pointer-abi, and the guard returns Ok when that flag is off, so that census cannot move. GALE-SHAPED: 0 newly refused. Every #1145 / #1622 fixture in scripts/repro is in the corpus above (memlayer5_1145/*.wat, mem_isolation_two_tenant_1145.wat, npa_xcopy_*_1145.wat, mem406_multi_memory.wat, mem757_gale/loom.wasm) and none moved; the wired gale-reconstruction oracles all exit 0 on this branch, memk_i64_1622_differential.py (5484 emulations over gale's pagesize-1 memory extents) and npa_multi_memory_1145_differential.py among them. gale's REAL fused image was not available to this lane, and gale has not answered the #1145 straddle question (comment 6508777813); in that image memory 0 has no stack pointer, so its data segments are split and a memory-0 constant access spanning one of them would now refuse."
+      verified-by: >
+        DELIVERED. scripts/repro/npa_straddle_1604_differential.py (from
+        #1616, extended here) executes 88 calls against wasmtime: 30 with no
+        stack-pointer global and 42 with one on cortex-m3, 10 on cortex-m7dp,
+        all boundary-touching in-region accesses with stores read back byte by
+        byte, and 6 NEW calls on a contiguous image. The 6 are straddles with
+        a segment below the stack-pointer base, where the ELF builder ships
+        one PROGBITS image and the straddle is correct, so they must keep
+        compiling. It also asserts 255 refusal rows (rc != 0, a (#1604)
+        diagnostic, no panic, no object) over five classes
+        (reservation->segment, segment->gap, segment->padding,
+        segment->segment, overlap) x const / offset / local / run-time-base
+        forms x i16, i32, i64, f32 and f64 loads and stores, plus memory.fill
+        and memory.copy (destination and source). RED on main c20d37b2: exit
+        1, 0 of 255 refused; 109 rows compiled and executed WRONG, 79 compiled
+        and agreed by coincidence, 67 were refused for another reason
+        (VCR-VER-003 or #952) — the same split #1616 measured on d048b523.
+        The 6 contiguous-image calls agree with wasmtime on c20d37b2 too.
+        GREEN on this branch: exit 0, 88 of 88 equal, 255 of 255 refused.
+        POTENCY, three planted mutants of the guard, each rebuilt and run,
+        then reverted: (A) the straddle test never matches: 0 of 255 refused,
+        exit 1; (B) the `segment below the base` exemption dropped: 255 of 255
+        still refused, but the 6 contiguous-image calls fail to compile, exit
+        1 — this mutant SURVIVED #1616's oracle as shipped (exit 0) and is
+        why the contiguous-image row was added; (C) the boundary test off by
+        one (`b < last`): 70 refusal misses, exit 1. Neighbouring oracles
+        on this branch, each exit 0: npa_const_addr_differential,
+        npa_const_addr_matrix_1568 --expect ok=99,refused=63,guard=59,wrong=0,
+        npa_offset_cross_segment_1580, verwidth_1563, static_above_sp_739,
+        wide_static_746, wide_static_copy_757, mem757_rawvec_memcopy,
+        mem757_gale, multi_memory_406, mem_isolation_red_1145,
+        npa_multi_memory_1145, multi_memory_bulk_1145 and memk_i64_1622.
+        cargo test -p synth-synthesis -p synth-cli: 1533 passed, 0 failed
+        (vcr_ver_003_addr_777 15 of 15 and multi_memory_406 23 of 23 among
+        them). Pins moved, each with a paired control: the exact emulation
+        floor rises by the oracle's declared 88 over the superseded 398507
+        (v0.89.2 cold review) to the total oracle_wiring_check.py reports;
+        that total gives rc=0 and 398507 gives rc=1 on this tree, and the
+        reverse holds on main c20d37b2;
+        selector_lines_code 21360 -> 21509, waived, where c20d37b2 derives
+        21360 and this tree 21509; selector_lines_total 32163 -> 32312. No
+        wildcard arm was added, and the oracle defines no KNOWN or PINNED
+        table. The mutation ledger was re-anchored: 6 sites moved, 0 not
+        found. WHY outlives, chosen on purpose: the issue's two rows are
+        refused, but three shapes of the same class still compile silently,
+        because none has a static byte range to check. (1) A run-time base
+        whose memarg offset is NOT relocated (no stack-pointer global): that
+        is #1568 shape 2, carried by RQ-90-NPASHAPE2. (2) A memory.fill or
+        memory.copy with a non-constant length. (3) A constant that reaches
+        the access through arithmetic. #1616 named all three; this lane did
+        not re-measure them. Also not measured: execution of non-relocatable
+        --native-pointer-abi, which ships a dense ROM copy (#758). And the
+        guard does not mirror the ELF builder's all-Abs32 condition; where
+        that condition fails the image is contiguous and the guard
+        over-refuses, loudly, never silently.
       done-when: >
         manual:2027-03-31 an access straddling the reservation/segment
         boundary under --native-pointer-abi returns the reference value or is

@@ -190,9 +190,13 @@ fn span_straddling_overlap_is_refused_on_the_mixed_split() {
          miscompiled it — the packed seg_0 serves a4a5 where the runtime \
          image owns b0b1):\nstderr: {stderr}"
     );
+    // #1604: the selector's region-straddle guard now refuses this access
+    // before VCR-VER-003 sees its relocation (the function is skipped, so no
+    // reloc reaches the validator); VCR-VER-003's span check stays the
+    // backstop, unit-tested in synth-core's static_data_addr.
     assert!(
-        stderr.contains("VCR-VER-003") && stderr.contains("span byte +2"),
-        "the refusal must carry the span diagnostic:\n{stderr}"
+        stderr.contains("(#1604)") && stderr.contains("[0x10006, 0x1000a)"),
+        "the refusal must carry the #1604 region-straddle diagnostic:\n{stderr}"
     );
 }
 
@@ -541,7 +545,7 @@ fn staggered_1563(body: &str) -> String {
 /// 1" mutation turns green.
 #[test]
 fn width_1563_accesses_reaching_stale_bytes_are_refused_at_their_width() {
-    for (tag, body, needle) in [
+    for (tag, body, _vcr_ver_003_span) in [
         (
             "load32",
             "(result i32) i32.const 0 i32.load offset=2048",
@@ -568,10 +572,13 @@ fn width_1563_accesses_reaching_stale_bytes_are_refused_at_their_width() {
             "span byte +1 of a 2-byte access",
         ),
     ] {
+        // #1604: each of these spans seg_0's surviving bytes and seg_1's, so
+        // the selector's region-straddle guard refuses it before VCR-VER-003
+        // sees the relocation; the width it reports is the access's own.
         let (ok, all) = compile_1563(tag, &staggered_1563(body));
         assert!(
-            !ok && all.contains("VCR-VER-003") && all.contains(needle),
-            "{tag}: must be refused with `{needle}`:\n{all}"
+            !ok && all.contains("(#1604)") && all.contains("data segment 1 [0x802, 0x804)"),
+            "{tag}: must be refused by the #1604 region-straddle guard:\n{all}"
         );
     }
 }
@@ -644,8 +651,15 @@ fn width_1563_unproven_widths_stay_conservative() {
         ),
     ] {
         let (ok, all) = compile_1563(tag, &wat);
+        // #1604: the two 8-byte accesses span both staggered segments, so the
+        // selector's region-straddle guard refuses them first.
+        let refused = if tag.ends_with("64") {
+            all.contains("(#1604)")
+        } else {
+            all.contains("VCR-VER-003") && all.contains("width unproven")
+        };
         assert!(
-            !ok && all.contains("VCR-VER-003") && all.contains("width unproven"),
+            !ok && refused,
             "{tag}: an unproven width must keep the conservative 8-byte span:\n{all}"
         );
     }
@@ -663,8 +677,10 @@ fn width_1563_cross_segment_straddle_is_refused() {
   (data (i32.const 3596) "\aa\bb")
   (func (export "f") (result i32) i32.const 0 i32.load offset=3596))"#;
     let (ok, all) = compile_1563("straddle", wat);
+    // #1604: refused by the selector's region-straddle guard, ahead of the
+    // VCR-VER-003 span check that used to catch it.
     assert!(
-        !ok && all.contains("span byte +2 of a 4-byte access"),
+        !ok && all.contains("(#1604)") && all.contains("[0xe0c, 0xe10)"),
         "the cross-segment straddle must be refused:\n{all}"
     );
 }
@@ -683,11 +699,11 @@ fn width_1563_exact_width_refuses_packed_neighbour_in_implicit_zero_memory() {
   (data (i32.const 3000) "\05\06\07\08")
   (func (export "f") (result i32) i32.const 0 i32.load offset=2002))"#;
     let (ok, all) = compile_1563("implicit_zero", wat);
+    // #1604: refused by the selector's region-straddle guard (segment ->
+    // zero reservation), ahead of the VCR-VER-003 span check.
     assert!(
-        !ok && all.contains("span byte +2 of a 4-byte access")
-            && all.contains(
-                "serves 0x05 but the runtime image (segments applied later-wins) owns 0x00"
-            ),
+        !ok && all.contains("(#1604)")
+            && all.contains("data segment 0 [0x7d0, 0x7d4) and the zero-initialised reservation"),
         "the 4-byte read of packed-neighbour bytes must be refused:\n{all}"
     );
 }
