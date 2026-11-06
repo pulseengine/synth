@@ -4657,7 +4657,14 @@ claims:
     #   differentials present. Paired control: `397867` rc=0 and `394603` rc=1 on
     #   this tree; `397867` rc=1 and `394603` rc=0 on main 000187e8; each
     #   single-PR value (394667, 397803) rc=1 here.
-    text: "--exact-emulation-floor 397867"
+    # v0.89.2 cold-review corrections (#1206, F2): 397867 -> 398507 (+640).
+    #   optloop_backedge_1206_differential.py gains the cortex-m55 leg and
+    #   declares `emulations >= 3840` (3840 measured via oracle_run.py: 8
+    #   exports x 80 vectors x cortex-m3/m4/m4f/m7/m7dp/m55). On the v0.89.1
+    #   tag's binary the six-target run fails 1914 of 3840 (319 of 640 on m55).
+    #   Paired control: `398507` rc=0 and `397867` rc=1 on this tree;
+    #   `398507` rc=1 and `397867` rc=0 on main 14dbc9ed.
+    text: "--exact-emulation-floor 398507"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

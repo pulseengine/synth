@@ -55,30 +55,40 @@ re-measured a different population: 552 in-repo source files x 13 configurations
 
 ### Do-while loops whose condition landed in a high register hung (#1206)
 
-On the default optimized path (self-contained cortex-m3, m4, m4f, m7 and m7dp), a do-while loop's
-back-edge landed 6 bytes short whenever the loop condition was allocated to R8. It landed after
+On the default optimized path (self-contained cortex-m3, m4, m4f, m7, m7dp and m55: every
+Thumb-2 Cortex-M profile `--target` accepts), a do-while loop's back-edge landed 6 bytes short whenever the loop condition was allocated to R8. It landed after
 the loop's increment, so any loop that needed a second iteration never terminated.
 
 - **Cause.** The optimized path places branches by summing an estimate of each instruction's
   size. That estimate is a hand-written copy of the encoder's rules, and it under-counted the wide
   forms: it sized a high-register `SetCond` at 6 bytes (the encoder emits 10) and `cmp r8, #0` at
   2 (the encoder emits 4).
-- **Fix.** An exhaustive operand-class sweep compared the estimate with the real encoder. It
-  covered about 258k instructions: every variant, every register, every immediate and offset
-  class. It found further disagreements, and the estimator is now exact for every one of them
-  (`crates/synth-backend/tests/estimator_encoder_agreement.rs`, no allowlist).
+- **Fix.** An operand-class sweep compared the estimate with the real encoder
+  (`crates/synth-backend/tests/estimator_encoder_agreement.rs`, no allowlist). It sweeps the 70
+  `ArmOp` variants that the test classifies as emitted by the optimized path, out of 224. The
+  other 154, among them `B`, `Bcc`, `Mvn`, `Umull`, `Mla` and every `F32*`, `F64*` and `Mve*`
+  op, are classified as not emitted there and are not swept; the test's own documentation calls
+  that classification a claim it cannot prove. For the 70 it generates 291,779 instructions
+  across register, immediate, offset, shift, condition and displacement classes (all of R0-R12
+  for ops with up to three register operands, representative registers for the multi-register
+  i64 expansions). The encoder accepts 244,092 of them, and the estimate now equals the encoder
+  on every one. The sweep found further disagreements besides #1206's two, and each is fixed.
 - **New compile-time check.** Every branch whose displacement came from the estimate is now
   checked against the real encoder's layout. If a branch would not reach the instruction it was
   resolved to, the compile is refused instead of shipping a misplaced branch. On the fixed tree
   the check fires 0 times across the corpus (PR #1646).
 
 **Execution evidence.** `scripts/repro/optloop_backedge_1206_differential.py` (new, wired in CI)
-runs 8 exports x 80 vectors x 5 targets on the self-contained default image. Every export is
-asserted to take the optimized path, and each run has a 100k-instruction budget. Re-run for this
-release:
+runs 8 exports x 80 vectors x 6 targets (cortex-m3, m4, m4f, m7, m7dp and m55) on the
+self-contained default image. Every export is asserted to take the optimized path, and each run
+has a 100k-instruction budget. Re-run for this release with the cortex-m55 leg, added after the
+cold review found that m55 hung too:
 
-    synth 0.89.1 (v0.89.1 tag):  FAIL: 1595 of 3200 emulations differ from wasmtime or hang
-    synth 0.89.2:                PASS: 3200 emulations match wasmtime
+    synth 0.89.1 (v0.89.1 tag):  FAIL: 1914 of 3840 emulations differ from wasmtime or hang
+    synth 0.89.2:                PASS: 3840 emulations match wasmtime
+
+On 0.89.1 every target fails 319 of its 640 runs, all of them hangs, cortex-m55 included; the R7
+control passes on every target.
 
 The spec-suite parity oracle had pinned this defect as a known wrong answer
 (`control_loop.wast` `countdown`). That pin is removed. In PR #1646 the oracle failed with the pin
@@ -88,8 +98,9 @@ still in place, because the pinned wrong answer had vanished. It passes without 
 **Changed code.** Measured for this release (552 files x 13 configurations): with
 `SYNTH_CONST_CSE=0` on both sides, exactly 8 functions change on each self-contained Cortex-M
 target, cortex-m55 included: `countdown` and the 7 loop shapes of the new oracle. The new oracle
-executes the 7 loop shapes on cortex-m3, m4, m4f, m7 and m7dp, and the parity oracle executes
-`countdown` on cortex-m4. Neither runs cortex-m55. PR #1646 measured 0 changed functions on
+executes the 7 loop shapes on cortex-m3, m4, m4f, m7, m7dp and m55, and the parity oracle
+executes `countdown` on cortex-m4 only, so `control_loop.wast` `countdown` is not executed on the
+other profiles. PR #1646 measured 0 changed functions on
 cortex-m4 `--relocatable`, RV32 and AArch64.
 
 **WCET.** In PR #1646, of 530 `--emit-wcet` sidecars, 6 functions' bounds rose by 10 cycles and
@@ -112,14 +123,19 @@ and cortex-m4, self-contained and `--relocatable`. 900 are identical, and no bou
   affected. Measured for this release: 0 modules and 0 functions newly refuse, across the 13
   configurations.
 - **cortex-r5 (A32) is not fixed.** Both fixes change A32 bytes:
-  - #1206's 8 functions are wrong on A32 both before and after. PR #1646 traced this to the
-    optimized path's numeric branch offset, which is a Thumb halfword count that the A32 encoder
-    encodes as a word count. That PR judged it distinct from #1639 (A32 label branches) and did not
-    file it.
+  - #1206's 8 functions are wrong on A32 both before and after. The cause is the optimized
+    path's numeric branch offset, a Thumb halfword count that the A32 encoder reads as a word
+    count. That is the offset-unit mismatch #1641 names, and open PR #1644 (for #1639 and #1641)
+    retargets these numeric branches too. Measured with this release's fixture on cortex-r5,
+    entered at each function's symbol under unicorn (not booted, #1640), by a scratch harness
+    that is not in the repo (see the v0.89.2 review's disposition): 383 of 640 runs are wrong on
+    0.89.1 and on 0.89.2, and 0 of 640 with PR #1644's code commit applied to 0.89.2. PR #1646 had judged the defect distinct from #1639 and did not file it; it is #1641's
+    mechanism.
   - #1635's change removes the same r0 clobber on A32 and changes 20 A32 functions, none of them
     executed.
 
-  A32 control flow is wrong for separate reasons: see #1639, #1640 and #1645.
+  A32 control flow is tracked in #1639, #1640, #1641 and #1645, with the branch-offset fix in open
+  PR #1644.
 - **Release tooling.** The status-evidence anchor moves to v0.89.1. The spec-parity pin for #1206
   is removed, and `stale_pin_check.py` now books a suppression table whose every entry carries a
   declared reason. Previously, closing the last issue-charged pin in a table turned it red.

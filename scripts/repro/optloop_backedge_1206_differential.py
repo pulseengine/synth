@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 3200
+# ci-checks: emulations >= 3840
 """#1206 (EST1206) — EXECUTION-validate do-while `br_if` back-edges on the
 DEFAULT optimized Thumb-2 path.
 
@@ -10,10 +10,11 @@ Thumb-2 encoder. When a loop condition's `SetCond` was allocated to R8 the
 encoder emitted `ite; mov.w r8,#1; mov.w r8,#0; cmp.w r8,#0` (14 bytes) and
 the estimator assumed 8 (`SetCond => 6`, `cmp => 2`), so the back-edge landed
 6 bytes short — after the loop's increment — and any loop needing a second
-iteration never terminated. Exit 0, no warning, on cortex-m3/m4/m4f/m7/m7dp.
+iteration never terminated. Exit 0, no warning, on cortex-m3/m4/m4f/m7/m7dp
+and cortex-m55 (every Thumb-2 Cortex-M profile `--target` accepts).
 
 This oracle compiles `optloop_backedge_1206.wat` self-contained (the default
-image, `--target T --all-exports`) for the five Cortex-M targets and:
+image, `--target T --all-exports`) for the six Cortex-M targets and:
 
   1. PATH — asserts every export compiled on the OPTIMIZED path
      (`SYNTH_PATH_DEBUG`: "optimized (ir_to_arm ok)"). A shape that drifts
@@ -35,11 +36,16 @@ forms) and was correct before the fix — if it fails, the harness is broken.
 
 Red-first, measured on origin/main df847a16: 1595 of 3200 emulations hang —
 7 of the 8 exports on every target; the `countdown_r7` control passes 400/400.
-Green on the fix: 3200/3200. Potency, measured with planted mutants on the
+Green on the fix: 3200/3200. The cortex-m55 leg was added by the v0.89.2
+cold-review corrections (the review found m55 hung too and no wired oracle ran
+it): on the v0.89.1 tag's binary (000187e8) the six-target run is 1914 of 3840
+— 319 of 640 on EVERY target, m55 included, all hangs; on 0.89.2 (14dbc9ed)
+3840/3840. Potency, measured with planted mutants on the
 fix: reverting the `SetCond` high-rd estimator arm makes the compile-time
 landing check REFUSE 7 of 8 exports (gate 1 red); reverting the `MemorySize`
 arm alone makes it refuse `msize_loop` (gate 1 red); reverting the `SetCond`
-arm with the landing check disabled hangs 1420 of 3200 (gate 2 red). Other
+arm with the landing check disabled hangs 1420 of 3200 on the five-target
+run (gate 2 red). Other
 fixed arms (e.g. the sub-word load/store rows) are not exercised by this
 fixture; the exhaustive `estimator_encoder_agreement` test pins those.
 
@@ -62,7 +68,8 @@ from unicorn import arm_const as A
 HERE = Path(__file__).parent
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 FIXTURE = HERE / "optloop_backedge_1206.wat"
-TARGETS = ["cortex-m3", "cortex-m4", "cortex-m4f", "cortex-m7", "cortex-m7dp"]
+TARGETS = ["cortex-m3", "cortex-m4", "cortex-m4f", "cortex-m7", "cortex-m7dp",
+           "cortex-m55"]
 CONTROL = "countdown_r7"
 # One page: wasmtime's memory.size is 1; R10 carries the byte size on target.
 MEM_BYTES = 0x10000
