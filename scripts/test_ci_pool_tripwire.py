@@ -206,7 +206,196 @@ def blocked_reason(j: dict, required=()) -> str | None:
     return blocked.get(j["name"])
 
 
+# =====================================================================
+# RQ-90-SPECEXEC (#1636): required contexts resolve across EVERY workflow.
+#
+# Branch protection is about to require `spec-suite execution (#1636)`, which
+# is a job in spec-suite.yml. Before v0.90 the deadlock guard read ci.yml only,
+# so adding that context to REQUIRED_CONTEXTS printed DEADLOCK and redded main.
+# These drive the PUBLIC `main()` — which exists on the pre-v0.90 script too —
+# so the same assertion is RED there and GREEN here, for the right reason.
+# =====================================================================
+
+SPEC_CTX = "spec-suite execution (#1636)"
+BOGUS_CTX = "context defined in no workflow (#0)"
+
+
+def run_main(contexts, pending=(), live=None, offline=True) -> tuple[int, str]:
+    """Drive the public `main()` with patched lists (and, when `live` is given,
+    a recorded branch-protection answer instead of the network).
+
+    `PENDING_REQUIRED_CONTEXTS` is SET with setattr, so on the pre-v0.90 script
+    (which has no such list and ignores it) the same call still runs."""
+    import contextlib
+    import io
+
+    saved = (T.REQUIRED_CONTEXTS, getattr(T, "PENDING_REQUIRED_CONTEXTS", None),
+             T.live_required_contexts, sys.argv)
+    buf = io.StringIO()
+    try:
+        T.REQUIRED_CONTEXTS = list(contexts)
+        T.PENDING_REQUIRED_CONTEXTS = list(pending)
+        if live is not None:
+            T.live_required_contexts = lambda repo: list(live)
+        sys.argv = ["ci_pool_tripwire.py"] + (["--offline"] if offline else [])
+        with contextlib.redirect_stdout(buf):
+            rc = T.main()
+    finally:
+        (T.REQUIRED_CONTEXTS, pend, T.live_required_contexts, sys.argv) = saved
+        if pend is None:
+            delattr(T, "PENDING_REQUIRED_CONTEXTS")
+        else:
+            T.PENDING_REQUIRED_CONTEXTS = pend
+    return rc, buf.getvalue()
+
+
+def _deadlocks(out: str) -> str:
+    return " | ".join(l for l in out.splitlines() if "DEADLOCK" in l)
+
+
+def check_cross_workflow_main() -> None:
+    base = [c for c in T.REQUIRED_CONTEXTS if c not in (SPEC_CTX, BOGUS_CTX)]
+    # (a) the spec-suite.yml context resolves AS A REQUIRED CONTEXT: no
+    # DEADLOCK, rc 0. This is the assertion that is RED on e318b728's script.
+    rc, out = run_main(base + [SPEC_CTX])
+    check("(a) a REQUIRED context defined in spec-suite.yml does NOT deadlock",
+          "DEADLOCK" not in out and rc == 0, f"- rc={rc}; {_deadlocks(out)}")
+    # ...and as a PENDING one, which is how the branch ships it.
+    rc, out = run_main(base, pending=[SPEC_CTX])
+    check("(a) the same context as PENDING does NOT deadlock",
+          "DEADLOCK" not in out and rc == 0, f"- rc={rc}; {_deadlocks(out)}")
+    check("(a) ...and the pending context really was resolved (not ignored)",
+          f"pending context {SPEC_CTX!r} resolves in "
+          f".github/workflows/spec-suite.yml" in out, f"- {out[-400:]!r}")
+    # (b) NEGATIVE CONTROL: defined in no workflow -> still DEADLOCK, rc 1,
+    # whether it is required or pending.
+    rc, out = run_main(base + [SPEC_CTX, BOGUS_CTX])
+    check("(b) a REQUIRED context defined in NO workflow still DEADLOCKs",
+          rc == 1 and f"DEADLOCK: required context `{BOGUS_CTX}`" in out,
+          f"- rc={rc}; the guard no longer catches a missing context")
+    check("(b) ...and ONLY that context deadlocks",
+          out.count("DEADLOCK") == 1, f"- {out.count('DEADLOCK')} DEADLOCK lines")
+    rc, out = run_main(base, pending=[SPEC_CTX, BOGUS_CTX])
+    check("(b) a PENDING context defined in NO workflow DEADLOCKs too",
+          rc == 1 and f"DEADLOCK: required context `{BOGUS_CTX}`" in out
+          and out.count("DEADLOCK") == 1, f"- rc={rc}; {_deadlocks(out)}")
+    # The two lists are disjoint.
+    rc, out = run_main(base + [SPEC_CTX], pending=[SPEC_CTX])
+    check("a context in BOTH lists fails CONTRACT",
+          rc == 1 and "FAIL CONTRACT:" in out, f"- rc={rc}")
+
+
+def check_drift_window() -> None:
+    """The live cross-check over the pending window, from recorded answers."""
+    base = [c for c in T.REQUIRED_CONTEXTS if c not in (SPEC_CTX, BOGUS_CTX)]
+    rc, out = run_main(base, [SPEC_CTX], live=base, offline=False)
+    check("drift: protection == REQUIRED (pending not yet added) -> rc 0",
+          rc == 0 and "match branch protection" in out
+          and "is not yet in branch protection" in out, f"- rc={rc}")
+    rc, out = run_main(base, [SPEC_CTX], live=base + [SPEC_CTX], offline=False)
+    check("drift: protection gained the PENDING context -> PROMOTE, rc 1",
+          rc == 1 and "FAIL PROMOTE:" in out and "CONTRACT DRIFT" not in out,
+          f"- rc={rc}")
+    rc, out = run_main(base, [SPEC_CTX], live=base + ["Bogus extra"], offline=False)
+    check("drift: protection has a context in NEITHER list -> CONTRACT DRIFT",
+          rc == 1 and "FAIL CONTRACT DRIFT" in out, f"- rc={rc}")
+    rc, out = run_main(base, [SPEC_CTX], live=base[:-1] + [SPEC_CTX], offline=False)
+    check("drift: protection LOST a required context -> CONTRACT DRIFT",
+          rc == 1 and "FAIL CONTRACT DRIFT" in out, f"- rc={rc}")
+    rc, out = run_main(base + [SPEC_CTX], [], live=base + [SPEC_CTX], offline=False)
+    check("drift: after PROMOTION (pending emptied, protection has it) -> rc 0",
+          rc == 0 and "match branch protection" in out, f"- rc={rc}")
+
+
+def check_resolver_on_recorded_workflows() -> None:
+    ci = ".github/workflows/ci.yml"
+    pr_on = {"pull_request": {"branches": ["main"]}, "push": {"branches": ["main"]}}
+
+    def wf(jobs, on=None):
+        # `True` is how PyYAML parses a bare `on:` key — the recording uses
+        # the parsed shape, not the source spelling.
+        return {True: pr_on if on is None else on, "jobs": jobs}
+
+    def res(ctx, workflows):
+        return T.resolve_required_contexts([ctx], workflows)
+
+    plain = {"x": {"name": "Plain", "runs-on": "ubuntu-latest"}}
+    r, f = res("Plain", {".github/workflows/a.yml": wf(plain)})
+    check("a literal name in another workflow resolves",
+          "Plain" in r and not f, f"- {f}")
+
+    r, f = res("Plain", {".github/workflows/a.yml": wf(plain, on={"push": None})})
+    check("a workflow with no pull_request trigger is a DEADLOCK",
+          any(x.startswith("DEADLOCK") and "pull_request" in x for x in f), f"- {f}")
+    r, f = res("Plain", {".github/workflows/a.yml": wf(
+        plain, on={"pull_request": {"paths": ["docs/**"]}})})
+    check("a pull_request `paths:` filter is a DEADLOCK",
+          any(x.startswith("DEADLOCK") and "paths" in x for x in f), f"- {f}")
+    r, f = res("Plain", {".github/workflows/a.yml": wf(
+        plain, on={"pull_request": {"paths-ignore": ["docs/**"]}})})
+    check("a pull_request `paths-ignore:` filter is a DEADLOCK",
+          any(x.startswith("DEADLOCK") and "paths-ignore" in x for x in f), f"- {f}")
+    r, f = res("Plain", {".github/workflows/a.yml": {
+        "on": ["push", "pull_request"], "jobs": plain}})
+    check("a quoted `on:` list with pull_request resolves", "Plain" in r, f"- {f}")
+
+    r, f = res("publish", {".github/workflows/a.yml": wf(
+        {"publish": {"name": "Publish workspace", "runs-on": "ubuntu-latest"}})})
+    check("another workflow's job ID does NOT resolve (it reports its name)",
+          not r and any(x.startswith("DEADLOCK") for x in f), f"- {r}")
+    r, f = res("solo", {".github/workflows/a.yml": wf(
+        {"solo": {"runs-on": "ubuntu-latest"}})})
+    check("a job with no name resolves by its id (that IS what it reports)",
+          "solo" in r, f"- {f}")
+    r, f = res("Test", {ci: wf({"test": {"name": "Test", "runs-on": "ubuntu-latest"}})})
+    check("ci.yml keeps its job-id alias AND its name (pre-v0.90 behaviour)",
+          "Test" in r and "test" in T.job_contexts(ci, {"test": {"name": "Test"}}))
+
+    r, f = res("${{ matrix.target }} (60s)", {".github/workflows/a.yml": wf(
+        {"fuzz": {"name": "${{ matrix.target }} (60s)", "runs-on": "ubuntu-latest",
+                  "strategy": {"matrix": {"target": ["a", "b"]}}}})})
+    check("a `${{ }}` name does NOT resolve as its literal source text",
+          not r and any(x.startswith("DEADLOCK") for x in f), f"- {r}")
+    r, f = res("Lit", {".github/workflows/a.yml": wf(
+        {"m": {"name": "Lit", "runs-on": "ubuntu-latest",
+               "strategy": {"matrix": {"os": ["x", "y"]}}}})})
+    check("a matrix job does NOT resolve even with a literal name",
+          not r and any(x.startswith("DEADLOCK") for x in f), f"- {r}")
+    r, f = res("Caller", {".github/workflows/a.yml": wf(
+        {"c": {"name": "Caller", "uses": "./.github/workflows/b.yml"}})})
+    check("a reusable-workflow caller does NOT resolve (it reports `a / b`)",
+          not r and any(x.startswith("DEADLOCK") for x in f), f"- {r}")
+
+    r, f = res("Plain", {ci: wf(plain), ".github/workflows/a.yml": wf(plain)})
+    check("one context defined by TWO workflows is AMBIGUOUS, not resolved",
+          not r and len(f) == 1 and f[0].startswith("AMBIGUOUS"), f"- {f}")
+
+    r, f = res("Gated", {".github/workflows/a.yml": wf(
+        {"g": {"name": "Gated", "runs-on": "ubuntu-latest", "if": "false"}})})
+    check("resolution leaves the `if:` check to main() (resolved here)",
+          "Gated" in r, f"- {f}")
+
+
+def check_live_spec_suite_resolution() -> None:
+    """How the REAL spec-suite.yml job resolves, re-derived every run."""
+    wfs = T.load_workflows()
+    path = ".github/workflows/spec-suite.yml"
+    check("spec-suite.yml is among the workflows read", path in wfs)
+    r, f = T.resolve_required_contexts([SPEC_CTX], wfs)
+    check(f"live: {SPEC_CTX!r} resolves to exactly spec-suite.yml",
+          r.get(SPEC_CTX, (None,))[0] == path and not f, f"- {r} {f}")
+    check("live: the pool-share population is still ci.yml ONLY",
+          len(T.load_jobs()) == len((wfs[".github/workflows/ci.yml"] or {})["jobs"]))
+
+
 def main() -> int:
+    # ---- RQ-90-SPECEXEC (#1636): FIRST, through the public main() only, so
+    # this block runs unchanged against the pre-v0.90 script (red there).
+    check_cross_workflow_main()
+    check_drift_window()
+    check_resolver_on_recorded_workflows()
+    check_live_spec_suite_resolution()
+
     # ---- RQ-76-RECORDSHAPE: is the recording shaped like the real file? --
     check_recording_covers_live_shape()
 
