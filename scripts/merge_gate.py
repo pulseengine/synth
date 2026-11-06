@@ -197,6 +197,10 @@ def is_advisory(name: str) -> bool:
 # scripts are invoked as files, not as a package.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ci_pool_tripwire import REQUIRED_CONTEXTS  # noqa: E402
+# v0.90 (RQ-90-SPECEXEC, #1636): contexts about to be required. Branch
+# protection may or may not carry them yet; CHECK1 accepts both states and,
+# once the API lists one, `missing` demands it SUCCESS like any other.
+from ci_pool_tripwire import PENDING_REQUIRED_CONTEXTS  # noqa: E402
 
 
 def branch_currency(head: str, base_ref: str = "origin/main"):
@@ -357,12 +361,24 @@ def decide(roll: dict, required: list[str], current: bool, behind: int,
         # and `not missing` is True over an empty list: with the contract empty
         # this check passed while asserting NOTHING, which is the same shape one
         # level down.
+        #
+        # (v0.90, RQ-90-SPECEXEC #1636) The API set may also carry a PENDING
+        # context — one being added to protection — so the contract is a
+        # RANGE: REQUIRED <= api <= REQUIRED | PENDING. The lower bound is what
+        # it always was (every pinned context must be in the API); the upper
+        # bound still refuses any context that is in neither list. Equality
+        # would refuse every PR from the moment protection gains the pending
+        # context until the pin follows, including the PR that moves the pin.
         "CHECK1": (bool(REQUIRED_CONTEXTS)
-                   and set(required) == set(REQUIRED_CONTEXTS)
+                   and set(REQUIRED_CONTEXTS) <= set(required)
+                   <= set(REQUIRED_CONTEXTS) | set(PENDING_REQUIRED_CONTEXTS)
                    and not missing,
                    {"missing": missing,
-                    "not_in_contract": sorted(set(required) - set(REQUIRED_CONTEXTS)),
+                    "not_in_contract": sorted(set(required) - set(REQUIRED_CONTEXTS)
+                                              - set(PENDING_REQUIRED_CONTEXTS)),
                     "absent_from_api": sorted(set(REQUIRED_CONTEXTS) - set(required)),
+                    "pending_in_api": sorted(set(required)
+                                             & set(PENDING_REQUIRED_CONTEXTS)),
                     "contract_size": len(REQUIRED_CONTEXTS)}),
         # #1269a: the BRANCH must be current. `baseRefOid` agreement is reported
         # beside it, deliberately NOT as the check — it is what was mistaken for
@@ -800,6 +816,33 @@ def self_test() -> int:
         REQUIRED_CONTEXTS.extend(_saved)
     check("fixture shape: the contract was restored after the empty-case test",
           list(REQUIRED_CONTEXTS) == _saved and len(REQUIRED_CONTEXTS) > 0)
+
+    # ---- v0.90 (RQ-90-SPECEXEC, #1636): the PENDING window -------------
+    # Protection gaining a pending context must not refuse every PR; and the
+    # tolerance must not let that context through unrun, nor admit anything
+    # outside both lists.
+    pend = list(PENDING_REQUIRED_CONTEXTS)
+    check("fixture shape: there is a pending context to drive the window with",
+          bool(pend) and not set(pend) & set(real), f"pending={pend}")
+    both = real + pend
+    r = decide({n: "SUCCESS" for n in both}, both, True, 0, True)
+    check("CHECK1: protection carries the PENDING context, all SUCCESS -> pass",
+          r["CHECK1"][0], r["CHECK1"][1])
+    r = decide(dict({n: "SUCCESS" for n in real}, **{pend[0]: "FAILURE"}),
+               both, True, 0, True)
+    check("CHECK1: protection carries the PENDING context, it FAILED -> REFUSED",
+          not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
+    r = decide({n: "SUCCESS" for n in real}, both, True, 0, True)
+    check("CHECK1: protection carries the PENDING context, it NEVER RAN -> REFUSED",
+          not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
+    extra = real + ["Bogus extra"]
+    r = decide({n: "SUCCESS" for n in extra}, extra, True, 0, True)
+    check("CHECK1: a context in NEITHER list, all SUCCESS -> REFUSED",
+          not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
+    shortp = real[:-1] + pend
+    r = decide({n: "SUCCESS" for n in shortp}, shortp, True, 0, True)
+    check("CHECK1: PENDING present but a REQUIRED context absent -> REFUSED",
+          not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
 
     # CHECK3/3b still discriminate, and advisory names are still excluded.
     r = decide(dict(green, **{"Some Job": "FAILURE"}), real, True, 0, True)

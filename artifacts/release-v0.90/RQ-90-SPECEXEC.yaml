@@ -65,8 +65,16 @@ artifacts:
         NOT DONE, and the reason the issue outlives this artifact: #1636's last
         acceptance criterion, making the context required, is the maintainer's
         branch-protection decision. ci_pool_tripwire.py's REQUIRED_CONTEXTS
-        deadlock guard reads ci.yml only, so adding this spec-suite.yml context
-        to it needs that guard taught a second workflow in the same change.
+        deadlock guard read ci.yml only; the follow-up change "ci_pool_tripwire
+        resolves required contexts across every workflow" teaches it every file
+        under .github/workflows/ and pins this context in a separate
+        PENDING_REQUIRED_CONTEXTS list. REQUIRED_CONTEXTS stays equal to live
+        protection, because merge_gate.py's CHECK1 compares it with the API by
+        name. A pending context gets the full deadlock guard, so one defined in
+        no workflow fails DEADLOCK. CHECK1 accepts protection with or without
+        it and, once protection lists it, requires it SUCCESS. The drift
+        cross-check fails PROMOTE once protection carries it. The pool-share
+        ceiling still counts ci.yml only.
         RV32 and AArch64 legs are not built. call.wast's module at line 3 is
         refused whole on cortex-m7dp (#1102), so its float directives execute
         on no leg. Default-bounds float memory accesses execute on no leg.

@@ -33,6 +33,13 @@ Retargeting a REQUIRED context is the one unsafe move: a required NAME that
 never runs blocks every merge with no red to revert. So this also asserts that
 every required context is still DEFINED and still has a `runs-on` — catching a
 rename or a deletion before it can deadlock the branch, rather than after.
+
+(v0.90, RQ-90-SPECEXEC #1636) A required context is RESOLVED ACROSS EVERY
+workflow file under `.github/workflows/`, not only `ci.yml` — branch protection
+names check-run contexts, and a job in `spec-suite.yml` reports one exactly as a
+`ci.yml` job does. The POOL-SHARE count and its ceiling still read `ci.yml`
+ONLY, deliberately: widening the count's population would move the ceiling
+silently. See `resolve_required_contexts` for what resolves and what does not.
 """
 import argparse
 import json
@@ -46,6 +53,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 CI = ROOT / ".github" / "workflows" / "ci.yml"
+WORKFLOWS = ROOT / ".github" / "workflows"
 
 # The ceiling. It is a CEILING and not an equality: a PR may add an
 # `ubuntu-latest` job when it also moves others off, and a ratchet that
@@ -73,6 +81,11 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 # v0.88 (#1564): 46 -> 44. aarch64-oracle and repro-sweep-memory-oracle were
 # pinned to ubuntu-24.04 because the ubuntu-26.04 image ubuntu-latest began
 # rolling to on 2026-10-21 changed their apt toolchain underneath them.
+# v0.90 (RQ-90-SPECEXEC, #1636): the population of this count is UNCHANGED —
+# ci.yml's job definitions only — even though required contexts now resolve
+# across every workflow. Counting the other workflows' jobs too would move the
+# number with no job having moved, which is the silent drift this ceiling
+# exists to make visible. Widen it only with a re-derived ceiling and a reason.
 UBUNTU_LATEST_CEILING = 44
 
 EXACT_LABEL = "ubuntu-latest"
@@ -232,6 +245,124 @@ def load_jobs():
     return doc["jobs"]
 
 
+def load_workflows():
+    """{relative path: parsed document} for every workflow file, sorted."""
+    out = {}
+    for p in sorted(list(WORKFLOWS.glob("*.yml")) + list(WORKFLOWS.glob("*.yaml"))):
+        out[str(p.relative_to(ROOT))] = yaml.safe_load(p.read_text()) or {}
+    return out
+
+
+CI_REL = ".github/workflows/ci.yml"
+
+
+def _triggers(doc):
+    # PyYAML (YAML 1.1) parses the bare key `on` as the boolean True. Reading
+    # only "on" would see NO triggers on every workflow and the trigger check
+    # below would be blind; reading only True would break on a quoted "on".
+    on = doc.get("on", doc.get(True))
+    if isinstance(on, str):
+        return {on: None}
+    if isinstance(on, list):
+        return {k: None for k in on}
+    return on if isinstance(on, dict) else {}
+
+
+def trigger_problem(doc):
+    """Why this workflow may NEVER report on a pull request, or None.
+
+    A required context that does not run on a PR is a NAME that never reports:
+    the deadlock, reached through the workflow's `on:` rather than the job."""
+    trig = _triggers(doc)
+    if "pull_request" not in trig:
+        return (f"its workflow does not trigger on `pull_request` "
+                f"(triggers: {sorted(map(str, trig))})")
+    pr = trig.get("pull_request") or {}
+    if isinstance(pr, dict):
+        for k in ("paths", "paths-ignore"):
+            if k in pr:
+                return (f"its workflow's `pull_request` trigger carries a `{k}:` "
+                        f"filter, so a PR outside it never reports the context")
+    return None
+
+
+def job_contexts(path, jobs):
+    """The check-run contexts a workflow's jobs report, as {context: job}.
+
+    A job reports its `name:`, or its job id when it has no name. What does NOT
+    resolve, on purpose — each would make a required context look defined when
+    the context GitHub actually reports is a different string:
+      * a `name:` containing `${{` — the reported name is the EXPANSION;
+      * a job with `strategy.matrix` — GitHub appends the matrix values, so even
+        a literal name reports as `name (a, b)`;
+      * a job-level `uses:` (a reusable-workflow call) — it reports as
+        `caller / callee`.
+    ci.yml ALONE also keeps its historical job-id alias (`by_name.setdefault`),
+    so ci.yml's resolution is byte-identical to the pre-v0.90 guard. It is NOT
+    extended to other workflows: there a required context spelled `publish` or
+    `fuzz` would resolve to a job that reports a different name."""
+    out = {}
+    for key, j in (jobs or {}).items():
+        if not isinstance(j, dict):
+            continue
+        name = j.get("name", key)
+        if path == CI_REL:
+            out[name] = j
+            out.setdefault(key, j)
+            continue
+        if "${{" in str(name):
+            continue
+        if isinstance(j.get("strategy"), dict) and "matrix" in j["strategy"]:
+            continue
+        if "uses" in j:
+            continue
+        out[str(name)] = j
+    return out
+
+
+def resolve_required_contexts(contexts, workflows):
+    """({context: (path, job)}, [failure]) for the pinned required contexts.
+
+    TWO WORKFLOWS DEFINING ONE REQUIRED CONTEXT is a failure (AMBIGUOUS): GitHub
+    would carry two check runs with the same name, and which one satisfies the
+    branch rule is not something this repository controls — a green one can
+    stand in for a red one. A context defined in NO workflow is the DEADLOCK it
+    always was. (Duplicates INSIDE ci.yml keep their pre-v0.90 behaviour, the
+    later definition wins, so the ci.yml path is unchanged.)"""
+    defs = {}
+    for path, doc in workflows.items():
+        for ctx, j in job_contexts(path, (doc or {}).get("jobs")).items():
+            defs.setdefault(ctx, []).append((path, j, doc))
+    resolved, failures = {}, []
+    for c in contexts:
+        hits = defs.get(c, [])
+        if not hits:
+            failures.append(
+                f"DEADLOCK: required context `{c}` is not defined in any "
+                f"workflow under .github/workflows/. "
+                f"A required NAME that never runs blocks every merge, with no "
+                f"red to revert — this is the one unsafe move in this lane. "
+                f"If the context was deliberately renamed or retired, update "
+                f"REQUIRED_CONTEXTS and the branch protection TOGETHER.")
+            continue
+        if len(hits) > 1:
+            failures.append(
+                f"AMBIGUOUS: required context `{c}` is defined by "
+                f"{len(hits)} jobs ({', '.join(h[0] for h in hits)}). Two check "
+                f"runs with one name let a green one stand in for a red one. "
+                f"Rename all but one.")
+            continue
+        path, j, doc = hits[0]
+        why = trigger_problem(doc)
+        if why is not None:
+            failures.append(
+                f"DEADLOCK: required context `{c}` ({path}) may never report: "
+                f"{why}.")
+            continue
+        resolved[c] = (path, j)
+    return resolved, failures
+
+
 # The required contexts, PINNED. Read from
 # `repos/<repo>/branches/main/protection/required_status_checks/contexts`
 # on 2026-09-23 and committed here on purpose:
@@ -256,6 +387,32 @@ REQUIRED_CONTEXTS = [
     "Bazel Build & Proofs",
     "Kani Verification",
     "Rivet Validation",
+]
+
+# v0.90 (RQ-90-SPECEXEC, #1636): contexts ABOUT TO BE required — the maintainer
+# has decided to add them to branch protection, and protection does not carry
+# them yet. Kept apart from REQUIRED_CONTEXTS on purpose, because that list is
+# also the merge gate's CONTRACT (`merge_gate.py` imports it, CHECK1 compares it
+# with the live API by name): pinning a context protection does not have yet
+# would make CHECK1 refuse EVERY PR until protection caught up.
+#
+# What a pending context gets, and what it does not:
+#   * the DEADLOCK guard below resolves it exactly like a required one — a
+#     pending context defined in no workflow, gated off by `if:`, or in a
+#     workflow that does not run on `pull_request` FAILS. Adding a context
+#     to protection is only safe once that holds, which is why it is checked
+#     BEFORE the flip.
+#   * the merge gate tolerates protection carrying it or not (CHECK1:
+#     REQUIRED <= api <= REQUIRED | PENDING), and once protection carries it,
+#     CHECK1's `missing` demands it SUCCESS like any required context.
+#   * the drift cross-check FAILS (PROMOTE) once protection carries it, so the
+#     window ends in a one-line diff moving it into REQUIRED_CONTEXTS rather
+#     than lasting forever.
+# The two lists must be disjoint; the cross-check below fails if not.
+PENDING_REQUIRED_CONTEXTS = [
+    # defined in spec-suite.yml, not ci.yml — the reason the guard now
+    # resolves required contexts across every workflow file.
+    "spec-suite execution (#1636)",
 ]
 
 
@@ -317,21 +474,27 @@ def main():
             f"baseline rule, applied here).")
 
     # ---- the deadlock guard: ALWAYS runs, from the pinned contract ---------
-    by_name = {}
-    for key, j in jobs.items():
-        by_name[j.get("name", key)] = j
-        by_name.setdefault(key, j)
+    # GUARDED = the required contexts AND the pending ones: a context about to
+    # be required must already pass every check a required one does.
+    overlap = sorted(set(REQUIRED_CONTEXTS) & set(PENDING_REQUIRED_CONTEXTS))
+    if overlap:
+        failures.append(
+            f"CONTRACT: {overlap} is in BOTH REQUIRED_CONTEXTS and "
+            f"PENDING_REQUIRED_CONTEXTS. A context is required or pending, "
+            f"never both — remove it from PENDING when promoting it.")
+    guarded = list(REQUIRED_CONTEXTS) + [
+        c for c in PENDING_REQUIRED_CONTEXTS if c not in REQUIRED_CONTEXTS]
+    resolved, res_failures = resolve_required_contexts(
+        guarded, load_workflows())
+    failures.extend(res_failures)
     on_hosted = 0
-    for c in REQUIRED_CONTEXTS:
-        j = by_name.get(c)
-        if j is None:
-            failures.append(
-                f"DEADLOCK: required context `{c}` is not defined in ci.yml. "
-                f"A required NAME that never runs blocks every merge, with no "
-                f"red to revert — this is the one unsafe move in this lane. "
-                f"If the context was deliberately renamed or retired, update "
-                f"REQUIRED_CONTEXTS and the branch protection TOGETHER.")
+    for c in guarded:
+        if c not in resolved:
             continue
+        path, j = resolved[c]
+        kind = "pending" if c in PENDING_REQUIRED_CONTEXTS else "required"
+        if path != CI_REL:
+            print(f"ci-pool: {kind} context {c!r} resolves in {path}")
         if not j.get("runs-on"):
             failures.append(f"DEADLOCK: required context `{c}` has no `runs-on:`.")
             continue
@@ -350,14 +513,17 @@ def main():
                 f"every merge with no red to revert. Remove the condition, or "
                 f"retire the context from branch protection FIRST.")
             continue
-        if pool_of(j.get("runs-on")) == EXACT_LABEL:
+        if pool_of(j.get("runs-on")) == EXACT_LABEL and kind == "required":
             on_hosted += 1
     print(f"ci-pool: {len(REQUIRED_CONTEXTS)} required contexts (pinned), "
           f"{on_hosted} on {EXACT_LABEL}, "
           f"{len(REQUIRED_CONTEXTS) - on_hosted} elsewhere")
+    if PENDING_REQUIRED_CONTEXTS:
+        print(f"ci-pool: {len(PENDING_REQUIRED_CONTEXTS)} pending context(s) "
+              f"guarded as if required: {PENDING_REQUIRED_CONTEXTS}")
 
     # RQ-73-CIPOOL (#1062 increment 4): the migration-ready set, DERIVED.
-    ready, blocked = pep668_pool_ready(jobs, set(REQUIRED_CONTEXTS))
+    ready, blocked = pep668_pool_ready(jobs, set(guarded))
     n_req = sum(1 for v in blocked.values() if v.startswith("required"))
     n_apt = sum(1 for v in blocked.values() if "apt/sudo" in v)
     n_pip = sum(1 for v in blocked.values() if "PEP 668" in v)
@@ -366,7 +532,7 @@ def main():
     # A required context must NEVER be reported movable: retargeting one leaves
     # a NAME that never runs, which blocks every merge with no red to revert.
     for name in ready:
-        if name in set(REQUIRED_CONTEXTS):
+        if name in set(guarded):
             failures.append(
                 f"ci-pool: {name!r} is a REQUIRED context and was reported "
                 f"PEP668_POOL_READY. Moving it deadlocks every merge.")
@@ -390,10 +556,9 @@ def main():
     # contexts already run self-hosted today. "Required contexts can never move"
     # is false as a general statement; "a required context that needs apt can
     # never run self-hosted" is the true one, and is what this checks.
-    for jid, j in jobs.items():
-        name = j.get("name") or jid
-        if name not in set(REQUIRED_CONTEXTS):
-            continue
+    # v0.90: walks the RESOLVED required jobs, so a required context defined
+    # outside ci.yml is checked too (it used to walk ci.yml's jobs only).
+    for name, (_path, j) in resolved.items():
         if pool_of(j.get("runs-on")) != "self-hosted":
             continue
         body = job_text(j)
@@ -419,14 +584,29 @@ def main():
             print("ci-pool: live required-context list UNAVAILABLE (no gh, no "
                   "network, or no token) — the pinned contract above still ran; "
                   "only the drift cross-check is skipped")
-        elif sorted(live) != sorted(REQUIRED_CONTEXTS):
-            failures.append(
-                f"CONTRACT DRIFT: branch protection requires {sorted(live)} but "
-                f"REQUIRED_CONTEXTS pins {sorted(REQUIRED_CONTEXTS)}. A context "
-                f"appearing or vanishing is worth a visible diff, not a silent "
-                f"adoption — reconcile them in one PR.")
         else:
-            print("ci-pool: pinned required contexts match branch protection")
+            live_s, req_s = set(live), set(REQUIRED_CONTEXTS)
+            pend_s = set(PENDING_REQUIRED_CONTEXTS)
+            promoted = sorted(live_s & pend_s)
+            if not (req_s <= live_s <= req_s | pend_s):
+                failures.append(
+                    f"CONTRACT DRIFT: branch protection requires {sorted(live)} but "
+                    f"REQUIRED_CONTEXTS pins {sorted(REQUIRED_CONTEXTS)} (pending "
+                    f"{sorted(pend_s)}). A context "
+                    f"appearing or vanishing is worth a visible diff, not a silent "
+                    f"adoption — reconcile them in one PR.")
+            elif promoted:
+                failures.append(
+                    f"PROMOTE: branch protection now requires pending context(s) "
+                    f"{promoted}. Move them from PENDING_REQUIRED_CONTEXTS into "
+                    f"REQUIRED_CONTEXTS in one PR, so the merge gate's contract "
+                    f"equals protection again (merge_gate CHECK1 accepts both "
+                    f"states, so that PR can merge).")
+            else:
+                print("ci-pool: pinned required contexts match branch protection")
+                for c in sorted(pend_s):
+                    print(f"ci-pool: pending context {c!r} is not yet in branch "
+                          f"protection")
 
     for f in failures:
         print(f"FAIL {f}")
