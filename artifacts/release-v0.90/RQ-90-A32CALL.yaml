@@ -1,0 +1,53 @@
+artifacts:
+  - id: RQ-90-A32CALL
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "A self-contained cortex-r5 image patches every internal A32 bl, or refuses"
+    description: >
+        HANG, exit 0. The self-contained `--target cortex-r5` builder ships
+        every internal A32 `bl` as the encoder placeholder `ebfffffe` (a
+        branch-and-link to itself) and prints `Internal calls: 1 resolved in
+        place`. The no-target build of the same module already refuses (an
+        ArmCall relocation the standalone builder cannot patch), so the two
+        A32 self-contained paths disagree. #1639 does not cover it: the
+        reproducer has no branches.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Compile the
+        #1645 module (`(module (func $sq (param i32) (result i32) (i32.add
+        (i32.mul (local.get 0) (local.get 0)) (i32.const 1))) (func (export
+        "callsq") (param i32 i32) (result i32) (call $sq (local.get 0))))`)
+        with `synth compile x.wat -b arm --target cortex-r5 --all-exports -o
+        r5.elf`, extract .text (`arm-none-eabi-objcopy -O binary -j .text`)
+        and count the little-endian words equal to 0xebfffffe. A count of 0
+        together with callsq(3, 0) = 10 under UC_MODE_ARM refutes it.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree: LIVE. Compile rc 0, stdout
+        `Internal calls: 1 resolved in place (standalone executable)`; .text
+        is 14 words, and the twelfth (offset 0x2c) is 0xebfffffe: 1 unpatched
+        bl.
+
+        CITATION: #1645 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1645"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 every internal A32 call in a self-contained
+        cortex-r5 image is patched to its callee, or the build refuses loudly
+        as the no-target build does, and an execution differential against
+        wasmtime covers a direct call and a call inside a loop — delivered
+        with an execution-verified result where the lane is a wrong-code fix,
+        or REFUTED with the measurement that refutes it; and the refuting
+        command above is RUN FIRST and its result reported either way

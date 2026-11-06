@@ -1,0 +1,52 @@
+artifacts:
+  - id: RQ-90-GATEPLACE
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "Decide whether the wrong-code differentials become required checks"
+    description: >
+        Carried from v0.89 (RQ-89-GATEPLACE, blocked on a maintainer
+        decision). The wrong-code differentials are potent but run in jobs
+        outside the nine required status checks, so a pull request can merge
+        with any of them red. Changing the required set is a branch-protection
+        decision for the maintainer; this lane carries the measured cost and
+        the decision.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: `gh api
+        repos/pulseengine/synth/branches/main/protection/required_status_checks/contexts`,
+        then map each wrong-code differential in .github/workflows/ci.yml to
+        its job name. If every one sits in a required context, the lane is
+        moot.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree: LIVE. Required: Format, Clippy,
+        Test, Z3 Verification, Claim Check, Version Pin Sweep, Bazel Build &
+        Proofs, Kani Verification, Rivet Validation. The differentials run in
+        other jobs: verwidth_1563, npa_const_addr,
+        npa_offset_cross_segment_1580, optloop_backedge_1206 and memk_i64_1622
+        in trap-semantics-oracle; vfp_home_alias_1436 and
+        island_offset_invariant_345 in litpool-islands-345; r0_clobber_1635 in
+        repro-sweep-selector-oracle. None is required.
+
+        CITATION: #1573 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1573"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 the maintainer decides whether the jobs running the
+        wrong-code differentials become required checks, and the decision and
+        its critical-path cost are recorded — delivered with an
+        execution-verified result where the lane is a wrong-code fix, or
+        REFUTED with the measurement that refutes it; and the refuting command
+        above is RUN FIRST and its result reported either way

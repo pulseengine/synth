@@ -1,0 +1,42 @@
+# v0.90 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS, in either spelling. A figure parked here is a
+# second copy of a measured number, and a second copy is how a number goes stale.
+# The release's numbers live in the artifact records that measured them and in the
+# CHANGELOG section that cites those records. Re-derive; do not read a count here.
+#
+# THEME, carried from v0.89: SOLVE THE SERIOUS ISSUES. Wrong code comes first: a
+# module that compiles cleanly and returns a different answer than the reference is
+# the defect this compiler exists to prevent, and a release that only hardens the
+# instruments around such a defect has not moved it.
+#
+# WHERE THE WRONG CODE IS. The ARM-state (Cortex-R and no-target) path: label and
+# guard branches, internal calls and the entry state of self-contained images. The
+# safety-bounds and trap paths the new spec-execution runner exposed: a partial
+# store before a trap, a missing indirect-call type trap, and memory-k bulk ops that
+# cannot trap at all. The native-pointer-abi residue: the straddling access and the
+# dynamic shape a maintainer decision still holds.
+#
+# SO THE ORDER OF WORK, earned rather than asserted:
+#
+#   * WRONG-CODE LANES FIRST. Each is delivered as an execution-verified fix, red
+#     before and green after, against the reference runtime, or as a loud refusal
+#     where supporting the input is out of scope. A refusal is a correct outcome; a
+#     silent wrong answer never is.
+#   * EVERY REFUTING COMMAND WAS RUN AT PLANNING, and its output is in its record.
+#     Run it again before building; a defect already gone is reported with its
+#     outputs and closed, not re-fixed.
+#   * A FIX THAT NARROWS REACH SAYS WHAT IT COSTS. Count what newly refuses, and why,
+#     before calling the change done.
+#   * OPEN PULL REQUESTS WITH RECORDS: the records reserved here carry the same id and
+#     path the delivering pull request uses, so it rebases onto this one and writes
+#     its record over the planned one.
+#
+# PROCESS LANES are kept to the ones the predecessor reviews found, plus the gate
+# placement decision and the reporter's re-derivable evidence.
+#
+# REPORTER CORRESPONDENCE is the maintainer's to send. A reply leads with what changed
+# for the reporter; nothing is posted without the maintainer's word.
+#
+# The anchor moves to the predecessor's tag in this pull request, across every site
+# the ledger pins, with the counts read off the gate's own printed anchor line.

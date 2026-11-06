@@ -1,0 +1,49 @@
+artifacts:
+  - id: RQ-90-FALCON7
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "The falcon execution figures for #1318 are re-derivable from the tree"
+    description: >
+        The #1318 execution evidence (step 1000 of 1000 on a garbage stack and
+        on a zeroed one, configure 42 of 42, cabi_realloc 60 of 60) rests on a
+        harness, falcon_exec.py, that is not committed, so the figure cannot
+        be re-derived from the tree (v0.89 cold review, U1). #1318 stays OPEN
+        until the harness and its evidence are committed and re-run; this lane
+        commits them and re-measures against the reporter's module, fetched
+        from the issue attachment by a recorded sha256 rather than committed
+        if its licence does not allow that.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: `git
+        ls-files | grep -c falcon_exec` and `git grep -n falcon_exec`. A
+        tracked harness that reproduces the published figures refutes it.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree: LIVE. `git ls-files | grep -c
+        falcon_exec` prints 0. `git grep` finds the name only in prose:
+        CHANGELOG.md (stating the harness is not committed),
+        artifacts/release-v0.89/RQ-89-FALCON6.yaml and RQ-89-FALCONSTEP.yaml.
+
+        CITATION: #1318 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      issue: "#1318"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 the falcon execution harness is committed and wired,
+        its input is fetched by a pinned sha256, and re-running it reproduces
+        the published step, configure and cabi_realloc figures or replaces
+        them with the re-measured ones — delivered with an execution-verified
+        result where the lane is a wrong-code fix, or REFUTED with the
+        measurement that refutes it; and the refuting command above is RUN
+        FIRST and its result reported either way

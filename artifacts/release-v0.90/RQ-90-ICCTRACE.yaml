@@ -1,0 +1,43 @@
+artifacts:
+  - id: RQ-90-ICCTRACE
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "issue_closure_check refuses a missing --since-tag with a message, not a traceback"
+    description: >
+        The v0.89.1 cold review found `issue_closure_check.py` crashes with an
+        uncaught CalledProcessError traceback when --since-tag names a tag
+        that does not exist yet, instead of refusing with a message.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: `python3
+        scripts/issue_closure_check.py --release v0.90 --since-tag v0.90.0
+        --allow-unclosed` (a tag that does not exist). A one-line refusal with
+        no traceback refutes it.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree: LIVE. rc 1 with a Python traceback
+        ending `subprocess.CalledProcessError: Command '['gh', 'api',
+        'repos/pulseengine/synth/commits/v0.90.0', '--jq',
+        '.commit.committer.date']' returned non-zero exit status 1.`
+
+        CITATION: #1655 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1655"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 a missing --since-tag is refused with a message
+        naming the tag and a non-zero exit, with a test for it — delivered
+        with an execution-verified result where the lane is a wrong-code fix,
+        or REFUTED with the measurement that refutes it; and the refuting
+        command above is RUN FIRST and its result reported either way

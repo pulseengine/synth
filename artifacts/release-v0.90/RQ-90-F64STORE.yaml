@@ -1,0 +1,55 @@
+artifacts:
+  - id: RQ-90-F64STORE
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "An out-of-bounds f64.store under --safety-bounds software writes nothing before it traps"
+    description: >
+        SILENT MISCOMPILE (a partial write). Under --safety-bounds software an
+        f64.store is lowered as two 32-bit stores, each with its own bounds
+        check, so an access straddling the end of memory writes its low word
+        and then traps. The spec requires a trapping store to write nothing.
+        i64.store is checked once and is correct. Found by the #1636
+        spec-execution runner (PR #1638).
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Run PR
+        #1638's runner (scripts/repro/spec_exec_1636_differential.py at
+        pr/1638@5b94dead, with selector_parity_197_differential.py beside it
+        and the tests/spec-testsuite submodule checked out) as `--only
+        memory_trap.wast`. Statically: compile `(module (memory 1) (func
+        (export "st") (param i32 f64) (f64.store (local.get 0) (local.get
+        1))))` with `--target cortex-m7dp --safety-bounds software
+        --relocatable` and disassemble; a str before the second guard is the
+        defect.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree: LIVE. Runner: cortex-m7dp executed
+        180 = pass 178 + fail 2, both wrong-value (the reads after the partial
+        store; both are entries of the PR's baseline, so it reports PASS).
+        Disassembly: guard, `str.w r2, [fp, r0]`, then the second guard, then
+        `str.w r3, [fp, ip]`: the low word is stored before the high word's
+        check.
+
+        CITATION: #1642 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1642"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 an out-of-bounds f64.store traps with memory
+        unchanged, on every target and every bounds mode that accepts it, with
+        an execution differential that reads memory back after the trap —
+        delivered with an execution-verified result where the lane is a
+        wrong-code fix, or REFUTED with the measurement that refutes it; and
+        the refuting command above is RUN FIRST and its result reported either
+        way

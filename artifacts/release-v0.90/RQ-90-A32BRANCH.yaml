@@ -1,0 +1,74 @@
+artifacts:
+  - id: RQ-90-A32BRANCH
+    type: system-req
+    release: v0.90
+    status: proposed
+    title: "A32 branches are resolved in A32 word units, and a branch the A32 encoder would get wrong is refused"
+    description: >
+        SILENT MISCOMPILE and HANG on every A32 build (--target cortex-r5, and
+        every ARM build with no --target, whose default ISA is Arm32). #1639:
+        every A32 label branch ships as the encoder placeholder, a zero
+        displacement (`b pc+8`) with no relocation, so
+        block/br_if/loop/br_table/if take the wrong path. #1641: the numeric
+        guard branches the selectors write in Thumb units are read by the A32
+        encoder in words, so every --safety-bounds software guard is a branch
+        to itself. #1206's A32 counterpart is the same class: v0.89.2
+        corrected the Thumb-2 estimator and stated that the ARM-state bytes of
+        the affected functions change and are still wrong; it is planned here,
+        keyed on #1639, rather than as a second artifact on #1206, which
+        v0.89.2 already authorises.
+
+        PLANNED HERE FOR PR #1644, which carries this artifact under
+        artifacts/release-v0.89/ with `release: v0.89` (at pr/1644@6b58802f).
+        That PR rebases onto this planning PR and moves its record over this
+        file, same id, same path under artifacts/release-v0.90/, with
+        `release: v0.90`.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: Run PR
+        #1644's oracle (scripts/repro/a32_control_flow_1639_differential.py
+        and its two fixtures at pr/1644@6b58802f) against a main build:
+        `SYNTH=target/debug/synth python3
+        scripts/repro/a32_control_flow_1639_differential.py`. For #1206's
+        shape, compile the #1206 countdown function (the WAT in #1206) with
+        `-b arm --target cortex-r5 --relocatable --all-exports` and execute
+        countdown(5) under unicorn UC_MODE_ARM against wasmtime. If every A32
+        leg matches, the defect is gone.
+
+        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
+        0.89.2 debug build from this tree: LIVE. The #1644 oracle exits 1,
+        ORACLE: FAIL on all five A32 legs: cortex-r5 --relocatable 18/55
+        vectors match, no-target --relocatable 18/55, the self-contained
+        cortex-r5 image entered at its symbol 13/51, cortex-r5 --safety-bounds
+        software 0/15 and no-target --safety-bounds software 0/15 (every
+        guarded load and store HANGs at its guard). The two Thumb controls
+        match, 55/55 and 15/15. dowhile(6, 0) returns 0x5 against wasmtime
+        0x12. The #1206 countdown on cortex-r5: countdown(0) and (1) match,
+        countdown(5) returns 0x5 and countdown(10) returns 0xa against
+        wasmtime 0x0 (compile rc 0).
+
+        CITATION: #1639 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1639"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 every A32 label branch and every selector-written
+        numeric branch reaches the A32 encoder in A32 word units, a branch
+        that cannot be expressed is refused rather than encoded, and an
+        execution differential against wasmtime covers block/br_if, loop
+        back-edges including #1206's countdown and a do-while, br_table,
+        if/else, a call in a loop, the div/rem guards and --safety-bounds
+        software on cortex-r5 and no-target — delivered with an
+        execution-verified result where the lane is a wrong-code fix, or
+        REFUTED with the measurement that refutes it; and the refuting command
+        above is RUN FIRST and its result reported either way
