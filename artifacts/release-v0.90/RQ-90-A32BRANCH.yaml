@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-A32BRANCH
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "A32 branches are resolved in A32 word units, and a branch the A32 encoder would get wrong is refused"
     description: >
         SILENT MISCOMPILE and HANG on every A32 build (--target cortex-r5, and
@@ -12,17 +12,16 @@ artifacts:
         block/br_if/loop/br_table/if take the wrong path. #1641: the numeric
         guard branches the selectors write in Thumb units are read by the A32
         encoder in words, so every --safety-bounds software guard is a branch
-        to itself. #1206's A32 counterpart is the same class: v0.89.2
-        corrected the Thumb-2 estimator and stated that the ARM-state bytes of
-        the affected functions change and are still wrong; it is planned here,
-        keyed on #1639, rather than as a second artifact on #1206, which
-        v0.89.2 already authorises.
-
-        PLANNED HERE FOR PR #1644, which carries this artifact under
-        artifacts/release-v0.89/ with `release: v0.89` (at pr/1644@6b58802f).
-        That PR rebases onto this planning PR and moves its record over this
-        file, same id, same path under artifacts/release-v0.90/, with
-        `release: v0.90`.
+        to itself. The same unit mismatch hits two producers neither issue
+        names: every i32 div_u/div_s/rem_u/rem_s trap guard (a non-zero
+        runtime divisor spins forever), and the optimized path's pre-resolved
+        numeric branches, which include #1206's eight loop back-edges.
+        #1206's A32 counterpart is that last class: v0.89.2 corrected the
+        Thumb-2 estimator and stated that the ARM-state bytes of the affected
+        functions change and are still wrong; it is delivered here, keyed on
+        #1639, rather than as a second artifact on #1206, which v0.89.2
+        already authorises. #1641 has its own record, RQ-90-A32GUARD, with
+        the same delivering PR.
 
         REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
         refutation is a legitimate outcome, reported with numbers: Run PR
@@ -61,6 +60,54 @@ artifacts:
       issue: "#1639"
       verification-track: manual
       issue-scope: closes
+      landed: "PR #1644 - #1639 - DELIVERED: a wrong-code fix. The refuting command was RE-RUN FIRST on main c20d37b2 (v0.89.2 plus the v0.90 planning PR) and the defect was LIVE: the #1644 oracle's five A32 legs matched 18/55, 18/55, 13/51, 0/15 and 0/15, and the #1206 countdown on cortex-r5 --relocatable returned 0x5 for countdown(5) and 0xa for countdown(10) against wasmtime 0x0. Fix, in crates/synth-backend/src/arm_backend.rs: the A32 arm of the emit pipeline now runs resolve_a32_branches and validate_a32_branch_targets. A label branch is resolved against the A32 byte position of its label. A numeric branch is RETARGETED: its Thumb-unit offset is decoded into a target instruction by walking the span with the real Thumb-2 encoder's sizes, then re-expressed as the A32 word distance to that instruction. The gate refuses any surviving label branch (A32 records no relocation for one), any target that is not an A32 instruction start, and any imm24 overflow. The Thumb-2 path is untouched; on it, v0.89.2's estimator landing check (validate_estimated_branch_landings) still runs, and the A32 arm does not run it. The A32 encoder comment that said a backward branch of N instructions is offset -(N + 2) now states the units its arithmetic uses: offset = (target - branch) / 4, so that branch is offset -N. No literal islands are involved: A32 has no LdrSym lowering."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime-py, on the tree rebased
+        onto main c20d37b2. Wired oracle
+        scripts/repro/a32_control_flow_1639_differential.py, with fixtures
+        a32_control_flow_1639.wat, a32_safety_bounds_1641.wat and (shared with
+        the Thumb #1206 oracle) optloop_backedge_1206.wat, declares
+        `emulations >= 1541`. Legs: cortex-r5 --relocatable and no-target
+        --relocatable (linked with arm-none-eabi-ld), the cortex-r5
+        self-contained image (optimized path, entered at symbol & ~1 in ARM
+        state and NOT booted, because of #1640), cortex-r5 and no-target with
+        --safety-bounds software, the cortex-r5 and no-target self-contained
+        images of the eight #1206 loops (80 vectors each, the Thumb oracle's
+        set, every export required to compile on the optimized path), and
+        cortex-m4 controls. RED on c20d37b2: 908 of the 1471 A32 vectors wrong
+        or hung (18/55, 18/55, 13/51, 0/15, 0/15, and 257/640 on each #1206
+        image leg), the cortex-m4 controls green. GREEN on the fix: 1541 of
+        1541. The #1206 legs reproduce the v0.89.2 cold review's independent
+        F3 harness (383 of 640 wrong on cortex-r5 before, 0 after); its
+        earlier 21/42 -> 42/42 figure came from a different vector set.
+        Potency: a planted off-by-one instruction in the numeric retarget
+        (k.saturating_sub(1)) reds every A32 leg (43/55, 43/55, 34/51, 7/15,
+        7/15, 265/640, 265/640) while the controls stay green. Unit tests pin
+        the label resolution, the guard retarget and the gate's refusals. The
+        Thumb oracles this change sits beside stay green on the rebased
+        binary: optloop_backedge_1206_differential.py 3840 of 3840 and
+        r0_clobber_1635_differential.py 64 of 64. An estimator-vs-encoder
+        probe (scratch, not committed) decoded every estimator-resolved
+        numeric branch reaching the A32 arm both ways over 499 corpus files
+        (scripts/repro, tests/wast, tests/wat, the spec testsuite) on
+        cortex-r5 and no-target self-contained: 106 branches each, 0
+        disagreements. Census at the original base df847a16 (PR #1644 before
+        the rebase), 471 inputs x 21 configurations: newly refused 0, newly
+        accepted 0, every Thumb-2, RV32 and AArch64 output byte-identical, and
+        every changed A32 function (459 of 2077 --relocatable, 693 of 1991
+        with --safety-bounds software, 179 of 869 cortex-r5 self-contained,
+        137 of 1119 no-target self-contained) the same length and containing
+        an A32 B/Bcc word. An A32 adaptation of the #973 corpus sweep at that
+        base (scratch): cortex-r5 --relocatable 3747 vectors, 0 mismatches
+        (889 mismatches and 14 faults before); the cortex-r5 self-contained
+        image 3144 vectors, 12 mismatches, all
+        i64_width_vstack_946.wat:f_brif, whose cortex-m4 build emits the same
+        sequence; --safety-bounds software 5432 vectors, 36 mismatches, all
+        mem_grow_539 (the #539 fixed-memory envelope), identical before.
+        NOT FIXED, recorded for triage: the self-contained cortex-r5 image
+        leaves an internal A32 `bl` unpatched (#1645, RQ-90-A32CALL), and
+        self-contained A32 images are entered in Thumb state (#1640,
+        RQ-90-A32ENTRY).
       done-when: >
         manual:2027-03-31 every A32 label branch and every selector-written
         numeric branch reaches the A32 encoder in A32 word units, a branch

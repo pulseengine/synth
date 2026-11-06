@@ -4664,13 +4664,16 @@ claims:
     #   tag's binary the six-target run fails 1914 of 3840 (319 of 640 on m55).
     #   Paired control: `398507` rc=0 and `397867` rc=1 on this tree;
     #   `398507` rc=1 and `397867` rc=0 on main 14dbc9ed.
-    # v0.90 A32BRANCH (#1639/#1641): 398507 -> 398768 (+261). The new
-    #   a32_control_flow_1639_differential.py declares `emulations >= 261`
-    #   (261 measured via oracle_run.py: 55 control-flow vectors on each of
+    # v0.90 A32BRANCH (#1639/#1641): 398507 -> 400048 (+1541). The new
+    #   a32_control_flow_1639_differential.py declares `emulations >= 1541`
+    #   (1541 measured via oracle_run.py: 55 control-flow vectors on each of
     #   cortex-r5/no-target --relocatable and the cortex-m4 control, 51 on
     #   the cortex-r5 self-contained image, 15 safety-bounds vectors on each
-    #   of cortex-r5/no-target/cortex-m4). Paired control: PENDING
-    text: "--exact-emulation-floor 398768"
+    #   of cortex-r5/no-target/cortex-m4, and 640 on each of the cortex-r5
+    #   and no-target self-contained images of optloop_backedge_1206.wat).
+    #   Paired control: `400048` rc=0 and `398507` rc=1 on this tree;
+    #   `400048` rc=1 and `398507` rc=0 on main c20d37b2.
+    text: "--exact-emulation-floor 400048"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

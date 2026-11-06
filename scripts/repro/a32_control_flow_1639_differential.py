@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 261
+# ci-checks: emulations >= 1541
 """#1639 / #1641 — A32 control-flow execution differential (unicorn vs wasmtime).
 
 WHAT WAS WRONG (measured at v0.89.0 dd2b791a and main df847a16):
@@ -35,6 +35,13 @@ THE ORACLE. Two fixtures, every export `(i32, i32) -> i32`:
     OPTIMIZED path accepts, and the four i32 div/rem trap guards.
   * `a32_safety_bounds_1641.wat` — guarded i32 and byte accesses, in bounds
     and out of bounds, with and without a static offset, one inside a loop.
+  * `optloop_backedge_1206.wat` (shared with the Thumb-2 #1206 oracle) — the
+    eight OPTIMIZED-path loops whose back-edges are numeric branches the
+    size estimator places before encoding (#1206's countdown, count-up and
+    count-down by const and by param, from zero, a memory.size bound, and
+    the R7 control). On A32 those
+    back-edges are the #1641 unit class: before this fix every one of them
+    left its function on cortex-r5 (v0.89.2 cold review, F3).
 
 compiled on these legs, every vector executed under unicorn and compared with
 wasmtime (fresh instance and fresh zeroed memory per vector on both sides):
@@ -50,6 +57,14 @@ wasmtime (fresh instance and fresh zeroed memory per vector on both sides):
                   is an R_ARM_CALL the standalone Cortex-M builder will not
                   patch), identically before and after this fix.
   a32 r5-sb       cortex-r5 --relocatable --safety-bounds software (#1641)
+  a32 r5-image-1206 / a32 notgt-image-1206
+                  `optloop_backedge_1206.wat`, self-contained, cortex-r5 and
+                  no target, entered at `symbol & ~1` like r5-image (not
+                  booted, #1640). Every export must compile on the OPTIMIZED
+                  path (SYNTH_PATH_DEBUG), or the leg would stop exercising the
+                  estimator-resolved branches it exists for. The fixture has no
+                  call, so the no-target image builds; 80 vectors per export,
+                  the Thumb oracle's set, R10 = one page for msize_loop.
   a32 notgt-sb    no-target --relocatable --safety-bounds software (#1641)
   thumb m4-rel / m4-sb   cortex-m4 controls: correct before and after, so a
                   red A32 leg is the A32 path and not the harness.
@@ -65,6 +80,7 @@ Run (rebuild synth first):
   SYNTH=path/to/synth python3 scripts/repro/a32_control_flow_1639_differential.py
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -88,6 +104,9 @@ from unicorn.arm_const import (
 ROOT = Path(__file__).resolve().parents[2]
 CF = ROOT / "scripts/repro/a32_control_flow_1639.wat"
 SB = ROOT / "scripts/repro/a32_safety_bounds_1641.wat"
+OPT = ROOT / "scripts/repro/optloop_backedge_1206.wat"
+OPT_EXPORTS = ("countdown", "up_const", "up_param", "down_param", "down_const",
+               "up_from_zero", "msize_loop", "countdown_r7")
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 
 M32 = (1 << 32) - 1
@@ -124,6 +143,11 @@ SB_VECTORS = [
     ("bytes", 3, 0xFFFE),
 ]
 
+# The Thumb #1206 oracle's vector set, (a, b); a one-param export ignores b.
+OPT_VECTORS = [(fn, a, b) for fn in OPT_EXPORTS
+               for a in (0, 1, 2, 5, 9, 10, 15, 37, 100, 200)
+               for b in (0, 1, 3, 9, 10, 64, 100, 200)]
+
 # The image leg's SCOPE, a positive list: what it exists to execute is the
 # OPTIMIZED path's numeric (Thumb-unit) branches retargeted to A32, which only
 # a non-relocatable build reaches. `callsum` is NOT in scope here and that is a
@@ -149,6 +173,10 @@ LEGS = [
                        "--safety-bounds", "software"], "a32"),
     ("a32 notgt-sb", SB, ["-b", "arm", "--relocatable",
                           "--safety-bounds", "software"], "a32"),
+    ("a32 r5-image-1206 (entered at symbol, not booted)", OPT,
+     ["-b", "arm", "--target", "cortex-r5"], "a32-image"),
+    ("a32 notgt-image-1206 (entered at symbol, not booted)", OPT,
+     ["-b", "arm"], "a32-image"),
     ("thumb m4-rel (control)", CF,
      ["-b", "arm", "--target", "cortex-m4", "--relocatable"], "thumb"),
     ("thumb m4-sb (control)", SB, ["-b", "arm", "--target", "cortex-m4",
@@ -161,9 +189,11 @@ def truth(fixture, fn, a, b):
     engine = wasmtime.Engine()
     store = wasmtime.Store(engine)
     inst = wasmtime.Instance(store, wasmtime.Module(engine, fixture.read_text()), [])
+    f = inst.exports(store)[fn]
+    args = [a & M32 if a < INT_MIN else a - (1 << 32),
+            b if b < INT_MIN else b - (1 << 32)][:len(f.type(store).params)]
     try:
-        return inst.exports(store)[fn](store, a & M32 if a < INT_MIN else a - (1 << 32),
-                                       b if b < INT_MIN else b - (1 << 32)) & M32
+        return f(store, *args) & M32
     except wasmtime.Trap:
         return "TRAP"
 
@@ -177,8 +207,12 @@ def need(tool):
 
 def compile_leg(fixture, flags, out):
     cmd = [SYNTH, "compile", str(fixture), "-o", out, "--all-exports", *flags]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    return r.returncode, (r.stdout + r.stderr)[-2000:]
+    r = subprocess.run(cmd, capture_output=True, text=True,
+                       env={**os.environ, "SYNTH_PATH_DEBUG": "1"})
+    log = r.stdout + r.stderr
+    optimized = {int(i) for i in re.findall(
+        r"\[path-debug\] optimized \(ir_to_arm ok\) func=(\d+)", log)}
+    return r.returncode, log[-2000:], optimized
 
 
 def link(obj, out, entry):
@@ -253,7 +287,7 @@ def fmt(v):
 def main():
     need("arm-none-eabi-ld")
     expected = {}
-    for fixture, vecs in ((CF, CF_VECTORS), (SB, SB_VECTORS)):
+    for fixture, vecs in ((CF, CF_VECTORS), (SB, SB_VECTORS), (OPT, OPT_VECTORS)):
         for fn, a, b in vecs:
             expected[(fixture, fn, a, b)] = truth(fixture, fn, a, b)
     traps = sum(1 for v in expected.values() if v == "TRAP")
@@ -262,12 +296,18 @@ def main():
     failed_legs = []
     with tempfile.TemporaryDirectory() as tmp:
         for name, fixture, flags, kind in LEGS:
-            tag = "cf" if fixture == CF else "sb"
+            tag = {CF: "cf", SB: "sb", OPT: "opt"}[fixture]
             obj = str(Path(tmp) / f"{tag}_{LEGS.index((name, fixture, flags, kind))}.o")
             print(f"== {name}: synth compile {fixture.name} {' '.join(flags)}")
-            rc, out = compile_leg(fixture, flags, obj)
+            rc, out, optimized = compile_leg(fixture, flags, obj)
             if rc != 0:
                 print(f"  COMPILE FAILED (rc={rc}):\n{out}")
+                failed_legs.append(name)
+                continue
+            if fixture == OPT and optimized != set(range(len(OPT_EXPORTS))):
+                print(f"  NOT ON THE OPTIMIZED PATH: funcs {sorted(optimized)} of "
+                      f"{len(OPT_EXPORTS)} — the leg no longer exercises "
+                      f"estimator-resolved back-edges")
                 failed_legs.append(name)
                 continue
             exe = obj
@@ -279,8 +319,8 @@ def main():
                     failed_legs.append(name)
                     continue
             text, base, syms = load(exe)
-            vecs = CF_VECTORS if fixture == CF else SB_VECTORS
-            if kind == "a32-image":
+            vecs = {CF: CF_VECTORS, SB: SB_VECTORS, OPT: OPT_VECTORS}[fixture]
+            if kind == "a32-image" and fixture == CF:
                 vecs = [v for v in vecs if v[0] in IMAGE_LEG_EXPORTS]
                 print("  scope: IMAGE_LEG_EXPORTS (callsum excluded: unpatched A32 "
                       "bl in the self-contained image, a disclosed gap; see header)")

@@ -1,0 +1,68 @@
+artifacts:
+  - id: RQ-90-A32GUARD
+    type: system-req
+    release: v0.90
+    status: implemented
+    title: "A32 --safety-bounds software guards skip to the access, not to themselves"
+    description: >
+        HANG on every A32 build with --safety-bounds software (--target
+        cortex-r5, and every ARM build with no --target). The selectors write
+        each guard's skip as a NUMERIC branch in Thumb units, (target - branch
+        - 4) / 2 halfwords; the A32 encoder reads the same field as (target -
+        branch) / 4 words. A guard's `offset: 0` therefore encodes as a branch
+        to itself, and every guarded load and store spins, exit 0 at compile
+        time.
+
+        ONE RECORD PER ISSUE. The defect shares its mechanism and its fix with
+        #1639 (RQ-90-A32BRANCH): one change in PR #1644 resolves both, and
+        that record carries the oracle, the census and the fix description.
+        This record exists so the closure of #1641 is authorised by an
+        artifact whose `issue:` names it, as RQ-89-BRVALUE and RQ-89-SELWRAP
+        did for the two issues PR #1583 answered.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
+        refutation is a legitimate outcome, reported with numbers: compile
+        scripts/repro/a32_safety_bounds_1641.wat with `-b arm --target
+        cortex-r5 --relocatable --safety-bounds software --all-exports` (and
+        again with no --target), link it, and execute its 15 vectors under
+        unicorn UC_MODE_ARM against wasmtime. If all 15 match on both, the
+        defect is gone. The a32 r5-sb and a32 notgt-sb legs of
+        scripts/repro/a32_control_flow_1639_differential.py are that command.
+
+        CITATION: #1641 is where the matter was analysed. The number names
+        where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1641"
+      verification-track: manual
+      issue-scope: closes
+      landed: "PR #1644 - #1641 - DELIVERED: a wrong-code fix, the same change as RQ-90-A32BRANCH (#1639). The refuting command was run first on main c20d37b2 and the defect was LIVE: 0 of 15 vectors matched on cortex-r5 and 0 of 15 on no-target, every guarded access hanging at its guard; the cortex-m4 control matched 15 of 15. Fix: resolve_a32_branches in crates/synth-backend/src/arm_backend.rs RETARGETS every numeric branch, decoding its Thumb-unit offset into a target instruction with the real Thumb-2 encoder's sizes and re-expressing it as the A32 word distance to that instruction; validate_a32_branch_targets refuses a target that is not an A32 instruction start or does not fit imm24."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime-py on the tree rebased
+        onto main c20d37b2. The a32 r5-sb and a32 notgt-sb legs of the wired
+        oracle scripts/repro/a32_control_flow_1639_differential.py (fixture
+        a32_safety_bounds_1641.wat: guarded i32 and byte loads and stores, in
+        and out of bounds, with and without a static offset, one inside a
+        loop) go from 0/15 and 0/15 on c20d37b2 to 15/15 and 15/15; the
+        cortex-m4 --safety-bounds software control is 15/15 on both. The same
+        retarget repairs the i32 div/rem trap guards, which the oracle's
+        control-flow fixture executes (du/ds/ru/rs, including the divide-by-
+        zero and INT_MIN / -1 traps). Potency: a planted off-by-one
+        instruction in the numeric retarget drops both legs to 7/15. The full
+        oracle numbers, the census and the corpus sweep are in
+        RQ-90-A32BRANCH's verified-by.
+      done-when: >
+        manual:2027-03-31 every --safety-bounds software guard on cortex-r5
+        and no-target A32 builds branches to the access it guards or to its
+        trap, and an execution differential against wasmtime covers in-bounds
+        and out-of-bounds loads and stores on both — delivered with an
+        execution-verified result, or REFUTED with the measurement that
+        refutes it; and the refuting command above is RUN FIRST and its result
+        reported either way

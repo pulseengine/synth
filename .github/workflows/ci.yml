@@ -1238,7 +1238,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 398768 \
+            --exact-emulation-floor 400048 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -4828,8 +4828,17 @@ jobs:
           # this branch's binary prints main 000187e8's 7587 / 9088 / 241739 exactly;
           # the deltas are each fixture's own (+8/+24/+364 and +16/+30/+176), summed.
           # `hits: 0` on every run.
-          grep -Eq '^functions audited: 7611$' haa1189.txt
-          grep -Eq '^homes watched: 9142$' haa1189.txt
+          # A32BRANCH (#1639/#1641, v0.90): 7611 -> 7665, 9142 -> 9234 and
+          # (below) 242279 -> 242991. CORPUS GROWTH ONLY, by paired controls:
+          # two new scripts/repro/*.wat fixtures (a32_control_flow_1639.wat,
+          # a32_safety_bounds_1641.wat) enter the corpus. The audit's four
+          # legs are cortex-m4/m4f (Thumb-2), which the A32-only fix never
+          # reaches: main c20d37b2's binary over THIS tree prints the same
+          # 7665 / 9234 / 242991 (unattributed 31222), and this branch's
+          # binary with both fixtures held aside prints c20d37b2's 7611 /
+          # 9142 / 242279 exactly. `hits: 0` on every run.
+          grep -Eq '^functions audited: 7665$' haa1189.txt
+          grep -Eq '^homes watched: 9234$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -4844,7 +4853,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 242279 ' haa1189.txt
+          grep -Eq '^attributed instructions: 242991 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
@@ -6522,9 +6531,10 @@ jobs:
         # Every A32 label branch shipped as a zero-displacement `b pc+8` with
         # no relocation (#1639), and every selector-written numeric branch
         # (--safety-bounds software guards #1641, i32 div/rem trap guards,
-        # optimized-path branches) was read in Thumb units by the A32 encoder
-        # — `offset: 0` became a branch to itself. RED on main df847a16: 142 of
-        # the 191 A32 vectors wrong/hung; the cortex-m4 controls green throughout.
+        # optimized-path branches, incl. #1206's eight loop back-edges) was read
+        # in Thumb units by the A32 encoder — `offset: 0` became a branch to
+        # itself. RED on main c20d37b2: 908 of the 1471 A32 vectors wrong/hung
+        # (383 of 640 on each #1206 image leg); the cortex-m4 controls green.
         # Needs arm-none-eabi-ld (installed above): the objects are LINKED.
         run: python scripts/oracle_run.py scripts/repro/a32_control_flow_1639_differential.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
