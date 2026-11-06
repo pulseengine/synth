@@ -1238,7 +1238,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 449173 \
+            --exact-emulation-floor 449329 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -5205,6 +5205,14 @@ jobs:
     #     A32/Cortex-R5 self-contained path (no flash-table builder) still
     #     LOUD-declines with #275; `--relocatable` stays untouched on both
     #     ISAs.
+    #  3. #1643 (v0.90): the WASM 3.0 type rules at the same dispatch —
+    #     iso-recursive rec-group equivalence and declared subtyping, the
+    #     four spec modules verbatim (type-rec.wast:170/179/188,
+    #     type-subtyping.wast:290/318) plus two hand modules, on cortex-m4,
+    #     cortex-m7dp --safety-bounds software (self-contained, own
+    #     Reset_Handler) and -b aarch64, every outcome from wasmtime with GC
+    #     enabled; the loud declines are an exact table. Red on c20d37b2: 87
+    #     missing traps.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -5234,6 +5242,10 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/call_indirect_275_selfcontained_differential.py
+      - name: Run call_indirect WASM 3.0 type-rule differential (#1643)
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/oracle_run.py scripts/repro/call_indirect_type_1643_differential.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
       # met its declared floor AND that the expected number of them
       # reported at all — a step deleted, commented out, or skipped by an
@@ -5244,7 +5256,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 3
 
   block-brif-483-oracle:
     name: optimized-path block/br_if lowering oracle

@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-CALLINDTYPE
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "call_indirect traps on rec-group and subtyping type mismatches, or such modules are refused"
     description: >
         SILENT MISCOMPILE. call_indirect does not trap on the type mismatches
@@ -25,6 +25,14 @@ artifacts:
         (19 not representable), all missing-trap. Each is a baseline entry in
         the PR, so the runner reports PASS.
 
+        REFUTING COMMAND RUN FIRST, 2026-11-06 on c20d37b2 (this lane's base,
+        synth debug build of that tree), PR #1638's runner at 5b94dead run
+        from a scratch root so the branch carries none of its files: LIVE, the
+        same 12. type-rec.wast: cortex-m4 executed 3 = pass 1 + fail 2,
+        cortex-m7dp 3 = pass 1 + fail 2. type-subtyping.wast: cortex-m4
+        executed 4 = pass 0 + fail 4, cortex-m7dp 10 = pass 6 + fail 4. All 12
+        failures are missing-trap.
+
         CITATION: #1643 is where the matter was analysed. The number names
         where it was analysed, not an open scope.
     tags:
@@ -39,6 +47,42 @@ artifacts:
       issue: "#1643"
       verification-track: manual
       issue-scope: closes
+      verified-by: >
+        DELIVERED. Red first: the new
+        scripts/repro/call_indirect_type_1643_differential.py runs the four
+        spec modules verbatim (type-rec.wast 170, 179, 188; type-subtyping.wast
+        290, 318) and two hand modules on cortex-m4, cortex-m7dp with
+        --safety-bounds software (self-contained, booted through their own
+        Reset_Handler) and -b aarch64 under unicorn. Every expected outcome
+        comes from wasmtime with GC enabled. On the base binary c20d37b2 it
+        FAILS with 95 divergences: 87 calls return a value where wasmtime traps
+        with indirect call type mismatch, and 8 entries of its exact
+        loud-decline table compile instead. On the branch it PASSES: 146 calls
+        match wasmtime (122 traps, 24 values or void returns), with 10 loud
+        declines that match the table, and 160 emulations measured through
+        oracle_run.py. Four planted mutants of the fix fail it. Dropping the
+        canonical ids gives 95 divergences, dropping the equality refusal 8,
+        ignoring declared supertypes 8, and reading structural ids in the
+        aarch64 PlanInputs 4. The aarch64 compile_module route, which the CLI
+        does not take, is pinned by
+        crates/synth-backend-aarch64/tests/library_call_indirect_subtype_1643.rs;
+        the same structural-id mutant there fails it. Unit tests in
+        wasm_decoder.rs check the canonical classes against the spec modules,
+        and an instruction_selector.rs test checks the ARM refusal. Rebased
+        onto main e318b728, which carries #1638's runner in-tree: run as its
+        spec-suite.yml job runs it, on the branch binary, it reports all 12
+        `#1643` baseline entries as BASELINE ENTRY NOW PASSES and no other
+        failure or baseline movement: type-subtyping.wast 314, 315, 345 and
+        346 are pass:trap on both legs, and type-rec.wast 183 and 192 are
+        notrep:symbol-missing, the loud closed-world decline. The 12 entries
+        leave its KNOWN table in this PR (known_open_pins 145 -> 133,
+        pinned cases 211 -> 199); its per-leg executed floors fall by the 2
+        type-rec directives that now decline (11636 -> 11634, 24044 -> 24042)
+        and its declared emulations by 4 (49125 -> 49121). The new
+        differential is red on e318b728's binary with the same 95
+        divergences (87 missing traps) and green on the branch. Paired
+        control on the exact emulation floor: the summed value rc 0 and
+        main's 449173 rc 1 on the branch, the reverse on e318b728.
       done-when: >
         manual:2027-03-31 call_indirect performs the iso-recursive
         type-equivalence and subtype check and traps on mismatch, or modules
@@ -47,3 +91,4 @@ artifacts:
         execution-verified result where the lane is a wrong-code fix, or
         REFUTED with the measurement that refutes it; and the refuting command
         above is RUN FIRST and its result reported either way
+      landed: "PR #1658 - #1643 - DELIVERED: a wrong-code fix, plus loud declines where one compare cannot be sound. call_indirect now compares the type's canonical identity under WASM 3.0 iso-recursive type equivalence. The decoder validates the type section on its own with wasmparser's validator, the canonicalisation wasmtime's check rests on, and the class id is the canonical type id; a type section that does not validate makes every call_indirect decline. The closed-world check now asks whether the callee's type is a SUBTYPE of the expected type, reflexively and along the declared supertype chain. The ARM sidecar CMP and every AArch64 dispatch test one class id for equality, so a dispatch whose expected type has a strict declared subtype in the funcref region now refuses loudly. Byte identity, base c20d37b2 against the branch, over the 2453 modules of the spec suite and tests/wast on four legs (cortex-m4, cortex-m7dp with software bounds, cortex-m4 relocatable, aarch64): output differs in 18 of 9812 compiles, all in 5 GC-typed modules. They are type-rec.wast modules 18 and 19 and type-subtyping.wast modules 18 and 19 on every leg, and type-equivalence.wast module 7 on the relocatable and aarch64 legs. The last is the reverse direction: two canonically equal types with different module indices used to be different classes, and its call_indirect function is skipped for ref.func either way. Newly refused, loud, over the same population: run in type-rec.wast's modules at lines 179 and 188 on the ARM legs (closed-world reject, the #642 decline shape), and run at type-subtyping.wast line 318 on aarch64 (strict subtype in the table). The spec compile census is unchanged and passes on every backend. The exact emulation floor rises by 156 over main e318b728's 449173: +160, the new oracle's declared floor, and -4 on the spec-execution runner, whose type-rec.wast run directives now decline loudly. The 12 #1643 entries leave that runner's ratchet baseline. The live value is what oracle_wiring_check.py reports."

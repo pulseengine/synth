@@ -438,7 +438,9 @@ impl Backend for AArch64Backend {
                 // ELF build below actually places.
                 a64_substrate_emitted: substrate.emitted,
                 call_indirect_guards: module.call_indirect_guards(),
-                type_class_ids: module.structural_type_class_ids(),
+                // #1643: 0 (loud decline) for an expected type with a strict
+                // declared subtype in the region — equality would false-trap.
+                type_class_ids: module.dispatch_type_class_ids(),
                 type_arg_counts: module.type_arg_counts.clone(),
                 type_result_counts: module.type_result_counts.clone(),
                 type_ret_f32: module.type_ret_f32.clone(),

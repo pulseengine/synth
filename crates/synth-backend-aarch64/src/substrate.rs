@@ -176,7 +176,7 @@ impl PlanInputs {
             num_imported_funcs: module.num_imported_funcs,
             import_func_symbols: import_func_symbols(module),
             uses_call_indirect: false,
-            type_class_ids: module.structural_type_class_ids(),
+            type_class_ids: module.dispatch_type_class_ids(), // #1643
             type_result_counts: module.type_result_counts.clone(),
         }
     }
