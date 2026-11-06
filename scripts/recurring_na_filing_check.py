@@ -75,13 +75,17 @@ def releases_in(docs) -> set[tuple]:
     return rel
 
 
-def release_under_cut(docs) -> tuple[str, list[str]]:
+def release_under_cut(docs, anchor=None) -> tuple[str, list[str]]:
     """The release being cut, derived TWICE and cross-checked.
 
     `ANCHOR_TAG` is the LAST SHIPPED release, so the cut is its successor. The
     artifact tree's own max `release:` must agree. Disagreement is refused
     rather than resolved: picking the wrong release here would let a previous
     release's filing discharge this one's, which is the whole defect #1136 names.
+
+    `anchor` defaults to the shipped `ANCHOR_TAG`. It is a parameter only so the
+    self-test can pin a PATCH-release fixture whose verdict does not depend on
+    where the live tree's anchor happens to stand (RQ-90-NASELFTEST, #1653).
     """
     sec = _load("sec_anchor", "scripts/status_evidence_check.py")
     rels = releases_in(docs)
@@ -90,7 +94,7 @@ def release_under_cut(docs) -> tuple[str, list[str]]:
                     "zero is a refusal, not a pass"]
     # anchor+1 is the successor MINOR, or the successor PATCH when that patch's
     # own records are present — the same single answer the CENSUS uses.
-    from_anchor = sec.expected_cut(sec.ANCHOR_TAG, rels)
+    from_anchor = sec.expected_cut(sec.ANCHOR_TAG if anchor is None else anchor, rels)
     from_tree = max(rels)
     if from_anchor != from_tree:
         return "", [f"the release under cut is ambiguous: anchor+1 says "
@@ -99,8 +103,8 @@ def release_under_cut(docs) -> tuple[str, list[str]]:
     return sec.fmt_release(from_anchor), []
 
 
-def check(docs) -> list[str]:
-    rel, fails = release_under_cut(docs)
+def check(docs, anchor=None) -> list[str]:
+    rel, fails = release_under_cut(docs, anchor)
     if fails:
         return fails
     lcc = _load("lcc_match", "scripts/loop_conformance_check.py")
@@ -183,6 +187,37 @@ def self_test() -> int:
     ok(any("ambiguous" in m for m in msgs3),
        "NEGATIVE CONTROL: a stray newer release makes the cut AMBIGUOUS and is "
        "refused, not resolved by picking one")
+
+    # PATCH FIXTURE (RQ-90-NASELFTEST, #1653). Every case above is either the
+    # live tree or a MINOR-release shape, so the patch key was untested: the
+    # v0.89.1 cold review (G10) found this self-test stayed rc 0 under BOTH key
+    # mutants — `release_key` folding every patch to (major, minor), and
+    # `releases_in` truncating its keys with `[:2]` — and the v0.90 planning
+    # measurement found the fold redded it only through the live-tree case,
+    # i.e. only while the live anchor happened to be a patch.
+    #
+    # So this fixture is OFFLINE: a synthetic tree and a PINNED anchor, v0.89.0
+    # -> cut v0.89.1, independent of the live ANCHOR_TAG. Measured against the
+    # two mutants at authoring:
+    #   * the fold keys the anchor and the filing as (0, 89): both sources say
+    #     v0.89 and agree, the derived release is v0.89, and the v0.89.1 filing
+    #     is reported stale;
+    #   * the truncation keys the tree as {(0, 89)}: the patch is absent, so
+    #     anchor+1 says v0.90 while the tree's max says v0.89 -> ambiguous.
+    # The derived RELEASE STRING is asserted, not only `check() == []`, so the
+    # fold cannot pass by some other filing matching the folded release.
+    patch_fixture = [("fixture/release-v0.89.1/RQ-89-1-ARCHMODEL.yaml", {
+        "artifacts": [{"id": "RQ-89-1-ARCHMODEL", "release": "v0.89.1",
+                       "status": "proposed",
+                       "tags": ["feature-loop", "aadl"],
+                       "fields": {"issue": "#1136"}}]})]
+    prel, perrs = release_under_cut(patch_fixture, anchor="v0.89.0")
+    ok(prel == "v0.89.1" and not perrs,
+       f"PATCH FIXTURE: anchor v0.89.0 + a v0.89.1 filing derives the cut as "
+       f"v0.89.1, a PATCH key (got {prel!r}, {perrs})")
+    pmsgs = check(patch_fixture, anchor="v0.89.0")
+    ok(pmsgs == [], f"PATCH FIXTURE: the patch release's own filing is VISIBLE "
+                    f"and discharges it ({pmsgs})")
     return 0 if fails == 0 else 1
 
 
