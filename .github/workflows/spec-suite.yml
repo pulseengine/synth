@@ -11,9 +11,11 @@
 # and exact-pins every bucket per backend; proven able to fail at authoring
 # (empty dir + off-by-one pin both exit 1 — evidence in PR #1095 thread).
 #
-# NOT in the required-check set (main's 9): a new required context that fails
-# to run deadlocks all merges. Advisory-but-red-visible, like the other
-# oracle jobs.
+# The COMPILE census is NOT in the required-check set (main's 9): a new
+# required context that fails to run deadlocks all merges. Advisory-but-
+# red-visible, like the other oracle jobs. The EXECUTION job at the end of
+# this file (#1636) is shaped to BE required — see its header — once the
+# maintainer adds its context to branch protection.
 name: Spec Suite
 
 on:
@@ -118,6 +120,84 @@ jobs:
           # proposal permits, and the assertion count must not thin.
           grep -qE '^spec suite: 2 legal \[1, 65536\], [0-9]{2,} invalid' /tmp/pagesize.log
           grep -qE '^PASS: pagesize oracle, [0-9]{2,} assertions' /tmp/pagesize.log
+      - name: Differential evidence ledger (#910)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
+
+  # RQ-90-SPECEXEC (#1636): the suite EXECUTED, not only compiled. Every
+  # top-level `assert_return` / `assert_trap` in the 257 files is accounted
+  # for on two Cortex-M legs (cortex-m4 default; cortex-m7dp with
+  # `--safety-bounds software`), booted through each image's own
+  # Reset_Handler under unicorn and held to the .wast's own expected result:
+  # pass, fail, or not-representable WITH A REASON — and per (leg, file) the
+  # three must sum to the file's directive count, so a dropped directive is
+  # red. Every failing directive is pinned by (leg, file, line, col) in the
+  # script's KNOWN table (claims.yaml `known_open_pin_tables`), exact in both
+  # directions: a new failure is red, and a pinned directive that now passes
+  # is red until its entry is removed.
+  #
+  # BUILT TO BE A REQUIRED CONTEXT. Its own job, a static `name:` (the
+  # context string), no matrix, no `paths:` filter (a required check skipped
+  # by a path filter never reports and blocks merges), no concurrency
+  # cancellation (a cancelled check satisfies the merge gates), and the
+  # reference engine + emulator PINNED so the exact baseline cannot move with
+  # a floating `pip install`. Deterministic: the garbage machine states are
+  # seeded from (leg, file, module position). Making it required is the
+  # maintainer's branch-protection action, not this file's.
+  spec-suite-execution:
+    name: spec-suite execution (#1636)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Load-bearing: the suite is a submodule. The script's 257-file and
+          # directive-total pins turn an empty checkout RED.
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-specexec-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-specexec-
+            ${{ runner.os }}-cargo-
+      # The SAME build the baseline was measured on (and the census job's, so
+      # the cache is shared). synth-test is the SECOND parser: its Rust
+      # `wast`-crate count of every file's assert_return directives must equal
+      # the script's own census.
+      - name: Build synth and synth-test
+        run: |
+          cargo build --features riscv --bin synth
+          cargo build -p synth-test --bin synth-test
+      # Pinned to the interpreter the baseline was measured on: the garbage
+      # machine states come from a seeded `random.Random`, and a floating
+      # "3.x" would make the reproducibility of that stream an assumption.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.14"
+      - name: Install emulation deps (reference engine PINNED)
+        run: pip install wasmtime==48.0.0 unicorn==2.1.4 pyelftools || pip install --break-system-packages wasmtime==48.0.0 unicorn==2.1.4 pyelftools
+      - name: Execute the spec suite's assert_return / assert_trap directives (#1636)
+        run: |
+          set -euo pipefail
+          SYNTH=./target/debug/synth SYNTH_TEST=./target/debug/synth-test \
+            python3 scripts/oracle_run.py \
+            scripts/repro/spec_exec_1636_differential.py | tee /tmp/specexec.log
+          # NON-VACUITY, asserted here as well as inside the script, so
+          # neither can go quiet alone: both legs executed, the second parser
+          # agreed on every file it parses, and the verdict line printed.
+          grep -qE '^  \[cortex-m4\] executed [1-9][0-9]{3,} = ' /tmp/specexec.log
+          grep -qE '^  \[cortex-m7dp\] executed [1-9][0-9]{3,} = ' /tmp/specexec.log
+          grep -qE '^  second parser \(synth-test stats\): 25[0-9] files agree, 0 disagree' /tmp/specexec.log
+          grep -qE '^#1636 EXECUTED=[1-9][0-9]{4,} directives across 2 legs' /tmp/specexec.log
+          grep -q '^RESULT: PASS' /tmp/specexec.log
       - name: Differential evidence ledger (#910)
         if: always()
         run: |
