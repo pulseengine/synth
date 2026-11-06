@@ -19,10 +19,10 @@ is `R11 + addr` (R11 = 0 under `--native-pointer-abi`, so a native pointer;
 the embedder's memory-0 base otherwise), memory k is
 `__synth_wasm_data_<k> + addr`. The byte loop runs over the ABSOLUTE
 pointers, choosing its direction on them, so a same-memory copy is
-memmove-correct and a cross-memory copy is correct either way. Inline bounds
-checking (`--safety-bounds software|mask`) still refuses any memory-k op —
-memory k has no size register — so this oracle runs the unguarded
-configurations the downstream uses.
+memmove-correct and a cross-memory copy is correct either way. This oracle
+runs the unguarded configurations the downstream uses; the
+`--safety-bounds software` guard against `__synth_mem_size_k` (#1619) is
+memk_bulk_oob_1619_differential.py's.
 
 HARNESS. Every section is hand-linked at its own, NON-ADJACENT base with the
 gaps unmapped; each access is hooked with its PC and attributed to the

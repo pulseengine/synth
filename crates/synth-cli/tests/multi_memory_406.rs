@@ -21,6 +21,8 @@
 //! | multi-memory on riscv / aarch64        | refuse (no per-memory base)    |
 //! | cross-/non-default memory.copy/fill    | loud-skip naming the op        |
 //! | i64 access on memory k > 0 (#1622)     | GREEN (execution differential) |
+//! | memory-k op × `--safety-bounds software` | GREEN: `__synth_mem_size_k` guard (#1619) |
+//! | memory-k op × `--safety-bounds mask`   | refuse (mask needs a 2^n size) |
 //! | f32/f64 access on memory k > 0         | loud-skip (integer family only)|
 //! | non-const data-segment offset on mem k | refuse at decode               |
 //!
@@ -30,7 +32,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
+use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, SectionKind};
 
 // #977 RQ-59-FRESHNESS: nothing here parses an artifact until the artifact is
 // proven to be THIS invocation's output — see `artifact_guard`.
@@ -556,30 +558,56 @@ fn copies_carry_no_pointers_needs_native_pointer_abi_1145() {
     );
 }
 
-/// #1145: a multi-memory bulk op under an INLINE bounds mode is still the
-/// loud memory-k refusal (memory k has no size register).
+/// #1619: does the object read memory k's size from the region table — an
+/// `R_ARM_ABS32` against the SHN_ABS `__synth_mem_size_k`, never a second copy?
+fn reads_size_symbol(bytes: &[u8], k: u32) -> bool {
+    let obj = object::File::parse(bytes).expect("parse ELF");
+    let want = format!("__synth_mem_size_{k}");
+    obj.sections().any(|sec| {
+        sec.relocations().any(|(_, r)| {
+            matches!(r.target(), RelocationTarget::Symbol(i)
+                if obj.symbol_by_index(i).is_ok_and(|s| s.name() == Ok(want.as_str())))
+        })
+    })
+}
+
+/// #1619: a multi-memory bulk op under `--safety-bounds software` is
+/// GUARDED — memory k against `__synth_mem_size_k`, memory 0 against R10 —
+/// instead of the old loud memory-k refusal. Under the native-pointer ABI a
+/// memory-0 side is refused (R10 bounds no native pointer), and `mask` is
+/// refused (it wraps with `AND size-1`; memory k's size need not be 2^n).
+/// Trap-before-write is scripts/repro/memk_bulk_oob_1619_differential.py's job.
 #[test]
-fn cross_memory_copy_software_bounds_refuses_1145() {
+fn cross_memory_copy_software_bounds_guarded_1619() {
     let wat = r#"(module
       (memory $a 1 1)
       (memory $b 1 1)
       (func (export "xcopy") (param $d i32) (param $s i32) (param $n i32)
         (memory.copy $b $a (local.get $d) (local.get $s) (local.get $n))))"#;
     let f = wat_file("cross_copy_sw.wat", wat);
+    let sw = ["--relocatable", "--target", "cortex-m3", "--safety-bounds"];
+    let bytes = compile_read(&f, &[&sw[..], &["software"]].concat());
+    assert!(
+        reads_size_symbol(&bytes, 1),
+        "the memory-1 side must be checked against __synth_mem_size_1"
+    );
     let out = compile(
         &f,
-        &[
-            "--relocatable",
-            "--target",
-            "cortex-m3",
-            "--safety-bounds",
-            "software",
-        ],
+        &[&sw[..], &["software", "--native-pointer-abi"]].concat(),
     );
     assert_refused(
         &out,
-        &["#406", "no size register"],
-        "software bounds on memory 1",
+        &[
+            "memory.copy with a memory 0 side under --native-pointer-abi",
+            "#1619",
+        ],
+        "software bounds on a memory-0 side under the native-pointer ABI",
+    );
+    let out = compile(&f, &[&sw[..], &["mask"]].concat());
+    assert_refused(
+        &out,
+        &["mask is not lowered for an op on memory 1", "power-of-two"],
+        "mask bounds on memory 1",
     );
 }
 
@@ -618,33 +646,28 @@ fn i64_access_on_non_default_memory_lowered_1622() {
     }
 }
 
-/// #1622 keeps the compliance envelope: an i64 access on memory k under an
-/// INLINE bounds mode is still the loud memory-k refusal (no size register).
+/// #1619: an i64 access on memory k is GUARDED under `--safety-bounds
+/// software` (against `__synth_mem_size_k`) and still refused under `mask`.
 #[test]
-fn i64_access_on_non_default_memory_inline_bounds_refuses_1622() {
+fn i64_access_on_non_default_memory_inline_bounds_1619() {
     let wat = r#"(module
       (memory $a 1 1)
       (memory $b 1 1)
       (func (export "w") (param $p i32) (result i64)
         (i64.load $b (local.get $p))))"#;
     let f = wat_file("wide_i64_bounds_1622.wat", wat);
-    for mode in ["software", "mask"] {
-        let out = compile(
-            &f,
-            &[
-                "--relocatable",
-                "--target",
-                "cortex-m3",
-                "--safety-bounds",
-                mode,
-            ],
-        );
-        assert_refused(
-            &out,
-            &["#406", "no size register"],
-            &format!("{mode} bounds on an i64 memory-1 access"),
-        );
-    }
+    let sw = ["--relocatable", "--target", "cortex-m3", "--safety-bounds"];
+    let bytes = compile_read(&f, &[&sw[..], &["software"]].concat());
+    assert!(
+        reads_size_symbol(&bytes, 1),
+        "the i64 memory-1 load must be checked against __synth_mem_size_1"
+    );
+    let out = compile(&f, &[&sw[..], &["mask"]].concat());
+    assert_refused(
+        &out,
+        &["mask is not lowered for an op on memory 1", "#1619"],
+        "mask bounds on an i64 memory-1 access",
+    );
 }
 
 /// The non-default-memory scope is the INTEGER access family: a float

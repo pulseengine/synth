@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-MEMKBULK
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "An out-of-bounds memory.fill or memory.copy on memory k traps with no write, or is refused"
     description: >
         SILENT MISCOMPILE. Since #1605, memory.copy and memory.fill on a
@@ -35,6 +35,7 @@ artifacts:
     tags:
       - feature-loop
       - bug
+      - multi-memory
     links:
       - type: derives-from
         target: BR-001
@@ -42,7 +43,7 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1619"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
       done-when: >
         manual:2027-03-31 an out-of-bounds bulk op on memory k traps before
@@ -52,3 +53,100 @@ artifacts:
         with an execution-verified result where the lane is a wrong-code fix,
         or REFUTED with the measurement that refutes it; and the refuting
         command above is RUN FIRST and its result reported either way
+      landed: "PR #1660 - #1619 - DELIVERED. THE REFUTING COMMAND, run first on main c20d37b2 (synth 0.89.2 debug build of that tree), CONFIRMED the defect exactly as recorded: with the default --safety-bounds none, f returns, l returns 1 and the byte at memory 2 + 0x10000 is 0x01; wasmtime traps f and l returns 0. --safety-bounds mpu --embedder-mpu gives the same (its object is byte-identical to none). --safety-bounds software skips both functions (`--safety-bounds is not lowered for an op on memory 2`, rc 1) and mask refuses the zero-byte memory 0. On the branch, under --safety-bounds software, f stops on the guard's UDF, l returns 0 and the byte past memory 2's end is unchanged, matching wasmtime. THE CHANGE: under --safety-bounds software every lowered memory-k op is guarded against memory k's OWN size, the region table's SHN_ABS __synth_mem_size_k, read through an R_ARM_ABS32 literal (linked with GNU ld 2.41 the literal resolves to the symbol's value, 0x10000 for the refuting module). memory.fill and memory.copy (k->k, j->k, 0->k, k->0) check every side's whole range before the byte loop writes anything: side+len overflowing u32 or exceeding the size traps, == size is in bounds; a memory-0 side is checked against R10 as memory 0's own bulk ops are. The i32/i64 load/store families on memory k run memory 0's own access guard, software_bounds_guard, now parameterized by the size register (software_bounds_guard_against; memory 0 still passes R10, byte-identical). DECIDED WITH EVIDENCE, not taken from the brief: (a) bulk only would have left the refuting module itself refused (its l is a memory-k load) and every module that also loads or stores memory k, which is every multi-memory module in the corpus and gale's, so the load/store extension (b) is in: one closure, one call per family. mask stays REFUSED on memory k, now saying why: it wraps with AND size-1, which needs a power-of-two size, and __synth_mem_size_k need not be one ((pagesize 1), e.g. gale's 5,376 B). Under --native-pointer-abi, software REFUSES a memory.copy with a memory-0 side: memory 0's pointers are native there and R10 bounds no native pointer. The default none is unchanged."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime under unicorn. New wired
+        oracle scripts/repro/memk_bulk_oob_1619_differential.py (ci.yml, routed
+        through oracle_run.py, `emulations >= 214`): three memories of three
+        sizes (64 KiB, a (pagesize 1) 5,376 B, 128 KiB) so a guard reading the
+        wrong memory's bound is visible; fill, same-memory copy both directions,
+        cross-memory copies 1<-2, 2<-1, 1<-0 and 0<-1, and i32/i64 loads and
+        stores (narrow and wide, small and >0xFFF offsets) on memories 1 and 2,
+        at in-bounds, end-exact, len-0-at-size, len-0-past-size, straddling,
+        fully out-of-bounds, between-the-sizes and u32-wrapping addresses.
+        After every call the result, every memory (vs wasmtime) and a 0x5A
+        canary band after each memory's end are compared; a trap counts only
+        when the emulator stops on the guard's UDF #0, never on an unmapped
+        fault. Legs: software/plain (77 calls), software/npa (69, plus the two
+        native-pointer refusals), and the 34 in-bounds rows on each of
+        none/plain and none/npa. RED on c20d37b2: both software legs refused at
+        compile, 68 of 214 calls run, ORACLE FAIL; with the out-of-bounds rows
+        forced on the none legs (MEMK_MEASURE=1) 43 of 77 rows diverge per leg,
+        19 of them writing past a memory's end and 3 faulting into unmapped
+        memory. GREEN on the branch: 214 of 214. POTENCY, seven planted
+        mutants, each red: the size read from R10 instead of the symbol (70
+        calls), no overflow trap on a bulk side (6), only the destination side
+        checked (13), HS->HI in the bulk check (10), the load/store access width
+        halved (24), no load/store guard (42), the native-pointer refusal
+        removed (2). scripts/repro/mem_isolation_red_1145.py gains a software
+        leg on gale's adjacent two-tenant layout: accepted, tenant A's
+        one-page-past-the-end store and tenant B's past-the-end load stop on
+        the UDF and tenant B's byte is unchanged (emulations 6 -> 10); its mask
+        needle is now the power-of-two reason. npa_multi_memory_1145's
+        safety_sw refusal becomes safety_sw_xcopy (the native-pointer refusal)
+        plus safety_mask. crates/synth-cli/tests/multi_memory_406.rs:
+        cross_memory_copy_software_bounds_guarded_1619 and
+        i64_access_on_non_default_memory_inline_bounds_1619 assert the
+        R_ARM_ABS32 to __synth_mem_size_1 and the two refusals (23 of 23 pass).
+        REACH, base c20d37b2 vs branch, symtab byte census over 295 repo files
+        (tests/, scripts/repro, examples) and the 257 top-level spec .wast
+        files, cortex-m4 --relocatable under none, none+NPA, mpu+--embedder-mpu,
+        mask, software and software+NPA, plus self-contained cortex-m4 and
+        cortex-m7 software: 0 functions changed bytes and 0 newly refused in
+        every configuration; under software 261 functions newly compile (spec:
+        7 files go rc 1 -> 0 — address0, address1, linking2, load2,
+        memory_fill0, memory_trap0, store0 — and linking3, load0,
+        memory_copy0/1, memory_init0, memory_trap1 and traps0 lose memory-k
+        skips; repo: 20 functions,
+        mem406_multi_memory.wat rc 1 -> 0), and under software+NPA 255. The
+        spec directives of twelve of those files (all but linking3 and
+        memory_init0) were EXECUTED statefully on the
+        plain software path against wasmtime, every memory and the bytes after
+        each memory's end compared after each directive: 274 assert_return and
+        177 assert_trap rows pass (address0 17 traps, address1 22,
+        memory_trap0 10, memory_trap1 110, traps0 12, memory_fill0 2,
+        memory_copy0 2, memory_copy1 2), 52 float rows and 2 skipped-function
+        rows not representable, 8 rows need linking2's import. 5 rows fail
+        identically on none with the base binary, so they are not this change:
+        load2's four call_indirect rows (the harness sets up no function table)
+        and as-memory.grow-size (synth's fixed-memory grow returns -1). The same
+        files on c20d37b2 under software: 10 pass, 441 rows in refused modules
+        and 59 on skipped functions. NOT EXECUTED: the software+NPA path of the newly compiling
+        spec functions (memory-0 native pointers would need a separate
+        harness). FINDING, PRE-EXISTING AND NOT CHANGED HERE: under
+        --native-pointer-abi --safety-bounds software, memory 0's OWN accesses
+        and bulk ops compare a native pointer against R10, so an in-bounds
+        memory.fill/memory.copy on memory 0 traps (executed on c20d37b2: both
+        f0 and c00 trap in bounds, plain passes). The MPU question #1619 asked:
+        mpu+--embedder-mpu stays byte-identical to none, so its byte loop
+        still writes the in-region bytes it reaches before the first
+        out-of-region byte faults; only software gives the no-write trap.
+        Pins moved with paired controls, RE-DERIVED on the tree rebased over
+        main bd4d70fc (#1644, #1638, #1658, #1659; each holds here and reds on
+        bd4d70fc, the main value the reverse): the selector line ratchet
+        21373 -> 21475 (+102, waiver chained after RQ-90-CALLINDTYPE's) and the
+        whole-file count 32234 -> 32336; the exact emulation floor
+        +218 over v0.90 F64STORE's (the new oracle's 214 and mem_isolation_red_1145's
+        +4, as oracle_wiring_check.py reports it); the new claim
+        SYNTH-MEMK-SOFTWARE-BOUNDS-1619 (reds on bd4d70fc's tree).
+        known_open_pins (131) and known_open_pinned_cases (197) do not move.
+        The mutation ledger was re-anchored on c20d37b2 (two select_with_stack
+        sites moved, 0 not found; mutants, controls, ci_subset and UNTESTED
+        unchanged); reanchor over bd4d70fc moved 0 more. The spec-execution
+        runner (spec_exec_1636_differential.py, cortex-m4 and cortex-m7dp,
+        default bounds) was run on the rebased branch binary as its spec-suite.yml
+        job runs it: RESULT PASS, 35676 directives executed across the two legs
+        (cortex-m4 11634, cortex-m7dp 24042), measured 49121 = its declared
+        floor; 53 failures, all 53 exact baseline entries, so 0 entries leave
+        the baseline (the runner uses the default bounds mode, which this
+        change leaves byte-identical) and 0 new failures. The byte census was
+        re-run against bd4d70fc over the 268 repo .wat/.wasm files on
+        cortex-m4 (--relocatable none, none+NPA, mpu+--embedder-mpu, mask,
+        software, software+NPA, and self-contained software): every object
+        whose skip set is unchanged is byte-identical, 0 new refusals;
+        under software 6 files and under software+NPA 3 lose memory-k skips.
+        The three oracles that landed on main since c20d37b2 pass on the
+        rebased binary at their declared floors (f64_store_partial_1642 87,
+        call_indirect_type_1643 160, a32_control_flow_1639 1541).
+        #1145 is NOT closed by this record: its per-memory isolation
+        obligations are carried by RQ-89-MEMLAYER6.

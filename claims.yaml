@@ -902,6 +902,31 @@ claims:
         glob: ['CLAUDE.md']
         min: 1
 
+  # #1619 (MEMKBULK, v0.90): CLAUDE.md said memory k "cannot be bounds-checked
+  # on ANY profile". `--safety-bounds software` now guards every lowered
+  # memory-k op against the region table's `__synth_mem_size_k`; `mask` still
+  # refuses. The doc's new statement is bound to the three facts it rests on:
+  # the guard reads the size SYMBOL (one source, the shipped table), the mask
+  # refusal still exists, and the execution oracle that proves the trap is
+  # wired. Removing any of them reds this claim instead of leaving the doc
+  # claiming a mode that no longer exists or is no longer gated.
+  - id: SYNTH-MEMK-SOFTWARE-BOUNDS-1619
+    doc: CLAUDE.md
+    text: "memory k > 0 is bounds-checked ONLY under `--safety-bounds"
+    evidence:
+      - kind: count-eq                       # the size comes from the region table
+        pattern: 'format!\("__synth_mem_size_\{memory\}"\)'
+        glob: ['crates/synth-synthesis/src/instruction_selector.rs']
+        expect: 1
+      - kind: count-eq                       # mask still refuses memory k
+        pattern: '--safety-bounds mask is not lowered for'
+        glob: ['crates/synth-synthesis/src/instruction_selector/select_with_stack.rs']
+        expect: 1
+      - kind: count-eq                       # the trap oracle is wired, once
+        pattern: 'oracle_run\.py scripts/repro/memk_bulk_oob_1619_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        expect: 1
+
   # #1286 (RQ-68-CLAIMSDRIFT): CLAUDE.md told readers to publish the v0.59
   # 805-module acceptance rates two releases after RQ-64-SCOPEGAP superseded
   # them. The fix removes the copy rather than refreshing it, so the pin is on
@@ -1933,9 +1958,42 @@ claims:
         # after RQ-89-MEMLAYER6's waiver).
         # RQ-90-CALLINDTYPE (#1643): 21360 -> 21373, waived below (chained
         # after MEMK64's waiver).
-        value: 21373
+        # MEMKBULK (#1619, v0.90): 21373 -> 21475, waived below (chained
+        # after RQ-90-CALLINDTYPE's waiver).
+        value: 21475
         baseline: 17897
         waivers:
+          - to: 21475
+            reason: >-
+              MEMKBULK (Refs #1619): 21373 -> 21475 (+102, measured after
+              cargo fmt on the tree rebased over bd4d70fc; paired control:
+              21475 holds and 21373 reds here, the reverse on main bd4d70fc). A NEW guard, replacing no arm:
+              under --safety-bounds software every lowered memory-k op is checked
+              against memory k's own size, the region table's SHN_ABS
+              __synth_mem_size_k read through an R_ARM_ABS32 literal — the
+              i32/i64 load/store families by memory 0's own
+              software_bounds_guard (now parameterized by the size register,
+              software_bounds_guard_against; memory 0 still passes R10 and is
+              byte-identical), and memory.fill/memory.copy by a whole-range
+              pre-check on every side before the loop writes a byte. Before it,
+              software and mask refused every memory-k op, so no configuration
+              made an out-of-bounds memory-k bulk op trap: it wrote the
+              in-bounds bytes and the bytes past memory k's end. mask stays
+              refused (it needs a power-of-two size), with a message saying so;
+              under --native-pointer-abi a memory.copy with a memory-0 side is
+              refused (R10 bounds no native pointer). No wildcard arm was added.
+              Gated by execution: memk_bulk_oob_1619_differential.py (214 calls,
+              three memories of three sizes, every memory and a canary band
+              after each end compared with wasmtime; RED at c20d37b2, both
+              software legs refused at compile; seven planted mutants each red
+              it, 2 to 70 calls). Object bytes were identical to c20d37b2 under
+              none, mpu, mask and self-contained software over 295 repo files
+              and 257 spec files; re-run against bd4d70fc over the 268 repo
+              .wat/.wasm files on cortex-m4: identical under none, none+NPA,
+              mpu, mask and self-contained software, and under software and
+              software+NPA the only change is functions that newly compile
+              (6 and 3 files, 0 new refusals; every object whose skip set is
+              unchanged is byte-identical).
           - to: 21373
             reason: >-
               RQ-90-CALLINDTYPE (Refs #1643): 21360 -> 21373 (+13, measured
@@ -3184,7 +3242,9 @@ claims:
         # selector_lines_code, waived there) and +58 test module (the
         # `_1643` equality-refusal unit test, plus the `runtime_check_reject`
         # field in three existing #676 test literals). No waiver.
-        value: 32234
+        # MEMKBULK (#1619): 32234 -> 32336, the same +102 as
+        # selector_lines_code (all of it outside the test module). No waiver.
+        value: 32336
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4787,7 +4847,16 @@ claims:
     #   floor is unchanged (49121, measured on the branch binary).
     #   Paired control: `449416` rc=0 and `449329` rc=1 on this tree;
     #   `449416` rc=1 and `449329` rc=0 on main c365a154.
-    text: "--exact-emulation-floor 449416"
+    # v0.90 MEMKBULK (#1619): 449416 -> 449634 (+218, re-derived on the
+    #   tree rebased over F64STORE, bd4d70fc). The new
+    #   memk_bulk_oob_1619_differential.py declares `emulations >= 214` (214
+    #   measured via oracle_run.py: 77 rows on the software/plain leg, 69 on
+    #   software/npa, and the 34 in-bounds rows on each of the two `none`
+    #   legs), and
+    #   mem_isolation_red_1145.py rises 6 -> 10 (its new `software` leg runs
+    #   four calls). Paired control: `449634` rc=0 and `449416` rc=1 on this
+    #   tree; `449634` rc=1 and `449416` rc=0 on main bd4d70fc.
+    text: "--exact-emulation-floor 449634"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

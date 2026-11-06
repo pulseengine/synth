@@ -7713,6 +7713,15 @@ impl InstructionSelector {
         });
     }
 
+    /// #1619: the region-table symbol carrying memory `k`'s DECLARED size in
+    /// bytes (`SHN_ABS`, emitted by the CLI for every multi-memory object;
+    /// `(pagesize 1)` included). Loaded through the same `R_ARM_ABS32`
+    /// literal as the base symbol, it is the number the embedder programs its
+    /// region from — the guard reads the shipped table, not a second copy.
+    fn mem_size_symbol(memory: u32) -> String {
+        format!("__synth_mem_size_{memory}")
+    }
+
     /// #237/#345: emit a `__synth_wasm_data + addend` address into `rd` — the
     /// base-independent static-data address, via the link-survivable literal-pool
     /// load (see [`Self::emit_sym_addr`] for the #345 rationale).
@@ -7929,6 +7938,20 @@ impl InstructionSelector {
     /// guard function itself (no hand-maintained mirror to drift, the
     /// VCR-ORACLE lesson).
     pub fn software_bounds_guard(addr_reg: Reg, offset: i32, access_size: u32) -> Vec<ArmOp> {
+        Self::software_bounds_guard_against(Reg::R10, addr_reg, offset, access_size)
+    }
+
+    /// [`Self::software_bounds_guard`] with the memory size in `size` instead
+    /// of R10 — the same function, so memory 0's guard is this one at R10 and
+    /// stays byte-identical. #1619: a memory-k access passes the register its
+    /// `__synth_mem_size_k` was loaded into (memory k has no size register).
+    /// `size` must not be R12, which the guard uses as its scratch.
+    pub fn software_bounds_guard_against(
+        size: Reg,
+        addr_reg: Reg,
+        offset: i32,
+        access_size: u32,
+    ) -> Vec<ArmOp> {
         // The wasm memarg offset is unsigned; `offset` arrives through an
         // `as i32` cast, so round-trip it back through u32 (lossless).
         let k = u64::from(offset as u32) + u64::from(access_size);
@@ -7941,7 +7964,7 @@ impl InstructionSelector {
         if k <= 0xFFF {
             ops.push(ArmOp::Sub {
                 rd: Reg::R12,
-                rn: Reg::R10,
+                rn: size,
                 op2: Operand2::Imm(k as i32),
             });
         } else {
@@ -7958,12 +7981,12 @@ impl InstructionSelector {
             }
             ops.push(ArmOp::Sub {
                 rd: Reg::R12,
-                rn: Reg::R10,
+                rn: size,
                 op2: Operand2::Reg(Reg::R12),
             });
         }
         ops.push(ArmOp::Cmp {
-            rn: Reg::R10,
+            rn: size,
             op2: Operand2::Reg(Reg::R12),
         });
         ops.push(ArmOp::BCondOffset {

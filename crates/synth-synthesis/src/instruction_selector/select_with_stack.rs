@@ -3797,9 +3797,10 @@ impl InstructionSelector {
                 //     LDR/STR[B/H] value, [base]
                 //
                 // Scope: the i32 and i64 (#1622) integer access families and
-                // the bulk forms. f32/f64/v128 accesses and inline
-                // `--safety-bounds` on memory k decline LOUDLY (typed Err →
-                // loud-skip), never alias memory 0.
+                // the bulk forms. f32/f64/v128 accesses and `--safety-bounds
+                // mask` on memory k decline LOUDLY (typed Err → loud-skip),
+                // never alias memory 0; `software` guards against memory k's
+                // own size (#1619).
                 MultiMemory {
                     memory,
                     op: inner_op,
@@ -3807,28 +3808,53 @@ impl InstructionSelector {
                     // Validates the configuration (relocatable, no
                     // native-pointer ABI, known index) — pages unused here.
                     self.multi_memory_pages(*memory)?;
-                    if !self.bounds_check.is_passthrough() {
-                        // #1145 root cause: the software guard compares
-                        // against R10 and mask derives `size-1` from R10 —
-                        // MEMORY 0's size by the register contract. Memory k
-                        // has NO size register, so a guarded memory-k access
-                        // would check the WRONG bound or nothing; decline
-                        // until a per-memory limit source exists (e.g.
-                        // `__synth_mem_size_k`). `mpu` emits no inline guard
-                        // on any memory (`is_passthrough`, #1284): it lowers
-                        // like `none`, and the embedder's per-memory MPU
-                        // region (from the region table) is the enforcement.
-                        // Only the INLINE modes (software/mask) reach here.
+                    // #1619: memory k has no size REGISTER (R10 is memory
+                    // 0's), so `software` guards a memory-k access against
+                    // `__synth_mem_size_k` instead (`emit_memk_base`, and the
+                    // bulk pre-check below). `mask` stays refused: it wraps
+                    // with `AND size-1`, which needs a power-of-two size, and
+                    // memory k's need not be one (`(pagesize 1)`). `mpu`
+                    // emits no inline guard (`is_passthrough`, #1284).
+                    if matches!(self.bounds_check, BoundsCheckConfig::Masking) {
                         return Err(synth_core::Error::synthesis(format!(
-                            "multi-memory: --safety-bounds is not lowered for an \
-                             op on memory {memory} in phase 1 — the bounds \
-                             machinery (R10/mask) is memory-0-only; memory \
-                             {memory} has no size register, so a guard would \
-                             compare against the wrong memory's bound \
-                             (#406, #1145)"
+                            "multi-memory: --safety-bounds mask is not lowered for \
+                             an op on memory {memory} — mask wraps an address \
+                             with `AND size-1`, which needs a power-of-two size, \
+                             and memory {memory}'s need not be one; use \
+                             --safety-bounds software, which traps (#1145, #1619)"
                         )));
                     }
                     let sym = Self::wasm_data_symbol(*memory);
+                    // #1619: under `software`, memory 0's exact access guard
+                    // (`software_bounds_guard_against`) with `base` holding
+                    // `__synth_mem_size_k`, before `base` becomes the address.
+                    let width = synth_core::proven_safe::access_width(inner_op).unwrap_or(0);
+                    let software = matches!(self.bounds_check, BoundsCheckConfig::Software);
+                    let size_sym = Self::mem_size_symbol(*memory);
+                    let memk_guard = |out: &mut Vec<ArmInstruction>,
+                                      cf: &mut ControlFlowManager,
+                                      base: Reg,
+                                      addr: Reg,
+                                      offset: u32| {
+                        if software {
+                            let mut g = vec![ArmOp::LdrSym {
+                                rd: base,
+                                symbol: size_sym.clone(),
+                                addend: 0,
+                            }];
+                            g.extend(Self::software_bounds_guard_against(
+                                base,
+                                addr,
+                                offset as i32,
+                                width,
+                            ));
+                            cf.add_instructions(g.len());
+                            out.extend(g.into_iter().map(|op| ArmInstruction {
+                                op,
+                                source_line: Some(idx),
+                            }));
+                        }
+                    };
                     match inner_op.as_ref() {
                         I32Load { offset, .. }
                         | I32Load8S { offset, .. }
@@ -3859,6 +3885,7 @@ impl InstructionSelector {
                                 &[live_params.as_slice(), &[addr, dst]].concat(),
                                 idx,
                             )?;
+                            memk_guard(&mut instructions, &mut cf, base, addr, *offset);
                             Self::emit_sym_addr(&mut instructions, base, &sym, *offset as i32, idx);
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Add {
@@ -3912,6 +3939,7 @@ impl InstructionSelector {
                                 &[live_params.as_slice(), &[addr, value]].concat(),
                                 idx,
                             )?;
+                            memk_guard(&mut instructions, &mut cf, base, addr, *offset);
                             Self::emit_sym_addr(&mut instructions, base, &sym, *offset as i32, idx);
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Add {
@@ -3983,6 +4011,7 @@ impl InstructionSelector {
                                 &[live_params.as_slice(), &[addr, dst_lo, dst_hi]].concat(),
                                 idx,
                             )?;
+                            memk_guard(&mut instructions, &mut cf, base, addr, *offset);
                             Self::emit_sym_addr(&mut instructions, base, &sym, *offset as i32, idx);
                             let mem = MemAddr::imm(base, 0);
                             let mut ops = vec![ArmOp::Add {
@@ -4070,6 +4099,7 @@ impl InstructionSelector {
                                 &[live_params.as_slice(), &[addr, value_lo, value_hi]].concat(),
                                 idx,
                             )?;
+                            memk_guard(&mut instructions, &mut cf, base, addr, *offset);
                             Self::emit_sym_addr(&mut instructions, base, &sym, *offset as i32, idx);
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Add {
@@ -4107,10 +4137,9 @@ impl InstructionSelector {
                         // Model boundaries to. Each side resolves against ITS
                         // memory: memory 0 is `R11 + addr` (R11 = 0 under
                         // --native-pointer-abi, so a native pointer), memory k
-                        // is `__synth_wasm_data_<k> + addr`. Inline bounds
-                        // checking was refused above for any memory-k op
-                        // (memory k has no size register), so this is the
-                        // unguarded #374 byte loop over ABSOLUTE pointers; the
+                        // is `__synth_wasm_data_<k> + addr`. Under `software`
+                        // each side is range-checked first (#1619, below);
+                        // then the #374 byte loop runs over ABSOLUTE pointers; the
                         // copy direction is chosen on those pointers, so a
                         // same-memory copy is memmove-correct and a cross-memory
                         // copy (disjoint regions) is correct either way.
@@ -4207,6 +4236,56 @@ impl InstructionSelector {
                             } else {
                                 vec![(dst, sides[0])]
                             };
+                            // #1619: under `software`, every side is checked
+                            // against ITS memory's size BEFORE the loop writes
+                            // a byte (wasm checks the whole range first):
+                            // `reg+len` overflowing or `> size` traps, `==` is
+                            // in bounds. Memory 0 is R10, exactly as its own
+                            // bulk ops; memory k is `__synth_mem_size_k`.
+                            if software {
+                                for &(reg, m) in &rebased {
+                                    if m == 0 && self.native_pointer_abi {
+                                        return Err(synth_core::Error::synthesis(
+                                            "multi-memory: --safety-bounds software is not \
+                                             lowered for a memory.copy with a memory 0 side \
+                                             under --native-pointer-abi — memory 0's guard \
+                                             compares against R10, which bounds no native \
+                                             pointer (#1619)",
+                                        ));
+                                    }
+                                    let size = if m == 0 { Reg::R10 } else { base };
+                                    let mut g = Vec::new();
+                                    if m != 0 {
+                                        let symbol = Self::mem_size_symbol(m);
+                                        g.push(ArmOp::LdrSym {
+                                            rd: base,
+                                            symbol,
+                                            addend: 0,
+                                        });
+                                    }
+                                    let skip = |cond| ArmOp::BCondOffset { cond, offset: 0 };
+                                    g.extend([
+                                        ArmOp::Adds {
+                                            rd: Reg::R12,
+                                            rn: reg,
+                                            op2: Operand2::Reg(len),
+                                        },
+                                        skip(Condition::LO),
+                                        ArmOp::Udf { imm: 0 },
+                                        ArmOp::Cmp {
+                                            rn: size,
+                                            op2: Operand2::Reg(Reg::R12),
+                                        },
+                                        skip(Condition::HS),
+                                        ArmOp::Udf { imm: 0 },
+                                    ]);
+                                    cf.add_instructions(g.len());
+                                    instructions.extend(g.into_iter().map(|op| ArmInstruction {
+                                        op,
+                                        source_line: Some(idx),
+                                    }));
+                                }
+                            }
                             for (reg, m) in rebased {
                                 cf.add_instructions(if m == 0 { 1 } else { 2 });
                                 let rn = if m == 0 {

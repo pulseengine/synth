@@ -541,26 +541,39 @@ comparison into flattery. So:
   "bounded" invites exactly the confusion that makes fast/slow-path
   optimizations look like wins (see VCR-VER-002 and the Track D note on
   loop-versioning).
-- **Multi-memory: memory k > 0 cannot be bounds-checked on ANY profile**
-  (#1145, RQ-62-MEMISOLATE — gale's finding, and it outranks the MPU headline
-  it arrived beside). A module touching memory k either compiles with NO
-  inline bounds checking at all (the default) or does not compile:
-  `--safety-bounds software|mask` LOUD-SKIP every memory-k access — root
-  cause: the software guard compares against R10 and mask mode derives
-  `size-1` from R10, both MEMORY 0's size by the register contract; memory k
-  has no size register, so a guard would check the wrong memory's bound — and
-  the module then fails via #952. `--safety-bounds mpu` is accepted only with
-  `--embedder-mpu` (synth emits no MPU programming; memory k gets no inline
-  guard under it, the embedder's per-memory region is the enforcement).
-  What ships instead (v0.62, #1145 option 3): the per-memory region table
+- **Multi-memory: memory k > 0 is bounds-checked ONLY under `--safety-bounds
+  software`** (#1619, v0.90). Before it, memory k could not be bounds-checked
+  on ANY profile (#1145, RQ-62-MEMISOLATE — gale's finding, and it outranks
+  the MPU headline it arrived beside): the guards read R10, MEMORY 0's size by
+  the register contract, and memory k has no size register. `software` now
+  guards every lowered memory-k op — the i32/i64 load/store families and
+  `memory.fill`/`memory.copy` — against memory k's OWN size,
+  `__synth_mem_size_k` (the region table's SHN_ABS symbol, read through an
+  `R_ARM_ABS32` literal, so the guard and the embedder's region read one
+  number); memory 0 keeps R10. A bulk op checks every side's whole range
+  before it writes a byte, as wasm does. What is still not covered, loudly:
+  `--safety-bounds mask` LOUD-SKIPS every memory-k access (mask wraps with
+  `AND size-1`, which needs a power-of-two size, and memory k's need not be
+  one) and the module then fails via #952; under `--native-pointer-abi`,
+  `software` refuses a `memory.copy` with a memory-0 side (memory 0's guard
+  compares against R10, which bounds no native pointer). The default `none`
+  emits no memory-k guard, byte-identical to before. `--safety-bounds mpu` is
+  accepted only with `--embedder-mpu` (synth emits no MPU programming; memory
+  k gets no inline guard under it, the embedder's per-memory region is the
+  enforcement — and its object is byte-identical to `none`, so an OOB bulk
+  op's byte loop still writes the bytes it reaches before the first
+  out-of-region byte faults; only `software` gives wasm's no-write trap).
+  What ships for the MPU (v0.62, #1145 option 3): the per-memory region table
   (`__synth_mem_base_N`/`__synth_mem_size_N`/`__synth_mem_count`) from which
   the EMBEDDER programs one MPU region per memory — embedder-trusted
   isolation, obligations in `docs/embedder-abi-relocatable-arm.md`;
   `--safety-bounds mpu --embedder-mpu` records that obligation
   (embedder-programmed; containment demonstrated by gale on Renode and on STM32WB55 silicon (#1145); v0.68 aligns each
   `.synth.wasm_mem_k` to its MPU region size). Pinned executable:
-  `scripts/repro/mem_isolation_red_1145.py` (decline needles + the landed
-  cross-tenant write).
+  `scripts/repro/memk_bulk_oob_1619_differential.py` (the memory-k trap, vs
+  wasmtime) and `scripts/repro/mem_isolation_red_1145.py` (the decline
+  needles, the landed cross-tenant write under `none`, and both tenants
+  contained under `software`).
 
 ## Trap preservation — the rule, written down while it is free
 

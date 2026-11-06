@@ -412,19 +412,44 @@ load into R11 — one source, no drift.
    (gale's first two-tenant attempt escaped exactly this way). Each context
    switch must grant only the memory of the tenant about to run.
 
-### The compliance fact this table does not fix
+### Bounds checking memory k: `software` only (#1619, v0.90)
 
-**Memory k > 0 has no bounds-check story on any profile** (#1145, the finding
-that outranks the MPU headline): `--safety-bounds software|mask` loud-skip
-every memory-k access — the software guard compares against R10 and mask mode
-derives `size-1` from R10, both **memory 0's size** by the register contract;
-memory k has no size register, so a guard would check the wrong memory's
-bound — and the module then fails via #952 rather than shipping a partial
-object. A module touching memory k either compiles with NO inline bounds
-checking at all or does not compile. Embedder-programmed MPU regions from
-this table are currently the ONLY enforcement available for it. Pinned
-executable: `scripts/repro/mem_isolation_red_1145.py` (the decline needles +
-the landed cross-tenant write).
+Until v0.90 **memory k > 0 had no bounds-check story on any profile** (#1145,
+the finding that outranked the MPU headline): `--safety-bounds software|mask`
+loud-skipped every memory-k access, because both guards read R10 — **memory
+0's size** by the register contract — and memory k has no size register.
+
+`--safety-bounds software` now guards memory k against **this table's own
+`__synth_mem_size_k`**: every lowered memory-k op (the i32/i64 load/store
+families, `memory.fill`, `memory.copy` in either direction) loads it through
+an `R_ARM_ABS32` literal and runs memory 0's guard against it, trapping with
+an inline `UDF`. A bulk op checks every side's whole range before its loop
+writes a byte (`dst+len`, and `src+len` for a copy: overflow or `> size`
+traps, `== size` is in bounds), so an out-of-bounds fill or copy writes
+nothing, as WebAssembly requires. The memory-0 side of a cross-memory copy is
+checked against R10, as memory 0's own bulk ops are. What this asks of you:
+nothing new — the guard reads the number you already program region k from,
+so map memory k at (at least) `__synth_mem_size_k` bytes, as before.
+
+Still refused, loudly (the function is skipped and the module fails via
+#952):
+- `--safety-bounds mask` on any memory-k access: mask wraps an address with
+  `AND size-1`, which needs a power-of-two size, and `__synth_mem_size_k`
+  need not be one (`(pagesize 1)`).
+- under `--native-pointer-abi`, `software` on a `memory.copy` with a memory-0
+  side: memory 0's pointers are native there, and R10 bounds no native
+  pointer.
+
+The default `none` emits no memory-k guard (byte-identical to before), and
+`mpu` + `--embedder-mpu` is byte-identical to `none`: an out-of-bounds fill or
+forward copy writes the in-region bytes its loop reaches before the first
+out-of-region byte faults. Only `software` gives a bulk op wasm's no-write
+trap. Pinned executable: `scripts/repro/memk_bulk_oob_1619_differential.py`
+(in-bounds, end-exact, straddling, fully out-of-bounds and wrapping fill,
+copy and load/store on memories of three different sizes, vs wasmtime, with
+the bytes after each memory's end watched) and
+`scripts/repro/mem_isolation_red_1145.py` (the landed cross-tenant write
+under `none`; both tenants contained under `software`).
 
 ### With `--native-pointer-abi` (RQ-89-MEMLAYER6, v0.89)
 
@@ -626,4 +651,5 @@ accepts conforming, acknowledged, and synth-emitted images on every run.
 With the default `--safety-bounds none` there is no OOB trap on this path —
 see the "Compliance envelope" section of `CLAUDE.md`. `--safety-bounds
 software|mask` make the guards above real and make R10 load-bearing on every
-access.
+memory-0 access; on a multi-memory object `software` also guards memory k
+against `__synth_mem_size_k`, and `mask` refuses memory k (#1619).
