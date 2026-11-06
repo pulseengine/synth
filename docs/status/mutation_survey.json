@@ -2300,7 +2300,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "46e7a4c8",
+    "reanchored_at": "c20d37b2",
     "seed": 1189
   },
   "mutants": [
@@ -6971,13 +6971,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 7860,
+      "end": 7939,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/COND/select_with_stack.rs:7860:37",
+      "id": "R3-direct/COND/select_with_stack.rs:7939:37",
       "op": "COND",
       "region": "R3-direct",
       "seconds": 329.4,
-      "start": 7860,
+      "start": 7939,
       "status": "survived",
       "suite_seconds": 301.7
     },
@@ -7430,9 +7430,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 7065,
+      "end": 7144,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/GUARD/select_with_stack.rs:7065:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:7144:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -7444,7 +7444,7 @@
       "op": "GUARD",
       "region": "R3-direct",
       "seconds": 22.6,
-      "start": 7065,
+      "start": 7144,
       "status": "killed"
     },
     {

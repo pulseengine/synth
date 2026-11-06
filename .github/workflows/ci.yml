@@ -1102,6 +1102,7 @@ jobs:
       # symmetric -- `--safety-bounds software|mask` declines ANY memory-k access
       # regardless of width, because the guard reads R10, which is MEMORY 0's
       # size. So the lift to cost is a per-memory size source, not width coverage.
+      # (That lift landed in v0.90, #1619: software reads __synth_mem_size_k.)
       #
       # The pin reds when either side moves. Both negative controls were executed
       # against mutated copies; one of them fired by RAISING rather than
@@ -1238,7 +1239,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/oracle_wiring_check.py --json /tmp/oracle-wiring.json --list \
-            --exact-emulation-floor 449416 \
+            --exact-emulation-floor 449634 \
             | tee /tmp/oracle-wiring.log
           python3 - <<'PY'
           import json, sys
@@ -3173,8 +3174,9 @@ jobs:
       # spec TRAPS the same store), plus the #1145 region-table structural
       # pins (__synth_mem_{count,size_N} SHN_ABS exact, __synth_mem_base_1 at
       # the region base, NO __synth_mem_base_0) and the envelope pins
-      # (software/mask still loud-skip the memory-1 access via #952; mpu
-      # still refuses naming the criterion). The GREEN leg — the write FAULTS
+      # (mask still loud-skips the memory-1 access via #952; mpu still
+      # refuses naming the criterion; since #1619 software is ACCEPTED and
+      # both tenants' out-of-region accesses stop on the guard's UDF). The GREEN leg — the write FAULTS
       # with MPU regions programmed from the table — is unicorn-inexecutable
       # (no MPU model) and runs on gale's Renode M4 platform / STM32G474RE.
       # RED pre-#1145 (no region table, refusal pointed at closed "#406
@@ -3225,6 +3227,19 @@ jobs:
       # (rev6 then refuses to compile on every leg).
       - name: Run memory-k i64 load/store oracle (#1622, cortex-m3/m4f/m7, NPA and plain)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/memk_i64_1622_differential.py
+      # MEMKBULK (#1619): under --safety-bounds software an out-of-bounds
+      # memory.fill / memory.copy / load / store on a NON-DEFAULT memory traps
+      # (inline UDF) BEFORE writing a byte — each side checked against its own
+      # memory's size, memory k against the region table's __synth_mem_size_k.
+      # Three memories of three different sizes (64 KiB, a (pagesize 1) 5,376 B,
+      # 128 KiB), every memory compared with wasmtime after each call AND a
+      # canary band after each memory's end watched; a trap counts only on the
+      # guard's UDF. RED at c20d37b2: both software legs are refused at
+      # compile. Seven planted mutants (R10 instead of the size symbol, no
+      # overflow trap, dst side only, HS->HI, halved access width, no
+      # load/store guard, the native-pointer refusal removed) each red it.
+      - name: Run memory-k out-of-bounds trap oracle (#1619, cortex-m3, NPA and plain)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/memk_bulk_oob_1619_differential.py
       # #758: the DEFAULT self-contained `--cortex-m` image (no --relocatable,
       # no native-pointer ABI) must SHIP active memory-0 data segments. Before
       # the fix `.linear_memory` was NoBits and the reset path had no copy loop,

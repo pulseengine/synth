@@ -192,7 +192,7 @@ refusal now sits IN FRONT of the lowering gaps it used to let through.
 | `VCR-RA-003: JoinValueNotAvailable { reg: R4 }` (`br`, `br_if`, `br_table`, `labels`; an R5 instance in one more) | 1 / – / – | **filed as #1230**: the allocator validator refusing its own emitted stream — a caught would-be miscompile, not a lowering gap |
 | aarch64 `expected GP operand, got FP` / `expected FP operand, got GP` (`local_set`, `align`, `float_exprs`, `endianness`, ...) | – / – / 1 (3 files after; 15 files, ~300 functions on the v0.63 set before the merge refusal hid most of them) | **filed as #1231**: an operand-class tracking defect in the aarch64 selector |
 | `call_indirect` table not linked in a self-contained image (#717) | 2 on the v0.63 set; 0 now (`nop`/`load` flipped to `ok` once the single-module path handed the backend a real table) | **declined**: silicon-gated for the remaining multi-module shapes |
-| multi-memory in a self-contained image (VCR-MEM-002) | 17 on the v0.63 set; 1 now | **moved out of the family**: a multi-memory decline; memory k cannot be bounds-checked on any profile (#1145) and no memory-k execution oracle exists for a self-contained image, so it is declined here, not closed |
+| multi-memory in a self-contained image (VCR-MEM-002) | 17 on the v0.63 set; 1 now | **moved out of the family**: a multi-memory decline; memory k could not be bounds-checked on any profile at this census (#1145; `--safety-bounds software` guards it on `--relocatable` since #1619) and no memory-k execution oracle exists for a self-contained image, so it is declined here, not closed |
 
 ## Relationship to the acceptance ladder
 

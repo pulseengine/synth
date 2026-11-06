@@ -36,7 +36,15 @@ THE TWO REFUSALS ARE NOT SYMMETRIC, which is the scoping conclusion:
 So the lift to cost is a PER-MEMORY SIZE SOURCE (`__synth_mem_size_k`), not
 width coverage. Verified by execution, not by reading: the pinned repro
 `mem_isolation_red_1145.py` compiles this fixture on the plain `--relocatable`
-path today and records software/mask loud-skipping memory 1.
+path and records software/mask loud-skipping memory 1.
+
+THAT LIFT LANDED in v0.90 (MEMKBULK, #1619): `--safety-bounds software` now
+guards every lowered memory-k op — the i32/i64 load/store families and
+memory.fill/memory.copy — against `__synth_mem_size_k`, and
+`mem_isolation_red_1145.py` executes the reporter's fixture under it (both
+tenants contained). `mask` is still refused on memory k (it wraps with
+`AND size-1`, which needs a power-of-two size). The analysis above is kept as
+the record of why the size source, not width, was the lift.
 
 "THE TWO REFUSALS" IS READ OFF THE SOURCE, not inferred. The selector's own
 phase-1 comment names exactly two: "i64/f32/f64/v128 accesses AND
@@ -189,10 +197,11 @@ def report() -> int:
     print("  width refusal  -- float/v128 on memory k declines loudly (the i64 "
           "family is lowered since #1622); reporter uses "
           f"{sum(1 for v in used if not v.startswith(('I32', 'I64')))} such access(es)")
-    print("  bounds refusal -- --safety-bounds software|mask declines for ANY "
-          "memory-k access, width-independent (the guard reads R10 = memory 0's size)")
-    print("\nSCOPING CONCLUSION: the lift to cost is a per-memory size source "
-          "(`__synth_mem_size_k`), NOT width coverage.")
+    print("  bounds refusal -- was width-independent (the guard read R10 = memory 0's "
+          "size); since #1619 software guards memory k against __synth_mem_size_k, "
+          "and only mask still declines (it needs a 2^n size)")
+    print("\nSCOPING CONCLUSION: the lift was a per-memory size source "
+          "(`__synth_mem_size_k`, landed in #1619), NOT width coverage.")
     return 0 if not gap else 1
 
 

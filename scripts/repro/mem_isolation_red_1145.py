@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 6
+# ci-checks: emulations >= 10
 """RQ-62-MEMISOLATE (#1145) — the RED leg of gale's two-tenant kill-criterion,
 plus the region-table structural pins and the decline-matrix envelope pins.
 
@@ -41,9 +41,16 @@ Also pinned here, so the compliance envelope cannot drift silently:
     with st_size = region extent, and NO `__synth_mem_base_0` (memory 0's
     base is the embedder's R11 value; a symbol would be a second source of
     truth).
-  * `--safety-bounds software|mask` still LOUD-decline the memory-1 access
-    (root cause: memory 1 has no size register — R10 is memory 0's) and the
-    module fails via #952 rather than shipping a partial object.
+  * `--safety-bounds mask` still LOUD-declines the memory-1 access (mask
+    wraps with `AND size-1`, which needs a power-of-two size, and memory k's
+    need not be one) and the module fails via #952 rather than shipping a
+    partial object.
+  * `--safety-bounds software` is ACCEPTED since #1619 (v0.90) and CONTAINS
+    both tenants in software: memory 0 is guarded against R10, memory 1
+    against `__synth_mem_size_1` (an R_ARM_ABS32 to the region table's
+    SHN_ABS symbol). Executed on the same ADJACENT layout: tenant A's
+    one-page-past-the-end store and tenant B's past-the-end load both stop
+    on the guard's UDF, and tenant B's byte is unchanged.
   * `--safety-bounds mpu` without `--embedder-mpu` still refuses, naming the
     region table and the two-tenant criterion rather than the closed
     "#406 phase 2"; WITH `--embedder-mpu` it is accepted and the object is
@@ -70,8 +77,10 @@ from pathlib import Path
 import wasmtime
 from elftools.elf.elffile import ELFFile
 from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc, UcError
+from unicorn.unicorn_const import UC_ERR_INSN_INVALID
 from unicorn.arm_const import (
     UC_ARM_REG_LR,
+    UC_ARM_REG_PC,
     UC_ARM_REG_R0,
     UC_ARM_REG_R1,
     UC_ARM_REG_R10,
@@ -115,13 +124,83 @@ def compile_variant(obj, extra):
     )
 
 
+def software_leg(tmp):
+    """#1619: `--safety-bounds software` compiles the two-tenant module and
+    CONTAINS both tenants on the adjacent layout — the guard's UDF stops each
+    out-of-region access before it lands."""
+    obj = tmp / "two_tenant_sw.o"
+    p = compile_variant(obj, ["--safety-bounds", "software"])
+    if p.returncode != 0:
+        print(p.stderr.strip()[-600:])
+        fail("--safety-bounds software refused the two-tenant module (#1619)")
+    e = ELFFile(open(obj, "rb"))
+    secname_by_idx = {i: s.name for i, s in enumerate(e.iter_sections())}
+    text = bytearray(e.get_section_by_name(".text").data())
+    mem1_image = bytes(e.get_section_by_name(MEM1_SECTION).data())
+    symtab = [s for s in e.iter_sections() if s["sh_type"] == "SHT_SYMTAB"][0]
+    syms = {s.name: (s["st_shndx"], s["st_value"]) for s in symtab.iter_symbols()}
+    sec_bases = {MEM1_SECTION: MEM1_BASE, ".text": TEXT_BASE}
+    size_relocs = 0
+    for r in e.get_section_by_name(".rel.text").iter_relocations():
+        if r["r_info_type"] != ABS32:
+            continue
+        sym = symtab.get_symbol(r["r_info_sym"])
+        shndx, val = syms[sym.name]
+        if shndx == SHN_ABS:  # a region-table VALUE: resolves to itself
+            if sym.name != "__synth_mem_size_1":
+                fail(f"unexpected ABS32 reloc to SHN_ABS {sym.name}")
+            size_relocs += 1
+            target = val
+        else:
+            target = sec_bases[secname_by_idx[shndx]] + val
+        (add,) = struct.unpack_from("<I", text, r["r_offset"])
+        struct.pack_into("<I", text, r["r_offset"], (target + add) & 0xFFFFFFFF)
+    if size_relocs == 0:
+        fail("software: read_b is not guarded against __synth_mem_size_1")
+    mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+    for base in (TEXT_BASE, MEM0_BASE, MEM1_BASE, STACK_BASE):
+        mu.mem_map(base, PAGE)
+    mu.mem_write(TEXT_BASE, bytes(text))
+    ret = TEXT_BASE + PAGE - 0x10
+    mu.mem_write(ret, b"\x00\xbf\x00\xbf")
+    mu.mem_write(MEM0_BASE, b"tenantA")
+    mu.mem_write(MEM1_BASE, mem1_image)
+
+    def run(fn, args):
+        for reg, val in zip((UC_ARM_REG_R0, UC_ARM_REG_R1), args):
+            mu.reg_write(reg, val & 0xFFFFFFFF)
+        mu.reg_write(UC_ARM_REG_R10, PAGE)
+        mu.reg_write(UC_ARM_REG_R11, MEM0_BASE)
+        mu.reg_write(UC_ARM_REG_SP, STACK_BASE + PAGE - 0x100)
+        mu.reg_write(UC_ARM_REG_LR, ret | 1)
+        try:
+            mu.emu_start((TEXT_BASE + (syms[fn][1] & ~1)) | 1, ret, timeout=5_000_000)
+        except UcError as exc:
+            pc = mu.reg_read(UC_ARM_REG_PC) & ~1
+            if exc.errno == UC_ERR_INSN_INVALID and bytes(mu.mem_read(pc, 2)) == b"\x00\xde":
+                return "UDF"
+            fail(f"software: {fn}{args} faulted off the guard ({exc}) @ {pc:#x}")
+        return mu.reg_read(UC_ARM_REG_R0) & 0xFF
+
+    for fn, args, want in (
+        ("read_b", (6,), ord("B")),
+        ("read_b", (PAGE,), "UDF"),             # tenant B, one past its end
+        ("write_a", (OOB_ADDR, POISON), "UDF"),  # tenant A's escape
+        ("read_b", (3,), ord("a")),             # the escape did not land
+    ):
+        got = run(fn, args)
+        if got != want:
+            fail(f"software: {fn}{args} = {got!r}, want {want!r}")
+    print(f"software (#1619): accepted; write_a({OOB_ADDR:#x}) and read_b({PAGE:#x}) "
+          f"stop on the guard's UDF, tenant B unchanged — contained in software")
+
+
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="memiso1145_"))
 
     # ── Envelope pins: the decline matrix, exact and loud ────────────────────
     for mode, needles in (
-        ("software", ["read_b", "memory-0-only", "#952"]),
-        ("mask", ["read_b", "memory-0-only", "#952"]),
+        ("mask", ["read_b", "power-of-two", "#952"]),
         ("mpu", ["#1145", "__synth_mem_base_N", "two-tenant"]),
     ):
         p = compile_variant(tmp / f"declined_{mode}.o", ["--safety-bounds", mode])
@@ -136,7 +215,8 @@ def main():
         for needle in needles:
             if needle not in blob:
                 fail(f"--safety-bounds {mode} refusal no longer names {needle!r}")
-    print("declines pinned: software/mask skip memory-1 loudly (#952), mpu refuses naming #1145")
+    print("declines pinned: mask skips memory-1 loudly (#952), mpu refuses naming #1145")
+    software_leg(tmp)
 
     # ── The shipped object ───────────────────────────────────────────────────
     obj = tmp / "two_tenant.o"
@@ -276,8 +356,8 @@ def main():
 
     # ── THE RED LEG ──────────────────────────────────────────────────────────
     # Tenant A writes one page past its own region. No MPU is modeled, no
-    # guard is emitted (--safety-bounds none is the only accepting mode for
-    # this module): the store must COMPLETE — a fault here means the harness
+    # guard is emitted (this is the default --safety-bounds none object;
+    # `software` traps it, see software_leg): the store must COMPLETE — a fault here means the harness
     # layout is wrong, not that isolation exists.
     try:
         run("write_a", (OOB_ADDR, POISON))

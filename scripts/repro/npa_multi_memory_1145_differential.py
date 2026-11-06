@@ -110,7 +110,12 @@ REFUSALS (each must refuse, naming the shape, no object written):
                  global: nothing relocates it, so the #1568 constant-address
                  guard refuses it (it compiled silently before the guard saw
                  the wrapped copy);
-  safety_sw      `--safety-bounds software` (memory k has no size register).
+  safety_sw_xcopy  `--safety-bounds software` on a cross-memory copy with a
+                 memory-0 side: memory 0's guard compares against R10, which
+                 bounds no native pointer, so it is refused (#1619; a memory-k
+                 side IS guarded, against `__synth_mem_size_k`);
+  safety_mask    `--safety-bounds mask` on memory 1: mask wraps with
+                 `AND size-1`, which needs a power-of-two size (#1619).
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python3 scripts/repro/npa_multi_memory_1145_differential.py
@@ -341,7 +346,13 @@ REFUSALS = [
       (func (export "anchor") (result i32) (i32.load $m0 (i32.const 0x1000)))
       (func (export "x") (memory.copy $m1 $m0 (i32.const 0) (i32.const 0x1000) (i32.const 4))))""",
      [], "memory.copy (memory-0 side)"),
-    ("safety_sw", PAGES, ["--safety-bounds", "software"], "memory 1"),
+    ("safety_sw_xcopy", r"""(module (memory $m0 1 1) (memory $m1 1 1)
+      (func (export "x") (param i32 i32 i32)
+        (memory.copy $m1 $m0 (local.get 0) (local.get 1) (local.get 2))))""",
+     ["--safety-bounds", "software"],
+     "memory.copy with a memory 0 side under --native-pointer-abi"),
+    ("safety_mask", PAGES, ["--safety-bounds", "mask"],
+     "mask is not lowered for an op on memory 1"),
 ]
 
 
@@ -677,7 +688,8 @@ def main():
     for label, wat, extra, needle in REFUSALS:
         rc, log, obj = compile_obj(wat, tmp, f"refuse_{label}", extra)
         ok = (rc != 0 and "panicked" not in log and needle in log
-              and (label in ("safety_sw", "imported_mem0", "xcopy_nosp_static")
+              and (label in ("safety_sw_xcopy", "safety_mask", "imported_mem0",
+                             "xcopy_nosp_static")
                    or REFUSE_NEEDLE in log)
               and not (obj.exists() and obj.stat().st_size > 0))
         print(f"  [{'ok ' if ok else 'BUG'}] refused: {label} (rc={rc})"
