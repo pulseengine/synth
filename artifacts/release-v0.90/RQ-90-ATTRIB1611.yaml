@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-ATTRIB1611
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "A record delivered after its release's tag is attributed to a release that authorises its issue"
     description: >
         #1611 is delivered (RQ-89-SWEEPMUTANT, `release: v0.89`, implemented)
@@ -43,6 +43,41 @@ artifacts:
       issue: "#1611"
       verification-track: manual
       issue-scope: closes
+      landed: "PR #1668 - #1611 - DELIVERED. The refuting command was RUN FIRST on origin/main f28f29b0 and did NOT refute: #1611 is open; `git merge-base --is-ancestor f35d8606 v0.89.0` answers 1 (f35d8606 merged 2026-11-01, the v0.89.0 tag commit dd2b791a is dated 2026-10-29); issue_closure_check --allow-unclosed exits 0 for v0.89 (since v0.88.0; 19 authorised, 4 held open, 27 closed, and the only word on #1611 is WARN AUTHORISED BUT STILL OPEN), for v0.89.1 (since v0.89.0; 1 authorised, 19 closed) and for v0.89.2 (since v0.89.1; 2 authorised, 3 closed), and neither patch audit names #1611. ATTRIBUTION: the next audited release, v0.90, authorises the closure of #1611 through THIS record (issue #1611, issue-scope closes, now implemented). RQ-89-SWEEPMUTANT is NOT relabelled: v0.89 is a shipped release whose record set its tag, its archaeology (R4/R7/R10) and its audit output already describe, and moving a record out of it rewrites that history to fit a gate. THE GATE: scripts/issue_closure_check.py gains unaudited_deliveries and authorised_at_tag. An OPEN issue whose latest naming release authorises its closure, where no authorising release is the one being audited or later, and where every authorising release lacked that authorisation in the release directory as its TAG holds it, is now a FAILURE (DELIVERED BUT NO AUDIT AUTHORISES IT), not downgraded by --allow-unclosed. It runs in the CI step that can block (--from-anchor --closed '' --require-state). An unreadable tag is a loud UNAUDITED-DELIVERY CHECK SKIPPED warning, never a pass."
+      verified-by: >
+        DELIVERED. POPULATION, measured with the shipped function over every
+        artifacts/release-v*/ directory (32 directories, release-v0.61 to
+        release-v0.90, 361 records, 67 open issues): on f28f29b0 exactly ONE
+        issue trips, #1611 (RQ-89-SWEEPMUTANT, v0.89); on this branch, ZERO.
+        Measured and excluded: RQ-89-CENSUSFLOAT also arrived after the v0.89.0
+        tag, as did SWEEPMUTANT (the only two records absent from their
+        release's tag), but it declares issue-scope outlives over #1609, so no
+        authorisation was lost and it does not trip; RQ-77-FLOORREGEX's
+        authorisation of #1243 is absent from v0.77.0 (added by a later field
+        edit) but #1243 is closed. A DIFFERENT denominator, not the rule's count:
+        11 open issues have a latest naming release that authorises closure;
+        8 of them (v0.61 to v0.67) were authorised at their own tag, so an audit
+        saw them, and 2 are v0.90's own (#1639, #1641). That is why the rule is
+        keyed on the tag and not on "authorised and still open", which would
+        red main 9 times. PAIRED CONTROL ON REAL INPUT, the CI step's exact
+        invocation: the branch script on the f28f29b0 tree exits 1 with FAIL
+        DELIVERED BUT NO AUDIT AUTHORISES IT: #1611 (2 authorised, 1 failure);
+        on the branch tree it exits 0 with 3 authorised, and its pipefail
+        block with the state-count grep passes. POTENCY: attrib1611_tests in
+        scripts/test_issue_closure_check.py builds a real git repository with
+        an annotated v0.89.0 tag and drives the real loader. Run against
+        f28f29b0's script, 4 of its 13 assertions red (the late record, the
+        late status flip, the per-issue control after attribution, and the
+        loud skip on a deleted tag); against this branch, 0. It also pins that
+        the on-time record, the late outlives record, the release being cut
+        and a closed issue do not trip, that auditing v0.89 itself keeps only
+        the old warning, and that naming the issue in the release being cut
+        clears it. The full suite reports 0 failures. VERDICTS ON REAL INPUT,
+        base vs branch, back to back, --since-tag and --allow-unclosed: v0.89
+        (since v0.88.0), v0.89.1 (since v0.89.0) and v0.89.2 (since v0.89.1)
+        are byte-identical; v0.90 (since v0.89.2) gains one line, WARN
+        AUTHORISED BUT STILL OPEN: #1611 — RQ-90-ATTRIB1611, and moves from 2
+        to 3 authorised, 0 failures on both sides.
       done-when: >
         manual:2027-03-31 #1611's closure is authorised by an audited release,
         and a delivered record that no audited release authorises fails a gate

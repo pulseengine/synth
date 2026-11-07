@@ -554,6 +554,127 @@ def later_attribution(artifacts, version: tuple[int, int]):
     return found
 
 
+def release_tag_name(v: tuple) -> str:
+    """The tag a release's own audit ran at: (0, 89) -> v0.89.0, a patch
+    (0, 89, 1) -> v0.89.1."""
+    return "v" + ".".join(str(x) for x in (v if len(v) == 3 else (*v, 0)))
+
+
+def authorised_at_tag(root: Path, v: tuple) -> dict[int, str] | None:
+    """`authorised_close_set` for release `v` AS ITS TAG SAW IT. (RQ-90-ATTRIB1611)
+
+    The release directory is read out of the tag with `git show` into a scratch
+    tree and handed to the SAME loader and the SAME `authorised_close_set` the
+    live tree uses — no second derivation of the set. A directory absent at the
+    tag is an empty set (every record arrived later), which is a real answer.
+    None means the question could not be asked: no git, or the tag does not
+    resolve. The caller reports that loudly; it is never read as "present".
+    """
+    import tempfile
+    tag = release_tag_name(v)
+    rel_dir = f"artifacts/release-{fmt_release(v)}"
+
+    def _git(*args: str):
+        return subprocess.run(["git", "-C", str(root), *args],
+                              capture_output=True, text=True)
+    try:
+        if _git("rev-parse", "--verify", "--quiet",
+                f"refs/tags/{tag}^{{commit}}").returncode != 0:
+            return None
+        ls = _git("ls-tree", "-r", "--name-only", tag, "--", f"{rel_dir}/")
+    except OSError:
+        return None
+    if ls.returncode != 0:
+        return None
+    with tempfile.TemporaryDirectory() as td:
+        for rel in ls.stdout.split():
+            if not rel.endswith(".yaml"):
+                continue
+            blob = _git("show", f"{tag}:{rel}")
+            if blob.returncode != 0:
+                return None
+            dst = Path(td) / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(blob.stdout, encoding="utf-8")
+        tag_arts, _bad = load_release_artifacts(Path(td), RELEASE_GLOB)
+        auth, _held = authorised_close_set(tag_arts, v)
+    return auth
+
+
+def unaudited_deliveries(artifacts, version: tuple, open_issues: set[int],
+                         at_tag):
+    """RQ-90-ATTRIB1611 (#1611): an OPEN issue whose closure EVERY authorising
+    release granted only AFTER that release's own tag — so no audit ever saw it.
+
+    THE SHAPE, measured. RQ-89-SWEEPMUTANT (`release: v0.89`, implemented,
+    `issue: #1611`) merged as f35d8606 on 2026-11-01, three days after the
+    v0.89.0 tag (dd2b791a, 2026-10-29); `git merge-base --is-ancestor f35d8606
+    v0.89.0` answers 1. v0.89's ritual therefore ran without it, and every later
+    audit excludes it because it is keyed v0.89: `prior_attribution` reads it as
+    "ATTRIBUTED TO v0.89", an excuse for a closure, never an obligation to make
+    one. The only place it surfaced was a `WARN AUTHORISED BUT STILL OPEN` in a
+    re-audit of v0.89 itself, which no live CI step runs. Nothing made it a
+    failure, so the issue sat delivered and open with no release able to close
+    it.
+
+    THE RULE. Issue n trips when ALL of these hold:
+      * n is OPEN (state, not window — a closed issue has no gap);
+      * the most recent release naming n AUTHORISES its closure (a later
+        `issue-scope: outlives` is a deliberate hold, and governs);
+      * no authorising release is the one being audited or later — that
+        release's own audit is still ahead, and IS the remedy;
+      * for every authorising release, the authorisation is ABSENT from the
+        release directory as its TAG holds it (`authorised_at_tag`).
+    Keyed on the AUTHORISATION at the tag, not on the record FILE, so a record
+    present at the tag as `proposed` and flipped to implemented afterwards is
+    the same gap, and is caught.
+
+    WHY NOT "authorised and still open": that is ELEVEN issues on the live tree,
+    eight of them from v0.61-v0.67 whose authorisation WAS present at its tag —
+    those audits saw them, and what happened after (a reopen, a ritual that
+    left one open) is a different question this rule does not answer. Against
+    the tag, the population over every `release-v*/` directory is exactly one:
+    #1611.
+
+    `at_tag(v)` returns the tag's authorised set or None (unaskable). None is
+    returned to the caller as a SKIP, which `check` prints — a check that could
+    not run must never read as a pass.
+
+    Returns ([(n, art, releases)], [(n, release)] skipped).
+    """
+    latest: dict[int, tuple[tuple, str, str]] = {}
+    auth_by_v: dict[tuple, dict[int, str]] = {}
+    for v in sorted({a[1] for a in artifacts if a[1] is not None}):
+        auth, held = authorised_close_set(artifacts, v)
+        auth_by_v[v] = auth
+        for n, art in held.items():
+            latest[n] = (v, "held-open", art)
+        for n, art in auth.items():
+            latest[n] = (v, "authorised", art)
+    tripped, skipped = [], []
+    for n in sorted(open_issues):
+        if n not in latest or latest[n][1] != "authorised":
+            continue
+        granting = [v for v, auth in auth_by_v.items() if n in auth]
+        if any(v >= version for v in granting):
+            continue
+        unaskable = []
+        seen_at_tag = False
+        for v in granting:
+            tag_auth = at_tag(v)
+            if tag_auth is None:
+                unaskable.append(v)
+            elif n in tag_auth:
+                seen_at_tag = True
+        if seen_at_tag:
+            continue  # an audit DID see it; whatever happened after is not this rule
+        if unaskable:
+            skipped.extend((n, v) for v in unaskable)
+        else:
+            tripped.append((n, latest[n][2], granting))
+    return tripped, skipped
+
+
 def fmt_release(v: tuple) -> str:
     return _fmt_key(v)
 
@@ -561,7 +682,8 @@ def fmt_release(v: tuple) -> str:
 def check(root: Path, release: str, closed: set[int],
           allow_unclosed: bool = False, open_issues: set[int] | None = None,
           allow_vacuous: bool = False,
-          not_planned: dict[int, str] | None = None):
+          not_planned: dict[int, str] | None = None,
+          at_tag=None):
     """Returns (failures, warnings, authorised, held_open).
 
     `closed` is the WINDOW — issues closed at or after the tag. `open_issues`,
@@ -754,6 +876,33 @@ def check(root: Path, release: str, closed: set[int],
                     f"declares `issue-scope: outlives`, but the issue is not "
                     f"open. It was closed OUTSIDE this release's window, which "
                     f"the closed-set alone cannot see")
+
+    # RQ-90-ATTRIB1611 (#1611): a delivery no audited release can authorise.
+    # NOT downgraded by --allow-unclosed: that flag forgives a closure LAGGING an
+    # audit, and here there is no audit for it to lag. Runs under the CI step's
+    # `--closed ''`, the one invocation that can block a PR.
+    if open_issues is not None:
+        tripped, skipped = unaudited_deliveries(
+            artifacts, version, open_issues,
+            at_tag or (lambda v: authorised_at_tag(root, v)))
+        for n, v in skipped:
+            warnings.append(
+                f"UNAUDITED-DELIVERY CHECK SKIPPED: #{n} — "
+                f"{release_tag_name(v)} could not be read (no git, or the tag "
+                f"does not resolve), so whether {fmt_release(v)}'s audit saw "
+                f"this authorisation is UNKNOWN, not established")
+        for n, art, granting in tripped:
+            rels = ", ".join(fmt_release(v) for v in granting)
+            failures.append(
+                f"DELIVERED BUT NO AUDIT AUTHORISES IT: #{n} — {art} grants its "
+                f"closure under {rels}, but the authorisation is absent from "
+                f"{', '.join(release_tag_name(v) for v in granting)}: it "
+                f"arrived after that release's audit ran, and every later audit "
+                f"excludes it because it is keyed to {rels}. The issue is OPEN "
+                f"and nothing can close it under a gate. Name #{n} in a record "
+                f"of {release} (`issue-scope: closes`, claiming status) so this "
+                f"release's audit authorises it — do not relabel a shipped "
+                f"release's record")
     return failures, warnings, authorised, held_open
 
 

@@ -128,8 +128,11 @@ def run(artifacts, closed, allow_unclosed=False, open_issues=None):
     orig = C.load_release_artifacts
     C.load_release_artifacts = lambda root, glob: (artifacts, [])
     try:
+        # RQ-90-ATTRIB1611: every authorisation is PRESENT at its tag here, so
+        # the unaudited-delivery rule never reaches git from these stubs.
         return C.check(Path("."), "v0.71", set(closed), allow_unclosed,
-                       None if open_issues is None else set(open_issues))
+                       None if open_issues is None else set(open_issues),
+                       at_tag=lambda v: authorised_close_set(artifacts, v)[0])
     finally:
         C.load_release_artifacts = orig
 
@@ -457,6 +460,112 @@ def notplanned_tests() -> None:
     check("notplanned: (c) a MISSING state_reason stays a FAILURE",
           any("CLOSED BUT NOT AUTHORISED: #1609" in x for x in f), str(f))
 
+
+
+def attrib1611_tests() -> None:
+    """RQ-90-ATTRIB1611 (#1611): a delivery NO audited release can authorise.
+
+    The live shape: RQ-89-SWEEPMUTANT (`release: v0.89`, implemented, #1611)
+    merged three days AFTER the v0.89.0 tag, so v0.89's audit never saw it and
+    every later audit excluded it as keyed v0.89. Before this rule the gate's
+    only word on it was a WARN in a re-audit of v0.89 itself.
+
+    Driven through a REAL git repository with a REAL annotated tag and the REAL
+    loader over files on disk — the rule's whole question is "what did the tag
+    hold", so a stubbed tag would test the stub. Paired: the planted late record
+    FAILS, the on-time record, the late `outlives` record (RQ-89-CENSUSFLOAT's
+    shape) and the current release's own record do NOT, and naming the issue in
+    the release being cut CLEARS it.
+    """
+    def rec(root, rel_dir, aid, release, status, issue, scope=None):
+        d = root / "artifacts" / rel_dir
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{aid}.yaml").write_text(
+            "artifacts:\n"
+            f"  - id: {aid}\n"
+            "    type: system-req\n"
+            f"    release: {release}\n"
+            f"    status: {status}\n"
+            "    fields:\n"
+            f"      issue: \"#{issue}\"\n"
+            + (f"      issue-scope: {scope}\n" if scope else ""),
+            encoding="utf-8")
+
+    def git(root, *args):
+        subprocess.run(
+            ["git", "-C", str(root), "-c", "user.name=fixture",
+             "-c", "user.email=fixture@test", "-c", "commit.gpgsign=false",
+             "-c", "tag.gpgsign=false", *args],
+            check=True, capture_output=True)
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        git(root, "init", "-q")
+        rec(root, "release-v0.89", "RQ-89-ONTIME", "v0.89", "implemented", 100)
+        rec(root, "release-v0.89", "RQ-89-FLIP", "v0.89", "proposed", 300)
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "v0.89 records")
+        git(root, "tag", "-a", "v0.89.0", "-m", "v0.89.0")
+        # After the tag: a late delivery, a late hold-open, a late status flip,
+        # and the release being cut.
+        rec(root, "release-v0.89", "RQ-89-LATE", "v0.89", "implemented", 200)
+        rec(root, "release-v0.89", "RQ-89-LATEHOLD", "v0.89", "implemented",
+            400, scope="outlives")
+        rec(root, "release-v0.89", "RQ-89-FLIP", "v0.89", "implemented", 300)
+        rec(root, "release-v0.90", "RQ-90-OTHER", "v0.90", "implemented", 500)
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "after the tag")
+        opened = {100, 200, 300, 400, 500}
+        tag = "DELIVERED BUT NO AUDIT AUTHORISES IT"
+
+        f, w, _a, _h = C.check(root, "v0.90", set(), True, opened)
+        check("attrib1611: RED a record delivered after its release's tag FAILS",
+              any(f"{tag}: #200 — RQ-89-LATE" in x for x in f), str(f))
+        check("attrib1611: RED a status flipped to delivered after the tag FAILS "
+              "(keyed on the AUTHORISATION at the tag, not the file)",
+              any(f"{tag}: #300" in x for x in f), str(f))
+        check("attrib1611: it is a FAILURE even under --allow-unclosed",
+              not any(f"{tag}: #200" in x for x in w), str(w))
+        check("attrib1611: an authorisation the tag HELD is not this rule",
+              not any("#100" in x for x in f), str(f))
+        check("attrib1611: a late `outlives` record loses nothing (CENSUSFLOAT)",
+              not any("#400" in x for x in f), str(f))
+        check("attrib1611: the release being cut is its own audit, not a gap",
+              not any("#500" in x for x in f), str(f))
+        f, _w, _a, _h = C.check(root, "v0.90", set(), True, opened - {200, 300})
+        check("attrib1611: a CLOSED issue has no gap",
+              not any(tag in x for x in f), str(f))
+        f, w, _a, _h = C.check(root, "v0.89", set(), True, opened)
+        check("attrib1611: auditing v0.89 ITSELF keeps the old WARN, adds nothing",
+              not any(tag in x for x in f)
+              and any("AUTHORISED BUT STILL OPEN: #200" in x for x in w),
+              f"{f} / {w}")
+
+        # GREEN: the release being cut names it, so ITS audit authorises it.
+        rec(root, "release-v0.90", "RQ-90-ATTRIB", "v0.90", "implemented", 200,
+            scope="closes")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "v0.90 attributes #200")
+        f, w, auth, _h = C.check(root, "v0.90", set(), True, opened)
+        check("attrib1611: GREEN once the release being cut names the issue",
+              not any(f"{tag}: #200" in x for x in f) and 200 in auth, str(f))
+        check("attrib1611: ...and that release's audit now lists it",
+              any("AUTHORISED BUT STILL OPEN: #200 — RQ-90-ATTRIB" in x
+                  for x in w), str(w))
+        check("attrib1611: ...while the unattributed flip still FAILS (per issue)",
+              any(f"{tag}: #300" in x for x in f), str(f))
+        f, _w, _a, _h = C.check(root, "v0.89.1", set(), True, opened)
+        check("attrib1611: a historical audit BETWEEN the two is rescued by the "
+              "later attribution",
+              not any(f"{tag}: #200" in x for x in f), str(f))
+
+        # An UNASKABLE tag is a loud SKIP, never a pass and never a crash.
+        git(root, "tag", "-d", "v0.89.0")
+        f, w, _a, _h = C.check(root, "v0.90", set(), True, opened)
+        check("attrib1611: with the tag gone the check SKIPS LOUDLY",
+              not any(tag in x for x in f)
+              and any("UNAUDITED-DELIVERY CHECK SKIPPED: #300" in x for x in w),
+              f"{f} / {w}")
 
 def next_release_tag_tests() -> None:
     """v0.81 round-2 cold review, finding 9.
@@ -1036,6 +1145,7 @@ def main() -> int:
     closed_since_tests()
     closewindow_tests()
     notplanned_tests()
+    attrib1611_tests()
 
     print(f"issue-closure-tests: {FAILS} failure(s)")
     return 1 if FAILS else 0
