@@ -11,11 +11,12 @@
 # and exact-pins every bucket per backend; proven able to fail at authoring
 # (empty dir + off-by-one pin both exit 1 — evidence in PR #1095 thread).
 #
-# The COMPILE census is NOT in the required-check set (main's 9): a new
-# required context that fails to run deadlocks all merges. Advisory-but-
-# red-visible, like the other oracle jobs. The EXECUTION job at the end of
-# this file (#1636) is shaped to BE required — see its header — once the
-# maintainer adds its context to branch protection.
+# The COMPILE census is NOT in the required-check set: a new required
+# context that fails to run deadlocks all merges. Advisory-but-red-visible,
+# like the other oracle jobs. The EXECUTION job at the end of this file
+# (#1636) IS required: the maintainer added `spec-suite execution (#1636)` to
+# branch protection in v0.90, and ci_pool_tripwire.py's REQUIRED_CONTEXTS pins
+# it (its deadlock guard resolves it in THIS file).
 name: Spec Suite
 
 on:
@@ -144,8 +145,10 @@ jobs:
   # cancellation (a cancelled check satisfies the merge gates), and the
   # reference engine + emulator PINNED so the exact baseline cannot move with
   # a floating `pip install`. Deterministic: the garbage machine states are
-  # seeded from (leg, file, module position). Making it required is the
-  # maintainer's branch-protection action, not this file's.
+  # seeded from (leg, file, module position). It IS required since v0.90 —
+  # the maintainer's branch-protection action; renaming it, giving it an `if:`,
+  # a matrix or a path filter now deadlocks every merge, and
+  # ci_pool_tripwire.py / runner_redundancy_check.py fail on each of those.
   spec-suite-execution:
     name: spec-suite execution (#1636)
     runs-on: ubuntu-latest

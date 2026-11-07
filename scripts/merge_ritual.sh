@@ -11,7 +11,7 @@
 # The decidable half lives in `scripts/merge_gate.py`, which CI exercises via
 # `--self-test`. This file is the orchestration the network half needs.
 #
-#   CHECK1  all 9 required contexts SUCCESS, verified BY NAME from the API
+#   CHECK1  every required context SUCCESS, verified BY NAME from the API
 #   CHECK2  the BRANCH is CURRENT — `git merge-base --is-ancestor` plus
 #           `rev-list --count` = 0. NOT `baseRefOid == origin/main`, which is
 #           the PR's recorded BASE TIP and passed on #1268's stale branch

@@ -750,7 +750,7 @@ def self_test() -> int:
     green = {n: "SUCCESS" for n in real}
 
     r = decide(green, real, True, 0, True)
-    check("CHECK1: the nine real contexts, all SUCCESS -> pass",
+    check("CHECK1: the real required contexts, all SUCCESS -> pass",
           r["CHECK1"][0], r["CHECK1"][1])
 
     # THE ONE THAT MATTERS. Nine contexts, all SUCCESS, none of them real.
@@ -821,7 +821,12 @@ def self_test() -> int:
     # Protection gaining a pending context must not refuse every PR; and the
     # tolerance must not let that context through unrun, nor admit anything
     # outside both lists.
-    pend = list(PENDING_REQUIRED_CONTEXTS)
+    # The list is EMPTY between promotions, so the window is driven with a
+    # recorded pending name when it is; the list object is the one decide()
+    # reads, so it is filled IN PLACE and restored after.
+    _saved_pend = list(PENDING_REQUIRED_CONTEXTS)
+    pend = _saved_pend or ["Pending fixture context (self-test)"]
+    PENDING_REQUIRED_CONTEXTS[:] = pend
     check("fixture shape: there is a pending context to drive the window with",
           bool(pend) and not set(pend) & set(real), f"pending={pend}")
     both = real + pend
@@ -843,6 +848,15 @@ def self_test() -> int:
     r = decide({n: "SUCCESS" for n in shortp}, shortp, True, 0, True)
     check("CHECK1: PENDING present but a REQUIRED context absent -> REFUSED",
           not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
+    PENDING_REQUIRED_CONTEXTS[:] = _saved_pend
+    # And with the REAL pending list (empty between promotions) the pending
+    # name is just a context in neither list: refused.
+    if not _saved_pend:
+        r = decide({n: "SUCCESS" for n in both}, both, True, 0, True)
+        check("CHECK1: with PENDING empty, that same name -> REFUSED",
+              not r["CHECK1"][0], f"detail={r['CHECK1'][1]}")
+    check("fixture shape: the pending list was restored",
+          list(PENDING_REQUIRED_CONTEXTS) == _saved_pend)
 
     # CHECK3/3b still discriminate, and advisory names are still excluded.
     r = decide(dict(green, **{"Some Job": "FAILURE"}), real, True, 0, True)

@@ -15,10 +15,19 @@ indistinguishable in a utilisation reading. This gate asks the question none
 of them asked: HOW MANY ONLINE MACHINES CAN SATISFY THIS LABEL SET?
 
 WHAT IT CHECKS
-  1. Structural (no token needed): every pinned REQUIRED context exists as a
-     job `name:` in the workflow. A renamed required job never reports its
+  1. Structural (no token needed): every pinned REQUIRED context resolves to
+     a job in the workflows. A renamed required job never reports its
      context and DEADLOCKS all merges — the same terminal state the
      redundancy invariant guards against, caught at the other end.
+     (v0.90, RQ-90-SPECEXEC #1636) Resolution is ci_pool_tripwire's own
+     `resolve_required_contexts`, over EVERY file under .github/workflows/
+     by default (`spec-suite execution (#1636)` lives in spec-suite.yml),
+     and the contract is ci_pool_tripwire's REQUIRED_CONTEXTS +
+     PENDING_REQUIRED_CONTEXTS — imported, not a second hand-kept copy.
+     The same rules apply: a `${{ }}` name, a matrix job or a reusable-
+     workflow caller does not resolve, the workflow must run on
+     `pull_request` without a path filter, and two workflows defining one
+     context is AMBIGUOUS.
   2. Redundancy: for every required context whose job targets self-hosted
      labels, count ONLINE runners whose label set satisfies the job's
      `runs-on` set (case-insensitive superset, GitHub's own matching rule).
@@ -63,41 +72,44 @@ from pathlib import Path
 
 import yaml
 
-# The required contexts on main, pinned. Source of truth is branch
-# protection; verify the pin with:
-#   gh api /repos/pulseengine/synth/branches/main/protection/required_status_checks
-# (set 2026-07-29; see reference_main_branch_protection). If protection
-# changes, this list changes in the same PR.
-REQUIRED_CONTEXTS = [
-    "Format",
-    "Clippy",
-    "Test",
-    "Z3 Verification",
-    "Claim Check",
-    "Version Pin Sweep",
-    "Bazel Build & Proofs",
-    "Kani Verification",
-    "Rivet Validation",
-]
+# The required contexts. (v0.90, RQ-90-SPECEXEC #1636) This file used to keep
+# its OWN copy of the nine, which went stale the day protection gained a
+# tenth: the structural mode below read ci.yml only and would have reported the
+# new context as a deadlock. The contract now has ONE home —
+# ci_pool_tripwire.REQUIRED_CONTEXTS, which merge_gate.py already imports and
+# whose drift cross-check compares it with live branch protection — and the
+# pending ones are guarded here exactly as there.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ci_pool_tripwire as _T  # noqa: E402
+
+REQUIRED_CONTEXTS = list(_T.REQUIRED_CONTEXTS) + [
+    c for c in _T.PENDING_REQUIRED_CONTEXTS if c not in _T.REQUIRED_CONTEXTS]
 
 MIN_ONLINE = 2
 
 HOSTED_PREFIXES = ("ubuntu-", "macos-", "windows-")
 
 
-def load_workflow_jobs(workflow_path: Path) -> dict[str, list[str]]:
-    """Map job display name -> runs-on label list (lowercased)."""
-    doc = yaml.safe_load(workflow_path.read_text())
+def load_workflows(paths) -> dict:
+    """{path: parsed doc}: every workflow file by default, else the given ones."""
+    if not paths:
+        return _T.load_workflows()
+    return {str(p): (yaml.safe_load(Path(p).read_text()) or {}) for p in paths}
+
+
+def resolve_jobs(workflows: dict):
+    """(context -> runs-on label list (lowercased), [failure]) for the contract.
+
+    Delegates to ci_pool_tripwire.resolve_required_contexts, so this gate and
+    the tripwire cannot disagree about what a context resolves to."""
+    resolved, failures = _T.resolve_required_contexts(REQUIRED_CONTEXTS, workflows)
     jobs = {}
-    for job_id, job in (doc.get("jobs") or {}).items():
-        if not isinstance(job, dict):
-            continue
-        name = job.get("name", job_id)
+    for ctx, (_path, job) in resolved.items():
         runs_on = job.get("runs-on", [])
         if isinstance(runs_on, str):
             runs_on = [runs_on]
-        jobs[name] = [str(label).lower() for label in runs_on]
-    return jobs
+        jobs[ctx] = [str(label).lower() for label in runs_on]
+    return jobs, failures
 
 
 def is_hosted(labels: list[str]) -> bool:
@@ -146,8 +158,9 @@ def online_satisfying(runners: list[dict], want: list[str]) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--workflow", type=Path,
-                    default=Path(".github/workflows/ci.yml"))
+    ap.add_argument("--workflow", type=Path, action="append", default=[],
+                    help="workflow file to resolve contexts in (repeatable); "
+                         "default: every file under .github/workflows/")
     ap.add_argument("--runners-json", type=Path, default=None,
                     help="fixture: JSON file with {'runners': [...]} or a list")
     ap.add_argument("--org", default="pulseengine")
@@ -169,18 +182,17 @@ def main() -> int:
                          "the redundancy verdict.")
     args = ap.parse_args()
 
+    where = ", ".join(map(str, args.workflow)) or ".github/workflows/*"
     if args.structural_only:
-        jobs = load_workflow_jobs(args.workflow)
-        missing = [c for c in REQUIRED_CONTEXTS if c not in jobs]
-        for ctx in missing:
-            print(f"FAIL  required context {ctx!r} matches NO job name in "
-                  f"{args.workflow} — a context that never reports "
-                  "DEADLOCKS all merges")
+        jobs, res_failures = resolve_jobs(load_workflows(args.workflow))
+        for f in res_failures:
+            print(f"FAIL  {f} (resolved in {where}) — a context that never "
+                  "reports DEADLOCKS all merges")
         print(f"runner-redundancy(structural): {len(REQUIRED_CONTEXTS)} "
-              f"required contexts, {len(REQUIRED_CONTEXTS) - len(missing)} "
-              f"matched to jobs, {len(missing)} failures "
+              f"required contexts, {len(jobs)} "
+              f"matched to jobs, {len(res_failures)} failures "
               "(fleet redundancy NOT checked in this mode — run live)")
-        return 1 if missing else 0
+        return 1 if res_failures else 0
 
     if args.runners_json is not None:
         raw = json.loads(args.runners_json.read_text())
@@ -193,18 +205,16 @@ def main() -> int:
               "error or empty fleet must not read as 'no thin pools'.")
         return 1
 
-    jobs = load_workflow_jobs(args.workflow)
+    jobs, res_failures = resolve_jobs(load_workflows(args.workflow))
 
     failures = 0
     examined_selfhosted = 0
 
     # 1. structural: every required context reports from a real job.
-    for ctx in REQUIRED_CONTEXTS:
-        if ctx not in jobs:
-            print(f"FAIL  required context {ctx!r} matches NO job name in "
-                  f"{args.workflow} — a context that never reports DEADLOCKS "
-                  "all merges")
-            failures += 1
+    for f in res_failures:
+        print(f"FAIL  {f} (resolved in {where}) — a context that never "
+              "reports DEADLOCKS all merges")
+        failures += 1
 
     # 2. redundancy per required context.
     targets: list[tuple[str, list[str]]] = [

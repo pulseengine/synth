@@ -39,8 +39,11 @@ import unittest
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 SCRIPT = SCRIPTS / "runner_redundancy_check.py"
 
+# `on:` is load-bearing since v0.90: resolution is ci_pool_tripwire's, which
+# refuses a context whose workflow does not run on `pull_request`.
 WORKFLOW_TWO_REQUIRED = """
 name: CI
+on: [push, pull_request]
 jobs:
   fmt:
     name: Format
@@ -80,6 +83,34 @@ jobs:
     steps: [{run: "true"}]
 """
 
+# v0.90 (RQ-90-SPECEXEC, #1636): the tenth required context lives in a SECOND
+# workflow file, as it does in the repo (spec-suite.yml).
+WORKFLOW_SPEC = """
+name: Spec Suite
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  spec-suite-execution:
+    name: spec-suite execution (#1636)
+    runs-on: ubuntu-latest
+    steps: [{run: "true"}]
+"""
+
+
+def write_workflows(td: str, ci_text: str, spec_text: str | None = WORKFLOW_SPEC):
+    """The --workflow arguments for a ci.yml (+ optional spec-suite.yml)."""
+    wf = pathlib.Path(td) / "ci.yml"
+    wf.write_text(ci_text)
+    args = ["--workflow", str(wf)]
+    if spec_text is not None:
+        sp = pathlib.Path(td) / "spec-suite.yml"
+        sp.write_text(spec_text)
+        args += ["--workflow", str(sp)]
+    return args
+
 
 def runner(name: str, status: str, labels: list[str]) -> dict:
     return {"name": name, "status": status, "busy": False,
@@ -103,13 +134,12 @@ class RedundancyGate(unittest.TestCase):
     def run_gate(self, workflow: str, runners: list[dict],
                  extra: list[str] | None = None):
         with tempfile.TemporaryDirectory() as td:
-            wf = pathlib.Path(td) / "ci.yml"
-            wf.write_text(workflow)
+            wfargs = write_workflows(td, workflow)
             rj = pathlib.Path(td) / "runners.json"
             rj.write_text(json.dumps({"runners": runners}))
             return subprocess.run(
-                [sys.executable, str(SCRIPT), "--workflow", str(wf),
-                 "--runners-json", str(rj)] + (extra or []),
+                [sys.executable, str(SCRIPT)] + wfargs
+                + ["--runners-json", str(rj)] + (extra or []),
                 capture_output=True, text=True,
             )
 
@@ -155,7 +185,7 @@ class RedundancyGate(unittest.TestCase):
                                            "name: Formatting")
         p = self.run_gate(wf, HEALTHY_FLEET)
         self.assertEqual(p.returncode, 1)
-        self.assertIn("matches NO job name", p.stdout)
+        self.assertIn("DEADLOCK: required context `Format`", p.stdout)
         self.assertIn("DEADLOCKS", p.stdout)
 
     def test_empty_inventory_refused(self):
@@ -197,25 +227,62 @@ class RedundancyGate(unittest.TestCase):
         wf_text = WORKFLOW_TWO_REQUIRED.replace("name: Format",
                                                 "name: Formatting")
         with tempfile.TemporaryDirectory() as td:
-            wf = pathlib.Path(td) / "ci.yml"
-            wf.write_text(wf_text)
             p = subprocess.run(
-                [sys.executable, str(SCRIPT), "--workflow", str(wf),
-                 "--structural-only"],
+                [sys.executable, str(SCRIPT)] + write_workflows(td, wf_text)
+                + ["--structural-only"],
                 capture_output=True, text=True)
         self.assertEqual(p.returncode, 1)
+        self.assertIn("DEADLOCK: required context `Format`", p.stdout)
         self.assertIn("DEADLOCKS", p.stdout)
 
     def test_structural_only_green_control(self):
         with tempfile.TemporaryDirectory() as td:
-            wf = pathlib.Path(td) / "ci.yml"
-            wf.write_text(WORKFLOW_TWO_REQUIRED)
             p = subprocess.run(
-                [sys.executable, str(SCRIPT), "--workflow", str(wf),
-                 "--structural-only"],
+                [sys.executable, str(SCRIPT)]
+                + write_workflows(td, WORKFLOW_TWO_REQUIRED)
+                + ["--structural-only"],
                 capture_output=True, text=True)
-        self.assertEqual(p.returncode, 0)
-        self.assertIn("9 matched to jobs, 0 failures", p.stdout)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("10 required contexts, 10 matched to jobs, 0 failures",
+                      p.stdout)
+
+    # ---- v0.90 (RQ-90-SPECEXEC, #1636) ------------------------------------
+    def test_structural_only_context_in_no_workflow_deadlocks(self):
+        # NEGATIVE CONTROL: the tenth context resolved nowhere — ci.yml alone,
+        # which is exactly what the pre-v0.90 structural mode read.
+        with tempfile.TemporaryDirectory() as td:
+            p = subprocess.run(
+                [sys.executable, str(SCRIPT)]
+                + write_workflows(td, WORKFLOW_TWO_REQUIRED, spec_text=None)
+                + ["--structural-only"],
+                capture_output=True, text=True)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("DEADLOCK: required context `spec-suite execution (#1636)` "
+                      "is not defined in any workflow", p.stdout)
+
+    def test_structural_only_matrix_spelling_does_not_resolve(self):
+        # The same name behind a matrix reports `name (a, b)`, not the name.
+        spec = WORKFLOW_SPEC.replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n    strategy: {matrix: {leg: [m4, m7]}}\n")
+        self.assertNotEqual(spec, WORKFLOW_SPEC)
+        with tempfile.TemporaryDirectory() as td:
+            p = subprocess.run(
+                [sys.executable, str(SCRIPT)]
+                + write_workflows(td, WORKFLOW_TWO_REQUIRED, spec_text=spec)
+                + ["--structural-only"],
+                capture_output=True, text=True)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("spec-suite execution (#1636)", p.stdout)
+
+    def test_contract_is_ci_pool_tripwires_not_a_copy(self):
+        sys.path.insert(0, str(SCRIPTS))
+        import ci_pool_tripwire as T
+        import runner_redundancy_check as R
+        want = list(T.REQUIRED_CONTEXTS) + [
+            c for c in T.PENDING_REQUIRED_CONTEXTS if c not in T.REQUIRED_CONTEXTS]
+        self.assertEqual(R.REQUIRED_CONTEXTS, want)
+        self.assertIn("spec-suite execution (#1636)", R.REQUIRED_CONTEXTS)
 
     def test_probe_on_thick_label_passes(self):
         p = self.run_gate(WORKFLOW_TWO_REQUIRED, HEALTHY_FLEET,

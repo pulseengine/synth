@@ -387,6 +387,11 @@ REQUIRED_CONTEXTS = [
     "Bazel Build & Proofs",
     "Kani Verification",
     "Rivet Validation",
+    # v0.90 (RQ-90-SPECEXEC, #1636): defined in spec-suite.yml, not ci.yml —
+    # the reason the guard resolves required contexts across every workflow
+    # file. PROMOTED from PENDING_REQUIRED_CONTEXTS once branch protection
+    # carried it (protection read 10 contexts on 2026-11-07).
+    "spec-suite execution (#1636)",
 ]
 
 # v0.90 (RQ-90-SPECEXEC, #1636): contexts ABOUT TO BE required — the maintainer
@@ -409,11 +414,11 @@ REQUIRED_CONTEXTS = [
 #     window ends in a one-line diff moving it into REQUIRED_CONTEXTS rather
 #     than lasting forever.
 # The two lists must be disjoint; the cross-check below fails if not.
-PENDING_REQUIRED_CONTEXTS = [
-    # defined in spec-suite.yml, not ci.yml — the reason the guard now
-    # resolves required contexts across every workflow file.
-    "spec-suite execution (#1636)",
-]
+#
+# EMPTY between promotions, and that is the normal state. The machinery stays:
+# the next context added to protection goes here first. Its tests drive it with
+# recorded lists rather than with this one, so an empty list does not empty them.
+PENDING_REQUIRED_CONTEXTS: list = []
 
 
 def live_required_contexts(repo):

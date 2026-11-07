@@ -13,7 +13,7 @@
 # this job does not run. ci.yml's Claim Check job runs the same check too, which
 # covers this file from the other side.
 #
-# NOT in the required-check set (main's 9), for the reason Spec Suite records:
+# NOT in the required-check set, for the reason Spec Suite records:
 # a new required context that fails to run deadlocks every merge.
 name: Workflow Strictness
 
