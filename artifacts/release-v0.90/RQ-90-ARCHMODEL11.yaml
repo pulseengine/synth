@@ -27,6 +27,18 @@ artifacts:
 
         CITATION: #1136 is where the matter was analysed. The number names
         where it was analysed, not an open scope.
+
+        RE-MEASURED AT RELEASE PREP, 2026-11-07T10:56Z, on main eb137389:
+        FILED, NOT PERFORMED, carried. `python3
+        scripts/recurring_na_filing_check.py` exits 0 with failures 0 and
+        reports `steps-1-2 filing VISIBLE: RQ-90-ARCHMODEL11 (#1136, status
+        proposed) scoped to v0.90`. It passes BECAUSE this record exists, so
+        it says the not-applicable is visible, not that the step was done.
+        No spar AADL model and no derived WIT was produced in v0.90. `gh -R
+        pulseengine/spar issue view 445 --json state,updatedAt`: OPEN,
+        updated 2026-09-03T10:57:37Z. #1136 is OPEN, updated
+        2026-09-22T21:53:10Z. Awaited: spar#445 upstream, or a maintainer
+        decision to model without it.
     tags:
       - feature-loop
       - process

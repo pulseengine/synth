@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-GATEPLACE
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "Decide whether the wrong-code differentials become required checks"
     description: >
         Carried from v0.89 (RQ-89-GATEPLACE, blocked on a maintainer
@@ -31,6 +31,33 @@ artifacts:
 
         CITATION: #1573 is where the matter was analysed. The number names
         where it was analysed, not an open scope.
+
+        RE-MEASURED AT RELEASE PREP, 2026-11-07T10:56Z, on main eb137389:
+        `gh api repos/pulseengine/synth/branches/main/protection/required_status_checks`
+        lists TEN contexts, strict false: Format, Clippy, Test, Z3
+        Verification, Claim Check, Version Pin Sweep, Bazel Build & Proofs,
+        Kani Verification, Rivet Validation, and `spec-suite execution
+        (#1636)`, which #1670 added. enforce_admins is true. Each wrong-code
+        differential of v0.88 to v0.90 mapped to the job that runs it, by
+        job id, over every file in .github/workflows/: spec_exec_1636 runs in
+        spec-suite.yml job spec-suite-execution, which IS required.
+        f64_store_partial_1642, memk_bulk_oob_1619, npa_straddle_1604,
+        npa_const_addr, npa_const_addr_matrix_1568, verwidth_1563,
+        optloop_backedge_1206, memk_i64_1622, vfp_local_pressure_1069,
+        vfp_wide_stage_1593, float_local_zero_init_1594,
+        vfp_high_bank_restore_1318, relocatable_single_function_1565,
+        npa_offset_cross_segment_1580, reinterpret_pair_1603 and
+        rendezvous_frame_1614 run in ci.yml trap-semantics-oracle;
+        a32_control_flow_1639 in repro-sweep-memory-oracle;
+        a32_image_1645_1640, r0_clobber_1635 and brvalue_operand_1215 in
+        repro-sweep-selector-oracle; call_indirect_type_1643 in
+        call-indirect-275-selfcontained-oracle; vfp_home_alias_1436,
+        island_offset_invariant_345 and int_home_alias_1566 in
+        litpool-islands-345; imported_memory_size_1584 in aarch64-oracle;
+        falcon_exec_1318 in no workflow (manual, external input). None of
+        those ci.yml jobs is a required context. So of the 27 scripts, 1 runs
+        in a required context, 25 run in ci.yml jobs that are not required
+        and can be red on a PR that GitHub lets merge, and 1 runs on no PR.
     tags:
       - feature-loop
       - process
@@ -43,6 +70,22 @@ artifacts:
       issue: "#1573"
       verification-track: manual
       issue-scope: closes
+      verified-by: >
+        DELIVERED AS A DECISION, recorded at the v0.90 release prep. The
+        maintainer decided on 2026-11-06 to keep the required set as it is,
+        with no branch-protection change, and to end the issue at this
+        release on this rationale: scripts/merge_ritual.sh refuses a merge
+        while any non-advisory check is red or pending (CHECK3/CHECK3b; only
+        contexts matching codecov or advisory are exempt), so every merge
+        made through the ritual is covered by the differentials' jobs;
+        GitHub itself does not block a merge made outside the ritual. That
+        residual is accepted, not removed. The refuting command was re-run
+        first (see the 2026-11-07 paragraph above) and the lane is NOT moot:
+        1 of 27 wrong-code scripts runs in a required context. CRITICAL-PATH
+        COST of the one required differential: the spec-suite execution job
+        took 108 to 127 s of wall time on the last five main runs of
+        spec-suite.yml (42329369325, 42333144017, 42337900720, 42342229960,
+        42357702036; started_at to completed_at from the jobs API).
       done-when: >
         manual:2027-03-31 the maintainer decides whether the jobs running the
         wrong-code differentials become required checks, and the decision and

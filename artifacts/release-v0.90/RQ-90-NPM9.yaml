@@ -28,6 +28,23 @@ artifacts:
 
         CITATION: #1460 is where the matter was analysed. The number names
         where it was analysed, not an open scope.
+
+        RE-MEASURED AT RELEASE PREP, 2026-11-07T10:56Z, on main eb137389:
+        BLOCKED outside this repository, carried to v0.91. The registry, read
+        with the User-Agent `synth-release-check
+        (+https://github.com/pulseengine/synth)`: dist-tags latest 0.69.0,
+        39 versions, last modified 2026-09-18; 0.89.0, 0.89.2 and 0.90.0 each
+        HTTP 404; the control 0.69.0 HTTP 200. `gh run list --workflow
+        "Release NPM"`: the last publish attempt, run 42084323724
+        (2026-11-05), failed in "Publish @pulseengine/synth" with `npm error
+        code E403 ... This token can only publish to a staging area. Run npm
+        stage publish ... (E_STAGE_REQUIRED)`. The three runs after it,
+        42162764670, 42165218247 and 42182856898 (all 2026-11-06,
+        workflow_run), concluded `skipped`: their publish job did not run, so
+        they are not evidence either way. release-npm.yml still publishes
+        with `npm publish --access public`. Still blocked: either the token
+        type or the publish command has to change, and both are the
+        maintainer's.
     tags:
       - feature-loop
       - process
@@ -39,7 +56,6 @@ artifacts:
       priority: should
       issue: "#1460"
       verification-track: manual
-      issue-scope: closes
       disposition: blocked
       done-when: >
         manual:2027-03-31 the package publishes the release version, or the
