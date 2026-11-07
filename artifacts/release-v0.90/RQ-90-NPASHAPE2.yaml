@@ -2,16 +2,20 @@ artifacts:
   - id: RQ-90-NPASHAPE2
     type: system-req
     release: v0.90
-    status: proposed
-    title: "A dynamic native-pointer-abi access whose offset lands in the static region is relocated or refused"
+    status: implemented
+    title: "A dynamic native-pointer-abi access whose offset lands in the static region is refused for the whole module"
     description: >
         SILENT MISCOMPILE, #1568 shape 2. Under --native-pointer-abi, in a
         module with no stack-pointer global, a dynamic access whose memarg
         offset lands in the static data region reads raw address base + offset
         (R11 = 0), not the module's data. v0.89 (RQ-89-NPARESIDUE) fixed shape
         1, measured six options for shape 2, found none both sound and narrow,
-        and left the choice to the maintainer. This artifact carries that
-        decision: pick an option, or record why none is taken.
+        and left the choice to the maintainer. DECIDED 2026-11-06 by the
+        maintainer and gale (#1568 comment 6684974404): a loud refusal of the
+        whole module, with a named diagnostic giving the function, the memarg
+        offset and the static-region bounds, a non-zero exit and no object
+        (#1102-style, not a skip --allow-skipped-exports can cover), and a
+        positive control plus a near miss in synth's tests.
 
         REFUTING COMMAND, to be RUN BEFORE building on this artifact — a
         refutation is a legitimate outcome, reported with numbers: With
@@ -22,11 +26,10 @@ artifacts:
         (i32.load offset=0x1000 (local.get 0))))` and call dyn(0) against
         wasmtime. If it returns 0x44332211 or the compile refuses, it is gone.
 
-        MEASURED 2026-11-06 on main 7f038605 (the v0.89.2 tag commit), synth
-        0.89.2 debug build from this tree: LIVE. anchor 0x44332211 = wasmtime;
-        dyn(0) faults on an unmapped read (UC_ERR_READ_UNMAPPED: it
-        dereferenced absolute 0x1000) against wasmtime 0x44332211; compile
-        clean.
+        MEASURED 2026-11-06 on main c20d37b2 (synth 0.89.2 debug build from
+        that tree): LIVE. Compile rc 0, a 755-byte object; anchor 0x44332211 =
+        wasmtime; dyn(0) faults on an unmapped read (UC_ERR_READ_UNMAPPED) where
+        wasmtime returns 0x44332211.
 
         CITATION: #1568 is where the matter was analysed. The number names
         where it was analysed, not an open scope.
@@ -41,7 +44,90 @@ artifacts:
       priority: must
       issue: "#1568"
       verification-track: manual
-      issue-scope: closes
+      issue-scope: outlives
+      landed: "PR #1667 - #1568 shape 2 - DELIVERED as the decided module-level refusal. Under --relocatable --native-pointer-abi on the ARM backend, in a module with no stack-pointer global with a positive init, a memory-0 access whose base is dynamic and whose non-zero memarg offset makes it touch the static region [lowest non-empty active data segment of memory 0, memory 0's declared minimum size) refuses the WHOLE module before any function compiles: exit 1, no object, with or without --allow-skipped-exports. The diagnostic is `npa-dynamic-static-offset (#1568)`, naming each function, op, memarg offset, access width and the region bounds. Shape 2 is refused, not fixed, and #1568 stays open: see verified-by for what remains."
+      verified-by: >
+        DELIVERED as a refusal, execution-verified. RED FIRST at c20d37b2: the
+        refuting command compiled clean and dyn(0) faulted against wasmtime's
+        0x44332211; all 10 shape-2 refusal rows added to
+        npa_const_addr_differential.py compile with exit 0 there, and the
+        oracle exits 1 on the first of them. On the branch the same command
+        exits 1 with no object, plain and with --allow-skipped-exports, and the
+        diagnostic reads `npa-dynamic-static-offset (#1568): --native-pointer-abi
+        refused for the whole module — 1 access(es) add a constant memarg
+        offset that lands in the module's static region [0x1000, 0x10000) ...
+        function 'dyn' (wasm function index 1): an i32 load at op 1 with
+        memarg offset 0x1000 (4-byte access)`. THE PREDICATE: an access counts
+        when its address is not one the shipped constant-address guard
+        resolves (a positional i32.const, or a local in npa_local_const_plan's
+        constant set, both computed by the selector's own code), its memarg
+        offset is non-zero, and the bytes it touches intersect the region. It
+        cannot fire with a stack-pointer global of positive init (the gate is
+        the complement of is_native_pointer_static_offset's wasm_data_base > 0),
+        on a constant base the shipped guard resolves (a positional i32.const
+        or a plan local; a constant the positional walk cannot see through,
+        such as one with a call between it and the access, counts as dynamic
+        and IS refused), at offset 0, outside --relocatable, or in a module
+        with no non-empty active data segment. The region's upper bound is
+        memory 0's declared minimum even when memory 0 is imported (the ARM
+        defined-memory size is 0 there; a cargo test pins [0x1000, 0x10000)
+        for an imported one-page memory). Offset 0 is excluded because it
+        bakes nothing; without that, a segment at address 0 refused every
+        dynamic access (measured on mem_isolation_two_tenant_1145.wat). The
+        self-contained image is out of scope by measurement: there the
+        optimized path adds the access to its own linear-memory base and the
+        shape is correct. EVIDENCE: npa_const_addr_differential.py executes 47
+        calls against wasmtime, 47 equal (the 38 earlier rows, 5 near-miss
+        calls at offsets 0xFFC, 0xFFF and 0xFF8 just below a region starting
+        at 0x1000, and 4 calls of the same dynamic accesses in a module with a
+        stack-pointer global at 0x800). It asserts 20 module refusals: 10 rows
+        (parameter, global, arithmetic, non-constant-local and internal-helper
+        bases; i32, i64 and f32 loads, an i32 store, the region's last byte
+        and a 4-byte access straddling into it), each plain and with
+        --allow-skipped-exports. Cargo tests in npa_const_addr_never_baked.rs
+        pin the positive control, the near miss (0xFFC and 0x10000 compile,
+        0xFFD refuses), the stack-pointer and constant-base twins and offset
+        0. Unchanged on the branch: the 162-cell matrix (ok 99, refused 63,
+        guard 59, wrong 0), the #1580 and #1145 differentials. MUTANTS, each
+        red: dropping the hit (the differential reds on the first refusal row;
+        3 cargo tests fail); treating every base as dynamic (the differential
+        reds, and the matrix reads ok 93, refused 69, guard 49). NEWLY
+        REFUSED, base c20d37b2 vs branch, with --target cortex-m3 --relocatable
+        --native-pointer-abi --all-exports: scripts/repro (recursive) plus
+        tests/wat, 239 inputs, 188 compile at base, 0 newly refused, 0 objects
+        changed; with --allow-skipped-exports 204 compile, 0 newly refused;
+        the 257 spec .wast files, 25 and 60 compile, 0 newly refused; the
+        gale-shaped subset (49 inputs: every scripts/repro .wat mentioning gale
+        and every committed .wasm), 45 compile, 0 newly refused, 0 objects
+        changed. One input carries the new diagnostic, i64_result_pair_1189.wat
+        (an i64 load at offset 0x40 over a segment at 0x40); it was already
+        refused at base. RE-MEASURED after rebasing onto main 78e686f6
+        (base = a 78e686f6 build, where the refuting command still compiles
+        with rc 0 and dyn(0) still faults): 241 inputs, 190 compile (207
+        with --allow-skipped-exports), 0 newly refused, 0 objects changed;
+        spec 25 / 60, 0 newly refused; gale-shaped 49, 45 compile, 0 newly
+        refused, 0 changed. The spec-execution runner (#1636), run as
+        spec-suite.yml runs it, matches its baseline exactly (53 of 53
+        failures are baseline entries; floor 49121 measured). WITH
+        NPASTRADDLE (#1604): the triggers are disjoint. #1604 judges constant
+        addresses and, with a stack-pointer global, #739-relocated offsets;
+        this refusal judges only dynamic bases in modules without one, and
+        never names a constant address. Measured on the rebased binary: a
+        constant straddle alone is refused by #1604; a dynamic offset alone by
+        this rule; a module carrying both is refused by this rule before
+        selection (exit 1, no object, plain and with --allow-skipped-exports),
+        so #1604's diagnostic is not printed but no refusal is lost; with a
+        stack-pointer global a dynamic offset straddling into a segment is
+        refused by #1604 and one inside it compiles. Both differentials pass
+        on the rebased binary (npa_const_addr 47 of 47, npa_straddle_1604 88
+        of 88 with its 255 refusal rows). WHAT REMAINS on #1568, and why the issue stays open:
+        a dynamic access whose offset sits below the first data segment but
+        whose base carries it into the statics; any dynamic access in a module
+        with no active data segment (BSS-only); with a stack-pointer global, a
+        dynamic offset into data below the stack pointer's init; and constant
+        addresses reaching an access through arithmetic or a local with a
+        non-constant definition. The selector cannot tell a host-pointer base
+        from a wasm-offset base, so these are not caught.
       done-when: >
         manual:2027-03-31 a dynamic access whose offset lands in the static
         region under --native-pointer-abi in a module without a stack-pointer

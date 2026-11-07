@@ -1962,9 +1962,34 @@ claims:
         # after RQ-90-CALLINDTYPE's waiver).
         # RQ-90-NPASTRADDLE (#1604): 21475 -> 21624, waived below (chained
         # after MEMKBULK's waiver).
-        value: 21624
+        # RQ-90-NPASHAPE2 (#1568 shape 2): 21624 -> 21715, waived below
+        # (chained after RQ-90-NPASTRADDLE's waiver).
+        value: 21715
         baseline: 17897
         waivers:
+          - to: 21715
+            reason: >-
+              RQ-90-NPASHAPE2 (Refs #1568): 21624 -> 21715 (+91, measured after
+              cargo fmt on the tree rebased over 78e686f6; first measured
+              21360 -> 21451 on c20d37b2; paired control: 21715 holds and
+              21624 reds here, the reverse on main 78e686f6). A NEW decision,
+              replacing no arm: `npa_dynamic_static_offset_accesses` (+ the
+              `NpaStaticOffsetHit` record it returns) names every memory-0
+              access whose base is DYNAMIC and whose non-zero memarg offset
+              touches the module's static region, for the CLI's module-level
+              --native-pointer-abi refusal. "Dynamic" is defined by REUSING the
+              shipped resolution (`npa_simple_push`, `npa_address_operands`,
+              `npa_local_const_plan`), not a second matcher, so it cannot
+              preempt the constant-address guard or NPASTRADDLE's
+              `npa_region_straddle_guard` (a constant address is never named).
+              No wildcard arm was added (matches! instead). The region bound
+              itself lives in synth-core (`backend::npa_static_region`). Most
+              of the +91 is the doc comment. Gated by execution:
+              npa_const_addr_differential.py (shape-2 near miss and
+              stack-pointer twin executed against wasmtime, 20 module-refusal
+              rows; RED at c20d37b2, where the positive control compiles with
+              exit 0 and its dyn(0) faults on an unmapped read against
+              wasmtime's 0x44332211).
           - to: 21624
             reason: >-
               RQ-90-NPASTRADDLE (Refs #1604): 21475 -> 21624 (+149 / -0 in
@@ -3269,7 +3294,9 @@ claims:
         # RQ-90-NPASTRADDLE (#1604): 32336 -> 32485, the same +149 as
         # selector_lines_code (waived there); the oracle is a scripts/repro
         # differential, outside this population. No waiver.
-        value: 32485
+        # RQ-90-NPASHAPE2 (#1568 shape 2): 32485 -> 32576, the same +91 as
+        # selector_lines_code (all of it outside the test module). No waiver.
+        value: 32576
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4928,7 +4955,15 @@ claims:
     #   executed by r5-image-1206 on byte-identical bodies. Paired control:
     #   `449140` rc=0 and `449722` rc=1 on this tree; `449140` rc=1 and
     #   `449722` rc=0 on main a5cfda5c.
-    text: "--exact-emulation-floor 449140"
+    # v0.90 RQ-90-NPASHAPE2 (#1568 shape 2): 449140 -> 449149 (+9,
+    #   re-derived on the tree rebased onto 78e686f6; first computed as
+    #   398507 -> 398516 on c20d37b2). npa_const_addr_differential.py now
+    #   declares `emulations >= 47` (47 measured via oracle_run.py: the 38
+    #   above + 5 shape-2 near-miss calls + 4 stack-pointer-twin calls; its 20
+    #   shape-2 module-refusal rows are counted by the script). Paired
+    #   control: `449149` rc=0 and `449140` rc=1 on this tree; `449149` rc=1
+    #   and `449140` rc=0 on main 78e686f6.
+    text: "--exact-emulation-floor 449149"
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

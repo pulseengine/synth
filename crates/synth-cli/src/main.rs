@@ -5467,6 +5467,88 @@ fn compile_all_exports(
         ..CompileConfig::default()
     };
 
+    // RQ-90-NPASHAPE2 (#1568 shape 2): under `--relocatable
+    // --native-pointer-abi` R11 is 0, and a memory-0 access with a DYNAMIC
+    // base is lowered as `[R11 + base + offset]` with the memarg offset baked
+    // raw. When the module has no stack-pointer global with a positive init,
+    // nothing marks that offset as a static (`is_native_pointer_static_offset`
+    // needs `wasm_data_base > 0`), so an offset that lands in the module's
+    // static region reads or writes absolute `base + offset` instead of the
+    // module's data — measured: `(i32.load offset=0x1000 (local.get 0))` over
+    // a segment at 0x1000 faulted on an unmapped read where wasmtime returns
+    // the segment's word. synth cannot tell a host-pointer base from a
+    // wasm-offset base, and every remedy measured on #1568 was unsound or not
+    // narrow, so — the maintainer's and gale's decision — the whole MODULE is
+    // refused here, before any function compiles: a non-zero exit and no
+    // object. Deliberately NOT a per-function skip, and NOT waived by
+    // `--allow-skipped-exports` (the #1102 policy: that flag accepts a partial
+    // object, not a wrong one). The self-contained image path is untouched:
+    // it lowers this shape against its own linear-memory base (measured
+    // correct), so the refusal is scoped to the configuration that bakes it.
+    if native_pointer_abi
+        && relocatable
+        && backend.name() == "arm"
+        && !matches!(config.stack_pointer_global, Some((_, init)) if init > 0)
+        // Memory 0's TRUE declaration (RQ-89-IMPSIZE): the ARM
+        // `linear_memory_bytes` reads the DEFINED list, which an imported
+        // memory 0 leaves empty, and that would shrink the region to the
+        // segments alone.
+        && let Some((lo, hi)) = synth_core::backend::npa_static_region(
+            &config.npa_data_regions,
+            memory0_decl
+                .as_ref()
+                .map_or(0, |m| m.initial_bytes())
+                .max(config.linear_memory_bytes),
+        )
+    {
+        let mut hits: Vec<String> = Vec::new();
+        for (func, origin) in all_exports.iter().zip(all_origins.iter()) {
+            if func.unsupported.is_some() {
+                continue; // skipped before the backend: emits no code
+            }
+            let arg_counts = wast_module_tables
+                .as_ref()
+                .and_then(|tables| tables.get(origin.module))
+                .map_or(&config.func_arg_counts, |t| &t.func_arg_counts);
+            let declared = arg_counts
+                .get(func.index as usize)
+                .copied()
+                .unwrap_or_else(|| synth_core::referenced_locals(&func.ops));
+            let name = func
+                .export_name
+                .clone()
+                .unwrap_or_else(|| format!("func_{}", func.index));
+            for h in synth_synthesis::InstructionSelector::npa_dynamic_static_offset_accesses(
+                &func.ops,
+                declared,
+                (lo, hi),
+            ) {
+                hits.push(format!(
+                    "function '{name}' (wasm function index {}): {} at op {} with memarg \
+                     offset 0x{:x} ({}-byte access)",
+                    func.index, h.access, h.op_index, h.offset, h.width
+                ));
+            }
+        }
+        if !hits.is_empty() {
+            anyhow::bail!(
+                "npa-dynamic-static-offset (#1568): --native-pointer-abi refused for the \
+                 whole module — {} access(es) add a constant memarg offset that lands in \
+                 the module's static region [0x{lo:x}, 0x{hi:x}) (memory 0's lowest active \
+                 data segment up to its declared minimum size) to a base computed at run \
+                 time: {}. The module has no stack-pointer global, so synth cannot tell a \
+                 host-pointer base from a wasm-offset base; the offset would be emitted raw \
+                 off R11 = 0 with no relocation and the access would silently read or \
+                 write absolute base + offset instead of the module's data. No object is \
+                 written. --allow-skipped-exports does not cover this. Give the module a \
+                 stack-pointer global (the toolchain `__stack_pointer`), keep dynamic \
+                 memarg offsets below 0x{lo:x}, or drop --native-pointer-abi.",
+                hits.len(),
+                hits.join("; ")
+            );
+        }
+    }
+
     // Compile each function via the selected backend
     let mut compiled_funcs = Vec::new();
     // #952: the third field marks whether the skipped function is a REQUESTED

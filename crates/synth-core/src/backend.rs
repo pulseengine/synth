@@ -681,6 +681,29 @@ impl Default for CompileConfig {
 /// R11, which is the linear-memory base (the #717 collision).
 pub const FUNC_TABLE_SYMBOL: &str = "__synth_func_table";
 
+/// RQ-90-NPASHAPE2 (#1568 shape 2): the module's STATIC REGION for the
+/// dynamic-offset refusal — `[lo, hi)` where `lo` is the lowest offset of
+/// memory 0's non-empty active data segments and `hi` is memory 0's
+/// declared minimum size in bytes (the bound the ARM selector's `static_data_addend`
+/// already treats as the end of the statics), widened to the last segment's end
+/// should a segment reach past it. `None` when memory 0 has no non-empty
+/// active data segment: such a module has no initialized static for a
+/// memarg offset to land in (a BSS-only module is NOT covered — see the
+/// release record).
+pub fn npa_static_region(
+    data_regions: &[(u32, u32)],
+    linear_memory_bytes: u32,
+) -> Option<(u32, u32)> {
+    let live = data_regions.iter().filter(|&&(_, len)| len > 0);
+    let lo = live.clone().map(|&(off, _)| off).min()?;
+    let end = live
+        .map(|&(off, len)| u64::from(off) + u64::from(len))
+        .max()?
+        .min(u64::from(u32::MAX)) as u32;
+    let hi = linear_memory_bytes.max(end);
+    (lo < hi).then_some((lo, hi))
+}
+
 /// A relocation entry produced during compilation
 ///
 /// Records that a BL instruction at `offset` bytes into the function's code
@@ -1110,5 +1133,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.effective_safety_bounds(), SafetyBounds::Mpu);
+    }
+
+    /// RQ-90-NPASHAPE2 (#1568 shape 2): the static region is the lowest
+    /// non-empty segment up to memory 0's minimum size, widened to a segment
+    /// that reaches past it; no non-empty segment means no region.
+    #[test]
+    fn npa_static_region_bounds_1568() {
+        assert_eq!(npa_static_region(&[], 0x10000), None);
+        assert_eq!(npa_static_region(&[(0x100, 0)], 0x10000), None);
+        assert_eq!(
+            npa_static_region(&[(0x2800, 16), (0x1000, 8), (0x40, 0)], 0x10000),
+            Some((0x1000, 0x10000))
+        );
+        assert_eq!(
+            npa_static_region(&[(0xfff0, 0x20)], 0x10000),
+            Some((0xfff0, 0x10010))
+        );
     }
 }

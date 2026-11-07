@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 38
+# ci-checks: emulations >= 47
 """--native-pointer-abi never bakes a constant static address as a raw
 linear-memory offset off R11 — execution differential vs wasmtime.
 
@@ -46,10 +46,46 @@ The refusal half also asserts, for the local-routed shape, one row per
 condition the relocation needs (memarg offset 0, a set before every read, no
 scalar observer, and the stack-pointer sliver reached through a local).
 
-NOT covered, and not catchable by this rule:
-  - a dynamic access whose memarg offset is in the static region of a module
-    with no stack-pointer global (#1568 shape 2) — measured, left to a
-    maintainer decision (artifacts/release-v0.89/RQ-89-NPARESIDUE.yaml);
+SHAPE 2 (RQ-90-NPASHAPE2, #1568): a DYNAMIC access — a base computed at run
+time — whose memarg offset lands in the module's static region, in a module
+with no stack-pointer global (none with a positive init). The offset is
+emitted raw off R11 = 0, so `(i32.load offset=0x1000 (local.get 0))` over a
+segment at 0x1000 dereferences absolute 0x1000 (measured at c20d37b2: rc 0,
+dyn(0) faults on an unmapped read, wasmtime 0x44332211). The maintainer's and
+gale's decision is a LOUD MODULE-LEVEL REFUSAL: the static region is
+[lowest active data segment of memory 0, memory 0's declared minimum size),
+an access is named when the bytes it touches intersect it, and the compile
+exits non-zero with no object, `--allow-skipped-exports` or not. Asserted
+here:
+  shape2 refusals — one row per dynamic-base kind (parameter, global,
+               arithmetic, a local with a non-constant definition, an
+               internal helper reached only by a call) and per access family
+               and edge (i32/i64/f32 load, i32 store, the last byte of the
+               region, a 4-byte access straddling into it). Each must name the
+               function, the offset and the region bounds, carry the
+               `npa-dynamic-static-offset (#1568)` needle and NOT the
+               constant-address guard's, write no object, and do so twice:
+               plain and with --allow-skipped-exports.
+  shape2_near  — the NEAR MISS, executed: the same module with offsets that
+               stop just below the region (0xFFC i32, 0xFFF u8, 0xFF8 i64)
+               compiles and matches wasmtime, plus an offset AT the region's
+               upper bound (0x10000) that compiles. EMULATION OF THE
+               NATIVE-POINTER CONTRACT for these rows: R11 = 0 and the base is
+               a native address, so `base + offset` with base 0 is absolute;
+               unicorn maps [0, 0x1000) zero-filled — exactly wasmtime's
+               memory below the first segment — and leaves the region itself
+               unmapped, so a store then a load through it is observed.
+  shape2_sp    — the same dynamic accesses WITH a stack-pointer global
+               (0x800): the offset is relocated by the #739 rule, so the
+               refusal must NOT fire; executed against wasmtime.
+
+NOT covered, and not catchable by these rules:
+  - a dynamic access whose OFFSET sits below the first data segment but whose
+    base carries it into the statics, or any dynamic access in a module with
+    no active data segment (BSS-only) — synth cannot tell a host-pointer base
+    from a wasm-offset base, which is why shape 2 is refused rather than fixed;
+  - WITH a stack-pointer global, a dynamic offset into data that sits BELOW
+    the stack pointer's init (the #739 rule relocates offsets at or above it);
   - a constant address reaching the access through arithmetic, or through a
     local that also has a non-constant definition.
 They still read the wrong address; they are reported, not pinned.
@@ -188,6 +224,128 @@ REFUSE_SP = [
 ]
 NEEDLE = "which this lowering would emit as a raw linear-memory offset off R11"
 
+# RQ-90-NPASHAPE2 (#1568 shape 2). One segment at 0x1000 in a one-page memory:
+# the static region is [0x1000, 0x10000).
+S2_SEG = r"""(module (memory (export "mem") 1)
+  (data (i32.const 0x1000) "\11\22\33\44\55\66\77\88")
+  (func (export "anchor") (result i32) (i32.load (i32.const 0x1000)))
+"""
+S2_NEEDLE = "npa-dynamic-static-offset (#1568)"
+S2_REGION = "[0x1000, 0x10000)"
+# (label, target, extra module text, named function, offset)
+S2_REFUSE = [
+    ("param_i32_load", "cortex-m3",
+     '(func (export "f") (param i32) (result i32) local.get 0 i32.load offset=0x1000)',
+     "f", 0x1000),
+    ("param_i32_store", "cortex-m3",
+     '(func (export "f") (param i32) local.get 0 i32.const 7 i32.store offset=0x1004)',
+     "f", 0x1004),
+    ("param_i64_load", "cortex-m3",
+     '(func (export "f") (param i32) (result i64) local.get 0 i64.load offset=0x1000)',
+     "f", 0x1000),
+    ("param_f32_load", "cortex-m7dp",
+     '(func (export "f") (param i32) (result f32) local.get 0 f32.load offset=0x1000)',
+     "f", 0x1000),
+    ("region_last_byte", "cortex-m3",
+     '(func (export "f") (param i32) (result i32) local.get 0 i32.load8_u offset=0xffff)',
+     "f", 0xFFFF),
+    ("straddle_into_region", "cortex-m3",
+     '(func (export "f") (param i32) (result i32) local.get 0 i32.load offset=0xffd)',
+     "f", 0xFFD),
+    ("global_base", "cortex-m3",
+     '(global $g (mut i32) (i32.const 0)) '
+     '(func (export "f") (result i32) global.get $g i32.load offset=0x1000)',
+     "f", 0x1000),
+    ("arith_base", "cortex-m3",
+     '(func (export "f") (param i32) (result i32) local.get 0 i32.const 4 i32.add '
+     'i32.load offset=0x1000)',
+     "f", 0x1000),
+    ("nonconst_local_base", "cortex-m3",
+     '(func (export "f") (param i32) (result i32) (local i32) local.get 0 local.set 1 '
+     'local.get 1 i32.load offset=0x1000)',
+     "f", 0x1000),
+    ("internal_helper", "cortex-m3",
+     '(func $h (param i32) (result i32) local.get 0 i32.load offset=0x1000) '
+     '(func (export "f") (result i32) i32.const 0 call $h)',
+     "func_1", 0x1000),
+]
+S2_NEAR = S2_SEG + r"""  (func (export "nm_ld") (param i32) (result i32) local.get 0 i32.load offset=0xffc)
+  (func (export "nm_st") (param i32 i32) local.get 0 local.get 1 i32.store offset=0xffc)
+  (func (export "nm_ld8") (param i32) (result i32) local.get 0 i32.load8_u offset=0xfff)
+  (func (export "nm_ld64") (param i32) (result i64) local.get 0 i64.load offset=0xff8)
+  (func (export "nm_hi") (param i32) (result i32) local.get 0 i32.load offset=0x10000))"""
+S2_NEAR_SEQ = [("nm_ld", (0,)), ("nm_st", (0, 0x5A5A1234)), ("nm_ld", (0,)),
+               ("nm_ld8", (0,)), ("nm_ld64", (0,))]
+S2_SP = r"""(module (memory (export "mem") 1)
+  (global $sp (mut i32) (i32.const 0x800))
+  (data (i32.const 0x1000) "\11\22\33\44\55\66\77\88")
+  (func (export "anchor") (result i32) (i32.load (i32.const 0x1000)))
+  (func (export "ld") (param i32) (result i32) local.get 0 i32.load offset=0x1000)
+  (func (export "st") (param i32) local.get 0 i32.const 0x01020304 i32.store offset=0x1004)
+  (func (export "ld64") (param i32) (result i64) local.get 0 i64.load offset=0x1000))"""
+S2_SP_SEQ = [("ld", (0,)), ("st", (0,)), ("ld64", (0,)), ("ld", (0,))]
+
+
+def assert_shape2_refusals(tmp):
+    """Every S2_REFUSE row is refused for the whole module, twice."""
+    n = 0
+    for label, tgt, funcs, fname, off in S2_REFUSE:
+        src = tmp / f"s2_{label}.wat"
+        src.write_text(S2_SEG + funcs + ")")
+        for extra in ([], ["--allow-skipped-exports"]):
+            obj = tmp / f"s2_{label}{'_ase' if extra else ''}.o"
+            r = subprocess.run(
+                [SYNTH, "compile", str(src), "-o", str(obj), "--target", tgt,
+                 "--all-exports", "--relocatable", "--native-pointer-abi", *extra],
+                capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"},
+            )
+            log = (r.stdout or "") + (r.stderr or "")
+            tag = f"shape2 {label}{' +allow-skipped-exports' if extra else ''}"
+            if r.returncode == 0:
+                sys.exit(f"{tag}: compiled with exit 0 — a dynamic access whose "
+                         f"memarg offset lands in the static region must refuse")
+            if "panicked at" in log:
+                sys.exit(f"{tag}: refusal PANICKED: {log[-400:]}")
+            want = [S2_NEEDLE, f"function '{fname}'", f"offset 0x{off:x}", S2_REGION]
+            missing = [w for w in want if w not in log]
+            if missing or NEEDLE in log:
+                sys.exit(f"{tag}: wrong diagnostic (missing {missing}, "
+                         f"constant-guard needle {NEEDLE in log}):\n{log[-900:]}")
+            if obj.exists():
+                sys.exit(f"{tag}: an object was written despite the refusal")
+            print(f"  [ok ] refused: {tag}")
+            n += 1
+    return n
+
+
+def run_shape2(tmp, label, wat, seq, low_map):
+    """Execute `seq` (fn, args) in one instance each side; return fails."""
+    obj = compile_obj(wat, tmp, label)
+    linked = Linked(obj, low_map=low_map)
+    engine = wasmtime.Engine()
+    store = wasmtime.Store(engine)
+    inst = wasmtime.Instance(store, wasmtime.Module(engine, wat), [])
+    print(f"=== {label} ({linked.abs32} static-data ABS32 relocs) ===")
+    fails = 0
+    for fn, args in seq:
+        func = inst.exports(store)[fn]
+        res = func(store, *args)
+        ntype = func.type(store).results
+        got = linked.call(fn, args)
+        if isinstance(got, str):
+            ok, shown = False, got
+        elif not ntype:
+            ok, shown, res = True, "(void)", None
+        elif str(ntype[0]) == "i64":
+            v = got[0] | (got[1] << 32)
+            ok, shown = v == res & 0xFFFFFFFFFFFFFFFF, hex(v)
+        else:
+            ok, shown = got[0] == res & 0xFFFFFFFF, hex(got[0])
+        fails += not ok
+        exp = "(void)" if res is None else hex(res & 0xFFFFFFFFFFFFFFFF)
+        print(f"  [{'ok ' if ok else 'BUG'}] {fn}{args} -> {shown}  (wasmtime {exp})")
+    return fails, len(seq)
+
 
 def assert_refusals(tmp):
     n = 0
@@ -251,7 +409,7 @@ def thm_bl(src, dst):
 
 
 class Linked:
-    def __init__(self, obj):
+    def __init__(self, obj, low_map=0):
         e = ELFFile(open(obj, "rb"))
         secs = list(e.iter_sections())
         names = {i: s.name for i, s in enumerate(secs)}
@@ -291,15 +449,20 @@ class Linked:
         self.mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
         for base in BASES.values():
             self.mu.mem_map(base, MAPSZ)
+        if low_map:
+            # Shape 2 near miss: absolute [0, low_map) zero-filled (see above).
+            self.mu.mem_map(0, low_map)
         self.mu.mem_write(BASES[".text"], bytes(self.text))
         self.mu.mem_write(BASES[".data"], self.data)
         self.ret = BASES[".text"] + MAPSZ - 0x10
         self.mu.mem_write(self.ret, b"\x00\xbf\x00\xbf")
 
-    def call(self, fn):
+    def call(self, fn, args=()):
         if fn not in self.syms:
             return f"ERR:symbol {fn} missing"
         base, val = self.syms[fn]
+        for reg, a in zip((UC_ARM_REG_R0, UC_ARM_REG_R1), args):
+            self.mu.reg_write(reg, a & 0xFFFFFFFF)
         self.mu.reg_write(UC_ARM_REG_R11, 0)  # native deref
         self.mu.reg_write(UC_ARM_REG_SP, BASES[".bss"] + MAPSZ - 0x100)
         self.mu.reg_write(UC_ARM_REG_LR, self.ret | 1)
@@ -344,6 +507,19 @@ def main():
     if compared == 0:
         print("VACUOUS: compared nothing")
         return 1
+    # RQ-90-NPASHAPE2 (#1568 shape 2): near miss + stack-pointer twin,
+    # executed; then the module-level refusal rows.
+    for label, wat, seq, low in (("shape2_near", S2_NEAR, S2_NEAR_SEQ, 0x1000),
+                                 ("shape2_sp", S2_SP, S2_SP_SEQ, 0)):
+        f, c = run_shape2(tmp, label, wat, seq, low)
+        fails += f
+        compared += c
+    print("=== shape 2: dynamic offset in the static region (must be refused) ===")
+    s2 = assert_shape2_refusals(tmp)
+    if s2 != 2 * len(S2_REFUSE):
+        print(f"VACUOUS: shape-2 refusals={s2} of {2 * len(S2_REFUSE)}")
+        return 1
+    print(f"shape-2 refusals: {s2}")
     print("=== non-folding arms (must be refused) ===")
     refusals = assert_refusals(tmp)
     # Non-vacuity for the refusal half (#1113): the emulation floor cannot

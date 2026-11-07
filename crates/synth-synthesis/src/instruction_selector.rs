@@ -29,6 +29,21 @@ pub(crate) struct NpaLocalPlan {
     rewrite: std::collections::HashSet<usize>,
 }
 
+/// RQ-90-NPASHAPE2 (#1568 shape 2): one memory-0 access with a dynamic base
+/// whose memarg offset lands in the module's static region — see
+/// [`InstructionSelector::npa_dynamic_static_offset_accesses`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpaStaticOffsetHit {
+    /// Index of the access in the function's op stream.
+    pub op_index: usize,
+    /// What the access is ("an i32 load", "an f64 store", ...).
+    pub access: &'static str,
+    /// The constant memarg offset.
+    pub offset: u32,
+    /// Bytes the access touches.
+    pub width: u32,
+}
+
 /// The pattern-match / fallback path: `select()` + `select_default` (#197
 /// legacy layer; production ARM codegen enters via `select_with_stack`).
 /// Pure relocation out of this file — RQ-58-SPLIT, #242.
@@ -9209,6 +9224,82 @@ impl InstructionSelector {
             }
         }
         Ok(())
+    }
+
+    /// RQ-90-NPASHAPE2 (#1568 shape 2): every memory-0 access in `wasm_ops`
+    /// whose address is DYNAMIC and whose constant memarg offset makes it touch
+    /// `static_region` ([`synth_core::backend::npa_static_region`]) — the accesses the `--native-pointer-abi` module-level
+    /// refusal names. The caller applies it only where the access would be
+    /// lowered as `[R11 = 0 + base + offset]`: `--relocatable` ARM, and no
+    /// stack-pointer global with a positive init (with one, an offset at or
+    /// above the init is relocated by `is_native_pointer_static_offset`).
+    ///
+    /// An address is CONSTANT — and left to [`Self::npa_const_addr_guard`] and
+    /// the i32 const-address fold, which relocate or refuse it — exactly when
+    /// that guard resolves it: a positional `i32.const` (past only single-push
+    /// operands), or a `local.get` / `local.tee` of a local in
+    /// [`Self::npa_local_const_plan`]'s constant set, computed by the shipped
+    /// plan itself rather than a second matcher. Every other address is
+    /// dynamic: a parameter, a global, a call result, arithmetic, a load, a
+    /// local with a non-constant definition, or an operand the positional walk
+    /// cannot see through. The access is named when the bytes it touches,
+    /// `[offset, offset + width)`, intersect `[lo, hi)` — so a wide access
+    /// whose offset sits just below `lo` but straddles into the region is
+    /// named too. A memarg offset of 0 bakes nothing — the address is the
+    /// base alone, the native-pointer seam itself — so it is never named,
+    /// even when a segment starts at address 0 (without this, such a module
+    /// would refuse EVERY dynamic access: measured on
+    /// `mem_isolation_two_tenant_1145.wat`, region `[0x0, 0x10000)`). Bulk ops
+    /// (`memory.fill` / `memory.copy`) carry no memarg offset either.
+    ///
+    /// `declared_params` is the function's DECLARED parameter count: a
+    /// parameter is never a constant-plan local, and using the declared count
+    /// (never below the selector's effective count) can only make more
+    /// addresses dynamic — a refusal, never a miss.
+    pub fn npa_dynamic_static_offset_accesses(
+        wasm_ops: &[WasmOp],
+        declared_params: u32,
+        static_region: (u32, u32),
+    ) -> Vec<NpaStaticOffsetHit> {
+        use WasmOp::*;
+        let (lo, hi) = static_region;
+        let mut probe = Self::new(Vec::new());
+        probe.native_pointer_abi = true;
+        let plan = probe.npa_local_const_plan(wasm_ops, declared_params);
+        let mut hits = Vec::new();
+        for (idx, op) in wasm_ops.iter().enumerate() {
+            let Some((access, operands, _)) = Self::npa_address_operands(op) else {
+                continue;
+            };
+            let Some(width) = synth_core::proven_safe::access_width(op) else {
+                continue; // bulk: no memarg offset
+            };
+            let Some(&(back, offset)) = operands.first() else {
+                continue;
+            };
+            if offset == 0 {
+                continue; // nothing baked: the address is the base alone
+            }
+            let touches = u64::from(offset) + u64::from(width) > u64::from(lo)
+                && u64::from(offset) < u64::from(hi);
+            if !touches {
+                continue;
+            }
+            let operand = (idx >= back
+                && (1..back).all(|k| Self::npa_simple_push(&wasm_ops[idx - k])))
+            .then(|| &wasm_ops[idx - back]);
+            let constant = matches!(operand, Some(I32Const(_)))
+                || matches!(operand, Some(LocalGet(l) | LocalTee(l)) if plan.consts.contains_key(l));
+            if !constant {
+                hits.push(NpaStaticOffsetHit {
+                    op_index: idx,
+                    access,
+                    offset,
+                    width,
+                });
+            }
+        }
+        hits
     }
 
     /// A const-materialization instruction: what the `i32.const` handler emits
