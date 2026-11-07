@@ -36,7 +36,7 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1654"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
       landed: "PR #1665 - #1654 - DELIVERED: scripts/repro/memk_i64_1622_differential.py gains two fixtures, gale-min (2080/5376 B, pagesize 1) and paged-min (one 64 KiB page each), each a module holding ONLY four minimal functions of the shape `(local $x i64) (local.set $x (<i64 load> $m1 ..)) (local.get $x)` (i64.load at offset=8 align=4 and offset 0, i64.load32_s, i64.load8_u), built by build_fixture over FIXTURES and executed against wasmtime on npa/plain x cortex-m3/m4f/m7. They sit in their own module because the infer_i64_locals mutant makes rev6 refuse and the whole full-fixture module fail to compile, so a function added there would never run under the mutant. Declared floor 5484 -> 5724; the exact emulation floor (oracle_wiring_check.py's reported sum) rises by 240 (re-derived on the tree rebased onto 72a6b132, over A32CALL's 449140). No compiler change: a test-coverage lane, not a wrong-code fix."
       verified-by: >

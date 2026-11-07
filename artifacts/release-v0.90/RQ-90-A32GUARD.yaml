@@ -41,7 +41,7 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1641"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
       landed: "PR #1644 - #1641 - DELIVERED: a wrong-code fix, the same change as RQ-90-A32BRANCH (#1639). The refuting command was run first on main c20d37b2 and the defect was LIVE: 0 of 15 vectors matched on cortex-r5 and 0 of 15 on no-target, every guarded access hanging at its guard; the cortex-m4 control matched 15 of 15. Fix: resolve_a32_branches in crates/synth-backend/src/arm_backend.rs RETARGETS every numeric branch, decoding its Thumb-unit offset into a target instruction with the real Thumb-2 encoder's sizes and re-expressing it as the A32 word distance to that instruction; validate_a32_branch_targets refuses a target that is not an A32 instruction start or does not fit imm24."
       verified-by: >

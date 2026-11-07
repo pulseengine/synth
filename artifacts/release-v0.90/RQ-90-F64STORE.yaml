@@ -44,7 +44,7 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1642"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
       done-when: >
         manual:2027-03-31 an out-of-bounds f64.store traps with memory

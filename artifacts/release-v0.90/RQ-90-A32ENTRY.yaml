@@ -97,9 +97,17 @@ artifacts:
         self-contained images and 164 cortex-r5 single-function images change
         bytes (the entry and symbol bit, plus the #1645 call patch on 30 of
         them). NEWLY REFUSED, the headline, and the maintainer's chosen
-        behaviour: 312 no-target self-contained compiles (133 --all-exports,
-        179 single-function), the default `synth compile x.wat` invocation
-        among them. Before the fix every one of those images was unrunnable. The
+        behaviour. On this census's sample (one --func-name compile per file,
+        the first export): 133 no-target --all-exports compiles and 179
+        no-target single-function compiles. The 179 is a sampling rule, not a
+        population a user is in, and the two are different units, so they are
+        not summed. Re-derived over EVERY export at the v0.90 cold review,
+        v0.89.2 against 0.90.0 over the same 268 files: 133 module-level
+        compiles newly refuse, under --all-exports and equally under the
+        default `synth compile x.wat`, which takes the same path (the same rc
+        and object in 1072 of 1072 pairs); and 978 --func-name compiles newly
+        refuse, in 185 files; 197 distinct files in either mode.
+        Before the fix every one of those images was unrunnable. The
         in-repo callers of that default were retargeted to `--target
         cortex-r5`, which compiles the same A32 code into an A32 image:
         scripts/release_verify_smoke.sh (green on a verify build, and its

@@ -91,5 +91,10 @@ artifacts:
         branch, identical against 8c96a104: 30 cortex-r5 self-contained images change .text, exactly 44
         words, every one a former 0xebfffffe, and no ET_EXEC image keeps
         one; 48 cortex-r5 single-function compiles of a calling export are
-        newly refused; every Thumb-2 output and every A32 --relocatable
+        newly refused on this census's sample of one --func-name compile per
+        file (the first export), which is not a population a user is in.
+        Re-derived over EVERY export at the v0.90 cold review, v0.89.2 against
+        0.90.0 over the same 268 files: 107 cortex-r5 --func-name compiles
+        newly refuse, in 65 files, every one with the relocation (direct call)
+        refusal; every Thumb-2 output and every A32 --relocatable
         object is byte-identical.
