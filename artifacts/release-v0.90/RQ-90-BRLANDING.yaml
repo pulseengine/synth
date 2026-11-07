@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-BRLANDING
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "validate_estimated_branch_landings has a red-first test"
     description: >
         The v0.89.2 cold review (section 7, row 16) found the compile-time
@@ -38,6 +38,41 @@ artifacts:
       issue: "#1656"
       verification-track: manual
       issue-scope: closes
+      landed: "PR #1665 - #1656 - DELIVERED: the Thumb-2 branch tail of compile_wasm_to_arm (estimator snapshot, place_literal_islands_fixedpoint, validate_estimated_branch_landings, validate_branch_targets) is extracted into resolve_and_gate_thumb2_branches in crates/synth-backend/src/arm_backend.rs, which production calls and the new unit test test_estimated_branch_landing_refuses_mis_sized_span_1656 drives. The test plants the estimator's own drift, not a fake: UMULL has no arm in estimate_arm_byte_size (`_ => 2`, asserted) and encodes as 4 bytes (asserted); a back-edge resolved across it lands on the UMULL, an instruction start, and the helper must refuse with the #1206 branch-landing message. The extraction is byte-identical."
+      verified-by: >
+        DELIVERED, red-first. REFUTING COMMAND, run first on the lane branch at
+        f28f29b0: `git grep -n validate_estimated_branch_landings -- crates`
+        gave 4 hits, none a test call: a comment in compile_wasm_to_arm
+        (arm_backend.rs:1547), the one production call (:1988), the
+        definition (:3178) and the doc-comment mention in
+        tests/estimator_encoder_agreement.rs:572. LIVE. (The record's
+        planning measurement said three; the :1547 comment is the fourth, and
+        none is a call from a test.) After the change
+        `cargo test -p synth-backend --lib test_estimated_branch_landing_refuses_mis_sized_span_1656`
+        passes; `cargo test --workspace` (the required Test context) runs
+        it. POTENCY, both mutants run under that command: (A) the production call deleted
+        from resolve_and_gate_thumb2_branches -> rc 101, the test FAILED at
+        its expect_err (the helper returned Ok: SC-5 alone accepts the
+        mis-landing); (B) validate_estimated_branch_landings neutered to
+        return Ok(()) -> rc 101, FAILED the same way. Each reverted
+        byte-identical (cmp), then green again. Controls inside the test: the
+        same stream not marked estimator-resolved passes the helper (SC-5 is
+        blind to it), and a drift-free span with the same offset is accepted.
+        BYTE-IDENTITY of the extraction: every scripts/repro/*.wat compiled
+        under --relocatable cortex-m4, self-contained cortex-m3 and
+        --no-optimize cortex-m7 by the pre- and post-extraction binaries:
+        487 objects byte-identical, 0 differ, 0 rc changes (161 refused by
+        both). optloop_backedge_1206_differential.py via oracle_run.py on the
+        branch binary: rc 0, measured=3840. No pin moves for this record: the
+        mutation ledger's arm_backend.rs sites all sit above the edit
+        (reanchor: 0 sites moved, 0 not found), and the MC/DC population has
+        no arm_backend function. REBASED onto main 72a6b132 and re-run
+        there: both mutants rc 101 then green; byte-identity against a
+        72a6b132 binary 487 identical / 0 differ / 0 rc changes (161 refused
+        by both); the 1206 differential measured=3840 exit 0; reanchor 0
+        moved, 0 not found. issue-scope stays `closes`: the done-when (a
+        test feeding a mis-sized span, red with the production call deleted,
+        in a required check) is met as written.
       done-when: >
         manual:2027-03-31 a test feeds validate_estimated_branch_landings a
         mis-sized span and asserts the refusal, and deleting the production

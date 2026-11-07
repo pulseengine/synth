@@ -1975,23 +1975,12 @@ fn compile_wasm_to_arm(
     // re-deciding, so the offsets branches were resolved against and the
     // offsets the stream actually gets are the same numbers by construction.
     let (arm_instrs, planned_islands) = if use_thumb2 {
-        // #1206: snapshot the estimator's layout of the optimized path's numeric
-        // branches BEFORE the fixed point, so the landing check below can compare
-        // the instruction each branch was resolved to against the instruction it
-        // actually reaches in the real-encoder layout.
-        let estimated = estimator_resolved
-            .get()
-            .then(|| EstimatedBranches::snapshot(&arm_instrs));
-        let (resolved, islands) =
-            place_literal_islands_fixedpoint(arm_instrs, &encoder, !islands_disabled)?;
-        if let Some(estimated) = &estimated {
-            validate_estimated_branch_landings(estimated, &resolved, &encoder, !islands_disabled)?;
-        }
-        // SC-5 (#740/#930): hard-gate every branch target onto the
-        // instruction-start set of the final stream — both codegen paths
-        // funnel through here. See `validate_branch_targets`.
-        validate_branch_targets(&resolved, &encoder, !islands_disabled)?;
-        (resolved, islands)
+        resolve_and_gate_thumb2_branches(
+            arm_instrs,
+            estimator_resolved.get(),
+            &encoder,
+            !islands_disabled,
+        )?
     } else {
         // #1639 / #1641: A32 (Cortex-R5, and every ARM build with no
         // `--target`). Before this, the A32 stream went to the encoder with
@@ -3129,6 +3118,44 @@ fn validate_branch_targets(
     Ok(())
 }
 
+/// The Thumb-2 branch tail of `compile_wasm_to_arm`: resolve label branches
+/// and literal islands in one fixed point, then gate every branch.
+///
+/// Extracted (RQ-90-BRLANDING, #1656) so the production sequence is the one a
+/// test drives: before, `validate_estimated_branch_landings` was reachable
+/// only from inside `compile_wasm_to_arm`, no test exercised it, and deleting
+/// its call turned nothing red. `estimator_resolved` is set when `ir_to_arm`
+/// produced the stream, i.e. its numeric branches were sized by
+/// `estimate_arm_byte_size`.
+fn resolve_and_gate_thumb2_branches(
+    arm_instrs: Vec<ArmInstruction>,
+    estimator_resolved: bool,
+    encoder: &ArmEncoder,
+    islands_enabled: bool,
+) -> Result<
+    (
+        Vec<ArmInstruction>,
+        std::collections::BTreeMap<usize, usize>,
+    ),
+    String,
+> {
+    // #1206: snapshot the estimator's layout of the optimized path's numeric
+    // branches BEFORE the fixed point, so the landing check below can compare
+    // the instruction each branch was resolved to against the instruction it
+    // actually reaches in the real-encoder layout.
+    let estimated = estimator_resolved.then(|| EstimatedBranches::snapshot(&arm_instrs));
+    let (resolved, islands) =
+        place_literal_islands_fixedpoint(arm_instrs, encoder, islands_enabled)?;
+    if let Some(estimated) = &estimated {
+        validate_estimated_branch_landings(estimated, &resolved, encoder, islands_enabled)?;
+    }
+    // SC-5 (#740/#930): hard-gate every branch target onto the
+    // instruction-start set of the final stream — both codegen paths
+    // funnel through here. See `validate_branch_targets`.
+    validate_branch_targets(&resolved, encoder, islands_enabled)?;
+    Ok((resolved, islands))
+}
+
 /// #1206: the optimized path's numeric branches, as `ir_to_arm` sized them.
 ///
 /// `ir_to_arm` resolves every branch displacement by summing
@@ -3548,6 +3575,66 @@ mod tests {
             ]),
             vec![WasmOp::LocalGet(0), WasmOp::MemorySize(0), WasmOp::I32Add]
         );
+    }
+
+    /// RQ-90-BRLANDING (#1656): the #1206 branch-landing check refuses a
+    /// branch the size estimator resolved across an instruction it mis-sizes,
+    /// on the SAME helper `compile_wasm_to_arm` calls. Red if
+    /// `validate_estimated_branch_landings` is neutered OR its call in
+    /// `resolve_and_gate_thumb2_branches` is deleted: the mis-landing below is
+    /// an instruction start, so SC-5 alone accepts it (the second control).
+    #[test]
+    fn test_estimated_branch_landing_refuses_mis_sized_span_1656() {
+        use synth_synthesis::Condition;
+        let enc = ArmEncoder::new_thumb2();
+        let ins = |op: ArmOp| ArmInstruction {
+            op,
+            source_line: None,
+        };
+        let mov = || {
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            })
+        };
+        let umull = ArmOp::Umull {
+            rdlo: Reg::R2,
+            rdhi: Reg::R3,
+            rn: Reg::R0,
+            rm: Reg::R1,
+        };
+        // The planted drift is the estimator's own, not a fake: UMULL has no
+        // arm in `estimate_arm_byte_size` (`_ => 2`) and always encodes as a
+        // 32-bit Thumb-2 instruction. If the estimator learns UMULL, pick
+        // another OffPath op it still mis-sizes.
+        assert_eq!(synth_synthesis::estimate_arm_byte_size(&umull), 2);
+        assert_eq!(enc.encode(&umull).unwrap().len(), 4);
+        assert_eq!(enc.encode(&mov().op).unwrap().len(), 2);
+        // Estimator layout: 0 mov | 2 umull | 4 mov | 6 bne | 8 mov.
+        // The back-edge to instruction 0 resolved against it:
+        // (0 - 6 - 4) / 2 = -5. Real layout: the bne sits at 8 and
+        // 8 + 4 - 10 = 2 lands on the UMULL, an instruction start.
+        let bne = || {
+            ins(ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: -5,
+            })
+        };
+        let drift = vec![mov(), ins(umull.clone()), mov(), bne(), mov()];
+
+        let err = resolve_and_gate_thumb2_branches(drift.clone(), true, &enc, true)
+            .expect_err("a branch resolved across a mis-sized UMULL must be refused");
+        assert!(err.contains("#1206 branch-landing check"), "{err}");
+        assert!(err.contains("instruction 0 (0x0)"), "{err}");
+        assert!(err.contains("reaches 0x2"), "{err}");
+        assert!(err.contains("Umull"), "{err}");
+
+        // Control 1: the landing check is the ONLY gate that sees it — the
+        // same stream, not marked estimator-resolved, passes SC-5.
+        assert!(resolve_and_gate_thumb2_branches(drift, false, &enc, true).is_ok());
+        // Control 2: no drift in the span, same offset — accepted.
+        let exact = vec![mov(), mov(), mov(), bne(), mov()];
+        assert!(resolve_and_gate_thumb2_branches(exact, true, &enc, true).is_ok());
     }
 
     /// #1639: A32 label branches resolve in A32 WORD units, forward and
