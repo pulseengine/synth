@@ -88,10 +88,18 @@ argued **down** over time and cannot grow silently:
 
 - **145 wired** — a floor (`count-min`). The surface cannot be emptied by
   deleting oracles instead of fixing them.
-- **11 manual** — a ceiling (`count-max`). A twelfth needs a conversation, not a
+- **12 manual** — a ceiling (`count-max`). A thirteenth needs a conversation, not a
   commit. (This sentence said **9 manual** for one release after the ceiling
   reached 10, because the pin checks the sentence's presence, not its number;
-  the tenth and eleventh are itemized below.)
+  the tenth, eleventh and twelfth are itemized below.)
+
+  The twelfth is `falcon_exec_1318.py` (RQ-90-FALCON7, #1318, v0.90): it
+  executes the reporter's `opt.wasm` against wasmtime, and that module is not
+  vendored here and may only be re-fetched with the maintainer's approval, so
+  CI cannot fetch it per run. Its defect classes are gated by the wired
+  `vfp_wide_stage_1593_differential.py`,
+  `float_local_zero_init_1594_differential.py` and
+  `vfp_high_bank_restore_1318_differential.py`.
 
   The eleventh is `jessdiverge10_localise_1436.py` (RQ-88-JESSDIVERGE10, #1436,
   v0.88): it localised a reporter's divergence by execution over the reporter's
@@ -143,7 +151,7 @@ The gate also writes a table (and the unwired-debt list) to
 `$GITHUB_STEP_SUMMARY`, so the backlog is visible on every run rather than only
 in a log nobody opens.
 
-## The manual eleven
+## The manual twelve
 
 | script | category | why |
 |---|---|---|
@@ -158,6 +166,7 @@ in a log nobody opens.
 | `diagnostic_issue_census_345.py` | measurement | RQ-74-STALEMSG's refutation evidence (#345): the lane set out to build a tripwire refusing a diagnostic that cites a CLOSED issue, and this census found 93% of citation sites already do (363 of 389), because a `#N` names where the limitation was ANALYSED and that issue is normally closed. The refusal would have red 363 sites on landing. Prints counts, no verdict about the compiler |
 | `literal_table_census_1403.py` | measurement | RQ-77-CENSUS (#1403): the literal-table population under five named readings, because the stated predicate is ambiguous; no single figure, so no verdict for CI |
 | `jessdiverge10_localise_1436.py` | external-input | RQ-88-JESSDIVERGE10 (#1436): needs the reporter's module (sha256 in the header), not vendored here. The defect it localised is gated by the wired `vfp_home_alias_1436_differential.py` |
+| `falcon_exec_1318.py` | external-input | RQ-90-FALCON7 (#1318): needs the reporter's `opt.wasm` (sha256 in the header), not vendored here, and a re-fetch needs the maintainer's approval. Its defect classes are gated by the wired `vfp_wide_stage_1593_differential.py`, `float_local_zero_init_1594_differential.py` and `vfp_high_bank_restore_1318_differential.py` |
 
 ## Anti-vacuity — the gate must not become the thing it polices
 

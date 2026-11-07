@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-FALCON7
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "The falcon execution figures for #1318 are re-derivable from the tree"
     description: >
         The #1318 execution evidence (step 1000 of 1000 on a garbage stack and
@@ -25,6 +25,18 @@ artifacts:
         CHANGELOG.md (stating the harness is not committed),
         artifacts/release-v0.89/RQ-89-FALCON6.yaml and RQ-89-FALCONSTEP.yaml.
 
+        RE-RUN 2026-11-06 on origin/main c20d37b2, the lane's base: still
+        LIVE. `git ls-files | grep -c falcon_exec` prints 0, and `git grep`
+        finds the name only in prose (CHANGELOG.md, RQ-89-FALCON6.yaml,
+        RQ-89-FALCONSTEP.yaml, this file and docs/reviews/v0.89-cold-review.md).
+
+        DELIVERED by this artifact: scripts/repro/falcon_exec_1318.py. The
+        v0.89 sandbox script is gone, so this is a fresh harness, not a
+        recovery: its vectors are its own, seeded with 1318, and the call
+        counts (42, 60, 1000 per machine state) are the v0.89 ones. The
+        reporter's module is NOT committed: the harness takes it as an
+        argument and refuses any file whose sha256 is not the #1318 opt.wasm.
+
         CITATION: #1318 is where the matter was analysed. The number names
         where it was analysed, not an open scope.
     tags:
@@ -39,6 +51,53 @@ artifacts:
       issue: "#1318"
       verification-track: manual
       issue-scope: closes
+      verified-by: >
+        DELIVERED, execution-verified: the reporter's opt.wasm (sha256
+        7065f112fdaae127291f5f12cacc00619c55363e14a5141059dc2fcc6cfd00df), fetched once
+        with the maintainer's approval on 2026-11-06 from
+        https://github.com/user-attachments/files/32349478/errors.zip (24,368 bytes,
+        sha256 0f796616d5d7ec01dce21a32cb78d40240da778e04d64e32ee7e26c6d51184a1) into an
+        empty scratch directory, both member digests matched before use, and nothing
+        from it run natively. Command: `python3 -I scripts/oracle_run.py
+        scripts/repro/falcon_exec_1318.py <dir>/opt.wasm --synth ./target/debug/synth`.
+        On synth 0.89.2 built from origin/main c20d37b2: the reporter's command
+        (`--target cortex-m7 --relocatable --all-exports --embedder-data-init
+        --embedder-global-init`) compiles 17 of 17 functions, rc 0, object sha256
+        3877c047a9cd6f5d023fb89869677140c1180d2ae26ef0b5e1d4fcfd346f2310. Linked with
+        arm-none-eabi-ld -Ttext=0 against arm-none-eabi-gcc 13.2.1's thumb/v7e-m+fp/hard
+        libgcc.a and run in unicorn 2.1.4 against wasmtime-py 48.0.0 under the embedder
+        contract (R9 globals, R10 64 KiB, R11 linear memory; the reset image is checked
+        equal to wasmtime's fresh instance). With a garbage machine (random
+        caller-saved and callee-saved registers, random stack) and with a zeroed one,
+        each: configure 42 of 42, cabi_realloc_wit_bindgen_0_41_0 60 of 60 (21 of them
+        traps on both sides) and step 1000 of 1000 (20 episodes of 50 on fresh
+        instances, alternately unconfigured and configured). 2204 of 2204 calls match:
+        return value or trap, all 65536 bytes of linear memory, every global, and the
+        AAPCS contract (SP, R4..R11, S16..S31, the caller's frame). 0 NaN-payload words
+        were tolerated. oracle_run: emulations 2204 against a declared floor of 2204,
+        exit 0. Same counts as v0.89 (1000/1000 twice, 42/42, 60/60). The object
+        differs from v0.89's db26e1d9 because v0.89.1 and v0.89.2 changed the
+        compiler, and the trap split (21 against v0.89's 11) differs because the
+        vectors are new. POSITIVE CONTROLS, same file, same seed, rc 1 both: a binary
+        built at d4c0b232 (after #1585, before #1593, #1594 and #1600; v0.89 measured
+        334 of 1000 there with its own vectors) gives step 0 of 1000 in both states,
+        980 UC_ERR_WRITE_UNMAPPED faults and 20 wrong-memory calls in each. A binary
+        built at ce348045 (#1593 fixed, #1594 not) gives step 991 of 1000 with a
+        garbage machine and 1000 of 1000 zeroed, so the harness separates the #1594
+        read-before-write class by machine state. configure and cabi_realloc match at
+        both controls. RE-RUN 2026-11-07 after rebasing onto origin/main 3f4eecc3, on
+        synth 0.89.2 built from that tree, from the same verified local copy (no
+        re-fetch): the object is byte-identical (3877c047...6f2310) and the result is
+        unchanged, 2204 of 2204 in both states, oracle_run emulations 2204, exit 0.
+        NOT WIRED INTO CI, by decision: every re-fetch of the
+        attachment needs the maintainer's approval (RQ-89-FALCON6), so a CI job that
+        fetched it per run would be a standing unapproved re-fetch, and the module is
+        not vendored. The script declares `ci-status: manual (external-input)` and a
+        `ci-checks: emulations >= 2204` floor that oracle_run.py enforces when it is run
+        by hand. Its defect classes stay gated in CI on in-tree fixtures by
+        vfp_wide_stage_1593_differential.py, float_local_zero_init_1594_differential.py
+        and vfp_high_bank_restore_1318_differential.py. Emulated, not run on
+        hardware. The reporter's own hardware run is not part of this evidence.
       done-when: >
         manual:2027-03-31 the falcon execution harness is committed and wired,
         its input is fetched by a pinned sha256, and re-running it reproduces
