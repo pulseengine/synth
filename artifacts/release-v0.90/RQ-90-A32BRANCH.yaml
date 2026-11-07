@@ -58,7 +58,7 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1639"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
       landed: "PR #1644 - #1639 - DELIVERED: a wrong-code fix. The refuting command was RE-RUN FIRST on main c20d37b2 (v0.89.2 plus the v0.90 planning PR) and the defect was LIVE: the #1644 oracle's five A32 legs matched 18/55, 18/55, 13/51, 0/15 and 0/15, and the #1206 countdown on cortex-r5 --relocatable returned 0x5 for countdown(5) and 0xa for countdown(10) against wasmtime 0x0. Fix, in crates/synth-backend/src/arm_backend.rs: the A32 arm of the emit pipeline now runs resolve_a32_branches and validate_a32_branch_targets. A label branch is resolved against the A32 byte position of its label. A numeric branch is RETARGETED: its Thumb-unit offset is decoded into a target instruction by walking the span with the real Thumb-2 encoder's sizes, then re-expressed as the A32 word distance to that instruction. The gate refuses any surviving label branch (A32 records no relocation for one), any target that is not an A32 instruction start, and any imm24 overflow. The Thumb-2 path is untouched; on it, v0.89.2's estimator landing check (validate_estimated_branch_landings) still runs, and the A32 arm does not run it. The A32 encoder comment that said a backward branch of N instructions is offset -(N + 2) now states the units its arithmetic uses: offset = (target - branch) / 4, so that branch is offset -N. No literal islands are involved: A32 has no LdrSym lowering."
       verified-by: >

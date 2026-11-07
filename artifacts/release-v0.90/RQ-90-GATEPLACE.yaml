@@ -7,7 +7,7 @@ artifacts:
     description: >
         Carried from v0.89 (RQ-89-GATEPLACE, blocked on a maintainer
         decision). The wrong-code differentials are potent but run in jobs
-        outside the nine required status checks, so a pull request can merge
+        outside the nine required status checks of v0.89, so a pull request can merge
         with any of them red. Changing the required set is a branch-protection
         decision for the maintainer; this lane carries the measured cost and
         the decision.
@@ -37,7 +37,13 @@ artifacts:
         lists TEN contexts, strict false: Format, Clippy, Test, Z3
         Verification, Claim Check, Version Pin Sweep, Bazel Build & Proofs,
         Kani Verification, Rivet Validation, and `spec-suite execution
-        (#1636)`, which #1670 added. enforce_admins is true. Each wrong-code
+        (#1636)`. That tenth context was added to branch protection directly,
+        not by a pull request, between 2026-11-06T20:34:14Z (PR #1669's body,
+        last edited then, still says 9) and 2026-11-07T00:08:51Z (PR #1670's
+        first body version already says 10), on #1636's acceptance
+        criterion. PR #1670 did not change protection: it moved the name from
+        PENDING_REQUIRED_CONTEXTS into REQUIRED_CONTEXTS in
+        scripts/ci_pool_tripwire.py. enforce_admins is true. Each wrong-code
         differential of v0.88 to v0.90 mapped to the job that runs it, by
         job id, over every file in .github/workflows/: spec_exec_1636 runs in
         spec-suite.yml job spec-suite-execution, which IS required.
@@ -72,9 +78,14 @@ artifacts:
       issue-scope: closes
       verified-by: >
         DELIVERED AS A DECISION, recorded at the v0.90 release prep. The
-        maintainer decided on 2026-11-06 to keep the required set as it is,
-        with no branch-protection change, and to end the issue at this
-        release on this rationale: scripts/merge_ritual.sh refuses a merge
+        maintainer decided on 2026-11-06 to keep the required set as it is
+        for these wrong-code differentials, with no branch-protection change
+        for #1573: no ci.yml job that runs them became a required context.
+        The tenth required context, `spec-suite execution (#1636)`, was added
+        on a separate request, #1636's own acceptance criterion
+        (RQ-90-SPECEXEC), and is not part of this decision. The maintainer
+        also decided to end the issue at this release on this rationale:
+        scripts/merge_ritual.sh refuses a merge
         while any non-advisory check is red or pending (CHECK3/CHECK3b; only
         contexts matching codecov or advisory are exempt), so every merge
         made through the ritual is covered by the differentials' jobs;

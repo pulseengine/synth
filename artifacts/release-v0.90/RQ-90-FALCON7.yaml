@@ -49,7 +49,7 @@ artifacts:
       req-type: process
       priority: must
       issue: "#1318"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
       verified-by: >
         DELIVERED, execution-verified: the reporter's opt.wasm (sha256

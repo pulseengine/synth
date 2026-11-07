@@ -82,13 +82,21 @@ passed at its declared floor: `a32_control_flow_1639` 905, `a32_image_1645_1640`
 - **No-target self-contained ARM images** (#1640, the maintainer's decision). With no `--target`
   and no `--cortex-m`, ARM code is A32 but the image builder is the Cortex-M one, and no core can
   run the result. It is now refused, and the error names three alternatives: a Cortex-M target,
-  `--target cortex-r5`, or `--relocatable`. **312** no-target self-contained compiles over 268
-  tracked `.wat`/`.wasm` files newly refuse (133 `--all-exports`, 179 `--func-name`); the default
-  `synth compile x.wat` is one of them. Every one of those images was unrunnable before. In-repo
-  callers (the release smoke script, two verify tests, the wsc e2e script, the README) moved to
-  `--target cortex-r5`. Source: PR #1662.
-- **cortex-r5 single-function compiles of a function that makes a call** (#1645): **48** newly
-  refuse, because one function cannot hold its callee; use `--all-exports`. Source: PR #1662.
+  `--target cortex-r5`, or `--relocatable`. Over the 268 tracked `.wat`/`.wasm` files, v0.89.2
+  against 0.90.0, two different units newly refuse, and they are not added together: **133**
+  module-level compiles, one per file whose image used to build (every `--all-exports` compile,
+  and equally the default `synth compile x.wat`, which takes the same path); and **978**
+  single-function compiles (`--func-name`, every exported function), in 185 files. That is 197
+  distinct files in either mode. Every one of those images was unrunnable before.
+  In-repo callers (the release smoke script, two verify tests, the wsc e2e script, the README)
+  moved to `--target cortex-r5`. Source: PR #1662, whose 179 for `--func-name` compiled only the
+  first export of each file; the counts here were re-derived over every export at the v0.90 cold
+  review.
+- **cortex-r5 single-function compiles of a function that makes a call** (#1645): **107**
+  `--func-name` compiles newly refuse, in 65 files, because one function cannot hold its callee;
+  use `--all-exports`. Across this refusal and the one above, 212 distinct files are affected.
+  Source: PR #1662, whose 48 compiled only the first export of each file; re-derived over every
+  export at the v0.90 cold review.
 - **`call_indirect` where one compare cannot be sound** (#1643): `run` in `type-rec.wast`'s
   modules at lines 179 and 188 on ARM, and `run` at `type-subtyping.wast` line 318 on AArch64.
   2 spec directives per leg moved from executed-and-wrong to a named refusal. Source: PR #1658.
@@ -165,8 +173,11 @@ The default is unchanged: with `--safety-bounds none` synth emits no out-of-boun
 `--safety-bounds mpu` traps nothing from synth (it is accepted only on an ARM `--relocatable`
 object with `--embedder-mpu`). What changed is under `--safety-bounds software` only: memory k >
 0 is now bounds-checked (#1619), and an out-of-bounds `f64.store` writes nothing before it traps
-(#1642). `--safety-bounds mask` still refuses every memory-k access. Required checks: the
-maintainer kept the required set as it is (#1573). `scripts/merge_ritual.sh` refuses a merge
+(#1642). `--safety-bounds mask` still refuses every memory-k access. Required checks: for the
+wrong-code differentials of #1573, the maintainer kept the required set as it is, so no ci.yml
+job that runs them became required. The one context added this release, `spec-suite execution
+(#1636)`, was a separate request, #1636's own acceptance criterion; main now requires 10 checks.
+`scripts/merge_ritual.sh` refuses a merge
 while any non-advisory check is red, but GitHub does not block a merge made outside it. Of 27
 wrong-code scripts, 1 runs in a required context, 25 run in ci.yml jobs that are not required,
 and 1 (the falcon harness) runs in no workflow.

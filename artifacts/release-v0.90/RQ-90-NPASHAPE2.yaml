@@ -43,7 +43,7 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1568"
-      verification-track: manual
+      verification-track: execution
       issue-scope: outlives
       landed: "PR #1667 - #1568 shape 2 - DELIVERED as the decided module-level refusal. Under --relocatable --native-pointer-abi on the ARM backend, in a module with no stack-pointer global with a positive init, a memory-0 access whose base is dynamic and whose non-zero memarg offset makes it touch the static region [lowest non-empty active data segment of memory 0, memory 0's declared minimum size) refuses the WHOLE module before any function compiles: exit 1, no object, with or without --allow-skipped-exports. The diagnostic is `npa-dynamic-static-offset (#1568)`, naming each function, op, memarg offset, access width and the region bounds. Shape 2 is refused, not fixed, and #1568 stays open: see verified-by for what remains."
       verified-by: >
