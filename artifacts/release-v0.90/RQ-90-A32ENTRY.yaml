@@ -2,8 +2,8 @@ artifacts:
   - id: RQ-90-A32ENTRY
     type: system-req
     release: v0.90
-    status: proposed
-    title: "Self-contained A32 images enter A32 code in ARM state"
+    status: implemented
+    title: "Self-contained A32 images enter A32 code in ARM state, or are refused"
     description: >
         SILENT MISCOMPILE. Self-contained A32 images set the Thumb bit on A32
         function bodies: on `--target cortex-r5` the entry point and every
@@ -34,6 +34,7 @@ artifacts:
     tags:
       - feature-loop
       - bug
+      - wrong-code
     links:
       - type: derives-from
         target: BR-001
@@ -41,7 +42,7 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1640"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
       done-when: >
         manual:2027-03-31 a self-contained A32 image enters every A32 body in
@@ -52,3 +53,87 @@ artifacts:
         is a wrong-code fix, or REFUTED with the measurement that refutes it;
         and the refuting command above is RUN FIRST and its result reported
         either way
+      landed: "PR #1662 (branch a32image), shipped with RQ-90-A32CALL - #1640 - DELIVERED. The refuting command was RUN FIRST on main c20d37b2 and the defect was LIVE on both builds: cortex-r5 --all-exports rc 0, Entry point 0x8001, `add1` FUNC 0x00008001; no target --all-exports rc 0, Entry point 0x81 (the Thumb Reset_Handler), `add1` FUNC 0x000000a1 over A32 body words. Fix, in crates/synth-cli/src/main.rs: (1) cortex-r5 — build_multi_func_simple_elf and build_simple_elf (the self-contained builders for a non-Cortex-M ARM target) now take the target and call ElfBuilder::with_thumb_funcs(target.is_thumb2()), the #598 rule that --relocatable objects already followed, so e_entry and every STT_FUNC value of an A32 image are even. After the fix the refuting command reads Entry point 0x8000 and `add1` FUNC 0x00008000. (2) no target — the default ARM profile is Arm32 code under a Cortex-M family, so it reached the Cortex-M image builders: an M-profile vector table and a Thumb Reset_Handler that `blx`es into A32 bodies. No startup can make that correct: an M-profile core executes only Thumb, so entering with the Thumb bit decodes A32 words as Thumb and a `bx` to an even address takes an INVSTATE UsageFault. The new refuse_a32_cortex_m_image refuses it on both the multi-function and the single-function Cortex-M path, naming the three ways out (a Cortex-M target, --target cortex-r5, --relocatable). After the fix the no-target half of the refuting command exits 1 with that refusal. Thumb-2 targets never reach the refusal (is_thumb2), and the A32 --relocatable path is not touched."
+      verified-by: >
+        DELIVERED as an execution-verified wrong-code fix for cortex-r5, and
+        as a loud refusal for the no-target self-contained image, which no
+        core can run. New wired oracle
+        scripts/repro/a32_image_1645_1640_differential.py (ci.yml, through
+        oracle_run.py, `emulations >= 54`). It reads e_entry and the STT_FUNC
+        values as emitted, with no `sym & ~1`: bit 0 picks the state unicorn
+        starts in, as an interworking loader would. The image is
+        SECTION-loaded (the cortex-r5 image has no program headers and no
+        reset code; its e_entry is the first function), so the boot leg places
+        .text at its sh_addr and enters e_entry in the state its bit 0
+        selects, with the harness supplying SP, arguments and an LR sentinel.
+        This is not an ARM-state reset path: the cortex-r5 image has none, and
+        the done-when's "reset entry" is met as e_entry. The fixture's first
+        function is a caller, so the e_entry run crosses internal `bl`s. Legs:
+        cortex-r5 --all-exports, the same with --no-optimize, the cortex-r5
+        single-function image of a call-free function, and two refusal legs
+        (no target --all-exports, no target --func-name on a call-free
+        function, which on main shipped an image with exit 0). RED on main
+        c20d37b2, f28f29b0 (main with #1644) and 8c96a104: 75 failures, 54 of
+        54 emulations wrong (every entry point odd, every body entered in
+        Thumb state) and the no-target single-function build accepted. GREEN
+        on the branch rebased onto 8c96a104: 54 of 54, 3 refusals loud.
+        Potency, each a planted source mutant rebuilt and run (on the tree
+        rebased onto f28f29b0):
+        re-setting the Thumb bit in the multi-function A32 builder reds the
+        r5 and r5-noopt legs (62 failures, emulations included); re-setting it
+        in the single-function builder reds r5-single (8); disabling the
+        no-target refusal reds both no-target legs. Unit tests:
+        test_simple_elf_generation now asserts entry 0x8000 on an A32 body,
+        and a32_simple_image_patches_calls_and_clears_thumb_bit_1645_1640.
+        REACH, measured over every tracked .wat/.wasm (268 files) x 8 targets
+        x 3 modes (self-contained --all-exports, --relocatable --all-exports,
+        --func-name of the first export), base f28f29b0 vs the branch rebased
+        onto it, and again base 8c96a104 vs the branch rebased onto that
+        (every figure below identical in both):
+        every one of the 3,453 accepted Thumb-2 outputs
+        (cortex-m3/m4/m4f/m7/m7dp/m55) is byte-identical, with 0
+        compile-status or error-message flips; all 314 A32 --relocatable
+        objects (cortex-r5 and no target) are byte-identical. 164 cortex-r5
+        self-contained images and 164 cortex-r5 single-function images change
+        bytes (the entry and symbol bit, plus the #1645 call patch on 30 of
+        them). NEWLY REFUSED, the headline, and the maintainer's chosen
+        behaviour: 312 no-target self-contained compiles (133 --all-exports,
+        179 single-function), the default `synth compile x.wat` invocation
+        among them. Before the fix every one of those images was unrunnable. The
+        in-repo callers of that default were retargeted to `--target
+        cortex-r5`, which compiles the same A32 code into an A32 image:
+        scripts/release_verify_smoke.sh (green on a verify build, and its
+        ci.yml red leg still fails for the capability reason on a verify-less
+        build), crates/synth-cli/tests/verify_banner_1000.rs,
+        crates/synth-cli/tests/verify_report_935.rs, tests/wsc_sign_e2e.sh
+        and the README usage block. verify_report_935 was MISSED by the first
+        census and reddened CI: it compiles only under `--features verify`,
+        which the default `cargo test --workspace` never builds. The census
+        was then redone by instrumenting the refusal (a scratch build that
+        logs argv on every #1640 refusal) and running `cargo test -p
+        synth-cli` with default features and with `--features verify` (the
+        only CLI-invoking feature sets ci.yml uses), plus all 371 run: blocks
+        of ci.yml, spec-suite.yml and release.yml that invoke synth or
+        scripts/ on a verify-feature binary: the refusal fired in exactly 2
+        test cases (both verify_report_935) and 2 script calls (this lane's
+        own no-target refusal legs). For both verify fixtures (verify_report_935's
+        and verify_banner_1000's) main 8c96a104's no-target compile and this
+        branch's cortex-r5 compile give `synth verify` reports and stdout
+        identical except for the file name (r935: 4 verified, 0 failed, 0
+        unknown, 3 declined across 7 rule kinds; b1000: 2/0/0/3 across 5).
+        The no-target
+        self-contained #1206 leg of a32_control_flow_1639_differential.py
+        (RQ-90-A32BRANCH) compiled the now-refused image and was dropped; its
+        bodies were byte-identical to its cortex-r5 twin leg's. A local run of
+        every ci.yml step that invokes synth or scripts/ (354 run: blocks,
+        a c20d37b2 copy vs the pre-rebase branch) can only see a flip in a block that was green on
+        base: among those, the release smoke red leg was the one real flip
+        (before the retargeting), besides steps that need git history the
+        base copy lacked and four VFP oracles whose binary was swapped
+        mid-run, which re-ran green on the branch binary. 95 blocks were red
+        on both sides locally (missing toolchains, the unchecked-out
+        spec-testsuite submodule, evidence-ledger steps outside their jobs)
+        and are NOT examined by that run; CI is their check. Of the
+        spec-testsuite consumers among them, none compiles a no-target or
+        cortex-r5 self-contained image (each passes a Cortex-M target,
+        --cortex-m, --relocatable or another backend).

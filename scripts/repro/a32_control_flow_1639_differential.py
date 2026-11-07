@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 1541
+# ci-checks: emulations >= 905
 """#1639 / #1641 — A32 control-flow execution differential (unicorn vs wasmtime).
 
 WHAT WAS WRONG (measured at v0.89.0 dd2b791a and main df847a16):
@@ -53,18 +53,21 @@ wasmtime (fresh instance and fresh zeroed memory per vector on both sides):
                   symbols and entry carry the Thumb bit) is out of scope, so
                   `.text` is mapped at its address and entered at
                   `symbol & ~1` in ARM state. The no-target self-contained
-                  build is not a leg: it refuses this fixture (the A32 `bl`
-                  is an R_ARM_CALL the standalone Cortex-M builder will not
-                  patch), identically before and after this fix.
+                  build is not a leg: since #1640 every no-target
+                  self-contained image is refused (A32 bodies behind a
+                  Cortex-M Thumb startup cannot run).
   a32 r5-sb       cortex-r5 --relocatable --safety-bounds software (#1641)
-  a32 r5-image-1206 / a32 notgt-image-1206
-                  `optloop_backedge_1206.wat`, self-contained, cortex-r5 and
-                  no target, entered at `symbol & ~1` like r5-image (not
-                  booted, #1640). Every export must compile on the OPTIMIZED
-                  path (SYNTH_PATH_DEBUG), or the leg would stop exercising the
-                  estimator-resolved branches it exists for. The fixture has no
-                  call, so the no-target image builds; 80 vectors per export,
-                  the Thumb oracle's set, R10 = one page for msize_loop.
+  a32 r5-image-1206
+                  `optloop_backedge_1206.wat`, self-contained cortex-r5,
+                  entered at `symbol & ~1` like r5-image. Every export must
+                  compile on the OPTIMIZED path (SYNTH_PATH_DEBUG), or the leg
+                  would stop exercising the estimator-resolved branches it
+                  exists for; 80 vectors per export, the Thumb oracle's set,
+                  R10 = one page for msize_loop. Its no-target twin
+                  (notgt-image-1206) was DROPPED with #1640: that image is now
+                  refused, and before the refusal its eight function bodies
+                  were byte-identical to this leg's (measured on f28f29b0), so
+                  retargeting it to cortex-r5 would have run this leg twice.
   a32 notgt-sb    no-target --relocatable --safety-bounds software (#1641)
   thumb m4-rel / m4-sb   cortex-m4 controls: correct before and after, so a
                   red A32 leg is the A32 path and not the harness.
@@ -150,17 +153,13 @@ OPT_VECTORS = [(fn, a, b) for fn in OPT_EXPORTS
 
 # The image leg's SCOPE, a positive list: what it exists to execute is the
 # OPTIMIZED path's numeric (Thumb-unit) branches retargeted to A32, which only
-# a non-relocatable build reaches. `callsum` is NOT in scope here and that is a
-# DISCLOSED GAP, not a pass: its `bl` in the self-contained cortex-r5 image is
-# left unpatched (`bl` to itself — the image builder does not apply the A32
-# R_ARM_CALL; the no-target image REFUSES the same relocation loudly). That is
-# a separate silent defect of the self-contained A32 image builder, identical
-# before and after #1639's fix, and left for its own issue rather than pinned
-# here. The relocatable legs execute `callsum` through a real linker
-# relocation.
+# a non-relocatable build reaches. `callsum` (a call inside a loop) joined
+# this list with #1645: the self-contained A32 builder now patches its `bl`
+# (it shipped as a `bl` to itself before), so the image leg executes the
+# loop's branches and the patched call together.
 IMAGE_LEG_EXPORTS = (
     "f", "sum", "tbl", "ife", "nest", "dowhile", "blkval",
-    "optloop", "optif", "du", "ds", "ru", "rs",
+    "optloop", "optif", "du", "ds", "ru", "rs", "callsum",
 )
 
 # (name, fixture, synth flags, execution kind)
@@ -175,8 +174,6 @@ LEGS = [
                           "--safety-bounds", "software"], "a32"),
     ("a32 r5-image-1206 (entered at symbol, not booted)", OPT,
      ["-b", "arm", "--target", "cortex-r5"], "a32-image"),
-    ("a32 notgt-image-1206 (entered at symbol, not booted)", OPT,
-     ["-b", "arm"], "a32-image"),
     ("thumb m4-rel (control)", CF,
      ["-b", "arm", "--target", "cortex-m4", "--relocatable"], "thumb"),
     ("thumb m4-sb (control)", SB, ["-b", "arm", "--target", "cortex-m4",
@@ -322,8 +319,7 @@ def main():
             vecs = {CF: CF_VECTORS, SB: SB_VECTORS, OPT: OPT_VECTORS}[fixture]
             if kind == "a32-image" and fixture == CF:
                 vecs = [v for v in vecs if v[0] in IMAGE_LEG_EXPORTS]
-                print("  scope: IMAGE_LEG_EXPORTS (callsum excluded: unpatched A32 "
-                      "bl in the self-contained image, a disclosed gap; see header)")
+                print("  scope: IMAGE_LEG_EXPORTS (see header)")
             bad = 0
             for fn, a, b in vecs:
                 want = expected[(fixture, fn, a, b)]

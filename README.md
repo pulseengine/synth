@@ -141,21 +141,27 @@ synth verify examples/wat/simple_add.wat firmware.elf
 ### Compile WASM/WAT to ARM ELF
 
 ```bash
-# Compile a WAT file to an ARM ELF binary
-synth compile examples/wat/simple_add.wat -o add.elf
+# Compile a WAT file to an A32 (ARM-state) ELF image for Cortex-R5
+synth compile examples/wat/simple_add.wat --target cortex-r5 -o add.elf
 
 # Compile with a built-in demo (add, mul, calc, calc-ext)
-synth compile --demo add -o demo.elf
+synth compile --demo add --target cortex-r5 -o demo.elf
 
 # Compile a complete Cortex-M binary (vector table, startup code)
 synth compile examples/wat/simple_add.wat --cortex-m -o firmware.elf
 
 # Compile all exported functions
-synth compile input.wat --all-exports -o multi.elf
+synth compile input.wat --target cortex-r5 --all-exports -o multi.elf
 
 # Compile and formally verify the translation
-synth compile input.wat --verify -o verified.elf
+synth compile input.wat --target cortex-r5 --verify -o verified.elf
 ```
+
+With no `--target` (and no `--cortex-m`), ARM code is A32 and a self-contained
+image is refused (#1640): the image builder for that profile is a Cortex-M one,
+whose Thumb startup cannot enter A32 code. Pick a Cortex-M target for a
+bootable Thumb-2 image, `--target cortex-r5` for an A32 image, or
+`--relocatable` to link the A32 object yourself.
 
 ### Disassemble
 

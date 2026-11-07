@@ -107,7 +107,13 @@ artifacts:
         NOT FIXED, recorded for triage: the self-contained cortex-r5 image
         leaves an internal A32 `bl` unpatched (#1645, RQ-90-A32CALL), and
         self-contained A32 images are entered in Thumb state (#1640,
-        RQ-90-A32ENTRY).
+        RQ-90-A32ENTRY). LATER, in RQ-90-A32CALL (PR #1662), this oracle
+        changed and the figures above describe it as #1644 merged it: its
+        no-target self-contained #1206 leg (640 emulations) was dropped
+        because #1640 now refuses that image, and its bodies were
+        byte-identical to the cortex-r5 #1206 leg's; `callsum` joined the
+        cortex-r5 image leg once its `bl` was patched. It now declares
+        `emulations >= 905`.
       done-when: >
         manual:2027-03-31 every A32 label branch and every selector-written
         numeric branch reaches the A32 encoder in A32 word units, a branch

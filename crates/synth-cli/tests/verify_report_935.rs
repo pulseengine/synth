@@ -70,6 +70,13 @@ fn run_verify_with_report(tag: &str) -> Artifacts {
             "-o",
             elf.to_str().unwrap(),
             "--all-exports",
+            // #1640: an explicit A32 target. With no --target the default
+            // ISA is A32 and a self-contained image is refused (A32 bodies
+            // behind a Cortex-M Thumb startup cannot run); cortex-r5 compiles
+            // the same A32 code, so the verify verdict and counts below are
+            // unchanged (measured against main's no-target build).
+            "--target",
+            "cortex-r5",
         ])
         .output()
         .expect("run synth compile");

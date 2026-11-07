@@ -57,6 +57,10 @@ fn compile_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::p
             "-o",
             elf.to_str().unwrap(),
             "--all-exports",
+            // #1640: same target as scripts/release_verify_smoke.sh — a
+            // no-target self-contained A32 image is refused.
+            "--target",
+            "cortex-r5",
         ])
         .output()
         .expect("run synth compile");

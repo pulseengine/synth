@@ -68,7 +68,10 @@ run_synth --version
 # 1. The artifact must be able to COMPILE the module it is about to verify.
 #    No pipes anywhere below: `cmd | tail` has produced false PASSes in this
 #    repo twice — capture to a file, check rc, then read the file.
-if ! run_synth compile "$TMP/mix.wat" -o "$TMP/mix.elf" --all-exports \
+# #1640: an explicit target. With no --target the default ISA is A32 and a
+# self-contained image is refused (A32 bodies behind a Cortex-M Thumb startup
+# cannot run); cortex-r5 compiles the same A32 code into an A32 image.
+if ! run_synth compile "$TMP/mix.wat" -o "$TMP/mix.elf" --all-exports --target cortex-r5 \
     > "$TMP/compile.log" 2>&1; then
   echo "FAIL: synth compile failed" >&2
   cat "$TMP/compile.log" >&2

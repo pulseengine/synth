@@ -2512,6 +2512,8 @@ fn compile_command(
         }
         build_riscv_elf(&code, &func_name)?
     } else if cortex_m {
+        // #1640: see `refuse_a32_cortex_m_image`.
+        refuse_a32_cortex_m_image(target_spec)?;
         // #758: the single-function self-contained builder ships no data
         // segments (only the multi-function `--all-exports` path does). Rather
         // than emit an image whose initialized regions silently read zero,
@@ -2536,7 +2538,22 @@ fn compile_command(
             stack_layout,
         )?
     } else {
-        build_simple_elf(&code, &func_name)?
+        // #1645 (the #871/#1017 class): the single-function A32 image holds
+        // ONLY this function, so a direct call has no callee in the image to
+        // patch to — the `bl` would ship as the `ebfffffe` branch-to-self
+        // placeholder. Refuse loudly; the module path patches every call.
+        if !compiled.relocations.is_empty() {
+            anyhow::bail!(
+                "function '{}' carries {} relocation(s) (direct calls), but the \
+                 single-function self-contained A32 image contains only this \
+                 function — the call sites would ship as `bl` to themselves. \
+                 Compile with --all-exports (which places and patches every \
+                 callee) or --relocatable (#1645).",
+                func_name,
+                compiled.relocations.len()
+            );
+        }
+        build_simple_elf(&code, &func_name, target_spec)?
     };
 
     info!("Generated {} byte ELF file", elf_data.len());
@@ -6210,6 +6227,11 @@ fn compile_all_exports(
 
     // Check if any function has relocations (import calls)
     let has_relocations = compiled_funcs.iter().any(|f| !f.relocations.is_empty());
+    // #1645: how many relocations a SELF-CONTAINED builder actually patched in
+    // place. The "resolved in place" summary below prints only when this
+    // equals the relocation total — it used to print whenever relocations
+    // existed, and reported a patch the A32 builder never made.
+    let mut resolved_in_place: usize = 0;
 
     // Every defined function exposes two relocation labels the selector may
     // emit for an internal `call`: its export name and `func_{wasm_index}`.
@@ -6600,6 +6622,9 @@ fn compile_all_exports(
             &all_extra_memory_segments,
         )?
     } else if cortex_m {
+        // #1640: the Cortex-M image (vector table + Thumb Reset_Handler) can
+        // only enter Thumb code — see `refuse_a32_cortex_m_image`.
+        refuse_a32_cortex_m_image(target_spec)?;
         // RQ-89-IMPSIZE (#1584): see `memory0_baked_bytes`.
         memory0_reserved_bytes = memory0_decl
             .as_ref()
@@ -6608,7 +6633,7 @@ fn compile_all_exports(
         // #649: the self-contained image materializes the R9 globals table —
         // startup writes every global's captured init (both words for i64)
         // into RAM just above linear memory and points R9 at it.
-        build_multi_func_cortex_m_elf(
+        let (elf, resolved) = build_multi_func_cortex_m_elf(
             &compiled_funcs,
             // RQ-89-IMPSIZE (#1584): an imported-only module has no DEFINED
             // memory, and the builder's empty-list fallback is ONE page
@@ -6634,9 +6659,15 @@ fn compile_all_exports(
             config.call_indirect_guards.type_ids_byte_offset,
             // #1017: the accepted `(start ...)` function — the startup BLs it.
             accepted_start_function,
-        )?
+        )?;
+        resolved_in_place = resolved;
+        elf
     } else {
-        build_multi_func_simple_elf(&compiled_funcs)?
+        // #1645: the self-contained A32 builder patches every internal
+        // ArmCall `bl` in place (or refuses) and reports how many it patched.
+        let (elf, resolved) = build_multi_func_simple_elf(&compiled_funcs, target_spec)?;
+        resolved_in_place = resolved;
+        elf
     };
 
     info!("Generated {} byte ELF file", elf_data.len());
@@ -6742,6 +6773,14 @@ fn compile_all_exports(
     } else if has_relocations {
         // Standalone executable whose internal `BL func_N` calls were resolved
         // directly (no linker). Report them as patched, not pending (#170).
+        // #1645: only after the builder has patched every one of them.
+        anyhow::ensure!(
+            resolved_in_place == total_relocs,
+            "internal error: {} relocation(s) but the self-contained builder \
+             patched {} — refusing to ship unpatched call sites (#1645)",
+            total_relocs,
+            resolved_in_place
+        );
         println!(
             "  Internal calls: {} resolved in place (standalone executable)",
             total_relocs
@@ -6972,9 +7011,26 @@ fn arm_build_attributes(target: &TargetSpec) -> Section {
     }
 }
 
-fn build_multi_func_simple_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
+/// Self-contained image for a non-Cortex-M ARM target (cortex-r5, A32): the
+/// function bodies at 0x8000, no vector table or startup, `e_entry` = the first
+/// function. Returns the ELF and how many relocations it patched in place.
+///
+/// #1645: every relocation is either PATCHED or REFUSED here — an internal
+/// A32 `bl` (`ArmCall`, placeholder `ebfffffe`) is rewritten to its callee;
+/// any other kind, or a call to a symbol not in the image, is a loud error.
+/// This builder used to ignore `func.relocations`, so every internal call
+/// shipped as a branch-and-link to itself.
+fn build_multi_func_simple_elf(
+    funcs: &[ElfFunction],
+    target: &TargetSpec,
+) -> Result<(Vec<u8>, usize)> {
+    use std::collections::HashMap;
     let base_addr: u32 = 0x8000;
-    let mut elf_builder = ElfBuilder::new_arm32().with_entry(base_addr);
+    // #1640 (the #598 rule, self-contained): A32 bodies carry no Thumb bit on
+    // `e_entry` or on their STT_FUNC values.
+    let mut elf_builder = ElfBuilder::new_arm32()
+        .with_thumb_funcs(target.is_thumb2())
+        .with_entry(base_addr);
 
     // Concatenate all function code
     let mut all_code = Vec::new();
@@ -6987,6 +7043,64 @@ fn build_multi_func_simple_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
         }
         func_offsets.push(all_code.len() as u32);
         all_code.extend_from_slice(&func.code);
+    }
+
+    // #1645: resolve internal calls. A relocation names its callee by export
+    // name or by `func_{wasm_index}` (the labels the selector emits).
+    let mut label_to_addr: HashMap<String, u32> = HashMap::new();
+    for (i, func) in funcs.iter().enumerate() {
+        let addr = base_addr + func_offsets[i];
+        label_to_addr.insert(func.name.clone(), addr);
+        label_to_addr.insert(format!("func_{}", func.wasm_index), addr);
+    }
+    let mut resolved_in_place: usize = 0;
+    for (i, func) in funcs.iter().enumerate() {
+        for reloc in &func.relocations {
+            if !matches!(reloc.kind, synth_core::backend::RelocKind::ArmCall) {
+                anyhow::bail!(
+                    "relocation against '{}' at offset {} in '{}' has kind {:?}, \
+                     which the self-contained A32 builder cannot patch (only \
+                     ArmCall `bl`s) — refusing a silent mis-patch (#1645); \
+                     use --relocatable and link",
+                    reloc.symbol,
+                    reloc.offset,
+                    func.name,
+                    reloc.kind
+                );
+            }
+            let Some(&callee_addr) = label_to_addr.get(reloc.symbol.as_str()) else {
+                anyhow::bail!(
+                    "internal call to '{}' from '{}', which is not in the \
+                     self-contained A32 image — refusing to ship a `bl` to \
+                     itself (#1645)",
+                    reloc.symbol,
+                    func.name
+                );
+            };
+            let pos = (func_offsets[i] + reloc.offset) as usize;
+            let word = all_code
+                .get(pos..pos + 4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+            // The encoder's ArmCall placeholder is `bl .` (imm24 = -2, the -8
+            // addend, #1040). Anything else means the site is not the shape this
+            // patch rewrites — refuse rather than overwrite it.
+            anyhow::ensure!(
+                word == Some(A32_BL_PLACEHOLDER),
+                "ArmCall relocation at offset {} in '{}' does not sit on the \
+                 `bl .` placeholder (found {:x?}) — refusing to patch (#1645)",
+                reloc.offset,
+                func.name,
+                word
+            );
+            let bl_addr = base_addr + func_offsets[i] + reloc.offset;
+            let patched = encode_a32_bl(bl_addr, callee_addr)?;
+            all_code[pos..pos + 4].copy_from_slice(&patched.to_le_bytes());
+            info!(
+                "  patched internal A32 BL at 0x{:08x} -> '{}' 0x{:08x}",
+                bl_addr, reloc.symbol, callee_addr
+            );
+            resolved_in_place += 1;
+        }
     }
 
     let text_section = Section::new(".text", ElfSectionType::ProgBits)
@@ -7009,7 +7123,52 @@ fn build_multi_func_simple_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
         elf_builder.add_symbol(func_sym);
     }
 
-    elf_builder.build().context("ELF generation failed")
+    let elf = elf_builder.build().context("ELF generation failed")?;
+    Ok((elf, resolved_in_place))
+}
+
+/// The A32 encoder's `bl` placeholder for an `ArmCall` relocation: `bl .`,
+/// imm24 = -2 (the REL addend -8 that cancels the +8 pipeline bias, #1040).
+const A32_BL_PLACEHOLDER: u32 = 0xEBFF_FFFE;
+
+/// #1645: encode an A32 `BL` (cond AL) at `bl_addr` that branches to
+/// `target_addr`. A32 reads PC as the instruction address + 8, and imm24 is a
+/// signed WORD offset: `imm24 = (target - (bl_addr + 8)) / 4`, range ±32 MiB.
+/// Both addresses must be word-aligned A32 entries (no Thumb bit).
+fn encode_a32_bl(bl_addr: u32, target_addr: u32) -> Result<u32> {
+    anyhow::ensure!(
+        bl_addr.is_multiple_of(4) && target_addr.is_multiple_of(4),
+        "A32 BL at 0x{bl_addr:08x} -> 0x{target_addr:08x}: both must be \
+         word-aligned (#1645)"
+    );
+    let offset = target_addr as i64 - (bl_addr as i64 + 8);
+    anyhow::ensure!(
+        (-(1i64 << 25)..(1i64 << 25)).contains(&offset),
+        "A32 BL at 0x{bl_addr:08x} -> 0x{target_addr:08x} is out of the ±32 MiB \
+         range (#1645)"
+    );
+    Ok(0xEB00_0000 | (((offset >> 2) as u32) & 0x00FF_FFFF))
+}
+
+/// #1640: the Cortex-M image builders emit an M-profile vector table and a
+/// Thumb `Reset_Handler` that enters the first function with `blx`. An
+/// M-profile core executes ONLY Thumb, so an A32 body (the default no-target
+/// ARM profile is `Arm32`) cannot run in that image on any core: entered with
+/// the Thumb bit it decodes A32 words as Thumb, and a `bx` to an even address
+/// takes an INVSTATE UsageFault. The startup cannot be made correct, so the
+/// combination is refused.
+fn refuse_a32_cortex_m_image(target: &TargetSpec) -> Result<()> {
+    if target.is_thumb2() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "this target's code is A32 (ARM state), but the self-contained image \
+         is a Cortex-M one (M-profile vector table and a Thumb Reset_Handler), \
+         which can only enter Thumb code — the A32 bodies would run in Thumb \
+         state. Choose a Cortex-M target (`--target cortex-m3`, `cortex-m4`, \
+         ...) for a bootable Thumb-2 image, `--target cortex-r5` for an A32 \
+         image, or `--relocatable` to link the A32 object yourself (#1640)."
+    )
 }
 
 /// Build a relocatable ELF object (.o) with undefined symbols and relocations.
@@ -8763,7 +8922,7 @@ fn build_multi_func_cortex_m_elf(
     // whose instantiation step is missing is the silent-drop shape #1046
     // closed. `None` ⇒ byte-identical to before.
     start_function: Option<u32>,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, usize)> {
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
 
@@ -9018,6 +9177,9 @@ fn build_multi_func_cortex_m_elf(
         .any(|r| r.symbol == synth_core::backend::FUNC_TABLE_SYMBOL);
     let func_table_addr = (funcs_base + all_func_code.len() as u32 + 3) & !3;
     let mut func_table_blob: Vec<u8> = Vec::new();
+    // #1645: every relocation below is patched or refused; count the patches
+    // so the driver can check the total before it reports "resolved in place".
+    let mut resolved_in_place: usize = 0;
     {
         use std::collections::HashMap;
         let mut label_to_addr: HashMap<&str, u32> = HashMap::new();
@@ -9127,6 +9289,7 @@ fn build_multi_func_cortex_m_elf(
                         funcs_base + func_offsets[i] + reloc.offset,
                         value
                     );
+                    resolved_in_place += 1;
                     continue;
                 }
                 // Every other relocation on this path is an internal BL call
@@ -9162,6 +9325,7 @@ fn build_multi_func_cortex_m_elf(
                     "  patched internal BL at 0x{:08x} -> '{}' 0x{:08x}",
                     bl_addr, reloc.symbol, callee_addr
                 );
+                resolved_in_place += 1;
             }
         }
     }
@@ -9447,7 +9611,8 @@ fn build_multi_func_cortex_m_elf(
     // #637: target-derived `.ARM.attributes` (appended last; `.text` stays 4).
     elf_builder.add_section(arm_build_attributes(target));
 
-    elf_builder.build().context("ELF generation failed")
+    let elf = elf_builder.build().context("ELF generation failed")?;
+    Ok((elf, resolved_in_place))
 }
 
 /// #637: detect whether an EM_ARM ELF carries Thumb code, so `synth disasm`
@@ -10228,8 +10393,12 @@ fn build_multi_func_aarch64_elf(
 }
 
 /// Build a simple ELF with just the code section (for quick testing)
-fn build_simple_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
-    let mut elf_builder = ElfBuilder::new_arm32().with_entry(0x8000);
+fn build_simple_elf(code: &[u8], func_name: &str, target: &TargetSpec) -> Result<Vec<u8>> {
+    // #1640 (the #598 rule, self-contained): bit 0 of `e_entry` and of an
+    // STT_FUNC value is the Thumb interworking bit — clear for A32 bodies.
+    let mut elf_builder = ElfBuilder::new_arm32()
+        .with_thumb_funcs(target.is_thumb2())
+        .with_entry(0x8000);
 
     let text_section = Section::new(".text", ElfSectionType::ProgBits)
         .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
@@ -12046,17 +12215,112 @@ mod tests {
     fn test_simple_elf_generation() {
         let code = vec![0x00, 0x80, 0x80, 0xe0]; // ADD r0, r0, r1
 
-        let elf_data = build_simple_elf(&code, "simple_func").unwrap();
+        let elf_data = build_simple_elf(&code, "simple_func", &TargetSpec::cortex_r5()).unwrap();
 
         // Verify ELF magic
         assert_eq!(&elf_data[0..4], b"\x7fELF", "Invalid ELF magic");
 
-        // Verify entry point is 0x8000
+        // #1640: the body is A32, so the entry point is the EVEN 0x8000 — the
+        // Thumb bit on an A32 entry would make a loader enter it in Thumb state.
         let entry = u32::from_le_bytes([elf_data[24], elf_data[25], elf_data[26], elf_data[27]]);
+        assert_eq!(entry, 0x8000, "A32 entry point must be even (ARM state)");
+    }
+
+    /// #1645: the A32 `BL` encoder, checked against `arm-none-eabi-as`
+    /// (`bl` at 0x2c -> 0x0, at 0x100 -> 0x10000, at 0x200 -> 0x0, `.arm`).
+    #[test]
+    fn encode_a32_bl_matches_gas_1645() {
+        assert_eq!(encode_a32_bl(0x2c, 0x0).unwrap(), 0xebff_fff3);
+        assert_eq!(encode_a32_bl(0x100, 0x1_0000).unwrap(), 0xeb00_3fbe);
+        assert_eq!(encode_a32_bl(0x200, 0x0).unwrap(), 0xebff_ff7e);
+        // `bl .` is the placeholder itself: target == bl_addr is imm24 = -2.
+        assert_eq!(encode_a32_bl(0x8000, 0x8000).unwrap(), A32_BL_PLACEHOLDER);
+        // ±32 MiB: the last reachable forward target, then one word past it.
         assert_eq!(
-            entry, 0x8001,
-            "Entry point should be 0x8001 (0x8000 | Thumb bit)"
+            encode_a32_bl(0, 8 + 0x01ff_fffc).unwrap(),
+            0xeb7f_ffff,
+            "max forward"
         );
+        assert!(encode_a32_bl(0, 8 + 0x0200_0000).is_err());
+        assert!(encode_a32_bl(2, 0x100).is_err(), "unaligned BL");
+        assert!(encode_a32_bl(0, 0x101).is_err(), "Thumb-bit target");
+    }
+
+    fn a32_func(name: &str, idx: u32, code: Vec<u8>, relocs: &[(u32, &str)]) -> ElfFunction {
+        ElfFunction {
+            name: name.to_string(),
+            debug_name: None,
+            wasm_index: idx,
+            code,
+            relocations: relocs
+                .iter()
+                .map(|(off, sym)| synth_core::backend::CodeRelocation {
+                    offset: *off,
+                    symbol: sym.to_string(),
+                    kind: synth_core::backend::RelocKind::ArmCall,
+                    access_width: None,
+                })
+                .collect(),
+            op_offsets: vec![],
+            line_map: vec![],
+        }
+    }
+
+    /// #1645 + #1640: the self-contained A32 builder patches every internal
+    /// `bl` to its callee (by export name and by `func_N`), reports the count,
+    /// and emits even (ARM-state) `e_entry` and FUNC values.
+    #[test]
+    fn a32_simple_image_patches_calls_and_clears_thumb_bit_1645_1640() {
+        let bx_lr = 0xe12f_ff1eu32.to_le_bytes().to_vec();
+        let mut caller = Vec::new();
+        caller.extend_from_slice(&A32_BL_PLACEHOLDER.to_le_bytes()); // -> func_1
+        caller.extend_from_slice(&A32_BL_PLACEHOLDER.to_le_bytes()); // -> "leaf"
+        caller.extend_from_slice(&bx_lr);
+        let funcs = [
+            a32_func("main", 0, caller, &[(0, "func_1"), (4, "leaf")]),
+            a32_func("leaf", 1, bx_lr.clone(), &[]),
+        ];
+        let (elf, resolved) =
+            build_multi_func_simple_elf(&funcs, &TargetSpec::cortex_r5()).unwrap();
+        assert_eq!(resolved, 2);
+        let entry = u32::from_le_bytes(elf[24..28].try_into().unwrap());
+        assert_eq!(entry, 0x8000, "A32 e_entry must be even");
+        // `.text` at 0x8000: main (12 B), then leaf at 0x800c.
+        let mut text = Vec::new();
+        text.extend_from_slice(&encode_a32_bl(0x8000, 0x800c).unwrap().to_le_bytes());
+        text.extend_from_slice(&encode_a32_bl(0x8004, 0x800c).unwrap().to_le_bytes());
+        text.extend_from_slice(&bx_lr);
+        text.extend_from_slice(&bx_lr);
+        assert!(
+            elf.windows(text.len()).any(|w| w == &text[..]),
+            "patched .text not found in the image"
+        );
+        assert!(
+            !elf.windows(4)
+                .any(|w| w == A32_BL_PLACEHOLDER.to_le_bytes()),
+            "a `bl .` placeholder survived"
+        );
+    }
+
+    /// #1645: anything the A32 builder cannot patch is REFUSED, never shipped:
+    /// a callee absent from the image, a non-ArmCall kind, and a site that is
+    /// not the `bl .` placeholder.
+    #[test]
+    fn a32_simple_image_refuses_unpatchable_relocations_1645() {
+        let r5 = TargetSpec::cortex_r5();
+        let ph = A32_BL_PLACEHOLDER.to_le_bytes().to_vec();
+        let missing = [a32_func("main", 0, ph.clone(), &[(0, "func_9")])];
+        let e = build_multi_func_simple_elf(&missing, &r5).unwrap_err();
+        assert!(e.to_string().contains("not in the"), "{e}");
+
+        let mut wrong_kind = a32_func("main", 0, ph.clone(), &[(0, "main")]);
+        wrong_kind.relocations[0].kind = synth_core::backend::RelocKind::Abs32;
+        let e = build_multi_func_simple_elf(&[wrong_kind], &r5).unwrap_err();
+        assert!(e.to_string().contains("cannot patch"), "{e}");
+
+        let not_placeholder = [a32_func("main", 0, vec![0, 0, 0xa0, 0xe1], &[(0, "main")])];
+        let e = build_multi_func_simple_elf(&not_placeholder, &r5).unwrap_err();
+        assert!(e.to_string().contains("placeholder"), "{e}");
     }
 
     #[test]
