@@ -5,6 +5,172 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.90.0] - 2026-11-07
+
+This release fixes wrong code first. Three classes of silent wrong code are gone: A32 branches,
+calls and entry state; `call_indirect` type identity; and a partial `f64.store` before a trap. In
+each, the compile exited 0 and the program computed something different from wasmtime. Each fix
+was executed against wasmtime before and after, under unicorn; no hardware was run. A fourth
+change adds a trapping mode where none existed: `--safety-bounds software` now bounds-checks
+memory k > 0. **One visible break:** a bare `synth compile x.wat`, with no `--target`, now
+refuses (below); pass `--target cortex-r5` for the same A32 code. Where an input
+is out of scope, it is now refused loudly, and every new refusal is counted below. The spec
+suite now executes its assertions as a required check. The counts cover this repository's
+fixtures and the vendored spec suite; how many real-world modules newly refuse was **not
+measured**, because the 243-module acceptance-ladder corpus was not re-run.
+
+### Wrong code fixed
+
+Every figure is from the delivering PR's own differential against wasmtime. The current form of
+each oracle was re-run on the 0.90.0 release-prep binary through `scripts/oracle_run.py` and
+passed at its declared floor: `a32_control_flow_1639` 905, `a32_image_1645_1640` 54,
+`call_indirect_type_1643` 160, `f64_store_partial_1642` 87 and `memk_bulk_oob_1619` 214.
+
+- **A32 (`--target cortex-r5`, and ARM with no `--target`): branches, calls and entry state
+  were wrong** (#1639, #1641, #1645, #1640). The Thumb-2 Cortex-M targets were not affected.
+  - **Branches** (#1639, #1641). Every A32 branch to a label shipped as a placeholder that
+    jumps one instruction ahead. So `br_if` landed one instruction past itself, a loop back-edge
+    became a forward skip, and `br_table`/`if`/`else` took the wrong arm. Numeric branches were
+    written in Thumb halfword units and read by the A32 encoder as words. A
+    `--safety-bounds software` guard, and the trap guard of every i32 `div_u`/`div_s`/
+    `rem_u`/`rem_s`, therefore branched to itself: a non-zero divisor spun forever. On v0.89.2's
+    code base, 908 of 1471 A32 vectors were wrong or hung; with the fix, 1541 of 1541 passed
+    (PR #1644, base c20d37b2). The oracle now runs 905 emulations, after #1662 dropped its
+    no-target image leg, which is now refused (below).
+  - **Calls** (#1645). A self-contained cortex-r5 image left every internal `bl` unpatched, as
+    a branch-and-link to itself, and still printed "resolved in place". Calls are now patched;
+    any call that cannot be patched is refused. The new oracle was 54 of 54 wrong on the base
+    and is 54 of 54 correct, including a call inside a loop (PR #1662). A call inside a loop in
+    #1644's control-flow oracle hung on 3 of 4 vectors before.
+  - **Entry state** (#1640). A cortex-r5 image marked its entry point and functions as Thumb,
+    so a core entered A32 code in the wrong state. They are now even (ARM state) (PR #1662).
+  - **Workaround for older versions:** build for a Thumb-2 Cortex-M target. There is none on
+    the A32 path.
+- **`call_indirect` ignored WASM 3.0 type identity** (#1643). A function type declared in two
+  different `rec` groups, or at a different depth of a `sub` chain, is a different type, and an
+  indirect call through the wrong one must trap. synth compared types structurally and made the
+  call. The type check now uses canonical type identity and declared subtyping. Where one
+  equality compare cannot be sound, the dispatch refuses loudly. The new oracle runs cortex-m4,
+  cortex-m7dp and AArch64: 95 divergences on the base (87 calls returned a value where wasmtime
+  traps), and after the fix 146 calls match plus 10 expected refusals (PR #1658, base
+  c20d37b2). 12 spec directives that were wrong now pass or refuse. **Workaround for older
+  versions:** none.
+- **An out-of-bounds `f64.store` wrote half its value before trapping** (#1642). This affected
+  cortex-m7dp, the only target that accepts scalar f64, under `--safety-bounds software`. A store
+  that straddled the end of memory wrote its low word, then trapped. The spec requires a
+  trapping store to write nothing. One guard now covers all 8 bytes before either word is
+  written. The new oracle compares the trap and the whole of linear memory: 24 of 87 wrong on
+  the base, 87 of 87 after (PR #1659, base c365a154). `memory_trap.wast` lines 269 and 282
+  now pass. `--safety-bounds none` and `mpu` output is byte-identical. **Workaround for older
+  versions:** none.
+- **New: memory k > 0 can trap out-of-bounds accesses** (#1619). This is a new trapping mode, not a
+  fix of a compile that exited 0. Before this release, no
+  configuration made an out-of-bounds access to a non-default memory trap. Under the default
+  `none` (and `mpu`, which emits the same object), an out-of-bounds `memory.fill`/`memory.copy`
+  wrote the in-bounds bytes and then past memory k's end, where wasmtime traps. `software` and
+  `mask` refused every memory-k op. Now `--safety-bounds software` checks each memory-k
+  load, store, fill and copy against that memory's own size, `__synth_mem_size_k`, and a bulk op
+  checks every side's whole range before it writes a byte. The new oracle, over three memories
+  of three sizes, passes 214 of 214; on the base both software legs refused to compile (PR #1660,
+  base c20d37b2). Under `software`, 261 functions newly compile and 7 spec files go from rc 1 to
+  rc 0; their directives were run against wasmtime, and 274 `assert_return` and 177
+  `assert_trap` pass. `none` and `mpu` are unchanged and still do not trap on memory k.
+  **Workaround for older versions:** none existed.
+
+### New loud refusals
+
+- **No-target self-contained ARM images** (#1640, the maintainer's decision). With no `--target`
+  and no `--cortex-m`, ARM code is A32 but the image builder is the Cortex-M one, and no core can
+  run the result. It is now refused, and the error names three alternatives: a Cortex-M target,
+  `--target cortex-r5`, or `--relocatable`. **312** no-target self-contained compiles over 268
+  tracked `.wat`/`.wasm` files newly refuse (133 `--all-exports`, 179 `--func-name`); the default
+  `synth compile x.wat` is one of them. Every one of those images was unrunnable before. In-repo
+  callers (the release smoke script, two verify tests, the wsc e2e script, the README) moved to
+  `--target cortex-r5`. Source: PR #1662.
+- **cortex-r5 single-function compiles of a function that makes a call** (#1645): **48** newly
+  refuse, because one function cannot hold its callee; use `--all-exports`. Source: PR #1662.
+- **`call_indirect` where one compare cannot be sound** (#1643): `run` in `type-rec.wast`'s
+  modules at lines 179 and 188 on ARM, and `run` at `type-subtyping.wast` line 318 on AArch64.
+  2 spec directives per leg moved from executed-and-wrong to a named refusal. Source: PR #1658.
+- **`--native-pointer-abi`: an access whose bytes span two data regions** (#1604). It used to
+  read or write the wrong region: `i32.const 0x1ffe i32.load` returned 0 where wasmtime returns
+  `0x32310000`. **0** gale-shaped fixtures newly refuse; over the repo corpus (581 inputs, 1162
+  cells), 2 cells moved, both in one function that was already refused. The oracle: 88 of 88
+  calls equal and 255 of 255 refusals, against 0 of 255 refused on the base 175af4f3. Source:
+  PR #1664.
+- **`--native-pointer-abi`: a dynamic access whose offset lands in the static region** (#1568
+  shape 2), in a module with no stack-pointer global. It used to fault where wasmtime returns
+  `0x44332211`. The whole module is now refused with `npa-dynamic-static-offset (#1568)`.
+  **0** inputs newly refuse over the repo (241), spec (257) and gale-shaped (49) populations.
+  Source: PR #1667.
+
+Nothing newly refuses from #1639/#1641 (PR #1644's census), #1642 (PR #1659) or #1619
+(PR #1660).
+
+### Verification you can see
+
+- **The spec suite executes** (#1636). A new job runs every top-level `assert_return` and
+  `assert_trap` of the 257 spec files on cortex-m4 (default bounds) and cortex-m7dp
+  (`--safety-bounds software`) and checks each result against the `.wast` file's expected value.
+  Every one of the 57,588 directives is counted as pass, fail or not-representable with a named
+  reason. At this release it executes 11,634 directives on cortex-m4 and 24,042 on cortex-m7dp.
+  The 53 that still fail are pinned exactly: all are the #539 fixed-memory `memory.grow`
+  envelope. `spec-suite execution (#1636)` is now one of main's 10 required checks. The job found
+  #1643 and #1642, both above. Sources: PRs #1638, #1669, #1670; counts from the runner as
+  re-run in PRs #1659 and #1667.
+- **The falcon harness is committed** (#1318). `scripts/repro/falcon_exec_1318.py` re-derives the
+  reporter's module result from the tree: 2204 of 2204 calls match wasmtime (`configure` 42 of
+  42, `cabi_realloc` 60 of 60, `step` 1000 of 1000 on a garbage machine and on a zeroed one).
+  Controls built at d4c0b232 and ce348045 fail. It is not run in CI: the reporter's module is
+  not vendored and each fetch needs the maintainer's approval. Source: PR #1663.
+
+### Gates and tooling
+
+- `recurring_na_filing_check --self-test` now exercises the patch-release key; two mutants it
+  missed now red it (#1653, PR #1666).
+- `issue_closure_check` given a tag that does not exist prints one `REFUSED` line and exits 2,
+  where it used to print a traceback (#1655, PR #1666).
+- An open issue whose delivering record arrived after its release's tag, so no audit authorised
+  it, now fails the closure gate as `DELIVERED BUT NO AUDIT AUTHORISES IT` (#1611, PR #1668).
+- Two shipped fixes gained tests that go red when the fix is undone: the memory-k i64 local
+  shape (#1654) and the Thumb-2 estimator landing check (#1656) (PR #1665).
+- `ci_pool_tripwire` and `runner_redundancy_check` resolve required contexts across every
+  workflow (PRs #1669, #1670).
+
+### Known gaps
+
+- **#1604 and #1568 stay open.** Not caught: a run-time base whose offset is not relocated; a
+  bulk access with a non-constant length; a constant reached through arithmetic or through a
+  local with a non-constant definition; an offset below the first segment whose base carries the
+  access into the statics; a module with no data segments; and, with a stack-pointer global, a
+  dynamic offset into data below its init. Sources: PRs #1664, #1667.
+- **Self-contained cortex-r5 images ship `.text` only.** Active data segments and global
+  initialisers are silently dropped, and no startup sets SP, R9 or R11. Found in PR #1662;
+  no issue is filed.
+- **`--target cortex-m3 --func-name` on a function that calls another still ships a `bl` to
+  itself** and exits 0, the Thumb twin of #1645. Found in PR #1662; no issue is filed.
+- **Under `--native-pointer-abi --safety-bounds software`, an in-bounds memory-0 `memory.fill`
+  or `memory.copy` traps** (#1661, open). This predates v0.90 (PR #1660).
+- The A32 path does not run the Thumb-2 estimator landing check. An estimator drift there would
+  be mis-retargeted rather than refused; PR #1644 measured 0 occurrences over the corpus.
+- **npm is still at 0.69.0** (#1460). On 2026-11-07, 0.89.0, 0.89.2 and 0.90.0 return 404. The
+  last publish attempt (run 42084323724) failed with `E403 E_STAGE_REQUIRED`: the token can
+  only publish to a staging area. Carried to v0.91.
+- The architecture-model step (#1136) is filed for v0.90 and was not performed; spar#445 is
+  still open.
+
+### Compliance envelope
+
+The default is unchanged: with `--safety-bounds none` synth emits no out-of-bounds trap, and
+`--safety-bounds mpu` traps nothing from synth (it is accepted only on an ARM `--relocatable`
+object with `--embedder-mpu`). What changed is under `--safety-bounds software` only: memory k >
+0 is now bounds-checked (#1619), and an out-of-bounds `f64.store` writes nothing before it traps
+(#1642). `--safety-bounds mask` still refuses every memory-k access. Required checks: the
+maintainer kept the required set as it is (#1573). `scripts/merge_ritual.sh` refuses a merge
+while any non-advisory check is red, but GitHub does not block a merge made outside it. Of 27
+wrong-code scripts, 1 runs in a required context, 25 run in ci.yml jobs that are not required,
+and 1 (the falcon harness) runs in no workflow.
+
 ## [0.89.2] - 2026-11-05
 
 A patch release for two silent wrong-code defects on the Cortex-M path. In both, the compile
