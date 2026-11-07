@@ -76,6 +76,23 @@ def parse_version(release: str) -> tuple:
     return key
 
 
+class TagUnresolved(Exception):
+    """A window edge (`--since-tag` / `--until-tag`) that does not resolve.
+
+    RQ-90-ICCTRACE (#1655). `tag_commit_date` ran `gh api` with `check=True`,
+    so a tag that does not exist yet — `--release v0.89.2 --since-tag v0.89.1`
+    run before v0.89.1 was tagged — died in an uncaught CalledProcessError
+    traceback (MEASURED on f28f29b0: `--release v0.90 --since-tag v0.90.0` ->
+    rc 1, one `Traceback`). A missing window anchor is a REFUSAL with a named
+    reason, not a crash and not an empty population.
+    """
+
+    def __init__(self, tag: str, reason: str):
+        super().__init__(f"{tag}: {reason}")
+        self.tag = tag
+        self.reason = reason
+
+
 def tag_commit_date(tag: str, repo: str) -> str:
     """`tag`'s commit date, ISO8601. Split out so the window has two edges.
 
@@ -83,11 +100,27 @@ def tag_commit_date(tag: str, repo: str) -> str:
     documented in `closed_since`: every synth release tag is annotated, so
     `git/refs/tags/<tag>.object.sha` is the TAG OBJECT's sha and feeding it to
     `commits/<sha>` answers 422.
+
+    Raises TagUnresolved (RQ-90-ICCTRACE, #1655) when the lookup fails OR
+    answers an empty date: an empty date would build `closed:>=`, a window with
+    no lower edge, which is the too-wide window this function exists to bound.
+    `returncode` is read explicitly rather than via `check=True`, so the refusal
+    does not depend on which exception class the caller's subprocess raises.
     """
-    return subprocess.run(
+    r = subprocess.run(
         ["gh", "api", f"repos/{repo}/commits/{tag}", "--jq",
          ".commit.committer.date"],
-        capture_output=True, text=True, check=True).stdout.strip()
+        capture_output=True, text=True)
+    date = (r.stdout or "").strip()
+    if r.returncode != 0:
+        why = next((ln.strip() for ln in (r.stderr or "").splitlines()
+                    if ln.strip()), "no stderr")
+        raise TagUnresolved(tag, f"`gh api repos/{repo}/commits/{tag}` exited "
+                                 f"{r.returncode} ({why})")
+    if not date:
+        raise TagUnresolved(tag, f"`gh api repos/{repo}/commits/{tag}` answered "
+                                 f"no commit date")
+    return date
 
 
 def next_release_tag(tag: str, repo: str) -> str | None:
@@ -795,7 +828,15 @@ def main() -> int:
         elif until.lower() == "none":
             until = None
         print(f"  window: [{args.since_tag}, {until or 'now'})")
-        closed = closed_since(args.since_tag, args.repo, until)
+        try:
+            closed = closed_since(args.since_tag, args.repo, until)
+        except TagUnresolved as e:
+            # RQ-90-ICCTRACE (#1655): ONE named line and exit 2 ("the gate could
+            # not run", the RQ-76-CLOSUREMAIN distinction), never a traceback.
+            print(f"REFUSED: window tag {e.tag!r} does not resolve — "
+                  f"{e.reason}. A window with no edge is not an empty "
+                  f"close-set; re-run once {e.tag} is tagged.")
+            return 2
     # #1608: only the LIVE window asks why an issue closed. `--closed` (offline)
     # passes no reasons, so every unauthorised closure stays a failure there.
     not_planned = (not_planned_closures(closed, args.repo)

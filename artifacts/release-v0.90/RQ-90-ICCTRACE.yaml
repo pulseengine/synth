@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-ICCTRACE
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "issue_closure_check refuses a missing --since-tag with a message, not a traceback"
     description: >
         The v0.89.1 cold review found `issue_closure_check.py` crashes with an
@@ -35,6 +35,25 @@ artifacts:
       issue: "#1655"
       verification-track: manual
       issue-scope: closes
+      landed: "PR #1666 - #1655 - DELIVERED. The refuting command was RUN FIRST, on main f28f29b0, and CONFIRMED the record: `python3 scripts/issue_closure_check.py --release v0.90 --since-tag v0.90.0 --allow-unclosed` exits 1 with one Python traceback ending in subprocess.CalledProcessError for `gh api repos/pulseengine/synth/commits/v0.90.0`. Fix, in scripts/issue_closure_check.py: tag_commit_date reads returncode explicitly and raises TagUnresolved, naming the tag and gh's first stderr line, when the lookup fails or answers an empty date (an empty date would have built `closed:>=`, a window with no lower edge); main() turns that into ONE line, `REFUSED: window tag 'v0.90.0' does not resolve - ... (gh: No commit found for SHA: v0.90.0 (HTTP 422)) ...`, and exit 2, the script's existing code for a gate that could not run. The same path covers --until-tag, run live: `--release v0.89.2 --since-tag v0.89.1 --until-tag v9.99.0 --allow-unclosed` prints one REFUSED line naming v9.99.0 and exits 2."
+      verified-by: >
+        DELIVERED, test-verified. New missing_since_tag_tests in
+        scripts/test_issue_closure_check.py drives main() offline with a
+        recorded gh answer (commits/v0.90.0 exits 1 with the real HTTP 422
+        text) and asserts no exception escapes main(), rc 2, exactly one
+        REFUSED line naming the tag and carrying gh's reason, and no judgement
+        after it; a sixth case asserts an empty commit date is refused. RED on
+        f28f29b0's script (the branch test run in a git archive of f28f29b0):
+        6 of 6 ICCTRACE cases fail, rc 1 - the old script falls through to an
+        unrecorded `gh issue list --search closed:>=`. GREEN on the branch:
+        issue-closure-tests 0 failures. Live, the refuting command now prints
+        the one REFUSED line and exits 2, no traceback. Every other
+        issue_closure_check invocation on real input (v0.89.2 --since-tag
+        v0.89.1 with and without --allow-unclosed, v0.90 --since-tag v0.89.2,
+        the CI --from-anchor --require-state run) printed byte-identical
+        output on f28f29b0's script and the branch's, measured before these
+        records changed; the records then move v0.90's authorised set from 2
+        to 4 on purpose. No pin moved.
       done-when: >
         manual:2027-03-31 a missing --since-tag is refused with a message
         naming the tag and a non-zero exit, with a test for it — delivered

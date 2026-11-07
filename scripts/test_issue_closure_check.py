@@ -195,7 +195,8 @@ class _CwRecorder:
         rc, out = self.table[key]
         import subprocess as _sp
         return _sp.CompletedProcess(args=list(args), returncode=rc,
-                                    stdout=out, stderr="")
+                                    stdout=out,
+                                    stderr=getattr(self, "stderr", ""))
 
 
 def _cw_table():
@@ -660,6 +661,77 @@ def closed_since_tests() -> None:
         check("closed_since recorder: an unrecorded call raises", True)
 
 
+def missing_since_tag_tests() -> None:
+    """RQ-90-ICCTRACE (#1655): a --since-tag that does not exist is REFUSED.
+
+    MEASURED on f28f29b0: `--release v0.90 --since-tag v0.90.0` died with an
+    uncaught CalledProcessError traceback, rc 1. Driven through `main()` with a
+    RECORDED `gh` answer (the real 422 text), offline: the commits lookup exits
+    1. The fixed gate refuses with exit 2 and ONE line naming the tag. The old
+    gate either raises out of `main()` (live: CalledProcessError) or, under this
+    recorder, falls through to an unrecorded `gh issue list` — both are caught
+    here and reported as a FAIL, so the red half is a red, not a crash.
+    `--until-tag none` keeps `next_release_tag` out of the call set.
+    """
+    import contextlib
+    import io
+    import types
+
+    tag = "v0.90.0"
+    table = {
+        ("gh", "api", f"repos/{CW_REPO}/commits/{tag}",
+         "--jq", ".commit.committer.date"):
+            (1, ""),
+    }
+    rec = _CwRecorder(table)
+    rec.stderr = f"gh: No commit found for SHA: {tag} (HTTP 422)"
+    buf = io.StringIO()
+    orig_argv, orig_sp = sys.argv, C.subprocess
+    sys.argv = ["issue_closure_check.py", "--release", "v0.90",
+                "--root", str(pathlib.Path(__file__).resolve().parents[1]),
+                "--repo", CW_REPO, "--since-tag", tag, "--until-tag", "none",
+                "--open", "1", "--allow-unclosed"]
+    C.subprocess = types.SimpleNamespace(run=rec)
+    escaped = None
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = C.main()
+    except SystemExit as ex:
+        rc = ex.code if isinstance(ex.code, int) else 1
+    except Exception as ex:  # the #1655 shape: an exception escapes main()
+        rc, escaped = None, f"{type(ex).__name__}: {ex}"
+    finally:
+        sys.argv, C.subprocess = orig_argv, orig_sp
+    out = buf.getvalue()
+    refusals = [ln for ln in out.splitlines() if ln.startswith("REFUSED")]
+    check("ICCTRACE: a missing --since-tag does not escape main() as an exception",
+          escaped is None, f"- {escaped}")
+    check("ICCTRACE: ...it exits non-zero with the refusal code 2", rc == 2,
+          f"- rc={rc}")
+    check("ICCTRACE: ...in exactly ONE REFUSED line naming the tag",
+          len(refusals) == 1 and tag in refusals[0], f"- {refusals}")
+    check("ICCTRACE: ...carrying gh's own reason, not discarding it",
+          bool(refusals) and "HTTP 422" in refusals[0], f"- {refusals}")
+    check("ICCTRACE: ...and judges nothing after refusing",
+          "issue-closure:" not in out and len(rec.calls) == 1,
+          f"- calls={rec.calls}")
+
+    # An EMPTY date with rc 0 is refused too: it would build `closed:>=`, a
+    # window with no lower edge (the base script's fall-through above shows it).
+    empty = _CwRecorder({("gh", "api", f"repos/{CW_REPO}/commits/{tag}",
+                          "--jq", ".commit.committer.date"): (0, "")})
+    C.subprocess = types.SimpleNamespace(run=empty)
+    try:
+        C.tag_commit_date(tag, CW_REPO)
+        got = "returned"
+    except Exception as ex:
+        got = type(ex).__name__
+    finally:
+        C.subprocess = orig_sp
+    check("ICCTRACE: an EMPTY commit date is refused, not used as a window edge",
+          got == "TagUnresolved", f"- {got}")
+
+
 def main_exit_code_tests() -> None:
     """RQ-76-CLOSUREMAIN (#1404): drive `main()` and assert its EXIT CODE.
 
@@ -718,6 +790,7 @@ def main_exit_code_tests() -> None:
 
 def main() -> int:
     main_exit_code_tests()
+    missing_since_tag_tests()
 
     # ---- the authorised set is derived, not declared -----------------------
     delivered = art("RQ-71-A", "implemented", "#100")

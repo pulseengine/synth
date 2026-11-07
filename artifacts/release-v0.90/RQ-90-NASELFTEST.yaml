@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-90-NASELFTEST
     type: system-req
     release: v0.90
-    status: proposed
+    status: implemented
     title: "The recurring-filing check's self-test exercises the patch-release key"
     description: >
         The v0.89.1 cold review (G10) found `recurring_na_filing_check.py
@@ -45,6 +45,32 @@ artifacts:
       issue: "#1653"
       verification-track: manual
       issue-scope: closes
+      landed: "PR #1666 - #1653 - DELIVERED. The refuting command was RUN FIRST, on main f28f29b0 with the v0.90 records present, and CONFIRMED the record: unmutated the self-test is rc 0 (6 ok); under the release_key fold (`if p == 0:` -> `if True:` in scripts/status_evidence_check.py) it is rc 1 with 3 FAIL lines, every one a live-tree case (the derived anchor folds); under the local truncation (`rel.add(key)` -> `rel.add(key[:2])` in releases_in) it is rc 0 with 0 FAIL lines, and the live check is rc 0 too, because the live cut v0.90 is a minor and carries no patch key for the truncation to drop. Fix, in scripts/recurring_na_filing_check.py only: release_under_cut and check take an optional anchor (default ANCHOR_TAG, so every live caller is unchanged), and the self-test gains an OFFLINE patch fixture - a synthetic v0.89.1 filing tagged feature-loop + aadl under a pinned anchor v0.89.0 - asserting the derived cut is exactly v0.89.1 and that the filing discharges it. scripts/status_evidence_check.py is not modified."
+      verified-by: >
+        DELIVERED, mutant-verified. Each key mutant the review named was applied
+        to the working tree in turn with the fixture present: the release_key
+        fold reds the self-test (rc 1) with 5 FAIL lines, 2 of them the new
+        PATCH FIXTURE cases (derived 'v0.89' instead of 'v0.89.1'; the v0.89.1
+        filing reported stale); the local [:2] truncation reds it (rc 1) with
+        exactly 2 FAIL lines, BOTH PATCH FIXTURE cases (anchor+1 says v0.90
+        while the tree max says v0.89, ambiguous) and no live-tree case, so the
+        catch no longer depends on where the live anchor stands. After each
+        revert both files compared byte-identical by cmp with the pre-mutant
+        copies, and the self-test was rc 0 again (8 ok). Verdict identity on
+        real input, f28f29b0's scripts against the branch's in the same tree:
+        recurring_na_filing_check live, status_evidence_check (whole tree, and
+        with --release-glob scoped to release-v0.89.2 and to release-v0.90) and
+        issue_closure_check for v0.89.2 (--since-tag v0.89.1, with and without
+        --allow-unclosed), for v0.90 (--since-tag v0.89.2) and the CI
+        --from-anchor invocation all printed byte-identical output; the only
+        differences are the self-test's two added ok lines and the intended
+        RQ-90-ICCTRACE refusal. No pin moved: the step carries no ci-checks
+        floor and claims.yaml pins neither script.
+        That identity was measured with the records unchanged. These two
+        records, marked implemented with issue-scope closes, then move v0.90's
+        authorised set from 2 to 4 (#1639 #1641 -> + #1653 #1655), on
+        purpose; the CI issue-scope, status-evidence and --from-anchor
+        --require-state steps, run whole with their grep pins, stay rc 0.
       done-when: >
         manual:2027-03-31 the self-test carries a patch-release case, and each
         key mutant the review named turns it red, executed and recorded —
