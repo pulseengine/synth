@@ -79,7 +79,7 @@ def extract_wait_loop(text: str) -> str:
 
 
 def run_loop(loop: str, max_wait: str, pending: str,
-             present: str = "9") -> tuple[int, str]:
+             present: str = "10") -> tuple[int, str]:
     """Execute the SHIPPED loop with a stub `gh`.
 
     `present` is the first field the loop's own jq produces (how many non-advisory
@@ -106,7 +106,7 @@ def run_loop(loop: str, max_wait: str, pending: str,
         script.write_text(
             "set -uo pipefail\n"
             f'export PATH="{bindir}:$PATH"\n'
-            'PR=1; REPO=x/y; FLOOR=9\n'
+            'PR=1; REPO=x/y; FLOOR=10\n'
             f'MAX_WAIT_MIN={max_wait}\nWAITED=0\n'
             + loop
             + '\necho "LOOP-EXITED-NORMALLY"\n'
@@ -144,7 +144,7 @@ def main() -> int:
        "population is met and nothing is pending",
        rc_ok == 0 and "LOOP-EXITED-NORMALLY" in out_ok)
     # THE POPULATION FLOOR, tested by varying the POPULATION. Nothing pending, but
-    # only 3 of the 9 required checks present: "nothing is pending" is also true of
+    # only 3 of the 10 required checks present: "nothing is pending" is also true of
     # a PR whose checks have not registered, which is the #1407 defect the floor
     # exists to catch. It must NOT settle.
     #

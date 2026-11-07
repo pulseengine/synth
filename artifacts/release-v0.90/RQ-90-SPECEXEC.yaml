@@ -37,7 +37,7 @@ artifacts:
       priority: should
       issue: "#1636"
       verification-track: manual
-      issue-scope: outlives
+      issue-scope: closes
       landed: "PR #1638 - #1636 - DELIVERED, the execution gate. scripts/repro/spec_exec_1636_differential.py is wired as the spec-suite.yml job `spec-suite execution (#1636)`. It accounts for all 57588 top-level assert_return/assert_trap directives of the 257 spec files on cortex-m4 (default bounds) and cortex-m7dp (--safety-bounds software). Each directive is a pass, a fail, or not-representable with a named reason, and the accounted positions must equal an independent per-file census as a SET. synth-test stats (the Rust wast crate) re-counts assert_return per file and agrees on 256 files; it cannot parse names.wast. Executed 11636 on cortex-m4 and 24044 on cortex-m7dp. The 67 failing directives are pinned in KNOWN by (leg, file, line, col, outcome). 53 are the #539 fixed-SRAM grow envelope and 14 are new wrong code: #1643 (12, call_indirect type-mismatch traps missing under iso-recursive or subtyped function types) and #1642 (2, reads after an f64.store that wrote its low word before its high-word bounds guard trapped). KNOWN joins known_open_pin_tables. On the tree rebased onto main f28f29b0: known_open_pins 78 -> 145 with a waiver, known_open_pinned_cases 144 -> 211, the KNOWN/PINNED population 12 -> 13, and the exact emulation floor rises by this oracle's declared 49125. No compiler code changed."
       verified-by: >
         DELIVERED, the execution gate. On the tree rebased onto main f28f29b0
@@ -62,19 +62,23 @@ artifacts:
         PAIRED CONTROLS on the rebased tree and on main f28f29b0, for the
         exact emulation floor and for known_open_pins / known_open_pinned_cases,
         are recorded in the PR #1638 body.
-        NOT DONE, and the reason the issue outlives this artifact: #1636's last
-        acceptance criterion, making the context required, is the maintainer's
-        branch-protection decision. ci_pool_tripwire.py's REQUIRED_CONTEXTS
-        deadlock guard read ci.yml only; the follow-up change "ci_pool_tripwire
-        resolves required contexts across every workflow" teaches it every file
-        under .github/workflows/ and pins this context in a separate
-        PENDING_REQUIRED_CONTEXTS list. REQUIRED_CONTEXTS stays equal to live
-        protection, because merge_gate.py's CHECK1 compares it with the API by
-        name. A pending context gets the full deadlock guard, so one defined in
-        no workflow fails DEADLOCK. CHECK1 accepts protection with or without
-        it and, once protection lists it, requires it SUCCESS. The drift
-        cross-check fails PROMOTE once protection carries it. The pool-share
-        ceiling still counts ci.yml only.
+        REQUIRED, the criterion this record held open: #1636's last
+        acceptance criterion, making the context required, was the maintainer's
+        branch-protection decision, and it is made. On 2026-11-07 protection on
+        main lists 10 contexts, the tenth being `spec-suite execution (#1636)`.
+        PR #1669 taught ci_pool_tripwire.py's deadlock guard to resolve
+        contexts across every file under .github/workflows/ and carried the
+        context as PENDING_REQUIRED_CONTEXTS. Once protection listed it, the
+        live tripwire failed PROMOTE on main 175af4f3. The promotion moves it into
+        REQUIRED_CONTEXTS, leaves PENDING empty, and makes
+        runner_redundancy_check.py import that list instead of keeping its own
+        copy of nine, which it resolved in ci.yml only. A required context
+        defined in no workflow still fails DEADLOCK in both scripts.
+        With that, all four of #1636's acceptance criteria are met: directives
+        executed on the emulated path, an exact ratchet baseline, an executed
+        count asserted non-zero, and the context required. issue-scope is
+        therefore `closes`.
+        RESIDUALS, disclosed for a follow-up, and not #1636 acceptance criteria:
         RV32 and AArch64 legs are not built. call.wast's module at line 3 is
         refused whole on cortex-m7dp (#1102), so its float directives execute
         on no leg. Default-bounds float memory accesses execute on no leg.

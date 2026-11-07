@@ -90,7 +90,7 @@ MERGED = "cccccccc11112222333344445555666677778888"
 REQUIRED = [
     "Format", "Clippy", "Test", "Z3 Verification", "Claim Check",
     "Version Pin Sweep", "Bazel Build & Proofs", "Kani Verification",
-    "Rivet Validation",
+    "Rivet Validation", "spec-suite execution (#1636)",
 ]
 
 
@@ -535,8 +535,12 @@ def main() -> int:
     # Branch protection gains a context that is PENDING in the pin. The merge
     # must still go through when that check ran green, and must not when it
     # did not — and a context in neither list must still be refused.
-    pend = list(merge_gate.PENDING_REQUIRED_CONTEXTS)
-    check("pending: the pin carries a pending context to drive",
+    # EMPTY between promotions: drive the window with a recorded pending name,
+    # filled IN PLACE into the list decide() reads, and restored after.
+    saved_pend = list(merge_gate.PENDING_REQUIRED_CONTEXTS)
+    pend = saved_pend or ["Pending fixture context (callsite)"]
+    merge_gate.PENDING_REQUIRED_CONTEXTS[:] = pend
+    check("pending: there is a pending context to drive",
           bool(pend) and not set(pend) & set(REQUIRED), f"pending={pend}")
     green_p = rollup(**{p: "SUCCESS" for p in pend})
     rc, out, rec = run_main(["--pr", PR], main_table(green_p, contract=REQUIRED + pend))
@@ -546,6 +550,16 @@ def main() -> int:
     check("main: protection carries the PENDING context, it never ran -> GATEFAIL",
           rc == 1 and "GATEFAIL" in out and pend[0] in out,
           f"rc={rc} out={out[:300]!r}")
+    merge_gate.PENDING_REQUIRED_CONTEXTS[:] = saved_pend
+    if not saved_pend:
+        rc, out, rec = run_main(["--pr", PR], main_table(green_p, contract=REQUIRED + pend))
+        check("main: with PENDING empty, that same green context -> GATEFAIL",
+              rc == 1 and "GATEFAIL" in out, f"rc={rc} out={out[:300]!r}")
+    # The pin itself must equal what this file records as protection: the
+    # recorded REQUIRED above is the API answer every case here replays.
+    check("pin: the recorded protection list equals REQUIRED_CONTEXTS",
+          sorted(REQUIRED) == sorted(merge_gate.REQUIRED_CONTEXTS),
+          f"recorded={sorted(REQUIRED)} pin={sorted(merge_gate.REQUIRED_CONTEXTS)}")
     # The tolerance is BY NAME: a context in neither list stays refused even
     # when its check ran GREEN. (The EXTRA-context case above leaves it out of
     # the rollup, so `missing` refuses it and CHECK1's upper bound is never the
