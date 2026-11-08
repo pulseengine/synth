@@ -2210,6 +2210,10 @@ fn compile_command(
                 file_bytes
             };
 
+            // RQ-91-COMPEXPORTS (#1191): refuse a component BEFORE loom and
+            // arena_bind read the bytes, so the refusal is what the user sees.
+            synth_core::refuse_component_encoding(&wasm_bytes)?;
+
             // Run Loom WASM optimizer if --loom is enabled
             let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;
 
@@ -4622,6 +4626,7 @@ fn compile_all_exports(
         let mut merged_type_arg_counts: Vec<u32> = Vec::new();
 
         for (idx, wasm_bytes) in module_binaries.iter().enumerate() {
+            synth_core::refuse_component_encoding(wasm_bytes)?; // #1191
             // Run Loom optimizer on each module if --loom is enabled
             let wasm_bytes = maybe_run_loom(loom, wasm_bytes.clone())?;
             // First decoded module is the SBOM default; refined below to
@@ -4854,6 +4859,10 @@ fn compile_all_exports(
         } else {
             file_bytes
         };
+
+        // RQ-91-COMPEXPORTS (#1191): refuse a component BEFORE loom and
+        // arena_bind read the bytes, so the refusal is what the user sees.
+        synth_core::refuse_component_encoding(&wasm_bytes)?;
 
         // Run Loom optimizer if --loom is enabled
         let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;

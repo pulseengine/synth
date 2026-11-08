@@ -1054,7 +1054,37 @@ pub fn canonicalize_types(
 }
 
 /// Decode a WASM binary and extract functions, memory, and data segments
+/// RQ-91-COMPEXPORTS (#1191): refuse a WebAssembly COMPONENT (binary
+/// layer one) loudly. synth lowers core modules only, and both decode functions walk
+/// the input with `Parser::parse_all`, which descends into every nested core
+/// module of a component and concatenates them into ONE function/import/
+/// export index space. The result was accepted with exit 0 on every backend
+/// and mode: an object exporting a component's INTERNAL interfaces, omitting
+/// the ones it declares, leaving internal wiring as undefined symbols, and —
+/// once two modules' indices collide — binding an export name to the WRONG
+/// function body (measured: `g` returns 2 where wasmtime's component runtime
+/// returns 101). Canonical-ABI options (string encoding, realloc,
+/// post-return) are never honoured either, so no component is refused
+/// selectively: the supported route is to fuse it into a core module first.
+pub fn refuse_component_encoding(wasm_bytes: &[u8]) -> Result<()> {
+    if Parser::is_component(wasm_bytes) {
+        anyhow::bail!(
+            "input is a WebAssembly COMPONENT (component-model binary, layer 1), \
+             not a core module: synth lowers core modules only. Decoding a \
+             component as one module merges its nested core modules' index \
+             spaces — the object would export the component's internal \
+             interfaces instead of the ones it declares, leave internal wiring \
+             as undefined symbols, and can bind an export to the wrong function \
+             body; refusing (#1191). Fuse the component into a single core \
+             module first (`meld fuse <component.wasm> -o fused.wasm`) and \
+             compile that."
+        );
+    }
+    Ok(())
+}
+
 pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
+    refuse_component_encoding(wasm_bytes)?;
     let mut functions = Vec::new();
     let mut memories = Vec::new();
     let mut imported_memories: Vec<WasmMemory> = Vec::new();
@@ -1869,6 +1899,7 @@ fn apply_name_section(functions: &mut [FunctionOps], names: &HashMap<u32, String
 
 /// Decode a WASM binary and extract all function bodies as WasmOp sequences
 pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
+    refuse_component_encoding(wasm_bytes)?;
     let mut functions = Vec::new();
     let mut func_index = 0u32;
     let mut num_imported_funcs = 0u32;
@@ -3046,6 +3077,59 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
 
 #[cfg(test)]
 mod tests {
+
+    // RQ-91-COMPEXPORTS (#1191): shape 4 of the lane's oracle — two core
+    // modules in one component. Before the refusal, the flattened decode
+    // named the body `i32.const 2` as `g` (wasmtime: g() = 101).
+    const COMPONENT_1191: &str = r#"(component
+      (core module $A (func (export "f") (result i32) i32.const 1))
+      (core module $B
+        (import "x" "f" (func $f (result i32)))
+        (func (result i32) i32.const 2)
+        (func (export "g") (result i32) call $f i32.const 100 i32.add))
+      (core instance $a (instantiate $A))
+      (core instance $b (instantiate $B (with "x" (instance $a))))
+      (func $g (result u32) (canon lift (core func $b "g")))
+      (export "g" (func $g)))"#;
+
+    #[test]
+    fn component_1191_refused_by_decode_wasm_module() {
+        let wasm = wat::parse_str(COMPONENT_1191).expect("component parses");
+        let err = decode_wasm_module(&wasm).expect_err("a component must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("WebAssembly COMPONENT"), "{msg}");
+        assert!(msg.contains("#1191"), "{msg}");
+        assert!(msg.contains("meld fuse"), "{msg}");
+    }
+
+    #[test]
+    fn component_1191_refused_by_decode_wasm_functions() {
+        let wasm = wat::parse_str(COMPONENT_1191).expect("component parses");
+        let err = decode_wasm_functions(&wasm).expect_err("a component must be refused");
+        assert!(format!("{err:#}").contains("#1191"));
+    }
+
+    #[test]
+    fn component_1191_core_module_twin_still_decodes() {
+        // Paired control: the same bodies as ONE core module are accepted,
+        // and `g` is the body that calls `f` and adds 100.
+        let wasm = wat::parse_str(
+            r#"(module
+              (func $f (export "f") (result i32) i32.const 1)
+              (func (result i32) i32.const 2)
+              (func (export "g") (result i32) call $f i32.const 100 i32.add))"#,
+        )
+        .expect("core module parses");
+        assert!(refuse_component_encoding(&wasm).is_ok());
+        let m = decode_wasm_module(&wasm).expect("core module decodes");
+        let g = m
+            .functions
+            .iter()
+            .find(|f| f.export_name.as_deref() == Some("g"))
+            .expect("g exported");
+        assert_eq!(g.index, 2);
+        assert!(g.ops.contains(&WasmOp::Call(0)), "{:?}", g.ops);
+    }
     use super::*;
 
     // ---- #1441: the declared page size, and the TWIN (initial/max) ----------

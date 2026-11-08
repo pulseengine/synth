@@ -36,7 +36,7 @@ pub use sbom::{CycloneDxSbom, SbomInputs};
 pub use target::*;
 pub use wasm_decoder::{
     CallIndirectGuards, DecodedModule, ElemSegmentInfo, FunctionOps, ImportEntry, ImportKind,
-    TableGuards, WasmMemory, decode_wasm_functions, decode_wasm_module,
+    TableGuards, WasmMemory, decode_wasm_functions, decode_wasm_module, refuse_component_encoding,
 };
 pub use wasm_op::{
     ParamBlockLowering, WasmOp, arm_param_block_lowering, count_params_heuristic,

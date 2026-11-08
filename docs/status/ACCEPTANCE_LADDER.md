@@ -9,6 +9,20 @@ integrity was re-verified in the same session, with the paths relative to
 shasum -a 256 -c ../MANIFEST.sha256` exited 0 with **243 `: OK` lines** (the
 positive control) and 0 failures. Raw outputs: RQ-88-LADDER10.
 
+> **COMPONENT INPUTS NOW DECLINE — RE-MEASUREMENT PENDING (noted 2026-11-08,
+> RQ-91-COMPEXPORTS, #1191).** As of this change, every component-encoded input
+> (binary layer 1, or component text) is refused at MODULE LEVEL, on every
+> backend and mode, before decode: synth had been decoding a component as one
+> flattened core module, which exported internal interfaces, omitted declared
+> ones and, on a measured shape, bound an export to the wrong function body.
+> The last per-stratum figures on record, v0.62's (RQ-62-REACH, `ae92a35f`),
+> accepted **6 / 5 / 5 of the 112 components** on arm / riscv / aarch64; those
+> are EXPECTED to become declines, which lowers the rungs above by up to that
+> many. This is NOT a measured figure: the rungs in this table were NOT
+> re-measured for this change, because `/Volumes/Work/corpora/wasm-243` was not
+> mounted. Re-measurement is pending until it is; until then, cite the table
+> above WITH this note.
+
 > **THE CORPUS IS EXTERNAL TO THIS REPO, AND IT IS REACHABLE.** `corpora/` is not
 > tracked here; the corpus lives at `/Volumes/Work/corpora/wasm-243`, on a work
 > volume of the release machine that is not always mounted (mounted 2026-10-20;

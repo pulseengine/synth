@@ -293,6 +293,17 @@ REFUSED_BY_DESIGN = {
     #     (the PMSA-legal extent) — plus all 17 spec-INVALID page sizes still refusing.
     # `shared_memory_1315.wat` is untouched and still refuses by design.
     "shared_memory_1315.wat": "#1315",
+    # RQ-91-COMPEXPORTS (#1191): WebAssembly COMPONENTS (component text). synth
+    # lowers core modules only and now refuses every component-encoded input
+    # before decode; these are component_input_1191_differential.py's
+    # fixtures, which executes shape 4's wrong body red-first and pins the
+    # refusal on every backend x mode. Their core-module twin
+    # (component_1191_twin.wat) compiles and runs in this sweep as usual.
+    "component_1191_shape1.wat": "#1191",
+    "component_1191_shape2.wat": "#1191",
+    "component_1191_shape3.wat": "#1191",
+    "component_1191_shape4.wat": "#1191",
+    "component_1191_shape5_arena.wat": "#1191",
 }
 
 # Compile floor: a FLOOR, so adding fixtures cannot redden the job. Measured
