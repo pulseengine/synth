@@ -168,6 +168,13 @@ struct M0Facts {
     /// The implicit zero of a non-parameter local read before any set that
     /// provably precedes it: `(function, local, node)`.
     zero_inits: Vec<(u32, u32, Node)>,
+    /// Every comparison `(function, op, lhs, rhs)`.
+    compares: Vec<(u32, usize, Node, Node)>,
+    /// `i64.extend_i32_{s,u}` results and their operand, so a comparison of
+    /// an extended end pointer is seen (R1 boundary rule).
+    extends: HashMap<Node, Node>,
+    /// `i64.const` results and their value (never relocated).
+    i64_consts: HashMap<Node, i64>,
 }
 
 /// One memory-0 access as the walk saw it.
@@ -902,6 +909,7 @@ fn walk(
                 g.couple(a, b);
                 g.observe(a);
                 g.observe(b);
+                g.m0.compares.push((fi, i, a, b));
                 let n = g.fresh();
                 g.m0.opaque.insert(n);
                 stack.push(n);
@@ -939,6 +947,15 @@ fn walk(
                     let r = g.fresh();
                     for &v in &ins {
                         g.flow(v, r);
+                    }
+                    match other {
+                        I64ExtendI32U | I64ExtendI32S if ins.len() == 1 => {
+                            g.m0.extends.insert(r, ins[0]);
+                        }
+                        I64Const(c) => {
+                            g.m0.i64_consts.insert(r, *c);
+                        }
+                        _ => {}
                     }
                     if add {
                         g.m0.binops.push((r, ins[0], ins[1], false));
@@ -1254,6 +1271,10 @@ pub struct Memory0Inputs<'a> {
     pub guarded_bounds: bool,
     /// Every analysed function's op stream (for the #1580 fold).
     pub func_ops: &'a HashMap<u32, &'a [WasmOp]>,
+    /// #1145: per function, the `i32.const` op indices the multi-memory
+    /// layering keeps RAW (memory-k offsets inside memory 0's window): never
+    /// relocated, so never a memory-0 static here.
+    pub raw_consts: &'a HashMap<u32, Vec<usize>>,
 }
 
 /// The decision, per function.
@@ -1518,6 +1539,12 @@ impl Provenance {
         let mut sites: Vec<Site> = Vec::new();
         let mut site_of: HashMap<Node, usize> = HashMap::new();
         let mut consts_by_node: HashMap<Node, u32> = HashMap::new();
+        let raw_nodes: std::collections::HashSet<Node> = g
+            .consts
+            .iter()
+            .filter(|((fi, op), _)| inp.raw_consts.get(fi).is_some_and(|v| v.contains(op)))
+            .map(|(_, &(_, nd))| nd)
+            .collect();
         let mut const_list: Vec<_> = g.consts.iter().collect();
         const_list.sort_by_key(|(k, _)| **k);
         for (&(func, op), &(c, node)) in const_list {
@@ -1627,7 +1654,7 @@ impl Provenance {
                 }
                 if let Some(&c) = consts_by_node.get(&v) {
                     s.vals = Vals::Known([c].into_iter().collect());
-                    if in_spz(c) {
+                    if in_spz(c) && !raw_nodes.contains(&v) {
                         s.spz.insert(c);
                     }
                     if lowest.is_some() && u64::from(c) < mem_end && c >= pure_lo {
@@ -1802,6 +1829,69 @@ impl Provenance {
             }
             None => "the zero-initialised reservation".to_string(),
         };
+        // ---- the one-past-the-end boundary (R1) ----------------------------
+        // On the split layout a relocated constant that is one past the end
+        // of a data segment resolves to the START of the region holding that
+        // address (the zero reservation, or the segment that begins there) —
+        // the meaning of a plain address use (a flag or object that starts
+        // there). Compared against a pointer it most likely means "the end of
+        // the segment before", which that resolution breaks: refused.
+        if split {
+            // A boundary only where the region changes across it: the last
+            // byte of the segment (where a walked pointer resolves) and the
+            // byte past it resolve to different regions. Overlapping
+            // segments that one later segment covers stay one region.
+            let ends: Vec<(usize, u64)> = segs
+                .iter()
+                .map(|&(k, o, b)| (k, u64::from(o) + b.len() as u64))
+                .filter(|&(_, e)| region_of(e) != region_of(e - 1))
+                .collect();
+            for &(fi, op, a, b) in &f.compares {
+                for side in [a, b] {
+                    // The operand IS the constant (directly, or through a
+                    // local or select whose every value is a constant, or an
+                    // `i64.extend_i32_{s,u}` of one) — not an address
+                    // computed from it (`HEAP_END + off`). An `i64.const`
+                    // equal to a boundary in the static window counts too.
+                    let mut src = side;
+                    while let Some(&s) = f.extends.get(&src) {
+                        src = s;
+                    }
+                    let hit = |e: u64| -> bool {
+                        let e32 = e as u32;
+                        if let Vals::Known(vs) = &sum[src].vals
+                            && vs.contains(&e32)
+                            && sum[src].spz.contains(&e32)
+                        {
+                            return true;
+                        }
+                        f.i64_consts
+                            .get(&side)
+                            .is_some_and(|&c| c as u64 == e && in_spz(e32))
+                    };
+                    let Some(&(k, e)) = ends.iter().find(|&&(_, e)| hit(e)) else {
+                        continue;
+                    };
+                    let (o, _) = &inp.data_segments[k];
+                    return Err(format!(
+                        "npa-end-pointer-compare (#1604): --native-pointer-abi refused for \
+                         the whole module — function '{}' (wasm function index {fi}) compares, \
+                         at op {op}, a value against the constant 0x{e:x}, one past the end \
+                         of data segment {k} [0x{o:x}, 0x{e:x}). The relocatable object lays \
+                         memory 0's segments out separately, so that constant resolves to \
+                         the START of the region holding 0x{e:x} ({}), not to the end of \
+                         segment {k}. A pointer walked through segment {k} equals it only if \
+                         the layout happens to place that region right after segment {k}, \
+                         which nothing promises. \
+                         No object is written. Compare against a length or an index instead \
+                         of an end address, merge the segments into one, or drop \
+                         --native-pointer-abi.",
+                        name(fi),
+                        region_name(region_of(e)),
+                    ));
+                }
+            }
+        }
         // ---- per-access decisions -----------------------------------------
         let mut offset_role: std::collections::HashSet<usize> = Default::default();
         let mut base_role: std::collections::HashSet<usize> = Default::default();

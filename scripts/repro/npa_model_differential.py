@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 25
+# ci-checks: emulations >= 33
 """RQ-91-NPAMODEL (#1672, #1568, #1604, #1661): memory-0 address provenance
 under `--relocatable --native-pointer-abi` is decided ONCE per module, and
 every shape is either executed equal to wasmtime or refused loudly with a
@@ -50,6 +50,19 @@ on the hand linker of npa_const_addr_differential.py, one instance per row):
                   it: EXEC (eab66646 faulted on the two below it).
     below_sp_dyn  a run-time base plus an offset into the data below the SP:
                   REFUSED `npa-dynamic-static-offset (#1568)`.
+  R1 boundary (one past a segment's end)
+    gale_boundary gale's shape: adjacent segments [2048, 2056) and [2056,
+                  2057), a flag at 2056 read and written: EXEC.
+    end_cmp_neg   `while p != END` with END one past segment 0: REFUSED
+                  `npa-end-pointer-compare (#1604)` (eab66646: 0x1043, wasmtime 0x3).
+    end_ltu_neg / end_i64_neg / end_i64c_neg
+                  the same walk as `p < END`, as an i64 comparison of the
+                  extended END, and against an `i64.const` END: REFUSED, same
+                  diagnostic (eab66646: 0x1043, 0x1043, a fault).
+    end_scalar_neg
+                  a counter compared with a constant equal to a segment end:
+                  REFUSED (eab66646 relocated the constant and never stopped).
+    interior_cmp  the walk compared against 0x2008 inside one segment: EXEC.
   #1661
     swb_neg       `--safety-bounds software` on a module touching memory 0:
                   REFUSED `npa-software-bounds (#1661)` (eab66646 compiled
@@ -74,6 +87,24 @@ SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 
 SEG = '(module (memory (export "mem") 1)\n  (data (i32.const 0x1000) "\\11\\22\\33\\44\\55\\66\\77\\88")\n'
 ANCHOR = '  (func (export "anchor") (result i32) (i32.load (i32.const 0x1000)))\n'
+# R1 boundary rows: `p = 0x2000; loop { if EXIT break; s += *p; p += 4 }`
+# with a stack pointer at 0x1000, so every segment is on the split layout.
+WALK_SP = '(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x1000))\n'
+WALK_SEG2 = ('  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00")\n'
+             '  (data (i32.const 0x3000) "\\40\\00\\00\\00")\n')
+
+
+def walk(exit_cond):
+    return ('  (func (export "sum") (result i32) (local i32 i32)\n'
+            '    (local.set 0 (i32.const 0x2000))\n'
+            '    (block (loop\n'
+            f'      (br_if 1 {exit_cond})\n'
+            '      (local.set 1 (i32.add (local.get 1) (i32.load (local.get 0))))\n'
+            '      (local.set 0 (i32.add (local.get 0) (i32.const 4)))\n'
+            '      (br 0)))\n'
+            '    (local.get 1)))')
+
+
 
 EXEC = [
     ("datap_near",
@@ -119,6 +150,22 @@ EXEC = [
      '    (i32.load (local.get 1)))\n'
      '  (func (export "vt") (result i32) (i32.load (i32.const 0x10000))))',
      [("use", (0x33333333,)), ("use", (0x44444444,)), ("vt", ())]),
+    # gale's R1 boundary shape: two ADJACENT segments [2048, 2056) and
+    # [2056, 2057), a run-once flag at 2056 read and written through
+    # `offset=2056` (positional and run-time base). The constant one past
+    # the first segment resolves to the START of the region holding it — the
+    # second segment — which is what these accesses mean.
+    ("gale_boundary",
+     '(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 1024))\n'
+     '  (data (i32.const 2048) "\\01\\02\\03\\04\\05\\06\\07\\08")\n'
+     '  (data (i32.const 2056) "\\00")\n'
+     '  (func (export "flag") (result i32) (i32.load8_u offset=2056 (i32.const 0)))\n'
+     '  (func (export "set") (i32.store8 offset=2056 (i32.const 0) (i32.const 1)))\n'
+     '  (func (export "flag_rt") (param i32) (result i32) (i32.load8_u offset=2056 (local.get 0)))\n'
+     '  (func (export "set_rt") (param i32) (i32.store8 offset=2056 (local.get 0) (i32.const 7)))\n'
+     '  (func (export "w6") (result i32) (i32.load (i32.const 2052))))',
+     [("flag", ()), ("set", ()), ("flag", ()), ("w6", ()), ("set_rt", (0,)),
+      ("flag_rt", (0,)), ("flag", ())]),
     ("arith_sel", SEG + ANCHOR +
      '  (func (export "arith") (result i32) (i32.load (i32.add (i32.const 0x1000) (i32.const 4))))\n'
      '  (func (export "sel") (param i32) (result i32)\n'
@@ -139,6 +186,12 @@ EXEC = [
      '  (func (export "lo4") (result i32) (i32.load (i32.const 0x1004)))\n'
      '  (func (export "lo_arith") (result i32) (i32.load (i32.add (i32.const 0x1000) (i32.const 4)))))',
      [("hi", ()), ("lo", ()), ("lo4", ()), ("lo_arith", ())]),
+    # R1 boundary near miss: the same walk compared against 0x2008 INSIDE one
+    # segment [0x2000, 0x2010) — not a boundary, so not refused: EXEC.
+    ("interior_cmp", WALK_SP +
+     '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n'
+     + walk('(i32.eq (local.get 0) (i32.const 0x2008))'),
+     [("sum", ())]),
 ]
 
 REFUSE = [
@@ -168,6 +221,47 @@ REFUSE = [
      '  (data (i32.const 0x1000) "\\11\\22\\33\\44\\55\\66\\77\\88")\n'
      '  (func (export "f") (param i32) (result i32) (i32.load offset=0x1004 (local.get 0))))',
      [], ["npa-dynamic-static-offset (#1568)", "function 'f'"]),
+    # R1 boundary, the narrow refusal: an END pointer (one past segment 0)
+    # COMPARED against a walked pointer — `while p != END` — would compare
+    # against the start of the region holding END (the reservation here).
+    # eab66646 compiled it and summed 0x1043 where wasmtime returns 0x3.
+    ("end_cmp_neg",
+     '(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x1000))\n'
+     '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00")\n'
+     '  (data (i32.const 0x3000) "\\40\\00\\00\\00")\n'
+     '  (func (export "sum") (result i32) (local i32 i32)\n'
+     '    (local.set 0 (i32.const 0x2000))\n'
+     '    (block (loop\n'
+     '      (br_if 1 (i32.eq (local.get 0) (i32.const 0x2008)))\n'
+     '      (local.set 1 (i32.add (local.get 1) (i32.load (local.get 0))))\n'
+     '      (local.set 0 (i32.add (local.get 0) (i32.const 4)))\n'
+     '      (br 0)))\n'
+     '    (local.get 1)))',
+     [], ["npa-end-pointer-compare (#1604)", "function 'sum'", "0x2008"]),
+    # The same refusal for the other comparison forms: `while p < END`
+    # (eab66646 summed 0x1043), an i64 comparison of the extended end pointer
+    # (0x1043), and an `i64.const` end (eab66646 faulted).
+    ("end_ltu_neg", WALK_SP + WALK_SEG2
+     + walk('(i32.eqz (i32.lt_u (local.get 0) (i32.const 0x2008)))'),
+     [], ["npa-end-pointer-compare (#1604)", "function 'sum'", "0x2008"]),
+    ("end_i64_neg", WALK_SP + WALK_SEG2
+     + walk('(i64.eq (i64.extend_i32_u (local.get 0)) (i64.extend_i32_u (i32.const 0x2008)))'),
+     [], ["npa-end-pointer-compare (#1604)", "function 'sum'", "0x2008"]),
+    ("end_i64c_neg", WALK_SP + WALK_SEG2
+     + walk('(i64.eq (i64.extend_i32_u (local.get 0)) (i64.const 0x2008))'),
+     [], ["npa-end-pointer-compare (#1604)", "function 'sum'", "0x2008"]),
+    # A counter compared with a constant equal to a segment end: on the split
+    # layout every constant in the stack-pointer window is relocated, so
+    # eab66646 compared the counter against a native address and never
+    # stopped where wasmtime returns 8200. Refused by the same rule.
+    ("end_scalar_neg", WALK_SP +
+     '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00")\n'
+     '  (func (export "anchor") (result i32) (i32.load (i32.const 0x2004)))\n'
+     '  (func (export "cnt") (result i32) (local i32)\n'
+     '    (block (loop (br_if 1 (i32.eq (local.get 0) (i32.const 0x2008)))\n'
+     '      (local.set 0 (i32.add (local.get 0) (i32.const 0x401))) (br 0)))\n'
+     '    (local.get 0)))',
+     [], ["npa-end-pointer-compare (#1604)", "function 'cnt'", "0x2008"]),
     ("swb_neg", SEG + ANCHOR +
      '  (func (export "st0") (param i32 i32) (i32.store (local.get 0) (local.get 1))))',
      ["--safety-bounds", "software"], ["npa-software-bounds (#1661)", "function '"]),

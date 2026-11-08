@@ -36,7 +36,10 @@ artifacts:
         0x44332211; a run-time base plus `offset=0x1004` faults too.
 
         CITATION: found while working #739, #1568 and #1672; no issue was
-        filed for it.
+        filed for it. #739 is where the native-pointer static window was
+        analysed. The number names where it was analysed, not an open scope.
+        It is closed (2026-07-15), so `issue-scope: closes` authorises
+        nothing; the record answers the defect it names, not the issue.
     tags:
       - feature-loop
       - bug
@@ -49,7 +52,7 @@ artifacts:
       priority: must
       issue: "#739"
       verification-track: execution
-      issue-scope: outlives
+      issue-scope: closes
       landed: "PR #1682 - #739 - DELIVERED. The memory-0 decision uses one static range, [min(lowest data segment, stack-pointer init), memory-0 size): a constant address below the stack-pointer init computed only from constants is relocated at its definition, and a constant or memarg offset in that range beside a run-time base is refused (npa-dynamic-static-offset), unless the base is the stack pointer itself (a frame offset)."
       verified-by: >
         DELIVERED, execution-verified. Red at eab66646 as measured above. On

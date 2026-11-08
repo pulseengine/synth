@@ -5683,6 +5683,10 @@ fn compile_all_exports(
                  .wast merge) is refused. Compile each module on its own."
             ),
         };
+        let npa_raw: std::collections::HashMap<u32, Vec<usize>> = match &npa_mm_plan {
+            Some(Ok(plan)) => plan.raw_consts.clone(),
+            _ => Default::default(),
+        };
         let func_ops: std::collections::HashMap<u32, &[WasmOp]> = all_exports
             .iter()
             .filter(|f| f.unsupported.is_none())
@@ -5691,6 +5695,7 @@ fn compile_all_exports(
         npa_m0_plan = prov
             .memory0_plan(&synth_core::npa_multi_memory::Memory0Inputs {
                 func_ops: &func_ops,
+                raw_consts: &npa_raw,
                 func_names: &npa_names,
                 memory0_bytes: config.linear_memory_bytes,
                 memory0_declared_bytes: memory0_decl.as_ref().map_or(0, |m| m.initial_bytes()),

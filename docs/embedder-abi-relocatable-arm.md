@@ -678,6 +678,9 @@ static range that carries no relocation is a compiler defect, refused as
     run-time length.
   - `npa-double-relocation (#1580)` — a self-relocated memarg offset added to
     an address that already carries a relocated static.
+  - `npa-end-pointer-compare (#1604)` — on the split layout, a relocated
+    constant one past a segment's end used as an operand of a comparison (see
+    R1's boundary rule).
   - `npa-software-bounds (#1661)` — `--safety-bounds software|mask` with any
     memory-0 access.
 
@@ -689,20 +692,22 @@ static range that carries no relocation is a compiler defect, refused as
   delta is a constant; across the split layout an access past the object can
   land in packing padding or another segment. `wrapping_add` and arithmetic
   through integer casts fall outside this guarantee.
-  **KNOWN GAP in the one-past-the-end half (measured, v0.91, not fixed):** on
-  the split layout (every data segment at or above the stack-pointer init) a
-  CONSTANT that names one past a data segment's end is relocated by the
-  region that contains that address — the zero reservation, or whichever
-  segment starts there — not by the segment it ends. A pointer walked from the
-  segment's start is then never equal to it: `p = 0x2000; while p != 0x2008`
-  over an 8-byte segment at 0x2000 (stack pointer 0x1000, next segment at
-  0x3000) sums 0x1043 where wasmtime returns 0x3, identically on v0.90.0 and
-  v0.91. It cannot be resolved by rule: such a constant is equally the start
-  of whatever follows (a `.bss` object placed right after `.data`). Until it
-  is decided (RQ-91-NPAMODEL, residual), an end pointer that is a constant
-  equal to a data segment's end is safe only when the contiguous one-image
-  layout applies (a segment below the stack-pointer init) or the following
-  segment is declared next and the segment's length is a multiple of 4.
+  **The boundary rule (v0.91, gale's decision).** On the split layout (every
+  data segment at or above the stack-pointer init, so memory 0's segments are
+  laid out as separate regions) a constant ONE PAST THE END of a memory-0
+  segment resolves to the START of the region holding that address — the
+  segment that begins there, or the zero reservation. That is the meaning of
+  a plain address use (a flag or object that starts there; gale's run-once
+  flag at the start of the segment after another). The OBLIGATION, on you and
+  on the source: do not COMPARE against such a constant unless "the start of
+  what follows" is the meaning. synth refuses the shape where it is most
+  likely not: the constant as an operand of a comparison (`i32.eq`/`ne`,
+  `lt`/`le`/`gt`/`ge`, signed and unsigned, and the `i64` forms over an
+  `i64.extend_i32_*` of it or an equal `i64.const`) is
+  `npa-end-pointer-compare` (`p = base; while p != END` over a segment). Comparing against a length or
+  an index, or keeping the walked object in one segment that also covers its
+  end, keeps it compiling. Memory k is not split, so the rule is memory 0's
+  only.
 - **R2 (no data, no stack pointer: run-time values are native).** In a module
   with no memory-0 data segment and no stack-pointer global, there is no
   static region: a run-time value that reaches an address is a native pointer,

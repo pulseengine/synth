@@ -3148,7 +3148,12 @@ jobs:
       # with no data (R2) executed on the native contract; #1604 arithmetic
       # straddle and computed bulk destination refused; data below the stack
       # pointer executed (positional and arithmetic) and its run-time offset
-      # refused; #1661 software bounds refused. RED on eab66646: 14 failures.
+      # refused; #1661 software bounds refused; the R1 boundary rule: gale's
+      # shape (a flag at the start of the segment after another) executed,
+      # an end pointer compared in a loop refused (npa-end-pointer-compare),
+      # also as `<`, as an i64 comparison and against an i64.const, and a
+      # counter compared with a segment end; the same walk against an
+      # interior constant executed. RED on eab66646: 19 failures.
       - name: Run native-pointer provenance oracle (RQ-91-NPAMODEL, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_model_differential.py
       # #746 (the #739 residual): the i64/WIDE static-region arms — i64.load/

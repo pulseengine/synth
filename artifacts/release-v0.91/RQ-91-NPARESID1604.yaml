@@ -71,7 +71,11 @@ artifacts:
         unmodified (88 emulations, 255 refusals). Residual R1, stated in the
         embedder ABI document: a static pointer plus a RUN-TIME delta stays in
         its object's closed range [base, base+size]; synth checks the bytes
-        only for a constant delta.
+        only for a constant delta. Its boundary case is now a rule (see
+        RQ-91-NPAMODEL): a constant one past a segment's end resolves to the
+        start of the region holding it, and the same constant as a comparison
+        operand of an i32 or i64 comparison is refused
+        (npa-end-pointer-compare (#1604)).
       done-when: >
         manual:2027-03-31 an access whose bytes span the zero
         reservation and a data segment, or two regions, with the

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 54
+# ci-checks: emulations >= 62
 """RQ-89-MEMLAYER6 (#1145) — `--native-pointer-abi` on a MULTI-MEMORY ARM
 `--relocatable` module, layered per memory — execution differential vs
 wasmtime (multi-memory + custom-page-sizes enabled), with an isolation check.
@@ -372,6 +372,46 @@ XCOPY_NOSP = r"""(module (memory $m0 1 1) (memory $m1 1 1)
       (func (export "x") (memory.copy $m1 $m0 (i32.const 0) (i32.const 0x1000) (i32.const 4)))
       (func (export "r1") (result i32) (i32.load $m1 (i32.const 0))))"""
 XCOPY_NOSP_CALLS = [("anchor", [], {0}), ("x", [], {0, 1}), ("r1", [], {1})]
+# RQ-91-NPAMODEL (gale's shape, R1 boundary rule): memory 0 has two ADJACENT
+# data segments [2048, 2056) and [2056, 2057) and a run-once flag at 2056 (the
+# second segment's START); memory 1 has a segment at 2048 and the same
+# constant 2056 as a memory-1 address on a "panic" path. The boundary
+# constant on memory 0 resolves to the start of the segment holding it; the
+# memory-1 constant stays a raw memory-k offset (the split layout is memory 0
+# only).
+GALE_BOUNDARY = r"""(module (memory $m0 1 1) (memory $m1 1 1)
+      (global $sp (mut i32) (i32.const 0x400))
+      (data (memory $m0) (i32.const 0x800) "\01\02\03\04\05\06\07\08")
+      (data (memory $m0) (i32.const 0x808) "\00")
+      (data (memory $m1) (i32.const 0x800) "\aa\bb\cc\dd\ee\ff\11\22\33")
+      (func (export "flag0") (result i32) (i32.load8_u $m0 offset=0x808 (i32.const 0)))
+      (func (export "set0") (i32.store8 $m0 offset=0x808 (i32.const 0) (i32.const 1)))
+      (func (export "w0") (result i32) (i32.load $m0 (i32.const 0x804)))
+      (func (export "panic1") (param i32) (result i32)
+        (if (result i32) (local.get 0)
+          (then (i32.load8_u $m1 (i32.const 0x808))) (else (i32.const 0)))))"""
+GALE_BOUNDARY_CALLS = [("flag0", [], {0}), ("set0", [], {0}), ("flag0", [], {0}),
+                       ("w0", [], {0}), ("panic1", [1], {1}), ("panic1", [0], set())]
+# The boundary REFUSAL is memory 0's only: a memory-1 pointer walked with
+# `while p != 0x808`, where 0x808 is one past a memory-1 segment AND one past
+# a memory-0 segment, compiles (the constant is a memory-1 offset, kept raw)
+# and executes equal to wasmtime.
+MEM1_WALK = r"""(module (memory $m0 1 1) (memory $m1 1 1)
+      (global $sp (mut i32) (i32.const 0x400))
+      (data (memory $m0) (i32.const 0x800) "\01\02\03\04\05\06\07\08")
+      (data (memory $m0) (i32.const 0x808) "\00")
+      (data (memory $m1) (i32.const 0x800) "\01\00\00\00\02\00\00\00")
+      (data (memory $m1) (i32.const 0x900) "\40\00\00\00")
+      (func (export "flag0") (result i32) (i32.load8_u $m0 offset=0x808 (i32.const 0)))
+      (func (export "sum1") (result i32) (local i32 i32)
+        (local.set 0 (i32.const 0x800))
+        (block (loop
+          (br_if 1 (i32.eq (local.get 0) (i32.const 0x808)))
+          (local.set 1 (i32.add (local.get 1) (i32.load $m1 (local.get 0))))
+          (local.set 0 (i32.add (local.get 0) (i32.const 4)))
+          (br 0)))
+        (local.get 1)))"""
+MEM1_WALK_CALLS = [("flag0", [], {0}), ("sum1", [], {1})]
 
 
 def compile_obj(wat, tmp, label, extra=()):
@@ -701,6 +741,14 @@ def main():
         print(f"  [ok ] {f} call(s) diverge from wasmtime, as a false assertion must")
     print("=== xcopy_nosp_static: relocated memory-0 side (RQ-91-NPAMODEL) ===")
     c, f = run_fixture("xcopy_nosp_static", XCOPY_NOSP, XCOPY_NOSP_CALLS, tmp)
+    total += c
+    fails += f
+    print("=== gale's boundary shape: memory-0 flag at a segment start, memory-1 twin ===")
+    c, f = run_fixture("gale_boundary", GALE_BOUNDARY, GALE_BOUNDARY_CALLS, tmp)
+    total += c
+    fails += f
+    print("=== the boundary refusal is memory 0's only: a memory-1 end-pointer walk ===")
+    c, f = run_fixture("mem1_walk", MEM1_WALK, MEM1_WALK_CALLS, tmp)
     total += c
     fails += f
     print("=== region table (pagesize 1, bytes) ===")
