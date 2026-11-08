@@ -25,6 +25,13 @@ on:
   pull_request:
     branches: [main]
 
+# CI load (org hosted queue, 2026-11-08): a new push to a PR cancels that
+# PR's superseded run of this workflow. Pushes to main are keyed by commit sha,
+# so a main run is never cancelled or replaced: every main commit stays verified.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   # #910: the per-job measured-evidence ledger the oracle driver appends to.
