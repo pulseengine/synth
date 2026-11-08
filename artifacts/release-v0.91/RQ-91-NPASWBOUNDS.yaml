@@ -52,7 +52,7 @@ artifacts:
       issue: "#1661"
       verification-track: execution
       issue-scope: closes
-      landed: "branch v091-npamodel - #1661 - DELIVERED AS A LOUD REFUSAL of the flag pair for modules that touch memory 0: npa-software-bounds (#1661), module-level. A module that touches only memory k keeps its memory-k guard (memk_bulk_oob_1619's software/npa leg stays green)."
+      landed: "PR #1682 - #1661 - DELIVERED AS A LOUD REFUSAL of the flag pair for modules that touch memory 0: npa-software-bounds (#1661), module-level. A module that touches only memory k keeps its memory-k guard (memk_bulk_oob_1619's software/npa leg stays green)."
       verified-by: >
         DELIVERED as a refusal, execution-verified. Red at eab66646: the
         refuting command's software/npa leg compiled and trapped 0 of 4

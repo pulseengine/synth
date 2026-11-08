@@ -50,7 +50,7 @@ artifacts:
       issue: "#739"
       verification-track: execution
       issue-scope: outlives
-      landed: "branch v091-npamodel - #739 - DELIVERED. The memory-0 decision uses one static range, [min(lowest data segment, stack-pointer init), memory-0 size): a constant address below the stack-pointer init computed only from constants is relocated at its definition, and a constant or memarg offset in that range beside a run-time base is refused (npa-dynamic-static-offset), unless the base is the stack pointer itself (a frame offset)."
+      landed: "PR #1682 - #739 - DELIVERED. The memory-0 decision uses one static range, [min(lowest data segment, stack-pointer init), memory-0 size): a constant address below the stack-pointer init computed only from constants is relocated at its definition, and a constant or memarg offset in that range beside a run-time base is refused (npa-dynamic-static-offset), unless the base is the stack pointer itself (a frame offset)."
       verified-by: >
         DELIVERED, execution-verified. Red at eab66646 as measured above. On
         the branch, scripts/repro/npa_model_differential.py row below_sp

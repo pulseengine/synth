@@ -60,7 +60,7 @@ artifacts:
       issue: "#1672"
       verification-track: execution
       issue-scope: closes
-      landed: "branch v091-npamodel - #1672 - DELIVERED AS A LOUD MODULE-LEVEL REFUSAL, as gale accepted for v0.91: npa-data-pointer (#1672), naming the dereferencing function, the load site (wasm op index) and the word's segment and segment offset. Memory is modelled per region, so a loaded value used as an INDEX on a static base (gale's HEAP + OFF bump allocator) is not refused."
+      landed: "PR #1682 - #1672 - DELIVERED AS A LOUD MODULE-LEVEL REFUSAL, as gale accepted for v0.91: npa-data-pointer (#1672), naming the dereferencing function, the load site (wasm op index) and the word's segment and segment offset. Memory is modelled per region, so a loaded value used as an INDEX on a static base (gale's HEAP + OFF bump allocator) is not refused."
       verified-by: >
         DELIVERED as a refusal, execution-verified. Red at eab66646: the
         refuting command compiled rc 0 and tbl() faulted where wasmtime returns

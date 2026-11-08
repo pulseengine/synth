@@ -59,7 +59,7 @@ artifacts:
       issue: "#1568"
       verification-track: execution
       issue-scope: closes
-      landed: "branch v091-npamodel - #1568 - DELIVERED. Constants through arithmetic, select and a local with an arithmetic definition are relocated at their definition and execute equal to wasmtime; a static constant beside a run-time value in a module with a memory-0 data segment and no stack-pointer global, or below the stack-pointer init, is refused (npa-dynamic-static-offset); a module with no data segment treats a run-time base as native (R2)."
+      landed: "PR #1682 - #1568 - DELIVERED. Constants through arithmetic, select and a local with an arithmetic definition are relocated at their definition and execute equal to wasmtime; a static constant beside a run-time value in a module with a memory-0 data segment and no stack-pointer global, or below the stack-pointer init, is refused (npa-dynamic-static-offset); a module with no data segment treats a run-time base as native (R2)."
       verified-by: >
         DELIVERED, execution-verified. Red at eab66646: arith(), sel(1) and
         sel(0) faulted (1 of 4 equal). On the branch: 4 of 4 equal, and the

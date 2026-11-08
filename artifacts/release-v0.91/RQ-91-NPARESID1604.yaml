@@ -61,7 +61,7 @@ artifacts:
       issue: "#1604"
       verification-track: execution
       issue-scope: closes
-      landed: "branch v091-npamodel - #1604 - DELIVERED AS A LOUD REFUSAL for what cannot be laid out: an access computed from constants whose bytes span two regions of the split layout, or whose relocated constant names another region, and a bulk op with a computed constant destination and a run-time length, are refused (npa-region-straddle); the same access inside one region executes."
+      landed: "PR #1682 - #1604 - DELIVERED AS A LOUD REFUSAL for what cannot be laid out: an access computed from constants whose bytes span two regions of the split layout, or whose relocated constant names another region, and a bulk op with a computed constant destination and a run-time length, are refused (npa-region-straddle); the same access inside one region executes."
       verified-by: >
         DELIVERED as a refusal, execution-verified. Red at eab66646:
         arith_straddle() faulted (1 of 2 equal) and the computed-destination
