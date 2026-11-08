@@ -417,6 +417,73 @@ load into R11 — one source, no drift.
    (gale's first two-tenant attempt escaped exactly this way). Each context
    switch must grant only the memory of the tenant about to run.
 
+### Facts for your MPU gate: `--emit-memory-facts`, `--memory-domain` (RQ-91-MPUENFORCE, v0.91)
+
+**The decision, and who made it.** #1145 asked for synth-emitted MPU
+enforcement. On 2026-11-08 gale, the embedder whose isolation model this is,
+chose that the embedder obligation stays the enforcement: gale's verified
+`switch_to_partition` and its `gust:mpu/regs` seam stay the ONLY MPU writer,
+because synth is build-time and outside the flight TCB. So synth emits **no
+MPU register writes, no init routine and no RBAR/RASR words** on any path —
+the encoding belongs to the embedder's verified driver. What synth delivers
+instead is FACTS, as data, for the embedder's own build-time gate.
+
+**`--emit-memory-facts`** (ARM `--relocatable --all-exports`, multi-memory
+only) writes `<output>.memfacts.json` (`synth-memfacts-v1`). The object is
+byte-identical with or without the flag; the sidecar carries the object's
+`object_sha256`, so a sidecar beside a rebuilt object is detectable. A sidecar,
+not a section: a section would change the object's bytes, and a linker merges
+or drops same-named non-alloc sections across inputs, losing per-object
+attribution; and `--emit-wcet`/`--emit-stack-depth` are sidecars already.
+
+| Field | Meaning | Source |
+|---|---|---|
+| `functions[].direct_memories` | memories this `func_N` body accesses itself | the memory index of every load/store/`memory.fill`/both sides of `memory.copy` — a static immediate in wasm, so exact |
+| `functions[].direct_calls` | the body's direct callees (`func_N`, or `module.field` for an import): with `direct_memories`, the call graph, so you can place a context switch at any edge | |
+| `functions[].direct_multi_memory`, `direct_domains`, `direct_spans_domains` | the DIRECT reading: this body itself touches several memories / domains, so it runs only in a context granted all of them (a supervisor adapter), wherever its callers run | |
+| `functions[].memories` | the grant a context running this function needs IF no context switch happens below it: the body plus everything it can call | closure over the direct call graph |
+| `functions[].via_call_indirect` | `memories` was widened to every memory because a `call_indirect` is reachable | stated, never folded in silently |
+| `functions[].imports_called` | host functions reachable by direct call; their accesses are YOURS and are not in `memories` | |
+| `functions[].multi_memory`, `domains`, `spans_domains` | the TRANSITIVE reading of the same: a tenant entry that calls a supervisor adapter is `true` here and `false` in `direct_spans_domains`. Which reading a supervisor assertion uses is yours to choose | |
+| `memories[].size_bytes` | declared size, exact for the process's life | read back: `__synth_mem_size_k` |
+| `memories[].pmsav7_region_bytes` | smallest PMSAv7 region covering it (power of two, >= 32 B) | read back: `__synth_mem_region_k` |
+| `memories[].base` | `symbol` (`__synth_mem_base_k` in `.synth.wasm_mem_k`, k >= 1), `register` (`r11`, memory 0), or `native` (memory 0 under `--native-pointer-abi`: native addresses, statics in `__synth_wasm_data` when present) | read back from the symbol table |
+| `memories[].section_align`, `section_bytes` | `sh_addralign` / `sh_size` of `.synth.wasm_mem_k` | read back from the section header |
+| `memories[].pmsav7_subregions_enabled` | when a section is padded to a subregion granule and does not fill its region, how many of its 8 subregions it covers; `null` otherwise (always `null` until a layout pads a section) | derived from `section_bytes` and the region |
+| `memories[].pmsav8_granule_bytes` | 32: PMSAv8 (M33/M55) base and limit granule; any size is legal there, so nothing here assumes a power of two | |
+| `not_covered` | what the facts do not cover, carried in every sidecar | |
+
+Every bound is read back from the written object, never recomputed. The sets
+come from the module and are cross-checked against the object before the
+sidecar is written: the functions described are exactly the `func_N` bodies
+the object defines, and a relocation in a function's own code against memory
+k's base or size symbol (k >= 1) must find k in its `direct_memories` — a
+disagreement refuses the compile. Memory 0 is not checkable that way (it is
+R11-relative, and under `--native-pointer-abi` a relocation against its statics
+can FORM a pointer a callee dereferences), so it rests on the execution oracle. Executed by `scripts/repro/memory_facts_1145_differential.py`: every
+legitimate (wasmtime-non-trapping) access of every #1145, #1619 and #1622
+multi-memory fixture, attributed by PC to its `func_N`, must be in that body's
+`direct_memories` and in the called export's `memories`; the sets equal the
+hand-written tables those oracles carry; a sidecar with one observed memory
+removed reds. That is emulation (unicorn, which models no MPU) of the
+SUFFICIENCY of the sets, not a containment result — containment is your MPU,
+and its evidence is your Renode/silicon matched pair.
+
+**`--memory-domain NAME=K[,K...]`** (repeatable, needs `--emit-memory-facts`)
+names which memories each execution domain owns. A meld `--domain` maps to one
+memory today; nothing assumes it. Every memory must belong to exactly one
+domain — a map that leaves a memory out, or gives one to two domains, refuses.
+
+**What none of this protects** (the compliance envelope, unchanged): an
+out-of-bounds address of memory k can land in any memory, so a set is a
+statement about legitimate accesses, not about where a bug can write; an
+access between `size_bytes` and the region's end does not fault; an MPU fault
+is not a wasm trap, and under `none`/`mpu` an out-of-bounds bulk op writes the
+in-region bytes before it faults — only `--safety-bounds software` traps
+before writing; privileged code can always reach the PPB, including the MPU
+registers, so a contained tenant must run unprivileged; the globals table, the
+stack and `.text` are shared by every context and are not in the sets.
+
 ### Bounds checking memory k: `software` only (#1619, v0.90)
 
 Until v0.90 **memory k > 0 had no bounds-check story on any profile** (#1145,

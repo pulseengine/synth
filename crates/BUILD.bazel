@@ -260,6 +260,7 @@ rust_binary(
         ":synth-backend-aarch64",
         "@crates//:anyhow",
         "@crates//:clap",
+        "@crates//:object",
         "@crates//:serde_json",
         "@crates//:tracing",
         "@crates//:tracing-subscriber",

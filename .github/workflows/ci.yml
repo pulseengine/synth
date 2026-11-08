@@ -3233,6 +3233,17 @@ jobs:
       # phase 2") -> GREEN with the emission.
       - name: Run two-tenant isolation RED oracle + region-table pins (#1145, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/mem_isolation_red_1145.py
+      # RQ-91-MPUENFORCE (#1145): the `--emit-memory-facts` sidecar gale's
+      # MPU gate consumes (synth emits no MPU programming; gale's verified
+      # switch is the only writer). Every legitimate access of every #1145 /
+      # #1619 / #1622 multi-memory fixture, executed and attributed by PC to
+      # its func_N body, must be in that body's emitted memory set; the sets
+      # must equal the source oracles' hand-written tables; a mutated sidecar
+      # must red; the object is byte-identical with and without the flag; the
+      # bounds equal the object's own symbols; --mpu-layout pads and refuses
+      # by name. RED on eab66646 (the flag does not exist).
+      - name: Run memory-facts sufficiency oracle (#1145, cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/memory_facts_1145_differential.py
       # RQ-89-MEMLAYER6 (#1145): --native-pointer-abi on a MULTI-MEMORY ARM
       # --relocatable module, layered per memory (memory 0 native, memory k a
       # wasm offset via __synth_wasm_data_<k>; the CLI provenance pass keeps
