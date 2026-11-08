@@ -50,8 +50,9 @@ step 3     rivet. The release's artifact set is VISIBLE (>=1 artifact; the
            check-run concluded success on the release commit (retro) / the
            gate exits 0 right now (pretag).
 step 4     oracle-gated. scripts/oracle_wiring_check.py exists at the ref and
-           ci.yml invokes it WITH a nonzero --min-emulation-floor (the #910/
-           #1113 ratchet — wiring without a floor is presence, not potency).
+           ci.yml invokes it WITH a nonzero --min-/--exact-emulation-floor or
+           (v0.91+) with --floor-base (the #910/#1113 ratchet — wiring
+           without a floor is presence, not potency).
            Run evidence: same "Claim Check" run (the wiring gate executes
            inside it) / a live exit-0 run against the ci-pinned floor.
 step 5     witness MC/DC. scripts/mcdc_gate.py exists at the ref, carries the
@@ -450,7 +451,16 @@ def ci_emulation_floor(ci_text: str) -> tuple[int, str]:
     the stronger gate as ABSENT — the same defect shape as RQ-62-FLOORTIGHT's
     done-when pinning a literal value its own protocol guaranteed would move.
     `exact` is checked first so the report names the stronger form when both
-    appear."""
+    appear.
+
+    RQ-91-EMUFLOOR (v0.91) retired the pinned number: ci.yml passes
+    `--floor-base REF` and the gate holds EACH oracle's own header floor
+    against the base tree. That form is reported as `(0, "base")` — there is
+    no single number to report, and its potency is the per-oracle comparison,
+    not a value. Checked FIRST, as the strongest form; refs before v0.91 still
+    read through the two numeric spellings."""
+    if re.search(r"--floor-base\b", ci_text):
+        return 0, "base"
     for flag in ("exact", "min"):
         m = re.search(rf"--{flag}-emulation-floor\s+(\d+)", ci_text)
         if m:
@@ -808,11 +818,15 @@ class Check:
     def step_4(self) -> None:
         ci = tree_read(self.ref, ".github/workflows/ci.yml") or ""
         floor, form = ci_emulation_floor(ci)
-        if tree_has(self.ref, "scripts/oracle_wiring_check.py") and floor > 0:
+        if tree_has(self.ref, "scripts/oracle_wiring_check.py") and (
+                floor > 0 or form == "base"):
             self.add(
                 "4",
                 "oracle wiring + floor",
                 DERIVED_PASS,
+                ("wired with --floor-base at ref (each oracle's floor held "
+                 "against the base tree — RQ-91-EMUFLOOR)")
+                if form == "base" else
                 f"wired with --{form}-emulation-floor {floor} at ref"
                 + (" (equality, not a lower bound — RQ-63-FLOOREQ)"
                    if form == "exact" else ""),
@@ -835,7 +849,12 @@ class Check:
                 f"via Claim Check check-run on {self.sha[:8]}: {concl or 'API unavailable'}",
              source=("github-api",),)
         else:
+            # The candidate is HEAD on main; its first parent is the tree
+            # the push-to-main run compares against.
             rc, _ = run(
+                [sys.executable, "scripts/oracle_wiring_check.py",
+                 "--floor-base", "HEAD^1"]
+                if form == "base" else
                 [
                     sys.executable,
                     "scripts/oracle_wiring_check.py",

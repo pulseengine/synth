@@ -1962,6 +1962,48 @@ class FloorProseRule(unittest.TestCase):
         self.assertIsNone(live)
         self.assertTrue(fails, "a blinded rule must fail")
 
+    def _derived_tree(self, prose="hi", floors=(40, 2)):
+        """A post-RQ-91-EMUFLOOR tree: ci.yml passes `--floor-base`, the live
+        total exists only as the sum of the oracles' own headers."""
+        import shutil
+        root = self._tree(prose=prose)
+        (root / ".github" / "workflows" / "ci.yml").write_text(
+            "jobs:\n  x:\n    steps:\n      - run: |\n"
+            "          python3 scripts/oracle_wiring_check.py --floor-base \"$B\"\n"
+        )
+        (root / "scripts" / "repro").mkdir(parents=True)
+        for f in ("oracle_wiring_check.py", "oracle_run.py"):
+            shutil.copy(REPO_ROOT / "scripts" / f, root / "scripts" / f)
+        for i, n in enumerate(floors):
+            (root / "scripts" / "repro" / f"o{i}.py").write_text(
+                f"# ci-status: wired\n# ci-checks: emulations >= {n}\n")
+        # Not counted: a manual oracle and a compiles-mode oracle.
+        (root / "scripts" / "repro" / "m.py").write_text(
+            "# ci-status: manual (hardware) — needs a real board CI lacks\n"
+            "# ci-checks: emulations >= 1000\n")
+        (root / "scripts" / "repro" / "c.py").write_text(
+            "# ci-status: wired\n# ci-checks: compiles >= 7000\n")
+        return root
+
+    def test_derived_form_reads_the_summed_headers(self):
+        """RQ-91-EMUFLOOR: no pin left in ci.yml, so the rule's subject is the
+        DERIVED total — 40 + 2, the wired emulations oracles only."""
+        _, live, hits, fails = check_live_floor_prose(self._derived_tree())
+        self.assertEqual((live, hits, fails), ("42", 0, []))
+
+    def test_derived_form_still_catches_a_restated_total(self):
+        root = self._derived_tree(prose="the floor is 42 today")
+        _, live, hits, fails = check_live_floor_prose(root)
+        self.assertEqual((live, hits), ("42", 1))
+        self.assertTrue(fails, "a restated DERIVED total must still fail")
+
+    def test_derived_form_with_no_oracle_fails(self):
+        """The derivation seeing nothing is blindness, not a clean tree."""
+        root = self._derived_tree(floors=())
+        _, live, _, fails = check_live_floor_prose(root)
+        self.assertIsNone(live)
+        self.assertTrue(fails)
+
     def test_zero_population_fails(self):
         """An empty artifact glob is pattern rot, not a clean tree."""
         td = tempfile.TemporaryDirectory()

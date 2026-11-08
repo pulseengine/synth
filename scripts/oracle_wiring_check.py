@@ -328,6 +328,242 @@ def classify(root, scripts, workflows):
     return records, fails
 
 
+# ---------------------------------------------------------------------------
+# RQ-91-EMUFLOOR (#910, v0.91) — the per-oracle floor compared against a BASE.
+#
+# Until v0.91 the summed `ci-checks: emulations` floors had to EQUAL a number
+# pinned literally in ci.yml (`--exact-emulation-floor N`) and mirrored in
+# claims.yaml. That pin had exactly one job left: make a SHRINK cost a second,
+# visible edit. It cost every oracle PR an edit to the same line — measured over
+# c20d37b2..2945628c (v0.90): 9 commits touched ci.yml and all 9 moved that
+# line, so every pair of oracle PRs conflicted on it. And it was BLIND to the
+# shrink it existed for whenever another oracle grew by the same amount:
+# lowering one oracle by 10 and raising another by 10 left it at rc 0 on
+# eab66646, because a sum cannot tell one oracle's loss from another's gain.
+#
+# The replacement compares EACH oracle against the tree the change lands on
+# (`--floor-base REF`: the merge ref's first parent on a pull request, the
+# pushed-over commit on a push). For every script that is `wired` with
+# `ci-checks: emulations >= N` in the base, the checked tree must still declare
+# it `wired` / `emulations` with a floor >= N. Nothing is pinned, so two PRs
+# adding two oracles touch no shared line; and the comparison is per oracle, so
+# a compensating move is a red build.
+#
+# A legitimate shrink is WAIVED where it happens:
+#   * lowered floor / flipped status / changed mode — in the oracle's own header:
+#         # ci-checks-shrink: emulations 1541 -> 905 — <reason, >= 20 chars>
+#   * deleted or renamed oracle — a tombstone, one FILE per retirement (no
+#     shared line), `scripts/repro/retired/<name>.retired`, carrying the same
+#     line with `-> 0`.
+# A waiver authorises exactly the base->current transition it names. It may stay
+# as history while its `to` equals the current floor; once that floor moves it
+# is STALE and red — and the PR that moves it is already editing that file, so
+# the cleanup never lands on an unrelated PR. A tombstone whose script exists
+# again is red, so a retirement cannot linger as a standing licence.
+#
+# Fails CLOSED: an unresolvable base, a base that does not parse, or a base with
+# no wired emulations oracle (which would make every oracle look like an
+# addition) is a red build, never a vacuous green.
+# ---------------------------------------------------------------------------
+
+SHRINK_RE = re.compile(
+    r"^#\s*ci-checks-shrink:\s*(?P<body>.*)$",
+    re.MULTILINE,
+)
+SHRINK_BODY_RE = re.compile(
+    r"^emulations\s+(?P<frm>\d+)\s*->\s*(?P<to>\d+)\s*[-—:]+\s*(?P<reason>.*)$"
+)
+RETIRED_DIR = "scripts/repro/retired"
+RETIRED_SUFFIX = ".retired"
+
+
+def emulation_floor_of(text):
+    """The `ci-checks: emulations` floor a script attests, or None.
+
+    None unless the script is `wired` AND declares mode `emulations` — the only
+    population the emulation floor ever counted. Status is read from the header
+    alone: at a BASE ref that tree's own gate already held header and wiring
+    consistent, and at HEAD `classify` checks it.
+    """
+    decls = list(DECL_RE.finditer(text))
+    if len(decls) != 1 or decls[0].group("status").lower() != "wired":
+        return None
+    decl, err = parse_checks_decl(text, "-")
+    if err or decl.mode != "emulations":
+        return None
+    return decl.minimum
+
+
+def parse_shrinks(text, rel):
+    """Return (list of (frm, to, reason), failures) for `ci-checks-shrink:` lines."""
+    out, fails = [], []
+    for m in SHRINK_RE.finditer(text):
+        b = SHRINK_BODY_RE.match(m.group("body").strip())
+        if not b:
+            fails.append(
+                f"{rel}: malformed `ci-checks-shrink:` line {m.group(0)!r} — "
+                f"want `# ci-checks-shrink: emulations <from> -> <to> — <reason>`"
+            )
+            continue
+        reason = b.group("reason").strip()
+        if len(reason) < MIN_REASON_CHARS or PLACEHOLDER_RE.match(reason):
+            fails.append(
+                f"{rel}: `ci-checks-shrink:` needs a REAL reason "
+                f"(>= {MIN_REASON_CHARS} chars, not a placeholder); got {reason!r}"
+            )
+            continue
+        out.append((int(b.group("frm")), int(b.group("to")), reason))
+    if len(out) + len(fails) > 1:
+        fails.append(
+            f"{rel}: {len(out) + len(fails)} `ci-checks-shrink:` lines — at most "
+            f"one is allowed (it names the ONE transition it authorises)"
+        )
+    return out, fails
+
+
+def _git(root, *args, input_bytes=None):
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        input=input_bytes,
+        capture_output=True,
+        timeout=120,
+    )
+
+
+def base_floors(root, ref):
+    """Return (sha, {script basename: floor}, failures) for the tree at `ref`."""
+    r = _git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    sha = r.stdout.decode().strip()
+    if r.returncode != 0 or not sha:
+        return None, {}, [
+            f"floor-base: cannot resolve {ref!r} to a commit — the per-oracle "
+            f"comparison has NO reference, and a gate with no reference passes "
+            f"everything. Fetch the base (Claim Check uses fetch-depth: 0) or "
+            f"pass a resolvable --floor-base."
+        ]
+    ls = _git(root, "ls-tree", "--name-only", sha, "scripts/repro/")
+    if ls.returncode != 0:
+        return sha, {}, [f"floor-base: `git ls-tree` failed at {sha[:12]}: "
+                         f"{ls.stderr.decode().strip()}"]
+    paths = [
+        p for p in ls.stdout.decode().splitlines()
+        if p.count("/") == 2 and (p.endswith(".py") or p.endswith(".sh"))
+    ]
+    floors = {}
+    if paths:
+        req = "".join(f"{sha}:{p}\n" for p in paths).encode()
+        cat = _git(root, "cat-file", "--batch", input_bytes=req)
+        if cat.returncode != 0:
+            return sha, {}, [f"floor-base: `git cat-file` failed at {sha[:12]}"]
+        buf, pos = cat.stdout, 0
+        for p in paths:
+            nl = buf.index(b"\n", pos)
+            header = buf[pos:nl].decode().split()
+            if len(header) != 3 or header[1] != "blob":
+                return sha, {}, [f"floor-base: cannot read {p} at {sha[:12]}"]
+            size = int(header[2])
+            body = buf[nl + 1:nl + 1 + size].decode(errors="ignore")
+            pos = nl + 1 + size + 1
+            f = emulation_floor_of(body)
+            if f is not None:
+                floors[os.path.basename(p)] = f
+    if not floors:
+        return sha, {}, [
+            f"floor-base: VACUOUS — the base {sha[:12]} has NO wired "
+            f"`ci-checks: emulations` oracle, so every oracle here would read as "
+            f"an addition and nothing could shrink. Wrong ref, or a broken read."
+        ]
+    return sha, floors, []
+
+
+def compare_floors(root, base, head_texts):
+    """Per-oracle comparison of `base` {name: floor} against the checked tree.
+
+    `head_texts` maps script basename -> text for scripts/repro/*.{py,sh} in the
+    checked tree. Returns (stats, failures).
+    """
+    fails = []
+    head_floors = {}
+    waivers = {}
+    for name, text in head_texts.items():
+        f = emulation_floor_of(text)
+        if f is not None:
+            head_floors[name] = f
+        w, wf = parse_shrinks(text, f"scripts/repro/{name}")
+        fails += wf
+        if w:
+            waivers[name] = w
+            cur = f if f is not None else 0
+            for frm, to, _ in w:
+                if to != cur:
+                    fails.append(
+                        f"scripts/repro/{name}: STALE `ci-checks-shrink: "
+                        f"emulations {frm} -> {to}` — the script now attests "
+                        f"{cur}. A shrink waiver names one transition; once the "
+                        f"floor moves again it authorises nothing. Delete it in "
+                        f"this PR (or replace it, if this PR shrinks again)."
+                    )
+
+    tomb_dir = pathlib.Path(root) / RETIRED_DIR
+    tombs = {}
+    for t in sorted(tomb_dir.glob(f"*{RETIRED_SUFFIX}")) if tomb_dir.is_dir() else []:
+        name = t.name[: -len(RETIRED_SUFFIX)]
+        rel = f"{RETIRED_DIR}/{t.name}"
+        w, wf = parse_shrinks(t.read_text(errors="ignore"), rel)
+        fails += wf
+        if not w and not wf:
+            fails.append(f"{rel}: a tombstone must carry one "
+                         f"`# ci-checks-shrink: emulations <from> -> 0 — <reason>`")
+        for frm, to, _ in w:
+            if to != 0:
+                fails.append(f"{rel}: a tombstone retires to 0, not {to}")
+        if name in head_texts:
+            fails.append(
+                f"{rel}: tombstone for scripts/repro/{name}, which EXISTS — a "
+                f"re-added oracle must delete its tombstone, or the old "
+                f"retirement stays a standing licence to delete it again."
+            )
+        tombs[name] = w
+
+    stats = {"compared": len(base), "unchanged": 0, "raised": 0,
+             "waived": 0, "added": 0}
+    for name, b in sorted(base.items()):
+        h = head_floors.get(name)
+        if h is not None and h >= b:
+            stats["unchanged" if h == b else "raised"] += 1
+            continue
+        now = h if h is not None else 0
+        if name in head_texts:
+            have = waivers.get(name, [])
+            where = f"scripts/repro/{name}"
+            if h is None:
+                what = ("is no longer a wired `ci-checks: emulations` oracle "
+                        "(status flipped, or mode changed)")
+            else:
+                what = f"declares `emulations >= {h}`"
+            hint = (f"add `# ci-checks-shrink: emulations {b} -> {now} — "
+                    f"<reason>` to its header")
+        else:
+            have = tombs.get(name, [])
+            where = f"scripts/repro/{name}"
+            what = "is GONE (deleted or renamed)"
+            hint = (f"add {RETIRED_DIR}/{name}{RETIRED_SUFFIX} carrying "
+                    f"`# ci-checks-shrink: emulations {b} -> 0 — <reason>`")
+        if any(frm == b and to == now for frm, to, _ in have):
+            stats["waived"] += 1
+            continue
+        fails.append(
+            f"{where}: emulation floor SHRANK against the base — it was a wired "
+            f"`emulations >= {b}` oracle there and {what}. That is the failure "
+            f"#910 exists to catch: an oracle that lost execution. If the loss is "
+            f"genuine and justified, {hint}; never lower a floor to green a build."
+        )
+    stats["added"] = sum(1 for n in head_floors if n not in base)
+    return stats, fails
+
+
 def summarize(records):
     out = {"total": len(records), "wired": 0, "manual": 0, "unwired": 0, "undeclared": 0}
     by_cat = {}
@@ -383,14 +619,13 @@ def main():
         "(the #910 ratchet; direction is UP)",
     )
     ap.add_argument(
-        "--exact-emulation-floor",
-        type=int,
-        metavar="N",
-        help="RQ-63-FLOOREQ: fail unless the summed `ci-checks: emulations` "
-        "floors EQUAL N exactly — the invariant RQ-62-FLOORTIGHT wrote down "
-        "and nothing enforced. `--min-` is a LOWER BOUND, so an oracle that "
-        "lands without its same-PR bump re-opens slack silently; equality "
-        "makes that a red build.",
+        "--floor-base",
+        metavar="REF",
+        help="RQ-91-EMUFLOOR: compare EACH wired oracle's `ci-checks: "
+        "emulations` floor against the tree at REF (the commit this change "
+        "lands on); a lowered floor, a flipped status, a changed mode or a "
+        "deleted oracle is red unless waived where it happens. Replaces the "
+        "summed `--exact-emulation-floor` pin every oracle PR conflicted on.",
     )
     args = ap.parse_args()
 
@@ -425,31 +660,30 @@ def main():
             "VACUOUS — no `wired` oracle declares `ci-checks: emulations`; the "
             "execution population is unmeasured."
         )
-    # RQ-63-FLOOREQ (#910, v0.63). RQ-62-FLOORTIGHT tightened the VALUE
-    # (322754 -> 324646) and wrote the rule beside it — "keep this EQUAL to
-    # the declared total; a landing oracle bumps both in the same PR" — but
-    # shipped only the number. Measured on the v0.63 tree: raising one
-    # oracle's declared floor by 50 while leaving ci.yml untouched left
-    # oracle_wiring_check, claim_check AND status_evidence_check all at
-    # EXIT 0. `--min-` cannot see it, because declared > enforced satisfies a
-    # lower bound. That is the same defect one level up again: #1113 was a
-    # decline half invisible to its own oracle's floor, FLOORTIGHT was the
-    # summed ratchet below the summed declarations, and this is the RULE
-    # WRITTEN TO PREVENT RECURRENCE being unenforced. Equality closes it:
-    # there is no slack to drift into, in either direction.
-    if args.exact_emulation_floor is not None:
-        measured = summary["emulation_floor"]
-        if measured != args.exact_emulation_floor:
-            direction = "ABOVE" if measured > args.exact_emulation_floor else "BELOW"
-            fails.append(
-                f"check-floor EQUALITY BROKEN: summed `ci-checks: emulations` "
-                f"floors {measured} != pinned {args.exact_emulation_floor} "
-                f"({direction} by {abs(measured - args.exact_emulation_floor)}). "
-                f"If an oracle landed, bump the pin in the SAME PR — that is "
-                f"the RQ-62-FLOORTIGHT protocol. If an oracle LOST execution, "
-                f"that is the failure this gate exists to catch. Never widen "
-                f"the pin to make a build green."
-            )
+    # RQ-63-FLOOREQ (#910, v0.63) made the summed floor an EQUALITY with a
+    # number pinned in ci.yml, because a lower bound let declared > enforced
+    # slack reopen silently. RQ-91-EMUFLOOR (v0.91) replaces that pin with a
+    # per-oracle comparison against the base tree: there is still no slack to
+    # drift into (every oracle's floor is held individually), no shared number
+    # for oracle PRs to conflict on, and a compensating move — one oracle
+    # down, another up by the same amount, which a sum cannot see — is red.
+    if args.floor_base is not None:
+        sha, base, bfails = base_floors(root, args.floor_base)
+        fails += bfails
+        if not bfails:
+            head_texts = {
+                os.path.basename(s): pathlib.Path(s).read_text(errors="ignore")
+                for s in scripts
+            }
+            stats, cfails = compare_floors(root, base, head_texts)
+            fails += cfails
+            summary["floor_base"] = sha
+            summary["floor_base_compared"] = stats["compared"]
+            summary["floor_base_raised"] = stats["raised"]
+            summary["floor_base_waived"] = stats["waived"]
+            summary["floor_base_added"] = stats["added"]
+        else:
+            summary["floor_base_compared"] = 0
     if args.min_emulation_floor is not None:
         if summary["emulation_floor"] < args.min_emulation_floor:
             fails.append(
@@ -485,6 +719,14 @@ def main():
         )
     if summary["checks_undeclared"]:
         print(f"  ci-checks UNDECLARED: {summary['checks_undeclared']}")
+    if summary.get("floor_base"):
+        print(
+            f"  floor-base {summary['floor_base'][:12]}: compared "
+            f"{summary['floor_base_compared']} base emulations oracles — "
+            f"{summary['floor_base_raised']} raised, "
+            f"{summary['floor_base_waived']} waived shrink(s), "
+            f"{summary['floor_base_added']} new"
+        )
 
     summary["failures"] = len(fails)
 

@@ -93,7 +93,7 @@ artifacts:
       # is convention, not a check — `--min-emulation-floor` is a lower bound,
       # so a landing oracle whose author forgets the bump re-opens slack
       # silently; an `--exact-emulation-floor` would close it.
-      done-when: "contains:.github/workflows/ci.yml:Keep this EQUAL to"
+      done-when: "contains:.github/workflows/ci.yml:--floor-base"
       verified-by: >-
         Red-first in both directions, in an isolated git worktree so the
         mutations could not touch the release tree: with the OLD floor,
@@ -107,3 +107,12 @@ artifacts:
         Re-derived on the tree: `oracle_wiring_check.py` reports `emulations
         158 scripts, floor total 324646`, equal to the enforced value; and
         claim_check.py is 58/58 with the verbatim pin naming 324646.
+        SUCCESSOR, recorded 2026-11-08 at v0.91: RQ-91-EMUFLOOR retired the
+        summed pin this artifact tightened to equal the declared total. The invariant (no slack between what
+        an oracle declares and what the gate holds it to) is now held PER
+        ORACLE by `oracle_wiring_check.py --floor-base`, which also reds the
+        compensating move a sum could not see. The anchor literal named a
+        ci.yml text that described the retired gate, and keeping it alive in
+        a comment would have made this predicate true about a gate that no
+        longer exists, so the done-when was moved to the successor's anchor.
+        The transcript above is unchanged.
