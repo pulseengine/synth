@@ -521,7 +521,8 @@ loud-skipped every memory-k access, because both guards read R10 — **memory
 
 `--safety-bounds software` now guards memory k against **this table's own
 `__synth_mem_size_k`**: every lowered memory-k op (the i32/i64 load/store
-families, `memory.fill`, `memory.copy` in either direction) loads it through
+families, the f32/f64 loads and stores (#1673), `memory.fill`, `memory.copy`
+in either direction) loads it through
 an `R_ARM_ABS32` literal and runs memory 0's guard against it, trapping with
 an inline `UDF`. A bulk op checks every side's whole range before its loop
 writes a byte (`dst+len`, and `src+len` for a copy: overflow or `> size`

@@ -3902,9 +3902,10 @@ impl InstructionSelector {
                 //     ADD  base, base, addr
                 //     LDR/STR[B/H] value, [base]
                 //
-                // Scope: the i32 and i64 (#1622) integer access families and
-                // the bulk forms. f32/f64/v128 accesses and `--safety-bounds
-                // mask` on memory k decline LOUDLY (typed Err → loud-skip),
+                // Scope: the i32 and i64 (#1622) integer access families, the
+                // f32/f64 accesses (#1673) and the bulk forms. v128 accesses
+                // and `--safety-bounds mask` on memory k decline LOUDLY
+                // (typed Err → loud-skip),
                 // never alias memory 0; `software` guards against memory k's
                 // own size (#1619).
                 MultiMemory {
@@ -3962,11 +3963,17 @@ impl InstructionSelector {
                         }
                     };
                     match inner_op.as_ref() {
+                        // #1673: `f32.load` is memory 0's shape (#708) — the
+                        // i32 word load, then a bit-exact `VMOV Sd, Rd` (never
+                        // VLDR, which alignment-faults on an unaligned address).
+                        // The FPU gates see through the wrapper, so this never
+                        // runs on a core without VFP.
                         I32Load { offset, .. }
                         | I32Load8S { offset, .. }
                         | I32Load8U { offset, .. }
                         | I32Load16S { offset, .. }
-                        | I32Load16U { offset, .. } => {
+                        | I32Load16U { offset, .. }
+                        | F32Load { offset, .. } => {
                             let addr = pop_operand(
                                 &mut stack,
                                 &mut next_temp,
@@ -4003,7 +4010,7 @@ impl InstructionSelector {
                             });
                             let mem = MemAddr::imm(base, 0);
                             let load_op = match inner_op.as_ref() {
-                                I32Load { .. } => ArmOp::Ldr { rd: dst, addr: mem },
+                                I32Load { .. } | F32Load { .. } => ArmOp::Ldr { rd: dst, addr: mem },
                                 I32Load8U { .. } => ArmOp::Ldrb { rd: dst, addr: mem },
                                 I32Load8S { .. } => ArmOp::Ldrsb { rd: dst, addr: mem },
                                 I32Load16U { .. } => ArmOp::Ldrh { rd: dst, addr: mem },
@@ -4015,28 +4022,54 @@ impl InstructionSelector {
                                 source_line: Some(idx),
                             });
                             cf.add_instructions(3);
-                            stack.push(StackVal::i32(dst));
+                            if matches!(inner_op.as_ref(), F32Load { .. }) {
+                                let sd = alloc_vfp_temp(&mut vfp_used)?;
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::F32ReinterpretI32 { sd, rm: dst },
+                                    source_line: Some(idx),
+                                });
+                                cf.add_instruction();
+                                stack.push(StackVal::Float { sreg: sd });
+                            } else {
+                                stack.push(StackVal::i32(dst));
+                            }
                         }
+                        // #1673: `f32.store` = `VMOV Rd, Sn` into a core
+                        // register, then the i32 word store (memory 0's #719
+                        // shape); the guard below still precedes the store.
                         I32Store { offset, .. }
                         | I32Store8 { offset, .. }
-                        | I32Store16 { offset, .. } => {
+                        | I32Store16 { offset, .. }
+                        | F32Store { offset, .. } => {
                             // WASM store pops: value first, then address.
-                            let value = pop_operand(
-                                &mut stack,
-                                &mut next_temp,
-                                &mut instructions,
-                                &mut spill,
-                                &live_params,
-                                idx,
-                            )?;
-                            let addr = pop_operand(
-                                &mut stack,
-                                &mut next_temp,
-                                &mut instructions,
-                                &mut spill,
-                                &live_params,
-                                idx,
-                            )?;
+                            let pop = |stack: &mut Vec<StackVal>,
+                                       next_temp: &mut u8,
+                                       instructions: &mut Vec<ArmInstruction>,
+                                       spill: &mut SpillState| {
+                                pop_operand(stack, next_temp, instructions, spill, &live_params, idx)
+                            };
+                            let (value, addr) = if matches!(inner_op.as_ref(), F32Store { .. }) {
+                                let sm = pop_float(&mut stack)?;
+                                let addr = pop(&mut stack, &mut next_temp, &mut instructions, &mut spill)?;
+                                let rd = alloc_temp_or_spill(
+                                    &mut next_temp,
+                                    &mut stack,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &[live_params.as_slice(), &[addr]].concat(),
+                                    idx,
+                                )?;
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::I32ReinterpretF32 { rd, sm },
+                                    source_line: Some(idx),
+                                });
+                                cf.add_instruction();
+                                free_vfp_temp(&mut vfp_used, &vfp_home, sm);
+                                (rd, addr)
+                            } else {
+                                let value = pop(&mut stack, &mut next_temp, &mut instructions, &mut spill)?;
+                                (value, pop(&mut stack, &mut next_temp, &mut instructions, &mut spill)?)
+                            };
                             let base = alloc_temp_or_spill(
                                 &mut next_temp,
                                 &mut stack,
@@ -4057,7 +4090,7 @@ impl InstructionSelector {
                             });
                             let mem = MemAddr::imm(base, 0);
                             let store_op = match inner_op.as_ref() {
-                                I32Store { .. } => ArmOp::Str {
+                                I32Store { .. } | F32Store { .. } => ArmOp::Str {
                                     rd: value,
                                     addr: mem,
                                 },
@@ -4091,7 +4124,10 @@ impl InstructionSelector {
                         | I64Load16S { offset, .. }
                         | I64Load16U { offset, .. }
                         | I64Load32S { offset, .. }
-                        | I64Load32U { offset, .. } => {
+                        | I64Load32U { offset, .. }
+                        // #1673: `f64.load` is the `I64Ldr` pair, then a
+                        // bit-exact `VMOV Dd, lo, hi` (memory 0's #369 shape).
+                        | F64Load { offset, .. } => {
                             let addr = pop_operand(
                                 &mut stack,
                                 &mut next_temp,
@@ -4167,36 +4203,67 @@ impl InstructionSelector {
                                 }),
                             }
                             cf.add_instructions(1 + ops.len());
+                            if matches!(inner_op.as_ref(), F64Load { .. }) {
+                                let dd = alloc_vfp_dtemp(&mut vfp_used)?;
+                                ops.push(ArmOp::F64ReinterpretI64 {
+                                    dd,
+                                    rmlo: dst_lo,
+                                    rmhi: dst_hi,
+                                });
+                                cf.add_instruction();
+                                stack.push(StackVal::Double { dreg: dd });
+                            } else {
+                                stack.push(StackVal::i64(dst_lo));
+                            }
                             for op in ops {
                                 instructions.push(ArmInstruction {
                                     op,
                                     source_line: Some(idx),
                                 });
                             }
-                            stack.push(StackVal::i64(dst_lo));
                         }
+                        // #1673: `f64.store` = `VMOV lo, hi, Dm` into a core
+                        // pair, then the `I64Str` pair behind ONE full-width
+                        // guard, so a trapping store writes nothing (#1642).
                         I64Store { offset, .. }
                         | I64Store8 { offset, .. }
                         | I64Store16 { offset, .. }
-                        | I64Store32 { offset, .. } => {
-                            // WASM store pops: value (an i64 pair) first.
-                            let value_lo = pop_operand(
-                                &mut stack,
-                                &mut next_temp,
-                                &mut instructions,
-                                &mut spill,
-                                &live_params,
-                                idx,
-                            )?;
-                            let addr = pop_operand(
-                                &mut stack,
-                                &mut next_temp,
-                                &mut instructions,
-                                &mut spill,
-                                &live_params,
-                                idx,
-                            )?;
-                            let value_hi = i64_pair_hi(value_lo)?;
+                        | I64Store32 { offset, .. }
+                        | F64Store { offset, .. } => {
+                            let pop = |stack: &mut Vec<StackVal>,
+                                       next_temp: &mut u8,
+                                       instructions: &mut Vec<ArmInstruction>,
+                                       spill: &mut SpillState| {
+                                pop_operand(stack, next_temp, instructions, spill, &live_params, idx)
+                            };
+                            // WASM store pops: value (an i64 pair / f64) first.
+                            let (value_lo, value_hi, addr) = if matches!(
+                                inner_op.as_ref(),
+                                F64Store { .. }
+                            ) {
+                                let dm = pop_double(&mut stack)?;
+                                let addr = pop(&mut stack, &mut next_temp, &mut instructions, &mut spill)?;
+                                let (rdlo, rdhi) = alloc_consecutive_pair(
+                                    &mut next_temp,
+                                    &mut stack,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &[addr],
+                                    &live_params,
+                                    idx,
+                                )?;
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::I64ReinterpretF64 { rdlo, rdhi, dm },
+                                    source_line: Some(idx),
+                                });
+                                cf.add_instruction();
+                                free_vfp_dtemp(&mut vfp_used, &vfp_home, dm);
+                                (rdlo, rdhi, addr)
+                            } else {
+                                let lo = pop(&mut stack, &mut next_temp, &mut instructions, &mut spill)?;
+                                let addr = pop(&mut stack, &mut next_temp, &mut instructions, &mut spill)?;
+                                (lo, i64_pair_hi(lo)?, addr)
+                            };
                             let base = alloc_temp_or_spill(
                                 &mut next_temp,
                                 &mut stack,
@@ -4218,7 +4285,7 @@ impl InstructionSelector {
                             // Narrow stores write the LOW word only (wrap).
                             let (rd, addr) = (value_lo, MemAddr::imm(base, 0));
                             let op = inner_op.as_ref();
-                            let store_op = if matches!(op, I64Store { .. }) {
+                            let store_op = if matches!(op, I64Store { .. } | F64Store { .. }) {
                                 ArmOp::I64Str {
                                     rdlo: value_lo,
                                     rdhi: value_hi,
@@ -4548,9 +4615,10 @@ impl InstructionSelector {
                             return Err(synth_core::Error::synthesis(format!(
                                 "multi-memory: {other:?} on memory {memory} is not \
                                  lowered — on a non-default memory only the i32 \
-                                 and i64 integer load/store families, memory.fill \
-                                 and memory.copy are (#406, #1622); float/v128 \
-                                 accesses on a non-default memory decline loudly"
+                                 and i64 integer load/store families, the f32/f64 \
+                                 load/store, memory.fill and memory.copy are \
+                                 (#406, #1622, #1673); v128 accesses on a \
+                                 non-default memory decline loudly"
                             )));
                         }
                     }

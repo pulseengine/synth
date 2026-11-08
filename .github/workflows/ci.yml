@@ -3373,6 +3373,19 @@ jobs:
       # load/store guard, the native-pointer refusal removed) each red it.
       - name: Run memory-k out-of-bounds trap oracle (#1619, cortex-m3, NPA and plain)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/memk_bulk_oob_1619_differential.py
+      # MEMKFLOAT (#1673): f32/f64 load/store on a NON-DEFAULT memory k lower
+      # through the i32/i64 memory-k arms plus memory 0's bit-exact VMOV.
+      # cortex-m4f (f32) and cortex-m7dp (f32+f64), software/none x plain/npa,
+      # vs wasmtime driven through bit-carrying twins: NaN payloads (sNaN
+      # included) bit-exact, unaligned and boundary addresses, every memory's
+      # image and a canary past each end after every call; under software an
+      # OOB store traps on the UDF with ZERO bytes written. Plus decline parity
+      # (m3/m4f/m7 decline the memory-k twin with memory 0's exact text) and
+      # mask's loud-skip. RED at 617e440b: 0 of 1666 compiled. Mutants (guard
+      # against R10, width-1 guard, store before guard, scope unwrap removed)
+      # each red it.
+      - name: Run memory-k f32/f64 load/store oracle (#1673, cortex-m4f/m7dp, NPA and plain)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/memk_float_1673_differential.py
       # #758: the DEFAULT self-contained `--cortex-m` image (no --relocatable,
       # no native-pointer ABI) must SHIP active memory-0 data segments. Before
       # the fix `.linear_memory` was NoBits and the reset path had no copy loop,
@@ -5030,8 +5043,14 @@ jobs:
           # one new fixture scripts/repro/armv6m_1301.wat contributes all of it
           # (+22 / +30 / +52); held aside, this branch's binary prints main's own
           # 7745 / 9312 / 244183. `hits: 0`.
-          grep -Eq '^functions audited: 7767$' haa1189.txt
-          grep -Eq '^homes watched: 9342$' haa1189.txt
+          # RQ-91-MEMKFLOAT (#1673, v0.91): 7767 -> 7773 functions, 9342 -> 9357
+          # homes and (below) 244235 -> 244358 attributed. CODE, not corpus: the
+          # branch adds no fixture; memory-k f32/f64 load/store functions that
+          # main skipped now compile and are audited. Paired control: main
+          # b0b643f1's binary over this tree prints 7767 / 9342 / 244235.
+          # `hits: 0`.
+          grep -Eq '^functions audited: 7773$' haa1189.txt
+          grep -Eq '^homes watched: 9357$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -5046,7 +5065,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 244235 ' haa1189.txt
+          grep -Eq '^attributed instructions: 244358 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),

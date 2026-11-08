@@ -546,8 +546,9 @@ comparison into flattery. So:
   on ANY profile (#1145, RQ-62-MEMISOLATE — gale's finding, and it outranks
   the MPU headline it arrived beside): the guards read R10, MEMORY 0's size by
   the register contract, and memory k has no size register. `software` now
-  guards every lowered memory-k op — the i32/i64 load/store families and
-  `memory.fill`/`memory.copy` — against memory k's OWN size,
+  guards every lowered memory-k op — the i32/i64 load/store families, the
+  f32/f64 loads and stores (#1673, v0.91) and `memory.fill`/`memory.copy` —
+  against memory k's OWN size,
   `__synth_mem_size_k` (the region table's SHN_ABS symbol, read through an
   `R_ARM_ABS32` literal, so the guard and the embedder's region read one
   number); memory 0 keeps R10. A bulk op checks every side's whole range

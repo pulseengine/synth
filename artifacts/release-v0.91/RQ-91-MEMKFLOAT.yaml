@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-MEMKFLOAT
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "f32 and f64 loads and stores on a non-default memory are lowered"
     description: >
         The float sibling of #1622. On ARM --relocatable, f32.load,
@@ -49,6 +49,51 @@ artifacts:
       issue: "#1673"
       verification-track: manual
       issue-scope: closes
+      landed: "#1673 - DELIVERED: f32.load, f32.store, f64.load and f64.store on memory k > 0 lower on ARM --relocatable by JOINING the shipped i32 and i64 memory-k arms (same integer word access, same guard, same __synth_mem_size_k / __synth_wasm_data_k symbols) plus memory 0's bit-exact VMOV; the f32/f64 scope classifiers see through the MultiMemory wrapper so cortex-m3 and the single-precision cores decline exactly as memory 0's twins do. Newly refused: nothing."
+      verified-by: >
+        DELIVERED, execution-verified against wasmtime. The refuting command
+        was RUN FIRST on 617e440b and the gap was LIVE: both targets rc 0
+        under --allow-skipped-exports with only li32 in the object
+        (cortex-m7dp: 4 multi-memory skips; cortex-m4f: 3, sf64 skipped for
+        its f64 parameter). On the branch cortex-m7dp defines all five
+        functions; cortex-m4f defines lf32/sf32/li32 and declines lf64/sf64
+        with memory 0's exact double-precision refusal.
+        scripts/repro/memk_float_1673_differential.py, 1666 calls on
+        {cortex-m4f, cortex-m7dp} x {software, none} x {plain, npa}: NaN
+        payloads bit-exact (f32 and f64 sNaN with the quiet bit asserted
+        clear in wasmtime's own bits, via bit-carrying twins), unaligned
+        and boundary addresses (size-4/size-8 in, size-3/size-7 and beyond
+        trap), three memories of three sizes (64 KiB, 5,376 B pagesize-1,
+        128 KiB) compared whole after every call with a canary past each
+        end, R4-R11/SP/S16-S31 preserved; 132 trap rows under software,
+        every one a UDF with ZERO bytes written. Plus 104 decline checks:
+        memory-k twin declines with memory 0's exact text on cortex-m3
+        (f32, f64), cortex-m4f and cortex-m7 (f64), and every memory-k
+        float function still loud-skips under --safety-bounds mask. RED on
+        617e440b: 0 of 1666 compiled (every leg rc 1) and 21 of 104
+        decline checks failed. GREEN on the branch. Mutants, each red:
+        float guard against R10 (120 failures), a width-1 guard (46), the
+        store emitted before its guard (68: an OOB store writes its bytes
+        before the UDF, or faults on unmapped memory instead of trapping), the MultiMemory unwrap removed from the scope
+        classifiers (every leg fails to compile, 21 parity failures).
+        Paired controls: a sha256 census of 275 .wat/.wasm files (the
+        repo corpus plus memory-0 float, integer memory-k #1619/#1622 and
+        the refuting fixture) x 37 configs (cortex-m3/m4/m4f/m7/m7dp/r5,
+        self-contained and --relocatable, none/software/mask/mpu,
+        npa, --no-optimize, riscv, aarch64) = 10175 base-vs-branch pairs:
+        10160 byte-identical, 0 bytes-differ, 15 rc/skip changes, all on
+        the refuting fixture (more float functions compile). Newly
+        refused: nothing. DISCLOSED SCOPE: the software/npa legs run the
+        memory-k-only functions; the four cross-memory ones (x01_32,
+        x10_32, x01_64, x10_64) are excluded there because their MEMORY-0
+        side traps on valid native pointers. That is memory 0's own guard
+        (a native pointer compared against R10), RQ-91-NPASWBOUNDS,
+        analysed on #1661: a control on this branch traps identically for
+        a plain memory-0 f32.load and i32.load at the same native pointer
+        (n:0x40) under software+npa, and returns under software/plain. So
+        under software+npa the cross-memory float functions now compile
+        and inherit exactly that memory-0 behaviour; the fix belongs to
+        that record, not this one.
       done-when: >
         manual:2027-03-31 the four float ops on memory k lower through
         the integer family's memory-k base and execute equal to

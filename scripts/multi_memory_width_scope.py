@@ -194,9 +194,9 @@ def report() -> int:
     print(f"UNEXERCISED REACH (phase one covers, reporter never uses): "
           f"{len(family - set(used))} op(s)")
     print("\nTHE TWO REFUSALS ARE NOT SYMMETRIC:")
-    print("  width refusal  -- float/v128 on memory k declines loudly (the i64 "
-          "family is lowered since #1622); reporter uses "
-          f"{sum(1 for v in used if not v.startswith(('I32', 'I64')))} such access(es)")
+    print("  width refusal  -- v128 on memory k declines loudly (the i64 "
+          "family is lowered since #1622, f32/f64 since #1673); reporter uses "
+          f"{sum(1 for v in used if v.startswith('V128'))} such access(es)")
     print("  bounds refusal -- was width-independent (the guard read R10 = memory 0's "
           "size); since #1619 software guards memory k against __synth_mem_size_k, "
           "and only mask still declines (it needs a 2^n size)")
@@ -249,9 +249,13 @@ def self_test() -> int:
     # MEMK64 (#1622, v0.89.1) moved the i64 integer family INSIDE the arm, so
     # the declining widths are now the float/v128 ones; the i64 family is
     # asserted present below, so this control moved with the scope, not away.
-    ok(not any(v.startswith(("F32", "F64", "V128")) for v in family),
+    # MEMKFLOAT (#1673, v0.91) moved the f32/f64 accesses inside too; v128 is
+    # the declining width that remains.
+    ok(not any(v.startswith("V128") for v in family),
        "NEGATIVE CONTROL: the derived family contains no declining width (and "
        "removing the `other =>` cut makes the derivation RAISE, not over-read)")
+    ok({"F32Load", "F32Store", "F64Load", "F64Store"} <= family,
+       "#1673: the f32/f64 accesses are inside the arm's reach")
     ok({"I64Load", "I64Load32U", "I64Store", "I64Store32"} <= family,
        "#1622: the i64 integer family (gale's supervisor-domain widths) is "
        "inside the arm's reach")
