@@ -66,6 +66,25 @@ artifacts:
         per-export memory sets, per-memory bounds read back from the
         object, and an opt-in PMSAv7 placement.
 
+        #1145 STAYS OPEN: this record is `issue-scope: outlives`.
+        gale's closure criteria, verbatim as relayed on 2026-11-08:
+        (a) the facts and the layout option are in a released synth that
+        a pinned varve layer carries; (b) on that pin, gale's census and
+        the 56/56 run are byte-identical on its real image, and the
+        memfacts sidecar's sha256 matches the object; (c) gale's own
+        acceptance pair passes on Renode and silicon: tenant
+        unprivileged, CONTROL.nPRIV read back, a write into supervisor
+        memory faults with the HM verdict, and the same write lands with
+        protection off.
+
+        SYNTH'S OWN RESIDUALS on #1145, not delivered here:
+        `__synth_mem_used_N` (a used-extent high-water symbol); the #398
+        per-memory data-base contract; the QEMU mps2 cross-region fault
+        pair; and an imported memory 0 beside a defined memory 1, which
+        does not compile today (the memory-1 access declines). That last
+        one is not gale's shape: gale defines both memories and exports
+        memory 1.
+
         CITATION: #1145 is where the matter was analysed. The number
         names where it was analysed, not an open scope.
     tags:
@@ -81,18 +100,18 @@ artifacts:
       priority: must
       issue: "#1145"
       verification-track: manual
-      issue-scope: closes
-      landed: "PR #1681 - #1145 - DELIVERED on the route the embedder chose: the embedder obligation stays the enforcement, and synth delivers facts. The refuting command was RUN FIRST on main eab66646 and was LIVE (rc 1, rc 1, rc 0, rc 0; the acknowledged object byte-identical to the plain one, no MPU-register literal). New: `--emit-memory-facts` writes the synth-memfacts-v1 sidecar `<output>.memfacts.json` on ARM --relocatable --all-exports for a multi-memory module. Per function it gives direct_memories (the static memory indices of loads, stores, memory.fill and both sides of memory.copy), direct_calls, and the DIRECT reading direct_multi_memory, direct_domains and direct_spans_domains. It also gives the TRANSITIVE reading memories, multi_memory, domains and spans_domains (the closure over the direct call graph; call_indirect widens to every memory and sets via_call_indirect), plus imports_called. Per memory it gives size_bytes, pmsav7_region_bytes, base (symbol and section, register r11, or native under --native-pointer-abi), section_align, section_bytes, pmsav7_subregions_enabled, pmsav8_granule_bytes and domain, each read back from the written object. `--memory-domain NAME=K[,K...]` supplies the domain map; nothing hard-codes meld's 1:1 mapping, and a partial or overlapping map refuses. Before writing, the emitter cross-checks the module against the object: the functions are exactly the func_N bodies, and every relocation in a body's own code against memory k's base or size symbol (k >= 1) must find k in its direct set. It is a sidecar and not a section because a section would change the object bytes and a linker merges same-named sections across inputs. Code: crates/synth-core/src/memory_facts.rs (pure derivation, plus the placement helper the follow-on --mpu-layout lane uses) and crates/synth-cli/src/memory_facts_emit.rs (read-back, cross-check, write); main.rs only gains the two flags and the post-compile call, so no image builder is touched. synth still emits no MPU programming on any path. NOT in this PR: the opt-in --mpu-layout placement, which threads through build_relocatable_elf and ships separately so it can rebase over the image-builder unification. The #1145 disposition comment is the maintainer's to post."
+      issue-scope: outlives
+      landed: "PR #1681 - #1145 - DELIVERED on the route the embedder chose: the embedder obligation stays the enforcement, and synth delivers facts. The refuting command was RUN FIRST on main eab66646 and was LIVE (rc 1, rc 1, rc 0, rc 0; the acknowledged object byte-identical to the plain one, no MPU-register literal). New: `--emit-memory-facts` writes the synth-memfacts-v1 sidecar `<output>.memfacts.json` on ARM --relocatable --all-exports for a multi-memory module. Per function it gives direct_memories (the static memory indices of loads, stores, memory.fill and both sides of memory.copy), direct_calls, direct_call_indirect and sits_in_domains. It gives the DIRECT reading direct_multi_memory, direct_domains and direct_spans_domains, whose role is the key for gale's supervisor-only assertion: a body that itself touches two domains is an adapter and must be supervisor code. It gives the TRANSITIVE reading memories, multi_memory, domains and spans_domains, whose role is the key for the reachability / boundary census: tenant_call reaching both domains is a true finding (the closure over the direct call graph; call_indirect widens to every memory and sets via_call_indirect). It also gives imports_called. The report adds cross_domain_edges, one entry per call site whose callee's call tree reaches a domain the caller does not sit in. Each entry gives kind, caller, callee, the site (function_index, op_index, wasm_offset) and caller_domains / callee_domains. Every import call is listed, with empty callee domains; a call_indirect counts as reaching every domain, consistent with the sets. Cutting exactly those edges leaves every function's reach inside the domains it sits in, which is what gale's gate checks. A field_roles map carries each reading's role in every sidecar. Per memory it gives size_bytes, pmsav7_region_bytes, base (symbol and section, register r11, or native under --native-pointer-abi), section_align, section_bytes, pmsav7_subregions_enabled, pmsav8_granule_bytes and domain, each read back from the written object. `--memory-domain NAME=K[,K...]` supplies the domain map; nothing hard-codes meld's 1:1 mapping, and a partial or overlapping map refuses. Before writing, the emitter cross-checks the module against the object: the functions are exactly the func_N bodies, and every relocation in a body's own code against memory k's base or size symbol (k >= 1) must find k in its direct set. It is a sidecar and not a section because a section would change the object bytes and a linker merges same-named sections across inputs. Code: crates/synth-core/src/memory_facts.rs (pure derivation, plus the placement helper the follow-on --mpu-layout lane uses) and crates/synth-cli/src/memory_facts_emit.rs (read-back, cross-check, write); main.rs only gains the two flags and the post-compile call, so no image builder is touched. synth still emits no MPU programming on any path. NOT in this PR: the opt-in --mpu-layout placement, which threads through build_relocatable_elf and ships separately so it can rebase over the image-builder unification. The #1145 disposition comment is the maintainer's to post."
       verified-by: >
         DELIVERED, execution-verified. Wired oracle
         scripts/repro/memory_facts_1145_differential.py, `emulations >=
-        2179`, imports its fixtures from the oracles that own them
+        2197`, imports its fixtures from the oracles that own them
         (multi_memory_bulk_1145, npa_multi_memory_1145,
         memk_bulk_oob_1619 and memk_i64_1622) plus the #1145 two-tenant
-        and #406 modules. It makes 2179 wasmtime-non-trapping calls over
-        25 fixture/mode legs (plain, --native-pointer-abi,
+        and #406 modules. It makes 2197 wasmtime-non-trapping calls over
+        26 fixture/mode legs (plain, --native-pointer-abi,
         --safety-bounds software and gale's own --safety-bounds mpu
-        --embedder-mpu), with 2230 data accesses attributed by PC to
+        --embedder-mpu), with 2257 data accesses attributed by PC to
         their func_N body. Every access is in that body's
         direct_memories and in the export's memories. The sets equal the
         source oracles' hand-written tables (per function for bulk and
@@ -108,19 +127,33 @@ artifacts:
         readings: transitive spans_domains holds copy01, copy10,
         copy_static, func_2 and tenant_call; direct_spans_domains holds
         the same without tenant_call. It also pins the call edges
-        tenant_call -> func_2 -> func_0, func_1. RED, measured: run with
+        tenant_call -> func_2 -> func_0, func_1. CROSS-DOMAIN EDGES, on the
+        adapter fixture executed with --memory-domain tenant=0
+        --memory-domain supervisor=1. cross_domain_edges is exactly the one
+        known crossing, tenant_call (func 3) -> func_2, caller [tenant],
+        callee [supervisor, tenant]. Its site (func 3, op 9, wasm offset
+        0x113) is checked against the wasm bytes independently of synth's
+        decoder: it is `call 2`. Every executed caller-to-callee transition
+        (3 distinct, by a block hook on function entries) whose callee
+        reaches beyond the caller's domains is a listed edge. Cutting the
+        listed edges leaves every function's reach inside sits_in_domains.
+        Dropping the edge reds that cut check. A planted code mutant that
+        drops every non-import edge is caught three ways: the executed
+        crossing is unlisted, the cut check fails, and the exact edge list
+        differs. RED, measured: run with
         a binary built from eab66646 plus the unlinked #1678 mpu.rs
         change, every compile fails with `unexpected argument
         '--emit-memory-facts'` and the oracle exits 1. Floor control: the
         2183 floor the oracle carried with the layout legs reds this
-        facts-only oracle (`VACUOUS: 2179 calls`). Potency: the in-script
+        facts-only oracle (`VACUOUS: 2179 calls`); with the edge legs the
+        oracle measures and declares 2197. Potency: the in-script
         mutated sidecar (one observed memory removed) reds on all five
         fixtures it runs on. A planted mutant attributing memory-k loads
         and stores to memory 0 is refused at compile time by the
         relocation cross-check on 25 compiles. A planted mutant dropping
         memory 0 from bare loads and stores, which no relocation can show,
         is caught by execution alone with 130 ISOLATION lines. Unit
-        tests: six in synth-core memory_facts and two CLI integration
+        tests: seven in synth-core memory_facts and two CLI integration
         tests in crates/synth-cli/tests/memory_facts_1145.rs. This is
         unicorn emulation of the SUFFICIENCY of the sets, and unicorn
         models no MPU. It is not containment evidence; containment stays

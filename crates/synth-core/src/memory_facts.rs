@@ -116,6 +116,9 @@ pub struct FunctionInput<'a> {
     pub export: Option<&'a str>,
     /// The decoded body.
     pub ops: &'a [WasmOp],
+    /// Module-relative wasm byte offset of each op (same index), or empty
+    /// when the decoder recorded none.
+    pub op_offsets: &'a [u32],
 }
 
 /// The memory-to-domain mapping the embedder supplies. A meld `--domain`
@@ -207,16 +210,24 @@ pub struct FunctionFacts {
     /// The body's direct callees: `func_<N>` for a defined function, the
     /// `module.field` name for an import. With `direct_memories` this is the
     /// call graph, so a consumer can place a context switch at any edge.
+    /// Call sites, with their domains, are in the report's
+    /// `cross_domain_edges`.
     pub direct_calls: Vec<String>,
     /// `direct_memories` holds more than one memory: this body itself
     /// touches several (a cross-memory adapter, typically).
     pub direct_multi_memory: bool,
     /// The domains of `direct_memories`, when a domain map was given.
     pub direct_domains: Vec<String>,
-    /// `direct_domains` holds more than one domain: this body itself
-    /// touches memories of several domains, so it can run only in a context
-    /// granted all of them (gale's supervisor), wherever its callers run.
+    /// ROLE: the key for the SUPERVISOR-ONLY ASSERTION. `direct_domains`
+    /// holds more than one domain: this body itself touches memories of
+    /// several domains, so it is an adapter and can run only in a context
+    /// granted all of them (supervisor code), wherever its callers run.
     pub direct_spans_domains: bool,
+    /// The domains this function SITS IN, which decides whether a call out of
+    /// it crosses: the domains of `direct_memories` when the body touches a
+    /// memory; for a body that touches none, the union of its callers'
+    /// (it runs in its caller's context); `[]` for such a body nothing calls.
+    pub sits_in_domains: Vec<String>,
     /// Memories the body and everything it can call accesses. This is the
     /// grant a context running this function needs if no context switch
     /// happens below it.
@@ -224,6 +235,9 @@ pub struct FunctionFacts {
     /// `memories` was widened to every memory because a `call_indirect` is
     /// reachable from this function.
     pub via_call_indirect: bool,
+    /// This body itself contains a `call_indirect` (treated as reaching every
+    /// domain; listed in `cross_domain_edges` when that crosses).
+    pub direct_call_indirect: bool,
     /// Imported (host) functions reachable by direct call. Their accesses are
     /// not in `memories`.
     pub imports_called: Vec<String>,
@@ -231,11 +245,12 @@ pub struct FunctionFacts {
     pub multi_memory: bool,
     /// The domains of `memories`, when a domain map was given.
     pub domains: Vec<String>,
-    /// `domains` holds more than one domain: without a context switch below
-    /// it, this function's call tree needs a grant of several domains. A
-    /// tenant entry that calls a supervisor adapter is `true` here and
-    /// `false` in `direct_spans_domains`; which reading a supervisor
-    /// assertion uses is the consumer's choice.
+    /// ROLE: the key for the REACHABILITY / BOUNDARY CENSUS. `domains` holds
+    /// more than one domain: this function's call tree reaches memories of
+    /// several domains. A tenant entry that calls a supervisor adapter is
+    /// `true` here — a TRUE finding (the tenant can reach supervisor memory
+    /// through that call), and the crossing that makes it so is listed in
+    /// `cross_domain_edges` — and `false` in `direct_spans_domains`.
     pub spans_domains: bool,
 }
 
@@ -306,7 +321,7 @@ pub fn derive(
         }
     }
 
-    funcs
+    let mut facts = funcs
         .iter()
         .map(|f| {
             let via = indirect[&f.index];
@@ -338,9 +353,11 @@ pub fn derive(
                     .collect(),
                 direct_multi_memory: d.memories.len() > 1,
                 direct_spans_domains: ddoms.len() > 1,
+                sits_in_domains: ddoms.iter().cloned().collect(),
                 direct_domains: ddoms.into_iter().collect(),
                 memories: set.iter().copied().collect(),
                 via_call_indirect: via,
+                direct_call_indirect: d.call_indirect,
                 imports_called: imports[&f.index]
                     .iter()
                     .map(|i| import_names[*i as usize].clone())
@@ -350,7 +367,39 @@ pub fn derive(
                 domains: doms.into_iter().collect(),
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    // A body that touches no memory runs in its callers' context: it sits
+    // in the union of their domains (fixpoint, recursion-safe).
+    let pos: BTreeMap<u32, usize> = facts
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.index, i))
+        .collect();
+    loop {
+        let mut changed = false;
+        for (caller, d) in &direct {
+            let from: Vec<String> = facts[pos[caller]].sits_in_domains.clone();
+            for c in &d.calls {
+                let Some(&ci) = pos.get(c) else { continue };
+                if !direct[c].memories.is_empty() {
+                    continue;
+                }
+                let s = &mut facts[ci].sits_in_domains;
+                for dom in &from {
+                    if !s.contains(dom) {
+                        s.push(dom.clone());
+                        changed = true;
+                    }
+                }
+                s.sort();
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    facts
 }
 
 /// Where a memory's base address comes from. Never a number: the base is a
@@ -419,8 +468,163 @@ pub struct MemoryFactsReport {
     pub domains: BTreeMap<String, Vec<u32>>,
     pub memories: Vec<MemoryBounds>,
     pub functions: Vec<FunctionFacts>,
+    /// One entry per call site that crosses a domain boundary (empty without
+    /// a domain map). See [`CallEdge`].
+    pub cross_domain_edges: Vec<CallEdge>,
+    /// The role of each reading, carried in the sidecar so a consumer reads
+    /// the right key for the right check.
+    pub field_roles: BTreeMap<String, String>,
     /// What these facts do not cover.
     pub not_covered: Vec<String>,
+}
+
+/// The `field_roles` map.
+pub fn field_roles() -> BTreeMap<String, String> {
+    [
+        (
+            "direct_spans_domains",
+            "SUPERVISOR-ONLY ASSERTION key: the function's OWN body touches memories of \
+             more than one domain, so it is an adapter and must be supervisor code",
+        ),
+        (
+            "spans_domains",
+            "REACHABILITY / BOUNDARY CENSUS key: the function's call tree reaches \
+             memories of more than one domain; for a tenant entry that is a true \
+             finding, and the crossing responsible is in cross_domain_edges",
+        ),
+        (
+            "cross_domain_edges",
+            "the call sites where the call tree leaves the caller's domains: cutting \
+             exactly these edges leaves every function's reach inside sits_in_domains",
+        ),
+        (
+            "memories",
+            "the grant a context running the function needs if no context switch \
+             happens below it (transitive over direct calls; call_indirect = every memory)",
+        ),
+        (
+            "direct_memories",
+            "the memories the function's own body accesses",
+        ),
+        (
+            "sits_in_domains",
+            "the domains the function runs in: its own body's, or its callers' when the \
+             body touches no memory",
+        ),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
+}
+
+/// What a call site calls.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CallKind {
+    /// A direct call to a function this module defines.
+    Direct,
+    /// A direct call to an imported (host) function. It leaves the module,
+    /// so it is ALWAYS reported; its memory accesses are the embedder's, so
+    /// its `callee_domains` is empty.
+    Import,
+    /// `call_indirect`: the callee is not statically known, so it is treated
+    /// as reaching EVERY domain, as the memory sets treat it.
+    CallIndirect,
+}
+
+/// Where a call is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallSite {
+    /// The calling function's module index.
+    pub function_index: u32,
+    /// Index of the call op in the decoded body.
+    pub op_index: u32,
+    /// Module-relative wasm byte offset of the call op, when known.
+    pub wasm_offset: Option<u32>,
+}
+
+/// One call site that crosses a domain boundary: the callee's call tree
+/// reaches a domain the caller does not sit in (or the callee is an import).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallEdge {
+    pub kind: CallKind,
+    /// `func_<N>` of the caller.
+    pub caller: String,
+    /// The caller's export name, if any.
+    pub caller_export: Option<String>,
+    /// `func_<N>`, the import's `module.field`, or `call_indirect`.
+    pub callee: String,
+    pub site: CallSite,
+    /// The caller's `sits_in_domains`.
+    pub caller_domains: Vec<String>,
+    /// The callee's transitive `domains` (every domain for `call_indirect`,
+    /// none for an import).
+    pub callee_domains: Vec<String>,
+}
+
+/// Every crossing call site. Empty when `domains` is empty.
+pub fn cross_domain_edges(
+    funcs: &[FunctionInput<'_>],
+    facts: &[FunctionFacts],
+    import_names: &[String],
+    domains: &DomainMap,
+) -> Vec<CallEdge> {
+    if domains.domains.is_empty() {
+        return Vec::new();
+    }
+    let by: BTreeMap<u32, &FunctionFacts> = facts.iter().map(|f| (f.index, f)).collect();
+    let all: BTreeSet<String> = domains.domains.keys().cloned().collect();
+    let sits: BTreeMap<u32, BTreeSet<String>> = facts
+        .iter()
+        .map(|f| (f.index, f.sits_in_domains.iter().cloned().collect()))
+        .collect();
+    let num_imports = import_names.len() as u32;
+    let mut out = Vec::new();
+    for f in funcs {
+        let caller = by[&f.index];
+        let mine = &sits[&f.index];
+        for (i, op) in f.ops.iter().enumerate() {
+            let (kind, callee, theirs): (CallKind, String, BTreeSet<String>) = match op {
+                WasmOp::Call(c) if *c < num_imports => (
+                    CallKind::Import,
+                    import_names[*c as usize].clone(),
+                    BTreeSet::new(),
+                ),
+                WasmOp::Call(c) => match by.get(c) {
+                    Some(g) => (
+                        CallKind::Direct,
+                        g.symbol.clone(),
+                        g.domains.iter().cloned().collect(),
+                    ),
+                    None => continue,
+                },
+                WasmOp::CallIndirect { .. } => (
+                    CallKind::CallIndirect,
+                    "call_indirect".to_string(),
+                    all.clone(),
+                ),
+                _ => continue,
+            };
+            let crosses = kind == CallKind::Import || !theirs.is_subset(mine);
+            if !crosses {
+                continue;
+            }
+            out.push(CallEdge {
+                kind,
+                caller: caller.symbol.clone(),
+                caller_export: caller.export.clone(),
+                callee,
+                site: CallSite {
+                    function_index: f.index,
+                    op_index: i as u32,
+                    wasm_offset: f.op_offsets.get(i).copied(),
+                },
+                caller_domains: mine.iter().cloned().collect(),
+                callee_domains: theirs.into_iter().collect(),
+            });
+        }
+    }
+    out
 }
 
 /// The fixed list of what the facts do not cover, carried in every sidecar so
@@ -595,16 +799,19 @@ mod tests {
                 index: 1,
                 export: Some("a"),
                 ops: &f1,
+                op_offsets: &[],
             },
             FunctionInput {
                 index: 2,
                 export: None,
                 ops: &f2,
+                op_offsets: &[],
             },
             FunctionInput {
                 index: 3,
                 export: Some("c"),
                 ops: &f3,
+                op_offsets: &[],
             },
         ];
         let doms = DomainMap::parse(&["t=0".into(), "s=1,2".into()], 3).unwrap();
@@ -641,11 +848,13 @@ mod tests {
                 index: 0,
                 export: None,
                 ops: &f1,
+                op_offsets: &[],
             },
             FunctionInput {
                 index: 1,
                 export: Some("e"),
                 ops: &f2,
+                op_offsets: &[],
             },
         ];
         let r = derive(&funcs, &[], 3, &DomainMap::default());
@@ -694,6 +903,108 @@ mod tests {
             MpuLayout::parse("pmsav7-srd").unwrap(),
             MpuLayout::Pmsav7Srd
         );
+    }
+
+    /// The adapter shape: tenant entry (memory 0) -> adapter (0 and 1) ->
+    /// supervisor helper (1) and a domainless helper; plus a domainless
+    /// entry calling the tenant, an import call and a call_indirect.
+    #[test]
+    fn cross_domain_edges_are_exactly_where_the_reach_leaves_the_domain() {
+        let helper = vec![WasmOp::I32Const(1), WasmOp::Drop]; // touches nothing
+        let sup = vec![st(1)];
+        let adapter = vec![st(0), st(1), WasmOp::Call(1), WasmOp::Call(2)];
+        let tenant = vec![st(0), WasmOp::Call(3), WasmOp::Call(0)];
+        let entry = vec![WasmOp::Call(4)];
+        let ind = vec![
+            st(0),
+            WasmOp::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
+        ];
+        let offs = [10u32, 11, 12];
+        fn fi<'a>(
+            index: u32,
+            export: Option<&'a str>,
+            ops: &'a [WasmOp],
+            op_offsets: &'a [u32],
+        ) -> FunctionInput<'a> {
+            FunctionInput {
+                index,
+                export,
+                ops,
+                op_offsets,
+            }
+        }
+        // import 0 = env.log; defined 1.. : helper 1, sup 2, adapter 3, tenant 4, entry 5, ind 6
+        let funcs = [
+            fi(1, None, &helper, &[]),
+            fi(2, None, &sup, &[]),
+            fi(3, None, &adapter, &[]),
+            fi(4, Some("tenant"), &tenant, &offs),
+            fi(5, Some("entry"), &entry, &[]),
+            fi(6, Some("ind"), &ind, &[]),
+        ];
+        let doms = DomainMap::parse(&["t=0".into(), "s=1".into()], 2).unwrap();
+        let names = vec!["env.log".to_string()];
+        let facts = derive(&funcs, &names, 2, &doms);
+        let sits = |i: usize| facts[i].sits_in_domains.clone();
+        assert_eq!(
+            sits(0),
+            vec!["s".to_string(), "t".to_string()],
+            "helper inherits the adapter's"
+        );
+        assert_eq!(
+            sits(4),
+            Vec::<String>::new(),
+            "a domainless entry nothing calls"
+        );
+        let edges = cross_domain_edges(&funcs, &facts, &names, &doms);
+        let got: Vec<(String, String, CallKind, u32, Option<u32>)> = edges
+            .iter()
+            .map(|e| {
+                (
+                    e.caller.clone(),
+                    e.callee.clone(),
+                    e.kind.clone(),
+                    e.site.op_index,
+                    e.site.wasm_offset,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "func_4".into(),
+                    "func_3".into(),
+                    CallKind::Direct,
+                    1,
+                    Some(11)
+                ),
+                (
+                    "func_4".into(),
+                    "env.log".into(),
+                    CallKind::Import,
+                    2,
+                    Some(12)
+                ),
+                ("func_5".into(), "func_4".into(), CallKind::Direct, 0, None),
+                (
+                    "func_6".into(),
+                    "call_indirect".into(),
+                    CallKind::CallIndirect,
+                    1,
+                    None
+                ),
+            ]
+        );
+        assert_eq!(edges[0].caller_domains, vec!["t".to_string()]);
+        assert_eq!(
+            edges[0].callee_domains,
+            vec!["s".to_string(), "t".to_string()]
+        );
+        assert!(cross_domain_edges(&funcs, &facts, &names, &DomainMap::default()).is_empty());
     }
 
     #[test]

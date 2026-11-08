@@ -268,6 +268,7 @@ pub fn emit(
             index: f.index,
             export: f.export_name.as_deref(),
             ops: &f.ops,
+            op_offsets: &f.op_offsets,
         })
         .collect();
     if inputs.len() != shipped.len() {
@@ -360,7 +361,14 @@ pub fn emit(
             .map(|(n, m)| (n.clone(), m.iter().copied().collect()))
             .collect(),
         memories,
+        cross_domain_edges: memory_facts::cross_domain_edges(
+            &inputs,
+            &functions,
+            &import_names,
+            &domains,
+        ),
         functions,
+        field_roles: memory_facts::field_roles(),
         not_covered: memory_facts::not_covered(),
     };
     let path = sidecar_path(output);
@@ -378,11 +386,13 @@ pub fn emit(
         .count();
     println!(
         "  Memory facts: wrote {} ({} functions, {} accessing several memories \
-         themselves, {} spanning domains themselves) — {MEMORY_FACTS_SCHEMA}",
+         themselves, {} spanning domains themselves, {} cross-domain call sites) — \
+         {MEMORY_FACTS_SCHEMA}",
         path.display(),
         report.functions.len(),
         multi,
-        spans
+        spans,
+        report.cross_domain_edges.len()
     );
     Ok(path)
 }

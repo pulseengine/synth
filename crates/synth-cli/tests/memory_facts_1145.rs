@@ -107,6 +107,15 @@ fn two_tenant_facts_name_the_object_and_its_sets_1145() {
     assert_eq!(m1["section_align"], 65536);
     assert_eq!(m1["size_bytes"], 65536);
     assert_eq!(doc["memories"][0]["base"]["register"], "r11");
+    // No call, so no crossing; the roles travel with the facts.
+    assert_eq!(doc["cross_domain_edges"], serde_json::json!([]));
+    for key in [
+        "direct_spans_domains",
+        "spans_domains",
+        "cross_domain_edges",
+    ] {
+        assert!(doc["field_roles"][key].is_string(), "role for {key}");
+    }
 }
 
 fn refused(wat: &str, tag: &str, extra: &[&str]) -> String {

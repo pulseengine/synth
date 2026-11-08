@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 2179
+# ci-checks: emulations >= 2197
 """RQ-91-MPUENFORCE (#1145) — the `--emit-memory-facts` sidecar is SUFFICIENT
 for every legitimate access, checked by EXECUTION, and exact against the
 hand-written per-function tables the multi-memory oracles already carry.
@@ -40,8 +40,17 @@ not what a grant is for), and its result must equal wasmtime's. Then:
   REFUSALS      a single-memory module, a partial or overlapping domain map,
                 a domain map without the facts flag and a non-relocatable
                 compile each refuse, by name.
-  DOMAINS       with `--memory-domain`, `spans_domains` is true exactly for
-                the functions whose set holds memories of two domains.
+  DOMAINS       with `--memory-domain`, both readings are pinned with their
+                roles: `direct_spans_domains` (the supervisor-only assertion)
+                and `spans_domains` (the boundary census, where the tenant's
+                own entry reaching supervisor memory is a TRUE finding).
+  EDGES         `cross_domain_edges` lists exactly the one known crossing of
+                the adapter fixture (tenant_call's `call $adapter`), its site
+                checked against the wasm bytes (a `call 2` at that offset);
+                every EXECUTED call whose callee reaches beyond the caller's
+                domains is a listed edge; cutting the listed edges leaves every
+                function's reach inside its `sits_in_domains` (gale's gate);
+                and dropping any listed edge reds that cut check.
 
 Fixtures are IMPORTED from the oracles that own them, so a fixture change
 there is a change here: multi_memory_bulk_1145_differential (adapter, bulk3),
@@ -71,8 +80,8 @@ from pathlib import Path
 
 import wasmtime
 from elftools.elf.elffile import ELFFile
-from unicorn import (UC_ARCH_ARM, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE,
-                     UC_MODE_THUMB, Uc, UcError)
+from unicorn import (UC_ARCH_ARM, UC_HOOK_BLOCK, UC_HOOK_MEM_READ,
+                     UC_HOOK_MEM_WRITE, UC_MODE_THUMB, Uc, UcError)
 from unicorn.arm_const import (UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0,
                                UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3,
                                UC_ARM_REG_R4, UC_ARM_REG_R9, UC_ARM_REG_R10,
@@ -211,10 +220,24 @@ class Linked:
             (int(n[len("__synth_wasm_seg_"):]), self.addr(n))
             for n in self.syms if n.startswith("__synth_wasm_seg_"))
         self.accesses = []
+        self.transitions = []
+        self.entry_of = {lo: name for lo, _, name in self.funcs}
         self.mu.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, self._hook)
+        self.mu.hook_add(UC_HOOK_BLOCK, self._block)
 
     def _hook(self, uc, acc, addr, size, val, ud):
         self.accesses.append((uc.reg_read(UC_ARM_REG_PC), addr))
+
+    def _block(self, uc, addr, size, ud):
+        """A block starting at a func_N entry is a call into it: record
+        (caller body, callee) from the link register."""
+        callee = self.entry_of.get(addr & ~1)
+        if callee is None:
+            return
+        lr = uc.reg_read(UC_ARM_REG_LR) & ~1
+        caller = self.func_of(lr - 2)
+        if caller.startswith("func_"):
+            self.transitions.append((caller, callee))
 
     def addr(self, name):
         sec, val, _ = self.syms[name]
@@ -280,6 +303,7 @@ class Linked:
         self.mu.reg_write(UC_ARM_REG_SP, STACK_BASE + STACK_SIZE - 0x100)
         self.mu.reg_write(UC_ARM_REG_LR, self.ret | 1)
         self.accesses = []
+        self.transitions = []
         try:
             self.mu.emu_start(self.addr(fn) | 1, self.ret, timeout=20_000_000)
         except UcError as ex:
@@ -367,9 +391,40 @@ def check_accesses(ln, facts, export, accesses):
     return breaches, seen
 
 
+def cut_violations(doc, edges=None):
+    """gale's gate, over the sidecar alone: with the listed crossings cut,
+    the domains a function reaches through its call tree must lie inside the
+    domains it sits in. Returns the violations (empty when the edges are
+    complete)."""
+    edges = doc["cross_domain_edges"] if edges is None else edges
+    cut = {(e["caller"], e["callee"]) for e in edges}
+    dom_of = {k: d for d, ks in doc["domains"].items() for k in ks}
+    alld = set(doc["domains"])
+    sym = {f["symbol"]: f for f in doc["functions"]}
+    bad = []
+    for f in doc["functions"]:
+        seen, stack, reach = set(), [f["symbol"]], set()
+        while stack:
+            s = stack.pop()
+            if s in seen:
+                continue
+            seen.add(s)
+            g = sym[s]
+            reach |= {dom_of[k] for k in g["direct_memories"]}
+            if g["direct_call_indirect"] and (s, "call_indirect") not in cut:
+                reach |= alld  # an uncut call_indirect in this body reaches every domain
+            for c in g["direct_calls"]:
+                if c in sym and (s, c) not in cut:
+                    stack.append(c)
+        if not reach <= set(f["sits_in_domains"]):
+            bad.append(f"{f['symbol']} reaches {sorted(reach)} but sits in "
+                       f"{f['sits_in_domains']}")
+    return bad
+
+
 class Tally:
     def __init__(self):
-        self.calls = self.accesses = self.fails = 0
+        self.calls = self.accesses = self.fails = self.edge_checks = 0
         self.mem_seen = set()
 
     def bad(self, msg):
@@ -403,7 +458,14 @@ def run_fixture(label, wat, calls, mode, tmp, t, hand=None, hand_kind=None,
         tail = [ln for ln in log.splitlines() if "rror" in ln][:2]
         t.bad(f"{label}/{mode}: compile rc={rc} sidecar={side.exists()}: {' | '.join(tail)[:300]}")
         return
-    rc2, _, obj2, _ = compile_obj(wat, tmp, f"{label}.{mode}", flags, facts=False)
+    plain_flags = []  # the same compile without the facts flags
+    it = iter(flags)
+    for f in it:
+        if f == "--memory-domain":
+            next(it)
+        else:
+            plain_flags.append(f)
+    rc2, _, obj2, _ = compile_obj(wat, tmp, f"{label}.{mode}", plain_flags, facts=False)
     data = obj.read_bytes()
     doc = json.loads(side.read_text())
     if rc2 != 0 or obj2.read_bytes() != data:
@@ -419,6 +481,7 @@ def run_fixture(label, wat, calls, mode, tmp, t, hand=None, hand_kind=None,
     observed_export = {}
     observed_func = {}
     kept = []
+    transitions = set()
     for fn, args in calls:
         args = norm_args(args)
         try:
@@ -445,6 +508,7 @@ def run_fixture(label, wat, calls, mode, tmp, t, hand=None, hand_kind=None,
             observed_export.setdefault(fn, set()).update(ms)
             t.mem_seen.update((label, m) for m in ms)
         kept.append((fn, args, list(ln.accesses)))
+        transitions.update(ln.transitions)
     # NON-VACUITY: every memory some function's facts say is accessed is
     # observed accessed.
     for k in sorted({k for f in doc["functions"] for k in f["direct_memories"]}):
@@ -485,7 +549,20 @@ def run_fixture(label, wat, calls, mode, tmp, t, hand=None, hand_kind=None,
             else:
                 print(f"  [ok ] potency: removing m{m} from {f} reds")
             break
+    # EDGES: every executed call whose callee's reach leaves the caller's
+    # domains is a listed crossing, and cutting the listed crossings leaves
+    # every function's reach inside the domains it sits in.
+    if doc["domains"]:
+        pairs = {(e["caller"], e["callee"]) for e in doc["cross_domain_edges"]}
+        sym = {f["symbol"]: f for f in doc["functions"]}
+        for f, g in sorted(transitions):
+            if not set(sym[g]["domains"]) <= set(sym[f]["sits_in_domains"]) and (f, g) not in pairs:
+                t.bad(f"{label}/{mode}: executed crossing {f} -> {g} is not a listed edge")
+        t.edge_checks += len(transitions)
+        for v in cut_violations(doc):
+            t.bad(f"{label}/{mode}: cut check — {v}")
     print(f"  [{'ok ' if t.fails == 0 else '...'}] {label}/{mode}: {len(kept)} calls")
+    return doc
 
 
 def two_tenant_calls():
@@ -546,22 +623,21 @@ def refusal_legs(tmp, t):
 
 
 def domain_leg(tmp, t):
-    rc, log, obj, side = compile_obj(mmb.ADAPTER, tmp, "adapter.domains", MODES["plain"]
-                                     + ["--memory-domain", "tenant=0",
-                                        "--memory-domain", "supervisor=1"])
-    if rc != 0:
-        t.bad(f"domains: compile rc={rc}")
+    doms = ["--memory-domain", "tenant=0", "--memory-domain", "supervisor=1"]
+    doc = run_fixture("adapter.domains", mmb.ADAPTER, mmb.ADAPTER_CALLS, "plain", tmp, t,
+                      extra=doms)
+    if doc is None:
         return
-    doc = json.loads(side.read_text())
     name = {0: "tenant", 1: "supervisor"}
     for f in doc["functions"]:
         for key, mems in (("", f["memories"]), ("direct_", f["direct_memories"])):
-            doms = {name[k] for k in mems}
-            if (f[key + "spans_domains"] != (len(doms) > 1)
-                    or set(f[key + "domains"]) != doms):
+            ds = {name[k] for k in mems}
+            if (f[key + "spans_domains"] != (len(ds) > 1)
+                    or set(f[key + "domains"]) != ds):
                 t.bad(f"domains: {f['symbol']} {key}spans/domains disagree with {mems}")
-    # Both readings, pinned. The transitive one flags the tenant's own entry
-    # (it calls the adapter); the direct one only the bodies that touch both.
+    # Both readings, pinned, each with its role. The transitive one is the
+    # boundary census: the tenant's own entry reaching supervisor memory is
+    # a TRUE finding. The direct one is the supervisor-only assertion.
     for key, want in (("spans_domains", ["copy01", "copy10", "copy_static", "func_2",
                                          "tenant_call"]),
                       ("direct_spans_domains", ["copy01", "copy10", "copy_static",
@@ -571,11 +647,39 @@ def domain_leg(tmp, t):
             t.bad(f"domains: {key} {got} != {want}")
         else:
             print(f"  [ok ] domains: {key} {got}")
+    for key in ("spans_domains", "direct_spans_domains", "cross_domain_edges"):
+        if key not in doc["field_roles"]:
+            t.bad(f"domains: field_roles has no role for {key}")
     calls = {f["export"] or f["symbol"]: f["direct_calls"] for f in doc["functions"]}
     if calls["tenant_call"] != ["func_2"] or calls["func_2"] != ["func_0", "func_1"]:
         t.bad(f"domains: call edges {calls['tenant_call']} / {calls['func_2']}")
+    # The ONE known crossing: tenant_call's `call $adapter`.
+    edges = doc["cross_domain_edges"]
+    want = [("direct", "func_3", "tenant_call", "func_2", ["tenant"], ["supervisor", "tenant"])]
+    got = [(e["kind"], e["caller"], e["caller_export"], e["callee"], e["caller_domains"],
+            e["callee_domains"]) for e in edges]
+    if got != want:
+        t.bad(f"domains: cross_domain_edges {got} != {want}")
     else:
-        print("  [ok ] domains: call edges tenant_call -> func_2 -> func_0, func_1")
+        # The site, checked against the wasm bytes independently of synth's
+        # decoder: a `call` (0x10) of function 2 at that module offset.
+        wasm = wasmtime.wat2wasm(mmb.ADAPTER)
+        off = edges[0]["site"]["wasm_offset"]
+        ok = (off is not None and edges[0]["site"]["function_index"] == 3
+              and wasm[off] == 0x10 and wasm[off + 1] == 0x02)
+        if not ok:
+            t.bad(f"domains: edge site {edges[0]['site']} is not `call 2` in the wasm")
+        else:
+            print(f"  [ok ] domains: exactly one crossing, tenant_call -> func_2 "
+                  f"(func 3, op {edges[0]['site']['op_index']}, wasm offset {off:#x})")
+    # POTENCY: drop each listed edge; the cut check must red.
+    for i in range(len(edges)):
+        rest = edges[:i] + edges[i + 1:]
+        if not cut_violations(doc, rest):
+            t.bad(f"domains: POTENCY — dropping edge {i} left the cut check green")
+        else:
+            print(f"  [ok ] potency: dropping edge {edges[i]['caller']} -> "
+                  f"{edges[i]['callee']} reds the cut check")
 
 
 def main():
@@ -624,8 +728,9 @@ def main():
     refusal_legs(tmp, t)
     print("=== --memory-domain ===")
     domain_leg(tmp, t)
-    print(f"\nlegitimate calls: {t.calls}, attributed memory accesses: {t.accesses}")
-    if t.calls < 2179:
+    print(f"\nlegitimate calls: {t.calls}, attributed memory accesses: {t.accesses}, "
+          f"executed call transitions checked against the edges: {t.edge_checks}")
+    if t.calls < 2197:
         print(f"VACUOUS: {t.calls} calls")
         return 1
     print(f"ORACLE: {'PASS' if t.fails == 0 else f'FAIL ({t.fails})'}")

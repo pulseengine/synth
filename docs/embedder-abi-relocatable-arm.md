@@ -440,11 +440,15 @@ attribution; and `--emit-wcet`/`--emit-stack-depth` are sidecars already.
 |---|---|---|
 | `functions[].direct_memories` | memories this `func_N` body accesses itself | the memory index of every load/store/`memory.fill`/both sides of `memory.copy` — a static immediate in wasm, so exact |
 | `functions[].direct_calls` | the body's direct callees (`func_N`, or `module.field` for an import): with `direct_memories`, the call graph, so you can place a context switch at any edge | |
-| `functions[].direct_multi_memory`, `direct_domains`, `direct_spans_domains` | the DIRECT reading: this body itself touches several memories / domains, so it runs only in a context granted all of them (a supervisor adapter), wherever its callers run | |
+| `functions[].direct_multi_memory`, `direct_domains`, `direct_spans_domains` | the DIRECT reading. **Role: the key for the supervisor-only assertion.** `direct_spans_domains` = this body itself touches memories of more than one domain, so it is an adapter and must be supervisor code, wherever its callers run | |
+| `functions[].sits_in_domains` | the domains the function runs in: its own body's, or, for a body that touches no memory, the union of its callers' (it runs in their context); `[]` for such a body nothing calls | |
+| `functions[].direct_call_indirect` | this body itself contains a `call_indirect` | |
 | `functions[].memories` | the grant a context running this function needs IF no context switch happens below it: the body plus everything it can call | closure over the direct call graph |
 | `functions[].via_call_indirect` | `memories` was widened to every memory because a `call_indirect` is reachable | stated, never folded in silently |
 | `functions[].imports_called` | host functions reachable by direct call; their accesses are YOURS and are not in `memories` | |
-| `functions[].multi_memory`, `domains`, `spans_domains` | the TRANSITIVE reading of the same: a tenant entry that calls a supervisor adapter is `true` here and `false` in `direct_spans_domains`. Which reading a supervisor assertion uses is yours to choose | |
+| `functions[].multi_memory`, `domains`, `spans_domains` | the TRANSITIVE reading. **Role: the key for the reachability / boundary census.** A tenant entry that calls a supervisor adapter is `true` here — a TRUE finding: that tenant entry can reach supervisor memory, through the crossing listed in `cross_domain_edges` — and `false` in `direct_spans_domains` | |
+| `cross_domain_edges[]` | one entry per CALL SITE whose callee's call tree reaches a domain the caller does not sit in: `kind`, `caller` (+ `caller_export`), `callee`, `site` (`function_index`, `op_index`, `wasm_offset`), `caller_domains` (its `sits_in_domains`), `callee_domains` (its transitive `domains`). `kind: import` — every call to a host function, always listed (it leaves the module; its accesses are yours, so `callee_domains` is empty). `kind: call-indirect` — callee unknown, treated as reaching EVERY domain, as the memory sets treat it. Cutting exactly these edges leaves every function's reach inside its `sits_in_domains`: allowlist them as the sanctioned crossings. Empty without `--memory-domain` | the decoded call ops and the sets above |
+| `field_roles` | the role of each reading above, carried in every sidecar | |
 | `memories[].size_bytes` | declared size, exact for the process's life | read back: `__synth_mem_size_k` |
 | `memories[].pmsav7_region_bytes` | smallest PMSAv7 region covering it (power of two, >= 32 B) | read back: `__synth_mem_region_k` |
 | `memories[].base` | `symbol` (`__synth_mem_base_k` in `.synth.wasm_mem_k`, k >= 1), `register` (`r11`, memory 0), or `native` (memory 0 under `--native-pointer-abi`: native addresses, statics in `__synth_wasm_data` when present) | read back from the symbol table |
@@ -557,9 +561,10 @@ Bulk memory across memories (v0.89, same lane): `memory.copy dst_mem src_mem`
 `--relocatable`, with and without `--native-pointer-abi`. Each side resolves
 against its own memory (memory 0 at R11, memory k at `__synth_wasm_data_<k>`),
 and the byte loop picks its direction on the absolute pointers, so a
-same-memory copy is memmove-correct. Inline bounds checking
-(`--safety-bounds software|mask`) still refuses every memory-k op, these
-included. Under `--native-pointer-abi` the provenance pass charges each side
+same-memory copy is memmove-correct. Inline bounds checking of these ops:
+since v0.90 (#1619) `--safety-bounds software` guards them against
+`__synth_mem_size_k` (see "Bounds checking memory k" above); `mask` still
+refuses every memory-k op. Under `--native-pointer-abi` the provenance pass charges each side
 to its memory and lets the copied bytes flow between the two memories'
 contents. Because it is field-insensitive, a module that stores pointers in
 BOTH memories and copies across them can be refused although no value is
