@@ -1,0 +1,70 @@
+artifacts:
+  - id: RQ-91-SUPPORTLEVELS
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "Each backend carries a support level, L1 to L3, whose criteria are pinned in claims.yaml"
+    description: >
+        THEME: backend support levels, adopted by the maintainer on
+        2026-11-06. Named support levels, not tiers, because T1/T2/T3
+        are already the Rocq proof tiers. L1 verified: Rocq proofs for
+        the covered ops, wasmtime execution differentials in a
+        REQUIRED check, a WCET bound, and an acceptance-ladder rung.
+        L2 execution-tested: CI-gated wasmtime differentials, and
+        every unsupported shape declines loudly. L3 experimental:
+        builds and has tests, no correctness claim. Initial placement:
+        L1 Cortex-M Thumb-2; L2 RV32, AArch64 and Cortex-R5
+        --relocatable; L3 self-contained Cortex-R5, which fails L2's
+        loud-decline rule (RQ-91-R5DATAINIT), and x86-64. x86-64 is a
+        maintainer-relayed request from Christof (cpetig); it has no
+        synth issue, and it starts at L3 and is promoted through the
+        same gate as every backend. SHOULD, not MUST: it makes the
+        public claims honest but changes no emitted code.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        `git grep -n -i -E 'support[ _-]level' -- docs claims.yaml
+        README.md artifacts scripts`; `ls crates | grep -i x86`; `git
+        grep -c -i -E 'x86[_-]64' -- 'crates/*/src'`; and the section
+        headings of docs/status/FEATURE_MATRIX.md.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. 0 support-level
+        hits in docs, claims.yaml, README.md, artifacts or scripts; no
+        x86 crate; 0 x86-64 mentions in any crate's src.
+        FEATURE_MATRIX.md's sections are Legend, Backends, WebAssembly
+        Operation Coverage, Mechanized Proofs & Verification, CLI,
+        Testing and Honest Summary, with no level table.
+
+        CITATION: #1286 is where citing the acceptance ladder rather
+        than copying it was analysed; it is closed, so `issue-scope:
+        closes` authorises nothing. The number names where it was
+        analysed, not an open scope. The x86-64 request has no issue:
+        it was relayed by the maintainer from a conversation with
+        Christof, and nothing is posted to his threads and no issue is
+        filed in his name without the maintainer's word.
+    tags:
+      - feature-loop
+      - process
+      - claims
+      - backends
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1286"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 docs/status/FEATURE_MATRIX.md carries a
+        support-level table for every backend that cites
+        docs/status/ACCEPTANCE_LADDER.md and copies none of its
+        numbers; claims.yaml pins each level's criteria so that a
+        demotion reds CI; a promotion happens only through that gate;
+        and x86-64 is listed at L3 — delivered with an
+        execution-verified result where the lane is a wrong-code fix,
+        or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported
+        either way

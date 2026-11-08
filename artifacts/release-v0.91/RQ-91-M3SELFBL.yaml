@@ -1,0 +1,57 @@
+artifacts:
+  - id: RQ-91-M3SELFBL
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "A self-contained cortex-m3 --func-name image patches the bl of a function that calls another, or refuses"
+    description: >
+        HANG, UNFILED by decision: the Thumb twin of #1645, found by
+        the v0.90 A32 lane (PR #1662) and recorded in the v0.90.0
+        CHANGELOG Known gaps; no issue is filed and this record files
+        none. `--target cortex-m3 --func-name F`, where F calls
+        another function, ships a `bl` to itself and exits 0: the
+        callee is not in the image and the call is never patched.
+        Delivered through RQ-91-IMAGEBUILDER.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        compile `(module (func $callee (param i32) (result i32)
+        (i32.mul (local.get 0) (i32.const 3))) (func (export "caller")
+        (param i32) (result i32) (i32.add (call $callee (local.get 0))
+        (i32.const 1))))` with `synth compile x.wat --target cortex-m3
+        --func-name caller -o c.elf` and `arm-none-eabi-objdump -d
+        c.elf | grep -E '[[:space:]]bl[[:space:]]'`. A `bl` whose
+        target is not its own address, or a refusal, refutes it.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. rc 0, no
+        warning. The image holds one `bl`, `b2: f7ff fffe bl b2
+        <caller+0x12>`: a branch-and-link to itself.
+
+        CITATION: #1645 is where the A32 twin was analysed, and PR
+        #1662 is where this defect was found. The numbers name where
+        it was analysed, not an open scope. #1645 is closed, so
+        `issue-scope: closes` authorises nothing.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - hang
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1645"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 a self-contained cortex-m --func-name image
+        of a function that calls another either includes and links the
+        callee, executing equal to wasmtime, or is refused with a
+        named diagnostic; red before and green after — delivered with
+        an execution-verified result where the lane is a wrong-code
+        fix, or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported
+        either way

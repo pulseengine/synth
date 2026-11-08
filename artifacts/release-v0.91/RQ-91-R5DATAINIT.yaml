@@ -1,0 +1,72 @@
+artifacts:
+  - id: RQ-91-R5DATAINIT
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "A self-contained cortex-r5 image places its data segments and global initialisers, or refuses"
+    description: >
+        SILENT MISCOMPILE, UNFILED by decision: found by the v0.90 A32
+        lane (PR #1662) and recorded in the v0.90.0 CHANGELOG Known
+        gaps; no issue is filed and this record files none. A
+        self-contained `--target cortex-r5` image ships `.text` only:
+        active data segments and global initialisers are dropped with
+        exit 0 and no diagnostic, and no startup sets SP, R9 or R11.
+        It is why self-contained cortex-r5 sits at support level 3
+        (RQ-91-SUPPORTLEVELS). Delivered through RQ-91-IMAGEBUILDER.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        compile `(module (memory (export "mem") 1) (global $g (mut
+        i32) (i32.const 0x5a5a)) (data (i32.const 0x100)
+        "\11\22\33\44") (func (export "rd") (result i32) (i32.add
+        (i32.load (i32.const 0x100)) (global.get $g))))` with `synth
+        compile x.wat --target cortex-r5 --all-exports -o r5.elf` and
+        with `--target cortex-m3` as the control;
+        `arm-none-eabi-readelf -S` each, and count the segment bytes
+        11 22 33 44 in each file. Separately compile `(module (global
+        $g (mut i32) (i32.const 0x13572468)) (func (export "rg")
+        (result i32) (global.get $g)))` for both targets and look for
+        the init value in `arm-none-eabi-objdump -d`. Segment bytes
+        and the init value present in the cortex-r5 image, or a
+        refusal, refute it.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. cortex-r5: rc
+        0, no warning; one section besides the string and symbol
+        tables, `.text` (0x28 bytes at 0x8000); 0 copies of the
+        segment bytes; the global image disassembles to 4
+        instructions, none materialising 0x13572468. Control
+        cortex-m3: rc 0, `#758 data ROM image: 260 bytes ... copied to
+        linmem 0x20000000 at reset`, 1 copy of the segment bytes, a
+        .linear_memory section, and the startup materialises the init
+        with `movw ip, #0x2468` / `movt ip, #0x1357`.
+
+        CITATION: #1645 and #1640 are where the A32 self-contained
+        path was analysed, and PR #1662 is where this defect was
+        found. The numbers name where it was analysed, not an open
+        scope. Both issues are closed, so `issue-scope: closes`
+        authorises nothing.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - cortex-r5
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1640"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 a self-contained cortex-r5 image with an
+        active data segment or a global initialiser either executes
+        equal to wasmtime with the data placed and the globals
+        initialised, or is refused with a named diagnostic; red before
+        and green after; with the newly refused count over the repo
+        corpus stated — delivered with an execution-verified result
+        where the lane is a wrong-code fix, or REFUTED with the
+        measurement that refutes it; and the refuting command above is
+        RUN FIRST and its result reported either way

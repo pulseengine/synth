@@ -1,0 +1,73 @@
+artifacts:
+  - id: RQ-91-COMPEXPORTS
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "A relocatable compile of a component emits the exports it declares and only its real imports, or refuses"
+    description: >
+        gale's ask, ranked after #1145. On a component, --relocatable
+        lowers the component's internals rather than its declared
+        interface: the object exports an internal interface the
+        component does not export, does not export the interface it
+        does, and on gale-nano 0.7.0 leaves 6 undefined symbols where
+        the component declares 2 imports. Nothing in the object
+        distinguishes the real obligations from the internals, so an
+        embedder satisfies all of them and is wrong on hardware.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        build a two-component composition with wasm-tools and wac: WIT
+        `package t:c; interface mmio { read32: func(a: u32) -> u32; }
+        interface sched { state: func() -> u32; } interface time {
+        now: func() -> u32; } world wa { import mmio; export sched; }
+        world wb { import sched; export time; }`, core module A
+        exporting `t:c/sched#state` that calls the `t:c/mmio` import
+        `read32`, core module B exporting `t:c/time#now` that calls
+        `t:c/sched` `state` and adds 1; `wasm-tools component embed`
+        and `component new` each, `wac plug b.comp.wasm --plug
+        a.comp.wasm -o ab.comp.wasm`, check `wasm-tools component wit`
+        declares import t:c/mmio and export t:c/time only, then `synth
+        compile ab.comp.wasm -t cortex-m3 --cortex-m --relocatable
+        --all-exports --embedder-data-init --embedder-global-init -o
+        ab.o` and `arm-none-eabi-nm ab.o`. An object defining
+        t:c/time#now and no t:c/sched symbol, or a refusal, refutes
+        it.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE for the export
+        half. Compile rc 0, no warning. The object defines `T
+        t:c/sched#state`, an interface the composed component does not
+        export, and no symbol for t:c/time#now, which it does; the
+        only undefined symbol is read32. The import half (internals
+        left undefined) does NOT reproduce on this toy: 1 undefined
+        for 1 declared import. gale-nano 0.7.0 was not available to
+        this lane, so the issue's 6-for-2 figure was not re-run.
+
+        CITATION: #1191 is where the matter was analysed. The number
+        names where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+      - component-model
+      - gale
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1191"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 a relocatable compile of a component emits a
+        defined symbol for every function of every interface the
+        component declares as an export, an undefined symbol for every
+        declared import and none for its internals, or refuses loudly
+        naming what it cannot lower; gated by an execution
+        differential of the composed component against wasmtime's
+        component runtime, red before and green after — delivered with
+        an execution-verified result where the lane is a wrong-code
+        fix, or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported
+        either way

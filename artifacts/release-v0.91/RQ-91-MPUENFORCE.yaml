@@ -1,0 +1,72 @@
+artifacts:
+  - id: RQ-91-MPUENFORCE
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "Per-memory MPU isolation is enforced by code synth emits, or the embedder obligation stays the only enforcement and says so"
+    description: >
+        gale's second-ranked ask: the MPU-enforcement half of #1145.
+        v0.62 shipped the per-memory region table and v0.68 the
+        `--safety-bounds mpu --embedder-mpu` acknowledgement, so the
+        isolation gale demonstrated on Renode and on STM32WB55 silicon
+        is embedder-programmed: synth emits no MPU programming on any
+        path. The self-contained path, which owns startup, still
+        declines a module with more than one memory. The ask is
+        synth-emitted enforcement: an MPU region per memory programmed
+        by code synth emits, on a path that compiles multi-memory.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        compile the #1145 two-memory module `(module (memory $a 1)
+        (memory $b 1) (data $da (memory $a) (i32.const 0) "tenantA")
+        (data $db (memory $b) (i32.const 0) "tenantB") (func (export
+        "read_a") (param i32) (result i32) (i32.load8_u $a (local.get
+        0))) (func (export "read_b") (param i32) (result i32)
+        (i32.load8_u $b (local.get 0))) (func (export "write_a")
+        (param i32 i32) (i32.store8 $a (local.get 0) (local.get 1))))`
+        with `--target cortex-m3 --all-exports` four ways: `--cortex-m
+        --safety-bounds mpu`; `--relocatable --embedder-data-init
+        --safety-bounds mpu`; the same plus `--embedder-mpu`; and
+        `--relocatable --embedder-data-init` alone. `cmp` the last two
+        objects and `nm` the acknowledged one.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. Self-contained:
+        rc 1 (`a module with 2 linear memories cannot be compiled into
+        a self-contained image — there is only ONE runtime
+        linear-memory base (R11)`). Relocatable without the
+        acknowledgement: rc 1 (`requires --embedder-mpu. synth emits
+        NO MPU programming`). Relocatable with it: rc 0, and the
+        object is byte-identical to the one compiled with no
+        --safety-bounds; it carries __synth_mem_base_1,
+        __synth_mem_count (2) and __synth_mem_size_0/1, and nothing
+        that programs the MPU.
+
+        CITATION: #1145 is where the matter was analysed. The number
+        names where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - multi-memory
+      - mpu
+      - gale
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1145"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 either a multi-memory module compiles on a
+        path where synth emits the MPU programming (one region per
+        memory, granted per execution context), gated by a
+        cross-region fault criterion executed on an emulator and
+        reported against gale's silicon criterion, or the maintainer
+        records why the embedder obligation stays the enforcement, and
+        #1145's disposition is updated to match — delivered with an
+        execution-verified result where the lane is a wrong-code fix,
+        or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported
+        either way

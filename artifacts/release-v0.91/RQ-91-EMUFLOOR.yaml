@@ -1,0 +1,71 @@
+artifacts:
+  - id: RQ-91-EMUFLOOR
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "The exact emulation floor is derived at check time instead of pinned in ci.yml and claims.yaml"
+    description: >
+        THEME: derive the exact emulation floor. The oracle wiring
+        check sums every `# ci-checks: emulations` declaration and
+        fails on any inequality with a number pinned literally in a
+        ci.yml step and mirrored in claims.yaml. Every oracle PR
+        therefore edits the same line, and every two oracle PRs in a
+        window conflict on it. Derive the floor where it is checked,
+        and pin only what cannot be derived; do the same for the
+        selector waiver chain if that is feasible. SHOULD, not MUST:
+        this is merge friction and a hand-maintained second copy, not
+        wrong code.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        `git grep -c` the live floor value (the number after
+        `--exact-emulation-floor` in ci.yml) over .github,
+        claims.yaml, scripts and docs; `python3
+        scripts/oracle_wiring_check.py --exact-emulation-floor V` for
+        V, V-1 and V+1; `git rev-list --count c20d37b2..2945628c`,
+        then the same restricted to .github/workflows/ci.yml, and for
+        each such commit whether its diff moves the
+        `--exact-emulation-floor` line; and the `- to:` waiver entries
+        inside claims.yaml's selector_lines_code ratchet.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. The live value
+        appears once in ci.yml (the CLI argument), three times in
+        claims.yaml (the pinned `text:` and two comment lines) and
+        twice in the v0.90 cold review. The pinned value gives rc 0,
+        and V-1 and V+1 each give rc 1. c20d37b2..2945628c is 16
+        commits (the v0.90 lanes, then release prep and the cold
+        review); 9 of them touch ci.yml, and all 9 move the floor
+        line. The selector_lines_code ratchet carries 50 waiver
+        entries, with value 21715 against baseline 17897.
+
+        CITATION: #910 is where the matter was analysed. The number
+        names where it was analysed, not an open scope. It is closed,
+        so `issue-scope: closes` authorises nothing; the record
+        answers the residual it names, not the issue.
+    tags:
+      - feature-loop
+      - process
+      - ci
+      - subtraction
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#910"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 the exact emulation floor is computed by the
+        check from the declarations it already sums, the literal pin
+        is gone from ci.yml and claims.yaml, and a negative control
+        (an oracle whose declared emulations shrink) still reds; the
+        selector waiver chain is either derived the same way or the
+        record states why it cannot be; and two oracle PRs in one
+        window no longer conflict on a pinned number — delivered with
+        an execution-verified result where the lane is a wrong-code
+        fix, or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported
+        either way

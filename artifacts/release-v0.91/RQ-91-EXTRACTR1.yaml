@@ -1,0 +1,52 @@
+artifacts:
+  - id: RQ-91-EXTRACTR1
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "extract_r1_numbers drops binary-name digits and normalises thousands separators"
+    description: >
+        Carried from the v0.90 cold review (R2.3). The round-2 number
+        extractor reads digits out of binary names as quantities and
+        does not normalise thousands separators, so it inflates the
+        review queue. It drops nothing real.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        `head -c 29642 docs/reviews/v0.90-cold-review.md > r1.md` (the
+        frozen round 1, sha256 f41f9750...), then `python3
+        scripts/extract_r1_numbers.py r1.md` and look for 090, 0892
+        and the 11634/24042/57588 pairs.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. The prefix
+        hashes to f41f9750120ca805..., the frozen round 1. 156
+        distinct numbers; `090` 21 times and `0892` 12 times (from
+        synth-090 and synth-0892); 11634, 24042 and 57588 each appear
+        twice and again as 11,634, 24,042 and 57,588 once each, three
+        pairs split into six entries.
+
+        CITATION: #1575 is where the matter was analysed. The number
+        names where it was analysed, not an open scope. It is closed,
+        so `issue-scope: closes` authorises nothing; the record
+        answers the residual it names, not the issue.
+    tags:
+      - feature-loop
+      - process
+      - review
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1575"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 the extractor skips digits inside a binary
+        or tool name and merges a thousands-separated figure with its
+        plain spelling, shown on the frozen v0.90 round 1 with the
+        before and after counts — delivered with an execution-verified
+        result where the lane is a wrong-code fix, or REFUTED with the
+        measurement that refutes it; and the refuting command above is
+        RUN FIRST and its result reported either way

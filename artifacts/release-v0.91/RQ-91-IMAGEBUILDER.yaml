@@ -1,0 +1,72 @@
+artifacts:
+  - id: RQ-91-IMAGEBUILDER
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "One image builder with per-ISA hooks patches every relocation or refuses, and places every data segment or refuses"
+    description: >
+        THEME: unify the image builders. Each ISA and each output form
+        has its own ELF builder in synth-cli, and each re-implements
+        relocation patching and data placement. v0.90 found the cost
+        twice in one path: the self-contained cortex-r5 image shipped
+        every internal A32 `bl` unpatched (#1645) and entered A32
+        bodies in Thumb state (#1640), and the same lane found two
+        more defects of the same class that are still open and
+        UNFILED, carried here as RQ-91-R5DATAINIT and RQ-91-M3SELFBL.
+        One builder with per-ISA hooks enforces two invariants for
+        every target: every relocation is patched or the compile is
+        refused, and every data segment and global initialiser is
+        placed or the compile is refused. Success is measured by
+        builders deleted. MUST because it carries two silent
+        wrong-code defects.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        `grep -c -E '^fn build_[a-z0-9_]*(elf|object)[[:space:]]*[<(]'
+        crates/synth-cli/src/main.rs` for the definitions, and `grep
+        -o -E '^fn build_[a-z0-9_]*(elf|object)'
+        crates/synth-cli/src/main.rs | sort -u` for the distinct
+        builders; then run the refuting commands of RQ-91-R5DATAINIT
+        and RQ-91-M3SELFBL.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. 12 builder
+        definitions in crates/synth-cli/src/main.rs, 10 distinct names
+        (build_riscv_elf and build_multi_func_riscv_elf each have a
+        cfg twin for the riscv feature): build_aarch64_elf,
+        build_aarch64_object, build_cortex_m_elf,
+        build_multi_func_aarch64_elf, build_multi_func_cortex_m_elf,
+        build_multi_func_riscv_elf, build_multi_func_simple_elf,
+        build_relocatable_elf, build_riscv_elf, build_simple_elf. Both
+        dependent refuters are LIVE (see their records).
+
+        CITATION: #1645 and #1640 are where the matter was analysed.
+        The numbers name where it was analysed, not an open scope. All
+        are closed, so `issue-scope: closes` authorises nothing; the
+        record answers the residual it names, not the issues.
+    tags:
+      - feature-loop
+      - refactor
+      - wrong-code
+      - subtraction
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1645"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 the self-contained and relocatable images
+        are produced by one builder with per-ISA hooks; the distinct
+        builder count measured above goes DOWN; the builder refuses
+        any relocation it does not patch and any active data segment
+        or global initialiser it does not place, on every target; the
+        frozen-fixture and symtab differentials stay byte-identical;
+        and RQ-91-R5DATAINIT and RQ-91-M3SELFBL go from red to green
+        or to a loud refusal — delivered with an execution-verified
+        result where the lane is a wrong-code fix, or REFUTED with the
+        measurement that refutes it; and the refuting command above is
+        RUN FIRST and its result reported either way

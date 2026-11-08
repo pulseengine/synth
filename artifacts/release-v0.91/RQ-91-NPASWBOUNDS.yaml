@@ -1,0 +1,64 @@
+artifacts:
+  - id: RQ-91-NPASWBOUNDS
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "In-bounds memory-0 accesses do not trap under the native-pointer ABI with software bounds"
+    description: >
+        WRONG BEHAVIOUR, the other direction from a missing trap: a
+        correct program is stopped. Under --native-pointer-abi
+        --safety-bounds software, memory 0's accesses and bulk ops
+        compare a NATIVE pointer against R10, memory 0's size in
+        bytes. The guard is meant for a wasm offset, so an in-bounds
+        access traps whenever the native address exceeds the size.
+        RQ-91-NPAMODEL is the natural fix: guard the wasm offset
+        before the native relocation, or refuse the flag pair.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        with run_leg and the three-memory MEMS from
+        scripts/repro/memk_bulk_oob_1619_differential.py, add `(func
+        (export "fill0") (param i32 i32 i32) (memory.fill $m0
+        (local.get 0) (local.get 1) (local.get 2)))`, `copy00`
+        (memory.copy $m0 $m0), `st0` (i32.store $m0) and `ld0`
+        (i32.load $m0), and run the in-bounds calls fill0(n:0x100,
+        0xab, 0x40), copy00(n:0x200, n:0x100, 0x20), st0(n:0x300,
+        0x12345678), ld0(n:0x300) (`n:` is a memory-0 offset passed as
+        its native address) in the software/npa leg (`--safety-bounds
+        software --native-pointer-abi`) and, as the control, the
+        none/npa leg. Every call equal to wasmtime in the software/npa
+        leg, or a refusal of the flag pair, refutes it.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. software/npa: 0
+        of 4 in-bounds calls equal; every call traps (UDF) where
+        wasmtime returns, the loads and the store as well as fill and
+        copy. Control none/npa: 4 of 4 equal, ld0 returning 0x12345678
+        as wasmtime does.
+
+        CITATION: #1661 is where the matter was analysed. The number
+        names where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-behaviour
+      - gale
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1661"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 an execution differential against wasmtime
+        over in-bounds and out-of-bounds memory-0 loads, stores, fill,
+        copy and init under --native-pointer-abi --safety-bounds
+        software is green, or the flag pair is refused with a named
+        diagnostic; red before and green after — delivered with an
+        execution-verified result where the lane is a wrong-code fix,
+        or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported
+        either way
