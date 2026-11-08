@@ -46,7 +46,7 @@
 //! prepended) and global (one entry appended) change.
 
 use anyhow::{Context, Result, bail};
-use wasm_encoder::{BlockType, Function, MemArg, ValType};
+use wasm_encoder::{BlockType, Function, MemArg, MemArgTarget, ValType};
 use wasmparser::{Parser, Payload};
 
 /// The core-module field name of the embedder arena import (#418). The kebab
@@ -209,7 +209,8 @@ fn allocator_body(cursor_global: u32, arena_end: u32) -> Function {
     let mem = MemArg {
         offset: 0,
         align: 0,
-        memory_index: 0,
+        target: MemArgTarget::Memory(0),
+        ordering: None,
     };
     let mut f = Function::new([(4, ValType::I32)]);
     // contract: old_len == 0 && new_len == 0 -> return align verbatim
