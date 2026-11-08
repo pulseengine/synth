@@ -129,6 +129,11 @@ Per-call re-establishment is therefore unnecessary but harmless.
   in declaration order (`global_slot_width` / `global_slot_offset`,
   `instruction_selector.rs:6752-6777`, #643). Slot offsets are compile-time
   constants; an i64 slot is two word accesses at `off`/`off+4`.
+  The order is the FULL wasm global index space: imported globals take the
+  leading slots (with their own widths), then the defined globals. synth
+  binds no imported global's value, so a function that reads or writes one
+  is refused (`IMPORTED-GLOBAL`, RQ-91-IMPGLOBAL, #1676); an unreferenced
+  import only positions the defined globals after it.
 - **Alignment:** 4-byte-align both R9 and R11. The globals lowering emits
   word `LDR/STR` at `R9 + 4k` and its stated requirement is word alignment
   (`instruction_selector.rs:6770`: "word alignment is all the paired

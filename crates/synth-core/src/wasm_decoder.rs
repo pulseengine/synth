@@ -470,6 +470,13 @@ pub struct DecodedModule {
     /// initializer is a linear-memory address (e.g. `$__stack_pointer`)
     /// self-contained rather than table-relative.
     pub globals: Vec<WasmGlobal>,
+    /// RQ-91-IMPGLOBAL: the slot width (4 = i32/f32, 8 = i64/f64, 16 = v128,
+    /// the [`WasmGlobal::slot_bytes`] rule) of every IMPORTED global, in
+    /// declaration order. Imported globals take the LEADING global indices,
+    /// so a globals table laid out in the full wasm index space (the ARM R9
+    /// table, `__synth_globals`) needs their widths to place the defined
+    /// globals after them. [`WasmGlobal::index`] stays the DEFINED index.
+    pub imported_global_slot_bytes: Vec<u32>,
     /// Function indices that populate any table via an element segment (#275).
     /// These are the possible `call_indirect` targets — a function reached only
     /// through the table is invisible to direct-`call` reachability, so the
@@ -1122,6 +1129,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // → slot zeroed), so a read returns 0.0 instead of the init — a silent
     // wrong value. Functions touching a float global loud-skip instead.
     let mut num_imported_globals = 0u32;
+    let mut imported_global_slot_bytes: Vec<u32> = Vec::new();
     let mut float_globals: std::collections::HashSet<u32> = std::collections::HashSet::new();
     // #680: v128-typed globals (same index space) — a SIMD access has no
     // lowering on any target, so touching one must loud-skip the function.
@@ -1375,6 +1383,11 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             if g.content_type == wasmparser::ValType::V128 {
                                 v128_globals.insert(num_imported_globals);
                             }
+                            imported_global_slot_bytes.push(match g.content_type {
+                                wasmparser::ValType::I64 | wasmparser::ValType::F64 => 8,
+                                wasmparser::ValType::V128 => 16,
+                                _ => 4,
+                            });
                             num_imported_globals += 1;
                             (ImportKind::Global, 0)
                         }
@@ -1800,6 +1813,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         type_ret_f32,
         type_ret_f64,
         globals,
+        imported_global_slot_bytes,
         elem_func_indices,
         table_size: table_sizes.first().copied().flatten(),
         table_sizes,
