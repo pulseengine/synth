@@ -419,7 +419,7 @@ load into R11 — one source, no drift.
    (gale's first two-tenant attempt escaped exactly this way). Each context
    switch must grant only the memory of the tenant about to run.
 
-### Facts for your MPU gate: `--emit-memory-facts`, `--memory-domain` (RQ-91-MPUENFORCE, v0.91)
+### Facts for your MPU gate: `--emit-memory-facts`, `--memory-domain`, `--mpu-layout` (RQ-91-MPUENFORCE, v0.91)
 
 **The decision, and who made it.** #1145 asked for synth-emitted MPU
 enforcement. On 2026-11-08 gale, the embedder whose isolation model this is,
@@ -455,7 +455,7 @@ attribution; and `--emit-wcet`/`--emit-stack-depth` are sidecars already.
 | `memories[].pmsav7_region_bytes` | smallest PMSAv7 region covering it (power of two, >= 32 B) | read back: `__synth_mem_region_k` |
 | `memories[].base` | `symbol` (`__synth_mem_base_k` in `.synth.wasm_mem_k`, k >= 1), `register` (`r11`, memory 0), or `native` (memory 0 under `--native-pointer-abi`: native addresses, statics in `__synth_wasm_data` when present) | read back from the symbol table |
 | `memories[].section_align`, `section_bytes` | `sh_addralign` / `sh_size` of `.synth.wasm_mem_k` | read back from the section header |
-| `memories[].pmsav7_subregions_enabled` | when a section is padded to a subregion granule and does not fill its region, how many of its 8 subregions it covers; `null` otherwise (always `null` until a layout pads a section) | derived from `section_bytes` and the region |
+| `memories[].pmsav7_subregions_enabled` | when a section is padded to a subregion granule and does not fill its region, how many of its 8 subregions it covers; `null` otherwise (set under `--mpu-layout pmsav7-srd`) | derived from `section_bytes` and the region |
 | `memories[].pmsav8_granule_bytes` | 32: PMSAv8 (M33/M55) base and limit granule; any size is legal there, so nothing here assumes a power of two | |
 | `not_covered` | what the facts do not cover, carried in every sidecar | |
 
@@ -479,6 +479,21 @@ and its evidence is your Renode/silicon matched pair.
 names which memories each execution domain owns. A meld `--domain` maps to one
 memory today; nothing assumes it. Every memory must belong to exactly one
 domain — a map that leaves a memory out, or gives one to two domains, refuses.
+
+**`--mpu-layout pmsav7|pmsav7-srd`** (opt-in; refuses on a single-memory
+module, on a module that imports a memory, and on a memory no single region
+covers) lays out every section synth places, `.synth.wasm_mem_k` for k >= 1,
+as a legal PMSAv7 region. It composes with v0.68: the base alignment is
+unchanged (already the region size); what moves is the section's SIZE.
+`pmsav7` pads it to the whole region, so nothing the linker places after it
+falls inside the region you program; `pmsav7-srd` pads only to the region's
+subregion granule (region / 8, regions >= 256 B), and the sidecar's
+`pmsav7_subregions_enabled` says how many low subregions to keep — e.g. a
+3-page memory is a 256 KiB region with 6 of 8 subregions enabled, no padding.
+`__synth_mem_size_k`, `memory.size` and the `software` guard still read the
+DECLARED size. **Memory 0 is not placed by synth** (its base is your R11
+value, or native under `--native-pointer-abi`): give its region the alignment
+the sidecar states, and place it yourself.
 
 **What none of this protects** (the compliance envelope, unchanged): an
 out-of-bounds address of memory k can land in any memory, so a set is a

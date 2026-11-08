@@ -1,11 +1,11 @@
-//! RQ-91-MPUENFORCE (#1145): `--emit-memory-facts`.
+//! RQ-91-MPUENFORCE (#1145): `--emit-memory-facts` and `--mpu-layout`.
 //!
 //! The execution oracle is `scripts/repro/memory_facts_1145_differential.py`
 //! (every legitimate access attributed by PC to its function and checked
 //! against the sidecar). These tests pin the contract that needs no emulator:
 //! the object is byte-identical with the flag, the sidecar names that object
-//! and the per-memory sets of gale's two-tenant module, and the refusals carry
-//! their names.
+//! and the per-memory sets of gale's two-tenant module, the layout moves only
+//! the padded section, and the refusals carry their names.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -118,6 +118,35 @@ fn two_tenant_facts_name_the_object_and_its_sets_1145() {
     }
 }
 
+fn mem1_section(bytes: &[u8]) -> (u64, u64) {
+    use object::{Object, ObjectSection};
+    let f = object::File::parse(bytes).expect("elf");
+    let s = f.section_by_name(".synth.wasm_mem_1").expect("memory 1");
+    (s.align(), s.size())
+}
+
+#[test]
+fn mpu_layout_pads_only_the_memory_section_1145() {
+    // memory 1 is 3 pages = 192 KiB: its PMSAv7 region is 256 KiB.
+    let m = fixture("mem406_multi_memory.wat");
+    let (_, plain) = compile(&m, "lay_none", &[]);
+    let (_, pow2) = compile(&m, "lay_pow2", &["--mpu-layout", "pmsav7"]);
+    let (_, srd) = compile(&m, "lay_srd", &["--mpu-layout", "pmsav7-srd"]);
+    assert_eq!(mem1_section(&plain), (1 << 18, 3 * 65536));
+    assert_eq!(mem1_section(&pow2), (1 << 18, 1 << 18));
+    assert_eq!(
+        mem1_section(&srd),
+        (1 << 18, 3 * 65536),
+        "6 of 8 subregions"
+    );
+    use object::{Object, ObjectSection};
+    let text = |b: &[u8]| {
+        let f = object::File::parse(b).unwrap();
+        f.section_by_name(".text").unwrap().data().unwrap().to_vec()
+    };
+    assert_eq!(text(&plain), text(&pow2), "code does not move");
+}
+
 fn refused(wat: &str, tag: &str, extra: &[&str]) -> String {
     let dir = std::env::temp_dir().join("synth_memfacts_tests");
     std::fs::create_dir_all(&dir).unwrap();
@@ -142,8 +171,11 @@ fn refused(wat: &str, tag: &str, extra: &[&str]) -> String {
 }
 
 #[test]
-fn facts_refuse_by_name_1145() {
+fn facts_and_layout_refuse_by_name_1145() {
     let one = "(module (memory 1) (func (export \"f\") (result i32) (i32.load (i32.const 0))))";
+    assert!(
+        refused(one, "one_layout", &["--mpu-layout", "pmsav7"]).contains("--mpu-layout (#1145)")
+    );
     assert!(refused(one, "one_facts", &["--emit-memory-facts"]).contains("no region table"));
     let two = "(module (memory $a 1) (memory $b 1) (func (export \"f\") (result i32) \
                (i32.load $b (i32.const 0))))";
