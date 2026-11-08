@@ -4972,7 +4972,22 @@ claims:
     #   20 per minimal leg, x npa/plain x cortex-m3/m4f/m7). Paired control:
     #   `449389` rc=0 and `449149` rc=1 on this tree; `449389` rc=1 and `449149`
     #   rc=0 on main 839d4b26.
-    text: "--exact-emulation-floor 449389"
+    # v0.91 RQ-91-EMUFLOOR (#910): the summed pin is RETIRED. The comments
+    #   above are dated transcripts of the pin it was; none is live. ci.yml
+    #   now passes `--floor-base`, and oracle_wiring_check.py holds EACH wired
+    #   oracle's `ci-checks: emulations` floor against the tree the change
+    #   lands on (a shrink, status flip, mode change or deletion is red unless
+    #   waived in the oracle's header or by a scripts/repro/retired/
+    #   tombstone). Why: all 9 ci.yml commits of v0.90 moved the pinned line,
+    #   so every pair of oracle PRs conflicted on it, and the sum was blind to
+    #   a compensating move (-10/+10 across two oracles: rc 0 on eab66646
+    #   under the v0.90 pinned value, red under `--floor-base eab66646`).
+    #   The transition moved no declaration: the per-oracle comparison against
+    #   eab66646 reports 200 compared, 0 raised, 0 waived, 0 new.
+    #   What is pinned now is the FLAG, so the step cannot quietly fall back to
+    #   no comparison at all; the population floor (`floor_base_compared<100`)
+    #   is asserted by the step's own vacuity block.
+    text: "--floor-base \"$FLOOR_BASE\""
     evidence:
       - kind: count-min                      # oracle steps routed through the driver
         pattern: 'oracle_run\.py scripts/repro/'

@@ -243,6 +243,16 @@ class PureHelpers(unittest.TestCase):
             (2, "exact"))
         self.assertEqual(
             lcc.ci_emulation_floor("oracle_wiring_check.py --json out"), (0, ""))
+        # RQ-91-EMUFLOOR: the per-oracle form carries no number and is the
+        # strongest, so it is reported even beside an old spelling.
+        self.assertEqual(
+            lcc.ci_emulation_floor(
+                'oracle_wiring_check.py --floor-base "$FLOOR_BASE" \\\n'),
+            (0, "base"))
+        self.assertEqual(
+            lcc.ci_emulation_floor(
+                " --exact-emulation-floor 2 \\\n --floor-base HEAD^1\n"),
+            (0, "base"))
 
     def test_signing_tag_trigger(self):
         wf = 'name: Signing E2E\non:\n  push:\n    tags:\n      - "v*"\n    branches: [main]\n'
@@ -495,6 +505,39 @@ class ReleaseShapeReplay(unittest.TestCase):
                  {"artifacts": [artifact("RQ-61-X", verified_by="DELIVERED. fixture")]})]
         self.run_steps_3_4_5(c, files, docs)
         self.assertEqual([f for f in c.findings if f[2] in lcc.FAILING], [])
+
+    def test_v091_floor_base_shape_step_4_green(self):
+        """RQ-91-EMUFLOOR: a ref whose ci.yml passes `--floor-base` (no pinned
+        number) is wired, not floor-less."""
+        c = mk_check("v0.91.0")
+        files = {
+            ".github/workflows/ci.yml": CI_MODERN.replace(
+                "--min-emulation-floor 322754", '--floor-base "$FLOOR_BASE"'),
+            "scripts/status_evidence_check.py": "#",
+            "scripts/oracle_wiring_check.py": "#",
+            "scripts/mcdc_gate.py": "BRANCH_POPULATION = {}",
+        }
+        docs = [("artifacts/release-v0.91/RQ-91-X.yaml",
+                 {"artifacts": [artifact("RQ-91-X", verified_by="DELIVERED. fixture")]})]
+        self.run_steps_3_4_5(c, files, docs)
+        self.assertEqual([f for f in c.findings if f[2] in lcc.FAILING], [])
+        step4 = [f for f in c.findings if f[0] == "4"]
+        self.assertTrue(any("--floor-base" in str(f) for f in step4), step4)
+
+    def test_v091_floor_base_absent_is_still_floorless(self):
+        """The new form must not make step 4 accept a ci.yml with NO floor."""
+        c = mk_check("v0.91.0")
+        files = {
+            ".github/workflows/ci.yml": CI_MODERN.replace(
+                " --min-emulation-floor 322754", ""),
+            "scripts/status_evidence_check.py": "#",
+            "scripts/oracle_wiring_check.py": "#",
+            "scripts/mcdc_gate.py": "BRANCH_POPULATION = {}",
+        }
+        docs = [("artifacts/release-v0.91/RQ-91-X.yaml",
+                 {"artifacts": [artifact("RQ-91-X", verified_by="DELIVERED. fixture")]})]
+        self.run_steps_3_4_5(c, files, docs)
+        self.assertTrue(any(f[0] == "4" and f[2] in lcc.FAILING for f in c.findings))
 
     def test_v057_shape_fails_with_attribution(self):
         c = mk_check("v0.57.0")

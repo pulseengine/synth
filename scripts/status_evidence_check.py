@@ -1750,6 +1750,40 @@ def _live_status(root: Path) -> dict:
 # glob matches nothing, that is a FAILURE and not a quiet pass — a rule that
 # cannot see its subject must say so (#1113 / RQ-63-FLOOREQ).
 LIVE_FLOOR_RE = re.compile(r"--exact-emulation-floor\s+(\d+)")
+# RQ-91-EMUFLOOR (#910, v0.91): the summed floor is no longer PINNED in ci.yml —
+# the gate passes `--floor-base` and holds each oracle's own header floor against
+# the base tree. The live total still exists (it is the sum of the declarations)
+# and a prose restatement of it still rots the moment one oracle moves, so the
+# rule keeps its subject by DERIVING it, through the gate's own per-script reader
+# (scripts/oracle_wiring_check.py `emulation_floor_of`), never a second parser.
+# A tree whose ci.yml still carries the old pin (any tag before v0.91) is read
+# the old way, so the rule keeps working on old refs.
+DERIVED_FLOOR_RE = re.compile(r"--floor-base\b")
+
+
+def _derived_emulation_floor(root: Path) -> tuple[int | None, str | None]:
+    """Sum `ci-checks: emulations` floors with the gate's own reader at `root`."""
+    import importlib.util
+
+    src = root / "scripts" / "oracle_wiring_check.py"
+    if not src.is_file():
+        return None, "scripts/oracle_wiring_check.py is missing"
+    try:
+        spec = importlib.util.spec_from_file_location("_owc_floorprose", src)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        reader = mod.emulation_floor_of
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - any failure is blind
+        return None, f"cannot load the gate's floor reader: {exc}"
+    paths = sorted(root.glob("scripts/repro/*.py")) + sorted(root.glob("scripts/repro/*.sh"))
+    total = 0
+    for path in paths:
+        f = reader(path.read_text(encoding="utf-8", errors="replace"))
+        if f is not None:
+            total += f
+    if total == 0:
+        return None, "the derived emulation total is 0 (no wired emulations oracle)"
+    return total, None
 
 
 def check_live_floor_prose(root: Path) -> tuple[int, str | None, int, list[str]]:
@@ -1761,14 +1795,26 @@ def check_live_floor_prose(root: Path) -> tuple[int, str | None, int, list[str]]
             "floor cannot be derived and this rule cannot run — a rule that "
             "cannot see its subject FAILS rather than passing quietly"
         ])
-    m = LIVE_FLOOR_RE.search(ci.read_text(encoding="utf-8", errors="replace"))
-    if not m:
+    ci_text = ci.read_text(encoding="utf-8", errors="replace")
+    m = LIVE_FLOOR_RE.search(ci_text)
+    if m:
+        live = m.group(1)
+    elif DERIVED_FLOOR_RE.search(ci_text):
+        total, why = _derived_emulation_floor(root)
+        if total is None:
+            return (0, None, 0, [
+                f"floor-prose: ci.yml runs the per-oracle `--floor-base` gate, "
+                f"but the live emulation total cannot be derived ({why}). A rule "
+                f"that cannot see its subject FAILS rather than passing quietly"
+            ])
+        live = str(total)
+    else:
         return (0, None, 0, [
-            "floor-prose: no `--exact-emulation-floor N` found in ci.yml. "
-            "Either the gate was removed (which RQ-63-FLOOREQ forbids) or its "
-            "spelling changed and THIS rule went blind; both are failures"
+            "floor-prose: neither `--floor-base` nor `--exact-emulation-floor N` "
+            "found in ci.yml. Either the gate was removed (which RQ-63-FLOOREQ "
+            "and RQ-91-EMUFLOOR forbid) or its spelling changed and THIS rule "
+            "went blind; both are failures"
         ])
-    live = m.group(1)
 
     scanned, hits = 0, []
     for path in sorted(root.glob("artifacts/release-v*/*.yaml")):

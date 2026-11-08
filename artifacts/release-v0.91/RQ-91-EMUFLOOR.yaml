@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-EMUFLOOR
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "The exact emulation floor is derived at check time instead of pinned in ci.yml and claims.yaml"
     description: >
         THEME: derive the exact emulation floor. The oracle wiring
@@ -57,6 +57,94 @@ artifacts:
       issue: "#910"
       verification-track: manual
       issue-scope: closes
+      landed: "PR #1679 - #910 - DELIVERED: the summed emulation-floor pin is gone from ci.yml and claims.yaml; oracle_wiring_check.py --floor-base holds each wired emulations oracle to its own floor at the base tree, with shrinks waived in the oracle header or by a one-file tombstone, so two oracle PRs share no pinned line; a compensating move that the sum could not see is now red."
+      verified-by: >
+        DELIVERED, by replacing the summed pin with a per-oracle comparison
+        against the base tree. REFUTING COMMAND, run first on eab66646: LIVE,
+        with the record's numbers (the live value once in ci.yml, three times
+        in claims.yaml, twice in the v0.90 cold review; the pinned value rc 0,
+        one below and one above it rc 1 each; c20d37b2..2945628c 16 commits, 9
+        touching ci.yml, all 9 moving the floor line; 2945628c..eab66646 one
+        commit with no ci.yml change; selector_lines_code 50 waivers, value
+        21715, baseline 17897). A FIFTH finding, measured on eab66646 before
+        any edit: the summed pin is blind to a COMPENSATING move. Lowering
+        a32_control_flow_1639_differential.py 905 -> 895 and raising
+        memk_i64_1622_differential.py 5724 -> 5734 left the old gate at rc 0
+        with the v0.90 pinned value. THE DESIGN: `oracle_wiring_check.py
+        --floor-base REF` holds every script that is `wired` with `ci-checks:
+        emulations >= N` at REF to a floor >= N on the checked tree. REF is the
+        merge ref's first parent on a pull request and `github.event.before` on
+        a push. A lowered floor, a wired -> manual/unwired flip, a mode change
+        or a deleted oracle is red unless waived where it happens: a
+        `# ci-checks-shrink: emulations <from> -> <to> — <reason>` line in the
+        oracle's header, or for a deleted or renamed oracle a one-file tombstone
+        scripts/repro/retired/<name>.retired. A waiver authorises exactly the
+        transition it names and goes stale (red) once that floor moves again. A
+        tombstone for a script that exists is red. An unresolvable base, an
+        all-zero push `before`, or a base with no wired emulations oracle fails
+        closed, and the ci.yml step also requires >= 100 oracles compared.
+        Nothing is pinned: ci.yml and claims.yaml no longer carry the number,
+        and the claims.yaml pin now names the `--floor-base` flag. REJECTED:
+        per-oracle pins alone (a PR lowering its own header is
+        self-consistent, so that is vacuous without an outside reference); a
+        ratchet over git history (needs tags and depth, and every legitimate
+        shrink pays forever); and declared against the measured ledger (it
+        cannot detect a shrink, because lowering a declaration makes measured
+        >= declared easier to pass; it already covers measured-below-declared
+        through oracle_run.py and oracle_evidence.py). NEGATIVE CONTROLS on
+        the real tree against eab66646, each restored afterwards: 905 -> 904
+        rc 1 (SHRANK); the compensating move rc 1 under the new gate, with the
+        old gate at rc 0 on the same tree; mode emulations -> compiles rc 1;
+        mem_isolation_red_1145.py deleted along with its step rc 1 (the
+        eab66646 gate without its pin passes the same tree: the
+        dangling-reference check cannot see it), green again with a tombstone
+        (1 waived); its step removed alone rc 1 (wired_unreferenced); step
+        removed and header flipped to unwired rc 1 (SHRANK).
+        scripts/test_oracle_wiring_check.py (20 tests, CI-wired in Claim Check)
+        repeats all of these on throwaway git repos. It adds: wrong-number,
+        stale and short-reason waivers; a tombstone for a live script; an
+        unresolvable base and an empty base; and measured below declared (an
+        oracle declaring emulations >= 5 that emulates nothing: oracle_run.py
+        rc 1 VACUOUS measured 0, then oracle_evidence.py rc 1 below floor).
+        POSITIVE CONTROL: two branches each adding an oracle on one base merge
+        in either order with no conflict, are green against HEAD^1 after each
+        merge and reach the same tree. PAIRED: the same two branches carrying
+        a summed pin conflict on the pinned line. Four mutants of the gate
+        (accept every floor, never stale, tombstone for a live script allowed,
+        empty base allowed) each red the suite. THE TRANSITION moves no
+        declaration: `--floor-base eab66646` reports 200 compared, 0 raised, 0
+        waived, 0 new, and the eab66646 gate script run on the branch tree with
+        the v0.90 pinned value is rc 0. The ci.yml step run whole under
+        pipefail with base eab66646 is rc 0, and with an all-zero base rc 1.
+        CONSUMERS MIGRATED: status_evidence_check's floor-prose rule derives
+        the live total through the gate's own `emulation_floor_of` when ci.yml
+        passes `--floor-base`, and still reads the pinned number on older
+        trees. On the trees of v0.90.0 and v0.89.2 it reads each tag's own
+        pinned value with 0 restatements, and it has three new tests.
+        loop_conformance_check step 4 accepts `--floor-base` as wired, and its
+        live run uses `--floor-base HEAD^1`. Retro for v0.90.0 and v0.89.2 on
+        the branch: step 4 DERIVED-PASS on both (each tag's
+        --exact-emulation-floor read at the ref, Claim Check success), the
+        only failure being the known npm 404 at step 8. Two new tests cover
+        this. RQ-62-FLOORTIGHT's and RQ-63-FLOOREQ's done-when named ci.yml
+        texts of the retired gate. They are moved to the successor anchor
+        `--floor-base` with a dated SUCCESSOR sentence each, their transcripts
+        unchanged. PAIRED: with eab66646's ci.yml status_evidence_check is rc
+        0, and with the branch ci.yml before the move it is rc 1 on exactly
+        those two R2 findings. THE SELECTOR WAIVER CHAIN is NOT derived, and
+        this is why. The emulation floors partition into per-file quantities,
+        so each PR edits only its own oracle. selector_lines_code is one scalar
+        whose waivers are keyed to its absolute value, and the absolute value
+        is what concurrent PRs collide on: 4 of the 16 v0.90 commits moved
+        it. Deriving it would mean a delta against the base, with waivers in
+        a file the PR owns. That makes `baseline:` implicit (changing the
+        self-banking rule), changes `kind: ratchet` for all ten pins, empties
+        the `value:` history ratchet_value_history and --metric read, and
+        contradicts CLAUDE.md's rule that `value:` equals the live derivation.
+        It is feasible as a separate lane, not this one. RESIDUAL: two oracle
+        PRs whose ci.yml steps are inserted at the same place still conflict
+        textually, as any two edits to the same lines do; that conflict was
+        never the floor's.
       done-when: >
         manual:2027-03-31 the exact emulation floor is computed by the
         check from the declarations it already sums, the literal pin

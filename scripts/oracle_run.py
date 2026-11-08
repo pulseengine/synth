@@ -77,7 +77,8 @@ merely the presence of a happy-path string.
 
 FLOORS, NEVER EQUALITY. `>=` so that adding a fixture cannot redden a step; the
 ratchet direction is up. `scripts/oracle_wiring_check.py` sums the declared
-floors, and `claims.yaml` pins the total.
+floors and, since v0.91 (RQ-91-EMUFLOOR), holds each
+oracle's floor against the base tree with `--floor-base` — no total is pinned.
 
 Exit: the oracle's own exit code, unless a floor is unmet (then 1). An oracle
 that exits 0 having emulated nothing FAILS here.

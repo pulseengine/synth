@@ -380,6 +380,28 @@ driver's header parser by import rather than re-implementing the grammar. Pinned
 in `claims.yaml` (`SYNTH-ORACLE-CHECK-FLOORS-910`) so the number here, the
 number in `ci.yml`, and the declared headers move together.
 
+**Since v0.91 (RQ-91-EMUFLOOR) no total is pinned.** The table above and the
+paragraph before this one are the v0.5x state, kept as history. The summed
+floor, pinned in `ci.yml` as `--exact-emulation-floor N` since RQ-63-FLOOREQ,
+was edited by every oracle PR (all 9 `ci.yml` commits of v0.90 moved that one
+line, so every pair conflicted) and could not see a compensating move — one
+oracle down by exactly what another rose. The gate now runs
+`oracle_wiring_check.py --floor-base REF` and holds **each** wired oracle's
+`ci-checks: emulations` floor against the tree the change lands on (the merge
+ref's first parent on a pull request, the pushed-over commit on a push). A
+lowered floor, a `wired` -> `manual`/`unwired` flip, a mode change or a deleted
+oracle is red unless waived **where it happens**:
+
+```
+# ci-checks-shrink: emulations 1541 -> 905 — <reason, >= 20 chars>
+```
+
+in the oracle's own header, or, for a deleted or renamed oracle, the same line
+(`-> 0`) in a one-file tombstone `scripts/repro/retired/<name>.retired`. A
+waiver authorises the one transition it names; once that floor moves again it
+is stale and red. An unresolvable base, or a base with no wired emulations
+oracle, fails closed. Controls: `scripts/test_oracle_wiring_check.py`.
+
 Per job, `scripts/oracle_evidence.py` closes out with what that job **measured**
 — asserting every record met its floor *and* that the expected number of oracles
 reported at all, so a step deleted, commented out, or skipped by an early exit
