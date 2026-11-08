@@ -42,7 +42,10 @@ silicon that lacks the hardware.
 * **MPU configuration** — `crates/synth-backend/src/mpu.rs` and
   `mpu_allocator.rs` model PMSAv7 regions, but **nothing in the `synth`
   binary drives them**: they contribute no symbols to it, and no generated
-  startup programs an MPU (RQ-68-MPUHONEST, #1284). The only shipped MPU
+  startup programs an MPU (RQ-68-MPUHONEST, #1284). Until v0.91 their
+  `MPU_RASR.SIZE` encoding was off by one, so every region was encoded at
+  twice its size (#1677, RQ-91-MPURASR); the generated `mpu_init` sets
+  PRIVDEFENA, so it contains only unprivileged code. The only shipped MPU
   surface is the multi-memory region table an EMBEDDER programs from
   (`--relocatable --safety-bounds mpu --embedder-mpu`;
   embedder-programmed; containment demonstrated by gale on Renode and on STM32WB55 silicon (#1145)).

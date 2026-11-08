@@ -1,0 +1,73 @@
+artifacts:
+  - id: RQ-91-MPURASR
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "The published synth-backend MPU model encodes each PMSAv7 region at its own size, not twice it"
+    description: >
+        SILENT DEFECT in a PUBLISHED library API (#1677), found by the
+        RQ-91-MPUENFORCE design lane. `MPURegion::rasr()` in
+        crates/synth-backend/src/mpu.rs wrote the `MPUSize` discriminant,
+        which is log2(bytes), straight into the PMSAv7 `MPU_RASR.SIZE`
+        field. ARMv7-M decodes that field as a region of 2^(SIZE+1)
+        bytes, so every region was programmed one power of two LARGER
+        than intended: a 64 KiB tenant region became 128 KiB and covered
+        the adjacent memory. The unit test `test_mpu_rasr_generation`
+        asserted the wrong value (16 for 64 KiB). The `synth` binary does
+        not link this module and synth emits no MPU programming on any
+        path (#1145, #1284), but `synth-backend` is published to
+        crates.io (scripts/publish.rs). `MPUAllocator::generate_init_code`
+        also enables the MPU with PRIVDEFENA set, which nothing documented.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers: on
+        main, compute `(MPURegion::new(0, 0x2000_0000,
+        MPUSize::Size64KB).rasr() >> 1) & 0x1F` and compare it with CMSIS
+        `ARM_MPU_REGION_SIZE_64KB` (0x0F, ARM-software/CMSIS_5
+        CMSIS/Core/Include/mpu_armv7.h). QEMU's `get_phys_addr_pmsav7`
+        decodes the field the same way (`rsize++`).
+
+        MEASURED 2026-11-08 on main eab66646: LIVE. The field is 16
+        (0x10), which the hardware reads as 128 KiB; for 32 B it is 5
+        against CMSIS 0x04.
+
+        CITATION: #1677 is where the matter was analysed. The number
+        names where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+      - mpu
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      issue: "#1677"
+      verification-track: manual
+      issue-scope: closes
+      landed: "PR #1678 - #1677 - DELIVERED: a wrong-encoding fix in a published library API. The refuting command was RUN FIRST on main eab66646 and the defect was LIVE (64 KiB encoded as SIZE 16, 32 B as 5). Fix, in crates/synth-backend/src/mpu.rs: a new `MPUSize::rasr_size_field()` returns log2(bytes) - 1, and `MPURegion::rasr()` encodes the SIZE field through it. The `MPUSize` discriminant stays log2(bytes), so `bytes()` and `from_bytes()` are unchanged. `MPUAllocator::generate_init_code` now documents, in its rustdoc and in the generated C, that it sets PRIVDEFENA: privileged code that matches no region gets the default map, so only unprivileged code is contained. The `synth` binary does not link this module, so no emitted byte of any synth output changes."
+      verified-by: >
+        DELIVERED, unit-verified against an external table.
+        `rasr_size_field_matches_cmsis_for_every_variant_1677` checks all
+        28 `MPUSize` variants (every power-of-two region from 32 B = 2^5 to
+        4 GiB = 2^32) against the CMSIS `ARM_MPU_REGION_SIZE_*` constants,
+        copied as literals from ARM's mpu_armv7.h (32 B 0x04 ... 64 KiB
+        0x0F ... 4 GiB 0x1F), and checks that each field decodes by the
+        ARMv7-M rule 2^(SIZE+1) back to exactly `bytes()`. It also checks
+        that `from_bytes` over 2^5..=2^32 yields exactly the table's
+        variants, so a variant added without a row fails.
+        `test_mpu_rasr_generation` now asserts 0x0F for 64 KiB. RED on
+        main eab66646: both tests fail (16 vs 15; 5 vs 4 for 32 B). GREEN
+        on the fix. Potency: a planted mutant that restores the old
+        encoding (`rasr_size_field` returning log2(bytes)) reds both
+        tests again. gale's Verus-checked encoder uses the same rule
+        (SIZE = log2(size) - 1), and gale does not depend on
+        synth-backend.
+      done-when: >
+        manual:2027-03-31 every MPUSize variant's RASR SIZE field equals
+        the CMSIS ARM_MPU_REGION_SIZE_* value, a mutant restoring the old
+        encoding is red, and PRIVDEFENA is documented where the init code
+        sets it — delivered with a unit-verified result, or REFUTED with
+        the measurement that refutes it; and the refuting command above
+        is RUN FIRST and its result reported either way
