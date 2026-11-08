@@ -1227,6 +1227,20 @@ jobs:
       - name: Unit-test the per-oracle emulation-floor gate — shrink / delete / unwire / mode / compensating-move / two-PR controls (RQ-91-EMUFLOOR, #910)
         run: python3 scripts/test_oracle_wiring_check.py
 
+      # RQ-91-SUPPORTLEVELS (#1286): each backend's support level (L1-L3) is
+      # held by its evidence. The checker re-derives every criterion named in
+      # claims.yaml `support_levels:` (the oracle is wired, the L1 differential,
+      # WCET gate and proof compile run in a REQUIRED check, the evidence
+      # invokes THIS backend) and compares the level with the
+      # `## Support levels` table of docs/status/FEATURE_MATRIX.md. A demotion
+      # reds here; so does a level raised by assertion. The self-test runs one
+      # mutation per way a level can lie, against a synthetic tree.
+      - name: Support-level self-test — demote / drift / promotion-by-assertion controls (RQ-91-SUPPORTLEVELS)
+        run: python3 scripts/support_level_check.py --self-test
+
+      - name: Support levels — every L1/L2 criterion is backed by wired evidence (RQ-91-SUPPORTLEVELS)
+        run: python3 scripts/support_level_check.py claims.yaml
+
       - name: Oracle wiring gate — every repro script declares a CI status (890)
         # THE FLOOR (#910). Every wired oracle declares `ci-checks: emulations
         # >= N` in its own header and scripts/oracle_run.py enforces it on every

@@ -37,6 +37,45 @@ soundness feature, not an absence.
 
 ---
 
+## Support levels
+
+Each backend carries a **support level**. The name is deliberate: T1/T2/T3
+are the Rocq proof tiers, so a backend's level is never called a tier.
+Levels are cumulative: L1 must also meet L2.
+
+- **L1 verified**: Rocq proofs for the covered ops; a wasmtime execution
+  differential in a REQUIRED check; a WCET gate; an acceptance-ladder rung
+  that measures this backend.
+- **L2 execution-tested**: CI-wired wasmtime execution differentials, and
+  unsupported shapes decline loudly. The gate checks that the named
+  decline tripwires exist and run. It cannot check "every unsupported
+  shape"; the AArch64 row above lists module- and shape-level declines that
+  are explicitly unchecked.
+- **L3 experimental**: no correctness claim. A backend with code builds and
+  has tests; a requested backend with no code yet also starts here.
+
+The level of each row, and the evidence named in it, are held by
+`support_levels:` in `claims.yaml` and re-derived by
+`scripts/support_level_check.py` in the `Claim Check` job. A differential
+that stops being wired, leaves its required check, or stops invoking its
+backend reds that check: that is a demotion. A level edited here without
+the ledger, or the ledger without evidence that passes, is also red. The
+acceptance figures live in [`ACCEPTANCE_LADDER.md`](ACCEPTANCE_LADDER.md)
+with their measurement date and commit, and are cited from there, never
+copied here (#1286).
+
+| Backend | Level | Evidence, per criterion |
+|---------|-------|-------------------------|
+| Cortex-M Thumb-2 (`--cortex-m`, `--target cortex-m*`) | L1 verified (ladder criterion not met) | **Rocq:** `coq/Synth/Synth/VcrSelRules.v`, compiled by `bazel test //coq:verify_proofs` in the required `Bazel Build & Proofs` check. **Required differential:** `spec_exec_1636_differential.py` (cortex-m4 and cortex-m7dp legs vs wasmtime) in the required `spec-suite execution (#1636)` check; also `call_indirect_642_differential.py`. **WCET:** `wcet_bound_gate` in the required `Test` check. **Loud declines:** `call_indirect_275_selfcontained.rs`, `i64_call_arg_decline_929.rs`. **Ladder: not met.** The `arm` row of `ACCEPTANCE_LADDER.md` is measured by `partial_census_1017.py` as `-b arm --relocatable` with no `--target`, which selects the A32 encoder, not Thumb-2. No rung measures Thumb-2 yet; the gate reds once the census selects a Cortex-M target and this note is still here. |
+| RISC-V RV32 (`-b riscv`) | L2 execution-tested | **Differentials:** `rv32_br_table_882_differential.py`, `rv32_globals_1163_boot_differential.py`. **Loud declines:** `param_block_decline_1093.rs` (RV32). |
+| AArch64 (`-b aarch64`) | L2 execution-tested | **Differentials:** `aarch64_call_valstack_rq63_differential.py`, `arm64_linux_host_link_rq64_differential.py`. **Loud declines:** `aarch64_m2_decline_538.py`, `aarch64_f32_loudskip_554.rs`. |
+| Cortex-R5 `--relocatable` (`--target cortex-r5 --relocatable`) | L2 execution-tested | **Differentials:** `a32_control_flow_1639_differential.py`, `a32_i64_615_differential.py`. **Loud declines:** `a32_no_silent_nop_615.rs`, the no-wildcard A32 encoder tripwire. |
+| Cortex-R5 self-contained image (`--target cortex-r5`) | L3 experimental | Fails L2's loud-decline rule: the image drops active data segments and global initializers with exit 0 and no diagnostic (RQ-91-R5DATAINIT). `a32_image_1645_1640_differential.py` executes it against wasmtime, but no correctness claim is made until the image builder places that data or refuses it. |
+| x86-64 | L3 experimental | Requested by a downstream user and relayed by the maintainer. There is no code, no crate and no tests yet. It is promoted only through the same gate as every other backend. |
+| Cortex-M0/M0+ (ARMv6-M, `--target cortex-m0`, `cortex-m0plus`) | L3 experimental | Refuse-only (#1301): every module is declined with a loud diagnostic and no object is written, so there is no correctness claim to hold. Promoted only through the same gate as every other backend. |
+
+---
+
 ## WebAssembly Operation Coverage (ARM Thumb-2 primary path)
 
 | Category | Status | Notes |

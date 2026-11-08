@@ -140,6 +140,59 @@ def collect(root):
 _PURE_ECHO = re.compile(r"\s*echo\b")
 
 
+def step_chunks(st):
+    """The EXECUTABLE text of one workflow step: its `run:` body with shell
+    comments and pure `echo` lines dropped, plus its `with:`/`env:` values.
+
+    Factored out of `executable_surface` unchanged (RQ-91-SUPPORTLEVELS), so
+    `scripts/support_level_check.py` can ask which JOB runs an oracle with the
+    same reading of "runs" this gate uses, instead of a second copy of it.
+    """
+    chunks = []
+    if not isinstance(st, dict):
+        return chunks
+    if isinstance(st.get("run"), str):
+        # Strip SHELL comments before counting a reference.
+        #
+        # The gate's whole point is that a mention must be something
+        # that RUNS. YAML eats `#` only in a single-line plain scalar;
+        # in a `run: |` block — which is nearly every oracle step here
+        # — the `#` survives into the script body, so commenting the
+        # body out left the script still "referenced" and the gate
+        # GREEN while the step executed nothing. Commenting out a
+        # flaky step is the most common way a gate goes inert, i.e.
+        # precisely the #890 failure this exists to reject.
+        # Found by the v0.54 cold review; the earlier
+        # comment-demotion mutation passed only because it happened
+        # to target a single-line `run:`.
+        for line in st["run"].splitlines():
+            code = line.split("#", 1)[0]
+            if not code.strip():
+                continue
+            # (v0.73 cold review round 2, finding 13) A bare `echo`
+            # PRINTS the path; it does not run it. The reviewer
+            # replaced the falcon step's body with
+            # `run: echo scripts/repro/falcon_opt_1318_differential.py`
+            # and this gate stayed GREEN — while its own docstring
+            # says "a gate satisfiable by prose is the very shape
+            # this check exists to reject". A mention inside a
+            # comment was already rejected; a mention inside an echo
+            # is the same class one layer in.
+            #
+            # Narrow on purpose: only a PURE echo is dropped. A line
+            # that pipes or chains (`echo x | python3 -`,
+            # `echo a && run b`) still counts, because something
+            # there does execute.
+            if (_PURE_ECHO.match(code)
+                    and not any(t in code for t in ("|", "&&", ";", "$("))):
+                continue
+            chunks.append(code)
+    for block in ("with", "env"):
+        for v in (st.get(block) or {}).values():
+            chunks.append(str(v))
+    return chunks
+
+
 def executable_surface(workflows):
     """Map workflow filename -> the text a runner would actually EXECUTE.
 
@@ -162,47 +215,7 @@ def executable_surface(workflows):
             if not isinstance(job, dict):
                 continue
             for st in job.get("steps") or []:
-                if not isinstance(st, dict):
-                    continue
-                if isinstance(st.get("run"), str):
-                    # Strip SHELL comments before counting a reference.
-                    #
-                    # The gate's whole point is that a mention must be something
-                    # that RUNS. YAML eats `#` only in a single-line plain scalar;
-                    # in a `run: |` block — which is nearly every oracle step here
-                    # — the `#` survives into the script body, so commenting the
-                    # body out left the script still "referenced" and the gate
-                    # GREEN while the step executed nothing. Commenting out a
-                    # flaky step is the most common way a gate goes inert, i.e.
-                    # precisely the #890 failure this exists to reject.
-                    # Found by the v0.54 cold review; the earlier
-                    # comment-demotion mutation passed only because it happened
-                    # to target a single-line `run:`.
-                    for line in st["run"].splitlines():
-                        code = line.split("#", 1)[0]
-                        if not code.strip():
-                            continue
-                        # (v0.73 cold review round 2, finding 13) A bare `echo`
-                        # PRINTS the path; it does not run it. The reviewer
-                        # replaced the falcon step's body with
-                        # `run: echo scripts/repro/falcon_opt_1318_differential.py`
-                        # and this gate stayed GREEN — while its own docstring
-                        # says "a gate satisfiable by prose is the very shape
-                        # this check exists to reject". A mention inside a
-                        # comment was already rejected; a mention inside an echo
-                        # is the same class one layer in.
-                        #
-                        # Narrow on purpose: only a PURE echo is dropped. A line
-                        # that pipes or chains (`echo x | python3 -`,
-                        # `echo a && run b`) still counts, because something
-                        # there does execute.
-                        if (_PURE_ECHO.match(code)
-                                and not any(t in code for t in ("|", "&&", ";", "$("))):
-                            continue
-                        chunks.append(code)
-                for block in ("with", "env"):
-                    for v in (st.get(block) or {}).values():
-                        chunks.append(str(v))
+                chunks.extend(step_chunks(st))
             for v in (job.get("env") or {}).values():
                 chunks.append(str(v))
         surface[name] = "\n".join(chunks)
