@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 33
+# ci-checks: emulations >= 42
 """RQ-91-NPAMODEL (#1672, #1568, #1604, #1661): memory-0 address provenance
 under `--relocatable --native-pointer-abi` is decided ONCE per module, and
 every shape is either executed equal to wasmtime or refused loudly with a
@@ -63,6 +63,15 @@ on the hand linker of npa_const_addr_differential.py, one instance per row):
                   a counter compared with a constant equal to a segment end:
                   REFUSED (eab66646 relocated the constant and never stopped).
     interior_cmp  the walk compared against 0x2008 inside one segment: EXEC.
+  #1684 i64 constants (never relocated)
+    i64_static_cmp_neg / i64_static_addr_neg
+                  an i64.const in the static window compared with a
+                  static-derived pointer (eab66646 faulted, wasmtime 0x3), or
+                  reaching a memory-0 address: REFUSED `npa-i64-static-const
+                  (#1684)`.
+    i64_outside_ctl / i64_scalar_ctl / i64_hostcmp_ctl / i64_counter_ctl
+                  an i64.const outside the window, a plain scalar, compared
+                  with a host value, an i64 counter bound: EXEC.
   #1661
     swb_neg       `--safety-bounds software` on a module touching memory 0:
                   REFUSED `npa-software-bounds (#1661)` (eab66646 compiled
@@ -192,6 +201,25 @@ EXEC = [
      '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n'
      + walk('(i32.eq (local.get 0) (i32.const 0x2008))'),
      [("sum", ())]),
+    # #1684 controls: an i64.const that is NOT refused. Outside the static
+    # window; inside it but a plain scalar; inside it but compared with a host
+    # value; an i64 counter compared with an in-window bound. Each EXEC, and
+    # byte-identical to eab66646.
+    ("i64_outside_ctl", WALK_SP + '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n' + '  (func (export "anchor") (result i32) (i32.load (i32.const 0x2004)))\n' +
+     '  (func (export "c") (result i32) (i64.eq (i64.extend_i32_u (i32.const 0x2000)) (i64.const 0x10))))',
+     [("anchor", ()), ("c", ())]),
+    ("i64_scalar_ctl", WALK_SP + '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n' + '  (func (export "anchor") (result i32) (i32.load (i32.const 0x2004)))\n' +
+     '  (func (export "s") (result i32) (i32.wrap_i64 (i64.add (i64.const 0x2004) (i64.const 1)))))',
+     [("anchor", ()), ("s", ())]),
+    ("i64_hostcmp_ctl", WALK_SP + '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n' + '  (func (export "anchor") (result i32) (i32.load (i32.const 0x2004)))\n' +
+     '  (func (export "h") (param i32) (result i32) (i64.eq (i64.extend_i32_u (local.get 0)) (i64.const 0x2004))))',
+     [("anchor", ()), ("h", (0x2004,)), ("h", (5,))]),
+    ("i64_counter_ctl", WALK_SP + '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n' + '  (func (export "anchor") (result i32) (i32.load (i32.const 0x2004)))\n' +
+     '  (func (export "cnt") (result i32) (local i64)\n'
+     '    (block (loop (br_if 1 (i64.ge_u (local.get 0) (i64.const 0x2008)))\n'
+     '      (local.set 0 (i64.add (local.get 0) (i64.const 0x401))) (br 0)))\n'
+     '    (i32.wrap_i64 (local.get 0))))',
+     [("anchor", ()), ("cnt", ())]),
 ]
 
 REFUSE = [
@@ -262,6 +290,16 @@ REFUSE = [
      '      (local.set 0 (i32.add (local.get 0) (i32.const 0x401))) (br 0)))\n'
      '    (local.get 0)))',
      [], ["npa-end-pointer-compare (#1604)", "function 'cnt'", "0x2008"]),
+    # #1684: an i64.const inside the static window compared with a pointer
+    # derived from a static (eab66646 compiled it and faulted where wasmtime
+    # returns 0x3), and one that reaches a memory-0 address (eab66646 refused
+    # it for an unrelated reason, so this row is not a wrong-code control).
+    ("i64_static_cmp_neg", WALK_SP + '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n'
+     + walk('(i64.eq (i64.extend_i32_u (local.get 0)) (i64.const 0x2008))'),
+     [], ["npa-i64-static-const (#1684)", "function 'sum'", "0x2008"]),
+    ("i64_static_addr_neg", WALK_SP + '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n' +
+     '  (func (export "ld") (result i32) (i32.load (i32.wrap_i64 (i64.const 0x2004)))))',
+     [], ["npa-i64-static-const (#1684)", "function 'ld'", "0x2004"]),
     ("swb_neg", SEG + ANCHOR +
      '  (func (export "st0") (param i32 i32) (i32.store (local.get 0) (local.get 1))))',
      ["--safety-bounds", "software"], ["npa-software-bounds (#1661)", "function '"]),

@@ -681,6 +681,9 @@ static range that carries no relocation is a compiler defect, refused as
   - `npa-end-pointer-compare (#1604)` — on the split layout, a relocated
     constant one past a segment's end used as an operand of a comparison (see
     R1's boundary rule).
+  - `npa-i64-static-const (#1684)` — an `i64.const` inside memory 0's static
+    window that reaches a memory-0 address, or is compared with a pointer
+    derived from a static (i64 constants are not relocated).
   - `npa-software-bounds (#1661)` — `--safety-bounds software|mask` with any
     memory-0 access.
 

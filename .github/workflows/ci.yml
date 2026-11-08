@@ -3153,7 +3153,10 @@ jobs:
       # an end pointer compared in a loop refused (npa-end-pointer-compare),
       # also as `<`, as an i64 comparison and against an i64.const, and a
       # counter compared with a segment end; the same walk against an
-      # interior constant executed. RED on eab66646: 19 failures.
+      # interior constant executed; #1684: an i64.const naming a static,
+      # compared with a static-derived pointer or reaching an address,
+      # refused (npa-i64-static-const), four i64 controls executed.
+      # RED on eab66646: 21 failures.
       - name: Run native-pointer provenance oracle (RQ-91-NPAMODEL, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_model_differential.py
       # #746 (the #739 residual): the i64/WIDE static-region arms — i64.load/

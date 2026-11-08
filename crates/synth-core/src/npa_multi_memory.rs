@@ -173,8 +173,8 @@ struct M0Facts {
     /// `i64.extend_i32_{s,u}` results and their operand, so a comparison of
     /// an extended end pointer is seen (R1 boundary rule).
     extends: HashMap<Node, Node>,
-    /// `i64.const` results and their value (never relocated).
-    i64_consts: HashMap<Node, i64>,
+    /// `i64.const` results: `(function, op, value)` (never relocated).
+    i64_consts: HashMap<Node, (u32, usize, i64)>,
 }
 
 /// One memory-0 access as the walk saw it.
@@ -953,7 +953,7 @@ fn walk(
                             g.m0.extends.insert(r, ins[0]);
                         }
                         I64Const(c) => {
-                            g.m0.i64_consts.insert(r, *c);
+                            g.m0.i64_consts.insert(r, (fi, i, *c));
                         }
                         _ => {}
                     }
@@ -1867,7 +1867,7 @@ impl Provenance {
                         }
                         f.i64_consts
                             .get(&side)
-                            .is_some_and(|&c| c as u64 == e && in_spz(e32))
+                            .is_some_and(|&(_, _, c)| c as u64 == e && in_spz(e32))
                     };
                     let Some(&(k, e)) = ends.iter().find(|&&(_, e)| hit(e)) else {
                         continue;
@@ -1889,6 +1889,85 @@ impl Provenance {
                         name(fi),
                         region_name(region_of(e)),
                     ));
+                }
+            }
+        }
+        // ---- an i64.const naming a memory-0 static (#1684) ----------------
+        // i64 constants are never relocated (the decision relocates
+        // `i32.const` only), so one inside the static window that reaches a
+        // memory-0 address, or is compared with a static-derived pointer
+        // (an `i64.extend_i32_*` of one), would be read raw beside native
+        // addresses. Refused until i64 relocation lands. A module with no
+        // static region (R2) has no window.
+        if lowest.is_some() || sp_init.is_some() {
+            let win_lo = i64::from(pure_lo);
+            let in_win = |c: i64| c >= win_lo && i128::from(c) < i128::from(mem_end);
+            // The first in-window i64 constant reaching `v` over directed flows.
+            let reaching = |v: Node| -> Option<(u32, usize, i64)> {
+                let mut seen = vec![false; n];
+                let mut work = vec![v];
+                while let Some(x) = work.pop() {
+                    if std::mem::replace(&mut seen[x], true) {
+                        continue;
+                    }
+                    if let Some(&(cf, co, c)) = f.i64_consts.get(&x)
+                        && in_win(c)
+                    {
+                        return Some((cf, co, c));
+                    }
+                    work.extend(f.fpreds[x].iter().copied());
+                }
+                None
+            };
+            let refuse = |cf: u32, co: usize, c: i64, how: String| -> String {
+                format!(
+                    "npa-i64-static-const (#1684): --native-pointer-abi refused for the whole \
+                     module — function '{}' (wasm function index {cf}) has, at op {co}, the \
+                     constant i64.const 0x{c:x}, inside memory 0's static window \
+                     [0x{pure_lo:x}, 0x{mem_end:x}), and {how}. i64 constants are not \
+                     relocated under the native-pointer ABI, so it would stay a raw wasm \
+                     address beside native pointers. No object is written. Use an i32 \
+                     address (an `i32.const`), or drop --native-pointer-abi.",
+                    name(cf)
+                )
+            };
+            for acc in &f.accesses {
+                if let Some((cf, co, c)) = reaching(acc.addr) {
+                    return Err(refuse(
+                        cf,
+                        co,
+                        c,
+                        format!(
+                            "it reaches the memory-0 address of the {} at op {} of function '{}'",
+                            acc.what,
+                            acc.op,
+                            name(acc.func)
+                        ),
+                    ));
+                }
+            }
+            let anchored = |s: &Sum| !s.spz.is_empty() || s.spz_many || !s.sites.is_empty();
+            for &(fi, op, a, b) in &f.compares {
+                for (k, o) in [(a, b), (b, a)] {
+                    let Some((cf, co, c)) = reaching(k) else {
+                        continue;
+                    };
+                    let mut src = o;
+                    while let Some(&s) = f.extends.get(&src) {
+                        src = s;
+                    }
+                    if anchored(&sum[o]) || anchored(&sum[src]) {
+                        return Err(refuse(
+                            cf,
+                            co,
+                            c,
+                            format!(
+                                "it is compared, at op {op} of function '{}', with a pointer \
+                                 derived from a memory-0 static",
+                                name(fi)
+                            ),
+                        ));
+                    }
                 }
             }
         }

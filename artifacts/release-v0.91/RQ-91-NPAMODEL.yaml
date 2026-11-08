@@ -67,7 +67,9 @@ artifacts:
 
         CITATION: #739, #1568, #1604, #1672 and #1661 are where the
         matter was analysed. The numbers name where it was analysed,
-        not an open scope.
+        not an open scope. #1684 is the i64-constant finding this lane
+        made and filed; it is OPEN, and this record's refusal addresses it
+        for v0.91, hence `issue-scope: closes`.
     tags:
       - feature-loop
       - refactor
@@ -80,10 +82,10 @@ artifacts:
     fields:
       req-type: functional
       priority: must
-      issue: "#739"
+      issue: "#739, #1684"
       verification-track: execution
       issue-scope: closes
-      landed: "PR #1682 - #739 - DELIVERED. Memory-0 address provenance under --relocatable --native-pointer-abi is decided ONCE per module by Provenance::memory0_plan, which extends the #1145 pass in crates/synth-core/src/npa_multi_memory.rs (one graph walk, read by both). It names the constants to relocate or refuses the module with a named diagnostic: npa-data-pointer, npa-dynamic-static-offset, npa-static-observed, npa-static-unrelocatable, npa-region-straddle, npa-double-relocation, npa-end-pointer-compare, npa-software-bounds. The emitted ARM stream is checked by arm_backend::npa_stream_validate (npa-addr-validate, fatal). Deleted: 12 of the 13 selector fn npa_* and synth-core npa_static_region, the three refusal call sites, the CLI shape-2 loop and the #1619 memory-0-side refusal."
+      landed: "PR #1682 - #739 - DELIVERED. Memory-0 address provenance under --relocatable --native-pointer-abi is decided ONCE per module by Provenance::memory0_plan, which extends the #1145 pass in crates/synth-core/src/npa_multi_memory.rs (one graph walk, read by both). It names the constants to relocate or refuses the module with a named diagnostic: npa-data-pointer, npa-dynamic-static-offset, npa-static-observed, npa-static-unrelocatable, npa-region-straddle, npa-double-relocation, npa-end-pointer-compare, npa-i64-static-const, npa-software-bounds. The emitted ARM stream is checked by arm_backend::npa_stream_validate (npa-addr-validate, fatal). Deleted: 12 of the 13 selector fn npa_* and synth-core npa_static_region, the three refusal call sites, the CLI shape-2 loop and the #1619 memory-0-side refusal."
       verified-by: >
         DELIVERED, execution-verified. The refuting command, re-run on the
         branch: `fn npa_*` above each test module drops from 15 to 5
@@ -116,7 +118,11 @@ artifacts:
         str_neg compile), the straddle check disabled (straddle_neg compiles).
         Newly refused over the repo corpus: 0 modules that compiled cleanly on
         eab66646 (the 2 self_contained_data_758 rows were already skipping the
-        same function).
+        same function). Newly refused outside the corpus, a stated COST: `while
+        p != 0x2008` where a segment DOES start at 0x2008 (the endptr probe's
+        end_sp_adjacent) executed correctly on eab66646 (0x3) and is now
+        refused by npa-end-pointer-compare, which refuses the comparison
+        whichever region follows the segment.
         R1 BOUNDARY RULE (found probing R1; gale decided it). On the split
         layout a constant one past a memory-0 segment's end resolves to the
         START of the region holding that address. gale's image is that case
@@ -146,8 +152,9 @@ artifacts:
         where a segment does start at 0x2008) executed correctly on eab66646
         (0x3) and is now refused: the rule refuses the comparison whichever
         region follows. Over the repo census the refusal fires on 0 modules.
-        npa_model_differential.py: 33 emulations, PASS on the branch, 19
-        failures on eab66646 (15 at b5239dab plus the four new refusal rows).
+        npa_model_differential.py at this point: 33 emulations, PASS on the
+        branch, 19 failures on eab66646 (15 at b5239dab plus the four new
+        refusal rows; 42 and 21 after #1684 below).
         Planted mutants, each red: the comparison refusal disabled (the five
         end_* rows compile); the refusal widened to plain address use
         (gale_boundary refused in both oracles, and mem1_walk); the #1145
@@ -184,12 +191,28 @@ artifacts:
         (seg 6 -> seg 7) is adjacent under today's packing iff segment 6's
         length is a multiple of 4 and segment 7 is declared next; gale's census
         on this head is the confirmation.
-        RESIDUAL, measured and outside the boundary class: an `i64.const` in
-        the static window that is NOT a boundary, compared with an extended
-        static pointer (`i64.eq (i64.extend_i32_u p) (i64.const 0x2008)` over
-        one segment [0x2000, 0x2010)), is silently wrong on eab66646 and on
-        this branch alike (a fault where wasmtime returns 0x3): i64 constants
-        are never relocated. Not refused here; it needs its own record.
+        #1684, REFUSED (maintainer decision): an `i64.const` in the static
+        window that is not a boundary, compared with an extended static
+        pointer (`i64.eq (i64.extend_i32_u p) (i64.const 0x2008)` over one
+        segment [0x2000, 0x2010)), was silently wrong on eab66646 (a fault
+        where wasmtime returns 0x3) because i64 constants are never relocated.
+        New module-level refusal npa-i64-static-const (#1684): an i64.const in
+        memory 0's static window [min(lowest segment, stack-pointer init),
+        memory-0 size) that reaches a memory-0 address over the directed value
+        flows, or is a comparison operand against a static-derived pointer
+        (looking through `i64.extend_i32_*`). Only in modules that have a
+        static region (R2 modules have no window). Rows i64_static_cmp_neg
+        (eab66646 compiled it and faulted) and i64_static_addr_neg (eab66646
+        refused it for an unrelated reason) are refused. Controls, each EXEC
+        equal to wasmtime and byte-identical to eab66646: an i64.const outside
+        the window compared with a static pointer (i64_outside_ctl), one inside
+        it used as a plain scalar (i64_scalar_ctl), compared with a host value
+        (i64_hostcmp_ctl), and an i64 counter with an in-window bound
+        (i64_counter_ctl). A planted mutant disabling the refusal turns both
+        refusal rows red. npa_model_differential.py: 42 emulations, PASS on
+        the branch, 21 failures on eab66646 (the summed floor moves +9 with
+        it, paired against the previous head f01c28c6). Relocating i64
+        constants properly is the follow-on.
         The delta-execution figures above were measured on an earlier branch
         binary; they still hold because those modules' census hashes are
         identical between that binary and this head (536 of 536 rows with the
