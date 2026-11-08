@@ -110,6 +110,21 @@ impl MPUAllocator {
     }
 
     /// Generate C initialization code for all regions
+    ///
+    /// **PRIVDEFENA is set.** The generated `mpu_init` enables the MPU with
+    /// `MPU_CTRL = ENABLE | PRIVDEFENA`. With PRIVDEFENA = 1, a PRIVILEGED
+    /// access that matches no region uses the architectural default memory
+    /// map instead of faulting, so these regions constrain only UNPRIVILEGED
+    /// code (which faults on any access outside every region either way).
+    /// Code that must be contained by the MPU has to run unprivileged
+    /// (`CONTROL.nPRIV = 1`); privileged code can also always reach the PPB,
+    /// including the MPU registers themselves. Note too that some emulators
+    /// do not model PRIVDEFENA = 0 faithfully (gale observed Renode granting
+    /// the default map to privileged code on the PMSAv7 path, #1145), so a
+    /// privileged run is no evidence of containment.
+    ///
+    /// Nothing in the `synth` binary calls this: synth emits no MPU
+    /// programming on any path (#1145, #1284).
     pub fn generate_init_code(&self) -> String {
         let mut code = String::new();
 
@@ -143,6 +158,8 @@ impl MPUAllocator {
         }
 
         code.push_str("    /* Enable MPU with default memory map for privileged access */\n");
+        code.push_str("    /* PRIVDEFENA: privileged code outside every region is NOT faulted;\n");
+        code.push_str("     * only unprivileged code (CONTROL.nPRIV = 1) is contained. */\n");
         code.push_str("    MPU_CTRL = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA;\n");
         code.push_str("}\n");
 

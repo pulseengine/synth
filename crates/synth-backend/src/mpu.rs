@@ -5,7 +5,10 @@ use synth_core::{Error, Result};
 /// MPU Region Size
 ///
 /// ARM Cortex-M MPU requires power-of-2 sized regions
-/// Values represent the power of 2 (e.g., Size32B = 5 means 2^5 = 32 bytes)
+/// Values represent the power of 2 (e.g., Size32B = 5 means 2^5 = 32 bytes).
+/// The discriminant is log2(bytes), NOT the RASR SIZE field: ARMv7-M decodes
+/// that field as a region of 2^(SIZE+1) bytes, so use
+/// [`MPUSize::rasr_size_field`] (log2 - 1) when encoding (#1677).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MPUSize {
     /// 32 bytes (2^5)
@@ -70,6 +73,17 @@ impl MPUSize {
     /// Get size in bytes
     pub fn bytes(&self) -> u64 {
         1u64 << (*self as u8)
+    }
+
+    /// The PMSAv7 `MPU_RASR.SIZE` field (bits 5:1) for this region size.
+    ///
+    /// ARMv7-M decodes the field as a region of `2^(SIZE+1)` bytes, so the
+    /// field is `log2(bytes) - 1`: 32 B -> 4, 64 KiB -> 15 (0x0F), 4 GiB -> 31
+    /// -- the CMSIS `ARM_MPU_REGION_SIZE_*` values. Writing `log2(bytes)`
+    /// instead programs a region one power of two LARGER than intended, so a
+    /// 64 KiB region silently covers the adjacent 64 KiB (#1677).
+    pub fn rasr_size_field(&self) -> u32 {
+        (*self as u32) - 1
     }
 
     /// Create from byte size (rounds up to next power of 2)
@@ -263,8 +277,9 @@ impl MPURegion {
             rasr |= 1 << 0;
         }
 
-        // Size field (bits 1-5)
-        rasr |= ((self.size as u32) << 1) & 0x3E;
+        // Size field (bits 1-5): log2(bytes) - 1, decoded by the hardware as
+        // 2^(SIZE+1) bytes (#1677).
+        rasr |= (self.size.rasr_size_field() << 1) & 0x3E;
 
         // Subregion disable (bits 8-15)
         rasr |= (self.subregion_disable as u32) << 8;
@@ -340,8 +355,76 @@ mod tests {
         // Check enable bit
         assert_eq!(rasr & 0x1, 1);
 
-        // Check size field
+        // Check size field. ARMv7-M decodes RASR.SIZE as a region of
+        // 2^(SIZE+1) bytes, so 64 KiB is SIZE = 15 (CMSIS
+        // ARM_MPU_REGION_SIZE_64KB = 0x0F) -- NOT log2(64 KiB) = 16, which
+        // the hardware reads as 128 KiB (#1677).
         let size_field = (rasr >> 1) & 0x1F;
-        assert_eq!(size_field, MPUSize::Size64KB as u32);
+        assert_eq!(size_field, 0x0F);
+    }
+
+    /// CMSIS `mpu_armv7.h` `ARM_MPU_REGION_SIZE_*`, copied as literals from
+    /// ARM's header (ARM-software/CMSIS_5, CMSIS/Core/Include/mpu_armv7.h) so
+    /// the expected field is an EXTERNAL source, not a re-statement of the
+    /// encoder's own arithmetic. One row per `MPUSize` variant: every
+    /// power-of-two region from 32 B (2^5) to 4 GiB (2^32), 28 rows.
+    const CMSIS_ARM_MPU_REGION_SIZE: [(MPUSize, u32); 28] = [
+        (MPUSize::Size32B, 0x04),
+        (MPUSize::Size64B, 0x05),
+        (MPUSize::Size128B, 0x06),
+        (MPUSize::Size256B, 0x07),
+        (MPUSize::Size512B, 0x08),
+        (MPUSize::Size1KB, 0x09),
+        (MPUSize::Size2KB, 0x0A),
+        (MPUSize::Size4KB, 0x0B),
+        (MPUSize::Size8KB, 0x0C),
+        (MPUSize::Size16KB, 0x0D),
+        (MPUSize::Size32KB, 0x0E),
+        (MPUSize::Size64KB, 0x0F),
+        (MPUSize::Size128KB, 0x10),
+        (MPUSize::Size256KB, 0x11),
+        (MPUSize::Size512KB, 0x12),
+        (MPUSize::Size1MB, 0x13),
+        (MPUSize::Size2MB, 0x14),
+        (MPUSize::Size4MB, 0x15),
+        (MPUSize::Size8MB, 0x16),
+        (MPUSize::Size16MB, 0x17),
+        (MPUSize::Size32MB, 0x18),
+        (MPUSize::Size64MB, 0x19),
+        (MPUSize::Size128MB, 0x1A),
+        (MPUSize::Size256MB, 0x1B),
+        (MPUSize::Size512MB, 0x1C),
+        (MPUSize::Size1GB, 0x1D),
+        (MPUSize::Size2GB, 0x1E),
+        (MPUSize::Size4GB, 0x1F),
+    ];
+
+    /// #1677: every `MPUSize` variant's RASR SIZE field equals the CMSIS
+    /// constant, AND decodes (by the ARMv7-M rule, region = 2^(SIZE+1)
+    /// bytes) back to exactly `bytes()` -- never one power of two larger.
+    #[test]
+    fn rasr_size_field_matches_cmsis_for_every_variant_1677() {
+        // Exhaustive over the enum: from_bytes over every power of two
+        // 2^5..=2^32 must name exactly the table's variants, in order, so a
+        // variant added to the enum without a CMSIS row fails here.
+        for (i, (size, _)) in CMSIS_ARM_MPU_REGION_SIZE.iter().enumerate() {
+            let bytes = 1u64 << (5 + i);
+            assert_eq!(MPUSize::from_bytes(bytes).unwrap(), *size);
+            assert_eq!(size.bytes(), bytes);
+        }
+        for (size, cmsis) in CMSIS_ARM_MPU_REGION_SIZE {
+            let base = if size.bytes() >= (1u64 << 32) {
+                0
+            } else {
+                0x2000_0000 & !(size.bytes() as u32 - 1)
+            };
+            let field = (MPURegion::new(0, base, size).rasr() >> 1) & 0x1F;
+            assert_eq!(field, cmsis, "{size:?}: RASR.SIZE");
+            assert_eq!(
+                1u64 << (field + 1),
+                size.bytes(),
+                "{size:?}: the hardware decodes 2^(SIZE+1) bytes"
+            );
+        }
     }
 }
