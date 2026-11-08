@@ -82,6 +82,18 @@ fn bv_rank(t: &BvTerm) -> u8 {
         BvTerm::ZeroExt { .. } => 16,
         BvTerm::SignExt { .. } => 17,
         BvTerm::Ite { .. } => 18,
+        // ordeal 0.28 (#192 phase 5) admitted the five formerly-DERIVED ops to
+        // the closed fragment as their own nodes, each with a Lean-proven
+        // blasting rule; `ordeal::lowering::{bvnot,bvneg,bvrotl,bvsdiv,bvsrem}`
+        // now return these nodes instead of a rewrite into the ops above.
+        // Ranks are APPENDED, never interleaved: renumbering would reorder the
+        // operands of every existing commutative node and move every CNF.
+        // Each gets its OWN rank for the reason the `Urem` note gives.
+        BvTerm::Not(..) => 19,
+        BvTerm::Neg(..) => 20,
+        BvTerm::Rotl(..) => 21,
+        BvTerm::Sdiv(..) => 22,
+        BvTerm::Srem(..) => 23,
         // ordeal ≥0.17 seals the term enums (`#[non_exhaustive]`, ordeal#104):
         // a variant is only ever added together with a proven blasting rule
         // and a CHANGELOG callout. synth-verify builds no terms outside the
@@ -150,9 +162,13 @@ fn ord_bv(a: &BvTerm, b: &BvTerm) -> Ordering {
         | (BvTerm::Lshr(a1, a2), BvTerm::Lshr(b1, b2))
         | (BvTerm::Ashr(a1, a2), BvTerm::Ashr(b1, b2))
         | (BvTerm::Rotr(a1, a2), BvTerm::Rotr(b1, b2))
+        | (BvTerm::Rotl(a1, a2), BvTerm::Rotl(b1, b2))
+        | (BvTerm::Sdiv(a1, a2), BvTerm::Sdiv(b1, b2))
+        | (BvTerm::Srem(a1, a2), BvTerm::Srem(b1, b2))
         | (BvTerm::Concat(a1, a2), BvTerm::Concat(b1, b2)) => {
             ord_bv(a1, b1).then_with(|| ord_bv(a2, b2))
         }
+        (BvTerm::Not(a1), BvTerm::Not(b1)) | (BvTerm::Neg(a1), BvTerm::Neg(b1)) => ord_bv(a1, b1),
         (
             BvTerm::Extract {
                 hi: ha,
@@ -285,6 +301,23 @@ fn canonicalize_bv(t: &BvTerm) -> BvTerm {
             let (a, b) = bin(a, b);
             BvTerm::Concat(a, b)
         }
+        // ordeal 0.28 derived-op nodes. None of the five commutes, so the
+        // operands keep their order (`bin`, never `comm`); only the children
+        // are canonicalized.
+        BvTerm::Rotl(a, b) => {
+            let (a, b) = bin(a, b);
+            BvTerm::Rotl(a, b)
+        }
+        BvTerm::Sdiv(a, b) => {
+            let (a, b) = bin(a, b);
+            BvTerm::Sdiv(a, b)
+        }
+        BvTerm::Srem(a, b) => {
+            let (a, b) = bin(a, b);
+            BvTerm::Srem(a, b)
+        }
+        BvTerm::Not(a) => BvTerm::Not(Box::new(canonicalize_bv(a))),
+        BvTerm::Neg(a) => BvTerm::Neg(Box::new(canonicalize_bv(a))),
         BvTerm::Extract { hi, lo, arg } => BvTerm::Extract {
             hi: *hi,
             lo: *lo,
@@ -894,6 +927,19 @@ fn fmt_bv(t: &BvTerm, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         BvTerm::Lshr(a, b) => fmt_bin(f, "bvlshr", a, b),
         BvTerm::Ashr(a, b) => fmt_bin(f, "bvashr", a, b),
         BvTerm::Rotr(a, b) => fmt_bin(f, "bvrotr", a, b),
+        BvTerm::Rotl(a, b) => fmt_bin(f, "bvrotl", a, b),
+        BvTerm::Sdiv(a, b) => fmt_bin(f, "bvsdiv", a, b),
+        BvTerm::Srem(a, b) => fmt_bin(f, "bvsrem", a, b),
+        BvTerm::Not(a) => {
+            write!(f, "(bvnot ")?;
+            fmt_bv(a, f)?;
+            write!(f, ")")
+        }
+        BvTerm::Neg(a) => {
+            write!(f, "(bvneg ")?;
+            fmt_bv(a, f)?;
+            write!(f, ")")
+        }
         BvTerm::Extract { hi, lo, arg } => {
             write!(f, "((_ extract {} {}) ", hi, lo)?;
             fmt_bv(arg, f)?;

@@ -283,6 +283,15 @@ mod z3_backend {
             BvTerm::Lshr(a, b) => bv_to_z3(a).bvlshr(&bv_to_z3(b)),
             BvTerm::Ashr(a, b) => bv_to_z3(a).bvashr(&bv_to_z3(b)),
             BvTerm::Rotr(a, b) => bv_to_z3(a).bvrotr(&bv_to_z3(b)),
+            // ordeal 0.28 derived-op nodes -> Z3's NATIVE operators (not the
+            // rewrite), so the oracle checks ordeal's proven composite rules
+            // against an independent implementation of the same SMT-LIB op.
+            // `bvsrem` (sign of the dividend), NOT `bvsmod`.
+            BvTerm::Rotl(a, b) => bv_to_z3(a).bvrotl(&bv_to_z3(b)),
+            BvTerm::Sdiv(a, b) => bv_to_z3(a).bvsdiv(&bv_to_z3(b)),
+            BvTerm::Srem(a, b) => bv_to_z3(a).bvsrem(&bv_to_z3(b)),
+            BvTerm::Not(a) => bv_to_z3(a).bvnot(),
+            BvTerm::Neg(a) => bv_to_z3(a).bvneg(),
             BvTerm::Extract { hi, lo, arg } => bv_to_z3(arg).extract(*hi, *lo),
             BvTerm::Concat(a, b) => bv_to_z3(a).concat(&bv_to_z3(b)),
             BvTerm::ZeroExt { by, arg } => bv_to_z3(arg).zero_ext(*by),

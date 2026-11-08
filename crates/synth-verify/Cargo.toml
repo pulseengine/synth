@@ -61,7 +61,26 @@ synth-synthesis = { path = "../synth-synthesis", version = "0.90.0", optional = 
 # the encoding is byte-identical at power-of-two widths, so unchanged verdicts
 # are evidence of non-affectedness and ANY changed verdict is the finding.
 # Reasoning alone would not have settled it.
-ordeal = "=0.22.1"
+#
+# 0.36.0 (#1590 lane, v0.91): dependabot's 0.34.0 failed Test + Z3 with 15
+# panics, ONE cause. 0.28 admitted the five formerly-derived ops to the closed
+# fragment as their own nodes (`BvTerm::{Not,Neg,Rotl,Sdiv,Srem}`, each with a
+# Lean-proven blasting rule), and `ordeal::lowering::{bvnot,bvneg,bvrotl,
+# bvsdiv,bvsrem}` now RETURN those nodes instead of a rewrite. The loud
+# catch-all in `canonicalize_bv` fired first, as designed: no verdict was ever
+# minted over an unmodeled node. term.rs/solver.rs now carry arms for all five
+# (ranks APPENDED so no existing operand order moves; none treated as
+# commutative; Z3 oracle maps them to its NATIVE bvnot/bvneg/bvrotl/bvsdiv/
+# bvsrem, so it checks ordeal's composite rules against an independent
+# implementation). Other 0.23..0.36 changes consumed here: 0.32 makes the
+# trusted term-DAG + query re-check run on EVERY `check*` (a trusted rejection
+# degrades to Unknown, never a wrong answer); 0.36 splits the certificate types
+# into `ordeal-cert` (re-exported at the old paths; new lock entry). MEASURED,
+# not assumed: the serial ordeal+Z3 differential over the whole synth-verify
+# suite gives the identical per-test verdict sequence on 0.22.1 and 0.36.0 (182
+# tests, 1283 verdicts, 0 disagreements), with 40 of those queries carrying a
+# Rotl/Sdiv node.
+ordeal = "=0.36.0"
 
 # Z3: optional differential oracle (feature `z3-solver`) — no longer default.
 # Default features only (NO `static-link-z3`/`bundled`): z3-sys links the
