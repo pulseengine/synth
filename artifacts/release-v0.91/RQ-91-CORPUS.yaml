@@ -1,0 +1,59 @@
+artifacts:
+  - id: RQ-91-CORPUS
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "The acceptance corpus is re-measured, and the modules v0.90 newly refuses are counted"
+    description: >
+        Carried from the v0.90 cold review (A1). v0.90 added loud
+        refusals (#1640, #1645, #1604, #1568 shape 2, #1643's
+        call_indirect decline), but the number of real-world modules
+        that newly refuse is UNMEASURED: the acceptance corpus named
+        in docs/status/ACCEPTANCE_LADDER.md lives on a volume that was
+        not mounted at v0.90. The review's inference is that only
+        #1643's decline is reachable on the ladder's invocations; that
+        is an inference, not a measurement.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        `ls /Volumes/Work/corpora/wasm-243` and `ls /Volumes/`. With
+        the volume mounted, run every ladder rung as
+        docs/status/ACCEPTANCE_LADDER.md defines it with the v0.89.2
+        and 0.90.0 binaries and diff the refusals.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE: still
+        unmeasurable. `ls /Volumes/Work/corpora/wasm-243` gives No
+        such file or directory, and /Volumes/ lists only
+        com.apple.TimeMachine.localsnapshots, Data, Macintosh HD and
+        Recovery, the same state the v0.90 review recorded.
+
+        CITATION: #1643 is where the call_indirect decline, the one
+        new refusal the review could not rule off the ladder, was
+        analysed. It is closed. The number names where it was
+        analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+      - acceptance
+      - reach
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1643"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 the ladder is re-run over its named corpus
+        at a stated commit, the modules v0.90 and v0.91 newly refuse
+        are counted per rung with their diagnostics, and
+        ACCEPTANCE_LADDER.md carries the new measurement with its
+        date; or, if the volume stays unavailable, the record says so
+        with the ls output and the measurement stays unclaimed —
+        delivered with an execution-verified result where the lane is
+        a wrong-code fix, or REFUTED with the measurement that refutes
+        it; and the refuting command above is RUN FIRST and its result
+        reported either way

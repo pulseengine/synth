@@ -1,0 +1,74 @@
+artifacts:
+  - id: RQ-91-NPARESID1568
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "A constant static address that reaches a native-pointer access through arithmetic or a select is relocated or refused"
+    description: >
+        SILENT MISCOMPILE, the residual of #1568 that v0.90 left open
+        on purpose (RQ-90-NPASHAPE2, issue-scope outlives). Under
+        --native-pointer-abi a constant that names a static only gets
+        relocated when it reaches the access directly. A constant that
+        arrives through arithmetic, through a select or through a
+        local with a non-constant definition is used as a raw absolute
+        address. The other named residuals are a dynamic access whose
+        offset sits below the first segment but whose base carries it
+        into the statics, any dynamic access in a module with no
+        active data segment, and, with a stack-pointer global, a
+        dynamic offset into data below its init. The selector cannot
+        tell a host-pointer base from a wasm-offset base, which is why
+        RQ-91-NPAMODEL decides provenance once instead.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        compile `(module (memory (export "mem") 1) (data (i32.const
+        0x1000) "\11\22\33\44\55\66\77\88") (func (export "anchor")
+        (result i32) (i32.load (i32.const 0x1000))) (func (export
+        "arith") (result i32) (i32.load (i32.add (i32.const 0x1000)
+        (i32.const 4)))) (func (export "sel") (param i32) (result i32)
+        (i32.load (select (i32.const 0x1000) (i32.const 0x1004)
+        (local.get 0)))))`; compile with `synth compile x.wat -o x.o
+        --target cortex-m3 --all-exports --relocatable
+        --native-pointer-abi`, then execute every export with Linked
+        and run_shape2 from
+        scripts/repro/npa_const_addr_differential.py (R11 = 0) against
+        wasmtime, calling anchor(), arith(), sel(1) and sel(0). If
+        arith and both sel calls equal wasmtime, or the compile
+        refuses with a named diagnostic, the class is gone.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. Compile rc 0,
+        no diagnostic, 1 static-data ABS32 relocation. anchor()
+        returns 0x44332211, equal to wasmtime. arith(), sel(1) and
+        sel(0) each fault on an unmapped read where wasmtime returns
+        0x88776655, 0x44332211 and 0x88776655. 1 of 4 calls equal.
+
+        CITATION: #1568 is where the matter was analysed. The number
+        names where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - gale
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1568"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 every residual shape RQ-90-NPASHAPE2 names
+        (constant through arithmetic, select or a non-constant local;
+        an offset below the first segment whose base carries it into
+        the statics; a module with no data segment; with a
+        stack-pointer global, a dynamic offset below its init) either
+        executes equal to wasmtime or is refused loudly, gated by an
+        execution differential with one row per shape, red before and
+        green after, and with the newly refused count over the repo
+        corpus stated — delivered with an execution-verified result
+        where the lane is a wrong-code fix, or REFUTED with the
+        measurement that refutes it; and the refuting command above is
+        RUN FIRST and its result reported either way

@@ -1,0 +1,60 @@
+artifacts:
+  - id: RQ-91-ARMV6M
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "An ARMv6-M target (cortex-m0, cortex-m0plus) exists, and every emitted instruction decodes in ARMv6-M"
+    description: >
+        gale's ask, ranked after #1191. synth offers no ARMv6-M
+        profile, so a dissolved gust driver cannot run on a Cortex-M0+
+        part (gale's NUCLEO-G031K8). gale measured 7346 of 13187
+        instructions in its 22 driver objects as ARMv7-M-only:
+        MOVW/MOVT, IT blocks, wide forms and UDIV/SDIV. This is a
+        backend profile, not a flag. It enters at support level 3
+        (RQ-91-SUPPORTLEVELS) and is promoted through the same gate as
+        every other backend.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        `synth compile add.wat --target cortex-m0plus --relocatable
+        --all-exports -o add.o` and the same with `--target
+        cortex-m0`, on `(module (func (export "f") (param i32) (result
+        i32) (i32.add (local.get 0) (i32.const 1))))`, with `--target
+        cortex-m3` as the control. Either target accepted refutes it.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. cortex-m0plus
+        and cortex-m0 each exit 1 with `unknown target triple ...
+        Supported: cortex-m3, cortex-m4, cortex-m4f, cortex-m7,
+        cortex-m7dp, cortex-m55, cortex-r5 (ARM); rv32imac, rv32imc,
+        rv32im, rv32i, rv32gc, esp32c3, riscv32 (RISC-V, -b riscv);
+        cortex-a53 (-b aarch64)`. The control cortex-m3 exits 0.
+
+        CITATION: #1301 is where the matter was analysed. The number
+        names where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - target
+      - armv6-m
+      - gale
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1301"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 `--target cortex-m0plus` (and cortex-m0)
+        compiles on the --relocatable path gale uses; an ARMv6-M-only
+        decoder over every emitted object finds zero instructions
+        outside ARMv6-M (no wide non-BL/MRS/MSR/barrier form, no IT,
+        no UDIV/SDIV); every unsupported shape declines loudly; and
+        the existing differentials run on the new profile under an
+        M0-class emulator, red before (the target is refused) and
+        green after — delivered with an execution-verified result
+        where the lane is a wrong-code fix, or REFUTED with the
+        measurement that refutes it; and the refuting command above is
+        RUN FIRST and its result reported either way

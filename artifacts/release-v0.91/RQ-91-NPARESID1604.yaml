@@ -1,0 +1,75 @@
+artifacts:
+  - id: RQ-91-NPARESID1604
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "A native-pointer access that straddles into a data segment through a computed constant is relocated or refused"
+    description: >
+        SILENT MISCOMPILE, the residual of #1604 that v0.90 left open
+        on purpose (RQ-90-NPASTRADDLE, issue-scope outlives). The
+        straddle guard refuses an access whose static byte range spans
+        two regions, but only when the address is a constant at the
+        access. Three shapes were named as not caught: a run-time base
+        whose memarg offset is not relocated (which RQ-90-NPASHAPE2
+        then delivered as the #1568 shape-2 refusal; not re-measured
+        here), a memory.fill or memory.copy with a non-constant
+        length, and a constant that reaches the access through
+        arithmetic.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        compile `(module (memory (export "mem") 1) (data (i32.const
+        0x1000) "\11\22\33\44\55\66\77\88") (func (export "anchor")
+        (result i32) (i32.load (i32.const 0x1000))) (func (export
+        "arith_straddle") (result i32) (i32.load (i32.add (i32.const
+        0xffe) (i32.const 0)))))`; compile with `synth compile x.wat
+        -o x.o --target cortex-m3 --all-exports --relocatable
+        --native-pointer-abi`, then execute every export with Linked
+        and run_shape2 from
+        scripts/repro/npa_const_addr_differential.py (R11 = 0) against
+        wasmtime. The near miss is the same module with `fillrd`
+        (`memory.fill (i32.const 0xffc) (i32.const 0xab) (local.get
+        0)` then `i32.load (i32.const 0x1000)`) in place of
+        arith_straddle. If arith_straddle() returns 0x22110000 or the
+        compile refuses, the arithmetic shape is gone.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE for the
+        arithmetic shape. Compile rc 0, 1 static-data ABS32
+        relocation. anchor() returns 0x44332211, equal to wasmtime.
+        arith_straddle() faults on an unmapped read where wasmtime
+        returns 0x22110000. 1 of 2 calls equal. The bulk shape with a
+        constant destination and a non-constant length is NOT silent:
+        fillrd is refused (rc 1, `--native-pointer-abi: memory.fill
+        (destination) at op 3 addresses the constant static-data
+        address 0xffc`, then #952). A bulk op whose destination is
+        itself computed was not measured.
+
+        CITATION: #1604 is where the matter was analysed. The number
+        names where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - gale
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1604"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 an access whose bytes span the zero
+        reservation and a data segment, or two regions, with the
+        address computed rather than constant at the access, and a
+        bulk op with a computed destination and a non-constant length,
+        either execute equal to wasmtime or are refused loudly, gated
+        by an execution differential red before and green after, with
+        the newly refused count over the repo corpus stated —
+        delivered with an execution-verified result where the lane is
+        a wrong-code fix, or REFUTED with the measurement that refutes
+        it; and the refuting command above is RUN FIRST and its result
+        reported either way

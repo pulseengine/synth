@@ -1,0 +1,58 @@
+artifacts:
+  - id: RQ-91-TRIPWIREEXPR
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "The ci_pool_tripwire resolves an expression runs-on, so the self-hosted checks see every required job"
+    description: >
+        Carried. pool_of() treats a `runs-on:` that is a `${{ ... &&
+        ... || fromJSON('["self-hosted",...]') }}` expression as an
+        opaque string. The check that refuses a REQUIRED job on the
+        self-hosted pool that needs apt or sudo (no_new_privs) matches
+        only `self-hosted`, so it cannot see a required job whose
+        runs-on is such an expression, even though that job runs
+        self-hosted on every non-fork PR.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        import scripts/ci_pool_tripwire.py, load every workflow with
+        load_workflows(), and for each name in REQUIRED_CONTEXTS print
+        pool_of(job['runs-on']), counting values that start with
+        `${{`.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. 5 of the 10
+        required contexts resolve to an unresolved expression: Format,
+        Clippy, Claim Check, Version Pin Sweep and Rivet Validation.
+        The other 5 (Test, Z3 Verification, Bazel Build & Proofs, Kani
+        Verification, spec-suite execution) are ubuntu-latest. The CI
+        log prints the same split as `10 required contexts (pinned), 5
+        on ubuntu-latest, 5 elsewhere`.
+
+        CITATION: #1636 is where the matter was analysed. The number
+        names where it was analysed, not an open scope. It is closed,
+        so `issue-scope: closes` authorises nothing; the record
+        answers the residual it names, not the issue.
+    tags:
+      - feature-loop
+      - process
+      - ci
+      - gate-potency
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1636"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 pool_of() resolves the non-fork branch of an
+        expression runs-on to its label set, the self-hosted checks
+        see all 10 required contexts, and a paired control (an apt
+        step planted in an expression-runs-on required job) reds —
+        delivered with an execution-verified result where the lane is
+        a wrong-code fix, or REFUTED with the measurement that refutes
+        it; and the refuting command above is RUN FIRST and its result
+        reported either way

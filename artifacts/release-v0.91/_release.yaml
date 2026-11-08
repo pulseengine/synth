@@ -1,0 +1,59 @@
+# v0.91 release scope — COMMENTS ONLY.
+#
+# This file carries NO STATISTICS, in either spelling. A figure parked here is a
+# second copy of a measured number, and a second copy is how a number goes stale.
+# The release's numbers live in the artifact records that measured them and in the
+# CHANGELOG section that cites those records. Re-derive; do not read a count here.
+#
+# THEME: GALE'S SILENT CLASSES, AND THE STRUCTURE THAT KEEPS PRODUCING THEM. gale's
+# requests rank highest. Its ranked asks are the native-pointer residual silent
+# classes and the data-segment pointer filed this release, then the MPU-enforcement
+# part of multi-memory isolation, then the software-bounds trap on an in-bounds
+# native-pointer access, the component export mismatch and the smaller-core target.
+#
+# WHY A REFACTOR IS IN A WRONG-CODE RELEASE. The native-pointer path has gained a
+# per-shape check every release, and every release found the residual the last check
+# could not see. The image builders each re-implement relocation and data placement,
+# and the predecessor found the same drop in several of them. Fixing the next
+# shape repeats the pattern; the release instead changes the structure that admits it.
+#
+# THE RELEASE THEMES, approved by the maintainer:
+#
+#   * NATIVE-POINTER ADDRESS MODEL. Decide address provenance where the address is
+#     created, add a validator over the emitted stream, and delete the per-shape
+#     checks it subsumes. Measured by checks deleted, not added. The existing
+#     native-pointer differentials stay byte-identical.
+#   * DERIVED EMULATION FLOOR. Compute the exact floor where it is checked instead of
+#     pinning it by hand, so oracle pull requests stop conflicting on the same
+#     line; the selector waiver chain likewise, if feasible.
+#   * A SHARED IMAGE BUILDER. Per-ISA hooks under a builder that patches every
+#     relocation or refuses, and places every data segment and global initialiser
+#     or refuses.
+#     Defects of this class found last release are unfiled by decision; their
+#     records state them.
+#   * BACKEND SUPPORT LEVELS. Evidence-defined levels with their criteria pinned in
+#     the claims ledger, so a demotion is red and a promotion goes through the gate.
+#     Named support levels, never tiers: the proof tiers already use that word.
+#
+# SO THE ORDER OF WORK, earned rather than asserted:
+#
+#   * GALE'S ITEMS AND WRONG CODE FIRST. Each is delivered as an execution-verified
+#     fix, red before and green after, against the reference runtime, or as a loud
+#     refusal where supporting the input is out of scope. A refusal is a correct
+#     outcome; a silent wrong answer never is.
+#   * A REFACTOR IS DONE WHEN THE CODE IT REPLACES IS DELETED, behind an oracle that
+#     proves the remaining bytes, never before.
+#   * EVERY REFUTING COMMAND WAS RUN AT PLANNING, and its output is in its record.
+#     Run it again before building; a defect already gone is reported with its
+#     outputs and closed, not re-fixed.
+#   * A FIX THAT NARROWS REACH SAYS WHAT IT COSTS. Count what newly refuses, and why,
+#     before calling the change done.
+#
+# PROCESS LANES are the ones the predecessor's cold review carried, plus the package
+# registry and the architecture-model filing.
+#
+# REPORTER CORRESPONDENCE is the maintainer's to send. Nothing is posted, and nothing
+# is filed in a reporter's name, without the maintainer's word.
+#
+# The anchor moves to the predecessor's tag in this pull request, across every site
+# the ledger pins, with the counts read off the gate's own printed anchor line.

@@ -1,0 +1,99 @@
+artifacts:
+  - id: RQ-91-NPAMODEL
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "Native-pointer address provenance is decided once and checked by one emitted-stream validator, and the per-shape checks are deleted"
+    description: >
+        THEME: the native-pointer address-model refactor. Every
+        native-pointer release since the shadow-stack rebasing (#739)
+        has added one more per-shape check: the constant-address guard
+        and matrix (#1568), the cross-segment offset fold (#1580), the
+        straddle guard (#1604), the shape-2 dynamic-offset refusal
+        (#1568). Each was locally correct and each left residuals that
+        the next release found (RQ-91-NPARESID1568,
+        RQ-91-NPARESID1604, RQ-91-NPADATAPTR, RQ-91-NPASWBOUNDS),
+        because the selector judges shapes, not where an address came
+        from. The refactor decides each memory-0 value's provenance
+        (wasm offset, relocated static, native pointer) once, adds one
+        validator over the emitted stream that refuses any access
+        whose provenance is not native, and DELETES the per-shape
+        npa_* checks it subsumes. Success is measured by checks
+        deleted, not added. MUST because it is the vehicle for gale's
+        first-ranked silent classes.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        count the shipped per-shape checks and their helpers. `git
+        grep -n -E '^[[:space:]]*(pub(\(crate\))? )?fn npa_' --
+        crates/synth-synthesis/src crates/synth-core/src
+        crates/synth-cli/src` (POSIX classes: git grep -E has no `\s`,
+        and with it this command prints a false 2), keeping only hits
+        above each file's `#[cfg(test)] mod tests` line
+        (instruction_selector.rs 10444, backend.rs 1079, main.rs
+        11202); then `git grep -n -E
+        'npa_(const_addr_guard|region_straddle_guard|dynamic_static_offset_accesses)\('
+        -- crates` for the refusal checks, whose output holds their
+        definitions and their call sites. Then run the five wired
+        native-pointer oracles through scripts/oracle_run.py:
+        npa_const_addr_differential.py, npa_const_addr_matrix_1568.py
+        --expect ok=99,refused=63,guard=59,wrong=0,
+        npa_offset_cross_segment_1580_differential.py,
+        npa_straddle_1604_differential.py and
+        npa_multi_memory_1145_differential.py.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE, the state the
+        refactor starts from. The first command prints 16 lines; 1 is
+        a test (backend.rs:1142, inside its test module), leaving 15
+        shipped `fn npa_*` definitions: 13 in
+        crates/synth-synthesis/src/instruction_selector.rs
+        (npa_region_of, npa_baked_const_addr, npa_operand_producer,
+        npa_memarg_offset_mut, npa_effective_addr_rewrite,
+        npa_address_operands, npa_simple_push, npa_address_consumer,
+        npa_local_const_plan, npa_const_addr_guard, npa_region_name,
+        npa_region_straddle_guard,
+        npa_dynamic_static_offset_accesses), 1 in synth-core
+        backend.rs (npa_static_region) and 1 in synth-cli main.rs
+        (npa_multi_memory_plan); the test module and the mcdc
+        harness's npa_plan_gate is outside the searched paths. The
+        second command prints 6 lines: the 3 refusal-check definitions
+        (instruction_selector.rs 8930, 9126, 9259) and their 3 call
+        sites, npa_const_addr_guard and npa_region_straddle_guard from
+        select_with_stack.rs 65 and 68,
+        npa_dynamic_static_offset_accesses from main.rs 5521. The five
+        oracles each exit 0 on this tree: that is the byte-identity
+        and execution baseline the refactor must keep.
+
+        CITATION: #739, #1568, #1604, #1672 and #1661 are where the
+        matter was analysed. The numbers name where it was analysed,
+        not an open scope.
+    tags:
+      - feature-loop
+      - refactor
+      - wrong-code
+      - gale
+      - subtraction
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#739"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 memory-0 address provenance under
+        --native-pointer-abi is decided in one place and checked by
+        one validator over the emitted stream; the per-shape refusal
+        checks it subsumes are deleted, and the count of shipped `fn
+        npa_*` definitions and refusal call sites goes DOWN from the
+        measurement above; the five native-pointer oracles named above
+        stay at exit 0 with their objects byte-identical where they
+        compiled before; #1672's repro goes from red to green or to a
+        loud refusal; and the newly refused count over the repo corpus
+        is stated — delivered with an execution-verified result where
+        the lane is a wrong-code fix, or REFUTED with the measurement
+        that refutes it; and the refuting command above is RUN FIRST
+        and its result reported either way

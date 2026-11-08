@@ -1,0 +1,61 @@
+artifacts:
+  - id: RQ-91-SPECDRIFT
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "The spec-execution ratchet reds on a corrupted .wast expectation instead of filing it as not representable"
+    description: >
+        Carried from the v0.90 cold review (N3, widened in round 2).
+        The required spec-execution ratchet (#1636) uses wasmtime as
+        its oracle, so a .wast expectation that disagrees with
+        wasmtime is filed as `notrep:state-skew` and lowers the
+        executed count without a red. Round 2 showed it for a wrong
+        assert_return value, an assert_return rewritten as
+        assert_trap, and the reverse. The ratchet is potent against
+        compiler drift and blind to suite drift.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        copy the 257 top-level .wast files of tests/spec-testsuite
+        (pinned at 34536735) into two directories; in one, change line
+        37 of i32.wast from `(assert_return (invoke "add" (i32.const
+        1) (i32.const 1)) (i32.const 2))` to `(i32.const 3))`; run
+        `SYNTH=./target/debug/synth python3
+        scripts/repro/spec_exec_1636_differential.py --suite-dir DIR
+        --only i32.wast` on each. A red on the corrupted copy refutes
+        it.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. Clean copy: rc
+        0, RESULT PASS, 374 executed and 0 not-representable per leg.
+        Corrupted copy: rc 0, RESULT PASS, 373 executed and 1
+        not-representable (`state-skew=1`) per leg, on both cortex-m4
+        and cortex-m7dp. The corruption is visible only as a count
+        that moved by one.
+
+        CITATION: #1636 is where the ratchet was analysed. The number
+        names where it was analysed, not an open scope. It is closed,
+        so `issue-scope: closes` authorises nothing.
+    tags:
+      - feature-loop
+      - process
+      - spec-suite
+      - gate-potency
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1636"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 each of the three corruption shapes round 2
+        named reds the ratchet (or a check beside it in the same
+        required context), while the clean suite stays green, shown by
+        a paired control in the delivering PR — delivered with an
+        execution-verified result where the lane is a wrong-code fix,
+        or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported
+        either way

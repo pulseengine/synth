@@ -1,0 +1,61 @@
+artifacts:
+  - id: RQ-91-MEMKFLOAT
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "f32 and f64 loads and stores on a non-default memory are lowered"
+    description: >
+        The float sibling of #1622. On ARM --relocatable, f32.load,
+        f32.store, f64.load and f64.store on memory k > 0 decline as a
+        function-level skip (exit 1 under --all-exports). #1622
+        lowered the integer family, i64 included. Not blocking gale
+        today: gale's image has no float access on memory 1. SHOULD
+        for that reason; the decline is loud.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        compile `(module (memory $m0 1) (memory $m1 1) (func (export
+        "lf32") (param i32) (result f32) (f32.load $m1 (local.get 0)))
+        (func (export "sf32") (param i32 f32) (f32.store $m1
+        (local.get 0) (local.get 1))) (func (export "lf64") (param
+        i32) (result f64) (f64.load $m1 (local.get 0))) (func (export
+        "sf64") (param i32 f64) (f64.store $m1 (local.get 0)
+        (local.get 1))) (func (export "li32") (param i32) (result i32)
+        (i32.load $m1 (local.get 0))))` with `--target cortex-m4f` and
+        `--target cortex-m7dp`, `--all-exports --relocatable
+        --allow-skipped-exports`, and `nm` the objects. Any float
+        function present refutes it.
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. Both targets rc
+        0 under --allow-skipped-exports, and each object defines only
+        li32 (the integer control). cortex-m7dp: 4 skips reading
+        `multi-memory: F32Load ... on memory 1 is not lowered` (and
+        the three siblings). cortex-m4f: 3 such skips, and sf64
+        skipped for the single-precision FPU instead.
+
+        CITATION: #1673 is where the matter was analysed. The number
+        names where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - multi-memory
+      - float
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      issue: "#1673"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 the four float ops on memory k lower through
+        the integer family's memory-k base and execute equal to
+        wasmtime on cortex-m4f and cortex-m7dp, including the trap
+        rows under --safety-bounds software, gated by an execution
+        differential red before and green after — delivered with an
+        execution-verified result where the lane is a wrong-code fix,
+        or REFUTED with the measurement that refutes it; and the
+        refuting command above is RUN FIRST and its result reported
+        either way

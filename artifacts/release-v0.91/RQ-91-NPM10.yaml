@@ -1,0 +1,52 @@
+artifacts:
+  - id: RQ-91-NPM10
+    type: system-req
+    release: v0.91
+    status: proposed
+    title: "The npm package publishes the release version, or its blocker is re-measured and named"
+    description: >
+        Carried from v0.90 (RQ-90-NPM9, blocked outside this
+        repository). The npm package has not published since 0.69.0.
+        The auth preflight passes; the publish step fails because the
+        organisation's token can only publish to a staging area.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact.
+        A refutation is a legitimate outcome, reported with numbers:
+        read the registry
+        (`https://registry.npmjs.org/@pulseengine/synth`,
+        dist-tags.latest, and the 0.90.0, 0.89.2 and 0.69.0 version
+        URLs) and the latest Release NPM runs' failing step (`gh run
+        list --workflow "Release NPM"`, `gh run view --log-failed`).
+
+        MEASURED 2026-11-08 on main 2945628c (the v0.90.0 tag commit),
+        synth 0.90.0 debug build from this tree: LIVE. latest 0.69.0,
+        39 versions; 0.90.0 and 0.89.2 return HTTP 404 and the control
+        0.69.0 returns 200. The v0.90.0 run 42434103438 (2026-11-08)
+        failed at step 7, Publish to npm, with `This token can only
+        publish to a staging area. Run npm stage publish ...
+        (E_STAGE_REQUIRED)`; the three runs before it (2026-11-06)
+        were skipped.
+
+        CITATION: #1460 is where the matter was analysed. The number
+        names where it was analysed, not an open scope.
+    tags:
+      - feature-loop
+      - process
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1460"
+      verification-track: manual
+      issue-scope: closes
+      disposition: blocked
+      done-when: >
+        manual:2027-03-31 the package publishes the release version,
+        or the blocker is re-measured against the live registry and
+        the specific credential or workflow change that unblocks it is
+        named — delivered with an execution-verified result where the
+        lane is a wrong-code fix, or REFUTED with the measurement that
+        refutes it; and the refuting command above is RUN FIRST and
+        its result reported either way
