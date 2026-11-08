@@ -284,7 +284,8 @@ enum Commands {
         cortex_m: bool,
 
         /// Target profile. ARM: cortex-m3, cortex-m4, cortex-m4f, cortex-m7,
-        /// cortex-m7dp. RISC-V (-b riscv): rv32imac, rv32imc, rv32im, rv32i,
+        /// cortex-m7dp; cortex-m0 / cortex-m0plus (ARMv6-M, experimental,
+        /// --relocatable only). RISC-V (-b riscv): rv32imac, rv32imc, rv32im, rv32i,
         /// rv32gc, esp32c3 (RV32IMC). `-b riscv` defaults to rv32imac.
         /// Implies --cortex-m for Cortex-M targets
         #[arg(short, long, value_name = "TARGET")]
@@ -953,6 +954,7 @@ fn main() -> Result<()> {
                     Ok(hints)
                 })
                 .transpose()?;
+            refuse_armv6m_unsupported_shape(&target_spec, relocatable, &backend)?;
             let is_cortex_m =
                 cortex_m || target_spec.family == synth_core::target::ArchFamily::ArmCortexM;
 
@@ -1381,9 +1383,10 @@ struct ElfFunction {
 /// backends (w2c2/awsm/wasker) are target-agnostic and return `None`.
 fn backend_accepted_targets(backend: &str) -> Option<&'static str> {
     match backend {
-        "arm" => {
-            Some("cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp, cortex-m55, cortex-r5")
-        }
+        "arm" => Some(
+            "cortex-m0, cortex-m0plus, cortex-m3, cortex-m4, cortex-m4f, cortex-m7, \
+                 cortex-m7dp, cortex-m55, cortex-r5",
+        ),
         "riscv" => Some("rv32imac, rv32imc, rv32im, rv32i, rv32gc, esp32c3, riscv32"),
         "aarch64" => Some("cortex-a53"),
         _ => None,
@@ -7371,6 +7374,39 @@ fn arm_build_attributes(target: &TargetSpec) -> Section {
     }
 }
 
+/// RQ-91-ARMV6M (#1301): the ARMv6-M profiles (cortex-m0, cortex-m0plus)
+/// are support LEVEL 3 and exist on ONE shape: a `--relocatable` object from
+/// the ARM backend. Every other shape is refused here, before any code is
+/// generated, rather than emitted unchecked: the self-contained image
+/// builders write a vector table and startup code that never pass through the
+/// ARMv6-M byte check, and the other backends do not run it at all.
+fn refuse_armv6m_unsupported_shape(
+    target: &TargetSpec,
+    relocatable: bool,
+    backend: &str,
+) -> Result<()> {
+    if !target.is_armv6m() {
+        return Ok(());
+    }
+    if backend != "arm" {
+        anyhow::bail!(
+            "--target {} (ARMv6-M) is only available with the ARM backend \
+             (`-b arm`); backend '{backend}' does not run the ARMv6-M \
+             instruction check (#1301)",
+            target.triple
+        );
+    }
+    if !relocatable {
+        anyhow::bail!(
+            "ARMv6-M (cortex-m0 / cortex-m0plus) is EXPERIMENTAL and supports \
+             only `--relocatable` objects: a self-contained image carries a \
+             vector table and startup code that synth does not check against \
+             ARMv6-M. Add `--relocatable` and link the object yourself (#1301)."
+        );
+    }
+    Ok(())
+}
+
 /// Self-contained image for a non-Cortex-M ARM target (cortex-r5, A32): the
 /// function bodies at 0x8000, no vector table or startup, `e_entry` = the first
 /// function. Returns the ELF and how many relocations it patched in place.
@@ -7389,7 +7425,7 @@ fn build_multi_func_simple_elf(
     // #1640 (the #598 rule, self-contained): A32 bodies carry no Thumb bit on
     // `e_entry` or on their STT_FUNC values.
     let mut elf_builder = ElfBuilder::new_arm32()
-        .with_thumb_funcs(target.is_thumb2())
+        .with_thumb_funcs(target.is_thumb_state())
         .with_entry(base_addr);
 
     // Concatenate all function code
@@ -7518,7 +7554,7 @@ fn encode_a32_bl(bl_addr: u32, target_addr: u32) -> Result<u32> {
 /// takes an INVSTATE UsageFault. The startup cannot be made correct, so the
 /// combination is refused.
 fn refuse_a32_cortex_m_image(target: &TargetSpec) -> Result<()> {
-    if target.is_thumb2() {
+    if target.is_thumb_state() {
         return Ok(());
     }
     anyhow::bail!(
@@ -10937,7 +10973,7 @@ fn build_simple_elf(code: &[u8], func_name: &str, target: &TargetSpec) -> Result
     // #1640 (the #598 rule, self-contained): bit 0 of `e_entry` and of an
     // STT_FUNC value is the Thumb interworking bit — clear for A32 bodies.
     let mut elf_builder = ElfBuilder::new_arm32()
-        .with_thumb_funcs(target.is_thumb2())
+        .with_thumb_funcs(target.is_thumb_state())
         .with_entry(0x8000);
 
     let text_section = Section::new(".text", ElfSectionType::ProgBits)
@@ -12772,6 +12808,60 @@ mod tests {
         assert_eq!(entry, 0x8000, "A32 entry point must be even (ARM state)");
     }
 
+    /// RQ-91-ARMV6M (#1301): ARMv6-M code runs in THUMB STATE. The three
+    /// sites that asked `is_thumb2()` — the two simple-image builders' Thumb
+    /// bit and the A32-image refusal — treated an ARMv6-M body as A32 (an
+    /// EVEN entry and FUNC value: an INVSTATE fault on any M-profile core).
+    /// They now ask `is_thumb_state()`. The self-contained paths are refused
+    /// for ARMv6-M at the CLI, so this test is what keeps the three sites
+    /// honest; each of the three assertions below reds if its site regresses.
+    #[test]
+    fn armv6m_is_thumb_state_at_every_site_1301() {
+        let m0 = TargetSpec::cortex_m0();
+        let bx_lr = vec![0x70, 0x47];
+        let elf = build_simple_elf(&bx_lr, "f", &m0).unwrap();
+        let entry = u32::from_le_bytes(elf[24..28].try_into().unwrap());
+        assert_eq!(
+            entry, 0x8001,
+            "build_simple_elf: ARMv6-M entry needs the Thumb bit"
+        );
+        let mut f = a32_func("f", 0, bx_lr.clone(), &[]);
+        f.relocations.clear();
+        let (elf, _) = build_multi_func_simple_elf(&[f], &m0).unwrap();
+        let entry = u32::from_le_bytes(elf[24..28].try_into().unwrap());
+        assert_eq!(entry, 0x8001, "build_multi_func_simple_elf: Thumb bit");
+        assert!(
+            refuse_a32_cortex_m_image(&m0).is_ok(),
+            "an ARMv6-M body is Thumb, not A32"
+        );
+        // The A32 controls stay as they were.
+        assert!(refuse_a32_cortex_m_image(&TargetSpec::cortex_r5()).is_err());
+        assert!(refuse_a32_cortex_m_image(&TargetSpec::cortex_m3()).is_ok());
+    }
+
+    /// RQ-91-ARMV6M (#1301): ARMv6-M exists on one shape only — an ARM
+    /// `--relocatable` object. Every other shape is refused before codegen.
+    #[test]
+    fn armv6m_shape_refusals_1301() {
+        for name in ["cortex-m0", "cortex-m0plus"] {
+            let spec = TargetSpec::from_triple(name).unwrap();
+            assert!(refuse_armv6m_unsupported_shape(&spec, true, "arm").is_ok());
+            let e = refuse_armv6m_unsupported_shape(&spec, false, "arm").unwrap_err();
+            assert!(e.to_string().contains("--relocatable") && e.to_string().contains("#1301"));
+            for b in ["w2c2", "awsm", "wasker"] {
+                assert!(
+                    refuse_armv6m_unsupported_shape(&spec, true, b).is_err(),
+                    "{b}"
+                );
+            }
+        }
+        // Every other target is untouched by this refusal.
+        for name in ["cortex-m3", "cortex-m4", "cortex-r5"] {
+            let spec = TargetSpec::from_triple(name).unwrap();
+            assert!(refuse_armv6m_unsupported_shape(&spec, false, "arm").is_ok());
+        }
+    }
+
     /// #1645: the A32 `BL` encoder, checked against `arm-none-eabi-as`
     /// (`bl` at 0x2c -> 0x0, at 0x100 -> 0x10000, at 0x200 -> 0x0, `.arm`).
     #[test]
@@ -13374,6 +13464,8 @@ mod tests {
     #[test]
     fn test_resolve_target_spec_good_input_unchanged_882() {
         let arm_targets = [
+            "cortex-m0",
+            "cortex-m0plus",
             "cortex-m3",
             "cortex-m4",
             "cortex-m4f",

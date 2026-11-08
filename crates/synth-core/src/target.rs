@@ -396,6 +396,34 @@ impl TargetSpec {
         }
     }
 
+    /// Cortex-M0 (ARMv6-M, Thumb only: the 16-bit Thumb subset plus BL,
+    /// MSR, MRS, DMB/DSB/ISB and UDF). No FPU, no MPU.
+    ///
+    /// RQ-91-ARMV6M (#1301), support LEVEL 3 (experimental, no correctness
+    /// claim beyond what the byte check and execution show). The selector
+    /// is the Thumb-2 one; every encoded instruction then goes through the
+    /// ARMv6-M byte check (`synth_backend::armv6m`), which refuses the
+    /// function, loudly, when any instruction is outside ARMv6-M.
+    pub fn cortex_m0() -> Self {
+        Self {
+            family: ArchFamily::ArmCortexM,
+            triple: "thumbv6m-none-eabi".to_string(),
+            isa: IsaVariant::Thumb,
+            mem_protection: MemProtection::SoftwareOnly,
+            fpu: None,
+        }
+    }
+
+    /// Cortex-M0+ (ARMv6-M). Identical to [`Self::cortex_m0`] for code
+    /// generation; the M0+ MPU is optional and has 8 regions when present
+    /// (gale's STM32G031 measures MPU_TYPE 0x0000_0800).
+    pub fn cortex_m0plus() -> Self {
+        Self {
+            mem_protection: MemProtection::Mpu { regions: 8 },
+            ..Self::cortex_m0()
+        }
+    }
+
     /// Cortex-M4 with 8 MPU regions (no FPU — M4 without F suffix)
     pub fn cortex_m4() -> Self {
         Self {
@@ -496,6 +524,8 @@ impl TargetSpec {
     /// Parse from an LLVM triple or shorthand name
     pub fn from_triple(triple: &str) -> std::result::Result<Self, String> {
         match triple {
+            "thumbv6m-none-eabi" | "cortex-m0" => Ok(Self::cortex_m0()),
+            "cortex-m0plus" => Ok(Self::cortex_m0plus()),
             "thumbv7m-none-eabi" | "cortex-m3" => Ok(Self::cortex_m3()),
             "thumbv7em-none-eabi" | "cortex-m4" => Ok(Self::cortex_m4()),
             "thumbv7em-none-eabihf" | "cortex-m4f" => Ok(Self::cortex_m4f()),
@@ -520,8 +550,8 @@ impl TargetSpec {
             // hard error at the CLI seam and this message is the user's map.
             _ => Err(format!(
                 "unknown target triple: {triple}. Supported: \
-                 cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp, \
-                 cortex-m55, cortex-r5 (ARM); \
+                 cortex-m0, cortex-m0plus, cortex-m3, cortex-m4, cortex-m4f, \
+                 cortex-m7, cortex-m7dp, cortex-m55, cortex-r5 (ARM); \
                  rv32imac, rv32imc, rv32im, rv32i, rv32gc, esp32c3, riscv32 \
                  (RISC-V, -b riscv); cortex-a53 (-b aarch64)"
             )),
@@ -536,6 +566,21 @@ impl TargetSpec {
     /// Whether this target uses Thumb-2 encoding (Cortex-M)
     pub fn is_thumb2(&self) -> bool {
         self.isa == IsaVariant::Thumb2
+    }
+
+    /// Whether this target's code runs in THUMB STATE — ARMv6-M (`Thumb`)
+    /// and ARMv7-M+ (`Thumb2`) alike. This is the question the interworking
+    /// bit and the M-profile image builders ask; `is_thumb2` answers a
+    /// different one (the Thumb-2 ISA), and using it there treats ARMv6-M
+    /// code as A32 (RQ-91-ARMV6M, #1301).
+    pub fn is_thumb_state(&self) -> bool {
+        matches!(self.isa, IsaVariant::Thumb | IsaVariant::Thumb2)
+    }
+
+    /// Whether this target is ARMv6-M (Cortex-M0/M0+), whose emitted code
+    /// must pass the ARMv6-M byte check (RQ-91-ARMV6M, #1301).
+    pub fn is_armv6m(&self) -> bool {
+        self.isa == IsaVariant::Thumb
     }
 }
 
@@ -585,6 +630,43 @@ mod tests {
         assert!(spec.is_thumb2());
         assert_eq!(spec.mem_protection, MemProtection::Mpu { regions: 8 });
         assert!(!spec.has_fpu());
+    }
+
+    /// RQ-91-ARMV6M (#1301): the ARMv6-M profiles resolve to the Thumb
+    /// (v6-M) ISA, are in Thumb state, are not Thumb-2, and have no FPU.
+    #[test]
+    fn test_armv6m_profiles_1301() {
+        for name in ["cortex-m0", "cortex-m0plus", "thumbv6m-none-eabi"] {
+            let spec = TargetSpec::from_triple(name).unwrap();
+            assert_eq!(spec.isa, IsaVariant::Thumb, "{name}");
+            assert_eq!(spec.triple, "thumbv6m-none-eabi", "{name}");
+            assert_eq!(spec.family, ArchFamily::ArmCortexM, "{name}");
+            assert!(spec.is_thumb_state() && spec.is_armv6m(), "{name}");
+            assert!(!spec.is_thumb2(), "{name}");
+            assert!(!spec.has_fpu(), "{name}");
+        }
+        assert_eq!(
+            TargetSpec::cortex_m0plus().mem_protection,
+            MemProtection::Mpu { regions: 8 }
+        );
+        assert_eq!(
+            TargetSpec::cortex_m0().mem_protection,
+            MemProtection::SoftwareOnly
+        );
+        // Every Thumb-2 profile is in Thumb state and is not ARMv6-M.
+        for name in [
+            "cortex-m3",
+            "cortex-m4",
+            "cortex-m4f",
+            "cortex-m7",
+            "cortex-m55",
+        ] {
+            let spec = TargetSpec::from_triple(name).unwrap();
+            assert!(spec.is_thumb_state() && !spec.is_armv6m(), "{name}");
+        }
+        assert!(!TargetSpec::cortex_r5().is_thumb_state());
+        let err = TargetSpec::from_triple("bogus").unwrap_err();
+        assert!(err.contains("cortex-m0plus"), "{err}");
     }
 
     #[test]

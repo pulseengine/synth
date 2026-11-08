@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-ARMV6M
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "An ARMv6-M target (cortex-m0, cortex-m0plus) exists, and every emitted instruction decodes in ARMv6-M"
     description: >
         gale's ask, ranked after #1191. synth offers no ARMv6-M
@@ -30,6 +30,43 @@ artifacts:
         rv32im, rv32i, rv32gc, esp32c3, riscv32 (RISC-V, -b riscv);
         cortex-a53 (-b aarch64)`. The control cortex-m3 exits 0.
 
+        RE-RUN 2026-11-08 on main 6b697bcf, the lane's base: LIVE again,
+        both targets exit 1 with the same message, cortex-m3 exits 0.
+
+        CENSUS, measured by this lane before building. The decoder is
+        llvm-objdump --triple=thumbv6m-none-eabi with .ARM.attributes
+        STRIPPED, because llvm-objdump obeys an object's attributes over
+        --triple (on v7-attributed objects the thumbv6m decode reported
+        2539 illegal instead of 9185). Literal-pool words are excluded.
+        gale's 23 committed *-cm3.o objects on gale main 155a4d56, built
+        by an older synth of unknown version: 15426 instructions, 9185 not
+        ARMv6-M (8736 wide non-BL, 449 IT). That figure sits BESIDE gale's
+        7346 of 13187; it is a different object vintage and a different
+        metric, not a refutation. CBZ/CBNZ and LDRD/STRD: 0 each.
+
+        EXPECTED REACH of a refuse-only profile, from that census: 70 of
+        1112 repo functions (3 of 224 objects), and 25 of 393 gale
+        functions (0 of 23 objects). No measured rule set makes any gale
+        object compile whole. The cheap, flag-neutral rules (narrow
+        encodings, PUSH/POP of r8-r11) would lift gale to 57 functions and
+        still 0 objects.
+
+        THE REAL BLOCKER, NAMED AS THE FOLLOW-ON AND NOT BUILT: the ARMv6-M
+        register contract. synth allocates R8, uses R11 as the
+        linear-memory base and R12 as scratch, and ARMv6-M's 16-bit
+        load/store and data-processing forms reach only R0-R7. Every
+        linear-memory access is therefore a wide form. Choosing a v6-M
+        contract (keep R11 and reach it through a low register, or move
+        the base) is a seam decision that needs gale's agreement first.
+
+        CARRIED FINDING, OUTSIDE THIS LANE: unicorn 2.1.4 does not honour
+        `ctl_set_cpu_model` for M-class. The model reads back as 11 (M33)
+        after setting 7 (M0) or 8 (M3), and TT (v8-M only), SDIV and
+        VADD.F32 all execute on the "M0" and "M3" models. So every repo
+        oracle that sets an M3 or M4 model actually runs on an M33, and
+        would not catch a v8-M-only or FPU encoding on a target without
+        one. Recorded here; no other oracle is changed by this lane.
+
         CITATION: #1301 is where the matter was analysed. The number
         names where it was analysed, not an open scope.
     tags:
@@ -44,8 +81,96 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1301"
-      verification-track: manual
-      issue-scope: closes
+      verification-track: execution
+      issue-scope: outlives
+      landed: "PR #1685 - #1301 - DELIVERED AS NARROWED, support level 3, no correctness claim beyond what the byte check and execution show. `--target cortex-m0` and `--target cortex-m0plus` (ARMv6-M, triple thumbv6m-none-eabi, no FPU; m0plus records an 8-region MPU, m0 none) exist on ONE shape: an ARM `--relocatable` object. A self-contained image (with or without --cortex-m) and every non-ARM backend are refused before codegen. There is NO ARMv6-M lowering: the selector and encoder are the ARMv7-M ones, and every encoded instruction goes through `synth_backend::armv6m::check_bytes`, in the encode loop, on the encoded bytes. A function containing any instruction outside ARMv6-M is refused with `ARMv6-M (cortex-m0/cortex-m0plus, experimental): the instruction at function offset +0xN is not an ARMv6-M instruction — <class> (<hex>), emitted for `<op>` ... (#1301)`. The 16-bit legal table is every halfword LLVM's thumbv6m decoder accepts, frozen in tests/fixtures/armv6m_legal16_1301.json and unit-tested equal to it; the 32-bit rule passes only BL and DMB/DSB/ISB SY, stricter than ARMv6-M because synth emits no MSR, MRS or UDF.W. A Thumb-state helper (`TargetSpec::is_thumb_state`) replaces `is_thumb2()` at the three sites that treated ARMv6-M code as A32: the Thumb bit in build_simple_elf and build_multi_func_simple_elf, and refuse_a32_cortex_m_image. The ELF carries Tag_CPU_arch v6-M. --emit-wcet declines the profile (UnsupportedCore). #1301 stays open: gale's driver objects do not compile on it, see verified-by."
+      verified-by: >
+        DELIVERED AS NARROWED: a refuse-only ARMv6-M profile, statically
+        checked and execution-verified on what it accepts. RED FIRST: on
+        main 6b697bcf the refuting command exits 1 for both targets, and
+        the new oracle armv6m_1301_differential.py fails its first leg
+        there. On the branch both targets exit 0 and emit the same 8-byte
+        body as cortex-m3 (push {r4,lr}; adds r2,r0,#1; mov r0,r2;
+        pop {r4,pc}). THE ORACLE (wired, Emulation and Differential job,
+        `ci-checks: emulations >= 624`, measured 624 emulations and 624
+        wasmtime calls over 273 compiles). Leg A: the fixture
+        scripts/repro/armv6m_1301.wat compiles to the same .text on both
+        targets; exactly inc, sub3 and ext8 are accepted, and the seven
+        other exports decline with the pinned class (MOVW/MOVT, UDIV/SDIV,
+        IT block, wide load/store multiple, wide data-processing, wide
+        multiply, wide load/store), each citing #1301; self-contained,
+        --cortex-m and -b riscv are refused. Leg B, over the WHOLE .text of
+        every accepted object, so code emitted outside the encode loop is
+        covered too: every instruction is in the frozen 16-bit table or is
+        BL/DMB/DSB/ISB SY, no 16-bit LDR (literal) appears, and every
+        STT_FUNC value has the Thumb bit; a planted MOVW in a copy is
+        detected. Leg C: the 3 fixture functions and 49 accepted functions
+        from 32 corpus objects (every tracked .wat/.wasm, all-i32
+        signatures, no call relocation) run under unicorn on 12 vectors
+        each and equal wasmtime. Unicorn proves semantics only: its CPU
+        model is inert (see description), so legality rests on leg B, and
+        a 16-bit ARMv6-M encoding outside an IT block means the same on
+        v7-M and v8-M. THE LLVM CROSS-CHECK RAN LOCALLY, NOT IN CI
+        (scripts/repro/armv6m_llvm_crosscheck_1301.py, `manual
+        (toolchain)`: the CI image has GNU binutils only, and GNU objdump
+        with --architecture=armv6-m decodes movw, udiv, it and cbz without
+        complaint). With LLVM 22.1.8: the 16-bit enumeration accepts 57182
+        of 59392 halfwords and EQUALS the fixture; the excluded set beyond
+        the undefined encodings is exactly CBZ/CBNZ and IT. Of a
+        786432-pair 32-bit sample, 32771 are accepted by both, 0 by the
+        rule alone, and 896 by LLVM alone (MSR/MRS forms the stricter rule
+        refuses). Every cortex-m0 object the 268 tracked inputs produce
+        (54 with code, 394 instructions) decodes with 0 unknown and 0
+        pc-relative loads; a planted MOVW is detected. IN CI the same
+        legality is gated by the Rust test pinning the in-tree table to the
+        fixture and by leg B. THE LITERAL-POOL REACH, verified rather than
+        assumed: synth's pool load is LDR.W (literal), 4 KB reach, and
+        ARMv6-M's LDR (literal) is 16-bit with a 1020-byte reach. The unit
+        test literal_pool_load_is_refused_1301 encodes `LdrSym` with the
+        real encoder for R0, R3, R7 and R12, and the check refuses each as
+        "wide load/store"; so no ARMv6-M function can carry a pool and the
+        4 KB island planner is never trusted for one. The 16-bit LDR
+        (literal), 0x4800-0x4FFF, is ARMv6-M, and the compiler's check
+        refuses it anyway by a separate rule ("16-bit LDR literal: pool
+        reach not checked on ARMv6-M", unit-tested at both ends of the
+        range), because nothing checks a 1020-byte reach; leg B is the
+        second check of the same rule over the whole .text. Lifting that
+        rule is the obligation of whoever adds a 16-bit pool load. WHAT
+        BYPASSES THE ENCODE LOOP on this path, read rather than assumed:
+        the literal-pool emitter (the island branch-over and the pooled
+        words), reachable only from a pending `LdrSym`, which is refused
+        first; and the relocatable builder's zero padding between
+        functions (0x0000, an ARMv6-M MOVS). Leg B covers both, since it
+        reads the whole .text. MEASURED REACH, 268 tracked inputs, --relocatable
+        --all-exports --allow-skipped-exports --embedder-data-init
+        --embedder-global-init, counting EXPORTED functions (a different
+        denominator from the census's disassembled functions): cortex-m0
+        accepts 83 of 1532, cortex-m3 1247 of 1532; objects compiling with
+        no export skipped: cortex-m0 3, cortex-m3 224. First refusal class
+        of the 1164 functions m3 accepts and m0 refuses: wide load/store
+        multiple 539, MOVW/MOVT 276, wide data-processing 139, wide
+        load/store 125, IT block 52, UDIV/SDIV 17, wide multiply 16. gale's
+        inputs are not in this tree, so the gale figure stays the census
+        projection above. BYTE-IDENTITY of every other target, base
+        6b697bcf vs branch, both binaries given the identical input path
+        and a relative -o: 268 inputs x 28 configurations (cortex-m3, m4,
+        m4f, m7, m7dp, m55, r5; rv32imac, imc, im, i, gc; cortex-a53; each
+        --relocatable and self-contained; plus no-target and --cortex-m) =
+        7504 pairs, 6028 with output and 392 sidecar files, exit code and
+        sha256 of every file: 0 differ. Potency control: the base binary
+        against itself with SYNTH_NO_LOCAL_PROMOTE on one side: 595 differ.
+        MUTANTS, each red: deleting the encode-loop check (oracle legs A
+        and B); letting IT through the predicate (oracle A and B, and 2 of
+        3 armv6m unit tests); the Thumb bit dropped (is_thumb2) at
+        build_simple_elf, build_multi_func_simple_elf and
+        refuse_a32_cortex_m_image (armv6m_is_thumb_state_at_every_site_1301
+        reds at each), and at build_relocatable_elf, the live
+        --relocatable site (oracle leg B: every STT_FUNC without the Thumb
+        bit); dropping the 16-bit LDR-literal rule (classes_1301 reds).
+        WHY outlives: gale's ask is driver breadth on a Cortex-M0+
+        part, and at this increment 0 of gale's 23 objects would compile.
+        That needs the ARMv6-M register contract named in the description,
+        which this lane did not build.
       done-when: >
         manual:2027-03-31 `--target cortex-m0plus` (and cortex-m0)
         compiles on the --relocatable path gale uses; an ARMv6-M-only

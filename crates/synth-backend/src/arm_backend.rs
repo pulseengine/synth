@@ -2380,6 +2380,27 @@ fn compile_wasm_to_arm(
             });
         }
 
+        // RQ-91-ARMV6M (#1301): on an ARMv6-M profile, every encoded
+        // instruction must be ARMv6-M. Checked on the ENCODED BYTES (the
+        // encoder expands one op into a sequence in many arms) and only on
+        // instruction bytes: pool and island words are written by
+        // `emit_literal_pool`, never through here. The offset is FINAL — any
+        // island for this instruction is already flushed above.
+        if config.target.isa == IsaVariant::Thumb
+            && let Err((at, v)) = crate::armv6m::check_bytes(&encoded)
+        {
+            return Err(format!(
+                "ARMv6-M (cortex-m0/cortex-m0plus, experimental): the instruction \
+                 at function offset +0x{:x} is not an ARMv6-M instruction — {} \
+                 ({}), emitted for `{:?}`. synth has no ARMv6-M lowering for this \
+                 shape, so the function is refused rather than emitted (#1301).",
+                code.len() + at,
+                v.class(),
+                v.bytes_hex(),
+                instr.op
+            ));
+        }
+
         // The machine offset of this instruction is the current code length,
         // captured before the bytes are appended (and AFTER any island above,
         // so the recorded offset is where the instruction really lands).
