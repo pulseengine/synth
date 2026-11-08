@@ -209,7 +209,7 @@ LEGS = [
     ("none/npa", ["--native-pointer-abi"], XMOD, XCALLS, False),
 ]
 # The refusal the software/npa leg asserts for a memory-0 side.
-NPA_XREFUSAL = "memory.copy with a memory 0 side under --native-pointer-abi"
+NPA_XREFUSAL = "npa-software-bounds (#1661)"
 FLOOR = 0  # set below from the leg table; the vacuity floor
 
 

@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-NPARESID1604
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "A native-pointer access that straddles into a data segment through a computed constant is relocated or refused"
     description: >
         SILENT MISCOMPILE, the residual of #1604 that v0.90 left open
@@ -59,8 +59,19 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1604"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
+      landed: "branch v091-npamodel - #1604 - DELIVERED AS A LOUD REFUSAL for what cannot be laid out: an access computed from constants whose bytes span two regions of the split layout, or whose relocated constant names another region, and a bulk op with a computed constant destination and a run-time length, are refused (npa-region-straddle); the same access inside one region executes."
+      verified-by: >
+        DELIVERED as a refusal, execution-verified. Red at eab66646:
+        arith_straddle() faulted (1 of 2 equal) and the computed-destination
+        fill (fill_neg) compiled rc 0. On the branch both are refused with
+        npa-region-straddle (#1604), rc 1, no object; the in-region near miss
+        (0x1000 + 2) executes equal; npa_straddle_1604_differential.py passes
+        unmodified (88 emulations, 255 refusals). Residual R1, stated in the
+        embedder ABI document: a static pointer plus a RUN-TIME delta stays in
+        its object's closed range [base, base+size]; synth checks the bytes
+        only for a constant delta.
       done-when: >
         manual:2027-03-31 an access whose bytes span the zero
         reservation and a data segment, or two regions, with the

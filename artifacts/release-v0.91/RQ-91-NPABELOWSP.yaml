@@ -1,0 +1,67 @@
+artifacts:
+  - id: RQ-91-NPABELOWSP
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "A memory-0 static below the stack-pointer init is relocated or refused under the native-pointer ABI"
+    description: >
+        SILENT MISCOMPILE, found by the RQ-91-NPAMODEL lane while it measured
+        the window definitions (filed here, not as an issue). Under
+        --relocatable --native-pointer-abi with a stack-pointer global, the
+        selector treated only constants in [sp_init, memory-0 size) as
+        statics (`static_data_addend`), while the shape-2 refusal used
+        [lowest data segment, memory-0 size) (`npa_static_region`): two
+        windows. A toolchain that places data BELOW the stack (data at 0x1000,
+        `__stack_pointer` at 0x2000) therefore had its statics baked raw: even
+        a positional `i32.load (i32.const 0x1000)` read absolute 0x1000 off
+        R11 = 0. gale is not affected (its data sits above the stack pointer).
+        Delivered through RQ-91-NPAMODEL's single window.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers: compile
+        `(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const
+        0x2000)) (data (i32.const 0x1000) "\11\22\33\44\55\66\77\88") (data
+        (i32.const 0x3000) "\aa\bb\cc\dd") (func (export "hi") (result i32)
+        (i32.load (i32.const 0x3000))) (func (export "lo") (result i32)
+        (i32.load (i32.const 0x1000))))` with `synth compile x.wat -o x.o
+        --target cortex-m3 --all-exports --relocatable --native-pointer-abi`,
+        then execute both exports with Linked from
+        scripts/repro/npa_const_addr_differential.py (R11 = 0) against
+        wasmtime. If lo() returns 0x44332211 or the compile refuses with a
+        named diagnostic, it is gone.
+
+        MEASURED 2026-11-08 on main eab66646, synth 0.90.0 debug build: LIVE.
+        Compile rc 0. hi() returns 0xddccbbaa, equal to wasmtime (the positive
+        control); lo() faults on an unmapped read where wasmtime returns
+        0x44332211; a run-time base plus `offset=0x1004` faults too.
+
+        CITATION: found while working #739, #1568 and #1672; no issue was
+        filed for it.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#739"
+      verification-track: execution
+      issue-scope: outlives
+      landed: "branch v091-npamodel - #739 - DELIVERED. The memory-0 decision uses one static range, [min(lowest data segment, stack-pointer init), memory-0 size): a constant address below the stack-pointer init computed only from constants is relocated at its definition, and a constant or memarg offset in that range beside a run-time base is refused (npa-dynamic-static-offset), unless the base is the stack pointer itself (a frame offset)."
+      verified-by: >
+        DELIVERED, execution-verified. Red at eab66646 as measured above. On
+        the branch, scripts/repro/npa_model_differential.py row below_sp
+        executes hi(), lo(), lo4() (0x1004) and lo_arith() (0x1000 + 4) equal
+        to wasmtime, and row below_sp_dyn (`offset=0x1004` on a parameter) is
+        refused with npa-dynamic-static-offset (#1568). The emitted-stream
+        validator refuses the raw form if the decision's relocation is
+        disabled (planted mutant M1: npa-addr-validate on below_sp's lo).
+      done-when: >
+        manual:2027-03-31 a memory-0 static below the stack-pointer init is
+        either reached through its relocation and executes equal to wasmtime
+        or refused loudly with a named diagnostic, gated by an execution
+        differential red before and green after; and the refuting command
+        above is RUN FIRST and its result reported either way

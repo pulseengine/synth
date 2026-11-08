@@ -62,7 +62,11 @@ MEASURED (v0.89, #1574), all three binaries built from their commits:
       GI-FPU-002); nothing that was ok changed.
   main     9f123a65: identical to 85914929, cell for cell.
   WRONG at the pre-fix binary by kind: nosp 65, spsliver 16, sp 0.
-CI runs it with --expect ok=99,refused=63,guard=59,wrong=0; a reach change
+  RQ-91-NPAMODEL (v0.91), eab66646 -> branch: ok 99 -> 158, REFUSED 63 -> 4
+      (the 4 GI-FPU-002 declines), WRONG 0; transitions REFUSED->ok 59,
+      REFUSED->REFUSED 4, ok->ok 99. `guard` now counts a refusal by a named
+      npa-* diagnostic (or the retired needle, for a --before binary): 0.
+CI runs it with --expect ok=158,refused=4,guard=0,wrong=0; a reach change
 that moves a cell moves the pin in the same PR.
   python3 npa_const_addr_matrix_1568.py --before BIN_A --after BIN_B
       run both and print the per-cell transition table (the 24/57/0 figures).
@@ -72,6 +76,7 @@ Needs wasmtime + unicorn + pyelftools.
 
 import argparse
 import json
+import re
 import os
 import struct
 import subprocess
@@ -102,6 +107,12 @@ BASES = {".text": 0x10000, ".data": 0x60000, ".bss": 0x80000}
 MAPSZ = 0x20000
 POPULATION = 162
 NEEDLE = "which this lowering would emit as a raw linear-memory offset off R11"
+# RQ-91-NPAMODEL: the per-shape constant-address guard is retired; a refusal
+# by the module-level memory-0 decision carries one of its named diagnostics
+# (`npa-region-straddle (#1604)`, `npa-static-unrelocatable (#1568)`, ...).
+# `guard` counts a refusal carrying EITHER — the old needle (a pre-v0.91
+# binary, for --before) or a named decision.
+NPA_DIAG = re.compile(r"\bnpa-[a-z-]+ \(#\d+\)")
 
 # (signature, body template, kind) — kind "f" selects the VFP target.
 FAMILIES = {
@@ -283,7 +294,7 @@ def run_cell(synth, tmp, tag, wat, tgt):
     )
     log = (r.stdout or "") + (r.stderr or "")
     if r.returncode != 0:
-        why = "npa-guard" if NEEDLE in log else "other"
+        why = "npa-guard" if (NEEDLE in log or NPA_DIAG.search(log)) else "other"
         err = [ln for ln in log.splitlines() if ln.startswith("Error")]
         return "REFUSED", why, (err[0] if err else log.strip()[-140:])[:140]
     try:

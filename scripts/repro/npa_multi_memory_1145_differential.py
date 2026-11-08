@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 51
+# ci-checks: emulations >= 54
 """RQ-89-MEMLAYER6 (#1145) — `--native-pointer-abi` on a MULTI-MEMORY ARM
 `--relocatable` module, layered per memory — execution differential vs
 wasmtime (multi-memory + custom-page-sizes enabled), with an isolation check.
@@ -105,17 +105,21 @@ REFUSALS (each must refuse, naming the shape, no object written):
                  pass, so the tenant's constant reads as used in both memories.
                  Imprecision, measured: the same module without the adapter
                  compiles, and the plain (non-NPA) path compiles it;
-  xcopy_nosp_static  a memory-0 static as the positional memory-0 side of a
+  xcopy_nosp_static  (EXECUTED since RQ-91-NPAMODEL, no longer a refusal) a
+                 memory-0 static as the positional memory-0 side of a
                  cross-memory memory.copy in a module with NO stack-pointer
-                 global: nothing relocates it, so the #1568 constant-address
-                 guard refuses it (it compiled silently before the guard saw
-                 the wrapped copy);
-  safety_sw_xcopy  `--safety-bounds software` on a cross-memory copy with a
-                 memory-0 side: memory 0's guard compares against R10, which
-                 bounds no native pointer, so it is refused (#1619; a memory-k
-                 side IS guarded, against `__synth_mem_size_k`);
-  safety_mask    `--safety-bounds mask` on memory 1: mask wraps with
-                 `AND size-1`, which needs a power-of-two size (#1619).
+                 global: the module-level memory-0 decision relocates the
+                 constant at its definition, and the copied word must land in
+                 memory 1 (refused per shape v0.89-v0.90);
+  safety_sw_xcopy  `--safety-bounds software` on a module touching memory 0:
+                 memory 0's guard compares against R10, which bounds no
+                 native pointer, so the module is refused
+                 (`npa-software-bounds`, #1661; a memory-k side IS guarded,
+                 against `__synth_mem_size_k`); safety_mask_mem0 the same
+                 for `mask`;
+  safety_mask    `--safety-bounds mask` on a module touching only memory 1:
+                 mask wraps with `AND size-1`, which needs a power-of-two
+                 size (#1619).
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python3 scripts/repro/npa_multi_memory_1145_differential.py
@@ -341,19 +345,33 @@ REFUSALS = [
      "--embedder-copies-carry-no-pointers"),
     ("xcopy_content_merge", (HERE / "npa_xcopy_merge_1145.wat").read_text(), [],
      "--embedder-copies-carry-no-pointers"),
-    ("xcopy_nosp_static", r"""(module (memory $m0 1 1) (memory $m1 1 1)
-      (data (memory $m0) (i32.const 0x1000) "\11\22\33\44")
-      (func (export "anchor") (result i32) (i32.load $m0 (i32.const 0x1000)))
-      (func (export "x") (memory.copy $m1 $m0 (i32.const 0) (i32.const 0x1000) (i32.const 4))))""",
-     [], "memory.copy (memory-0 side)"),
+    # RQ-91-NPAMODEL (#1661): memory 0 under the native-pointer ABI has no
+    # wasm offset for software or mask bounds to guard — any module that
+    # touches memory 0 is refused for the whole module.
     ("safety_sw_xcopy", r"""(module (memory $m0 1 1) (memory $m1 1 1)
       (func (export "x") (param i32 i32 i32)
         (memory.copy $m1 $m0 (local.get 0) (local.get 1) (local.get 2))))""",
      ["--safety-bounds", "software"],
-     "memory.copy with a memory 0 side under --native-pointer-abi"),
-    ("safety_mask", PAGES, ["--safety-bounds", "mask"],
+     "npa-software-bounds (#1661)"),
+    ("safety_mask_mem0", PAGES, ["--safety-bounds", "mask"],
+     "npa-software-bounds (#1661)"),
+    # A module that touches ONLY memory 1 passes the #1661 rule and reaches
+    # the per-memory mask decline.
+    ("safety_mask", r"""(module (memory $m0 1 1) (memory $m1 1 1)
+      (func (export "r1") (result i32) (i32.load $m1 (i32.const 0))))""",
+     ["--safety-bounds", "mask"],
      "mask is not lowered for an op on memory 1"),
 ]
+# RQ-91-NPAMODEL: a memory-0 static as the positional memory-0 side of a
+# cross-memory copy, no stack-pointer global. Refused per shape before; the
+# module-level memory-0 decision relocates the constant at its definition, so
+# it is EXECUTED now (the copied word must land in memory 1).
+XCOPY_NOSP = r"""(module (memory $m0 1 1) (memory $m1 1 1)
+      (data (memory $m0) (i32.const 0x1000) "\11\22\33\44")
+      (func (export "anchor") (result i32) (i32.load $m0 (i32.const 0x1000)))
+      (func (export "x") (memory.copy $m1 $m0 (i32.const 0) (i32.const 0x1000) (i32.const 4)))
+      (func (export "r1") (result i32) (i32.load $m1 (i32.const 0))))"""
+XCOPY_NOSP_CALLS = [("anchor", [], {0}), ("x", [], {0, 1}), ("r1", [], {1})]
 
 
 def compile_obj(wat, tmp, label, extra=()):
@@ -681,6 +699,10 @@ def main():
         fails += 1
     else:
         print(f"  [ok ] {f} call(s) diverge from wasmtime, as a false assertion must")
+    print("=== xcopy_nosp_static: relocated memory-0 side (RQ-91-NPAMODEL) ===")
+    c, f = run_fixture("xcopy_nosp_static", XCOPY_NOSP, XCOPY_NOSP_CALLS, tmp)
+    total += c
+    fails += f
     print("=== region table (pagesize 1, bytes) ===")
     fails += check_region_table(tmp)
     print("=== refusals ===")
@@ -688,8 +710,8 @@ def main():
     for label, wat, extra, needle in REFUSALS:
         rc, log, obj = compile_obj(wat, tmp, f"refuse_{label}", extra)
         ok = (rc != 0 and "panicked" not in log and needle in log
-              and (label in ("safety_sw_xcopy", "safety_mask", "imported_mem0",
-                             "xcopy_nosp_static")
+              and (label in ("safety_sw_xcopy", "safety_mask", "safety_mask_mem0",
+                             "imported_mem0")
                    or REFUSE_NEEDLE in log)
               and not (obj.exists() and obj.stat().st_size > 0))
         print(f"  [{'ok ' if ok else 'BUG'}] refused: {label} (rc={rc})"

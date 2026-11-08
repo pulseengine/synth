@@ -17,7 +17,9 @@ were relocated and the access faulted (`i32.const 0x900 i32.load
 offset=0x1704`). `C = 0` was always correct: the addend was already the
 effective address.
 
-THE FIX (`InstructionSelector::npa_effective_addr_rewrite`). The offset is
+THE FIX (`synth_core::npa_multi_memory::npa_offset_folds` since RQ-91-NPAMODEL,
+applied by the selector and read by the module-level memory-0 decision; it was
+`InstructionSelector::npa_effective_addr_rewrite`). The offset is
 folded into the constant that feeds the access (`i32.const C+O` with
 `offset=0`, exact wasm — the producer is found by an exact backward stack walk
 and is consumed only by the access), so the relocation carries `C + O` and the
@@ -227,7 +229,11 @@ def assert_refusals(tmp):
             why = "compiled with exit 0"
         elif "panicked at" in log:
             why = "refusal PANICKED"
-        elif "(#1580)" not in log or "through local 0" not in log:
+        # RQ-91-NPAMODEL: the module-level memory-0 decision refuses these by
+        # what goes wrong — the relocation follows another region
+        # (`npa-region-straddle`), or a relocated constant would be counted
+        # twice (`npa-double-relocation`) — not by the local they pass through.
+        elif not ("npa-region-straddle (#1604)" in log or "npa-double-relocation (#1580)" in log):
             why = f"refused for the WRONG reason: {log[-500:]}"
         elif obj.exists() and obj.stat().st_size > 0:
             why = "an object was written despite the refusal"

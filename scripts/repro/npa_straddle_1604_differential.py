@@ -36,7 +36,11 @@ start is outside its population, a store into zero padding passes a byte
 comparison, and a relocation whose width is unproven (a pointer constant
 under a stack-pointer global, a local) is checked only on covered bytes.
 
-THE FIX (`InstructionSelector::npa_region_straddle_guard`) refuses, before
+THE FIX (`InstructionSelector::npa_region_straddle_guard` at v0.90; since
+RQ-91-NPAMODEL the same rule is part of the module-level memory-0 decision,
+`synth_core::npa_multi_memory::Provenance::memory0_plan`, which refuses the
+whole module as `npa-region-straddle (#1604)`, and this oracle runs on it
+unmodified) refuses, before
 selection, any memory access whose CONSTANT effective address (the producing
 `i32.const` after the #1580 offset fold, or every value of a #1568
 constant-only local) touches bytes of two regions, with the same

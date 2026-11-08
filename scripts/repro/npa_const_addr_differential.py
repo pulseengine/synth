@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 47
+# ci-checks: emulations >= 65
 """--native-pointer-abi never bakes a constant static address as a raw
 linear-memory offset off R11 — execution differential vs wasmtime.
 
@@ -110,6 +110,8 @@ import wasmtime
 from elftools.elf.elffile import ELFFile
 from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc, UcError
 from unicorn.arm_const import (
+    UC_ARM_REG_C1_C0_2,
+    UC_ARM_REG_FPEXC,
     UC_ARM_REG_LR,
     UC_ARM_REG_R0,
     UC_ARM_REG_R1,
@@ -177,39 +179,58 @@ CASES = [
     ("local_sp", LOCAL_SP, ["ld", "st", "ld0"]),
 ]
 
-# Arms that cannot fold a constant address: each must be REFUSED. (label,
-# target, function body). Every module carries the folded `anchor` so the
-# region is referenced and the #1041 refusal cannot be what fires.
+# Arms that cannot fold a constant address. Before RQ-91-NPAMODEL each was
+# REFUSED per function by the selector's constant-address guard. The
+# module-level memory-0 decision now RELOCATES the constant at its definition
+# (`__synth_wasm_data + C`), so the non-folding arms compile — and are
+# EXECUTED against wasmtime below (RELOCATED); the shapes it cannot relocate
+# soundly stay refused, each with the named diagnostic in its row (REFUSE).
+# Every module carries the folded `anchor` so the region is referenced and
+# the #1041 refusal cannot be what fires.
 REFUSE_HDR = r"""(module (memory (export "mem") 1)
   (data (i32.const 0x100) "\01\02\03\04\05\06\07\08")
   (data (i32.const 0x1000) "\11\12\13\14\15\16\17\18")
   (func (export "anchor") (result i32) (i32.load (i32.const 0x100)))
   (func (export "f") """
+# Relocated now (were refused): (label, target, function body, call sequence).
+# The read-back exports observe what a store / fill / copy wrote.
+READBACK = r"""
+  (func (export "r100") (result i32) (i32.load (i32.const 0x100)))
+  (func (export "r104") (result i32) (i32.load (i32.const 0x104)))
+  (func (export "r1000") (result i32) (i32.load (i32.const 0x1000)))
+  (func (export "r1004") (result i32) (i32.load (i32.const 0x1004)))"""
+RELOCATED = [
+    ("i64_load", "(result i64) i32.const 0x1000 i64.load", ["f"]),
+    ("i64_load_low", "(result i64) i32.const 0x100 i64.load", ["f"]),
+    ("i64_store", "i32.const 0x1000 i64.const 7 i64.store", ["f", "r1000", "r1004"]),
+    ("i64_load8", "(result i64) i32.const 0x1001 i64.load8_u", ["f"]),
+    ("f32_store", "i32.const 0x1000 f32.const 1 f32.store", ["f", "r1000", "r1004"],
+     "cortex-m7dp"),
+    ("memory_fill", "i32.const 0x1000 i32.const 9 i32.const 4 memory.fill",
+     ["f", "r1000", "r1004"]),
+    ("memory_copy_src", "i32.const 0x104 i32.const 0x1000 i32.const 4 memory.copy",
+     ["f", "r100", "r104"]),
+    # f64.load from a constant static: read and stored back to 0x100 (an f64
+    # result would come back in D0, which this harness does not read).
+    ("f64_load", "i32.const 0x100 i32.const 0x1000 f64.load f64.store",
+     ["f", "r100", "r104"], "cortex-m7dp"),
+]
+# Still refused: (label, target, function body, the diagnostic it must carry).
 REFUSE = [
-    ("i64_load", "cortex-m3", "(result i64) i32.const 0x1000 i64.load"),
-    ("i64_load_low", "cortex-m3", "(result i64) i32.const 0x100 i64.load"),
-    ("i64_store", "cortex-m3", "i32.const 0x1000 i64.const 7 i64.store"),
-    ("i64_load8", "cortex-m3", "(result i64) i32.const 0x1001 i64.load8_u"),
-    ("f32_store", "cortex-m7dp", "i32.const 0x1000 f32.const 1 f32.store"),
-    ("f64_load", "cortex-m7dp", "(result f64) i32.const 0x1000 f64.load"),
-    ("memory_fill", "cortex-m3",
-     "i32.const 0x1000 i32.const 9 i32.const 4 memory.fill"),
-    ("memory_copy_src", "cortex-m3",
-     "i32.const 0x104 i32.const 0x1000 i32.const 4 memory.copy"),
     # RQ-89-NPARESIDUE (#1568) shape 1: a constant routed through a local the
-    # plan cannot relocate soundly — one row per relocation condition.
+    # decision cannot relocate soundly — one row per condition.
     ("local_nonzero_offset", "cortex-m3",
      "(result i32) (local i32) i32.const 5 local.set 0 local.get 0 "
-     "i32.load8_u offset=0x1000"),
+     "i32.load8_u offset=0x1000", "npa-region-straddle (#1604)"),
     ("local_zero_init_visible", "cortex-m3",
      "(result i32) (local i32) block i32.const 0x1004 local.set 0 end "
-     "local.get 0 i32.load"),
+     "local.get 0 i32.load", "npa-static-unrelocatable (#1568)"),
     ("local_scalar_observer", "cortex-m3",
      "(result i32) (local i32) i32.const 0x1004 local.set 0 local.get 0 "
-     "i32.load local.get 0 i32.add"),
+     "i32.load local.get 0 i32.add", "npa-static-observed (#1568)"),
     ("local_i64_nonzero_offset", "cortex-m3",
      "(result i64) (local i32) i32.const 0x1000 local.set 0 local.get 0 "
-     "i64.load offset=4"),
+     "i64.load offset=4", "npa-region-straddle (#1604)"),
 ]
 # The stack-pointer sliver reached through a local (header with an SP global).
 REFUSE_SP_HDR = r"""(module (memory (export "mem") 1)
@@ -220,8 +241,9 @@ REFUSE_SP_HDR = r"""(module (memory (export "mem") 1)
 REFUSE_SP = [
     ("local_sp_sliver", "cortex-m3",
      "(result i32) (local i32) i32.const 0x1800 local.set 0 local.get 0 "
-     "i32.load offset=0x1000"),
+     "i32.load offset=0x1000", "npa-static-unrelocatable (#1568)"),
 ]
+# The retired per-shape guard's text: no diagnostic may carry it any more.
 NEEDLE = "which this lowering would emit as a raw linear-memory offset off R11"
 
 # RQ-90-NPASHAPE2 (#1568 shape 2). One segment at 0x1000 in a one-page memory:
@@ -266,7 +288,11 @@ S2_REFUSE = [
      "f", 0x1000),
     ("internal_helper", "cortex-m3",
      '(func $h (param i32) (result i32) local.get 0 i32.load offset=0x1000) '
-     '(func (export "f") (result i32) i32.const 0 call $h)',
+     # RQ-91-NPAMODEL: the base reaches the helper from the HOST (an export
+     # parameter). With `i32.const 0 call $h` the module-level provenance
+     # pass sees the constant through the call and refuses the constant
+     # address as a straddle instead — still refused, under another name.
+     '(func (export "f") (param i32) (result i32) local.get 0 call $h)',
      "func_1", 0x1000),
 ]
 S2_NEAR = S2_SEG + r"""  (func (export "nm_ld") (param i32) (result i32) local.get 0 i32.load offset=0xffc)
@@ -318,9 +344,9 @@ def assert_shape2_refusals(tmp):
     return n
 
 
-def run_shape2(tmp, label, wat, seq, low_map):
+def run_shape2(tmp, label, wat, seq, low_map, target="cortex-m3"):
     """Execute `seq` (fn, args) in one instance each side; return fails."""
-    obj = compile_obj(wat, tmp, label)
+    obj = compile_obj(wat, tmp, label, target)
     linked = Linked(obj, low_map=low_map)
     engine = wasmtime.Engine()
     store = wasmtime.Store(engine)
@@ -350,7 +376,7 @@ def run_shape2(tmp, label, wat, seq, low_map):
 def assert_refusals(tmp):
     n = 0
     rows = [(REFUSE_HDR, r) for r in REFUSE] + [(REFUSE_SP_HDR, r) for r in REFUSE_SP]
-    for hdr, (label, tgt, body) in rows:
+    for hdr, (label, tgt, body, want) in rows:
         src = tmp / f"refuse_{label}.wat"
         src.write_text(hdr + body + "))")
         obj = tmp / f"refuse_{label}.o"
@@ -361,14 +387,12 @@ def assert_refusals(tmp):
         )
         log = (r.stdout or "") + (r.stderr or "")
         if r.returncode == 0:
-            sys.exit(f"refuse {label}: compiled with exit 0 — a constant static "
-                     f"address on a non-folding arm must be refused")
+            sys.exit(f"refuse {label}: compiled with exit 0 — this shape must be refused")
         if "panicked at" in log:
             sys.exit(f"refuse {label}: refusal PANICKED: {log[-400:]}")
-        if NEEDLE not in log or "--native-pointer-abi:" not in log:
-            sys.exit(f"refuse {label}: refused for the WRONG reason:\n{log[-800:]}")
-        if label.startswith("local") and "local 0" not in log:
-            sys.exit(f"refuse {label}: the diagnostic does not name the local:\n{log[-800:]}")
+        if want not in log or NEEDLE in log:
+            sys.exit(f"refuse {label}: refused for the WRONG reason (want {want!r}):\n"
+                     f"{log[-800:]}")
         if obj.exists() and obj.stat().st_size > 0:
             sys.exit(f"refuse {label}: an object was written despite the refusal")
         print(f"  [ok ] refused: {label}")
@@ -376,12 +400,12 @@ def assert_refusals(tmp):
     return n
 
 
-def compile_obj(wat_text, tmp, label):
+def compile_obj(wat_text, tmp, label, target="cortex-m3"):
     src = tmp / f"{label}.wat"
     src.write_text(wat_text)
     obj = tmp / f"{label}.o"
     r = subprocess.run(
-        [SYNTH, "compile", str(src), "-o", str(obj), "--target", "cortex-m3",
+        [SYNTH, "compile", str(src), "-o", str(obj), "--target", target,
          "--all-exports", "--relocatable", "--native-pointer-abi"],
         capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"},
     )
@@ -456,6 +480,10 @@ class Linked:
         self.mu.mem_write(BASES[".data"], self.data)
         self.ret = BASES[".text"] + MAPSZ - 0x10
         self.mu.mem_write(self.ret, b"\x00\xbf\x00\xbf")
+        # The FPU on (CPACR CP10/CP11, FPEXC.EN), for the cortex-m7dp rows;
+        # an integer-only object never touches either register.
+        self.mu.reg_write(UC_ARM_REG_C1_C0_2, 0x00F00000)
+        self.mu.reg_write(UC_ARM_REG_FPEXC, 0x40000000)
 
     def call(self, fn, args=()):
         if fn not in self.syms:
@@ -520,7 +548,14 @@ def main():
         print(f"VACUOUS: shape-2 refusals={s2} of {2 * len(S2_REFUSE)}")
         return 1
     print(f"shape-2 refusals: {s2}")
-    print("=== non-folding arms (must be refused) ===")
+    print("=== non-folding arms, relocated at the definition (RQ-91-NPAMODEL) ===")
+    for label, body, seq, *tgt in RELOCATED:
+        wat = REFUSE_HDR + body + ")" + READBACK + ")"
+        f, c = run_shape2(tmp, f"reloc_{label}", wat, [(s, ()) for s in seq], 0,
+                          *tgt)
+        fails += f
+        compared += c
+    print("=== shapes the decision cannot relocate (must be refused) ===")
     refusals = assert_refusals(tmp)
     # Non-vacuity for the refusal half (#1113): the emulation floor cannot
     # see a refused compile, so it is counted here.

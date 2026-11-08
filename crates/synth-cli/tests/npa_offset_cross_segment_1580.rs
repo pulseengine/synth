@@ -101,7 +101,7 @@ fn constant_plus_offset_is_relocated_on_the_effective_address() {
 }
 
 /// Through a local the offset cannot be folded into the shared definition:
-/// leaving the constant's region is refused with the #1580 diagnostic and no
+/// leaving the constant's region is refused with a named diagnostic and no
 /// object; staying inside it (a field off a static base, the #757 shape)
 /// compiles.
 #[test]
@@ -113,8 +113,12 @@ fn constant_through_a_local_leaving_its_region_is_refused() {
     let (ok, bytes, log) = compile("local_leave", &leave);
     assert!(!ok, "must be refused:\n{log}");
     assert!(bytes.is_none(), "no object on a refusal");
+    // RQ-91-NPAMODEL: refused by the module-level memory-0 decision, named
+    // by what goes wrong (a relocated part counted twice, or the relocation
+    // following another region), not by the local the constant passes through.
     assert!(
-        log.contains("(#1580)") && log.contains("through local 0"),
+        log.contains("npa-double-relocation (#1580)")
+            || log.contains("npa-region-straddle (#1604)"),
         "refused for the wrong reason:\n{log}"
     );
     let stay = format!(

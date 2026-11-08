@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-NPADATAPTR
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "A memory-0 address stored in a data segment is relocated, or the module is refused, under the native-pointer ABI"
     description: >
         SILENT MISCOMPILE, gale's first-ranked ask. Under
@@ -58,8 +58,30 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1672"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
+      landed: "branch v091-npamodel - #1672 - DELIVERED AS A LOUD MODULE-LEVEL REFUSAL, as gale accepted for v0.91: npa-data-pointer (#1672), naming the dereferencing function, the load site (wasm op index) and the word's segment and segment offset. Memory is modelled per region, so a loaded value used as an INDEX on a static base (gale's HEAP + OFF bump allocator) is not refused."
+      verified-by: >
+        DELIVERED as a refusal, execution-verified. Red at eab66646: the
+        refuting command compiled rc 0 and tbl() faulted where wasmtime returns
+        0x88776655 (1 of 2 equal). On the branch it is refused, rc 1, no
+        object: `npa-data-pointer (#1672): ... function 'tbl' (wasm function
+        index 1) dereferences, in a load at op 2, a value that may be the word
+        loaded by the load at op 1 ... data segment 0 holds the wasm address
+        0x1004 at segment offset 0x8`. npa_model_differential.py rows: the
+        repro (datap_neg) and a &'static str shape (str_neg, segment 1 holding
+        a pointer to a string in segment 0) both refused with the diagnostic;
+        the near miss (the pointer word loaded and returned, never
+        dereferenced) executes equal; gale's bump allocator (bump_pos) and the
+        same allocator in an image whose data holds a never-dereferenced
+        pointer word (bump_ptrdata) execute equal to wasmtime. A planted mutant
+        disabling the refusal turns datap_neg and str_neg red. Newly refused
+        over the repo corpus: 0 (only one tracked module carries a word in the
+        static range at all). gale's own image is not in the repo; gale runs it
+        on the candidate. RESIDUAL, stated: the region model is per data
+        segment, so a dereferenced load of ANY full word from a segment that
+        holds a pointer word refuses; a pointer assembled from narrower loads is
+        not tracked.
       done-when: >
         manual:2027-03-31 a module whose memory-0 data segment holds a
         word that is dereferenced as a memory-0 address under

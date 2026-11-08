@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-NPAMODEL
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "Native-pointer address provenance is decided once and checked by one emitted-stream validator, and the per-shape checks are deleted"
     description: >
         THEME: the native-pointer address-model refactor. Every
@@ -81,8 +81,54 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#739"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
+      landed: "branch v091-npamodel - #739 - DELIVERED. Memory-0 address provenance under --relocatable --native-pointer-abi is decided ONCE per module by Provenance::memory0_plan, which extends the #1145 pass in crates/synth-core/src/npa_multi_memory.rs (one graph walk, read by both). It names the constants to relocate or refuses the module with a named diagnostic: npa-data-pointer, npa-dynamic-static-offset, npa-static-observed, npa-static-unrelocatable, npa-region-straddle, npa-double-relocation, npa-software-bounds. The emitted ARM stream is checked by arm_backend::npa_stream_validate (npa-addr-validate, fatal). Deleted: 12 of the 13 selector fn npa_* and synth-core npa_static_region, the three refusal call sites, the CLI shape-2 loop and the #1619 memory-0-side refusal."
+      verified-by: >
+        DELIVERED, execution-verified. The refuting command, re-run on the
+        branch: `fn npa_*` above each test module drops from 15 to 5
+        (npa_baked_const_addr in the selector; npa_offset_folds and
+        npa_split_layout in synth-core; npa_multi_memory_plan and the new
+        npa_provenance in main.rs); the refusal grep prints 0 lines (0 of the
+        3 checks, 0 call sites). HONEST SIZE: the grep falls partly by MOVING
+        logic. Over crates/ the diff is about +1930 / -1020 lines: the
+        selector (instruction_selector.rs + select_with_stack.rs) -677 net
+        (claims.yaml selector_lines_code 21715 -> 21038, a FALL, waiver bound;
+        wildcard arms 53 -> 52), the CLI shape-2 loop and synth-core
+        npa_static_region deleted, while synth-core npa_multi_memory.rs grows
+        by +1369 (the decision, its docs and the moved #1580 fold) and
+        arm_backend.rs by +216 (the validator and a grow-fold re-key). It is a
+        net addition of lines and a net DELETION of decision sites: the three
+        selector guards, the local plan, the shape-2 matcher and the #1619
+        memory-0-side refusal become one decision plus one validator. The five native-pointer
+        oracles plus memk_bulk_oob_1619 exit 0 on the branch; three had refusal
+        rows that now compile and are EXECUTED instead (pins moved with paired
+        controls: npa_const_addr_differential 47 -> 65 emulations,
+        npa_multi_memory_1145 51 -> 54, the matrix 99/63/59 -> 158 ok / 4
+        refused / 0 npa-guard / 0 wrong, eab66646 measuring the old pin and
+        failing the new one). Byte identity: the census of every tracked .wat/.wasm (268 files x cortex-m3 and cortex-m7dp, --relocatable --native-pointer-abi --all-exports --allow-skipped-exports) is 517 of 536 rows byte-identical to eab66646; the same census without --native-pointer-abi is 536 of 536 identical. The 19 that move: 13 rows where eab66646 skipped a function on a per-shape guard (or compiled nothing) and the branch compiles it (bulk_local_clobber_677, bulk_mask_679, home_alias_class_1189_promo, i64_width_vstack_mem_946, vcr_reach_001_i64_pair on both targets; f64_369, aarch64_align_f32_switch_1231 and spill_slot_alias_1321 on cortex-m7dp), 2 where it now refuses the whole module instead of skipping the same function (self_contained_data_758, the same straddle, now npa-region-straddle), and 4 where eab66646 baked a constant address raw (popcnt_r11_clobber_1021 pc_store: base returns 0 where wasmtime returns 1, branch equal; call_indirect_275_selfcontained: the store address now carries its relocation). Executing the changed modules against wasmtime: every i32 export, 108 calls on cortex-m3 with 3 divergent, all call_indirect_275's entry, which this harness cannot dispatch on base or branch either, and 105 calls on cortex-m7dp with 0 divergent; f64_369's 34 i32-signature exports and aarch64_align_f32_switch_1231's f32 export on cortex-m7dp, 0 divergent. spill_slot_alias_1321 is not valid wasm to wasmtime (a register-pressure fixture) and has no reference to execute against. Every object the six pre-existing native-pointer oracles compiled on eab66646 is byte-identical on the branch (recorded through a hashing wrapper around SYNTH). New oracle
+        scripts/repro/npa_model_differential.py: 25 emulations, PASS on the
+        branch, 14 failures on eab66646. Planted mutants, each red: the
+        decision's relocation disabled (npa-addr-validate refuses the arith,
+        inregion and below-SP rows), the #1672 refusal disabled (datap_neg and
+        str_neg compile), the straddle check disabled (straddle_neg compiles).
+        Newly refused over the repo corpus: 0 modules that compiled cleanly on
+        eab66646 (the 2 self_contained_data_758 rows were already skipping the
+        same function).
+        RESIDUAL, measured and NOT fixed (found probing R1, present on
+        eab66646 and on this branch alike): on the split layout a CONSTANT
+        one past a data segment's end is relocated by the region holding that
+        address, not by the segment it ends, so `p = 0x2000; while p !=
+        0x2008` over an 8-byte segment at 0x2000 (stack pointer 0x1000, next
+        segment at 0x3000) sums 0x1043 where wasmtime returns 0x3. The
+        constant is equally the start of what follows (a .bss object right
+        after .data), so no rule resolves it; the decision does not see it
+        (it is compared, not dereferenced). Stated as a known gap in R1 of
+        docs/embedder-abi-relocatable-arm.md; it needs a maintainer and gale
+        decision (refusing every such constant would likely refuse ordinary
+        Rust images). The delta-execution figures above were measured on an
+        earlier branch binary; they still hold because those modules'
+        census hashes are identical between that binary and this head.
       done-when: >
         manual:2027-03-31 memory-0 address provenance under
         --native-pointer-abi is decided in one place and checked by

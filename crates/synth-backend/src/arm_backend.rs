@@ -389,6 +389,50 @@ fn remap_nonzero_consts(
         .collect()
 }
 
+/// RQ-91-NPAMODEL: re-key `i32.const` op indices across the
+/// `memory.grow(0)` fold, which replaces `i32.const 0; memory.grow` by
+/// `memory.size` and nothing else. Walks both streams in lockstep; a marked
+/// op that does not survive as the SAME constant is an internal error.
+fn remap_consts_across_grow_fold(
+    old: &[WasmOp],
+    new: &[WasmOp],
+    idx: &[usize],
+) -> Result<Vec<usize>, String> {
+    if idx.is_empty() || old.len() == new.len() {
+        return Ok(idx.to_vec());
+    }
+    let mut map: std::collections::HashMap<usize, usize> = Default::default();
+    let (mut i, mut j) = (0, 0);
+    while i < old.len() && j < new.len() {
+        if old[i] == new[j] {
+            map.insert(i, j);
+            i += 1;
+            j += 1;
+        } else if matches!(old[i], WasmOp::I32Const(0))
+            && matches!(old.get(i + 1), Some(WasmOp::MemoryGrow(_)))
+        {
+            i += 2;
+            j += 1;
+        } else {
+            break;
+        }
+    }
+    idx.iter()
+        .map(|i| {
+            map.get(i)
+                .copied()
+                .filter(|&j| old[*i] == new[j])
+                .ok_or_else(|| {
+                    format!(
+                        "RQ-91-NPAMODEL: native-pointer relocated-constant mark at op {i} does \
+                         not survive the memory.grow(0) fold — refusing to key a rewrite to the \
+                         wrong op"
+                    )
+                })
+        })
+        .collect()
+}
+
 /// #509: does the op stream contain a `br`/`br_if`/`br_table` that CARRIES a
 /// value — i.e. one targeting a result-typed block/if (forward edge with
 /// results > 0) or a parameterized loop header (backward edge with loop
@@ -579,6 +623,151 @@ pub(crate) fn literal_access_width(
     None
 }
 
+/// RQ-91-NPAMODEL: the `--native-pointer-abi` EMITTED-STREAM validator.
+///
+/// The module-level provenance decision
+/// (`synth_core::npa_multi_memory::Provenance::memory0_plan`) says which
+/// constants are wasm statics; this checks the instructions the backend is
+/// about to encode, independently of how the selector got there. Under the
+/// ABI R11 is 0, so a memory access dereferences its address register as a
+/// NATIVE pointer: an address that is a COMPILE-TIME CONSTANT inside memory
+/// 0's static range `[lo, hi)` was baked raw — the wasm offset of a static,
+/// not its native address `__synth_wasm_data + C`. That is the class every
+/// per-shape guard before v0.91 chased (#739, #1568, #1604), and it is
+/// refused here as `npa-addr-validate`, whatever lowering produced it.
+///
+/// The walk tracks, per core register, a known constant (`MOVW` / `MOVT` /
+/// `MVN` / `MOV #imm`, `ADD`/`SUB` of constants, R11 = 0) or a relocated
+/// static (`LdrSym __synth_wasm_data + A`, plus constants). Any other
+/// definition, a label (a join), a branch or a call forgets everything, so
+/// the check sees straight-line constant addressing only — a constant
+/// carried through a frame slot or across a branch is outside it (and is
+/// the provenance decision's to get right). `lo` is the lowest static
+/// (`min(stack-pointer init, lowest data segment)`, or 0 without a stack
+/// pointer); anything at or above `hi` is native (MMIO, a host buffer).
+pub(crate) fn npa_stream_validate(
+    instrs: &[synth_synthesis::ArmInstruction],
+    lo: u64,
+    hi: u64,
+) -> Result<(), String> {
+    use synth_synthesis::{Operand2, Reg};
+    #[derive(Clone, Copy, PartialEq)]
+    enum V {
+        Unknown,
+        Const(u32),
+        Rel,
+    }
+    fn ix(r: Reg) -> usize {
+        r as usize
+    }
+    let reset = |s: &mut [V; 16]| {
+        *s = [V::Unknown; 16];
+        s[ix(Reg::R11)] = V::Const(0);
+    };
+    let mut s = [V::Unknown; 16];
+    reset(&mut s);
+    let op2 = |s: &[V; 16], o: &Operand2| match o {
+        Operand2::Imm(i) => V::Const(*i as u32),
+        Operand2::Reg(r) => s[ix(*r)],
+        _ => V::Unknown,
+    };
+    let comb = |a: V, b: V, sub: bool| match (a, b) {
+        (V::Const(x), V::Const(y)) => V::Const(if sub {
+            x.wrapping_sub(y)
+        } else {
+            x.wrapping_add(y)
+        }),
+        (V::Rel, V::Const(_)) | (V::Const(_), V::Rel) if !sub => V::Rel,
+        (V::Rel, V::Const(_)) => V::Rel,
+        _ => V::Unknown,
+    };
+    for (i, ins) in instrs.iter().enumerate() {
+        use ArmOp::*;
+        let addr = match &ins.op {
+            Ldr { addr, .. }
+            | Str { addr, .. }
+            | Ldrb { addr, .. }
+            | Strb { addr, .. }
+            | Ldrh { addr, .. }
+            | Strh { addr, .. }
+            | Ldrsb { addr, .. }
+            | Ldrsh { addr, .. }
+            | I64Ldr { addr, .. }
+            | I64Str { addr, .. }
+            | F32Load { addr, .. }
+            | F32Store { addr, .. }
+            | F64Load { addr, .. }
+            | F64Store { addr, .. }
+            | MveLoad { addr, .. }
+            | MveStore { addr, .. } => Some(addr),
+            _ => None,
+        };
+        if let Some(a) = addr {
+            let base = s[ix(a.base)];
+            let off = a.offset_reg.map_or(V::Const(0), |r| s[ix(r)]);
+            if let V::Const(ea) = comb(comb(base, off, false), V::Const(a.offset as u32), false)
+                && u64::from(ea) >= lo
+                && u64::from(ea) < hi
+            {
+                return Err(format!(
+                    "npa-addr-validate (#739): --native-pointer-abi emitted-stream validation \
+                     FAILED — instruction {i} ({:?}, wasm op {:?}) dereferences the constant \
+                     address 0x{ea:x}, which lies in memory 0's static range [0x{lo:x}, \
+                     0x{hi:x}) but carries no relocation. Under the native-pointer ABI R11 is \
+                     0, so the access would read or write absolute 0x{ea:x} instead of the \
+                     static at __synth_wasm_data + 0x{ea:x}. This is a compiler defect; the \
+                     compile is refused rather than shipped.",
+                    ins.op, ins.source_line
+                ));
+            }
+        }
+        let def = |s: &mut [V; 16], r: Reg, v: V| s[ix(r)] = v;
+        match &ins.op {
+            Label { .. } => reset(&mut s),
+            Movw { rd, imm16 } => def(&mut s, *rd, V::Const(u32::from(*imm16))),
+            Movt { rd, imm16 } => {
+                let v = match s[ix(*rd)] {
+                    V::Const(x) => V::Const((x & 0xFFFF) | (u32::from(*imm16) << 16)),
+                    _ => V::Unknown,
+                };
+                def(&mut s, *rd, v)
+            }
+            Mov { rd, op2: o } => {
+                let v = op2(&s, o);
+                def(&mut s, *rd, v)
+            }
+            Mvn { rd, op2: o } => {
+                let v = match op2(&s, o) {
+                    V::Const(x) => V::Const(!x),
+                    _ => V::Unknown,
+                };
+                def(&mut s, *rd, v)
+            }
+            Add { rd, rn, op2: o } | Sub { rd, rn, op2: o } => {
+                let v = comb(s[ix(*rn)], op2(&s, o), matches!(ins.op, Sub { .. }));
+                def(&mut s, *rd, v)
+            }
+            LdrSym { rd, symbol, .. } => {
+                let v = if symbol == "__synth_wasm_data" {
+                    V::Rel
+                } else {
+                    V::Unknown
+                };
+                def(&mut s, *rd, v)
+            }
+            other => match synth_synthesis::liveness::reg_effect(other) {
+                Some(eff) => {
+                    for r in eff.defs {
+                        def(&mut s, r, V::Unknown);
+                    }
+                }
+                None => reset(&mut s),
+            },
+        }
+    }
+    Ok(())
+}
+
 /// RQ-72-ISLANDS (#345, cpetig via #1331): emit ONE constant island — the
 /// pooled words, optionally preceded by a branch over them — and patch each
 /// pending LDR's `imm12` in place.
@@ -758,6 +947,8 @@ fn compile_wasm_to_arm(
     // internal error, never a silently mis-keyed rewrite.
     let npa_raw_consts =
         remap_nonzero_consts(wasm_ops, &rewritten, &config.current_func_npa_raw_consts)?;
+    let npa_reloc_consts =
+        remap_consts_across_grow_fold(wasm_ops, &rewritten, &config.current_func_npa_reloc_consts)?;
     let wasm_ops: &[WasmOp] = &rewritten;
 
     // #457: `count_params` INFERS the param count from access patterns (a local
@@ -956,6 +1147,8 @@ fn compile_wasm_to_arm(
         selector.set_declared_float_locals(config.current_func_declared_float_locals.clone());
         // #1145: memory-k offsets inside memory 0's NPA window stay raw.
         selector.set_npa_raw_consts(npa_raw_consts.clone());
+        // RQ-91-NPAMODEL: constant statics below the stack-pointer window.
+        selector.set_npa_reloc_consts(npa_reloc_consts.clone());
         // Stack-pointer promotion is meaningful only under the native-pointer ABI;
         // gating here keeps every non-native compile (all frozen fixtures) on the
         // legacy R9 globals-table path, bit-identical.
@@ -2678,6 +2871,29 @@ fn finish_allocated_stream(
     // instructions on single-precision targets, etc.
     validate_instructions(&arm_instrs, config.target.fpu, &config.target.triple)
         .map_err(|e| format!("ISA validation failed: {}", e))?;
+
+    // RQ-91-NPAMODEL: the emitted stream must not dereference a wasm static
+    // address as a raw native one (R11 = 0 under the native-pointer ABI).
+    if config.native_pointer_abi && config.relocatable {
+        let lowest = config
+            .npa_data_regions
+            .iter()
+            .filter(|&&(_, len)| len > 0)
+            .map(|&(off, _)| off)
+            .min();
+        let data_end = config
+            .npa_data_regions
+            .iter()
+            .map(|&(off, len)| u64::from(off) + u64::from(len))
+            .max()
+            .unwrap_or(0);
+        let lo = match config.stack_pointer_global.filter(|&(_, v)| v > 0) {
+            Some((_, sp)) => lowest.map_or(sp as u32, |l| l.min(sp as u32)),
+            None => 0,
+        };
+        let hi = u64::from(config.linear_memory_bytes).max(data_end);
+        npa_stream_validate(&arm_instrs, u64::from(lo), hi)?;
+    }
 
     // VCR-RA-003 (epic #242): UNCONDITIONAL per-compilation register-allocation
     // validation. The register allocator is the last major unverified codegen

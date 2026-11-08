@@ -17,8 +17,10 @@ instead of using a register (`crates/synth-backend/src/arm_backend.rs:887-892`,
 routing at `:991`; `CompileConfig::relocatable` doc,
 `crates/synth-core/src/backend.rs:124-133`). Everything below describes what
 that selector and the ARM encoders actually emit. `--native-pointer-abi`
-changes the geometry (linmem base 0, statics via `__synth_wasm_data`) and is
-out of scope here.
+changes the geometry (linmem base 0, statics via `__synth_wasm_data`); its
+geometry is otherwise out of scope here, but the rules that decide which
+memory-0 values are wasm statics are an embedder contract and are stated in
+[`--native-pointer-abi`: memory-0 address provenance](#--native-pointer-abi-memory-0-address-provenance-rq-91-npamodel-v091).
 
 ## The register contract
 
@@ -512,9 +514,11 @@ Still refused, loudly (the function is skipped and the module fails via
 - `--safety-bounds mask` on any memory-k access: mask wraps an address with
   `AND size-1`, which needs a power-of-two size, and `__synth_mem_size_k`
   need not be one (`(pagesize 1)`).
-- under `--native-pointer-abi`, `software` on a `memory.copy` with a memory-0
-  side: memory 0's pointers are native there, and R10 bounds no native
-  pointer.
+- under `--native-pointer-abi`, `software` or `mask` on a module that touches
+  memory 0 at all (v0.91, #1661): memory 0's pointers are native there, and
+  R10 bounds no native pointer. This one is a MODULE-level refusal
+  (`npa-software-bounds`), not a skipped function; a module that touches only
+  memory k is accepted.
 
 The default `none` emits no memory-k guard (byte-identical to before), and
 `mpu` + `--embedder-mpu` is byte-identical to `none`: an out-of-bounds fill or
@@ -626,6 +630,96 @@ register-contract check already names as unseeable: whether the boot code's
 whether region 0 matches the R11/R10 values boot establishes. Those are
 execution properties — the two-tenant fault criterion on Renode-M4/silicon is
 their gate, not a disassembly scan.
+
+## `--native-pointer-abi`: memory-0 address provenance (RQ-91-NPAMODEL, v0.91)
+
+Under `--native-pointer-abi` R11 is 0 and every memory-0 address is a NATIVE
+pointer. A wasm static at offset `C` is reached as `__synth_wasm_data + C`
+(retargeted to `__synth_wasm_seg_K` on the split layout). Which values are
+wasm statics is decided ONCE per module by the provenance pass
+(`synth_core::npa_multi_memory::Provenance::memory0_plan`), and the emitted
+instruction stream is checked against the same rule by the ARM backend
+(`npa_stream_validate`: a compile-time-constant address inside memory 0's
+static range that carries no relocation is a compiler defect, refused as
+`npa-addr-validate`). These are the rules; each is a promise one side makes.
+
+**What synth decides (category (a)).**
+- With a stack-pointer global, a constant in `[sp_init, memory-0 size)` is a
+  pointer and is relocated wherever it appears; a run-time value added to it
+  is an index.
+- A constant address computed only from constants — through locals, `select`,
+  `i32.add` / `i32.sub` — is a static and is relocated at its definition (the
+  larger term of an add, the minuend of a sub). This includes statics BELOW
+  the stack-pointer init (a toolchain that places data under the stack) and
+  the i64 / f32 / v128 / bulk arms.
+- Refused for the whole module (non-zero exit, no object, NOT waived by
+  `--allow-skipped-exports`), each with its own diagnostic name:
+  - `npa-data-pointer (#1672)` — a data-segment WORD holding a wasm address in
+    the static range may be loaded and then dereferenced as the pointer.
+    Initialised data ships verbatim, so the word is a wasm offset, not a
+    native address. The diagnostic names the dereferencing function, the
+    load site and the word's segment offset. A word only loaded (returned,
+    compared) is not refused, and a loaded value used as an INDEX added to a
+    static (`HEAP + OFF`) is not refused.
+  - `npa-dynamic-static-offset (#1568)` — with a memory-0 data segment and no
+    stack-pointer global (or below the stack-pointer init), a constant or
+    memarg offset in the static region beside a run-time value.
+  - `npa-static-observed (#1568)` — a static constant below the
+    stack-pointer window that is also consumed as a scalar (a comparison, a
+    branch condition, arithmetic other than add/sub, or a value handed to the
+    host).
+  - `npa-static-unrelocatable (#1568)` — a constant static address no
+    constant of which can carry the relocation, a local's implicit zero
+    dereferenced, or a static constant that reaches an address only through
+    memory or a global.
+  - `npa-region-straddle (#1604)` — on the split layout, a constant access
+    whose bytes span two regions, a relocated constant naming another region
+    than the bytes accessed, or a bulk op with a constant destination and a
+    run-time length.
+  - `npa-double-relocation (#1580)` — a self-relocated memarg offset added to
+    an address that already carries a relocated static.
+  - `npa-software-bounds (#1661)` — `--safety-bounds software|mask` with any
+    memory-0 access.
+
+**What you promise (category (b)) — R1-R3′.**
+- **R1 (pointer arithmetic stays in its object).** A static pointer plus a
+  RUN-TIME delta stays inside the object the pointer names: within the
+  CLOSED range `[base, base + size]`, one-past-the-end included (slice
+  iterators compute `end = base + len`). synth checks the bytes only where the
+  delta is a constant; across the split layout an access past the object can
+  land in packing padding or another segment. `wrapping_add` and arithmetic
+  through integer casts fall outside this guarantee.
+  **KNOWN GAP in the one-past-the-end half (measured, v0.91, not fixed):** on
+  the split layout (every data segment at or above the stack-pointer init) a
+  CONSTANT that names one past a data segment's end is relocated by the
+  region that contains that address — the zero reservation, or whichever
+  segment starts there — not by the segment it ends. A pointer walked from the
+  segment's start is then never equal to it: `p = 0x2000; while p != 0x2008`
+  over an 8-byte segment at 0x2000 (stack pointer 0x1000, next segment at
+  0x3000) sums 0x1043 where wasmtime returns 0x3, identically on v0.90.0 and
+  v0.91. It cannot be resolved by rule: such a constant is equally the start
+  of whatever follows (a `.bss` object placed right after `.data`). Until it
+  is decided (RQ-91-NPAMODEL, residual), an end pointer that is a constant
+  equal to a data segment's end is safe only when the contiguous one-image
+  layout applies (a segment below the stack-pointer init) or the following
+  segment is declared next and the segment's length is a multiple of 4.
+- **R2 (no data, no stack pointer: run-time values are native).** In a module
+  with no memory-0 data segment and no stack-pointer global, there is no
+  static region: a run-time value that reaches an address is a native pointer,
+  and a constant added to it is an offset (the `MMIO_BASE + reg` shape of a
+  peripheral driver). The ambiguity refusal above applies only to modules
+  that HAVE a memory-0 data segment.
+- **R3′ (host pointers into the statics were handed out first).** A pointer
+  the host passes into the module's statics is one the module itself produced
+  earlier — a realloc result (`cabi_realloc` returning `HEAP + OFF`), an
+  exported address, a buffer handed out and received back. It is therefore
+  already native. The provenance pass assumes a host pointer may point into
+  every region whose address left the module through an export result or an
+  import argument, and no other.
+
+Pinned executable: `scripts/repro/npa_model_differential.py` (one row per
+shape: executed against wasmtime, or refused with its named diagnostic; red on
+eab66646), plus the five earlier native-pointer oracles.
 
 ## What is INCIDENTAL — observed in some outputs, guaranteed by nothing
 

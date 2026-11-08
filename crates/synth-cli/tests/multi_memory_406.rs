@@ -574,7 +574,8 @@ fn reads_size_symbol(bytes: &[u8], k: u32) -> bool {
 /// #1619: a multi-memory bulk op under `--safety-bounds software` is
 /// GUARDED — memory k against `__synth_mem_size_k`, memory 0 against R10 —
 /// instead of the old loud memory-k refusal. Under the native-pointer ABI a
-/// memory-0 side is refused (R10 bounds no native pointer), and `mask` is
+/// module touching memory 0 is refused for the whole module (R10 bounds no
+/// native pointer — `npa-software-bounds`, #1661, RQ-91-NPAMODEL), and `mask` is
 /// refused (it wraps with `AND size-1`; memory k's size need not be 2^n).
 /// Trap-before-write is scripts/repro/memk_bulk_oob_1619_differential.py's job.
 #[test]
@@ -597,10 +598,7 @@ fn cross_memory_copy_software_bounds_guarded_1619() {
     );
     assert_refused(
         &out,
-        &[
-            "memory.copy with a memory 0 side under --native-pointer-abi",
-            "#1619",
-        ],
+        &["npa-software-bounds (#1661)", "function 'xcopy'"],
         "software bounds on a memory-0 side under the native-pointer ABI",
     );
     let out = compile(&f, &[&sw[..], &["mask"]].concat());
