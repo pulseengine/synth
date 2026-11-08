@@ -205,6 +205,12 @@ jobs:
           # agreed on every file it parses, and the verdict line printed.
           grep -qE '^  \[cortex-m4\] executed [1-9][0-9]{3,} = ' /tmp/specexec.log
           grep -qE '^  \[cortex-m7dp\] executed [1-9][0-9]{3,} = ' /tmp/specexec.log
+          # RQ-91-SPECDRIFT: the suite-drift check graded directives on both
+          # legs (a literal wasmtime disagrees with, with no declined action
+          # before it, is `fail:literal-vs-reference` and red), and the
+          # corpus is the pinned submodule commit.
+          test "$(grep -cE '^     suite drift: [1-9][0-9]{3,} executed directives held to wasmtime' /tmp/specexec.log)" = 2
+          grep -qE '^  suite commit: gitlink [0-9a-f]{40}, pinned [0-9a-f]{40}$' /tmp/specexec.log
           grep -qE '^  second parser \(synth-test stats\): 25[0-9] files agree, 0 disagree' /tmp/specexec.log
           grep -qE '^#1636 EXECUTED=[1-9][0-9]{4,} directives across 2 legs' /tmp/specexec.log
           grep -q '^RESULT: PASS' /tmp/specexec.log

@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-SPECDRIFT
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "The spec-execution ratchet reds on a corrupted .wast expectation instead of filing it as not representable"
     description: >
         Carried from the v0.90 cold review (N3, widened in round 2).
@@ -48,8 +48,38 @@ artifacts:
       req-type: process
       priority: should
       issue: "#1636"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
+      landed: "PR #1695 - #1636 - DELIVERED, a gate-potency fix to the required spec-execution ratchet, branch v091-specdrift. The refuting command was RUN FIRST on main 617e440b and the blind spot was LIVE for all three round-2 shapes. In scripts/repro/spec_exec_1636_differential.py, `notrep:state-skew` is legal only after a declined action in the same module, the one cause the outcome exists for. Every Decl is raised before wasmtime runs the action, so before the first one wasmtime's state is the script's state. Any other literal/wasmtime disagreement is the new `fail:literal-vs-reference`, which counts as executed and goes red through the existing KNOWN ratchet as a NEW FAILURE. On the default corpus the superproject gitlink for tests/spec-testsuite must equal the new SUITE_COMMIT (345367358f06). A per-leg `suite drift:` line reports the guarded and exposed counts, a guarded count of 0 on a leg that executed anything is red (NON-VACUITY), and spec-suite.yml greps both new lines. No synth byte changes, no KNOWN entry moves, and the emulation floor stays 49121."
+      verified-by: >
+        DELIVERED, execution-verified by paired controls on the debug synth
+        built from 617e440b (the branch changes no Rust).
+        Refuting command (the i32.wast slice of a 257-file copy), three
+        corruptions. (a) line 37 expects 3; (b) line 38 rewritten as
+        assert_trap "integer overflow"; (c) line 64 rewritten as
+        assert_return 0. BASE 617e440b: each is rc 0, RESULT PASS, 373
+        executed, state-skew=1 per leg, and the clean copy gives 374, 0
+        notrep. BRANCH: each is rc 1, 374 executed, 1
+        `fail:literal-vs-reference` per leg, and a NEW FAILURE on both
+        cortex-m4 and cortex-m7dp. The clean copy is rc 0, 374 executed.
+        Full pinned suite, branch against base: RESULT PASS, the per-directive
+        JSON ledger byte-identical, executed 11634 (cortex-m4) and 24042
+        (cortex-m7dp) on both, emulations 49121 = the declared floor. All
+        75 real-suite state-skews (39 + 36, in bulk, memory_init,
+        float_memory and float_exprs) follow a declined action and stay
+        notrep. Compiler-drift control: a synth mutant lowering i32.add as
+        Sub (optimizer_bridge.rs) reds the clean slice on base and branch
+        alike, 6 fail:wrong-value per leg. Mutants of the new check:
+        `skew_or_drift` always notrep makes all three corruptions rc 0 PASS
+        again. `state_behind` initialised True absorbs them as state-skew
+        and is red only through the guarded-0 NON-VACUITY line. Dropping the
+        guarded counter reds the clean slice with that line. A SUITE_COMMIT
+        of zeros reds the default corpus with SUITE COMMIT.
+        RESIDUAL, measured on the full suite: 2034 of 11967 graded
+        directives on cortex-m4 and 1870 of 24078 on cortex-m7dp come after
+        a declined action in their module, so a corruption there is still
+        absorbed as state-skew on that leg. A corruption in a directive no
+        leg grades is not checked at all.
       done-when: >
         manual:2027-03-31 each of the three corruption shapes round 2
         named reds the ratchet (or a check beside it in the same
