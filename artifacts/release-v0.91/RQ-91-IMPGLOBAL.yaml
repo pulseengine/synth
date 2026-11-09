@@ -1,0 +1,112 @@
+artifacts:
+  - id: RQ-91-IMPGLOBAL
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "An imported global no longer shifts every defined global's slot on ARM, and a read of an imported global refuses"
+    description: >
+        SILENT MISCOMPILE, found by the IMAGEBUILDER lane (RQ-91-IMAGEBUILDER)
+        while inventorying where each image builder places global
+        initialisers; filed as #1676. Imported globals take the LEADING wasm
+        global indices, so `global.get i` names import `i` when `i` is below
+        the import count. The ARM selector addresses the globals table in
+        that FULL index space (`global_slot_offset`, the sum of the widths of
+        globals `0..i`), but the producers laid it out by DEFINED index: the
+        `--relocatable --native-pointer-abi` `__synth_globals` slots
+        (`defined_index * 4`), the stack-pointer identification
+        (`identify_stack_pointer_global`, so the native-pointer rebase landed
+        on the IMPORT and the real stack pointer was read raw), the
+        self-contained Cortex-M R9 table (`globals_table_words`), and the
+        per-global width table every ARM path hands the selector (so a wide
+        global after an import was addressed at the wrong offset and width
+        on plain `--relocatable`, against the documented embedder contract).
+        An imported global's own value is supplied at instantiation and no
+        ARM output binds it, so its slot held whatever sat there. gale
+        checked its image (0 imported globals across 75 modules) and is not
+        affected; gale asked that a referenced imported global be a loud
+        refusal or fixed.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers: compile
+        `(module (import "env" "g" (global i32)) (memory 1) (data (i32.const
+        16) "\01") (global $d i32 (i32.const 42)) (global $e i32 (i32.const
+        99)) (func (export "getd") (result i32) global.get 1) (func (export
+        "gete") (result i32) global.get 2) (func (export "geti") (result i32)
+        global.get 0))` with `synth compile x.wat --target cortex-m3
+        --all-exports --relocatable --native-pointer-abi -o x.o`, link it
+        with the npa_const_addr_differential.py linker and call each export
+        against wasmtime with `g = 7`. Every value equal, or a refusal of
+        `geti`, refutes it.
+
+        MEASURED 2026-11-08 on main eab66646, synth 0.90.0 debug build:
+        LIVE. rc 0, no warning; getd = 0x63 (wasmtime 0x2a), gete = 0x0
+        (0x63), geti = 0x2a (0x7). With a stack-pointer global after one
+        import, `getsp` read `__synth_globals + 4` unrebased and `geti`
+        carried the `+ __synth_wasm_data` rebase. The self-contained
+        Cortex-M image read 99 for `$d` (42) and 0 for a defined global after
+        two imports.
+
+        CITATION: #1676 is where the matter was filed; the analysis is in
+        this record and its PR.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - native-pointer-abi
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1676"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 on every ARM path that lays out a globals table
+        (`--relocatable --native-pointer-abi`, the self-contained Cortex-M
+        image, plain `--relocatable` seeded per the embedder contract) a
+        defined global after one or more imported globals, and the
+        stack-pointer global, execute equal to wasmtime; a function that
+        reads or writes an imported global is refused with a named
+        diagnostic and an unreferenced import refuses nothing; red before
+        and green after, with a planted-mutant control per producer; and
+        what newly refuses and what changes bytes is counted per invocation
+        over the tracked .wat/.wasm files and the spec suite
+      landed: "PR #1680 (branch v091-impglobal) - #1676 - DELIVERED: a wrong-code fix. The refuting command was RUN FIRST on main eab66646 and the defect was LIVE (values above). Fix: the decoder records each imported global's slot width (DecodedModule::imported_global_slot_bytes); on ARM the per-global width table, the self-contained R9 table (globals_table_words, imported slots leading and zero), the native-pointer `__synth_globals` slots, the stack-pointer identification, the #707 stack-pointer alias set and the #1145 provenance input are all laid out in the FULL wasm index space; RV32 keeps the defined index its selector already subtracts. A function that reads or writes an imported global is refused on every ARM path, single-function included, with `IMPORTED-GLOBAL ... (RQ-91-IMPGLOBAL, #1676)`, as aarch64 already refuses in substrate.rs."
+      verified-by: >
+        DELIVERED, execution-verified. New wired oracle
+        scripts/repro/imported_global_slots_rq91_differential.py (ci.yml,
+        through oracle_run.py, `emulations >= 42`, 42 measured): defined
+        globals after one and two imports, a mutable set/get, an i64 global
+        after an import, and the stack-pointer read, on the hand-linked
+        `--relocatable --native-pointer-abi` object, the self-contained
+        Cortex-M image booted through its Reset_Handler, and plain
+        `--relocatable --embedder-global-init` with the harness seeding R9 as
+        docs/embedder-abi-relocatable-arm.md states, plus no-import controls
+        and a refusal and an unreferenced-import leg on each path. RED on main
+        eab66646: 14 of 32 compared values wrong (native-pointer 5,
+        self-contained 7, plain relocatable 2) and all 4 refusal legs
+        compiled the import read with exit 0. GREEN on the branch: 40 checks,
+        0 failures. Potency, each a planted source mutant rebuilt and run:
+        dropping the offset from the native-pointer slots reds 5 checks, from
+        the R9 table 7, from the width table 4, from the stack-pointer index
+        1, and disabling the refusal reds the 4 refusal legs. Unit tests
+        imported_globals_take_the_leading_slots_1676 and
+        referenced_imported_global_refuses_1676. REACH, per invocation: over
+        the 268 tracked .wat/.wasm files x 15 targets x every leg of the
+        IMAGEBUILDER census (70,497 invocations, every export on the
+        --func-name legs) the branch is byte-identical to eab66646 with 0
+        newly refused (no tracked module imports a global). Over the 32 spec
+        suite modules that import a global, x 8 ARM flag sets (256
+        invocations): 22 newly refuse, all with IMPORTED-GLOBAL (5 modules:
+        global.wast, imports.wast, 3 x instance.wast), 9 change bytes (3
+        modules x the 3 self-contained Cortex-M targets; the plain and
+        native-pointer relocatable objects are byte-identical), and every
+        changed image was executed: linking.wast's `get` reads 0 on
+        eab66646 and 43 (wasmtime 43) on the branch; global.wast module 18
+        reads 0 for its data at non-constant offsets on BOTH binaries (the
+        non-constant data-offset drop, carried by RQ-91-IMAGEBUILDER, not
+        this record); elem.wast module 15's only export is skipped on both.
+        The spec-exec oracle declines every importing module before
+        compiling, so it cannot move.

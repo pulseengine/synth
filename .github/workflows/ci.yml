@@ -3082,6 +3082,16 @@ jobs:
       # wasmtime. RED at c20d37b2: the positive control compiles, exit 0.
       - name: Run native-pointer constant-address oracle (cortex-m3/m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_const_addr_differential.py
+      # RQ-91-IMPGLOBAL (#1676): an imported global took a leading slot in the
+      # selector's index space but not in the table producers, so every
+      # defined global after one read its neighbour's slot (and, under
+      # --native-pointer-abi, the stack-pointer rebase landed on the import).
+      # Executed against wasmtime on the native-pointer, self-contained and
+      # plain-relocatable paths; a function that reads an imported global must
+      # refuse (IMPORTED-GLOBAL). RED at eab66646: 14 of 32 values wrong, 4
+      # refusal legs silently compiled.
+      - name: Run imported-global slot oracle (#1676, npa / self-contained / relocatable)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/imported_global_slots_rq91_differential.py
       # #1574 / #1568: the v0.88 NPACONST before/after figures, re-derived from
       # a committed generator. 162 constant-address modules (19 access
       # families; shapes le_fff/gt_fff/gt_ffff/off_gt_fff in the nosp and sp

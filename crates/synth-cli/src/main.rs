@@ -2091,6 +2091,8 @@ fn compile_command(
     // #851: the aarch64 single-function path declines on them too (it ships no
     // data at all), including the non-const-offset segment decode legacy-drops.
     let mut single_func_has_data_segments = false;
+    // RQ-91-IMPGLOBAL: how many globals the single-function module imports.
+    let mut single_func_imported_globals: u32 = 0;
     let mut single_func_nonconst_data: Option<String> = None;
     // #865: the module's declared minimum linear-memory size (memory 0, bytes).
     // The single-function path previously never threaded memory context into
@@ -2169,16 +2171,19 @@ fn compile_command(
             type_ret_i64 = module.type_ret_i64;
             // #643: capture the declared global slot widths (indexed by
             // global index; gaps default to the 4-byte legacy width).
-            for g in &module.globals {
-                let i = g.index as usize;
-                if global_widths.len() <= i {
-                    global_widths.resize(i + 1, 4);
-                }
-                global_widths[i] = g.slot_bytes;
-            }
+            // RQ-91-IMPGLOBAL: on ARM the index is the FULL wasm global
+            // index (imports first), the space the selector addresses.
+            let arm_imported_widths: &[u32] = if backend_name == "arm" {
+                &module.imported_global_slot_bytes
+            } else {
+                &[]
+            };
+            global_widths = global_slot_widths(arm_imported_widths, &module.globals);
             // #649: capture the initial globals-table contents so the
             // self-contained image's startup can materialize them.
-            startup_globals_words = globals_table_words(&module.globals);
+            startup_globals_words =
+                globals_table_words(&module.imported_global_slot_bytes, &module.globals);
+            single_func_imported_globals = module.imported_global_slot_bytes.len() as u32;
             // #758: the single-function builder (`build_cortex_m_elf`) has no
             // data-segment plumbing — a data-carrying module compiled through
             // this path would silently read zeros. Record so the cortex-m call
@@ -2375,6 +2380,15 @@ fn compile_command(
     }
 
     info!("WASM operations: {:?}", wasm_ops);
+
+    // RQ-91-IMPGLOBAL: an imported global's value arrives at instantiation;
+    // no ARM output binds it, so a function that touches one is refused.
+    if backend_name == "arm" {
+        refuse_referenced_imported_global(
+            std::iter::once((func_name.as_str(), wasm_ops.as_slice())),
+            single_func_imported_globals,
+        )?;
+    }
 
     // Build compile config from CLI flags
     let config = CompileConfig {
@@ -3409,7 +3423,9 @@ fn npa_multi_memory_plan(
         .globals
         .iter()
         .map(|g| NpaGlobal {
-            index: g.index,
+            // RQ-91-IMPGLOBAL: the FULL wasm index (imports first) — the
+            // provenance pass keys globals by the op stream's index.
+            index: module.imported_global_slot_bytes.len() as u32 + g.index,
             mutable: g.mutable,
             init_i32: match g.init {
                 Some(GlobalInit::I32(v)) => Some(v),
@@ -3448,18 +3464,76 @@ fn npa_multi_memory_plan(
     Ok(out)
 }
 
-fn identify_stack_pointer_global(globals: &[WasmGlobal], linmem_bytes: u32) -> Option<(u32, i32)> {
+/// RQ-91-IMPGLOBAL: the returned index is the FULL wasm global index
+/// (`num_imported_globals` + the defined index) — the space every
+/// `global.get`/`global.set` names and the selector compares against.
+fn identify_stack_pointer_global(
+    globals: &[WasmGlobal],
+    num_imported_globals: u32,
+    linmem_bytes: u32,
+) -> Option<(u32, i32)> {
     globals
         .iter()
         .filter(|g| g.mutable)
         // #649: only an `i32.const` init can be a wasm stack pointer (the SP is
         // an i32 address); i64 inits are ordinary data globals, never promoted.
         .filter_map(|g| match g.init {
-            Some(GlobalInit::I32(v)) => Some((g.index, v)),
+            Some(GlobalInit::I32(v)) => Some((num_imported_globals + g.index, v)),
             _ => None,
         })
         .filter(|&(_, v)| v > 0 && (v as u32) <= linmem_bytes)
         .max_by_key(|&(_, v)| v)
+}
+
+/// RQ-91-IMPGLOBAL: per-global slot widths (#643) indexed by global index —
+/// the FULL wasm index space when `imported_slot_bytes` is supplied
+/// (imported globals first, in declaration order), else the DEFINED index.
+fn global_slot_widths(imported_slot_bytes: &[u32], globals: &[WasmGlobal]) -> Vec<u32> {
+    let base = imported_slot_bytes.len();
+    let mut widths = imported_slot_bytes.to_vec();
+    for g in globals {
+        let i = base + g.index as usize;
+        if widths.len() <= i {
+            widths.resize(i + 1, 4);
+        }
+        widths[i] = g.slot_bytes;
+    }
+    widths
+}
+
+/// RQ-91-IMPGLOBAL: refuse a function that reads or writes an IMPORTED
+/// global (`global.get`/`global.set` index below `num_imported_globals`).
+/// Its value is supplied by the host at instantiation, and no ARM output
+/// binds it: the self-contained image has no instantiation step, and the
+/// relocatable contracts assign the embedder only the table base and the
+/// DEFINED globals' initializers. Before this refusal every such access read
+/// a slot belonging to some other global (aarch64 refuses the same shape,
+/// `substrate.rs`; RV32 declines it in its selector).
+fn refuse_referenced_imported_global<'a>(
+    funcs: impl Iterator<Item = (&'a str, &'a [WasmOp])>,
+    num_imported_globals: u32,
+) -> Result<()> {
+    if num_imported_globals == 0 {
+        return Ok(());
+    }
+    for (name, ops) in funcs {
+        let hit = ops.iter().find_map(|op| match op {
+            WasmOp::GlobalGet(i) | WasmOp::GlobalSet(i) if *i < num_imported_globals => Some(*i),
+            _ => None,
+        });
+        if let Some(i) = hit {
+            anyhow::bail!(
+                "IMPORTED-GLOBAL: function '{name}' reads or writes imported global \
+                 {i}, whose value the host supplies at instantiation — no ARM output \
+                 binds an imported global (the self-contained image has no \
+                 instantiation step; the relocatable contracts give the embedder \
+                 only the table base and the defined globals' initializers), so the \
+                 access would read a slot that holds no value; refusing \
+                 (RQ-91-IMPGLOBAL, #1676)"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// #649: the initial CONTENTS of the R9 globals table for the self-contained
@@ -3469,8 +3543,15 @@ fn identify_stack_pointer_global(globals: &[WasmGlobal], linmem_bytes: u32) -> O
 /// shifts accordingly). Slots whose init was not captured (f32/f64 — the
 /// GI-FPU-001 loud-skip lane — or a non-const init expr) stay ZERO: their
 /// access-side handling is responsible, and we never fabricate a value.
-fn globals_table_words(globals: &[WasmGlobal]) -> Vec<u32> {
-    let mut words: Vec<u32> = Vec::new();
+fn globals_table_words(imported_slot_bytes: &[u32], globals: &[WasmGlobal]) -> Vec<u32> {
+    // RQ-91-IMPGLOBAL: imported globals take the LEADING slots (the selector
+    // addresses `global.get i` at the sum of the widths of globals `0..i` in
+    // the full index space). Their words stay zero: a function that touches
+    // an imported global is refused, so these only position the defined ones.
+    let mut words: Vec<u32> = imported_slot_bytes
+        .iter()
+        .flat_map(|&w| std::iter::repeat_n(0u32, (w.max(4) / 4) as usize))
+        .collect();
     for g in globals {
         let n = (g.slot_bytes.max(4) / 4) as usize;
         let base = words.len();
@@ -4325,6 +4406,9 @@ fn compile_all_exports(
     // Reset_Handler is the instantiation step and BLs it, #1046 follow-on);
     // every other path keeps the #1046 refusal. Set inside the decode below.
     let mut accepted_start_function: Option<u32> = None;
+    // RQ-91-IMPGLOBAL: slot widths of the module's imported globals (set by
+    // the single-module decode below; empty on the .wast merge).
+    let mut imported_global_widths: Vec<u32> = Vec::new();
 
     // Decode module(s) — for multi-module WAST files we merge exports across
     // all modules (see #1225 above for what the merge cannot represent).
@@ -4809,23 +4893,29 @@ fn compile_all_exports(
         // pointer per domain, and the larger init may belong to memory 1).
         let sp_global = match &npa_mm_plan {
             Some(Ok(plan)) => plan.stack_pointer_global,
-            _ => identify_stack_pointer_global(&module.globals, linmem_bytes),
+            _ => identify_stack_pointer_global(
+                &module.globals,
+                module.imported_global_slot_bytes.len() as u32,
+                linmem_bytes,
+            ),
         };
         // #643: per-global slot widths (4 = i32/f32, 8 = i64/f64, 16 = v128),
         // indexed by global index — the selector lays the R9 globals table out
         // by summing these, giving i64 globals room for both words and
         // shifting every later global's offset accordingly.
-        let global_widths: Vec<u32> = {
-            let mut widths = Vec::new();
-            for g in &module.globals {
-                let i = g.index as usize;
-                if widths.len() <= i {
-                    widths.resize(i + 1, 4);
-                }
-                widths[i] = g.slot_bytes;
-            }
-            widths
-        };
+        // RQ-91-IMPGLOBAL: on ARM, indexed by the FULL wasm global index
+        // (imported globals' widths first) — the space the ARM selector's
+        // `global_slot_offset` sums over. RV32 keeps the DEFINED index (its
+        // selector subtracts `num_imported_globals`, CompileConfig docs).
+        let global_widths: Vec<u32> = global_slot_widths(
+            if backend.name() == "arm" {
+                &module.imported_global_slot_bytes
+            } else {
+                &[]
+            },
+            &module.globals,
+        );
+        imported_global_widths = module.imported_global_slot_bytes.clone();
         // #643: the native-pointer ABI materializes `__synth_globals` as
         // 4-byte i32 slots (`idx * 4`); a wide (i64/f64/v128) global has no
         // consistent slot there. Refuse up front — an honest error beats the
@@ -5206,6 +5296,28 @@ fn compile_all_exports(
         .iter()
         .filter(|i| matches!(i.kind, synth_core::ImportKind::Global))
         .count() as u32;
+    // RQ-91-IMPGLOBAL: no ARM output binds an imported global's value (the
+    // self-contained image has no instantiation step; the relocatable
+    // contracts assign the embedder only defined-global initializers), so a
+    // compiled function that touches one is refused. Unreferenced imported
+    // globals still occupy their leading slots and refuse nothing.
+    if backend.name() == "arm" {
+        let names: Vec<String> = all_exports
+            .iter()
+            .map(|f| {
+                f.export_name
+                    .clone()
+                    .unwrap_or_else(|| format!("func_{}", f.index))
+            })
+            .collect();
+        refuse_referenced_imported_global(
+            names
+                .iter()
+                .zip(all_exports.iter())
+                .map(|(n, f)| (n.as_str(), f.ops.as_slice())),
+            num_imported_globals,
+        )?;
+    }
     let all_global_mutable: Vec<bool> = {
         let mut m = Vec::new();
         for g in &all_globals {
@@ -6650,11 +6762,13 @@ fn compile_all_exports(
                     // REFUSED up front (#643 bail above), so only `i32.const`
                     // inits can land here. f32 slots (captured as `None` —
                     // the GI-FPU-001 loud-skip lane) stay zero.
+                    // RQ-91-IMPGLOBAL: slot `num_imported_globals + index`
+                    // — the full wasm index the selector addresses.
                     globals: all_globals
                         .iter()
                         .map(|g| {
                             (
-                                g.index,
+                                num_imported_globals + g.index,
                                 match g.init {
                                     Some(GlobalInit::I32(v)) => v,
                                     _ => 0,
@@ -6678,7 +6792,7 @@ fn compile_all_exports(
                             .filter(|g| {
                                 g.mutable && matches!(g.init, Some(GlobalInit::I32(v)) if v == sp_v)
                             })
-                            .map(|g| g.index)
+                            .map(|g| num_imported_globals + g.index)
                             .collect(),
                         None => Vec::new(),
                     },
@@ -6725,7 +6839,7 @@ fn compile_all_exports(
             // Multi-memory never reaches here (refused off --relocatable).
             &memory0_decl.clone().into_iter().collect::<Vec<_>>(),
             target_spec,
-            &globals_table_words(&all_globals),
+            &globals_table_words(&imported_global_widths, &all_globals),
             stack_layout,
             // #758: active memory-0 data segments — the self-contained startup
             // now ships them in flash and copies ROM→RAM at reset. Empty ⇒ the
@@ -12669,10 +12783,71 @@ mod tests {
             },
         ];
         assert_eq!(
-            globals_table_words(&globals),
+            globals_table_words(&[], &globals),
             vec![0x9ABCDEF0, 0x12345678, 7, 0, 0]
         );
-        assert!(globals_table_words(&[]).is_empty());
+        assert!(globals_table_words(&[], &[]).is_empty());
+    }
+
+    /// RQ-91-IMPGLOBAL (#1676): imported globals take the LEADING slots, so
+    /// the defined globals sit after their widths — in the R9 table words,
+    /// in the per-global width table, and in the stack-pointer index.
+    #[test]
+    fn imported_globals_take_the_leading_slots_1676() {
+        let globals = vec![
+            WasmGlobal {
+                index: 0,
+                init: Some(GlobalInit::I32(42)),
+                mutable: true,
+                slot_bytes: 4,
+                float_or_v128: false,
+            },
+            WasmGlobal {
+                index: 1,
+                init: Some(GlobalInit::I64(0x1122_3344_5566_7788)),
+                mutable: false,
+                slot_bytes: 8,
+                float_or_v128: false,
+            },
+        ];
+        // one i32 import and one i64 import: 1 + 2 leading zero words
+        assert_eq!(
+            globals_table_words(&[4, 8], &globals),
+            vec![0, 0, 0, 42, 0x5566_7788, 0x1122_3344]
+        );
+        assert_eq!(global_slot_widths(&[4, 8], &globals), vec![4, 8, 4, 8]);
+        assert_eq!(global_slot_widths(&[], &globals), vec![4, 8]);
+        assert_eq!(
+            identify_stack_pointer_global(&globals, 2, 65536),
+            Some((2, 42))
+        );
+        assert_eq!(
+            identify_stack_pointer_global(&globals, 0, 65536),
+            Some((0, 42))
+        );
+    }
+
+    /// RQ-91-IMPGLOBAL (#1676): a read or write of an imported global refuses;
+    /// a function touching only defined globals, or a module with no import,
+    /// does not.
+    #[test]
+    fn referenced_imported_global_refuses_1676() {
+        let reads_import = [WasmOp::GlobalGet(0)];
+        let writes_import = [WasmOp::I32Const(1), WasmOp::GlobalSet(1)];
+        let reads_defined = [WasmOp::GlobalGet(2)];
+        let e = refuse_referenced_imported_global([("f", &reads_import[..])].into_iter(), 2)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("IMPORTED-GLOBAL") && e.contains("#1676"), "{e}");
+        assert!(
+            refuse_referenced_imported_global([("f", &writes_import[..])].into_iter(), 2).is_err()
+        );
+        assert!(
+            refuse_referenced_imported_global([("f", &reads_defined[..])].into_iter(), 2).is_ok()
+        );
+        assert!(
+            refuse_referenced_imported_global([("f", &reads_import[..])].into_iter(), 0).is_ok()
+        );
     }
 
     #[test]
