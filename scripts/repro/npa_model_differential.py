@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 51
+# ci-checks: emulations >= 54
 """RQ-91-NPAMODEL (#1672, #1568, #1604, #1661): memory-0 address provenance
 under `--relocatable --native-pointer-abi` is decided ONCE per module, and
 every shape is either executed equal to wasmtime or refused loudly with a
@@ -86,6 +86,14 @@ on the hand linker of npa_const_addr_differential.py, one instance per row):
                   and faulted where wasmtime returns 97).
     (the memory-1 shift-count false positive is gale_fp1 in
     npa_multi_memory_1145_differential.py)
+  gale's census of 85e5f200
+    gale_fpA      a live dereference whose only data-word source is a dead
+                  function's load: EXEC (85e5f200 refused it).
+    gale_fpB      one method called on two statics in two segments: EXEC
+                  (85e5f200 refused it as npa-region-straddle).
+    gale_fpA_indirect_neg / gale_fpB_neg
+                  the source reachable through call_indirect / one instance
+                  straddling its segment end: REFUSED.
   #1661
     swb_neg       `--safety-bounds software` on a module touching memory 0:
                   REFUSED `npa-software-bounds (#1661)` (eab66646 compiled
@@ -257,6 +265,33 @@ EXEC = [
     (local.set 1 (select (i32.load offset=2412 (i32.const 0)) (i32.const 4) (local.get 0)))
     (i32.store offset=2412 (i32.const 0) (i32.load offset=2360 (local.get 1)))))""",
      [("loc", ()), ("f5", ()), ("f9", (0,)), ("f5", ()), ("f9", (1,)), ("f5", ()), ("f9", (0,)), ("f5", ())]),
+    # gale's census of 85e5f200: fpA, a reachable function dereferencing a
+    # pointer it stored to its own stack slot, where the "data word" came
+    # only from a DEAD pad_integral storing a Location word to the same
+    # slot (a source load must be reachable too); fpB, one method called on
+    # two statics in two segments, `check(0x938)` and `check(0x978)`, each
+    # struct inside its own segment (the bases are judged per element, not
+    # as a union). Both refused on 85e5f200, EXEC here.
+    ("gale_fpA", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (type $t (func (param i32) (result i32)))
+  (table 1 funcref) (elem (i32.const 0) $pad)
+  (data (i32.const 0x800) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\3f\08\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x900) "\2a\00\00\00")
+  (func $pad (param i32) (result i32)
+    (i32.store (i32.sub (global.get $sp) (i32.const 16)) (i32.load (i32.const 0x84c)))
+    (i32.const 0))
+  (func (export "state") (result i32)
+    (i32.store (i32.sub (global.get $sp) (i32.const 16)) (i32.const 0x900))
+    (i32.load (i32.load (i32.sub (global.get $sp) (i32.const 16)))))
+  )""", [("state", ())]),
+    ("gale_fpB", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x938) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\01\01\00\00\02\01\00\00\03\01\00\00\04\01\00\00\05\01\00\00\06\01\00\00\07\01\00\00\08\01\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x974) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\02\00\00\01\02\00\00\02\02\00\00\03\02\00\00\04\02\00\00\05\02\00\00\06\02\00\00\07\02\00\00\08\02\00\00\00")
+  (func $check (param i32) (result i32)
+    (i32.add (i32.load offset=16 (local.get 0))
+      (i32.add (i32.load offset=32 (local.get 0)) (i32.load offset=48 (local.get 0)))))
+  (func (export "a") (result i32) (call $check (i32.const 0x938)))
+  (func (export "b") (result i32) (call $check (i32.const 0x978))))""", [("a", ()), ("b", ())]),
     ("i64_counter_ctl", WALK_SP + '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n' + '  (func (export "anchor") (result i32) (i32.load (i32.const 0x2004)))\n' +
      '  (func (export "cnt") (result i32) (local i64)\n'
      '    (block (loop (br_if 1 (i64.ge_u (local.get 0) (i64.const 0x2008)))\n'
@@ -372,6 +407,31 @@ REFUSE = [
   (func (export "name0") (param i32) (result i32)
     (i32.load8_u (i32.load offset=0x900 (i32.shl (local.get 0) (i32.const 2))))))""",
      [], ["npa-data-pointer (#1672)", "function 'name0'"]),
+    # Still refused: the dead source made reachable through a reachable
+    # call_indirect, and one of the two instances straddling its segment's
+    # end (check(0x97c) reads up to 0x9b0, past [0x974, 0x9ad)).
+    ("gale_fpA_indirect_neg", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (type $t (func (param i32) (result i32)))
+  (table 1 funcref) (elem (i32.const 0) $pad)
+  (data (i32.const 0x800) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\3f\08\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x900) "\2a\00\00\00")
+  (func $pad (param i32) (result i32)
+    (i32.store (i32.sub (global.get $sp) (i32.const 16)) (i32.load (i32.const 0x84c)))
+    (i32.const 0))
+  (func (export "state") (result i32)
+    (i32.store (i32.sub (global.get $sp) (i32.const 16)) (i32.const 0x900))
+    (i32.load (i32.load (i32.sub (global.get $sp) (i32.const 16)))))
+  (func (export "go") (param i32) (result i32) (call_indirect (type $t) (i32.const 0) (local.get 0))))""",
+     [], ["npa-data-pointer (#1672)", "function 'state'"]),
+    ("gale_fpB_neg", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x938) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\01\01\00\00\02\01\00\00\03\01\00\00\04\01\00\00\05\01\00\00\06\01\00\00\07\01\00\00\08\01\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x974) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\02\00\00\01\02\00\00\02\02\00\00\03\02\00\00\04\02\00\00\05\02\00\00\06\02\00\00\07\02\00\00\08\02\00\00\00")
+  (func $check (param i32) (result i32)
+    (i32.add (i32.load offset=16 (local.get 0))
+      (i32.add (i32.load offset=32 (local.get 0)) (i32.load offset=48 (local.get 0)))))
+  (func (export "a") (result i32) (call $check (i32.const 0x938)))
+  (func (export "b") (result i32) (call $check (i32.const 0x97c))))""",
+     [], ["npa-region-straddle (#1604)"]),
     ("swb_neg", SEG + ANCHOR +
      '  (func (export "st0") (param i32 i32) (i32.store (local.get 0) (local.get 1))))',
      ["--safety-bounds", "software"], ["npa-software-bounds (#1661)", "function '"]),

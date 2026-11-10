@@ -266,6 +266,30 @@ artifacts:
         stopping the i64 walk at conversions (i64_static_addr_neg is no
         longer refused). npa_model_differential: 51 emulations;
         npa_multi_memory_1145: 66.
+        GALE'S RE-RUN ON 85e5f200: the v11 two-domain image compiled 56/56,
+        byte-identical to base (object sha 4f91ec458025170f), and mpu-thin
+        and exec-provider were byte-identical. 62 SAME, 0 BYTES-DIFFER, 6
+        BOTH-REFUSE, and 8 NEWLY REFUSED (4 modules x 2) on two more classes,
+        each reproduced as a fixture (refused on 85e5f200, EXEC here).
+        (A) npa-data-pointer whose only SOURCE was dead: a reachable function
+        dereferenced a value whose candidate data word came from a load in
+        an unreachable pad_integral (wcet-fixture func_46, one-domain
+        func_35). A load or copy now puts a data word into flow only when
+        its function is reachable (gale_fpA). Still refused: the same source
+        made reachable through a reachable call_indirect
+        (gale_fpA_indirect_neg). (B) npa-region-straddle on one method called
+        on two statics in two segments (switch-thin MajorFrame::check, with
+        callers 0x938 and 0x978). The check paired one caller's access
+        address with the other caller's base constant. When an address's
+        possible values are exactly its relocated base constants, each value
+        is now judged against its own base's region (gale_fpB). Still
+        refused: one instance straddling its segment's end (gale_fpB_neg).
+        Mutants, each red: a dead source counted (gale_fpA refused), the
+        union check restored (gale_fpB refused), and no source counted at
+        all (every data-pointer refusal row compiles). Per-element judgement
+        applied without the equal-set guard refuses gale_boundary and
+        gale_fp2b, so the guard is load-bearing. npa_model_differential: 54
+        emulations.
         The delta-execution figures above were measured on an earlier branch
         binary; they still hold because those modules' census hashes are
         identical between that binary and this head (536 of 536 rows with the

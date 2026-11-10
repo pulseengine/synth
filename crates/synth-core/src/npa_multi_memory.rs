@@ -1687,6 +1687,9 @@ impl Provenance {
         // R1, and the same assumption the codegen makes when it relocates
         // that offset by the segment holding it (#739). Anything else keeps
         // `points_to`.
+        // #1672 (gale, 85e5f200): only a load or copy in a REACHABLE function
+        // can put a data word into flow — a load that never runs reads none.
+        let live_fn = |fi: u32| f.reachable.as_ref().is_none_or(|r| r.contains(&fi));
         let points_to_at = |s: &Sum, off: u32| -> u64 {
             if lowest.is_none() {
                 return points_to(s);
@@ -1810,7 +1813,7 @@ impl Provenance {
                     s.vals = Vals::Top;
                     s.dynamic |= DYN_LOAD;
                     // A FULL WORD read from a segment holding a wasm address.
-                    if s.data.is_none() && acc.width.is_some_and(|w| w >= 4) {
+                    if s.data.is_none() && acc.width.is_some_and(|w| w >= 4) && live_fn(acc.func) {
                         let w = u64::from(acc.width.unwrap_or(4));
                         let hit = match &a.vals {
                             Vals::Known(vs) if a.dynamic == 0 => vs
@@ -1871,10 +1874,12 @@ impl Provenance {
                         moved.join(b, false);
                     }
                 }
+                let copy_src = f.accesses.iter().find(|a| a.addr == src && a.is_copy_src);
                 if moved.data.is_none()
+                    && copy_src.is_none_or(|a| live_fn(a.func))
                     && let Some(wa) = word_of_regions(ps & ptr_regions)
                 {
-                    let acc = f.accesses.iter().find(|a| a.addr == src && a.is_copy_src);
+                    let acc = copy_src;
                     moved.data = Some((acc.map_or(0, |a| a.func), acc.map_or(0, |a| a.op), wa));
                 }
                 for (k, b) in nb.iter_mut().enumerate() {
@@ -2350,6 +2355,24 @@ impl Provenance {
             let s = &sum[acc.addr];
             let Vals::Known(vals) = &s.vals else { continue };
             let positional = consts_by_node.contains_key(&acc.addr);
+            // #1604 (gale, 85e5f200): an address whose possible values are
+            // EXACTLY its relocated base constants (one method called on two
+            // statics: `f(0x938)`, `f(0x978)`) is judged PER ELEMENT — each
+            // value is its own base, retargeted by its own region. Any other
+            // mix keeps the union check below.
+            let bases: std::collections::BTreeSet<u32> = s
+                .sites
+                .iter()
+                .filter(|k| relocated.contains(k))
+                .map(|&k| sites[k].value)
+                .chain(s.spz.iter().copied())
+                .collect();
+            let per_element = !s.spz_many
+                && !s.many_sites
+                && !folded.contains(&(acc.func, acc.op))
+                && !off_relocated(acc)
+                && !fallback.contains_key(&(acc.func, acc.op))
+                && bases == *vals;
             let width: Option<u32> = match (acc.width, acc.len.map(|l| &sum[l].vals)) {
                 (Some(w), _) => Some(w),
                 (None, Some(Vals::Known(ls))) => ls.iter().max().copied(),
@@ -2424,6 +2447,9 @@ impl Provenance {
                 let base_r =
                     if folded.contains(&(acc.func, acc.op)) || (positional && acc.offset == 0) {
                         None
+                    } else if per_element {
+                        let r = region_of(u64::from(v));
+                        (r != first_r).then_some(r)
                     } else {
                         s.sites
                             .iter()
