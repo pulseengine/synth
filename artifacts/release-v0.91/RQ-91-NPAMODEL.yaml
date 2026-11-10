@@ -108,9 +108,10 @@ artifacts:
         controls: npa_const_addr_differential 47 -> 65 emulations,
         npa_multi_memory_1145 51 -> 62, the matrix 99/63/59 -> 158 ok / 4
         refused / 0 npa-guard / 0 wrong, eab66646 measuring the old pin and
-        failing the new one; the summed --exact-emulation-floor moves +62
-        from v0.90's 449389, = 33 + 18 + 11, to oracle_wiring_check.py's
-        reported total, paired the same way). Byte identity: the census of every tracked .wat/.wasm (268 files x cortex-m3 and cortex-m7dp, --relocatable --native-pointer-abi --all-exports --allow-skipped-exports) is 517 of 536 rows byte-identical to eab66646; the same census without --native-pointer-abi is 536 of 536 identical. The 19 that move: 13 rows where eab66646 skipped a function on a per-shape guard (or compiled nothing) and the branch compiles it (bulk_local_clobber_677, bulk_mask_679, home_alias_class_1189_promo, i64_width_vstack_mem_946, vcr_reach_001_i64_pair on both targets; f64_369, aarch64_align_f32_switch_1231 and spill_slot_alias_1321 on cortex-m7dp), 2 where it now refuses the whole module instead of skipping the same function (self_contained_data_758, the same straddle, now npa-region-straddle), and 4 where eab66646 baked a constant address raw (popcnt_r11_clobber_1021 pc_store: base returns 0 where wasmtime returns 1, branch equal; call_indirect_275_selfcontained: the store address now carries its relocation). Executing the changed modules against wasmtime: every i32 export, 108 calls on cortex-m3 with 3 divergent, all call_indirect_275's entry, which this harness cannot dispatch on base or branch either, and 105 calls on cortex-m7dp with 0 divergent; f64_369's 34 i32-signature exports and aarch64_align_f32_switch_1231's f32 export on cortex-m7dp, 0 divergent. spill_slot_alias_1321 is not valid wasm to wasmtime (a register-pressure fixture) and has no reference to execute against. Every object the six pre-existing native-pointer oracles compiled on eab66646 is byte-identical on the branch (recorded through a hashing wrapper around SYNTH). New oracle
+        failing the new one; under RQ-91-EMUFLOOR's per-oracle protocol
+        each oracle's own `ci-checks: emulations` header carries its floor
+        and `oracle_wiring_check.py --floor-base` sees these three as raised
+        or new, never shrunk). Byte identity: the census of every tracked .wat/.wasm (268 files x cortex-m3 and cortex-m7dp, --relocatable --native-pointer-abi --all-exports --allow-skipped-exports) is 517 of 536 rows byte-identical to eab66646; the same census without --native-pointer-abi is 536 of 536 identical. The 19 that move: 13 rows where eab66646 skipped a function on a per-shape guard (or compiled nothing) and the branch compiles it (bulk_local_clobber_677, bulk_mask_679, home_alias_class_1189_promo, i64_width_vstack_mem_946, vcr_reach_001_i64_pair on both targets; f64_369, aarch64_align_f32_switch_1231 and spill_slot_alias_1321 on cortex-m7dp), 2 where it now refuses the whole module instead of skipping the same function (self_contained_data_758, the same straddle, now npa-region-straddle), and 4 where eab66646 baked a constant address raw (popcnt_r11_clobber_1021 pc_store: base returns 0 where wasmtime returns 1, branch equal; call_indirect_275_selfcontained: the store address now carries its relocation). Executing the changed modules against wasmtime: every i32 export, 108 calls on cortex-m3 with 3 divergent, all call_indirect_275's entry, which this harness cannot dispatch on base or branch either, and 105 calls on cortex-m7dp with 0 divergent; f64_369's 34 i32-signature exports and aarch64_align_f32_switch_1231's f32 export on cortex-m7dp, 0 divergent. spill_slot_alias_1321 is not valid wasm to wasmtime (a register-pressure fixture) and has no reference to execute against. Every object the six pre-existing native-pointer oracles compiled on eab66646 is byte-identical on the branch (recorded through a hashing wrapper around SYNTH). New oracle
         scripts/repro/npa_model_differential.py: 33 emulations, PASS on the
         branch, 19 failures on eab66646. Planted mutants, each red: the
         decision's relocation disabled (npa-addr-validate refuses the arith,
@@ -210,8 +211,8 @@ artifacts:
         (i64_hostcmp_ctl), and an i64 counter with an in-window bound
         (i64_counter_ctl). A planted mutant disabling the refusal turns both
         refusal rows red. npa_model_differential.py: 42 emulations, PASS on
-        the branch, 21 failures on eab66646 (the summed floor moves +9 with
-        it, paired against the previous head f01c28c6). Relocating i64
+        the branch, 21 failures on eab66646 (its header floor rises 33 ->
+        42 with it). Relocating i64
         constants properly is the follow-on.
         The delta-execution figures above were measured on an earlier branch
         binary; they still hold because those modules' census hashes are
