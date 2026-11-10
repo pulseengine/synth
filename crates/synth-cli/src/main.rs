@@ -3731,6 +3731,9 @@ struct ModuleTables {
     func_arg_counts: Vec<u32>,
     func_result_counts: Vec<u32>,
     type_arg_counts: Vec<u32>,
+    /// RQ-91-MVDROP: per-type result counts, so a merged function's
+    /// `call_indirect` reads ITS module's type table (void / multi-result).
+    type_result_counts: Vec<u32>,
     imports: Vec<ImportEntry>,
 }
 
@@ -4769,6 +4772,7 @@ fn compile_all_exports(
                 func_arg_counts: module.func_arg_counts.clone(),
                 func_result_counts: module.func_result_counts.clone(),
                 type_arg_counts: module.type_arg_counts.clone(),
+                type_result_counts: module.type_result_counts.clone(),
                 imports: module.imports.clone(),
             });
             for mut func in module.functions {
@@ -5905,6 +5909,7 @@ fn compile_all_exports(
                 fc.func_arg_counts = t.func_arg_counts.clone();
                 fc.func_result_counts = t.func_result_counts.clone();
                 fc.type_arg_counts = t.type_arg_counts.clone();
+                fc.type_result_counts = t.type_result_counts.clone();
             }
             // #457: THIS function's DECLARED param count, so the backends can
             // cap the access-pattern param inference that mistook a
@@ -12523,6 +12528,7 @@ mod tests {
                     func_arg_counts: Vec::new(),
                     func_result_counts: Vec::new(),
                     type_arg_counts: Vec::new(),
+                    type_result_counts: Vec::new(),
                     imports: Vec::new(),
                 })
                 .collect()
@@ -12591,6 +12597,7 @@ mod tests {
                     func_arg_counts: Vec::new(),
                     func_result_counts: Vec::new(),
                     type_arg_counts: Vec::new(),
+                    type_result_counts: Vec::new(),
                     imports: imports0,
                 },
                 ModuleTables {
@@ -12598,6 +12605,7 @@ mod tests {
                     func_arg_counts: Vec::new(),
                     func_result_counts: Vec::new(),
                     type_arg_counts: Vec::new(),
+                    type_result_counts: Vec::new(),
                     imports: Vec::new(),
                 },
             ]

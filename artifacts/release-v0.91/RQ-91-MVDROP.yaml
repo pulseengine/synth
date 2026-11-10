@@ -1,0 +1,230 @@
+artifacts:
+  - id: RQ-91-MVDROP
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "An ARM function returns its wasm stack top, a multi-result call is refused, and a void call_indirect pushes no result"
+    description: >
+        SILENT MISCOMPILE, found by the IMAGEBUILDER lane's execution sweep
+        (RQ-91-IMAGEBUILDER), which ran tests/fixtures/multivalue_call_select/
+        control_call_drop.wat for the first time: `(func $two (result i32 i32)
+        i32.const 10 i32.const 20) (func (export "f") (result i32) call $two
+        drop)` returned 20 where wasmtime returns 10, on every ARM path. The
+        fixture was written for #329/#330 as a "should compile" control, and
+        nothing executed it. Diagnosis found three defects, not one, and the
+        largest needs neither a call nor multi-value.
+
+        D2, the OPTIMIZED path (the default for every self-contained cortex-m /
+        cortex-r5 function without a local call). Its epilogue returns
+        `last_result_vreg`, the last value PRODUCED, not the wasm stack top.
+        `drop` emits no IR, and a store / `local.set` / `global.set` consumes
+        without producing. So `x; y; drop` returned y, and the `mem::take`
+        shape (store p, load it back, store 0, return the load) returned 0. An
+        i64 `drop` popped ONE slot of the lo/hi pair (D2b). RV32 and aarch64
+        return the correct value on every such shape.
+
+        D1, both ARM selectors. A call to a function (or a call_indirect of a
+        type) with MORE THAN ONE result pushed one value. The callee's
+        multi-value return convention is unspecified and leaves only its last
+        result in R0 (#1450). A consumer that never underflows the short model
+        compiled: `drop` (then the empty stack's epilogue returned the stale
+        R0), `local.tee; drop`, an `if` arm, a forwarding function, a
+        call_indirect. RV32 (#871) and aarch64 (#851) already refuse it.
+
+        D1c, the ARM direct selector. The #1210 void-callee rule covered `call`
+        only; a VOID call_indirect pushed a phantom result, so `i32.const 5;
+        i32.const 0; call_indirect (type $void)` returned the callee's R0.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers:
+        `synth compile tests/fixtures/multivalue_call_select/control_call_drop.wat
+        --target cortex-m4 --all-exports -o x.elf`, boot x.elf through its own
+        Reset_Handler with self_contained_boot_sweep_1189_differential.py's
+        Image class and call `f`; then compile `(module (memory 1) (func
+        (export "take") (param i32) (result i32) i32.const 16 local.get 0
+        i32.store i32.const 16 i32.load i32.const 16 i32.const 0 i32.store))`
+        the same way and call `take(p)`. f = 10 and take(p) = p (wasmtime's
+        values), or a refusal of `f`, refutes it.
+
+        MEASURED 2026-11-10 on main d2094ca4, release build: LIVE. f returned
+        20 (0x14) on all 12 argument vectors; take returned 0 on the 10
+        vectors whose first argument is non-zero (2 match because p = 0).
+
+        CITATION: #1450 is where the multi-value RETURN convention was
+        analysed (an exported multi-result function returns by an unstated
+        convention and never writes a return area). This record refuses the
+        CALLER side of that convention. The export side #1450 names is not
+        touched, so the record OUTLIVES the issue rather than closing it.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - multi-value
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1450"
+      verification-track: execution
+      issue-scope: outlives
+      landed: "PR #1697 (branch v091-mvdrop) - #1450 - DELIVERED: a wrong-code fix and a loud refusal. The refuting command was RUN FIRST on main d2094ca4 and the defect was LIVE: control_call_drop `f` returned 20 (wasmtime 10) and the mem::take shape returned 0 (wasmtime p). Fix: the ARM optimized path declines to the direct selector when its epilogue would return the last value produced instead of the wasm stack top, and on an i64 drop (typed as synth_synthesis::StackTopDecline); a multi-result call or call_indirect is refused on ARM with `MULTI-RESULT call` (synth-core find_multi_result_call at compile_wasm_to_arm); a void call_indirect pushes no result; a drop on an empty operand stack in reachable code refuses. Rebased over 0185ba07 (RQ-91-O2FLOAT) and re-measured there. #1450's export-side convention is untouched, so the issue stays open (outlives)."
+      done-when: >
+        manual:2027-03-31 on every ARM path (self-contained Thumb and A32
+        images, optimized and --no-optimize, --relocatable, --func-name on
+        the relocatable path) a function whose result was produced before a
+        drop / store / local or global set returns the wasm stack top, an
+        i64 drop leaves the right value, a multi-result call or call_indirect
+        is refused with a named diagnostic, and a void call_indirect returns
+        the value below it, all equal to wasmtime; red before and green after
+        with a planted-mutant control per change; and what newly refuses and
+        what changes bytes is counted per invocation over the tracked
+        .wat/.wasm files and the spec suite
+      verified-by: >
+        DELIVERED, execution-verified. FIX: (F2) `wasm_to_ir` records the
+        vreg it last pushed (re-pointed at the stack top after a br_if, as
+        `ir_to_arm` does) and, when the stack top at function end differs,
+        declines to the direct selector; (F2b) a `drop` of an i64 pair half
+        declines the same way; (F1) synth-core `find_multi_result_call`,
+        checked at `compile_wasm_to_arm` (both selectors and the optimized
+        path's import calls), refuses a multi-result call or call_indirect
+        with `MULTI-RESULT call`, with the per-type result counts now handed
+        to the ARM selector and the .wast merge; (F1') a void call_indirect
+        pushes nothing; (D1b) a `drop` on an empty operand stack in REACHABLE
+        code refuses (synth-core `wasm_stack_check::Reachability`: code after
+        an `end` is reachable only by fall-through, a branch taken from live
+        code, or an `if`'s false path; a first, purely syntactic version
+        wrongly refused spec unreached-valid.wast `meet-bottom` on cortex-m7dp,
+        caught by the spec run below and fixed before landing). New wired
+        oracle scripts/repro/stack_top_return_rq91_differential.py (ci.yml,
+        through oracle_run.py, `emulations >= 500`, 554 measured): 30 cases
+        over 8 ARM legs, every value against live wasmtime, with canaries in
+        the untouched argument registers. RED half: PINNED_WRONG holds the
+        111 wrong cells of d2094ca4, and `--red` against a d2094ca4 release
+        build reproduces exactly those 111 (776 values compared); the same
+        build in green mode fails 118 checks. GREEN on the branch: 500 values
+        equal to wasmtime, 76 refusals with the needle, 0 failures. Potency,
+        each a planted source mutant rebuilt and run: no F1 refusal reds 76
+        checks; the F1 threshold > 2 reds 64; no F2 check reds 27; no F2b
+        reds 3; a void call_indirect that pushes reds 6. Two defence-in-depth
+        mutants are not reachable by the oracle and are killed elsewhere:
+        dropping the br_if re-point is killed by the unit test
+        stack_top_return_and_i64_drop_decline_rq91_mvdrop AND reds
+        a32_control_flow_1639_differential.py ("NOT ON THE OPTIMIZED PATH"),
+        and disabling the reachable-drop refusal is killed by the unit test
+        drop_on_empty_stack_refuses_only_in_reachable_code_rq91_mvdrop. REACH,
+        per invocation: over the 268 tracked .wat/.wasm files x 10 builds
+        (cortex-m4, m4 --no-optimize, m4 --relocatable, m4f, m7dp, m3, r5, r5
+        --relocatable, riscv32imac --relocatable, aarch64), per function by
+        .text bytes, the branch is byte-identical to d2094ca4 on 17,597
+        functions, moves 0, and newly refuses ONE function, control_call_drop
+        `f` (the silently wrong one), on its 8 ARM builds. The D2 fallback
+        moves no tracked function, which is why no existing oracle saw D2.
+        RE-MEASURED after the rebase over 0185ba07 (RQ-91-O2FLOAT, which
+        rewrote the `if`-arm joins in select_with_stack): over the now 269
+        tracked files x the same 10 builds, 17,845 functions identical to
+        0185ba07, 0 moved, the same one newly refused; the +248 identical and
+        +82 both-declined rows are O2FLOAT's new fixture. Re-run again after
+        the rebase over 52add192 (RQ-91-MPUENFORCE) and over 2ef015ee
+        (RQ-91-NPAMODEL, which deleted the per-shape native-pointer guards
+        from the selector): identical figures, and the spec compile census
+        moves the same 7 call.wast functions. HOME-REGISTER AUDIT (ci.yml
+        RQ-65-ALIASCLASS, #1189; missed until CI went red on the tree rebased
+        over e8716535): functions audited 7743 -> 7739, attributed
+        instructions 244147 -> 244173, homes 9312 unchanged, hits 0. Paired
+        control, run: main e8716535's binary over this tree prints 7743 /
+        9312 / 244147. Per (module, leg): control_call_drop.wat -1 / -1 on
+        each of the 4 legs and spec call.wast -2 / -4 per leg (refusals);
+        +1 / +2 (local_set.wast type-local-i64) and +3 / +21 (three
+        unwind.wast block-unwind functions) on the two self-contained legs,
+        functions the optimized path now declines to the direct selector,
+        which the audit observes. The unwind three were correct before (an
+        i64 drop popped one half and a second drop the other, or the drop was
+        dead). The local_set one exposed a FURTHER D2 shape: an i64
+        `local.set` pops ONE slot on the optimized path, so an i32 result
+        under it returned the pair's low half (`local.get 0; i64.const
+        0x100000007; local.set` returned 7 for every p on cortex-m4/m3/r5);
+        it is now case d2_i64_local_set of the oracle, its 3 wrong cells
+        pinned from d2094ca4 (111 in all) and reproduced on e8716535.
+        Re-derived again on the tree rebased over 6b3d5c2a (RQ-91-NAMECOLL,
+        which adds no .wat fixture): 6b3d5c2a's binary prints the same 7743 /
+        9312 / 244147 and this branch 7739 / 9312 / 244173, so NAMECOLL
+        moved none of these pins.
+        #1229 FALSE-REJECT ORACLE (ci.yml rq66-unwatched): its
+        ('call.wast', 'arm') pin moves 3 -> 0 and the TOTAL 130 -> 127, a
+        RECLASSIFICATION, not a #1229 fix: the three were call.wast
+        as-binary-all-operands, as-mixed-operands and as-call-all-operands,
+        which contain no dead code and consume the two results of a
+        multi-result call, so the one-value model underflowed with #1229's
+        message; they now refuse by name. Paired control, run: e8716535's
+        binary still measures 3 (red against the new pin), the branch 0. The
+        table's entry count is unchanged, so the pin-debt ratchets do not
+        move. Every other ci.yml step that reads the corpus was run whole on
+        this tree and passes, except the two RQ-64-MACHO steps, which fail
+        identically with e8716535's binary at the local Apple clang host link
+        (an environment limit of this machine, not this change). O2FLOAT's
+        if_arm_dead_value_1691 (1392 emulations), #1215's brvalue_operand
+        (141) and this oracle (523) are all green on the rebased tree, and
+        `--red` against a 0185ba07 build reproduces exactly the same 108
+        PINNED_WRONG cells as d2094ca4, so O2FLOAT changed none of them. The
+        F2/F2b declines are also exposed as a TYPED fact,
+        `synth_synthesis::StackTopDecline` (`ResultNotLastProduced`,
+        `I64PairDrop`), read with `OptimizerBridge::stack_top_decline()`
+        after `optimize_full` fails; the message text is unchanged.
+        SPEC SUITE (spec_exec_1636 with the pinned testsuite 34536735,
+        local python/wasmtime/unicorn), base d2094ca4 vs branch: PASS on both
+        with their own baselines, 35,676 -> 35,715 directives executed, and
+        every moved directive is a gain. (1) call.wast module 0 on
+        cortex-m7dp was a #1102 whole-module refusal (a retained caller
+        relocated against a declined callee); that caller makes a
+        multi-result call and is now refused by name, so the module compiles
+        and 37 directives execute: 35 pass:value, 1 pass:trap, and
+        call.wast:359 `as-memory.grow-value` fails as the #539 grow envelope
+        already pinned at that line on cortex-m4 — added to the baseline, with
+        a waiver. PAIRED CONTROL, run: the branch without that entry reds
+        (NEW FAILURE) and d2094ca4 with it reds (BASELINE ENTRY NOW PASSES:
+        module-declined there). (2) type-subtyping.wast:344 `run` (five void
+        call_indirects) now passes on both legs; on d2094ca4 its five phantom
+        results exhausted the registers and it was skipped. SPEC COMPILE
+        CENSUS (spec_compile_census.py, #1095; missed in the first pass and
+        caught red on the PR): arm_m4f 1489 -> 1491 and arm_m7dp 1400 -> 1405
+        skipped functions, no file bucket moved, pins updated. Every newly
+        skipped function is a call.wast export that FORWARDS a multi-result
+        call as its own result, refused with `MULTI-RESULT call`:
+        type-i32-i64 and type-all-i32-i32 (both legs, and on the unpinned
+        `arm` leg), plus type-all-i32-f64, type-all-f32-f64 and
+        type-all-f64-i32 on arm_m7dp. None was correct before: executed on
+        52add192, type-i32-i64 returned 0x164 in r0 and its first result
+        0x132 in no return register (r0-r3, s0-s15 poisoned first), and
+        type-all-i32-i32's callee compiled to a bare `bx lr`, so it returned
+        its own arguments (1, 2) where wasm returns (2, 1). On arm_m7dp the
+        five never shipped: with --allow-skipped-exports the module was a
+        #1102 whole-module refusal. Paired control, run: the new pins pass on
+        the branch and fail on 52add192 (1489 / 1400); the old pins fail on
+        the branch (1491 / 1405). #1241: the final F2 does NOT flip the
+        boot sweep's `bl_brif_i64` pin (byte-identical, 9 mismatches as
+        before). A prototype that compared vregs across the IR passes did
+        flip it (12/12) but moved three correct functions as well, so it was
+        not shipped; the pin stays as #1241's. FOUR EXISTING TESTS fed
+        hand-built op streams that are not valid function bodies for the
+        shape they claim, and each now trips the new checks: five
+        audit_optimized_aapcs streams end with a value under trailing drops
+        (the D2 shape; a final `drop` makes them void, the clobber audit is
+        unchanged); three issue_93 streams drop an i64 shift result (now the
+        function's result instead); test_930's two result-typed blocks carried
+        no arity (it is now supplied, as the decoder supplies it); and
+        cross_backend_op_parity's "ARM accepts a value-carrying br_table"
+        claim, which asked to be deleted if ARM declined, now asserts the
+        under-count refusal instead. --func-name on a self-contained
+        Cortex-M image is NOT threaded here: that path receives no result-count
+        table, so F1 cannot fire on it; the IMAGEBUILDER branch (local commit
+        1d255057, not yet on main) routes ARM --func-name through the module
+        path, which carries the tables, and inherits F1 when it lands. NOT IN
+        SCOPE, measured and handed back: the optimized path keeps no
+        caller-saved clobber model and no result-count model across an IMPORT
+        call (a self-contained build of a module with imports returns the
+        import's R0 instead of a parameter read after the call); routing such
+        functions to the direct selector would change the import ABI
+        (`bl <name>` vs `bl __meld_dispatch_import`), so it needs its own
+        decision.

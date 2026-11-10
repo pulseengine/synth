@@ -2119,11 +2119,27 @@ fn br_table_subshape_asymmetry_882() {
         Drop,
         End,
     ];
-    assert!(
-        arm_lowers(&value_carrying, 1),
-        "ARM is expected to still accept a value-carrying br_table (it does \
-         not perform the #509 check); if it now declines, delete this claim"
-    );
+    // RQ-91-MVDROP: the ARM half of this claim was deleted, as it asked. The
+    // probe hands ARM no block arity, so both blocks are modelled VOID and
+    // the `drop` after the inner `end` (reachable: the live br_table targets
+    // that block) found an EMPTY operand stack. ARM used to pop nothing and
+    // return Ok; it now refuses that as a model under-count. What remains
+    // asserted is the RV32 decline below, and that the ARM refusal is the
+    // under-count one, not some unrelated error.
+    {
+        let db = RuleDatabase::with_standard_rules();
+        let mut sel =
+            InstructionSelector::with_bounds_check(db.rules().to_vec(), BoundsCheckConfig::None);
+        sel.set_target(None, "thumbv7em-none-eabi");
+        let r = sel.select_with_stack(&value_carrying, 1);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.to_string().contains("drop on an empty operand stack")),
+            "ARM must refuse the arity-free value-carrying probe as a model \
+             under-count; got {:?}",
+            r.map(|_| "Ok")
+        );
+    }
     assert!(
         matches!(
             riscv_select(&value_carrying, 1),

@@ -40,7 +40,8 @@ pub use wasm_decoder::{
 };
 pub use wasm_op::{
     ParamBlockLowering, WasmOp, arm_param_block_lowering, count_params_heuristic,
-    find_param_block_type, find_unlowered_param_block_type, param_block_decline_msg,
-    referenced_locals, rewrite_memory_grow_zero,
+    find_multi_result_call, find_param_block_type, find_unlowered_param_block_type,
+    multi_result_call_decline_msg, param_block_decline_msg, referenced_locals,
+    rewrite_memory_grow_zero,
 };
 pub use wsc_facts::{FactKind, WSC_FACTS_SECTION_NAME, WscFact, WscFactsParse, parse_wsc_facts};

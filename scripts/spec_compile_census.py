@@ -286,7 +286,19 @@ PINS = {
 # skipped, from its machine text only (`#952: N of M requested export(s)` and
 # `no functions compiled successfully (N skipped)`), never from log lines.
 # Exact, like PINS: a float function that starts or stops compiling moves it.
-SKIPPED_FUNCTION_PINS = {"arm_m4f": 1489, "arm_m7dp": 1400}
+# RQ-91-MVDROP: 1489 -> 1491 (arm_m4f) and 1400 -> 1405 (arm_m7dp). Every
+# new skip is in call.wast and refuses with `MULTI-RESULT call`: the exports
+# that FORWARD a multi-result call as their own multi-value result
+# (type-i32-i64, type-all-i32-i32 on both legs; type-all-i32-f64,
+# type-all-f32-f64, type-all-f64-i32 on arm_m7dp, where the f32/f64 boundary
+# reaches the call). None was correct before. Executed on the d2094ca4-era
+# code: type-i32-i64 returned 0x164 in r0 and its first result 0x132 in NO
+# return register; type-all-i32-i32's callee ($swap-i32-i32) compiled to a
+# bare `bx lr`, so r0/r1 came back as the call's own ARGUMENTS (1, 2) —
+# wasm's results are (2, 1). On arm_m7dp the five never shipped at all:
+# with --allow-skipped-exports the module was refused whole by #1102
+# (`type-all-f32-f64 -> func_11`). No file bucket moves.
+SKIPPED_FUNCTION_PINS = {"arm_m4f": 1491, "arm_m7dp": 1405}
 
 # Doc-cited derived figure, re-asserted at runtime against the pins above so
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:

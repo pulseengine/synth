@@ -78,8 +78,11 @@ macOS/arm64-linux jobs, not under unicorn), and building one is a lane of its
 own. cortex-m4f is not a leg. MEASURED (compile-only, every module of the
 suite on cortex-m4f vs cortex-m7dp at default bounds): its compiled function
 set is a subset of cortex-m7dp's in every module but ONE — call.wast's module
-at line 3, which cortex-m7dp refuses whole (#1102: a retained f32/f64 function
-relocates against a declined one) and cortex-m4f compiles (52 functions).
+at line 3, which cortex-m7dp refused whole (#1102: a retained f32/f64 function
+relocated against a declined one) and cortex-m4f compiles (52 functions).
+RQ-91-MVDROP changed that: the retained caller (`type-all-f32-f64`) makes a
+MULTI-RESULT call and is now refused by name itself, so the module compiles on
+cortex-m7dp too and its directives execute there (+36 measured).
 Those directives run here on cortex-m4 only where they are integer-typed; the
 float ones are a stated coverage residual, not worth a third leg's runtime.
 
@@ -223,6 +226,11 @@ KNOWN = {
     ('cortex-m4', 'select.wast', 330, 1, 'fail:wrong-value'): '#539-grow-fails',  # as-memory.grow-value
     ('cortex-m4', 'select.wast', 331, 1, 'fail:wrong-value'): '#539-grow-fails',  # as-memory.grow-value
     ('cortex-m7dp', 'block.wast', 384, 1, 'fail:wrong-value'): '#539-grow-fails',  # as-memory.grow-value
+    # RQ-91-MVDROP: call.wast module 0 compiled on cortex-m7dp for the first
+    # time once its multi-result caller was refused by name (it was a #1102
+    # whole-module refusal before), so this directive is newly REACHED. It is
+    # the same #539 envelope the cortex-m4 leg already pins at this line.
+    ('cortex-m7dp', 'call.wast', 359, 1, 'fail:wrong-value'): '#539-grow-fails',  # as-memory.grow-value
     ('cortex-m7dp', 'if.wast', 600, 1, 'fail:wrong-value'): '#539-grow-fails',  # as-memory.grow-value
     ('cortex-m7dp', 'if.wast', 601, 1, 'fail:wrong-value'): '#539-grow-fails',  # as-memory.grow-value
     ('cortex-m7dp', 'load.wast', 211, 1, 'fail:wrong-value'): '#539-grow-fails',  # as-memory.grow-size

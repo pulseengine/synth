@@ -13,6 +13,18 @@ spurious underflow on a module `wasm-tools validate` accepts. Surfaced as the
 | `control_single_call_select.wat` | VALID | compiles | compiles |
 | `control_call_drop.wat` | VALID | compiles | compiles |
 
+**RQ-91-MVDROP (v0.91) — the table above was a compile census, and one row was
+wrong code.** Nothing executed these fixtures until the IMAGEBUILDER sweep did:
+`control_call_drop` compiled on every ARM path and returned **20 where wasm
+returns 10**. The caller models the 2-result call as ONE value (the callee
+leaves only its last result in R0, #1450), `drop` removes it, and the
+function returns a stale R0. Every multi-result `call` / `call_indirect` is now
+REFUSED on ARM with `MULTI-RESULT call` (RV32 and aarch64 already refused), so
+`control_call_drop` and `repro_call_select` decline by name. The two other
+controls execute equal to wasmtime. All four are executed on every ARM leg by
+`scripts/repro/stack_top_return_rq91_differential.py`, which pins the 20 as its
+red half. The two-sided multi-value ABI below remains the way to lower the shape.
+
 The `drop`-vs-`select` split is the discriminator: a multi-result call alone is
 counted correctly (drop sees both), and single-result calls into select work — it
 is specifically the **multi-result-call × select** operand-pop interaction.

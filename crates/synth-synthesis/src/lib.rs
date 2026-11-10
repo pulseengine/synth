@@ -27,7 +27,7 @@ pub use instruction_selector::{
     validate_instructions_with_helium,
 };
 pub use optimizer_bridge::{
-    OptimizationConfig, OptimizationStats, OptimizerBridge, estimate_arm_byte_size,
+    OptimizationConfig, OptimizationStats, OptimizerBridge, StackTopDecline, estimate_arm_byte_size,
 };
 pub use pattern_matcher::{
     ApplyStats, Bindings, MatchResult, MatchValue, PatternMatcher, RuleApplicator,

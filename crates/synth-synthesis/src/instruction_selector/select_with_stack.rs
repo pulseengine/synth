@@ -1031,7 +1031,10 @@ impl InstructionSelector {
         // executed spill store would not dominate its reload). Only consulted
         // when `vfp_spill_on_exhaustion` is set.
         let mut vfp_cf_floor: usize = 0;
+        // RQ-91-MVDROP: reachability, for the `Drop` underflow check below.
+        let mut reachability = synth_core::wasm_stack_check::Reachability::default();
         for (idx, op) in wasm_ops.iter().enumerate() {
+            let reachable_here = reachability.step(op);
             // Param registers still live at this op — reserved from temp/pair/
             // reload allocation so a constant/result/reload never clobbers a live
             // param (#193).
@@ -6425,26 +6428,50 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     }
-                    // #311: tag an i64 result as the R0:R1 pair (static type).
-                    let ret_i64 = self
-                        .type_ret_i64
+                    // RQ-91-MVDROP: the #1210 void-callee rule, ported from
+                    // `Call`. A VOID type leaves no wasm-visible result, so the
+                    // indirect call pushes NOTHING — the legacy unconditional
+                    // push put whatever the callee left in R0 on the operand
+                    // stack (`i32.const 5; i32.const 0; call_indirect (type
+                    // $void)` returned the callee's R0, 77, not 5). An absent
+                    // table entry keeps the legacy push (byte-identical).
+                    let type_is_void = self
+                        .type_result_counts
                         .get(*type_index as usize)
-                        .copied()
-                        .unwrap_or(false);
-                    let result_reg = self.restore_caller_saved(
-                        &mut instructions,
-                        &preserved,
-                        &stack_live_regs(&stack),
-                        &local_to_reg,
-                        &layout,
-                        &mut spill,
-                        ret_i64,
-                        idx,
-                    )?;
-                    // #719 phase 2: reload the f32 S-registers the indirect call
-                    // clobbered.
-                    restore_vfp_caller_saved(&mut instructions, &vfp_preserved, idx);
-                    stack.push(result_reg);
+                        .is_some_and(|&c| c == 0);
+                    if type_is_void {
+                        for &(reg, off) in &preserved {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Ldr {
+                                    rd: reg,
+                                    addr: MemAddr::imm(Reg::SP, off),
+                                },
+                                source_line: Some(idx),
+                            });
+                        }
+                        restore_vfp_caller_saved(&mut instructions, &vfp_preserved, idx);
+                    } else {
+                        // #311: tag an i64 result as the R0:R1 pair (static type).
+                        let ret_i64 = self
+                            .type_ret_i64
+                            .get(*type_index as usize)
+                            .copied()
+                            .unwrap_or(false);
+                        let result_reg = self.restore_caller_saved(
+                            &mut instructions,
+                            &preserved,
+                            &stack_live_regs(&stack),
+                            &local_to_reg,
+                            &layout,
+                            &mut spill,
+                            ret_i64,
+                            idx,
+                        )?;
+                        // #719 phase 2: reload the f32 S-registers the indirect
+                        // call clobbered.
+                        restore_vfp_caller_saved(&mut instructions, &vfp_preserved, idx);
+                        stack.push(result_reg);
+                    }
                 }
 
                 Unreachable => {
@@ -6464,6 +6491,21 @@ impl InstructionSelector {
                 }
 
                 Drop => {
+                    // RQ-91-MVDROP: in REACHABLE code the wasm validator
+                    // guarantees an operand, so an empty operand stack here
+                    // means this selector's model under-counts (a call it
+                    // pushed too few results for). Silently popping nothing
+                    // let `call $two; drop` compile and return a stale R0;
+                    // refuse instead. Dead code after a terminator is
+                    // stack-polymorphic (#329) and stays silent.
+                    if reachable_here && stack.is_empty() {
+                        return Err(synth_core::Error::synthesis(
+                            "drop on an empty operand stack in reachable code — the \
+                             selector's operand model under-counts (compiler bug); \
+                             loud-declining (RQ-91-MVDROP)"
+                                .to_string(),
+                        ));
+                    }
                     // Just pop a value from the stack and discard it.
                     // #881 (rung-only, byte-invisible otherwise): a dropped
                     // VFP value releases its register / spill slot so deep
