@@ -4914,8 +4914,18 @@ jobs:
           # 7665 / 9234 / 242991 (unattributed 31222), and this branch's
           # binary with both fixtures held aside prints c20d37b2's 7611 /
           # 9142 / 242279 exactly. `hits: 0` on every run.
-          grep -Eq '^functions audited: 7665$' haa1189.txt
-          grep -Eq '^homes watched: 9234$' haa1189.txt
+          # O2FLOAT (#1691, v0.91): 7665 -> 7743, 9234 -> 9312 and (below)
+          # 242991 -> 244147, by paired controls. With the new fixture
+          # if_arm_dead_value_1691.wat held aside, main 0d22bafe's binary prints
+          # 7665 / 9234 / 242991 and this branch's prints 7665 / 9234 / 242979:
+          # the fix's own move is -12 attributed instructions, the dead `mov`
+          # no longer emitted at the unreachable fall-through join of
+          # labels.wast loop1/loop2/loop4 on each of the 4 legs (those three
+          # still return 5, 8 and 16 executed). The fixture adds +78 functions
+          # (16 integer exports x 2 soft-float legs + 23 x 2 hard-float legs),
+          # +78 homes and +1168 instructions. `hits: 0` on every run.
+          grep -Eq '^functions audited: 7743$' haa1189.txt
+          grep -Eq '^homes watched: 9312$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -4930,7 +4940,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 242991 ' haa1189.txt
+          grep -Eq '^attributed instructions: 244147 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
@@ -7241,6 +7251,21 @@ jobs:
           SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
             scripts/repro/carried_float_branch_1318_differential.py | tee /tmp/1318cfb.txt
           grep -q '^RESULT: PASS' /tmp/1318cfb.txt
+      # RQ-91-O2FLOAT (#1691): an `if` arm that ends in a br / br_table /
+      # return / unreachable left its dead values on the direct selector's
+      # simulated stack (#1215 cleaned up only a plain block's end), and the
+      # code after the if read a dead arm's register instead of the value
+      # beneath the if: cpetig's `wasm-opt -O2` controller, silent, exit 0.
+      # EXECUTED bit-exact against wasmtime on cortex-m4f/m7/m7dp (relocatable
+      # and image) and cortex-r5 A32, i32/i64/f32/f64, with arity-held
+      # CONTROLS and the loud below-entry-height refusal pinned on every leg.
+      # Unfixed: 788 failures (8 shapes are refused and 15 exports wrong).
+      - name: "an if arm ending in a transfer leaves no dead value behind (#1691)"
+        run: |
+          set -euo pipefail
+          SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
+            scripts/repro/if_arm_dead_value_1691_differential.py | tee /tmp/1691.txt
+          grep -q '^RESULT: PASS' /tmp/1691.txt
       # RQ-88-JESSDIVERGE10 (#1436): a float local's home S/D register was
       # rewritten by `local.set`/`local.tee` while an earlier `local.get`/
       # `local.tee` of the SAME local was still on the operand stack naming it

@@ -1964,9 +1964,30 @@ claims:
         # after MEMKBULK's waiver).
         # RQ-90-NPASHAPE2 (#1568 shape 2): 21624 -> 21715, waived below
         # (chained after RQ-90-NPASTRADDLE's waiver).
-        value: 21715
+        # RQ-91-O2FLOAT (#1691): 21715 -> 21852, waived below (chained after
+        # RQ-90-NPASHAPE2's waiver).
+        value: 21852
         baseline: 17897
         waivers:
+          - to: 21852
+            reason: >-
+              RQ-91-O2FLOAT (Refs #1691): 21715 -> 21852 (+137, measured after
+              cargo fmt on 0d22bafe; paired control: 21852 holds and 21715
+              reds here, the reverse on main 0d22bafe). A wrong-code fix that
+              REPLACES no arm and adds no wildcard: #1215's dead-code rule
+              (drop what an arm left after a br/br_table/return/unreachable,
+              refuse loudly if the dead code reached below the entry height)
+              applied to the `if` arms at their three join sites in
+              select_with_stack (`Else`, the else-less `End`, the if/else
+              `End`), plus two helpers (`check_dead_arm_prefix`,
+              `publish_live_arm`). Before it, the dead arm's values stayed on
+              the simulated stack and the code after the if read them instead
+              of the value beneath (cpetig's wasm-opt -O2 module, silent, exit
+              0). Most of the +137 is the comment explaining which counts stay
+              byte-identical and why. Gated by execution:
+              if_arm_dead_value_1691_differential.py (1392 emulations on 8 ARM
+              legs; 788 failures at 0d22bafe; each of the three sites reverted
+              alone, and the refusal removed, turns it RED).
           - to: 21715
             reason: >-
               RQ-90-NPASHAPE2 (Refs #1568): 21624 -> 21715 (+91, measured after
@@ -3296,7 +3317,10 @@ claims:
         # differential, outside this population. No waiver.
         # RQ-90-NPASHAPE2 (#1568 shape 2): 32485 -> 32576, the same +91 as
         # selector_lines_code (all of it outside the test module). No waiver.
-        value: 32576
+        # RQ-91-O2FLOAT (#1691): 32576 -> 32713, the same +137 as
+        # selector_lines_code (all of it outside the test module; the oracle
+        # is a scripts/repro differential, outside this population). No waiver.
+        value: 32713
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

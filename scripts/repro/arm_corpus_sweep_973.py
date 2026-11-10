@@ -249,6 +249,15 @@ EXPECTED_DECLINES = {
     # now executes its 12 vectors against wasmtime with no mismatch. #1230's
     # own oracle keeps the frozen pre-fix bytes as the proof the refusal was
     # right.
+    # RQ-91-O2FLOAT (#1691). The if-arm dead-value fixture. 3 of its 26
+    # exports decline on this sweep's cortex-m4f by design: the two `t_f64_*`
+    # need a double-precision FPU (GI-FPU-002 phase 2), and `refuse_below` is
+    # the fixture's LOUD-REFUSAL pin (its dead code drops below the if's entry
+    # height, which the direct selector's stack model cannot recover) — so the
+    # module fails via #952 without --allow-skipped-exports. Its execution
+    # truth, all 8 ARM legs including cortex-m7dp for f64, is
+    # if_arm_dead_value_1691_differential.py.
+    "if_arm_dead_value_1691.wat": "f64 on a single-precision FPU (GI-FPU-002) + the #1691 below-entry refusal pin (#952)",
 }
 
 # RQ-69-PAGESIZE (#1315): fixtures REFUSED AT THE MODULE LEVEL, by design.
