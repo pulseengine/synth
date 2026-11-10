@@ -2300,7 +2300,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "111f5485",
+    "reanchored_at": "6f81cd44",
     "seed": 1189
   },
   "mutants": [
@@ -2594,9 +2594,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 2950,
+      "end": 3005,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/REG/select_with_stack.rs:2950:24",
+      "id": "R3-direct/REG/select_with_stack.rs:3005:24",
       "killed_by": {
         "binaries": [
           "issue_95_const_addr_load"
@@ -2612,7 +2612,7 @@
       "op": "REG",
       "region": "R3-direct",
       "seconds": 277.5,
-      "start": 2950,
+      "start": 3005,
       "status": "killed"
     },
     {
@@ -5168,9 +5168,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 1150,
+      "end": 1205,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/GUARD/select_with_stack.rs:1150:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:1205:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -5182,7 +5182,7 @@
       "op": "GUARD",
       "region": "R3-direct",
       "seconds": 10.6,
-      "start": 1150,
+      "start": 1205,
       "status": "killed"
     },
     {
@@ -6971,13 +6971,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 7982,
+      "end": 8119,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/COND/select_with_stack.rs:7982:37",
+      "id": "R3-direct/COND/select_with_stack.rs:8119:37",
       "op": "COND",
       "region": "R3-direct",
       "seconds": 329.4,
-      "start": 7982,
+      "start": 8119,
       "status": "survived",
       "suite_seconds": 301.7
     },
@@ -7430,9 +7430,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 7187,
+      "end": 7324,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/GUARD/select_with_stack.rs:7187:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:7324:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -7444,7 +7444,7 @@
       "op": "GUARD",
       "region": "R3-direct",
       "seconds": 22.6,
-      "start": 7187,
+      "start": 7324,
       "status": "killed"
     },
     {
@@ -10450,14 +10450,14 @@
       "bytes": "identical",
       "changed": [],
       "classification": "EQUIVALENT",
-      "end": 1950,
+      "end": 2005,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/BOUND/select_with_stack.rs:1950:39",
+      "id": "R3-direct/BOUND/select_with_stack.rs:2005:39",
       "op": "BOUND",
       "reach": "reached",
       "region": "R3-direct",
       "seconds": 28.8,
-      "start": 1950,
+      "start": 2005,
       "status": "identical"
     },
     {
@@ -12146,9 +12146,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 675,
+      "end": 730,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/BOUND/select_with_stack.rs:675:46",
+      "id": "R3-direct/BOUND/select_with_stack.rs:730:46",
       "killed_by": {
         "job": "(compiler hang)",
         "layer": "timeout",
@@ -12157,7 +12157,7 @@
       "op": "BOUND",
       "region": "R3-direct",
       "seconds": 185.7,
-      "start": 675,
+      "start": 730,
       "status": "killed",
       "triage_note": "aborted-after-first-compiler-hang"
     }
