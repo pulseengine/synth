@@ -3460,6 +3460,7 @@ fn npa_provenance(
         elem_func_indices: &module.elem_func_indices,
         memory_count: (module.memories.len() + module.imported_memories.len()) as u32,
         cross_copies_carry_no_pointers: copies_carry_no_pointers,
+        start_function: module.start_function,
     };
     Provenance::analyze(&m)
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 62
+# ci-checks: emulations >= 66
 """RQ-89-MEMLAYER6 (#1145) — `--native-pointer-abi` on a MULTI-MEMORY ARM
 `--relocatable` module, layered per memory — execution differential vs
 wasmtime (multi-memory + custom-page-sizes enabled), with an isolation check.
@@ -412,6 +412,24 @@ MEM1_WALK = r"""(module (memory $m0 1 1) (memory $m1 1 1)
           (br 0)))
         (local.get 1)))"""
 MEM1_WALK_CALLS = [("flag0", [], {0}), ("sum1", [], {1})]
+# gale's census of 257f0067: a core::fmt argument packer on MEMORY 1 whose
+# `i64.const 32` is a SHIFT COUNT, stored to memory 1, and an unrelated
+# memory-1 byte compared with 2 elsewhere. 257f0067 refused the module
+# (npa-i64-static-const): the constant "reached" the comparison through
+# memory 1's contents. Memory 0 holds data at 0 and no stack pointer, so
+# its static window starts at 0 as gale's tenant window [0, 0x820) does,
+# and both 0x20 and the compared 2 lie inside it.
+GALE_FP1 = r"""(module (memory $m0 1 1) (memory $m1 1 1)
+  (data (memory $m0) (i32.const 0x0) "\74\65\6e\61\6e\74\00\00\00\00\00\00\00\00\00\00\07\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (func (export "t0") (result i32) (i32.load $m0 (i32.const 0x10)))
+  (func (export "pack") (param i32)
+    (i64.store $m1 offset=24 (i32.const 0)
+      (i64.or (i64.shl (i64.extend_i32_u (i32.const 3)) (i64.const 32))
+              (i64.extend_i32_u (local.get 0)))))
+  (func (export "chk") (result i32)
+    (i32.ne (i32.load8_u $m1 offset=5297 (i32.const 0)) (i32.const 2)))
+  (func (export "rd") (result i32) (i32.load $m1 offset=28 (i32.const 0))))"""
+GALE_FP1_CALLS = [("t0", [], {0}), ("pack", [5], {1}), ("rd", [], {1}), ("chk", [], {1})]
 
 
 def compile_obj(wat, tmp, label, extra=()):
@@ -749,6 +767,10 @@ def main():
     fails += f
     print("=== the boundary refusal is memory 0's only: a memory-1 end-pointer walk ===")
     c, f = run_fixture("mem1_walk", MEM1_WALK, MEM1_WALK_CALLS, tmp)
+    total += c
+    fails += f
+    print("=== gale's fmt packer: an i64.const shift count on memory 1 ===")
+    c, f = run_fixture("gale_fp1", GALE_FP1, GALE_FP1_CALLS, tmp)
     total += c
     fails += f
     print("=== region table (pagesize 1, bytes) ===")

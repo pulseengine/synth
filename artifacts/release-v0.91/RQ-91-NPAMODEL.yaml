@@ -214,6 +214,58 @@ artifacts:
         the branch, 21 failures on eab66646 (its header floor rises 33 ->
         42 with it). Relocating i64
         constants properly is the follow-on.
+        GALE'S CENSUS OF 257f0067 FOUND THREE FALSE-POSITIVE REFUSAL CLASSES,
+        and the repo census MISSED all three: the 268-file corpus carries no
+        rust core::fmt code and no panic-Location data, which is exactly
+        what gale's images are made of. gale ran 38 core modules (26 driver
+        crates, 9 committed .wasm, and the v11 one- and two-domain images
+        fused by meld 0.66.0 with --memory-page-size 1) on cortex-m3 and
+        cortex-m7dp with --relocatable --native-pointer-abi --all-exports. The
+        result was 56 rows SAME, 6 refused on both, and 14 NEWLY REFUSED (7
+        modules x 2). Its real v11 image was among them. Each class is
+        reproduced by a minimal fixture derived from gale's shape: REFUSED on
+        257f0067, compiled and EXECUTED equal to wasmtime after the fix.
+        (1) npa-i64-static-const fired on a fmt argument packer whose
+        `i64.const 32` is a SHIFT COUNT, stored to MEMORY 1, against an
+        unrelated memory-1 byte compared with 2. The provenance walk crossed
+        from the packer to the comparison through memory 1's content node
+        (a memory-k load takes a plain flow from it) and through the shift.
+        The walk now follows a value only over plain flows and the
+        value-preserving conversions and i64 add/sub. It stops at any other
+        scalar operand, at memory content (any memory) and at globals.
+        Fixture gale_fp1, in npa_multi_memory_1145. (2a) npa-data-pointer
+        fired in DEAD code: core::fmt pad_integral dereferencing a panic
+        Location's file pointer, reachable only through the element table,
+        whose only call_indirect sits in the same dead cluster. The refusal
+        now applies only to functions reachable from the exports and the
+        start function. Every element-segment function counts as reachable
+        once any reachable function executes a call_indirect, and reachability
+        is undecided (everything reachable) when a reachable function calls a
+        defined function the pass did not analyse. Fixture gale_fp2a. Positive
+        controls still refused: the same dereference reached directly
+        (gale_fp2a_direct_neg) and reached ONLY through call_indirect
+        (gale_fp2a_indirect_neg). Measured: under --all-exports the dead
+        functions are not emitted, and the reachable functions' bytes are
+        identical with and without the dead dereference on both targets.
+        (2b) npa-data-pointer fired on a state machine's next-state load. The
+        bucket model ignored the memarg offset, so every `offset=N (i32.const
+        0)` access shared one bucket, and a stored Location pointer polluted
+        the index loads. A load's may-read set is now judged by its whole
+        address: a known static address is exactly value + offset, and a
+        run-time index beside a static memarg base stays in the base's
+        segment. That is R1, and the same assumption the codegen makes when it
+        relocates that offset by the segment holding it (#739). Fixture
+        gale_fp2b. THE SAME CHANGE CLOSES A #1672 HOLE: a pointer table read
+        through a scaled index and dereferenced (ptrtab_idx_neg) compiled on
+        eab66646 AND on 257f0067 and faulted where wasmtime returns 97; it
+        is now refused. Mutants, each red: dropping elem reachability through
+        call_indirect (gale_fp2a_indirect_neg compiles); treating every
+        function as dead (datap_neg, str_neg, both gale_fp2a controls and
+        ptrtab_idx_neg compile); attributing a static-base access to the
+        reservation instead of the base's segment (ptrtab_idx_neg compiles);
+        stopping the i64 walk at conversions (i64_static_addr_neg is no
+        longer refused). npa_model_differential: 51 emulations;
+        npa_multi_memory_1145: 66.
         The delta-execution figures above were measured on an earlier branch
         binary; they still hold because those modules' census hashes are
         identical between that binary and this head (536 of 536 rows with the

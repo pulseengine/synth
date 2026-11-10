@@ -660,7 +660,14 @@ static range that carries no relocation is a compiler defect, refused as
     native address. The diagnostic names the dereferencing function, the
     load site and the word's segment offset. A word only loaded (returned,
     compared) is not refused, and a loaded value used as an INDEX added to a
-    static (`HEAP + OFF`) is not refused.
+    static (`HEAP + OFF`) is not refused. Only a function reachable from the
+    exports or the start function is refused; once a reachable function
+    executes a `call_indirect`, every element-segment function counts as
+    reachable. Which words a load may read is judged by its whole address,
+    memarg offset included: a run-time index beside a static memarg base is
+    taken to stay in the base's segment (R1), so a pointer TABLE read by
+    index is refused while an index table beside an unrelated pointer word
+    is not.
   - `npa-dynamic-static-offset (#1568)` — with a memory-0 data segment and no
     stack-pointer global (or below the stack-pointer init), a constant or
     memarg offset in the static region beside a run-time value.

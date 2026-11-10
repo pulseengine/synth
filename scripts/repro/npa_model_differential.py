@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 42
+# ci-checks: emulations >= 51
 """RQ-91-NPAMODEL (#1672, #1568, #1604, #1661): memory-0 address provenance
 under `--relocatable --native-pointer-abi` is decided ONCE per module, and
 every shape is either executed equal to wasmtime or refused loudly with a
@@ -72,6 +72,20 @@ on the hand linker of npa_const_addr_differential.py, one instance per row):
     i64_outside_ctl / i64_scalar_ctl / i64_hostcmp_ctl / i64_counter_ctl
                   an i64.const outside the window, a plain scalar, compared
                   with a host value, an i64 counter bound: EXEC.
+  gale's census of 257f0067 (three false-positive classes)
+    gale_fp2a     a dead core::fmt pad_integral dereferencing a panic
+                  Location pointer: EXEC (257f0067 refused it).
+    gale_fp2b     a state machine's next-state load beside a stored Location
+                  pointer: EXEC (257f0067 refused it).
+    gale_fp2a_direct_neg / gale_fp2a_indirect_neg
+                  the same dereference reachable directly / only through
+                  call_indirect: REFUSED `npa-data-pointer (#1672)`.
+    ptrtab_idx_neg
+                  a pointer table read through a scaled index and
+                  dereferenced: REFUSED (eab66646 and 257f0067 compiled it
+                  and faulted where wasmtime returns 97).
+    (the memory-1 shift-count false positive is gale_fp1 in
+    npa_multi_memory_1145_differential.py)
   #1661
     swb_neg       `--safety-bounds software` on a module touching memory 0:
                   REFUSED `npa-software-bounds (#1661)` (eab66646 compiled
@@ -214,6 +228,35 @@ EXEC = [
     ("i64_hostcmp_ctl", WALK_SP + '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n' + '  (func (export "anchor") (result i32) (i32.load (i32.const 0x2004)))\n' +
      '  (func (export "h") (param i32) (result i32) (i64.eq (i64.extend_i32_u (local.get 0)) (i64.const 0x2004))))',
      [("anchor", ()), ("h", (0x2004,)), ("h", (5,))]),
+    # gale's false positives on 257f0067 (census of its real images), each
+    # REFUSED there and EXEC here. fp2a: a core::fmt pad_integral that
+    # dereferences a panic Location's file pointer, reachable only through
+    # the element table whose only call_indirect is inside the same dead
+    # cluster (npa-data-pointer applies to reachable functions only). fp2b:
+    # a state machine whose next-state load sat in the same bucket as a
+    # stored Location pointer, because every `offset=N (i32.const 0)` access
+    # shared one (offset-aware buckets: a run-time index beside a static
+    # memarg base stays in the base's region).
+    ("gale_fp2a", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (type $t (func (param i32) (result i32)))
+  (table 2 funcref) (elem (i32.const 0) $fmt $pad)
+  (data (i32.const 0x800) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\3f\08\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (func $pad (param i32) (result i32) (i32.load8_u (i32.load (i32.const 0x84c))))
+  (func $fmt (param i32) (result i32) (call_indirect (type $t) (local.get 0) (i32.const 1)))
+  (func (export "anchor") (result i32) (i32.load8_u (i32.const 0x840)))
+  )""", [("anchor", ())]),
+    ("gale_fp2b", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x800) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\3f\08\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x938) "\04\00\00\00\08\00\00\00\0c\00\00\00\00\00\00\00\0a\00\00\00\14\00\00\00\1e\00\00\00\28\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (func (export "loc") (result i32) (i32.store offset=0x900 (i32.const 0) (i32.const 0x84c)) (i32.const 0))
+  (func (export "f5") (result i32) (local i32)
+    (local.set 0 (i32.load offset=2412 (i32.const 0)))
+    (if (i32.ge_u (local.get 0) (i32.const 16)) (then (return (i32.const 0))))
+    (i32.load offset=2376 (local.get 0)))
+  (func (export "f9") (param i32) (local i32)
+    (local.set 1 (select (i32.load offset=2412 (i32.const 0)) (i32.const 4) (local.get 0)))
+    (i32.store offset=2412 (i32.const 0) (i32.load offset=2360 (local.get 1)))))""",
+     [("loc", ()), ("f5", ()), ("f9", (0,)), ("f5", ()), ("f9", (1,)), ("f5", ()), ("f9", (0,)), ("f5", ())]),
     ("i64_counter_ctl", WALK_SP + '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n' + '  (func (export "anchor") (result i32) (i32.load (i32.const 0x2004)))\n' +
      '  (func (export "cnt") (result i32) (local i64)\n'
      '    (block (loop (br_if 1 (i64.ge_u (local.get 0) (i64.const 0x2008)))\n'
@@ -300,6 +343,35 @@ REFUSE = [
     ("i64_static_addr_neg", WALK_SP + '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n' +
      '  (func (export "ld") (result i32) (i32.load (i32.wrap_i64 (i64.const 0x2004)))))',
      [], ["npa-i64-static-const (#1684)", "function 'ld'", "0x2004"]),
+    # The data-pointer refusal still holds where it must: the same Location
+    # dereference reached directly, and reached ONLY through call_indirect
+    # (an elem function counts once a reachable function calls indirectly);
+    # and a pointer TABLE read through a scaled index and dereferenced,
+    # which eab66646 AND 257f0067 compiled and faulted on (wasmtime 97).
+    ("gale_fp2a_direct_neg", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (type $t (func (param i32) (result i32)))
+  (table 2 funcref) (elem (i32.const 0) $fmt $pad)
+  (data (i32.const 0x800) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\3f\08\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (func $pad (param i32) (result i32) (i32.load8_u (i32.load (i32.const 0x84c))))
+  (func $fmt (param i32) (result i32) (call_indirect (type $t) (local.get 0) (i32.const 1)))
+  (func (export "anchor") (result i32) (i32.load8_u (i32.const 0x840)))
+  (func (export "go") (result i32) (call $pad (i32.const 0))))""",
+     [], ["npa-data-pointer (#1672)", "0x84c"]),
+    ("gale_fp2a_indirect_neg", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (type $t (func (param i32) (result i32)))
+  (table 2 funcref) (elem (i32.const 0) $fmt $pad)
+  (data (i32.const 0x800) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\3f\08\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (func $pad (param i32) (result i32) (i32.load8_u (i32.load (i32.const 0x84c))))
+  (func $fmt (param i32) (result i32) (call_indirect (type $t) (local.get 0) (i32.const 1)))
+  (func (export "anchor") (result i32) (i32.load8_u (i32.const 0x840)))
+  (func (export "go") (param i32) (result i32) (call_indirect (type $t) (i32.const 0) (local.get 0))))""",
+     [], ["npa-data-pointer (#1672)", "0x84c"]),
+    ("ptrtab_idx_neg", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x800) "\61\62\63\00\78\79\7a\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x900) "\00\08\00\00\04\08\00\00")
+  (func (export "name0") (param i32) (result i32)
+    (i32.load8_u (i32.load offset=0x900 (i32.shl (local.get 0) (i32.const 2))))))""",
+     [], ["npa-data-pointer (#1672)", "function 'name0'"]),
     ("swb_neg", SEG + ANCHOR +
      '  (func (export "st0") (param i32 i32) (i32.store (local.get 0) (local.get 1))))',
      ["--safety-bounds", "software"], ["npa-software-bounds (#1661)", "function '"]),

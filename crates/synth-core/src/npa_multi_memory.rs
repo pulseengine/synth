@@ -106,6 +106,8 @@ pub struct NpaModule<'a> {
     /// such a copy does not join the two memories' contents. A same-memory
     /// copy and every other route are tracked unchanged.
     pub cross_copies_carry_no_pointers: bool,
+    /// The module's start function (a reachability root with the exports).
+    pub start_function: Option<u32>,
 }
 
 type Node = usize;
@@ -162,7 +164,7 @@ struct M0Facts {
     host_exits: Vec<Node>,
     /// Memory-0 stores `(address, value)` — `memory.fill` included, its
     /// fill value as the stored value.
-    stores: Vec<(Node, Node)>,
+    stores: Vec<(Node, Node, u32)>,
     /// Memory-0 `memory.copy` `(destination, source)`.
     copies: Vec<(Node, Node)>,
     /// The implicit zero of a non-parameter local read before any set that
@@ -175,6 +177,20 @@ struct M0Facts {
     extends: HashMap<Node, Node>,
     /// `i64.const` results: `(function, op, value)` (never relocated).
     i64_consts: HashMap<Node, (u32, usize, i64)>,
+    /// #1684: results of the VALUE-PRESERVING i64 conversions and address
+    /// arithmetic (`i64.extend_i32_*`, `i32.wrap_i64`, `i64.add`,
+    /// `i64.sub`) and their operands. Every other non-add result (a shift,
+    /// a multiply, an `or` ...) consumes its operand as a scalar.
+    transparent: HashMap<Node, Vec<Node>>,
+    /// Direct calls `(caller, callee)` between analysed functions.
+    calls: Vec<(u32, u32)>,
+    /// Functions that execute a `call_indirect`.
+    indirect_callers: std::collections::HashSet<u32>,
+    /// Functions that call a DEFINED function the pass did not analyse.
+    unknown_callers: std::collections::HashSet<u32>,
+    /// Functions reachable from the exports and the start function
+    /// (`None`: not decidable, every function counts as reachable).
+    reachable: Option<std::collections::HashSet<u32>>,
 }
 
 /// One memory-0 access as the walk saw it.
@@ -331,6 +347,7 @@ impl Provenance {
         for f in &m.funcs {
             walk(&mut g, m, &analyzed, f).map_err(|e| format!("function {}: {e}", f.index))?;
         }
+        g.m0.reachable = reachable_funcs(m, &analyzed, &g.m0);
         g.propagate();
         Ok(Provenance { graph: g })
     }
@@ -380,6 +397,47 @@ impl Provenance {
                 .unwrap_or(0),
         )
     }
+}
+
+/// #1672 (gale's dead `pad_integral`): the functions reachable from the
+/// exports and the start function over direct calls; every element-segment
+/// function becomes reachable once a reachable function executes a
+/// `call_indirect` (whatever its table index — the sound over-approximation).
+/// `None` when a reachable function calls a defined function the pass did not
+/// analyse: its callees are unknown, so nothing may be treated as dead.
+fn reachable_funcs(
+    m: &NpaModule,
+    analyzed: &std::collections::HashSet<u32>,
+    f: &M0Facts,
+) -> Option<std::collections::HashSet<u32>> {
+    let mut reach: std::collections::HashSet<u32> = Default::default();
+    let mut work: Vec<u32> = m
+        .funcs
+        .iter()
+        .filter(|x| x.exported)
+        .map(|x| x.index)
+        .chain(m.start_function)
+        .collect();
+    let mut elem_done = false;
+    while let Some(x) = work.pop() {
+        if !reach.insert(x) {
+            continue;
+        }
+        if f.unknown_callers.contains(&x) {
+            return None;
+        }
+        work.extend(f.calls.iter().filter(|&&(a, _)| a == x).map(|&(_, b)| b));
+        if !elem_done && f.indirect_callers.contains(&x) {
+            elem_done = true;
+            work.extend(
+                m.elem_func_indices
+                    .iter()
+                    .copied()
+                    .filter(|t| analyzed.contains(t)),
+            );
+        }
+    }
+    Some(reach)
 }
 
 fn walk(
@@ -633,6 +691,11 @@ fn walk(
                     .ok_or_else(|| format!("op {i}: call {c} has no result count"))?;
                 let args = pop_n(g, &mut stack, &frames, argc as usize, i)?;
                 if *c >= m.num_imported_funcs && analyzed.contains(c) {
+                    g.m0.calls.push((fi, *c));
+                } else if *c >= m.num_imported_funcs {
+                    g.m0.unknown_callers.insert(fi);
+                }
+                if *c >= m.num_imported_funcs && analyzed.contains(c) {
                     for (k, a) in args.into_iter().enumerate() {
                         let p = g.local(*c, k as u32);
                         g.flow(a, p);
@@ -656,6 +719,7 @@ fn walk(
                 }
             }
             CallIndirect { type_index, .. } => {
+                g.m0.indirect_callers.insert(fi);
                 let ti = pop(g, &mut stack, &frames, i)?; // table index (a scalar)
                 g.observe(ti);
                 let argc = *m
@@ -788,7 +852,7 @@ fn walk(
                 let content = g.mem(memory);
                 g.flow(v, content);
                 if memory == 0 {
-                    g.m0.stores.push((a, v));
+                    g.m0.stores.push((a, v, memarg_offset(inner).unwrap_or(0)));
                     g.m0.accesses.push(M0Access {
                         func: fi,
                         op: i,
@@ -886,7 +950,7 @@ fn walk(
                     g.m0.copies.push((dst, src_or_val));
                 } else {
                     g.flow(src_or_val, content);
-                    g.m0.stores.push((dst, src_or_val));
+                    g.m0.stores.push((dst, src_or_val, 0));
                 }
             }
             MemorySize(_) => {
@@ -925,6 +989,7 @@ fn walk(
                     g.m0.binops.push((r, a, b, true));
                 } else {
                     g.m0.opaque.insert(r);
+                    g.m0.transparent.insert(r, vec![a, b]);
                 }
                 stack.push(r);
             }
@@ -951,6 +1016,10 @@ fn walk(
                     match other {
                         I64ExtendI32U | I64ExtendI32S if ins.len() == 1 => {
                             g.m0.extends.insert(r, ins[0]);
+                            g.m0.transparent.insert(r, ins.clone());
+                        }
+                        I32WrapI64 | I64Add => {
+                            g.m0.transparent.insert(r, ins.clone());
                         }
                         I64Const(c) => {
                             g.m0.i64_consts.insert(r, (fi, i, *c));
@@ -1610,6 +1679,39 @@ impl Provenance {
             }
             r
         };
+        // Where an ACCESS may point: its address value plus its memarg offset.
+        // A fully known static address is exactly `v + offset` (a constant
+        // below the static window is a native address). A run-time index
+        // beside a static memarg BASE (an offset inside the static window,
+        // no static in the address itself) stays inside the base's region —
+        // R1, and the same assumption the codegen makes when it relocates
+        // that offset by the segment holding it (#739). Anything else keeps
+        // `points_to`.
+        let points_to_at = |s: &Sum, off: u32| -> u64 {
+            if lowest.is_none() {
+                return points_to(s);
+            }
+            if s.dynamic == 0
+                && let Vals::Known(vs) = &s.vals
+                && !vs.is_empty()
+            {
+                let mut r = 0u64;
+                for &v in vs {
+                    let ea = u64::from(v) + u64::from(off);
+                    r |= if ea >= u64::from(pure_lo) && ea < mem_end {
+                        region_bit(region_of(ea))
+                    } else {
+                        R_NATIVE
+                    };
+                }
+                return r;
+            }
+            let static_base = off >= pure_lo && u64::from(off) < mem_end;
+            if static_base && s.sites.is_empty() && s.spz.is_empty() && !s.spz_many {
+                return region_bit(region_of(u64::from(off)));
+            }
+            points_to(s)
+        };
         // ---- the fixpoint (nodes, then memory buckets, then escapes) ------
         let mut sum: Vec<Sum> = vec![Sum::bottom(); n];
         let mut bucket: Vec<Sum> = vec![Sum::bottom(); 64];
@@ -1699,7 +1801,7 @@ impl Provenance {
                 }
                 if let Some(acc) = loads.get(&v) {
                     let a = &sum[acc.addr];
-                    let pt = points_to(a);
+                    let pt = points_to_at(a, acc.offset);
                     for (k, b) in bucket.iter().enumerate() {
                         if pt & (1 << k) != 0 {
                             s.join(b, false);
@@ -1753,8 +1855,8 @@ impl Provenance {
             }
             // Memory buckets: what each region may hold.
             let mut nb: Vec<Sum> = vec![Sum::bottom(); 64];
-            for &(addr, val) in &f.stores {
-                let pt = points_to(&sum[addr]);
+            for &(addr, val, off) in &f.stores {
+                let pt = points_to_at(&sum[addr], off);
                 for (k, b) in nb.iter_mut().enumerate() {
                     if pt & (1 << k) != 0 {
                         b.join(&sum[val], false);
@@ -1902,7 +2004,15 @@ impl Provenance {
         if lowest.is_some() || sp_init.is_some() {
             let win_lo = i64::from(pure_lo);
             let in_win = |c: i64| c >= win_lo && i128::from(c) < i128::from(mem_end);
-            // The first in-window i64 constant reaching `v` over directed flows.
+            // The first in-window i64 constant reaching `v` as a VALUE: over
+            // plain flows (locals, select, parameters, results, block values)
+            // and the value-preserving conversions and i64 add/sub only —
+            // never through a shift count, another scalar operand, memory
+            // content (any memory) or a global (gale: a fmt packer's `i64.const
+            // 32` shift count stored to memory 1 "reached" an unrelated
+            // memory-1 load's comparison).
+            let walls: std::collections::HashSet<Node> =
+                g.mems.values().chain(g.globals.values()).copied().collect();
             let reaching = |v: Node| -> Option<(u32, usize, i64)> {
                 let mut seen = vec![false; n];
                 let mut work = vec![v];
@@ -1914,6 +2024,16 @@ impl Provenance {
                         && in_win(c)
                     {
                         return Some((cf, co, c));
+                    }
+                    if walls.contains(&x) {
+                        continue;
+                    }
+                    if let Some(ins) = f.transparent.get(&x) {
+                        work.extend(ins.iter().copied());
+                        continue;
+                    }
+                    if f.opaque.contains(&x) && !binop_of.contains_key(&x) {
+                        continue;
                     }
                     work.extend(f.fpreds[x].iter().copied());
                 }
@@ -1980,8 +2100,10 @@ impl Provenance {
             // An address anchored by a static constant: a loaded value in it
             // is an index, never the pointer.
             let anchored = !s.spz.is_empty() || s.spz_many || !s.sites.is_empty();
+            let live = f.reachable.as_ref().is_none_or(|r| r.contains(&acc.func));
             if let Some((lf, lop, wa)) = s.data
                 && !anchored
+                && live
             {
                 let k = region_of(u64::from(wa)).unwrap_or(0);
                 let so = wa - inp.data_segments.get(k).map_or(0, |d| d.0);
@@ -2397,6 +2519,7 @@ mod tests {
             elem_func_indices: &[],
             memory_count: 2,
             cross_copies_carry_no_pointers: false,
+            start_function: None,
         }
     }
 
