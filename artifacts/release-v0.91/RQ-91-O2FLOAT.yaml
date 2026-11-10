@@ -1,0 +1,155 @@
+artifacts:
+  - id: RQ-91-O2FLOAT
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "An if arm that ends in a br, br_table, return or unreachable no longer leaves its dead values for the code after the if on ARM"
+    description: >
+        SILENT MISCOMPILE, reported by cpetig as #1691. `synth compile
+        pruned-O2.wasm --target cortex-m7 --relocatable --all-exports
+        --embedder-data-init --embedder-global-init` exits 0 with no warning,
+        and the 4th `step` call returns four f32 values about 1e-3 off
+        wasmtime 50.0.1 (`3f1649f3 3f175bbd 3f16c13d 3f17c5b2` against
+        `3f162d43 3f177b90 3f16ded6 3f17a4f7`). The unoptimized module and
+        `wasm-opt -O3` are correct.
+
+        THE DEFECT. The direct selector (`select_with_stack`, the only ARM
+        selector) keeps a simulated operand stack. A value-carrying `br`
+        lands its value in the target join but leaves it ON that stack (it is
+        peeked, not popped, `instruction_selector.rs` `edge_value_move`).
+        Wasm's stack is polymorphic after the transfer; the simulated one is
+        not, so the dead tail of an arm leaves values above the arm's entry
+        height. #1215 discarded them at a plain block's `end`, but the `if`
+        arms never consulted its `dead_prefix`: the `End` of an else-less if
+        dropped nothing, `Else` forgot that the then arm was dead, and the
+        `End` of an if/else whose arms left different counts published the
+        dead arm's values beside the live arm's results. The code after the if
+        then read a dead arm's register instead of the value beneath the if.
+        In cpetig's module that is `func_2`, a biquad coefficient builder:
+        `f32.const 1; block (result f32) ... if ... f32.const 0; br 1 end ...
+        end; f32.sub` subtracted from the dead `0.0`, not from `1.0`. The
+        class is not float-specific (the i32 twin returns 0 where wasmtime
+        returns 99) and covers every ARM profile and rung (cortex-m3/m4/m4f/
+        m7/m7dp relocatable and self-contained, cortex-r5 A32); RV32 and
+        AArch64 have their own selectors and are not affected. When a dead
+        arm happened to leave exactly the if's arity, the junk acted as a
+        placeholder and the output was already correct, which is why the
+        spec suite (#1636) never saw it: no spec function consumes a value
+        from beneath a dead arm's leftover.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers: compile
+        `(module (func (export "f") (param i32) (result i32) i32.const 100
+        block (result i32) local.get 0 i32.eqz if i32.const 1 br 1 end
+        i32.const 7 end i32.sub))` with `synth compile x.wat --target
+        cortex-m4 --relocatable --all-exports -o x.o` and with `--target
+        cortex-r5`, and call `f` under unicorn with R0 = 0 and R0 = 5. Both
+        equal to wasmtime (99 and 93) refutes it.
+
+        MEASURED 2026-11-10 on main 0d22bafe, synth 0.90.0 debug build: LIVE.
+        rc 0, no warning; f(0) = 0 and f(5) = -7 on cortex-m4 (Thumb-2) and on
+        cortex-r5 (A32), against wasmtime's 99 and 93. The emitted `subs r6,
+        r3, r4` reads r3, the dead arm's `i32.const 1`, instead of r1 (100).
+
+        CITATION: #1691 is where the matter was filed; the analysis is in
+        this record and its PR. #1215 is where the block-level rule this
+        applies to the if arms was analysed; it is closed. #1426 and #1102
+        are the loud declines the leaked VFP values also caused (below); they
+        name where those declines were analysed, not open scopes.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - selector
+      - external-reporter
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1691"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 every if arm that ends in a br, br_table, return or
+        unreachable leaves nothing the code after the if reads, on every ARM
+        profile and rung, executed against wasmtime at i32, i64, f32 and f64;
+        a dead arm that reaches below the if's entry height is refused
+        loudly; red before and green after, with each of the three join sites
+        and the refusal mutated alone; the reporter's module replays equal to
+        wasmtime; and what changes bytes or newly refuses is counted over the
+        spec suite and the tracked .wat/.wasm files
+      landed: "PR #1694 - #1691 - DELIVERED: a wrong-code fix, not a refusal. The refuting command was RUN FIRST on main 0d22bafe and the defect was LIVE (values above). Fix, in select_with_stack: #1215's dead-code rule is applied to the if arms at their three join sites. `Else` records whether the then arm ended unreachable before resetting `dead_prefix`; the `End` of an else-less parameter-free if drops what a dead then arm left above the checkpoint; the `End` of an if/else publishes only the LIVE arm's results when a dead arm left a count other than the if's arity (both dead: nothing for a void if, the arm that left the arity for a result-typed one, else a loud refusal; and an unbranched both-dead if hands its parent the live prefix, as #1215 does for a block). Every case the old code already got right (a dead arm that left exactly the arity, the parameter-taking else-less if, no dead arm) is byte-identical. Dead code that consumed or rewrote a value below the if's entry height is refused with `#1691: unreachable code after a br/br_table/return/unreachable in an if arm consumed or rewrote an operand-stack value BELOW the if's entry height`."
+      verified-by: >
+        DELIVERED, execution-verified. REFUTING COMMAND, run first on
+        0d22bafe: LIVE (cortex-m4 and cortex-r5 both 0 / -7 against 99 / 93);
+        on the branch both 99 / 93. New wired oracle
+        scripts/repro/if_arm_dead_value_1691_differential.py (ci.yml, job
+        litpool-islands-345 beside the #1318 carried-float step, through
+        oracle_run.py, `emulations >= 1392`, floor DERIVED from the leg rules
+        and checked against the header): 26 exports of
+        if_arm_dead_value_1691.wat (then-arm br, else-arm br, both arms dead,
+        a br from a nested block, br_table, unreachable, return leaving an
+        operand, a carried value unwound into a void block, mismatched arm
+        counts with a dead then, a dead else and both dead, the labels.wast
+        loop exit; at i32, i64, f32 and f64; two arity-held CONTROLS; and the
+        `refuse_below` refusal pin) on cortex-m4f, cortex-m7 and cortex-m7dp,
+        each --relocatable and self-contained, and cortex-r5 A32 relocatable
+        and self-contained, x in {0,1,5,7}, zeroed and garbage machine state,
+        bit-exact against wasmtime 48.0.0 under unicorn 2.1.4. RED on
+        0d22bafe: 788 failures, 1008 of 1392 emulations reachable (15 exports
+        wrong on every leg they compile on; 8 shapes refused loudly on base,
+        by VCR-RA-003 JoinValueNotAvailable, #313, GI-FPU-002 and a stack
+        underflow; `refuse_below` not declined with #1691); both controls
+        correct on base. GREEN on the branch: 1392 emulations, 0 failures.
+        MUTANTS, each a source mutant rebuilt and run, each RED: the `Else`
+        site reverted (120 failures: t_i32_both / t_f32_both wrong, the
+        mismatched dead-then shape refused), the else-less `End` truncate
+        removed (604 failures), the if/else `End` publish reverted (120
+        failures: t_i32_else / t_f32_else wrong, three shapes refused), the
+        below-entry refusal removed (refuse_below falls to the old loud
+        "stack underflow" on every leg, so the pin reds; that shape was loud
+        before this change, not a miscompile). THE REPORTER'S MODULE, local
+        evidence only (cpetig's attachment is NOT committed; repro.zip sha256
+        f8cebc32f8ec2c3eac1211b7f7b6948442e3c7582fcda8a7844cc0c338d8e324,
+        pruned-O2.wasm c859c78068ea826efc56e60a0d2cf14223351c4e6521fe68f7aadbe6e3074c87,
+        pruned-plain.wasm c20fe49a79978b4e0755e283f9cd2f37c699029e323b1dbba48605cf8567c837,
+        calls.txt 2d59823b0b70c9ccb1b22ef9db97b85baf3473ed18949b4276ad0e1e766f78be),
+        the reporter's command, the shim.c R9/R10/R11 contract and data and
+        global init replayed under unicorn against wasmtime-py 50.0.1: step 3
+        RED on 0d22bafe (3f1649f3 3f175bbd 3f16c13d 3f17c5b2) and GREEN on the
+        branch (3f162d43 3f177b90 3f16ded6 3f17a4f7 == wasmtime, all 4
+        steps). Per-function differential (every function called directly
+        from the replay's memory states, traced and seeded arguments): 115 of
+        1468 calls wrong in 7 functions on 0d22bafe, 0 of 1468 on the branch.
+        pruned-plain's object is BYTE-IDENTICAL. Every VFP instruction in the
+        O2 objects re-assembles under -mcpu=cortex-m7 -mfpu=fpv5-sp-d16
+        (control: an appended vadd.f64 is rejected). REACH, measured with the
+        local wasm-opt 116, NOT the reporter's 133, from pruned-plain.wasm:
+        -O1 refused on base (#1102, func_3 declined), -Os and -Oz refused on
+        base (#1426 spill-slot pool exhausted on func_30, which the leaked VFP
+        values caused); on the branch -O1 and -Os compile clean and replay
+        equal to wasmtime (per-function 0 of 1548 and 0 of 1103), and -Oz
+        compiles everything but func_42 and the realloc (RefFunc / CallRef,
+        unrelated, #952) with 0 of 1323 per-function calls wrong. BYTE
+        IDENTITY, base 0d22bafe vs branch, 7 legs (cortex-m4, cortex-m7dp
+        software bounds, cortex-m4 / cortex-m7 / cortex-r5 relocatable, RV32,
+        AArch64): spec suite + tests/wast 2453 modules / 17171 compiles, 5
+        differ, 0 rc changes, all labels.wast module 0 on the 5 ARM legs
+        (loop1/loop2/loop4, which return the spec's 5, 8 and 16 on both
+        binaries: the branch drops a dead `mov` at an unreachable join);
+        the 233 tracked scripts/repro .wat/.wasm files plus 12 untracked local
+        inputs (both reporter modules and 10 reductions), 245 modules / 1715
+        compiles: among tracked files only the new fixture moves (5 ARM legs),
+        and among the local inputs pruned-O2 and the reductions move, as they
+        must; 0 rc changes; RV32 and AArch64 identical everywhere. spec-exec (#1636) identical on base and branch: 49121
+        emulations, 35676 directives executed, failures exactly the 53
+        baseline entries. #1215's brvalue_operand oracle and the control-flow
+        oracles (#500, #507, #509, #538, #665, #930, #1189 join-alias and
+        class, #1230, #1318, #1639, VCR-DEC-001, the self-contained boot
+        sweep) all pass on the branch. The home-alias audit's exact pins move
+        7665 -> 7743 functions, 9234 -> 9312 homes, 242991 -> 244147
+        instructions, by paired controls: with the fixture held aside the
+        base prints 242991 and the branch 242979 (the -12 is the labels.wast
+        dead `mov`, 3 functions x 4 legs); the fixture adds the rest.

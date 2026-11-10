@@ -16,6 +16,57 @@
 
 use super::*;
 
+/// #1691: an if arm whose end is unreachable may be dropped back to its
+/// checkpoint only if the dead code left the live prefix below it untouched
+/// (the #1215 rule for blocks, applied to an if arm).
+fn check_dead_arm_prefix(stack: &[StackVal], cp: usize, live: &[StackVal]) -> Result<()> {
+    if stack.len() < cp || live.len() != cp || stack[..cp] != *live {
+        return Err(synth_core::Error::synthesis(
+            "#1691: unreachable code after a br/br_table/return/unreachable in an \
+             if arm consumed or rewrote an operand-stack value BELOW the if's \
+             entry height; declined rather than miscompiled"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// #1691: the join of an if/else one or both of whose arms ended unreachable
+/// and left a value count other than the if's arity. A dead arm contributes
+/// nothing; the join's results are the LIVE arm's. Both arms dead: the join is
+/// reached only by a branch to the if itself, which carries nothing (a branch
+/// to a result-typed if is declined at the branch, #509), so a void if
+/// publishes nothing; a result-typed one keeps an arm that left the arity as
+/// placeholders for the dead code after it, and is refused if neither did.
+fn publish_live_arm(
+    stack: &mut Vec<StackVal>,
+    then_results: Vec<StackVal>,
+    else_results: Vec<StackVal>,
+    then_dead: bool,
+    else_dead: bool,
+    arity: usize,
+) -> Result<()> {
+    if !then_dead {
+        stack.extend(then_results);
+    } else if !else_dead {
+        stack.extend(else_results);
+    } else if arity == 0 {
+        // Nothing reaches the join with a value.
+    } else if then_results.len() == arity {
+        stack.extend(then_results);
+    } else if else_results.len() == arity {
+        stack.extend(else_results);
+    } else {
+        return Err(synth_core::Error::synthesis(
+            "#1691: both arms of a result-typed if end in an unconditional \
+             transfer and neither left the if's result arity on the direct \
+             selector's operand stack; declined rather than miscompiled"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 impl InstructionSelector {
     /// This method properly tracks the WASM virtual stack and generates code that
     /// uses r0-r3 for the first 4 parameters per AAPCS. Handles WASM structured
@@ -488,6 +539,10 @@ impl InstructionSelector {
         // (a `mov R_then, R_else` on the else path when they differ). Each
         // inner `Vec` is one if-block's then-arm results, top-most-last.
         let mut if_then_results: Vec<Vec<StackVal>> = Vec::new();
+        // #1691: per open if, the then-arm's dead-code snapshot (its #1215
+        // `dead_prefix`) captured at `Else`, or None when the then-arm's end
+        // is reachable.
+        let mut if_then_dead: Vec<Option<Vec<StackVal>>> = Vec::new();
         // RQ-64-MVLOWER (#1093): per open `if`, the block PARAMETER entries
         // snapshotted at `If` (bottom→top) — empty for a parameter-free if,
         // which keeps every existing lowering byte-identical. Re-pushed at
@@ -4657,6 +4712,7 @@ impl InstructionSelector {
                     if_checkpoints.push(cp);
                     if_start_idx.push(idx);
                     if_then_results.push(Vec::new());
+                    if_then_dead.push(None);
                     if_params.push(param_vals);
 
                     // CMP cond_reg, #0
@@ -4681,6 +4737,16 @@ impl InstructionSelector {
                 }
 
                 Else => {
+                    // #1691: remember whether the then-arm ended unreachable
+                    // before the else arm resets it.
+                    let then_dead = block_labels.last().and_then(|bl| bl.dead_prefix.clone());
+                    if let Some(live) = then_dead.as_deref() {
+                        let cp = if_checkpoints.last().copied().unwrap_or(0);
+                        check_dead_arm_prefix(&stack, cp, live)?;
+                    }
+                    if let Some(slot) = if_then_dead.last_mut() {
+                        *slot = then_dead;
+                    }
                     // #1215: the else arm starts REACHABLE whatever the then
                     // arm ended in.
                     if let Some(bl) = block_labels.last_mut() {
@@ -4806,6 +4872,16 @@ impl InstructionSelector {
                     if block_labels.last().is_some_and(|bl| bl.is_if)
                         && let Some((else_label, end_label)) = if_labels.last().cloned()
                     {
+                        // #1691: the CURRENT arm's dead-code snapshot (the
+                        // else arm's when an else was emitted, else the
+                        // then arm's), and the if's result arity.
+                        let arm_dead = block_labels.last().and_then(|bl| bl.dead_prefix.clone());
+                        let if_results = block_labels
+                            .last()
+                            .map(|bl| bl.results as usize)
+                            .unwrap_or(0);
+                        let if_branched = block_labels.last().is_some_and(|bl| bl.branched);
+                        let then_dead = if_then_dead.pop().flatten();
                         // Check if the else label was already emitted
                         // by looking for it in the instructions
                         let else_emitted = instructions
@@ -4813,6 +4889,15 @@ impl InstructionSelector {
                             .any(|i| matches!(&i.op, ArmOp::Label { name } if *name == else_label));
                         let params_here = if_params.pop().unwrap_or_default();
                         if !else_emitted && params_here.is_empty() {
+                            // #1691: a then-arm that ended in an unconditional
+                            // transfer reaches this join only on the FALSE
+                            // path, where nothing above the checkpoint was
+                            // pushed. Drop what the dead code left there.
+                            if let Some(live) = arm_dead.as_deref() {
+                                let cp = if_checkpoints.last().copied().unwrap_or(0);
+                                check_dead_arm_prefix(&stack, cp, live)?;
+                                stack.truncate(cp);
+                            }
                             // No else clause: emit else label (same as end).
                             // A valid parameter-free if-without-else has
                             // arity 0 (no result), so there is nothing to
@@ -4908,33 +4993,85 @@ impl InstructionSelector {
                         let checkpoint = if_checkpoints.pop();
                         if_start_idx.pop();
                         if else_emitted {
+                            // #1691: the #1215 rule at an if/else join. An arm
+                            // whose end is unreachable (it ended in a br,
+                            // br_table, return or unreachable) reaches the join
+                            // on NO path, so whatever its dead tail left above
+                            // the checkpoint is not a result. When such an arm
+                            // left exactly the if's arity, the reconciliation
+                            // below treats its entries as placeholders and is
+                            // correct, so that case is kept byte-identical.
+                            // When it left any other count, the old
+                            // "restore what we took" path published the dead
+                            // values beside the live arm's results and the code
+                            // after the if consumed them (#1691: a value
+                            // beneath the if was read from the dead arm's
+                            // register). The live arm's results alone are the
+                            // join's results.
+                            if let Some(live) = arm_dead.as_deref() {
+                                check_dead_arm_prefix(&stack, checkpoint.unwrap_or(0), live)?;
+                            }
+                            let else_dead = arm_dead.is_some();
+                            let then_is_dead = then_dead.is_some();
                             if let Some(cp) = checkpoint {
                                 // else-arm results above the checkpoint, in the
                                 // same bottom→top order as `then_results`.
                                 let else_results: Vec<StackVal> = stack.split_off(cp);
-                                if else_results.len() == then_results.len() {
-                                    for (then_v, else_v) in
-                                        then_results.iter().zip(else_results.iter())
-                                    {
-                                        reconcile_if_result(
-                                            then_v,
-                                            else_v,
-                                            &mut instructions,
-                                            idx,
-                                        )?;
-                                    }
+                                let arity_held = then_results.len() == if_results
+                                    && else_results.len() == if_results;
+                                if (then_is_dead || else_dead) && !arity_held {
+                                    publish_live_arm(
+                                        &mut stack,
+                                        then_results,
+                                        else_results,
+                                        then_is_dead,
+                                        else_dead,
+                                        if_results,
+                                    )?;
                                 } else {
-                                    // Arity mismatch between arms (should not
-                                    // happen for valid wasm). Restore what we
-                                    // took rather than silently miscompile;
-                                    // downstream may still Err cleanly.
-                                    stack.extend(else_results);
+                                    if else_results.len() == then_results.len() {
+                                        for (then_v, else_v) in
+                                            then_results.iter().zip(else_results.iter())
+                                        {
+                                            reconcile_if_result(
+                                                then_v,
+                                                else_v,
+                                                &mut instructions,
+                                                idx,
+                                            )?;
+                                        }
+                                    } else {
+                                        // Arity mismatch between arms with both
+                                        // arms live (invalid wasm). Restore what
+                                        // we took rather than silently
+                                        // miscompile; downstream may still Err
+                                        // cleanly.
+                                        stack.extend(else_results);
+                                    }
+                                    // The merged results live in the then-arm's
+                                    // registers — push them back onto the vstack
+                                    // so the surrounding code (return / outer
+                                    // op) reads them.
+                                    stack.extend(then_results);
+                                }
+                            } else {
+                                stack.extend(then_results);
+                            }
+                            // #1691: both arms dead and no branch targets the
+                            // if: its `end` is unreachable, so the code after it
+                            // is dead too. Hand the enclosing construct the live
+                            // prefix, exactly as #1215 does for an unbranched
+                            // block whose end is unreachable.
+                            if then_is_dead && else_dead && !if_branched && block_labels.len() >= 2
+                            {
+                                let cp = checkpoint.unwrap_or(stack.len()).min(stack.len());
+                                let parent_idx = block_labels.len() - 2;
+                                let parent = &mut block_labels[parent_idx];
+                                if parent.dead_prefix.is_none() && parent.entry_height <= cp {
+                                    parent.dead_prefix =
+                                        Some(stack[..parent.entry_height].to_vec());
                                 }
                             }
-                            // The merged results live in the then-arm's
-                            // registers — push them back onto the vstack so the
-                            // surrounding code (return / outer op) reads them.
-                            stack.extend(then_results);
                         }
                         instructions.push(ArmInstruction {
                             op: ArmOp::Label { name: end_label },
