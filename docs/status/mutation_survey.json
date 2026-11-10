@@ -2300,7 +2300,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "c4914d3c",
+    "reanchored_at": "111f5485",
     "seed": 1189
   },
   "mutants": [
@@ -2956,9 +2956,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 11097,
+      "end": 11122,
       "file": "crates/synth-cli/src/main.rs",
-      "id": "R5-startup/IMM/main.rs:11097:36",
+      "id": "R5-startup/IMM/main.rs:11122:36",
       "killed_by": {
         "binaries": [
           "synth-cli(unit)"
@@ -2974,7 +2974,7 @@
       "op": "IMM",
       "region": "R5-startup",
       "seconds": 304.1,
-      "start": 11097,
+      "start": 11122,
       "status": "killed"
     },
     {
@@ -6537,9 +6537,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 11008,
+      "end": 11033,
       "file": "crates/synth-cli/src/main.rs",
-      "id": "R5-startup/BOUND/main.rs:11008:58",
+      "id": "R5-startup/BOUND/main.rs:11033:58",
       "killed_by": {
         "binaries": [
           "base_cse_flip_468",
@@ -6563,7 +6563,7 @@
       "op": "BOUND",
       "region": "R5-startup",
       "seconds": 314.6,
-      "start": 11008,
+      "start": 11033,
       "status": "killed"
     },
     {
@@ -7322,9 +7322,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 11093,
+      "end": 11118,
       "file": "crates/synth-cli/src/main.rs",
-      "id": "R5-startup/IMM/main.rs:11093:32",
+      "id": "R5-startup/IMM/main.rs:11118:32",
       "killed_by": {
         "binaries": [
           "synth-cli(unit)"
@@ -7341,7 +7341,7 @@
       "op": "IMM",
       "region": "R5-startup",
       "seconds": 369.9,
-      "start": 11093,
+      "start": 11118,
       "status": "killed"
     },
     {
@@ -8768,9 +8768,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 11087,
+      "end": 11112,
       "file": "crates/synth-cli/src/main.rs",
-      "id": "R5-startup/GUARD/main.rs:11087:0",
+      "id": "R5-startup/GUARD/main.rs:11112:0",
       "killed_by": {
         "binaries": [
           "arm_reloc_globalinit_refusal_1052",
@@ -8796,7 +8796,7 @@
       "op": "GUARD",
       "region": "R5-startup",
       "seconds": 380.9,
-      "start": 11087,
+      "start": 11112,
       "status": "killed"
     },
     {
@@ -10203,9 +10203,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 11052,
+      "end": 11077,
       "file": "crates/synth-cli/src/main.rs",
-      "id": "R5-startup/GUARD/main.rs:11052:0",
+      "id": "R5-startup/GUARD/main.rs:11077:0",
       "killed_by": {
         "binaries": [
           "base_cse_flip_468",
@@ -10229,7 +10229,7 @@
       "op": "GUARD",
       "region": "R5-startup",
       "seconds": 414.2,
-      "start": 11052,
+      "start": 11077,
       "status": "killed"
     },
     {
@@ -10667,13 +10667,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 11023,
+      "end": 11048,
       "file": "crates/synth-cli/src/main.rs",
-      "id": "R5-startup/IMM/main.rs:11023:32",
+      "id": "R5-startup/IMM/main.rs:11048:32",
       "op": "IMM",
       "region": "R5-startup",
       "seconds": 446.8,
-      "start": 11023,
+      "start": 11048,
       "status": "survived",
       "suite_seconds": 419.7
     },
@@ -12069,9 +12069,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 11068,
+      "end": 11093,
       "file": "crates/synth-cli/src/main.rs",
-      "id": "R5-startup/IMM/main.rs:11068:28",
+      "id": "R5-startup/IMM/main.rs:11093:28",
       "killed_by": {
         "binaries": [
           "base_cse_flip_468",
@@ -12093,7 +12093,7 @@
       "op": "IMM",
       "region": "R5-startup",
       "seconds": 464.8,
-      "start": 11068,
+      "start": 11093,
       "status": "killed"
     },
     {
