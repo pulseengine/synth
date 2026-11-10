@@ -694,7 +694,7 @@ static range that carries no relocation is a compiler defect, refused as
   - `npa-software-bounds (#1661)` — `--safety-bounds software|mask` with any
     memory-0 access.
 
-**What you promise (category (b)) — R1-R3′.**
+**What you promise (category (b)) — R1-R4.**
 - **R1 (pointer arithmetic stays in its object).** A static pointer plus a
   RUN-TIME delta stays inside the object the pointer names: within the
   CLOSED range `[base, base + size]`, one-past-the-end included (slice
@@ -731,6 +731,17 @@ static range that carries no relocation is a compiler defect, refused as
   already native. The provenance pass assumes a host pointer may point into
   every region whose address left the module through an export result or an
   import argument, and no other.
+- **R4 (the canonical-ABI realloc contract).** For an export named
+  `cabi_realloc` or `cabi_realloc_*` (the canonical ABI / wit-bindgen name)
+  with the signature `(i32, i32, i32, i32) -> i32`, and for an internal
+  function whose whole body forwards its four parameters to one, the
+  `old_ptr` argument (parameter 0) is a block that realloc returned earlier,
+  or 0 — never an address inside the module's initialised data. The
+  OBLIGATION, on you: call it only that way, as the canonical ABI requires.
+  synth relies on it narrowly: a `memory.copy` whose source is that
+  parameter is taken to read no pointer word from a data segment. It is NOT
+  a rule that export parameters never point into statics (R3′ still holds
+  for every other parameter).
 
 Pinned executable: `scripts/repro/npa_model_differential.py` (one row per
 shape: executed against wasmtime, or refused with its named diagnostic; red on

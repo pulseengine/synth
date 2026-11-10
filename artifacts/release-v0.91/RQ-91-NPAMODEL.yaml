@@ -290,6 +290,45 @@ artifacts:
         applied without the equal-set guard refuses gale_boundary and
         gale_fp2b, so the guard is load-bearing. npa_model_differential: 54
         emulations.
+        GALE'S RE-RUN ON c9288222: the v11 two-domain image is still 56/56 and
+        byte-identical (m3 4f91ec458025170f, m7dp 298a11362380d01b), and
+        switch-thin is fixed. 64 SAME, 0 BYTES-DIFFER, and 6 NEWLY REFUSED (3
+        modules x 2) on two classes. (A1) npa-data-pointer in the fused v11
+        one-domain image, whose source load is `local.get 1; i32.load` in a
+        callee reached through two call levels with the constant 4488. The
+        two causes proposed were (i) a closed-range attribution of 4488 to the
+        segment that ends there, and (ii) the constant not carried through
+        two calls. Neither applies, MEASURED: there is no closed-range
+        attribution in the pass, and a minimal fixture of exactly that chain
+        (fpA1) compiles on c9288222. gale's diagnostic reproduces exactly once
+        ANOTHER caller passes a pointer into the Location's segment
+        (`&Location`) through the same chain (gale_fpA1). The cause is
+        context-insensitivity: a callee's parameters and returns are shared by
+        every call site, so that caller's hit marked every call's result. Each
+        call site now has its own result node, and a npa-data-pointer refusal
+        needs a call/return-MATCHED path. That path runs from the dereference
+        back to a source load whose address, in the same context, is a
+        constant naming a pointer word. The search keeps the refusal whenever
+        it cannot decide: arithmetic or a non-constant source in the address,
+        data that came through memory, or the budget. The fixture's `+128`
+        sibling then tripped npa-region-straddle (its values are the bases
+        plus 128). The per-base rule now also covers `x + d`, with d a
+        constant that is not relocated and x's values exactly the bases.
+        Still refused: the same chain dereferenced in the Location caller's
+        own context (gale_fpA1_ctx_neg), and a true 4-byte straddle into the
+        pointer-bearing segment (gale_fpA1_straddle_neg). (A2) npa-data-pointer
+        on a wit-bindgen `cabi_realloc_*` grow copy from `old_ptr`. The
+        maintainer's option (a) is now R4 of the ABI document, the
+        canonical-ABI realloc contract. Under it, a memory.copy whose source
+        is param 0 of an export named cabi_realloc / cabi_realloc_* with the
+        signature (i32,i32,i32,i32)->i32, or of a wrapper that only forwards
+        to one, reads no static. gale_fpA2 is EXEC. Still refused: the same
+        shape under another name and with another signature, an internal copy
+        from a pointer-bearing constant, and a copy from a non-realloc
+        export's param (R3′). Mutants, each red: no call/return matching; a
+        non-constant address atom counted as no hit; memory-borne data
+        counted as no hit; any export name; any signature; option (b), every
+        export parameter. npa_model_differential: 56 emulations.
         The delta-execution figures above were measured on an earlier branch
         binary; they still hold because those modules' census hashes are
         identical between that binary and this head (536 of 536 rows with the

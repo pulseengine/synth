@@ -108,6 +108,11 @@ pub struct NpaModule<'a> {
     pub cross_copies_carry_no_pointers: bool,
     /// The module's start function (a reachability root with the exports).
     pub start_function: Option<u32>,
+    /// Exports named `cabi_realloc` / `cabi_realloc_*` with the canonical-ABI
+    /// signature `(i32, i32, i32, i32) -> i32` (the caller checks name and
+    /// types). Under the canonical ABI their `old_ptr` (param 0) is the
+    /// result of a prior realloc, or 0: never a static.
+    pub canonical_realloc: Vec<u32>,
 }
 
 type Node = usize;
@@ -191,6 +196,17 @@ struct M0Facts {
     /// Functions reachable from the exports and the start function
     /// (`None`: not decidable, every function counts as reachable).
     reachable: Option<std::collections::HashSet<u32>>,
+    /// Every call site into analysed functions: `(callees, args, results)`,
+    /// each result a node of its own (the callee's shared return node flows
+    /// into it), so a search can match a return with its call.
+    sites: Vec<(Vec<u32>, Vec<Node>, Vec<Node>)>,
+    /// Parameter counts of the analysed functions.
+    param_counts: HashMap<u32, u32>,
+    /// The `old_ptr` (param 0) nodes of the canonical-ABI realloc functions
+    /// and of wrappers that only forward to one: a `memory.copy` reading
+    /// from one reads a prior allocation, not a static (the canonical-ABI
+    /// realloc contract, an embedder obligation in the ABI document).
+    realloc_old_ptr: std::collections::HashSet<Node>,
 }
 
 /// One memory-0 access as the walk saw it.
@@ -348,6 +364,28 @@ impl Provenance {
             walk(&mut g, m, &analyzed, f).map_err(|e| format!("function {}: {e}", f.index))?;
         }
         g.m0.reachable = reachable_funcs(m, &analyzed, &g.m0);
+        g.m0.param_counts = m.funcs.iter().map(|f| (f.index, f.param_count)).collect();
+        // The canonical-ABI realloc contract: the flagged exports, and any
+        // function whose whole body forwards its four parameters to one.
+        let mut realloc: std::collections::HashSet<u32> =
+            m.canonical_realloc.iter().copied().collect();
+        for f in &m.funcs {
+            use WasmOp::{Call, End, LocalGet, Nop};
+            let body: Vec<&WasmOp> = f.ops.iter().filter(|o| !matches!(o, End | Nop)).collect();
+            if f.param_count == 4
+                && f.result_count == 1
+                && let [LocalGet(0), LocalGet(1), LocalGet(2), LocalGet(3), Call(c)] =
+                    body.as_slice()
+                && m.canonical_realloc.contains(c)
+            {
+                realloc.insert(f.index);
+            }
+        }
+        for fi in realloc {
+            if let Some(&n) = g.locals.get(&(fi, 0)) {
+                g.m0.realloc_old_ptr.insert(n);
+            }
+        }
         g.propagate();
         Ok(Provenance { graph: g })
     }
@@ -696,14 +734,19 @@ fn walk(
                     g.m0.unknown_callers.insert(fi);
                 }
                 if *c >= m.num_imported_funcs && analyzed.contains(c) {
-                    for (k, a) in args.into_iter().enumerate() {
+                    for (k, &a) in args.iter().enumerate() {
                         let p = g.local(*c, k as u32);
                         g.flow(a, p);
                     }
+                    let mut results = Vec::new();
                     for r in 0..resc {
                         let n = g.ret(*c, r);
-                        stack.push(n);
+                        let rs = g.fresh();
+                        g.flow(n, rs);
+                        results.push(rs);
+                        stack.push(rs);
                     }
+                    g.m0.sites.push((vec![*c], args, results));
                 } else {
                     // Host boundary (import or loud-skipped callee).
                     g.m0.host_exits.extend(args.iter().copied());
@@ -745,6 +788,8 @@ fn walk(
                     .collect();
                 targets.sort_unstable();
                 targets.dedup();
+                g.m0.sites
+                    .push((targets.clone(), args.clone(), results.clone()));
                 for t in targets {
                     for (k, &a) in args.iter().enumerate() {
                         let p = g.local(t, k as u32);
@@ -1867,7 +1912,12 @@ impl Provenance {
                 }
             }
             for &(dst, src) in &f.copies {
-                let (pd, ps) = (points_to(&sum[dst]), points_to(&sum[src]));
+                let pd = points_to(&sum[dst]);
+                let ps = if f.realloc_old_ptr.contains(&src) {
+                    R_NATIVE
+                } else {
+                    points_to(&sum[src])
+                };
                 let mut moved = Sum::bottom();
                 for (k, b) in bucket.iter().enumerate() {
                     if ps & (1 << k) != 0 {
@@ -2096,6 +2146,141 @@ impl Provenance {
                 }
             }
         }
+        // ---- #1672: is a data word REALIZABLY dereferenced? -------------------
+        // The data flag is context-insensitive: a callee's parameters and
+        // returns are shared by every call site, so one caller passing a
+        // pointer-bearing static (`&Location`) marks EVERY call's result
+        // (gale's fused v11 one-domain image). Before refusing, search
+        // backward from the dereferenced address with call/return matching:
+        // a return is entered from ITS call site, and a parameter is left
+        // through that site's argument. The search succeeds (the refusal
+        // stands) when it reaches a source load whose address, in that same
+        // context, is a constant naming a pointer word — or when it cannot
+        // decide (arithmetic in the address, a non-constant source, data that
+        // came through memory, the budget): it never suppresses a refusal it
+        // cannot justify.
+        let site_of_result: HashMap<Node, (usize, usize)> = f
+            .sites
+            .iter()
+            .enumerate()
+            .flat_map(|(s, (_, _, rs))| rs.iter().enumerate().map(move |(r, &n)| (n, (s, r))))
+            .collect();
+        let param_of: HashMap<Node, (u32, u32)> = g
+            .locals
+            .iter()
+            .filter(|((fi, l), _)| f.param_counts.get(fi).is_some_and(|&pc| *l < pc))
+            .map(|(&(fi, l), &n)| (n, (fi, l)))
+            .collect();
+        let walls: std::collections::HashSet<Node> =
+            g.mems.values().chain(g.globals.values()).copied().collect();
+        let realizable = |d: Node| -> bool {
+            const BUDGET: usize = 200_000;
+            const DEPTH: usize = 16;
+            let mut seen: std::collections::HashSet<(Node, Vec<usize>, bool)> = Default::default();
+            // (node, call stack, searching an ADDRESS for a hitting constant)
+            let mut work: Vec<(Node, Vec<usize>, bool, u32, u32)> =
+                vec![(d, Vec::new(), false, 0, 0)];
+            while let Some((x, st, addr, off, w)) = work.pop() {
+                if seen.len() > BUDGET || st.len() > DEPTH {
+                    return true;
+                }
+                if !seen.insert((x, st.clone(), addr)) {
+                    continue;
+                }
+                if addr {
+                    // Looking for the constants this address can be here.
+                    if let Some(&c) = consts_by_node.get(&x) {
+                        let ea = u64::from(c) + u64::from(off);
+                        if word_in(ea, u64::from(w)).is_some() {
+                            return true;
+                        }
+                        continue;
+                    }
+                    if binop_of.contains_key(&x)
+                        || f.opaque.contains(&x)
+                        || loads.contains_key(&x)
+                        || host_nodes.contains(&x)
+                        || global_nodes.contains_key(&x)
+                        || walls.contains(&x)
+                    {
+                        return true;
+                    }
+                } else {
+                    // Only nodes carrying the data flag can carry it on.
+                    if sum[x].data.is_none() {
+                        continue;
+                    }
+                    if let Some(acc) = loads.get(&x) {
+                        // A load that sets the flag ITSELF: search its address
+                        // in this context. One that got it through memory:
+                        // undecidable here.
+                        if sum[x]
+                            .data
+                            .is_some_and(|(lf, lop, _)| lf == acc.func && lop == acc.op)
+                        {
+                            work.push((
+                                acc.addr,
+                                st.clone(),
+                                true,
+                                acc.offset,
+                                acc.width.unwrap_or(4),
+                            ));
+                            continue;
+                        }
+                        return true;
+                    }
+                    if global_nodes.contains_key(&x) || walls.contains(&x) {
+                        return true;
+                    }
+                }
+                if let Some(&(s, r)) = site_of_result.get(&x) {
+                    let mut st2 = st.clone();
+                    st2.push(s);
+                    for &c in &f.sites[s].0 {
+                        if let Some(&n) = g.rets.get(&(c, r as u32)) {
+                            work.push((n, st2.clone(), addr, off, w));
+                        }
+                    }
+                    continue;
+                }
+                if let Some(&(c, k)) = param_of.get(&x) {
+                    let arg_of = |s: usize| f.sites[s].1.get(k as usize).copied();
+                    let site_args: std::collections::HashSet<Node> = f
+                        .sites
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (cs, _, _))| cs.contains(&c))
+                        .filter_map(|(s, _)| arg_of(s))
+                        .collect();
+                    match st.last() {
+                        Some(&s) if f.sites[s].0.contains(&c) => {
+                            let mut st2 = st.clone();
+                            st2.pop();
+                            if let Some(a) = arg_of(s) {
+                                work.push((a, st2, addr, off, w));
+                            }
+                            for &p in &f.fpreds[x] {
+                                if !site_args.contains(&p) {
+                                    work.push((p, st.clone(), addr, off, w));
+                                }
+                            }
+                        }
+                        _ => {
+                            // No call to match (the dereference's own caller is
+                            // unknown): every caller.
+                            for &p in &f.fpreds[x] {
+                                work.push((p, st.clone(), addr, off, w));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                for &p in &f.fpreds[x] {
+                    work.push((p, st.clone(), addr, off, w));
+                }
+            }
+            false
+        };
         // ---- per-access decisions -----------------------------------------
         let mut offset_role: std::collections::HashSet<usize> = Default::default();
         let mut base_role: std::collections::HashSet<usize> = Default::default();
@@ -2109,6 +2294,7 @@ impl Provenance {
             if let Some((lf, lop, wa)) = s.data
                 && !anchored
                 && live
+                && realizable(acc.addr)
             {
                 let k = region_of(u64::from(wa)).unwrap_or(0);
                 let so = wa - inp.data_segments.get(k).map_or(0, |d| d.0);
@@ -2367,12 +2553,32 @@ impl Provenance {
                 .map(|&k| sites[k].value)
                 .chain(s.spz.iter().copied())
                 .collect();
+            // The element's base: the value itself, or — for `x + d` with `d`
+            // a constant that is not relocated and `x`'s values exactly the
+            // bases (a field `+128` of a per-caller static) — the value
+            // minus `d`.
+            let shift: Option<u32> = if bases == *vals {
+                Some(0)
+            } else if let Some(&(x, y, false)) = binop_of.get(&acc.addr) {
+                let side = |bn: Node, dn: Node| -> Option<u32> {
+                    let d = *consts_by_node.get(&dn)?;
+                    let relocated_d = sum[dn].sites.iter().any(|k| relocated.contains(k))
+                        || !sum[dn].spz.is_empty();
+                    match &sum[bn].vals {
+                        Vals::Known(bv) if *bv == bases && !relocated_d => Some(d),
+                        _ => None,
+                    }
+                };
+                side(x, y).or_else(|| side(y, x))
+            } else {
+                None
+            };
             let per_element = !s.spz_many
                 && !s.many_sites
                 && !folded.contains(&(acc.func, acc.op))
                 && !off_relocated(acc)
                 && !fallback.contains_key(&(acc.func, acc.op))
-                && bases == *vals;
+                && shift.is_some();
             let width: Option<u32> = match (acc.width, acc.len.map(|l| &sum[l].vals)) {
                 (Some(w), _) => Some(w),
                 (None, Some(Vals::Known(ls))) => ls.iter().max().copied(),
@@ -2448,7 +2654,7 @@ impl Provenance {
                     if folded.contains(&(acc.func, acc.op)) || (positional && acc.offset == 0) {
                         None
                     } else if per_element {
-                        let r = region_of(u64::from(v));
+                        let r = region_of(u64::from(v.wrapping_sub(shift.unwrap_or(0))));
                         (r != first_r).then_some(r)
                     } else {
                         s.sites
@@ -2546,6 +2752,7 @@ mod tests {
             memory_count: 2,
             cross_copies_carry_no_pointers: false,
             start_function: None,
+            canonical_realloc: Vec::new(),
         }
     }
 

@@ -3461,6 +3461,31 @@ fn npa_provenance(
         memory_count: (module.memories.len() + module.imported_memories.len()) as u32,
         cross_copies_carry_no_pointers: copies_carry_no_pointers,
         start_function: module.start_function,
+        canonical_realloc: module
+            .functions
+            .iter()
+            .filter(|f| {
+                let i = f.index as usize;
+                let named = f
+                    .export_name
+                    .as_deref()
+                    .is_some_and(|n| n == "cabi_realloc" || n.starts_with("cabi_realloc_"));
+                let i32_only = |m: &Vec<Vec<bool>>| {
+                    m.get(i)
+                        .is_some_and(|v| v.len() == 4 && v.iter().all(|&x| !x))
+                };
+                named
+                    && i32_only(&module.func_params_i64)
+                    && i32_only(&module.func_params_f32)
+                    && i32_only(&module.func_params_f64)
+                    && module.func_arg_counts.get(i) == Some(&4)
+                    && module.func_result_counts.get(i) == Some(&1)
+                    && module.func_ret_i64.get(i) == Some(&false)
+                    && module.func_ret_f32.get(i) == Some(&false)
+                    && module.func_ret_f64.get(i) == Some(&false)
+            })
+            .map(|f| f.index)
+            .collect(),
     };
     Provenance::analyze(&m)
 }

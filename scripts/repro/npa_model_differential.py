@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 54
+# ci-checks: emulations >= 56
 """RQ-91-NPAMODEL (#1672, #1568, #1604, #1661): memory-0 address provenance
 under `--relocatable --native-pointer-abi` is decided ONCE per module, and
 every shape is either executed equal to wasmtime or refused loudly with a
@@ -94,6 +94,17 @@ on the hand linker of npa_const_addr_differential.py, one instance per row):
     gale_fpA_indirect_neg / gale_fpB_neg
                   the source reachable through call_indirect / one instance
                   straddling its segment end: REFUSED.
+  gale's census of c9288222
+    gale_fpA1     a static's address through two call levels, loaded and
+                  dereferenced, while another caller passes &Location
+                  through the same chain: EXEC (c9288222 refused it).
+    gale_fpA2     a cabi_realloc_* grow copy from old_ptr: EXEC (c9288222
+                  refused it).
+    gale_fpA1_ctx_neg / gale_fpA1_straddle_neg / gale_fpA2_*_neg
+                  the Location caller's own dereference, a true straddle,
+                  the realloc shape under another name or signature, a copy
+                  from a pointer-bearing constant, a copy from a non-realloc
+                  export's param (R3'): REFUSED.
   #1661
     swb_neg       `--safety-bounds software` on a module touching memory 0:
                   REFUSED `npa-software-bounds (#1661)` (eab66646 compiled
@@ -292,6 +303,43 @@ EXEC = [
       (i32.add (i32.load offset=32 (local.get 0)) (i32.load offset=48 (local.get 0)))))
   (func (export "a") (result i32) (call $check (i32.const 0x938)))
   (func (export "b") (result i32) (call $check (i32.const 0x978))))""", [("a", ()), ("b", ())]),
+    # gale's census of c9288222. fpA1: a static at the start of the segment
+    # after the Location's, its address passed through two call levels and
+    # loaded; another caller passes `&Location` through the same chain, and
+    # the context-insensitive return made EVERY call's result "maybe the
+    # Location word" (the refusal now needs a call/return-matched path), and
+    # its `+128` sibling is judged per base. fpA2: a wit-bindgen-shaped
+    # `cabi_realloc_*` whose grow copy reads `old_ptr` (param 0): under the
+    # canonical-ABI realloc contract that is a prior allocation, not a
+    # static. Both refused on c9288222, EXEC here.
+    ("gale_fpA1", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x1020) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\30\10\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x1188) "\00\00\00\00\00\00\00\00\07\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (func $f60 (param i32 i32 i32) (result i32)
+    (i32.add (i32.load (local.get 1)) (i32.mul (local.get 2) (i32.load (i32.add (local.get 1) (i32.const 128))))))
+  (func $f61 (param i32 i32) (result i32)
+    (call $f60 (i32.add (global.get $sp) (i32.const 8)) (local.get 0) (local.get 1)))
+  (func (export "loc") (result i32) (call $f61 (i32.const 0x109c) (i32.const 0)))
+  (func (export "run") (result i32)
+    (i32.store (i32.const 0x1188) (i32.const 0x1030))
+    (i32.load8_u (call $f61 (i32.const 4488) (i32.const 0)))))""", [("run", ())]),
+    ("gale_fpA2", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x800) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\3f\08\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x880) "hello\00\00\00")
+  (func $impl (export "cabi_realloc_wit_bindgen_0_52_0") (param i32 i32 i32 i32) (result i32) (local i32)
+    (local.set 4 (i32.add (i32.const 0xa00) (i32.load (i32.const 0x900))))
+    (i32.store (i32.const 0x900) (i32.add (i32.load (i32.const 0x900)) (i32.const 16)))
+    (if (local.get 0)
+      (then (memory.copy (local.get 4) (local.get 0)
+              (select (local.get 1) (local.get 3) (i32.lt_u (local.get 1) (local.get 3))))))
+    (local.get 4))
+  (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32) (call $impl (local.get 0) (local.get 1) (local.get 2) (local.get 3)))
+  (func (export "loc") (result i32) (i32.const 0x84c))
+  (func (export "run") (result i32) (local i32 i32)
+    (local.set 0 (call $impl (i32.const 0) (i32.const 0) (i32.const 4) (i32.const 4)))
+    (i32.store (local.get 0) (i32.const 0x880))
+    (local.set 1 (call $impl (local.get 0) (i32.const 4) (i32.const 4) (i32.const 8)))
+    (i32.load8_u (i32.load (local.get 1)))))""", [("run", ())]),
     ("i64_counter_ctl", WALK_SP + '  (data (i32.const 0x2000) "\\01\\00\\00\\00\\02\\00\\00\\00\\04\\00\\00\\00\\08\\00\\00\\00")\n' + '  (func (export "anchor") (result i32) (i32.load (i32.const 0x2004)))\n' +
      '  (func (export "cnt") (result i32) (local i64)\n'
      '    (block (loop (br_if 1 (i64.ge_u (local.get 0) (i64.const 0x2008)))\n'
@@ -432,6 +480,83 @@ REFUSE = [
   (func (export "a") (result i32) (call $check (i32.const 0x938)))
   (func (export "b") (result i32) (call $check (i32.const 0x97c))))""",
      [], ["npa-region-straddle (#1604)"]),
+    # Still refused: the same chain dereferenced in the Location caller's
+    # own context; a true 4-byte straddle into the pointer-bearing segment;
+    # the realloc shape under another name, with another signature; an
+    # internal copy from a pointer-bearing constant; a copy from a param of
+    # a NON-realloc export that may point at an escaped static (R3').
+    ("gale_fpA1_ctx_neg", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x1020) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\30\10\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x1188) "\00\00\00\00\00\00\00\00\07\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (func $f60 (param i32 i32 i32) (result i32)
+    (i32.add (i32.load (local.get 1)) (i32.mul (local.get 2) (i32.load (i32.add (local.get 1) (i32.const 128))))))
+  (func $f61 (param i32 i32) (result i32)
+    (call $f60 (i32.add (global.get $sp) (i32.const 8)) (local.get 0) (local.get 1)))
+  (func (export "loc") (result i32) (i32.load8_u (call $f61 (i32.const 0x109c) (i32.const 0))))
+  (func (export "run") (result i32)
+    (i32.store (i32.const 0x1188) (i32.const 0x1030))
+    (i32.load8_u (call $f61 (i32.const 4488) (i32.const 0)))))""",
+     [], ["npa-data-pointer (#1672)", "function 'loc'"]),
+    ("gale_fpA1_straddle_neg", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x1020) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\30\10\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x1188) "\00\00\00\00\00\00\00\00\07\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (func $f60 (param i32 i32 i32) (result i32)
+    (i32.add (i32.load (local.get 1)) (i32.mul (local.get 2) (i32.load (i32.add (local.get 1) (i32.const 128))))))
+  (func $f61 (param i32 i32) (result i32)
+    (call $f60 (i32.add (global.get $sp) (i32.const 8)) (local.get 0) (local.get 1)))
+  (func (export "run") (result i32)
+    (i32.store (i32.const 0x1188) (i32.const 0x1030))
+    (i32.load8_u (call $f61 (i32.const 4486) (i32.const 0)))))""",
+     [], ["npa-region-straddle (#1604)"]),
+    ("gale_fpA2_name_neg", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x800) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\3f\08\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x880) "hello\00\00\00")
+  (func $impl (export "my_realloc") (param i32 i32 i32 i32) (result i32) (local i32)
+    (local.set 4 (i32.add (i32.const 0xa00) (i32.load (i32.const 0x900))))
+    (i32.store (i32.const 0x900) (i32.add (i32.load (i32.const 0x900)) (i32.const 16)))
+    (if (local.get 0)
+      (then (memory.copy (local.get 4) (local.get 0)
+              (select (local.get 1) (local.get 3) (i32.lt_u (local.get 1) (local.get 3))))))
+    (local.get 4))
+  
+  (func (export "loc") (result i32) (i32.const 0x84c))
+  (func (export "run") (result i32) (local i32 i32)
+    (local.set 0 (call $impl (i32.const 0) (i32.const 0) (i32.const 4) (i32.const 4)))
+    (i32.store (local.get 0) (i32.const 0x880))
+    (local.set 1 (call $impl (local.get 0) (i32.const 4) (i32.const 4) (i32.const 8)))
+    (i32.load8_u (i32.load (local.get 1)))))""",
+     [], ["npa-data-pointer (#1672)", "function 'run'"]),
+    ("gale_fpA2_sig_neg", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x800) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\3f\08\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 0x880) "hello\00\00\00")
+  (func $impl (export "cabi_realloc_wit_bindgen_0_52_0") (param i32 i32 i32) (result i32) (local i32)
+    (local.set 3 (i32.add (i32.const 0xa00) (i32.load (i32.const 0x900))))
+    (i32.store (i32.const 0x900) (i32.add (i32.load (i32.const 0x900)) (i32.const 16)))
+    (if (local.get 0)
+      (then (memory.copy (local.get 3) (local.get 0)
+              (select (i32.const 4) (local.get 2) (i32.lt_u (i32.const 4) (local.get 2))))))
+    (local.get 3))
+  
+  (func (export "loc") (result i32) (i32.const 0x84c))
+  (func (export "run") (result i32) (local i32 i32)
+    (local.set 0 (call $impl (i32.const 0) (i32.const 4) (i32.const 4)))
+    (i32.store (local.get 0) (i32.const 0x880))
+    (local.set 1 (call $impl (local.get 0) (i32.const 4) (i32.const 8)))
+    (i32.load8_u (i32.load (local.get 1)))))""",
+     [], ["npa-data-pointer (#1672)", "function 'run'"]),
+    ("gale_fpA2_const_neg", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x800) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\3f\08\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (func (export "run") (result i32)
+    (memory.copy (i32.const 0xa00) (i32.const 0x84c) (i32.const 4))
+    (i32.load8_u (i32.load (i32.const 0xa00)))))""",
+     [], ["npa-data-pointer (#1672)", "function 'run'"]),
+    ("gale_fpA2_r3_neg", r"""(module (memory (export "mem") 1) (global $sp (mut i32) (i32.const 0x400))
+  (data (i32.const 0x800) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\73\72\63\2f\6c\69\62\2e\72\73\00\00\00\3f\08\00\00\0a\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+  (func (export "loc") (result i32) (i32.const 0x84c))
+  (func (export "cp") (param i32 i32 i32 i32) (result i32)
+    (memory.copy (i32.const 0xa00) (local.get 0) (i32.const 4))
+    (i32.load8_u (i32.load (i32.const 0xa00)))))""",
+     [], ["npa-data-pointer (#1672)", "function 'cp'"]),
     ("swb_neg", SEG + ANCHOR +
      '  (func (export "st0") (param i32 i32) (i32.store (local.get 0) (local.get 1))))',
      ["--safety-bounds", "software"], ["npa-software-bounds (#1661)", "function '"]),
