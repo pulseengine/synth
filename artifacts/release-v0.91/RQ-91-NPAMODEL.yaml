@@ -329,6 +329,56 @@ artifacts:
         non-constant address atom counted as no hit; memory-borne data
         counted as no hit; any export name; any signature; option (b), every
         export parameter. npa_model_differential: 56 emulations.
+        GALE'S RE-RUN ON 3775050e printed the SAME two diagnostics: neither
+        fix had reached gale's modules, because both fixtures modelled
+        guessed shapes. gale's REAL modules were then examined here
+        (sha256-verified, used locally, NOT committed): fused--v11-one-domain
+        e237e5ab158f10fc1d58629c17c460492f99cd19a602df6e3fc05ce3eabf4f81,
+        fused--v11-two-domain 62e70dfe21e7fc7a6cb42bbe9c0157860b7aad499b5828b7a82e7bc3ad5d07c2,
+        switch-thin--gust_switch_thin
+        f9e55af8f03eed0ecf4476b8c48ddd8d7e0a447151a31840b409aa210c79e18f,
+        gustos.loom 62acd3a96e35c9831329b0b8689818047022e8cdc20d16294bac9475bb55c031
+        (gale main 5794643; meld 0.66.0). On 3775050e, one-domain and
+        gustos.loom are refused on both targets with gale's exact text;
+        two-domain and switch-thin are byte-identical to base 0185ba07. THE
+        REAL CAUSES, traced on the modules. (A1, one-domain) The flagged
+        source, func_60 op 78, does not read [4488, 4492): func_60 REASSIGNS
+        local 1 to `(p2 << 5) + p1 + 192`. p2 is a host-supplied value
+        carrying the escaped regions (R3′), the Location's segment among
+        them, so the may-read check attributed the Location word to the
+        load. R1 now judges a static base plus a run-time delta by the
+        base's segment. The word then reached func_6 through stores to cell
+        7372 (func_10 op 112, func_17 op 64) and a REUSED local: `local 2`
+        receives both the cell's load and `idx << 2`, and locals are one
+        node across assignments. The dereference is `i32.load offset=7336
+        (local 2)`, an index beside a static memarg base; that now anchors,
+        like `HEAP + OFF`. The image's NEXT refusal was npa-region-straddle,
+        again from local reuse: func_6's `local 3` is both a memory.fill
+        destination (7384) and a memory.copy destination (7320), plus its
+        implicit zero, so the per-base rule fell back to the union check. The
+        per-base equality now compares in-window values only. (A2,
+        gustos.loom) The copy's source is local 6 := param 0 (rustc's spill).
+        R4 now follows values that are param 0 unchanged, a local's implicit
+        zero being neutral since the contract allows 0. MEASURED which change
+        each module needs, by disabling them in pairs: one-domain passes with
+        either the R1 base rule or the memarg-base anchoring (and needs the
+        in-window rule); gustos.loom passes with either R4's copy tracking
+        or the memarg-base anchoring. AFTER the fix, all four modules compile
+        on cortex-m3 and cortex-m7dp, byte-identical to base 0185ba07:
+        one-domain 8b5970546bbf95a5 / 10be13b7ef5b2a68, two-domain
+        4f91ec458025170f / 298a11362380d01b, switch-thin ce077ab2794aff5e /
+        bdeadf8da9352dce, gustos.loom 1f71874f7c1e5e2e / 2f5f6aa07791d88f.
+        Minimal fixtures, each refused on 3775050e with gale's diagnostic
+        text and EXEC here: gale_gfA1, gale_gfA1_fill, gale_gfA2. Still
+        refused: a pointer table read through an in-address base
+        (gale_gf_ptrtab_site_neg); a data pointer dereferenced with a FIELD
+        offset (gale_gf_field_neg); a realloc copy from old_ptr OR a
+        pointer-bearing constant (gale_gfA2_mixed_neg); a static base plus a
+        choice of offsets crossing into the next segment (gale_gf_union_neg).
+        Mutants, each red: the R1 base rule reading nothing; any memarg
+        offset anchoring; R4 accepting any predecessor; per-base judgement
+        always on; R4's copy tracking dropped. npa_model_differential: 62
+        emulations.
         The delta-execution figures above were measured on an earlier branch
         binary; they still hold because those modules' census hashes are
         identical between that binary and this head (536 of 536 rows with the

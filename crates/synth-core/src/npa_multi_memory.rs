@@ -386,6 +386,35 @@ impl Provenance {
                 g.m0.realloc_old_ptr.insert(n);
             }
         }
+        // ... and every value that is old_ptr UNCHANGED: a local or stack
+        // value whose every incoming flow is one already in the set (rustc
+        // spills the arguments into fresh locals before `memory.copy` —
+        // gale's wit-bindgen realloc reads `old_ptr` from local 6 := local
+        // 0). A node with any other incoming value, or an operation result,
+        // is not old_ptr. A local's implicit zero (recorded when the pass
+        // cannot prove the set precedes every read) is neutral: the contract
+        // allows old_ptr = 0.
+        let zeros: std::collections::HashSet<Node> =
+            g.m0.zero_inits.iter().map(|&(_, _, z)| z).collect();
+        loop {
+            let set = &g.m0.realloc_old_ptr;
+            let add: Vec<Node> = (0..g.m0.fpreds.len())
+                .filter(|&v| {
+                    !set.contains(&v)
+                        && !g.m0.opaque.contains(&v)
+                        && !g.m0.binops.iter().any(|&(r, _, _, _)| r == v)
+                        && !g.m0.load_results.contains_key(&v)
+                        && g.m0.fpreds[v].iter().any(|p| set.contains(p))
+                        && g.m0.fpreds[v]
+                            .iter()
+                            .all(|p| set.contains(p) || zeros.contains(p))
+                })
+                .collect();
+            if add.is_empty() {
+                break;
+            }
+            g.m0.realloc_old_ptr.extend(add);
+        }
         g.propagate();
         Ok(Provenance { graph: g })
     }
@@ -1864,6 +1893,23 @@ impl Provenance {
                             Vals::Known(vs) if a.dynamic == 0 => vs
                                 .iter()
                                 .find_map(|&x| word_in(u64::from(x) + u64::from(acc.offset), w)),
+                            // R1: a static base plus a run-time delta stays in
+                            // the base's object — read only the bases'
+                            // regions (gale: `4488 + 192 + (host << 5)` read
+                            // the Location word through the host value's
+                            // escaped regions).
+                            _ if (!a.sites.is_empty() || !a.spz.is_empty())
+                                && !a.many_sites
+                                && !a.spz_many =>
+                            {
+                                let based = a
+                                    .sites
+                                    .iter()
+                                    .map(|&k| sites[k].value)
+                                    .chain(a.spz.iter().copied())
+                                    .fold(0u64, |r, b| r | region_bit(region_of(u64::from(b))));
+                                word_of_regions(based & ptr_regions)
+                            }
                             _ if pt & ptr_regions != 0 => word_of_regions(pt & ptr_regions),
                             _ => None,
                         };
@@ -2289,7 +2335,12 @@ impl Provenance {
             let s = &sum[acc.addr];
             // An address anchored by a static constant: a loaded value in it
             // is an index, never the pointer.
-            let anchored = !s.spz.is_empty() || s.spz_many || !s.sites.is_empty();
+            // A static memarg BASE anchors too (`HEAP + OFF` with OFF in the
+            // memarg, relocated by #739): the loaded value is the index (gale
+            // func_6 `i32.load offset=7336 (idx << 2)`).
+            let memarg_base = sp_init.is_some_and(|sp| acc.offset != 0 && acc.offset >= sp)
+                && acc.width.is_some();
+            let anchored = !s.spz.is_empty() || s.spz_many || !s.sites.is_empty() || memarg_base;
             let live = f.reachable.as_ref().is_none_or(|r| r.contains(&acc.func));
             if let Some((lf, lop, wa)) = s.data
                 && !anchored
@@ -2557,7 +2608,17 @@ impl Provenance {
             // a constant that is not relocated and `x`'s values exactly the
             // bases (a field `+128` of a per-caller static) — the value
             // minus `d`.
-            let shift: Option<u32> = if bases == *vals {
+            // Values below the static window (a local's implicit zero, a
+            // native address) are skipped by the per-value loop below, so
+            // they take no part in the comparison.
+            let in_window =
+                |vs: &std::collections::BTreeSet<u32>| -> std::collections::BTreeSet<u32> {
+                    vs.iter()
+                        .copied()
+                        .filter(|&v| v >= pure_lo && u64::from(v) < mem_end)
+                        .collect()
+                };
+            let shift: Option<u32> = if bases == in_window(vals) {
                 Some(0)
             } else if let Some(&(x, y, false)) = binop_of.get(&acc.addr) {
                 let side = |bn: Node, dn: Node| -> Option<u32> {
@@ -2565,7 +2626,7 @@ impl Provenance {
                     let relocated_d = sum[dn].sites.iter().any(|k| relocated.contains(k))
                         || !sum[dn].spz.is_empty();
                     match &sum[bn].vals {
-                        Vals::Known(bv) if *bv == bases && !relocated_d => Some(d),
+                        Vals::Known(bv) if in_window(bv) == bases && !relocated_d => Some(d),
                         _ => None,
                     }
                 };

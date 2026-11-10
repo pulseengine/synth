@@ -667,7 +667,12 @@ static range that carries no relocation is a compiler defect, refused as
     memarg offset included: a run-time index beside a static memarg base is
     taken to stay in the base's segment (R1), so a pointer TABLE read by
     index is refused while an index table beside an unrelated pointer word
-    is not.
+    is not. The same holds for a static base INSIDE the address (`4488 +
+    192 + (i << 5)`): the read is judged by the base's segment, not by the
+    regions a host-supplied index may carry. A value dereferenced beside a
+    static memarg offset (`i32.load offset=7336 (idx << 2)`, the offset at
+    or above the stack-pointer init) is an INDEX added to a relocated static,
+    as with `HEAP + OFF`, and is not refused.
   - `npa-dynamic-static-offset (#1568)` — with a memory-0 data segment and no
     stack-pointer global (or below the stack-pointer init), a constant or
     memarg offset in the static region beside a run-time value.
@@ -739,7 +744,9 @@ static range that carries no relocation is a compiler defect, refused as
   or 0 — never an address inside the module's initialised data. The
   OBLIGATION, on you: call it only that way, as the canonical ABI requires.
   synth relies on it narrowly: a `memory.copy` whose source is that
-  parameter is taken to read no pointer word from a data segment. It is NOT
+  parameter, or a local holding it unchanged (rustc spills the arguments
+  into fresh locals first), is taken to read no pointer word from a data
+  segment. It is NOT
   a rule that export parameters never point into statics (R3′ still holds
   for every other parameter).
 
