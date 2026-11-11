@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-NPASWBOUNDS
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "In-bounds memory-0 accesses do not trap under the native-pointer ABI with software bounds"
     description: >
         WRONG BEHAVIOUR, the other direction from a missing trap: a
@@ -50,8 +50,19 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1661"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
+      landed: "PR #1682 - #1661 - DELIVERED AS A LOUD REFUSAL of the flag pair for modules that touch memory 0: npa-software-bounds (#1661), module-level. A module that touches only memory k keeps its memory-k guard (memk_bulk_oob_1619's software/npa leg stays green)."
+      verified-by: >
+        DELIVERED as a refusal, execution-verified. Red at eab66646: the
+        refuting command's software/npa leg compiled and trapped 0 of 4
+        in-bounds calls equal. On the branch the same module is refused rc 1
+        naming function fill0's memory.fill; the none/npa control stays 4 of 4.
+        npa_model_differential.py swb_neg is refused; memk_bulk_oob_1619 (214
+        emulations, its software/npa leg on memory k only) and the 1145 oracle
+        (safety_sw_xcopy, safety_mask_mem0 refused with the new name;
+        safety_mask on a memory-1-only module still reaches the per-memory mask
+        decline) pass.
       done-when: >
         manual:2027-03-31 an execution differential against wasmtime
         over in-bounds and out-of-bounds memory-0 loads, stores, fill,

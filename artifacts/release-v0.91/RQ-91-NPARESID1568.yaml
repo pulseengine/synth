@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-NPARESID1568
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "A constant static address that reaches a native-pointer access through arithmetic or a select is relocated or refused"
     description: >
         SILENT MISCOMPILE, the residual of #1568 that v0.90 left open
@@ -57,8 +57,22 @@ artifacts:
       req-type: functional
       priority: must
       issue: "#1568"
-      verification-track: manual
+      verification-track: execution
       issue-scope: closes
+      landed: "PR #1682 - #1568 - DELIVERED. Constants through arithmetic, select and a local with an arithmetic definition are relocated at their definition and execute equal to wasmtime; a static constant beside a run-time value in a module with a memory-0 data segment and no stack-pointer global, or below the stack-pointer init, is refused (npa-dynamic-static-offset); a module with no data segment treats a run-time base as native (R2)."
+      verified-by: >
+        DELIVERED, execution-verified. Red at eab66646: arith(), sel(1) and
+        sel(0) faulted (1 of 4 equal). On the branch: 4 of 4 equal, and the
+        npa_model_differential.py rows arith, sel(0/1) and local_arith execute
+        equal. Per residual RQ-90-NPASHAPE2 named: constant through
+        arithmetic/select/non-constant local, EXEC; an offset below the first
+        segment carried into the statics by a run-time base, native under R3'
+        (a host pointer into the statics is one the module handed out), not
+        refused; a module with no data segment, R2 (mmio_pos: 0x40000000 + a
+        run-time offset compiles and reads/writes the peripheral page on the
+        native contract); with a stack-pointer global, a run-time offset into
+        data below its init, REFUSED (below_sp_dyn). npa_const_addr_matrix: 59
+        cells refused on eab66646 now execute equal (0 wrong of 162). Byte identity: the census of every tracked .wat/.wasm (268 files x cortex-m3 and cortex-m7dp, --relocatable --native-pointer-abi --all-exports --allow-skipped-exports) is 517 of 536 rows byte-identical to eab66646; the same census without --native-pointer-abi is 536 of 536 identical. The 19 that move: 13 rows where eab66646 skipped a function on a per-shape guard (or compiled nothing) and the branch compiles it (bulk_local_clobber_677, bulk_mask_679, home_alias_class_1189_promo, i64_width_vstack_mem_946, vcr_reach_001_i64_pair on both targets; f64_369, aarch64_align_f32_switch_1231 and spill_slot_alias_1321 on cortex-m7dp), 2 where it now refuses the whole module instead of skipping the same function (self_contained_data_758, the same straddle, now npa-region-straddle), and 4 where eab66646 baked a constant address raw (popcnt_r11_clobber_1021 pc_store: base returns 0 where wasmtime returns 1, branch equal; call_indirect_275_selfcontained: the store address now carries its relocation). Executing the changed modules against wasmtime: every i32 export, 108 calls on cortex-m3 with 3 divergent, all call_indirect_275's entry, which this harness cannot dispatch on base or branch either, and 105 calls on cortex-m7dp with 0 divergent; f64_369's 34 i32-signature exports and aarch64_align_f32_switch_1231's f32 export on cortex-m7dp, 0 divergent. spill_slot_alias_1321 is not valid wasm to wasmtime (a register-pressure fixture) and has no reference to execute against. Every object the six pre-existing native-pointer oracles compiled on eab66646 is byte-identical on the branch (recorded through a hashing wrapper around SYNTH).
       done-when: >
         manual:2027-03-31 every residual shape RQ-90-NPASHAPE2 names
         (constant through arithmetic, select or a non-constant local;

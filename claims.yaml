@@ -1966,9 +1966,27 @@ claims:
         # (chained after RQ-90-NPASTRADDLE's waiver).
         # RQ-91-O2FLOAT (#1691): 21715 -> 21852, waived below (chained after
         # RQ-90-NPASHAPE2's waiver).
-        value: 21852
+        # RQ-91-NPAMODEL (#1672, #1568, #1604, #1661): 21852 -> 21175 (-677),
+        # a FALL: the per-shape native-pointer guards (constant-address
+        # guard, local plan, straddle guard, shape-2 matcher, #1580 rewrite
+        # helpers, the #1619 memory-0-side refusal) were deleted; the decision
+        # moved to synth_core::npa_multi_memory::Provenance::memory0_plan.
+        value: 21175
         baseline: 17897
         waivers:
+          - to: 21175
+            reason: >-
+              RQ-91-NPAMODEL (Refs #1672, #1568, #1604, #1661): 21852 -> 21175
+              (-677, rebased over RQ-91-O2FLOAT). Not growth: the ceiling FELL, and a value above the
+              baseline still needs a waiver bound to it. Deleted from the
+              selector: npa_local_const_plan, npa_const_addr_guard,
+              npa_region_straddle_guard, npa_dynamic_static_offset_accesses,
+              npa_effective_addr_rewrite and its helpers (8 + 4 `fn npa_*`,
+              NpaLocalPlan, NpaStaticOffsetHit), the select_with_stack
+              pre-flight guards and the #1619 memory-0-side refusal. Their
+              decisions are made once per module by
+              synth_core::npa_multi_memory::Provenance::memory0_plan and checked
+              on the emitted stream by arm_backend::npa_stream_validate.
           - to: 21852
             reason: >-
               RQ-91-O2FLOAT (Refs #1691): 21715 -> 21852 (+137, measured after
@@ -3320,7 +3338,9 @@ claims:
         # RQ-91-O2FLOAT (#1691): 32576 -> 32713, the same +137 as
         # selector_lines_code (all of it outside the test module; the oracle
         # is a scripts/repro differential, outside this population). No waiver.
-        value: 32713
+        # RQ-91-NPAMODEL (#1672, #1568, #1604, #1661): 32713 -> 32036, the same
+        # -677 as selector_lines_code. No waiver.
+        value: 32036
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -3382,8 +3402,10 @@ claims:
         # turned slot 16 into S0) and `vfp_s_index`'s `_ => return None` (which
         # made S16..S31 unindexable). Both now read one 32-entry table,
         # `VFP_S_FILE`. Below the baseline, so the baseline moves with it.
-        value: 53
-        baseline: 53
+        # RQ-91-NPAMODEL: 53 -> 52, the deleted constant-address guard's
+        # `_ => continue` per-op match.
+        value: 52
+        baseline: 52
         waivers:
           - to: 56
             reason: >-
@@ -3437,7 +3459,7 @@ claims:
         # RQ-89-REINTERP (#1603): 91 -> 93, the two `_ => None` arms of the
         # `test_1603_i64_reinterpret_f64_is_a_pair` find_maps (test region;
         # the directed code-region count is unchanged).
-        value: 93
+        value: 92
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly

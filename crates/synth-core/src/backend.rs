@@ -371,6 +371,13 @@ pub struct CompileConfig {
     /// empty everywhere else ⇒ byte-identical.
     pub current_func_npa_raw_consts: Vec<usize>,
 
+    /// RQ-91-NPAMODEL: THIS function's `i32.const` op indices (into the
+    /// stream the driver hands the backend) that the module-level memory-0
+    /// decision (`crate::npa_multi_memory::Provenance::memory0_plan`) proved
+    /// to be wasm static addresses BELOW the stack-pointer window, emitted as
+    /// `__synth_wasm_data + C`. Empty everywhere else ⇒ byte-identical.
+    pub current_func_npa_reloc_consts: Vec<usize>,
+
     /// #543 Phase 1 — integrator-marked volatile linear-memory segments (the DMA
     /// transfer window). Each range `[base, base+len)` names a region of the fused
     /// linear memory that an EXTERNAL agent (the DMA engine, modelled by gale as a
@@ -634,6 +641,7 @@ impl Default for CompileConfig {
             current_func_declared_float_locals: Vec::new(),
             // #1145: empty ⇒ every static-window constant keeps the #237 rule.
             current_func_npa_raw_consts: Vec::new(),
+            current_func_npa_reloc_consts: Vec::new(),
             // #543 Phase 1: no volatile segments unless the CLI flag names them.
             // Empty ⇒ inert ⇒ emitted bytes unchanged.
             volatile_segments: Vec::new(),
@@ -680,29 +688,6 @@ impl Default for CompileConfig {
 /// this symbol) that the image builder patches post-layout — never through
 /// R11, which is the linear-memory base (the #717 collision).
 pub const FUNC_TABLE_SYMBOL: &str = "__synth_func_table";
-
-/// RQ-90-NPASHAPE2 (#1568 shape 2): the module's STATIC REGION for the
-/// dynamic-offset refusal — `[lo, hi)` where `lo` is the lowest offset of
-/// memory 0's non-empty active data segments and `hi` is memory 0's
-/// declared minimum size in bytes (the bound the ARM selector's `static_data_addend`
-/// already treats as the end of the statics), widened to the last segment's end
-/// should a segment reach past it. `None` when memory 0 has no non-empty
-/// active data segment: such a module has no initialized static for a
-/// memarg offset to land in (a BSS-only module is NOT covered — see the
-/// release record).
-pub fn npa_static_region(
-    data_regions: &[(u32, u32)],
-    linear_memory_bytes: u32,
-) -> Option<(u32, u32)> {
-    let live = data_regions.iter().filter(|&&(_, len)| len > 0);
-    let lo = live.clone().map(|&(off, _)| off).min()?;
-    let end = live
-        .map(|&(off, len)| u64::from(off) + u64::from(len))
-        .max()?
-        .min(u64::from(u32::MAX)) as u32;
-    let hi = linear_memory_bytes.max(end);
-    (lo < hi).then_some((lo, hi))
-}
 
 /// A relocation entry produced during compilation
 ///
@@ -1133,22 +1118,5 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.effective_safety_bounds(), SafetyBounds::Mpu);
-    }
-
-    /// RQ-90-NPASHAPE2 (#1568 shape 2): the static region is the lowest
-    /// non-empty segment up to memory 0's minimum size, widened to a segment
-    /// that reaches past it; no non-empty segment means no region.
-    #[test]
-    fn npa_static_region_bounds_1568() {
-        assert_eq!(npa_static_region(&[], 0x10000), None);
-        assert_eq!(npa_static_region(&[(0x100, 0)], 0x10000), None);
-        assert_eq!(
-            npa_static_region(&[(0x2800, 16), (0x1000, 8), (0x40, 0)], 0x10000),
-            Some((0x1000, 0x10000))
-        );
-        assert_eq!(
-            npa_static_region(&[(0xfff0, 0x20)], 0x10000),
-            Some((0xfff0, 0x10010))
-        );
     }
 }

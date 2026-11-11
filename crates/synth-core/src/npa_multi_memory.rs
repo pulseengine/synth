@@ -106,6 +106,13 @@ pub struct NpaModule<'a> {
     /// such a copy does not join the two memories' contents. A same-memory
     /// copy and every other route are tracked unchanged.
     pub cross_copies_carry_no_pointers: bool,
+    /// The module's start function (a reachability root with the exports).
+    pub start_function: Option<u32>,
+    /// Exports named `cabi_realloc` / `cabi_realloc_*` with the canonical-ABI
+    /// signature `(i32, i32, i32, i32) -> i32` (the caller checks name and
+    /// types). Under the canonical ABI their `old_ptr` (param 0) is the
+    /// result of a prior realloc, or 0: never a static.
+    pub canonical_realloc: Vec<u32>,
 }
 
 type Node = usize;
@@ -130,12 +137,100 @@ struct Graph {
     host_entries: Vec<(String, Node)>,
     /// A cross-memory copy joined two memories' contents.
     joined_by_cross_copy: bool,
+    /// RQ-91-NPAMODEL: the memory-0 facts the native-pointer decision
+    /// ([`Provenance::memory0_plan`]) reads. Recorded by the same walk.
+    m0: M0Facts,
+}
+
+/// RQ-91-NPAMODEL: what the walk records for the memory-0 decision, beside
+/// the reach graph. `fpreds` are the DIRECTED value flows only — `preds`
+/// also carries the two-way coupling of comparisons and subtraction (the
+/// #1145 reach rule), which must not make a compared constant look like an
+/// operand of the address it is compared with.
+#[derive(Default)]
+struct M0Facts {
+    fpreds: Vec<Vec<Node>>,
+    /// Memory-0 accesses, in walk order.
+    accesses: Vec<M0Access>,
+    /// `(result, lhs, rhs, is_sub)` of every `i32.add` / `i32.sub`.
+    binops: Vec<(Node, Node, Node, bool)>,
+    /// Value nodes whose constant value set is unknown (an arithmetic result
+    /// other than add/sub, a load, a global, a host value).
+    opaque: std::collections::HashSet<Node>,
+    /// Load results (memory 0): they read memory content, so a constant
+    /// stored there is NOT a direct operand of the address the loaded value
+    /// later forms. `(result, memory content node)`.
+    load_results: HashMap<Node, Node>,
+    /// Values consumed as a SCALAR: a comparison operand, a branch or select
+    /// condition, an operand of arithmetic other than add/sub, an argument to
+    /// or a result returned to the host.
+    observed: Vec<Node>,
+    /// Values that leave the module (export results, import arguments).
+    host_exits: Vec<Node>,
+    /// Memory-0 stores `(address, value)` — `memory.fill` included, its
+    /// fill value as the stored value.
+    stores: Vec<(Node, Node, u32)>,
+    /// Memory-0 `memory.copy` `(destination, source)`.
+    copies: Vec<(Node, Node)>,
+    /// The implicit zero of a non-parameter local read before any set that
+    /// provably precedes it: `(function, local, node)`.
+    zero_inits: Vec<(u32, u32, Node)>,
+    /// Every comparison `(function, op, lhs, rhs)`.
+    compares: Vec<(u32, usize, Node, Node)>,
+    /// `i64.extend_i32_{s,u}` results and their operand, so a comparison of
+    /// an extended end pointer is seen (R1 boundary rule).
+    extends: HashMap<Node, Node>,
+    /// `i64.const` results: `(function, op, value)` (never relocated).
+    i64_consts: HashMap<Node, (u32, usize, i64)>,
+    /// #1684: results of the VALUE-PRESERVING i64 conversions and address
+    /// arithmetic (`i64.extend_i32_*`, `i32.wrap_i64`, `i64.add`,
+    /// `i64.sub`) and their operands. Every other non-add result (a shift,
+    /// a multiply, an `or` ...) consumes its operand as a scalar.
+    transparent: HashMap<Node, Vec<Node>>,
+    /// Direct calls `(caller, callee)` between analysed functions.
+    calls: Vec<(u32, u32)>,
+    /// Functions that execute a `call_indirect`.
+    indirect_callers: std::collections::HashSet<u32>,
+    /// Functions that call a DEFINED function the pass did not analyse.
+    unknown_callers: std::collections::HashSet<u32>,
+    /// Functions reachable from the exports and the start function
+    /// (`None`: not decidable, every function counts as reachable).
+    reachable: Option<std::collections::HashSet<u32>>,
+    /// Every call site into analysed functions: `(callees, args, results)`,
+    /// each result a node of its own (the callee's shared return node flows
+    /// into it), so a search can match a return with its call.
+    sites: Vec<(Vec<u32>, Vec<Node>, Vec<Node>)>,
+    /// Parameter counts of the analysed functions.
+    param_counts: HashMap<u32, u32>,
+    /// The `old_ptr` (param 0) nodes of the canonical-ABI realloc functions
+    /// and of wrappers that only forward to one: a `memory.copy` reading
+    /// from one reads a prior allocation, not a static (the canonical-ABI
+    /// realloc contract, an embedder obligation in the ABI document).
+    realloc_old_ptr: std::collections::HashSet<Node>,
+}
+
+/// One memory-0 access as the walk saw it.
+#[derive(Clone)]
+struct M0Access {
+    func: u32,
+    op: usize,
+    addr: Node,
+    offset: u32,
+    /// Access width; `None` for a bulk op (the length is `len`).
+    width: Option<u32>,
+    len: Option<Node>,
+    what: &'static str,
+    /// A `memory.copy` source (read) side.
+    is_copy_src: bool,
+    /// A load: its result node.
+    result: Option<Node>,
 }
 
 impl Graph {
     fn fresh(&mut self) -> Node {
         self.preds.push(Vec::new());
         self.taint.push(0);
+        self.m0.fpreds.push(Vec::new());
         self.preds.len() - 1
     }
     fn keyed<K: std::hash::Hash + Eq>(
@@ -143,35 +238,67 @@ impl Graph {
         k: K,
         g: &mut Vec<Vec<Node>>,
         t: &mut Vec<Mask>,
+        f: &mut Vec<Vec<Node>>,
     ) -> Node {
         *map.entry(k).or_insert_with(|| {
             g.push(Vec::new());
             t.push(0);
+            f.push(Vec::new());
             g.len() - 1
         })
     }
     fn local(&mut self, f: u32, l: u32) -> Node {
-        Self::keyed(&mut self.locals, (f, l), &mut self.preds, &mut self.taint)
+        Self::keyed(
+            &mut self.locals,
+            (f, l),
+            &mut self.preds,
+            &mut self.taint,
+            &mut self.m0.fpreds,
+        )
     }
     fn ret(&mut self, f: u32, r: u32) -> Node {
-        Self::keyed(&mut self.rets, (f, r), &mut self.preds, &mut self.taint)
+        Self::keyed(
+            &mut self.rets,
+            (f, r),
+            &mut self.preds,
+            &mut self.taint,
+            &mut self.m0.fpreds,
+        )
     }
     fn global(&mut self, g: u32) -> Node {
-        Self::keyed(&mut self.globals, g, &mut self.preds, &mut self.taint)
+        Self::keyed(
+            &mut self.globals,
+            g,
+            &mut self.preds,
+            &mut self.taint,
+            &mut self.m0.fpreds,
+        )
     }
     fn mem(&mut self, m: u32) -> Node {
-        Self::keyed(&mut self.mems, m, &mut self.preds, &mut self.taint)
+        Self::keyed(
+            &mut self.mems,
+            m,
+            &mut self.preds,
+            &mut self.taint,
+            &mut self.m0.fpreds,
+        )
     }
     /// The value of `from` flows into `to`.
     fn flow(&mut self, from: Node, to: Node) {
         if from != to {
             self.preds[to].push(from);
+            self.m0.fpreds[to].push(from);
         }
     }
     /// `a` and `b` must share one representation.
     fn couple(&mut self, a: Node, b: Node) {
-        self.flow(a, b);
-        self.flow(b, a);
+        if a != b {
+            self.preds[b].push(a);
+            self.preds[a].push(b);
+        }
+    }
+    fn observe(&mut self, n: Node) {
+        self.m0.observed.push(n);
     }
     fn address(&mut self, n: Node, memory: u32) -> Result<(), String> {
         if memory >= 32 {
@@ -236,6 +363,58 @@ impl Provenance {
         for f in &m.funcs {
             walk(&mut g, m, &analyzed, f).map_err(|e| format!("function {}: {e}", f.index))?;
         }
+        g.m0.reachable = reachable_funcs(m, &analyzed, &g.m0);
+        g.m0.param_counts = m.funcs.iter().map(|f| (f.index, f.param_count)).collect();
+        // The canonical-ABI realloc contract: the flagged exports, and any
+        // function whose whole body forwards its four parameters to one.
+        let mut realloc: std::collections::HashSet<u32> =
+            m.canonical_realloc.iter().copied().collect();
+        for f in &m.funcs {
+            use WasmOp::{Call, End, LocalGet, Nop};
+            let body: Vec<&WasmOp> = f.ops.iter().filter(|o| !matches!(o, End | Nop)).collect();
+            if f.param_count == 4
+                && f.result_count == 1
+                && let [LocalGet(0), LocalGet(1), LocalGet(2), LocalGet(3), Call(c)] =
+                    body.as_slice()
+                && m.canonical_realloc.contains(c)
+            {
+                realloc.insert(f.index);
+            }
+        }
+        for fi in realloc {
+            if let Some(&n) = g.locals.get(&(fi, 0)) {
+                g.m0.realloc_old_ptr.insert(n);
+            }
+        }
+        // ... and every value that is old_ptr UNCHANGED: a local or stack
+        // value whose every incoming flow is one already in the set (rustc
+        // spills the arguments into fresh locals before `memory.copy` —
+        // gale's wit-bindgen realloc reads `old_ptr` from local 6 := local
+        // 0). A node with any other incoming value, or an operation result,
+        // is not old_ptr. A local's implicit zero (recorded when the pass
+        // cannot prove the set precedes every read) is neutral: the contract
+        // allows old_ptr = 0.
+        let zeros: std::collections::HashSet<Node> =
+            g.m0.zero_inits.iter().map(|&(_, _, z)| z).collect();
+        loop {
+            let set = &g.m0.realloc_old_ptr;
+            let add: Vec<Node> = (0..g.m0.fpreds.len())
+                .filter(|&v| {
+                    !set.contains(&v)
+                        && !g.m0.opaque.contains(&v)
+                        && !g.m0.binops.iter().any(|&(r, _, _, _)| r == v)
+                        && !g.m0.load_results.contains_key(&v)
+                        && g.m0.fpreds[v].iter().any(|p| set.contains(p))
+                        && g.m0.fpreds[v]
+                            .iter()
+                            .all(|p| set.contains(p) || zeros.contains(p))
+                })
+                .collect();
+            if add.is_empty() {
+                break;
+            }
+            g.m0.realloc_old_ptr.extend(add);
+        }
         g.propagate();
         Ok(Provenance { graph: g })
     }
@@ -287,6 +466,47 @@ impl Provenance {
     }
 }
 
+/// #1672 (gale's dead `pad_integral`): the functions reachable from the
+/// exports and the start function over direct calls; every element-segment
+/// function becomes reachable once a reachable function executes a
+/// `call_indirect` (whatever its table index — the sound over-approximation).
+/// `None` when a reachable function calls a defined function the pass did not
+/// analyse: its callees are unknown, so nothing may be treated as dead.
+fn reachable_funcs(
+    m: &NpaModule,
+    analyzed: &std::collections::HashSet<u32>,
+    f: &M0Facts,
+) -> Option<std::collections::HashSet<u32>> {
+    let mut reach: std::collections::HashSet<u32> = Default::default();
+    let mut work: Vec<u32> = m
+        .funcs
+        .iter()
+        .filter(|x| x.exported)
+        .map(|x| x.index)
+        .chain(m.start_function)
+        .collect();
+    let mut elem_done = false;
+    while let Some(x) = work.pop() {
+        if !reach.insert(x) {
+            continue;
+        }
+        if f.unknown_callers.contains(&x) {
+            return None;
+        }
+        work.extend(f.calls.iter().filter(|&&(a, _)| a == x).map(|&(_, b)| b));
+        if !elem_done && f.indirect_callers.contains(&x) {
+            elem_done = true;
+            work.extend(
+                m.elem_func_indices
+                    .iter()
+                    .copied()
+                    .filter(|t| analyzed.contains(t)),
+            );
+        }
+    }
+    Some(reach)
+}
+
 fn walk(
     g: &mut Graph,
     m: &NpaModule,
@@ -298,6 +518,7 @@ fn walk(
     let mut stack: Vec<Node> = Vec::new();
     let fn_results: Vec<Node> = (0..f.result_count).map(|r| g.ret(fi, r)).collect();
     if f.exported {
+        g.m0.host_exits.extend(fn_results.iter().copied());
         for p in 0..f.param_count {
             let n = g.local(fi, p);
             g.host_entries
@@ -314,6 +535,37 @@ fn walk(
         unreachable: false,
     }];
     let mut ordinal = 0usize;
+    // RQ-91-NPAMODEL: a non-parameter local holds 0 until set. Its first
+    // occurrence being a set at block depth 0 proves the set precedes every
+    // read (code at depth 0 runs in order); otherwise the zero may be read.
+    {
+        let mut first: HashMap<u32, bool> = HashMap::new();
+        let mut depth = 0i32;
+        for op in f.ops {
+            match op {
+                Block | Loop | If => depth += 1,
+                End => depth -= 1,
+                LocalGet(l) if *l >= f.param_count => {
+                    first.entry(*l).or_insert(false);
+                }
+                LocalSet(l) | LocalTee(l) if *l >= f.param_count => {
+                    first.entry(*l).or_insert(depth == 0);
+                }
+                _ => {}
+            }
+        }
+        let mut zero_reachable: Vec<u32> = first
+            .into_iter()
+            .filter_map(|(l, dominated)| (!dominated).then_some(l))
+            .collect();
+        zero_reachable.sort_unstable();
+        for l in zero_reachable {
+            let z = g.fresh();
+            let ln = g.local(fi, l);
+            g.flow(z, ln);
+            g.m0.zero_inits.push((fi, l, z));
+        }
+    }
 
     fn pop(
         g: &mut Graph,
@@ -397,7 +649,8 @@ fn walk(
                     return Err(format!("op {i}: unresolvable blocktype"));
                 }
                 if matches!(inner, If) {
-                    pop(g, &mut stack, &frames, i)?;
+                    let c = pop(g, &mut stack, &frames, i)?;
+                    g.observe(c);
                 }
                 let vals = pop_n(g, &mut stack, &frames, p as usize, i)?;
                 let params: Vec<Node> = vals
@@ -466,11 +719,13 @@ fn walk(
                 fr.unreachable = true;
             }
             BrIf(l) => {
-                pop(g, &mut stack, &frames, i)?;
+                let c = pop(g, &mut stack, &frames, i)?;
+                g.observe(c);
                 label_flow(g, &stack, &frames, *l, i)?;
             }
             BrTable { targets, default } => {
-                pop(g, &mut stack, &frames, i)?;
+                let c = pop(g, &mut stack, &frames, i)?;
+                g.observe(c);
                 for l in targets.iter().chain(std::iter::once(default)) {
                     label_flow(g, &stack, &frames, *l, i)?;
                 }
@@ -503,18 +758,30 @@ fn walk(
                     .ok_or_else(|| format!("op {i}: call {c} has no result count"))?;
                 let args = pop_n(g, &mut stack, &frames, argc as usize, i)?;
                 if *c >= m.num_imported_funcs && analyzed.contains(c) {
-                    for (k, a) in args.into_iter().enumerate() {
+                    g.m0.calls.push((fi, *c));
+                } else if *c >= m.num_imported_funcs {
+                    g.m0.unknown_callers.insert(fi);
+                }
+                if *c >= m.num_imported_funcs && analyzed.contains(c) {
+                    for (k, &a) in args.iter().enumerate() {
                         let p = g.local(*c, k as u32);
                         g.flow(a, p);
                     }
+                    let mut results = Vec::new();
                     for r in 0..resc {
                         let n = g.ret(*c, r);
-                        stack.push(n);
+                        let rs = g.fresh();
+                        g.flow(n, rs);
+                        results.push(rs);
+                        stack.push(rs);
                     }
+                    g.m0.sites.push((vec![*c], args, results));
                 } else {
                     // Host boundary (import or loud-skipped callee).
+                    g.m0.host_exits.extend(args.iter().copied());
                     for r in 0..resc {
                         let n = g.fresh();
+                        g.m0.opaque.insert(n);
                         g.host_entries.push((
                             format!("result {r} of the host call at function {fi} op {i}"),
                             n,
@@ -524,7 +791,9 @@ fn walk(
                 }
             }
             CallIndirect { type_index, .. } => {
-                pop(g, &mut stack, &frames, i)?; // table index (a scalar)
+                g.m0.indirect_callers.insert(fi);
+                let ti = pop(g, &mut stack, &frames, i)?; // table index (a scalar)
+                g.observe(ti);
                 let argc = *m
                     .type_arg_counts
                     .get(*type_index as usize)
@@ -548,6 +817,8 @@ fn walk(
                     .collect();
                 targets.sort_unstable();
                 targets.dedup();
+                g.m0.sites
+                    .push((targets.clone(), args.clone(), results.clone()));
                 for t in targets {
                     for (k, &a) in args.iter().enumerate() {
                         let p = g.local(t, k as u32);
@@ -588,7 +859,8 @@ fn walk(
                 pop(g, &mut stack, &frames, i)?;
             }
             Select => {
-                pop(g, &mut stack, &frames, i)?;
+                let c = pop(g, &mut stack, &frames, i)?;
+                g.observe(c);
                 let b = pop(g, &mut stack, &frames, i)?;
                 let a = pop(g, &mut stack, &frames, i)?;
                 let r = g.fresh();
@@ -621,6 +893,21 @@ fn walk(
                 let content = g.mem(memory);
                 let r = g.fresh();
                 g.flow(content, r);
+                if memory == 0 {
+                    g.m0.opaque.insert(r);
+                    g.m0.load_results.insert(r, content);
+                    g.m0.accesses.push(M0Access {
+                        func: fi,
+                        op: i,
+                        addr: a,
+                        offset: memarg_offset(inner).unwrap_or(0),
+                        width: crate::proven_safe::access_width(inner),
+                        len: None,
+                        what: "a load",
+                        is_copy_src: false,
+                        result: Some(r),
+                    });
+                }
                 stack.push(r);
             }
             I32Store { .. }
@@ -638,6 +925,20 @@ fn walk(
                 g.address(a, memory)?;
                 let content = g.mem(memory);
                 g.flow(v, content);
+                if memory == 0 {
+                    g.m0.stores.push((a, v, memarg_offset(inner).unwrap_or(0)));
+                    g.m0.accesses.push(M0Access {
+                        func: fi,
+                        op: i,
+                        addr: a,
+                        offset: memarg_offset(inner).unwrap_or(0),
+                        width: crate::proven_safe::access_width(inner),
+                        len: None,
+                        what: "a store",
+                        is_copy_src: false,
+                        result: None,
+                    });
+                }
             }
             MemoryCopyBetween { dst_mem, src_mem } => {
                 // #1145: a cross-/non-default-memory copy. Each address is
@@ -645,11 +946,29 @@ fn walk(
                 // the source memory's contents into the destination's — so
                 // a pointer carried across memories is still tracked (and,
                 // field-insensitively, the two memories' contents join).
-                pop(g, &mut stack, &frames, i)?; // len
+                let len = pop(g, &mut stack, &frames, i)?; // len
                 let src = pop(g, &mut stack, &frames, i)?;
                 let dst = pop(g, &mut stack, &frames, i)?;
                 g.address(dst, *dst_mem)?;
                 g.address(src, *src_mem)?;
+                for (side, mem, is_src) in [(dst, *dst_mem, false), (src, *src_mem, true)] {
+                    if mem == 0 {
+                        g.m0.accesses.push(M0Access {
+                            func: fi,
+                            op: i,
+                            addr: side,
+                            offset: 0,
+                            width: None,
+                            len: Some(len),
+                            what: "memory.copy (memory-0 side)",
+                            is_copy_src: is_src,
+                            result: None,
+                        });
+                    }
+                }
+                if *dst_mem == 0 && *src_mem == 0 {
+                    g.m0.copies.push((dst, src));
+                }
                 if *src_mem == *dst_mem || !m.cross_copies_carry_no_pointers {
                     let from = g.mem(*src_mem);
                     let to = g.mem(*dst_mem);
@@ -668,24 +987,56 @@ fn walk(
             MemoryCopy | MemoryFill if memory == 0 => {
                 // The decoder emits the bare variants for memory 0 only (a
                 // cross- or non-default-memory form is decode-unsupported).
-                pop(g, &mut stack, &frames, i)?; // len
+                let len = pop(g, &mut stack, &frames, i)?; // len
                 let src_or_val = pop(g, &mut stack, &frames, i)?;
                 let dst = pop(g, &mut stack, &frames, i)?;
                 g.address(dst, 0)?;
                 let content = g.mem(0);
-                if matches!(inner, MemoryCopy) {
+                let copy = matches!(inner, MemoryCopy);
+                g.m0.accesses.push(M0Access {
+                    func: fi,
+                    op: i,
+                    addr: dst,
+                    offset: 0,
+                    width: None,
+                    len: Some(len),
+                    what: if copy {
+                        "memory.copy (destination)"
+                    } else {
+                        "memory.fill (destination)"
+                    },
+                    is_copy_src: false,
+                    result: None,
+                });
+                if copy {
                     g.address(src_or_val, 0)?;
+                    g.m0.accesses.push(M0Access {
+                        func: fi,
+                        op: i,
+                        addr: src_or_val,
+                        offset: 0,
+                        width: None,
+                        len: Some(len),
+                        what: "memory.copy (source)",
+                        is_copy_src: true,
+                        result: None,
+                    });
+                    g.m0.copies.push((dst, src_or_val));
                 } else {
                     g.flow(src_or_val, content);
+                    g.m0.stores.push((dst, src_or_val, 0));
                 }
             }
             MemorySize(_) => {
                 let n = g.fresh();
+                g.m0.opaque.insert(n);
                 stack.push(n);
             }
             MemoryGrow(_) => {
-                pop(g, &mut stack, &frames, i)?;
+                let a = pop(g, &mut stack, &frames, i)?;
+                g.observe(a);
                 let n = g.fresh();
+                g.m0.opaque.insert(n);
                 stack.push(n);
             }
             I32Eq | I32Ne | I32LtS | I32LtU | I32LeS | I32LeU | I32GtS | I32GtU | I32GeS
@@ -694,7 +1045,11 @@ fn walk(
                 let b = pop(g, &mut stack, &frames, i)?;
                 let a = pop(g, &mut stack, &frames, i)?;
                 g.couple(a, b);
+                g.observe(a);
+                g.observe(b);
+                g.m0.compares.push((fi, i, a, b));
                 let n = g.fresh();
+                g.m0.opaque.insert(n);
                 stack.push(n);
             }
             I32Sub | I64Sub => {
@@ -704,6 +1059,12 @@ fn walk(
                 let r = g.fresh();
                 g.flow(a, r);
                 g.flow(b, r);
+                if matches!(inner, I32Sub) {
+                    g.m0.binops.push((r, a, b, true));
+                } else {
+                    g.m0.opaque.insert(r);
+                    g.m0.transparent.insert(r, vec![a, b]);
+                }
                 stack.push(r);
             }
             other if memory == 0 => {
@@ -713,10 +1074,36 @@ fn walk(
                     ));
                 };
                 let ins = pop_n(g, &mut stack, &frames, pops as usize, i)?;
+                let add = matches!(other, I32Add) && ins.len() == 2;
+                if !add {
+                    // Consumed as a scalar (an operand of arithmetic other
+                    // than add/sub, a conversion, `eqz` …).
+                    for &v in &ins {
+                        g.observe(v);
+                    }
+                }
                 for _ in 0..pushes {
                     let r = g.fresh();
                     for &v in &ins {
                         g.flow(v, r);
+                    }
+                    match other {
+                        I64ExtendI32U | I64ExtendI32S if ins.len() == 1 => {
+                            g.m0.extends.insert(r, ins[0]);
+                            g.m0.transparent.insert(r, ins.clone());
+                        }
+                        I32WrapI64 | I64Add => {
+                            g.m0.transparent.insert(r, ins.clone());
+                        }
+                        I64Const(c) => {
+                            g.m0.i64_consts.insert(r, (fi, i, *c));
+                        }
+                        _ => {}
+                    }
+                    if add {
+                        g.m0.binops.push((r, ins[0], ins[1], false));
+                    } else {
+                        g.m0.opaque.insert(r);
                     }
                     stack.push(r);
                 }
@@ -843,6 +1230,1572 @@ pub fn plan(
     Ok(out)
 }
 
+// ===========================================================================
+// RQ-91-NPAMODEL: the memory-0 native-pointer decision.
+// ===========================================================================
+
+/// The memarg `offset` of a scalar memory access (`None` for an op without
+/// one). Shared by the provenance walk and the selector's #1580 fold.
+pub fn memarg_offset(op: &WasmOp) -> Option<u32> {
+    use WasmOp::*;
+    match op {
+        I32Load { offset, .. }
+        | I32Load8S { offset, .. }
+        | I32Load8U { offset, .. }
+        | I32Load16S { offset, .. }
+        | I32Load16U { offset, .. }
+        | I32Store { offset, .. }
+        | I32Store8 { offset, .. }
+        | I32Store16 { offset, .. }
+        | I64Load { offset, .. }
+        | I64Load8S { offset, .. }
+        | I64Load8U { offset, .. }
+        | I64Load16S { offset, .. }
+        | I64Load16U { offset, .. }
+        | I64Load32S { offset, .. }
+        | I64Load32U { offset, .. }
+        | I64Store { offset, .. }
+        | I64Store8 { offset, .. }
+        | I64Store16 { offset, .. }
+        | I64Store32 { offset, .. }
+        | F32Load { offset, .. }
+        | F64Load { offset, .. }
+        | F32Store { offset, .. }
+        | F64Store { offset, .. }
+        | V128Load { offset, .. }
+        | V128Store { offset, .. } => Some(*offset),
+        _ => None,
+    }
+}
+
+/// The memarg `offset` of a scalar memory access, mutably.
+pub fn memarg_offset_mut(op: &mut WasmOp) -> Option<&mut u32> {
+    use WasmOp::*;
+    match op {
+        I32Load { offset, .. }
+        | I32Load8S { offset, .. }
+        | I32Load8U { offset, .. }
+        | I32Load16S { offset, .. }
+        | I32Load16U { offset, .. }
+        | I32Store { offset, .. }
+        | I32Store8 { offset, .. }
+        | I32Store16 { offset, .. }
+        | I64Load { offset, .. }
+        | I64Load8S { offset, .. }
+        | I64Load8U { offset, .. }
+        | I64Load16S { offset, .. }
+        | I64Load16U { offset, .. }
+        | I64Load32S { offset, .. }
+        | I64Load32U { offset, .. }
+        | I64Store { offset, .. }
+        | I64Store8 { offset, .. }
+        | I64Store16 { offset, .. }
+        | I64Store32 { offset, .. }
+        | F32Load { offset, .. }
+        | F64Load { offset, .. }
+        | F32Store { offset, .. }
+        | F64Store { offset, .. }
+        | V128Load { offset, .. }
+        | V128Store { offset, .. } => Some(offset),
+        _ => None,
+    }
+}
+
+/// The op that pushed the value at operand distance `back` (1 = the operand
+/// pushed last) of the op at `idx`, found by walking backwards over
+/// STRAIGHT-LINE ops with exact stack effects. `None` when the walk meets a
+/// control-region op, a call, or anything unmodeled, or when the value comes
+/// from an op that pushes more than one value.
+pub fn operand_producer(wasm_ops: &[WasmOp], idx: usize, back: u32) -> Option<usize> {
+    let mut d = back;
+    let mut j = idx;
+    while j > 0 {
+        j -= 1;
+        let (pops, pushes) = crate::wasm_stack_check::straight_line_stack_effect(&wasm_ops[j])?;
+        if d <= pushes {
+            return (pushes == 1).then_some(j);
+        }
+        d = d - pushes + pops;
+    }
+    None
+}
+
+/// #1580 / RQ-91-NPAMODEL: the `--native-pointer-abi` EFFECTIVE-ADDRESS
+/// FOLDS of one function — `(const op j, access op idx, C + O)` for every
+/// `i32.const C … access offset=O` (O != 0, scalar, not v128) whose constant
+/// is found by an exact backward walk over straight-line ops, and where the
+/// relocation must carry the effective address: with a stack-pointer global,
+/// when one part is relocated by the selector's #237 / #739 rules and `C + O`
+/// is itself in that window; in any module, when `j` is a constant the
+/// memory-0 decision relocates (`reloc`). `i32.const (C+O) … offset=0` is
+/// exact wasm (the constant's only consumer is this access), and the mixed
+/// split then retargets the relocation by the region of the ACCESSED byte.
+/// The selector applies these; the memory-0 decision reads them. One source.
+pub fn npa_offset_folds(
+    wasm_ops: &[WasmOp],
+    sp_init: Option<i32>,
+    memory0_bytes: u32,
+    reloc: &std::collections::HashSet<usize>,
+) -> Vec<(usize, usize, u32)> {
+    let base = sp_init.filter(|&v| v > 0).map(|v| v as u32);
+    let in_window = |a: u32| base.is_some_and(|b| b <= a && a < memory0_bytes);
+    let mut out = Vec::new();
+    for (idx, op) in wasm_ops.iter().enumerate() {
+        let Some(offset) = memarg_offset(op) else {
+            continue;
+        };
+        if offset == 0 || matches!(op, WasmOp::V128Load { .. } | WasmOp::V128Store { .. }) {
+            continue;
+        }
+        let back = if crate::proven_safe::access_width(op).is_some()
+            && matches!(
+                op,
+                WasmOp::I32Store { .. }
+                    | WasmOp::I32Store8 { .. }
+                    | WasmOp::I32Store16 { .. }
+                    | WasmOp::I64Store { .. }
+                    | WasmOp::I64Store8 { .. }
+                    | WasmOp::I64Store16 { .. }
+                    | WasmOp::I64Store32 { .. }
+                    | WasmOp::F32Store { .. }
+                    | WasmOp::F64Store { .. }
+            ) {
+            2
+        } else {
+            1
+        };
+        let Some(j) = operand_producer(wasm_ops, idx, back) else {
+            continue;
+        };
+        let WasmOp::I32Const(c) = wasm_ops[j] else {
+            continue;
+        };
+        let Some(eff) = (c as u32).checked_add(offset) else {
+            continue;
+        };
+        let by_sp = base
+            .is_some_and(|b| (in_window(c as u32) || (c != 0 && offset >= b)) && in_window(eff));
+        if by_sp || reloc.contains(&j) {
+            out.push((j, idx, eff));
+        }
+    }
+    out
+}
+
+/// The ELF builder's `--native-pointer-abi` MIXED SPLIT gate (#354), stated
+/// once: memory 0's statics are laid out NON-contiguously — the zero
+/// reservation as a `.bss` under `__synth_wasm_data`, each data segment packed
+/// 4-aligned into `.data` under its own `__synth_wasm_seg_K` — exactly when
+/// there is a data segment and every segment sits at or above the
+/// stack-pointer init (0 without one). Otherwise one contiguous image ships.
+/// (The builder additionally needs every static reloc in the retargetable
+/// `Abs32` form, which every shipped selector path emits.)
+pub fn npa_split_layout(segment_offsets: &[u32], sp_init: Option<i32>) -> bool {
+    let base = sp_init.map_or(0, |v| v.max(0) as u32);
+    !segment_offsets.is_empty() && segment_offsets.iter().all(|&o| o >= base)
+}
+
+/// The inputs of [`Provenance::memory0_plan`].
+pub struct Memory0Inputs<'a> {
+    /// Function names for the diagnostics (export name or `func_N`).
+    pub func_names: &'a HashMap<u32, String>,
+    /// Memory 0's static extent in bytes as the SELECTOR sees it (its
+    /// `linear_memory_bytes`, the end of the #237 window).
+    pub memory0_bytes: u32,
+    /// Memory 0's declared minimum in bytes (an imported memory 0 included).
+    pub memory0_declared_bytes: u32,
+    /// The memory-0 stack-pointer global the compile uses, `(index, init)`,
+    /// only when its init is positive.
+    pub stack_pointer: Option<(u32, i32)>,
+    /// Memory 0's active data segments `(offset, bytes)`, in declaration
+    /// order (empty ones included; they own no byte).
+    pub data_segments: &'a [(u32, Vec<u8>)],
+    /// `--safety-bounds software|mask`.
+    pub guarded_bounds: bool,
+    /// Every analysed function's op stream (for the #1580 fold).
+    pub func_ops: &'a HashMap<u32, &'a [WasmOp]>,
+    /// #1145: per function, the `i32.const` op indices the multi-memory
+    /// layering keeps RAW (memory-k offsets inside memory 0's window): never
+    /// relocated, so never a memory-0 static here.
+    pub raw_consts: &'a HashMap<u32, Vec<usize>>,
+}
+
+/// The decision, per function.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Memory0Plan {
+    /// Op indices of the `i32.const`s to emit as `__synth_wasm_data + C`
+    /// BELOW the stack-pointer window — the window `[sp_init, memory-0
+    /// bytes)` keeps the selector's own #237 rule (every constant there is
+    /// relocated), so it is never listed here.
+    pub reloc_consts: HashMap<u32, Vec<usize>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Vals {
+    Known(std::collections::BTreeSet<u32>),
+    Top,
+}
+
+const VALS_CAP: usize = 64;
+const SITES_CAP: usize = 64;
+
+// A value's dynamic origins.
+const DYN_HOST: u8 = 1;
+const DYN_SP: u8 = 2;
+const DYN_GLOBAL: u8 = 4;
+const DYN_LOAD: u8 = 8;
+const DYN_OPAQUE: u8 = 16;
+
+// Region bits: 0..=61 data segment k, 62 NATIVE (memory no static names:
+// the shadow stack, a host buffer), 63 the zero reservation / a byte no
+// segment owns.
+const R_NATIVE: u64 = 1 << 62;
+const R_RESERVATION: u64 = 1 << 63;
+
+fn region_bit(k: Option<usize>) -> u64 {
+    match k {
+        Some(k) if k < 62 => 1 << k,
+        Some(_) => R_RESERVATION | ((1u64 << 62) - 1), // > 62 segments: any
+        None => R_RESERVATION,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Sum {
+    vals: Vals,
+    /// Candidate static constants (site ids) that reach this value through
+    /// value flows and add/sub — never through memory or a global.
+    sites: std::collections::BTreeSet<usize>,
+    many_sites: bool,
+    /// Constants in the selector's #237 window that reach it the same way
+    /// (`spz_many` once more than `SITES_CAP` do).
+    spz: std::collections::BTreeSet<u32>,
+    spz_many: bool,
+    dynamic: u8,
+    /// Memory-0 regions the value may point into.
+    regions: u64,
+    /// May be a WORD read from a data segment that holds a wasm address:
+    /// `(load function, load op, word address)`.
+    data: Option<(u32, usize, u32)>,
+}
+
+impl Sum {
+    fn bottom() -> Sum {
+        Sum {
+            vals: Vals::Known(Default::default()),
+            sites: Default::default(),
+            many_sites: false,
+            spz: Default::default(),
+            spz_many: false,
+            dynamic: 0,
+            regions: 0,
+            data: None,
+        }
+    }
+    fn join(&mut self, o: &Sum, keep_values: bool) {
+        self.dynamic |= o.dynamic;
+        self.regions |= o.regions;
+        if self.data.is_none() {
+            self.data = o.data;
+        }
+        if keep_values {
+            self.many_sites |= o.many_sites;
+            self.spz_many |= o.spz_many;
+            self.spz.extend(o.spz.iter().copied());
+            self.sites.extend(o.sites.iter().copied());
+            if let (Vals::Known(a), Vals::Known(b)) = (&mut self.vals, &o.vals) {
+                a.extend(b.iter().copied());
+            } else {
+                self.vals = Vals::Top;
+            }
+        }
+    }
+}
+
+/// One `i32.const` (or implicit zero) the decision may relocate.
+struct Site {
+    func: u32,
+    /// `None` for a local's implicit zero.
+    op: Option<usize>,
+    value: u32,
+    node: Node,
+}
+
+impl Provenance {
+    /// RQ-91-NPAMODEL (#739, #1568, #1604, #1672, #1661): memory 0's address
+    /// provenance under `--native-pointer-abi`, decided ONCE for the module.
+    ///
+    /// Under the ABI R11 is 0, so a memory-0 access dereferences its address
+    /// as a NATIVE pointer. A wasm static at offset `C` lives at
+    /// `__synth_wasm_data + C`, so a value that is a wasm static address must
+    /// have been rewritten to that native form before it is dereferenced.
+    /// This pass classifies every value the accesses see and either names
+    /// the constants to rewrite or refuses the module, loudly, with a named
+    /// diagnostic. The rules are the ABI (docs/embedder-abi-relocatable-arm.md):
+    ///
+    /// * WITH a stack-pointer global, a constant in `[sp_init, memory-0
+    ///   bytes)` is a pointer, relocated by the selector wherever it appears
+    ///   (the #237 rule, unchanged), and a run-time value added to it is an
+    ///   index. Statics BELOW `sp_init` (data placed under the stack) are
+    ///   decided here like a stackless module's.
+    /// * An address computed only from constants (through locals, select,
+    ///   add/sub) is a static: its pointer term — the larger term of an add,
+    ///   the minuend of a sub — is relocated at its definition, provided no
+    ///   comparison, branch or non-add arithmetic consumes it as a scalar.
+    /// * With a memory-0 data segment and no stack-pointer global, a constant
+    ///   in the static region `[lowest segment, memory-0 bytes)` — or a
+    ///   memarg offset touching it — beside a run-time value is ambiguous
+    ///   (a static base plus an index, or a native pointer plus an offset)
+    ///   and refused: `npa-dynamic-static-offset` (#1568 shape 2). Without a
+    ///   data segment there is no static region: a run-time value is native
+    ///   and a constant added to it an offset (`MMIO_BASE + reg`).
+    /// * A data-segment word holding a value in the static region is a WASM
+    ///   address the image does not relocate. A full word that may have been
+    ///   loaded from one and is then dereferenced as the POINTER (not as an
+    ///   index added to a static) is refused: `npa-data-pointer` (#1672).
+    ///   Memory is modelled per region (each data segment, the reservation,
+    ///   and native memory such as the stack), so a copy of such a word is
+    ///   followed. A host-supplied pointer into the statics is one the module
+    ///   produced earlier (a realloc result, an exported address): it may
+    ///   point into every region whose address left the module.
+    /// * A constant effective address whose bytes span two regions of the
+    ///   split layout, or whose relocated constant names another region, is
+    ///   refused — `npa-region-straddle` (#1604) — as is a bulk op with a
+    ///   constant destination and a run-time length there.
+    /// * `--safety-bounds software|mask` guard a wasm OFFSET against R10; a
+    ///   memory-0 address here is native, so a module with any memory-0
+    ///   access is refused: `npa-software-bounds` (#1661).
+    pub fn memory0_plan(&self, inp: &Memory0Inputs) -> Result<Memory0Plan, String> {
+        let g = &self.graph;
+        let f = &g.m0;
+        let n = g.preds.len();
+        let name = |func: u32| {
+            inp.func_names
+                .get(&func)
+                .cloned()
+                .unwrap_or_else(|| format!("func_{func}"))
+        };
+        // ---- #1661 --------------------------------------------------------
+        if inp.guarded_bounds
+            && let Some(a) = f.accesses.first()
+        {
+            return Err(format!(
+                "npa-software-bounds (#1661): --native-pointer-abi with --safety-bounds \
+                 software|mask is refused for this module — function '{}' (wasm function \
+                 index {}) has {} on memory 0 at op {}. Under the native-pointer ABI a \
+                 memory-0 address is a NATIVE pointer (R11 = 0), and the software and mask \
+                 guards compare a wasm OFFSET against R10 (memory 0's size), so in-bounds \
+                 accesses would trap or be masked to the wrong address. Memory-k accesses \
+                 keep their own guard; a module that touches only memory k is accepted. No \
+                 object is written. Drop --safety-bounds, use --safety-bounds mpu \
+                 --embedder-mpu, or drop --native-pointer-abi.",
+                name(a.func),
+                a.func,
+                a.what,
+                a.op
+            ));
+        }
+        // ---- the regions --------------------------------------------------
+        let segs: Vec<(usize, u32, &Vec<u8>)> = inp
+            .data_segments
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, b))| !b.is_empty())
+            .map(|(k, (o, b))| (k, *o, b))
+            .collect();
+        let region_of = |a: u64| -> Option<usize> {
+            segs.iter()
+                .rev()
+                .find(|&&(_, o, b)| a >= u64::from(o) && a - u64::from(o) < b.len() as u64)
+                .map(|&(k, _, _)| k)
+        };
+        let lowest = segs.iter().map(|&(_, o, _)| o).min();
+        let data_end: u64 = segs
+            .iter()
+            .map(|&(_, o, b)| u64::from(o) + b.len() as u64)
+            .max()
+            .unwrap_or(0);
+        let mem_end: u64 = u64::from(inp.memory0_bytes)
+            .max(u64::from(inp.memory0_declared_bytes))
+            .max(data_end);
+        let sp_init = inp.stack_pointer.map(|(_, v)| v as u32);
+        let split = npa_split_layout(
+            &segs.iter().map(|&(_, o, _)| o).collect::<Vec<_>>(),
+            inp.stack_pointer.map(|(_, v)| v),
+        );
+        let in_spz =
+            |v: u32| sp_init.is_some_and(|s| v >= s && u64::from(v) < u64::from(inp.memory0_bytes));
+        // A constant that may be a static in a constant-only address.
+        let pure_lo: u32 = match sp_init {
+            Some(s) => lowest.map_or(s, |l| l.min(s)),
+            None => 0,
+        };
+        let candidate = |v: u32| v >= pure_lo && u64::from(v) < mem_end && !in_spz(v);
+        // The static region a constant beside a RUN-TIME value is judged in.
+        let (zlo, zhi): (u64, u64) = match (lowest, sp_init) {
+            (Some(l), Some(s)) => (u64::from(l), u64::from(s).max(u64::from(l))),
+            (Some(l), None) => (u64::from(l), mem_end),
+            (None, _) => (0, 0),
+        };
+        let in_zone = |lo: u64, len: u64| zlo < zhi && lo < zhi && lo + len.max(1) > zlo;
+        // ---- data words that hold a wasm address (#1672) ------------------
+        let mut ptr_words: Vec<(u32, usize)> = Vec::new();
+        let mut ptr_regions: u64 = 0;
+        if let Some(lo) = lowest {
+            let span = (data_end - u64::from(lo)) as usize;
+            let mut img = vec![0u8; span];
+            let mut cov = vec![false; span];
+            for &(_, o, b) in &segs {
+                let s = (o - lo) as usize;
+                img[s..s + b.len()].copy_from_slice(b);
+                cov[s..s + b.len()].iter_mut().for_each(|c| *c = true);
+            }
+            let ptr_lo = sp_init.map_or(lo, |s| s.min(lo));
+            let mut a = u64::from(lo.next_multiple_of(4));
+            while a + 4 <= data_end {
+                let s = (a - u64::from(lo)) as usize;
+                if cov[s..s + 4].iter().all(|&c| c) {
+                    let w = u32::from_le_bytes([img[s], img[s + 1], img[s + 2], img[s + 3]]);
+                    if w != 0 && w >= ptr_lo && u64::from(w) < mem_end {
+                        let k = region_of(a).unwrap_or(usize::MAX);
+                        ptr_words.push((a as u32, k));
+                        ptr_regions |= region_bit(Some(k));
+                    }
+                }
+                a += 4;
+            }
+        }
+        // The first pointer word an access of `w` bytes at `ea` reads.
+        let word_in = |ea: u64, w: u64| -> Option<u32> {
+            ptr_words
+                .iter()
+                .find(|&&(wa, _)| u64::from(wa) + 4 > ea && u64::from(wa) < ea + w.max(1))
+                .map(|&(wa, _)| wa)
+        };
+        let word_of_regions = |r: u64| -> Option<u32> {
+            ptr_words
+                .iter()
+                .find(|&&(_, k)| region_bit(Some(k)) & r != 0)
+                .map(|&(wa, _)| wa)
+        };
+        // ---- sites and seeds ----------------------------------------------
+        let mut sites: Vec<Site> = Vec::new();
+        let mut site_of: HashMap<Node, usize> = HashMap::new();
+        let mut consts_by_node: HashMap<Node, u32> = HashMap::new();
+        let raw_nodes: std::collections::HashSet<Node> = g
+            .consts
+            .iter()
+            .filter(|((fi, op), _)| inp.raw_consts.get(fi).is_some_and(|v| v.contains(op)))
+            .map(|(_, &(_, nd))| nd)
+            .collect();
+        let mut const_list: Vec<_> = g.consts.iter().collect();
+        const_list.sort_by_key(|(k, _)| **k);
+        for (&(func, op), &(c, node)) in const_list {
+            consts_by_node.insert(node, c as u32);
+            if candidate(c as u32) {
+                site_of.insert(node, sites.len());
+                sites.push(Site {
+                    func,
+                    op: Some(op),
+                    value: c as u32,
+                    node,
+                });
+            }
+        }
+        for &(func, _, node) in &f.zero_inits {
+            consts_by_node.insert(node, 0);
+            if candidate(0) {
+                site_of.insert(node, sites.len());
+                sites.push(Site {
+                    func,
+                    op: None,
+                    value: 0,
+                    node,
+                });
+            }
+        }
+        let host_nodes: std::collections::HashSet<Node> =
+            g.host_entries.iter().map(|(_, nd)| *nd).collect();
+        let global_nodes: HashMap<Node, u32> = g.globals.iter().map(|(&k, &v)| (v, k)).collect();
+        let binop_of: HashMap<Node, (Node, Node, bool)> = f
+            .binops
+            .iter()
+            .map(|&(r, a, b, s)| (r, (a, b, s)))
+            .collect();
+        let loads: HashMap<Node, &M0Access> = f
+            .accesses
+            .iter()
+            .filter_map(|a| a.result.map(|r| (r, a)))
+            .collect();
+        let mut succ: Vec<Vec<Node>> = vec![Vec::new(); n];
+        for v in 0..n {
+            for &p in &f.fpreds[v] {
+                succ[p].push(v);
+            }
+        }
+        for (&r, a) in &loads {
+            succ[a.addr].push(r);
+        }
+        // Where an address may point, as region bits.
+        let points_to = |s: &Sum| -> u64 {
+            let mut r = s.regions;
+            if s.dynamic != 0 || r == 0 {
+                r |= R_NATIVE;
+            }
+            if let Vals::Known(vs) = &s.vals
+                && s.dynamic == 0
+            {
+                for &v in vs {
+                    if lowest.is_some() && u64::from(v) < mem_end {
+                        r |= region_bit(region_of(u64::from(v)));
+                    }
+                }
+            }
+            r
+        };
+        // Where an ACCESS may point: its address value plus its memarg offset.
+        // A fully known static address is exactly `v + offset` (a constant
+        // below the static window is a native address). A run-time index
+        // beside a static memarg BASE (an offset inside the static window,
+        // no static in the address itself) stays inside the base's region —
+        // R1, and the same assumption the codegen makes when it relocates
+        // that offset by the segment holding it (#739). Anything else keeps
+        // `points_to`.
+        // #1672 (gale, 85e5f200): only a load or copy in a REACHABLE function
+        // can put a data word into flow — a load that never runs reads none.
+        let live_fn = |fi: u32| f.reachable.as_ref().is_none_or(|r| r.contains(&fi));
+        let points_to_at = |s: &Sum, off: u32| -> u64 {
+            if lowest.is_none() {
+                return points_to(s);
+            }
+            if s.dynamic == 0
+                && let Vals::Known(vs) = &s.vals
+                && !vs.is_empty()
+            {
+                let mut r = 0u64;
+                for &v in vs {
+                    let ea = u64::from(v) + u64::from(off);
+                    r |= if ea >= u64::from(pure_lo) && ea < mem_end {
+                        region_bit(region_of(ea))
+                    } else {
+                        R_NATIVE
+                    };
+                }
+                return r;
+            }
+            let static_base = off >= pure_lo && u64::from(off) < mem_end;
+            if static_base && s.sites.is_empty() && s.spz.is_empty() && !s.spz_many {
+                return region_bit(region_of(u64::from(off)));
+            }
+            points_to(s)
+        };
+        // ---- the fixpoint (nodes, then memory buckets, then escapes) ------
+        let mut sum: Vec<Sum> = vec![Sum::bottom(); n];
+        let mut bucket: Vec<Sum> = vec![Sum::bottom(); 64];
+        let mut escaped: u64 = 0;
+        let mut first = true;
+        loop {
+            let mut work: Vec<Node> = if first {
+                (0..n).collect()
+            } else {
+                // Only the bucket readers and the host values can change.
+                loads
+                    .keys()
+                    .copied()
+                    .chain(host_nodes.iter().copied())
+                    .collect()
+            };
+            first = false;
+            let mut queued = vec![false; n];
+            for &v in &work {
+                queued[v] = true;
+            }
+            while let Some(v) = work.pop() {
+                queued[v] = false;
+                let mut s = Sum::bottom();
+                let is_load = loads.contains_key(&v);
+                let blocked = is_load || global_nodes.contains_key(&v);
+                let opaque = f.opaque.contains(&v) && !binop_of.contains_key(&v);
+                if !is_load {
+                    for &p in &f.fpreds[v] {
+                        s.join(&sum[p], !blocked);
+                    }
+                }
+                if opaque {
+                    // A scalar result: neither a static nor a data word.
+                    s.sites.clear();
+                    s.many_sites = false;
+                    s.spz.clear();
+                    s.spz_many = false;
+                    s.data = None;
+                    s.vals = Vals::Top;
+                    s.dynamic |= DYN_OPAQUE;
+                }
+                if let Some(&c) = consts_by_node.get(&v) {
+                    s.vals = Vals::Known([c].into_iter().collect());
+                    if in_spz(c) && !raw_nodes.contains(&v) {
+                        s.spz.insert(c);
+                    }
+                    if lowest.is_some() && u64::from(c) < mem_end && c >= pure_lo {
+                        s.regions |= region_bit(region_of(u64::from(c)));
+                    }
+                }
+                if let Some(&k) = site_of.get(&v) {
+                    s.sites.insert(k);
+                }
+                if let Some(&(a, b, is_sub)) = binop_of.get(&v) {
+                    s.vals = match (&sum[a].vals, &sum[b].vals) {
+                        (Vals::Known(x), Vals::Known(y)) if x.len() * y.len() <= VALS_CAP => {
+                            Vals::Known(
+                                x.iter()
+                                    .flat_map(|&p| {
+                                        y.iter().map(move |&q| {
+                                            if is_sub {
+                                                p.wrapping_sub(q)
+                                            } else {
+                                                p.wrapping_add(q)
+                                            }
+                                        })
+                                    })
+                                    .collect(),
+                            )
+                        }
+                        _ => Vals::Top,
+                    };
+                }
+                if host_nodes.contains(&v) {
+                    s.vals = Vals::Top;
+                    s.dynamic |= DYN_HOST;
+                    s.regions |= escaped;
+                }
+                if let Some(&gi) = global_nodes.get(&v) {
+                    s.vals = Vals::Top;
+                    s.dynamic |= if inp.stack_pointer.is_some_and(|(i, _)| i == gi) {
+                        DYN_SP
+                    } else {
+                        DYN_GLOBAL
+                    };
+                }
+                if let Some(acc) = loads.get(&v) {
+                    let a = &sum[acc.addr];
+                    let pt = points_to_at(a, acc.offset);
+                    for (k, b) in bucket.iter().enumerate() {
+                        if pt & (1 << k) != 0 {
+                            s.join(b, false);
+                        }
+                    }
+                    s.vals = Vals::Top;
+                    s.dynamic |= DYN_LOAD;
+                    // A FULL WORD read from a segment holding a wasm address.
+                    if s.data.is_none() && acc.width.is_some_and(|w| w >= 4) && live_fn(acc.func) {
+                        let w = u64::from(acc.width.unwrap_or(4));
+                        let hit = match &a.vals {
+                            Vals::Known(vs) if a.dynamic == 0 => vs
+                                .iter()
+                                .find_map(|&x| word_in(u64::from(x) + u64::from(acc.offset), w)),
+                            // R1: a static base plus a run-time delta stays in
+                            // the base's object — read only the bases'
+                            // regions (gale: `4488 + 192 + (host << 5)` read
+                            // the Location word through the host value's
+                            // escaped regions).
+                            _ if (!a.sites.is_empty() || !a.spz.is_empty())
+                                && !a.many_sites
+                                && !a.spz_many =>
+                            {
+                                let based = a
+                                    .sites
+                                    .iter()
+                                    .map(|&k| sites[k].value)
+                                    .chain(a.spz.iter().copied())
+                                    .fold(0u64, |r, b| r | region_bit(region_of(u64::from(b))));
+                                word_of_regions(based & ptr_regions)
+                            }
+                            _ if pt & ptr_regions != 0 => word_of_regions(pt & ptr_regions),
+                            _ => None,
+                        };
+                        if let Some(wa) = hit {
+                            s.data = Some((acc.func, acc.op, wa));
+                        }
+                    }
+                }
+                if let Vals::Known(k) = &s.vals
+                    && k.len() > VALS_CAP
+                {
+                    s.vals = Vals::Top;
+                }
+                if s.sites.len() > SITES_CAP {
+                    s.many_sites = true;
+                }
+                if s.spz.len() > SITES_CAP {
+                    s.spz.clear();
+                    s.spz_many = true;
+                }
+                if f.fpreds[v].is_empty()
+                    && !consts_by_node.contains_key(&v)
+                    && !binop_of.contains_key(&v)
+                    && !is_load
+                {
+                    s.vals = Vals::Top;
+                }
+                if s != sum[v] {
+                    sum[v] = s;
+                    for &w in &succ[v] {
+                        if !queued[w] {
+                            queued[w] = true;
+                            work.push(w);
+                        }
+                    }
+                }
+            }
+            // Memory buckets: what each region may hold.
+            let mut nb: Vec<Sum> = vec![Sum::bottom(); 64];
+            for &(addr, val, off) in &f.stores {
+                let pt = points_to_at(&sum[addr], off);
+                for (k, b) in nb.iter_mut().enumerate() {
+                    if pt & (1 << k) != 0 {
+                        b.join(&sum[val], false);
+                    }
+                }
+            }
+            for &(dst, src) in &f.copies {
+                let pd = points_to(&sum[dst]);
+                let ps = if f.realloc_old_ptr.contains(&src) {
+                    R_NATIVE
+                } else {
+                    points_to(&sum[src])
+                };
+                let mut moved = Sum::bottom();
+                for (k, b) in bucket.iter().enumerate() {
+                    if ps & (1 << k) != 0 {
+                        moved.join(b, false);
+                    }
+                }
+                let copy_src = f.accesses.iter().find(|a| a.addr == src && a.is_copy_src);
+                if moved.data.is_none()
+                    && copy_src.is_none_or(|a| live_fn(a.func))
+                    && let Some(wa) = word_of_regions(ps & ptr_regions)
+                {
+                    let acc = copy_src;
+                    moved.data = Some((acc.map_or(0, |a| a.func), acc.map_or(0, |a| a.op), wa));
+                }
+                for (k, b) in nb.iter_mut().enumerate() {
+                    if pd & (1 << k) != 0 {
+                        b.join(&moved, false);
+                    }
+                }
+            }
+            // R3': host pointers into the statics are ones the module handed out.
+            let mut esc = escaped;
+            for &x in &f.host_exits {
+                esc |= sum[x].regions;
+            }
+            let mut grew = esc != escaped;
+            escaped = esc;
+            for (k, b) in nb.into_iter().enumerate() {
+                let mut j = bucket[k].clone();
+                j.join(&b, false);
+                if j != bucket[k] {
+                    bucket[k] = j;
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        // ---- observed-as-scalar (backward over the directed flows) --------
+        // A value that leaves the module (an export result, an import
+        // argument) is observed too: the host sees its number. A static the
+        // module hands out as a pointer is relocated by the #237 window; one
+        // below it would change what the host receives.
+        let mut obs = vec![false; n];
+        let mut work: Vec<Node> = f
+            .observed
+            .iter()
+            .chain(f.host_exits.iter())
+            .copied()
+            .collect();
+        while let Some(v) = work.pop() {
+            if obs[v] {
+                continue;
+            }
+            obs[v] = true;
+            work.extend(f.fpreds[v].iter().copied());
+        }
+        let region_name = |k: Option<usize>| match k {
+            Some(k) => {
+                let (o, b) = &inp.data_segments[k];
+                format!(
+                    "data segment {k} [0x{o:x}, 0x{:x})",
+                    u64::from(*o) + b.len() as u64
+                )
+            }
+            None => "the zero-initialised reservation".to_string(),
+        };
+        // ---- the one-past-the-end boundary (R1) ----------------------------
+        // On the split layout a relocated constant that is one past the end
+        // of a data segment resolves to the START of the region holding that
+        // address (the zero reservation, or the segment that begins there) —
+        // the meaning of a plain address use (a flag or object that starts
+        // there). Compared against a pointer it most likely means "the end of
+        // the segment before", which that resolution breaks: refused.
+        if split {
+            // A boundary only where the region changes across it: the last
+            // byte of the segment (where a walked pointer resolves) and the
+            // byte past it resolve to different regions. Overlapping
+            // segments that one later segment covers stay one region.
+            let ends: Vec<(usize, u64)> = segs
+                .iter()
+                .map(|&(k, o, b)| (k, u64::from(o) + b.len() as u64))
+                .filter(|&(_, e)| region_of(e) != region_of(e - 1))
+                .collect();
+            for &(fi, op, a, b) in &f.compares {
+                for side in [a, b] {
+                    // The operand IS the constant (directly, or through a
+                    // local or select whose every value is a constant, or an
+                    // `i64.extend_i32_{s,u}` of one) — not an address
+                    // computed from it (`HEAP_END + off`). An `i64.const`
+                    // equal to a boundary in the static window counts too.
+                    let mut src = side;
+                    while let Some(&s) = f.extends.get(&src) {
+                        src = s;
+                    }
+                    let hit = |e: u64| -> bool {
+                        let e32 = e as u32;
+                        if let Vals::Known(vs) = &sum[src].vals
+                            && vs.contains(&e32)
+                            && sum[src].spz.contains(&e32)
+                        {
+                            return true;
+                        }
+                        f.i64_consts
+                            .get(&side)
+                            .is_some_and(|&(_, _, c)| c as u64 == e && in_spz(e32))
+                    };
+                    let Some(&(k, e)) = ends.iter().find(|&&(_, e)| hit(e)) else {
+                        continue;
+                    };
+                    let (o, _) = &inp.data_segments[k];
+                    return Err(format!(
+                        "npa-end-pointer-compare (#1604): --native-pointer-abi refused for \
+                         the whole module — function '{}' (wasm function index {fi}) compares, \
+                         at op {op}, a value against the constant 0x{e:x}, one past the end \
+                         of data segment {k} [0x{o:x}, 0x{e:x}). The relocatable object lays \
+                         memory 0's segments out separately, so that constant resolves to \
+                         the START of the region holding 0x{e:x} ({}), not to the end of \
+                         segment {k}. A pointer walked through segment {k} equals it only if \
+                         the layout happens to place that region right after segment {k}, \
+                         which nothing promises. \
+                         No object is written. Compare against a length or an index instead \
+                         of an end address, merge the segments into one, or drop \
+                         --native-pointer-abi.",
+                        name(fi),
+                        region_name(region_of(e)),
+                    ));
+                }
+            }
+        }
+        // ---- an i64.const naming a memory-0 static (#1684) ----------------
+        // i64 constants are never relocated (the decision relocates
+        // `i32.const` only), so one inside the static window that reaches a
+        // memory-0 address, or is compared with a static-derived pointer
+        // (an `i64.extend_i32_*` of one), would be read raw beside native
+        // addresses. Refused until i64 relocation lands. A module with no
+        // static region (R2) has no window.
+        if lowest.is_some() || sp_init.is_some() {
+            let win_lo = i64::from(pure_lo);
+            let in_win = |c: i64| c >= win_lo && i128::from(c) < i128::from(mem_end);
+            // The first in-window i64 constant reaching `v` as a VALUE: over
+            // plain flows (locals, select, parameters, results, block values)
+            // and the value-preserving conversions and i64 add/sub only —
+            // never through a shift count, another scalar operand, memory
+            // content (any memory) or a global (gale: a fmt packer's `i64.const
+            // 32` shift count stored to memory 1 "reached" an unrelated
+            // memory-1 load's comparison).
+            let walls: std::collections::HashSet<Node> =
+                g.mems.values().chain(g.globals.values()).copied().collect();
+            let reaching = |v: Node| -> Option<(u32, usize, i64)> {
+                let mut seen = vec![false; n];
+                let mut work = vec![v];
+                while let Some(x) = work.pop() {
+                    if std::mem::replace(&mut seen[x], true) {
+                        continue;
+                    }
+                    if let Some(&(cf, co, c)) = f.i64_consts.get(&x)
+                        && in_win(c)
+                    {
+                        return Some((cf, co, c));
+                    }
+                    if walls.contains(&x) {
+                        continue;
+                    }
+                    if let Some(ins) = f.transparent.get(&x) {
+                        work.extend(ins.iter().copied());
+                        continue;
+                    }
+                    if f.opaque.contains(&x) && !binop_of.contains_key(&x) {
+                        continue;
+                    }
+                    work.extend(f.fpreds[x].iter().copied());
+                }
+                None
+            };
+            let refuse = |cf: u32, co: usize, c: i64, how: String| -> String {
+                format!(
+                    "npa-i64-static-const (#1684): --native-pointer-abi refused for the whole \
+                     module — function '{}' (wasm function index {cf}) has, at op {co}, the \
+                     constant i64.const 0x{c:x}, inside memory 0's static window \
+                     [0x{pure_lo:x}, 0x{mem_end:x}), and {how}. i64 constants are not \
+                     relocated under the native-pointer ABI, so it would stay a raw wasm \
+                     address beside native pointers. No object is written. Use an i32 \
+                     address (an `i32.const`), or drop --native-pointer-abi.",
+                    name(cf)
+                )
+            };
+            for acc in &f.accesses {
+                if let Some((cf, co, c)) = reaching(acc.addr) {
+                    return Err(refuse(
+                        cf,
+                        co,
+                        c,
+                        format!(
+                            "it reaches the memory-0 address of the {} at op {} of function '{}'",
+                            acc.what,
+                            acc.op,
+                            name(acc.func)
+                        ),
+                    ));
+                }
+            }
+            let anchored = |s: &Sum| !s.spz.is_empty() || s.spz_many || !s.sites.is_empty();
+            for &(fi, op, a, b) in &f.compares {
+                for (k, o) in [(a, b), (b, a)] {
+                    let Some((cf, co, c)) = reaching(k) else {
+                        continue;
+                    };
+                    let mut src = o;
+                    while let Some(&s) = f.extends.get(&src) {
+                        src = s;
+                    }
+                    if anchored(&sum[o]) || anchored(&sum[src]) {
+                        return Err(refuse(
+                            cf,
+                            co,
+                            c,
+                            format!(
+                                "it is compared, at op {op} of function '{}', with a pointer \
+                                 derived from a memory-0 static",
+                                name(fi)
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        // ---- #1672: is a data word REALIZABLY dereferenced? -------------------
+        // The data flag is context-insensitive: a callee's parameters and
+        // returns are shared by every call site, so one caller passing a
+        // pointer-bearing static (`&Location`) marks EVERY call's result
+        // (gale's fused v11 one-domain image). Before refusing, search
+        // backward from the dereferenced address with call/return matching:
+        // a return is entered from ITS call site, and a parameter is left
+        // through that site's argument. The search succeeds (the refusal
+        // stands) when it reaches a source load whose address, in that same
+        // context, is a constant naming a pointer word — or when it cannot
+        // decide (arithmetic in the address, a non-constant source, data that
+        // came through memory, the budget): it never suppresses a refusal it
+        // cannot justify.
+        let site_of_result: HashMap<Node, (usize, usize)> = f
+            .sites
+            .iter()
+            .enumerate()
+            .flat_map(|(s, (_, _, rs))| rs.iter().enumerate().map(move |(r, &n)| (n, (s, r))))
+            .collect();
+        let param_of: HashMap<Node, (u32, u32)> = g
+            .locals
+            .iter()
+            .filter(|((fi, l), _)| f.param_counts.get(fi).is_some_and(|&pc| *l < pc))
+            .map(|(&(fi, l), &n)| (n, (fi, l)))
+            .collect();
+        let walls: std::collections::HashSet<Node> =
+            g.mems.values().chain(g.globals.values()).copied().collect();
+        let realizable = |d: Node| -> bool {
+            const BUDGET: usize = 200_000;
+            const DEPTH: usize = 16;
+            let mut seen: std::collections::HashSet<(Node, Vec<usize>, bool)> = Default::default();
+            // (node, call stack, searching an ADDRESS for a hitting constant)
+            let mut work: Vec<(Node, Vec<usize>, bool, u32, u32)> =
+                vec![(d, Vec::new(), false, 0, 0)];
+            while let Some((x, st, addr, off, w)) = work.pop() {
+                if seen.len() > BUDGET || st.len() > DEPTH {
+                    return true;
+                }
+                if !seen.insert((x, st.clone(), addr)) {
+                    continue;
+                }
+                if addr {
+                    // Looking for the constants this address can be here.
+                    if let Some(&c) = consts_by_node.get(&x) {
+                        let ea = u64::from(c) + u64::from(off);
+                        if word_in(ea, u64::from(w)).is_some() {
+                            return true;
+                        }
+                        continue;
+                    }
+                    if binop_of.contains_key(&x)
+                        || f.opaque.contains(&x)
+                        || loads.contains_key(&x)
+                        || host_nodes.contains(&x)
+                        || global_nodes.contains_key(&x)
+                        || walls.contains(&x)
+                    {
+                        return true;
+                    }
+                } else {
+                    // Only nodes carrying the data flag can carry it on.
+                    if sum[x].data.is_none() {
+                        continue;
+                    }
+                    if let Some(acc) = loads.get(&x) {
+                        // A load that sets the flag ITSELF: search its address
+                        // in this context. One that got it through memory:
+                        // undecidable here.
+                        if sum[x]
+                            .data
+                            .is_some_and(|(lf, lop, _)| lf == acc.func && lop == acc.op)
+                        {
+                            work.push((
+                                acc.addr,
+                                st.clone(),
+                                true,
+                                acc.offset,
+                                acc.width.unwrap_or(4),
+                            ));
+                            continue;
+                        }
+                        return true;
+                    }
+                    if global_nodes.contains_key(&x) || walls.contains(&x) {
+                        return true;
+                    }
+                }
+                if let Some(&(s, r)) = site_of_result.get(&x) {
+                    let mut st2 = st.clone();
+                    st2.push(s);
+                    for &c in &f.sites[s].0 {
+                        if let Some(&n) = g.rets.get(&(c, r as u32)) {
+                            work.push((n, st2.clone(), addr, off, w));
+                        }
+                    }
+                    continue;
+                }
+                if let Some(&(c, k)) = param_of.get(&x) {
+                    let arg_of = |s: usize| f.sites[s].1.get(k as usize).copied();
+                    let site_args: std::collections::HashSet<Node> = f
+                        .sites
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (cs, _, _))| cs.contains(&c))
+                        .filter_map(|(s, _)| arg_of(s))
+                        .collect();
+                    match st.last() {
+                        Some(&s) if f.sites[s].0.contains(&c) => {
+                            let mut st2 = st.clone();
+                            st2.pop();
+                            if let Some(a) = arg_of(s) {
+                                work.push((a, st2, addr, off, w));
+                            }
+                            for &p in &f.fpreds[x] {
+                                if !site_args.contains(&p) {
+                                    work.push((p, st.clone(), addr, off, w));
+                                }
+                            }
+                        }
+                        _ => {
+                            // No call to match (the dereference's own caller is
+                            // unknown): every caller.
+                            for &p in &f.fpreds[x] {
+                                work.push((p, st.clone(), addr, off, w));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                for &p in &f.fpreds[x] {
+                    work.push((p, st.clone(), addr, off, w));
+                }
+            }
+            false
+        };
+        // ---- per-access decisions -----------------------------------------
+        let mut offset_role: std::collections::HashSet<usize> = Default::default();
+        let mut base_role: std::collections::HashSet<usize> = Default::default();
+        let mut pure: Vec<&M0Access> = Vec::new();
+        for acc in &f.accesses {
+            let s = &sum[acc.addr];
+            // An address anchored by a static constant: a loaded value in it
+            // is an index, never the pointer.
+            // A static memarg BASE anchors too (`HEAP + OFF` with OFF in the
+            // memarg, relocated by #739): the loaded value is the index (gale
+            // func_6 `i32.load offset=7336 (idx << 2)`).
+            let memarg_base = sp_init.is_some_and(|sp| acc.offset != 0 && acc.offset >= sp)
+                && acc.width.is_some();
+            let anchored = !s.spz.is_empty() || s.spz_many || !s.sites.is_empty() || memarg_base;
+            let live = f.reachable.as_ref().is_none_or(|r| r.contains(&acc.func));
+            if let Some((lf, lop, wa)) = s.data
+                && !anchored
+                && live
+                && realizable(acc.addr)
+            {
+                let k = region_of(u64::from(wa)).unwrap_or(0);
+                let so = wa - inp.data_segments.get(k).map_or(0, |d| d.0);
+                let word = word_at(inp.data_segments, wa).unwrap_or(0);
+                return Err(format!(
+                    "npa-data-pointer (#1672): --native-pointer-abi refused for the whole \
+                     module — function '{}' (wasm function index {}) dereferences, in {} at \
+                     op {}, a value that may be the word loaded by the load at op {lop} of \
+                     function '{}' (wasm function index {lf}): data segment {k} holds the \
+                     wasm address 0x{word:x} at segment offset 0x{so:x} (wasm address \
+                     0x{wa:x}). Initialised data ships verbatim, so that word is a WASM \
+                     address, while a memory-0 address under this ABI is NATIVE: the \
+                     dereference would silently read absolute 0x{word:x}. No object is \
+                     written; --allow-skipped-exports does not cover this. Build the \
+                     pointer at run time (where it is relocated) instead of storing it in \
+                     initialised data, or drop --native-pointer-abi.",
+                    name(acc.func),
+                    acc.func,
+                    acc.what,
+                    acc.op,
+                    name(lf),
+                ));
+            }
+            if s.dynamic != 0 {
+                let w = u64::from(acc.width.unwrap_or(1));
+                let zoned = s
+                    .sites
+                    .iter()
+                    .map(|&k| sites[k].value)
+                    .find(|&v| in_zone(u64::from(v), 1));
+                let off_in = acc.offset != 0 && in_zone(u64::from(acc.offset), w);
+                let sp_only = sp_init.is_some() && s.dynamic == DYN_SP;
+                if (zoned.is_some() || off_in || (s.many_sites && zhi > zlo)) && !sp_only {
+                    let what = match zoned {
+                        Some(v) => format!("the constant 0x{v:x}"),
+                        None => format!("the memarg offset 0x{:x}", acc.offset),
+                    };
+                    return Err(format!(
+                        "npa-dynamic-static-offset (#1568): --native-pointer-abi refused for \
+                         the whole module — function '{}' (wasm function index {}): {} at op \
+                         {} with memarg offset 0x{:x} adds {what}, which lies in the module's \
+                         static region [0x{zlo:x}, 0x{zhi:x}), to a value computed at run \
+                         time. synth cannot tell a static base plus an index from a native \
+                         pointer plus an offset there, and the wrong choice silently reads or \
+                         writes the wrong address. No object is written; \
+                         --allow-skipped-exports does not cover this. Give the module a \
+                         stack-pointer global (the toolchain `__stack_pointer`) placed below \
+                         its data, keep run-time memarg offsets below 0x{zlo:x}, or drop \
+                         --native-pointer-abi.",
+                        name(acc.func),
+                        acc.func,
+                        acc.what,
+                        acc.op,
+                        acc.offset,
+                    ));
+                }
+                offset_role.extend(s.sites.iter().copied());
+            } else {
+                base_role.extend(s.sites.iter().copied());
+                pure.push(acc);
+            }
+        }
+        // add / sub roles in constant-only address arithmetic.
+        for &(r, a, b, is_sub) in &f.binops {
+            if g.taint[r] & 1 == 0 || sum[r].dynamic != 0 {
+                continue;
+            }
+            let (sa, sb) = (&sum[a], &sum[b]);
+            if is_sub {
+                offset_role.extend(sb.sites.iter().copied());
+                continue;
+            }
+            let anch = |s: &Sum| !s.spz.is_empty() || s.spz_many || !s.sites.is_empty();
+            if !anch(sa) || !anch(sb) {
+                continue;
+            }
+            let max = |s: &Sum| match &s.vals {
+                Vals::Known(v) => v.iter().max().copied(),
+                Vals::Top => None,
+            };
+            match (max(sa), max(sb)) {
+                (Some(x), Some(y)) if x >= y => offset_role.extend(sb.sites.iter().copied()),
+                (Some(_), Some(_)) => offset_role.extend(sa.sites.iter().copied()),
+                _ => offset_role.extend(sa.sites.iter().chain(sb.sites.iter()).copied()),
+            }
+        }
+        // The relocated constants.
+        let mut plan = Memory0Plan::default();
+        let mut relocated: std::collections::HashSet<usize> = Default::default();
+        for (k, site) in sites.iter().enumerate() {
+            if !base_role.contains(&k) || offset_role.contains(&k) {
+                continue;
+            }
+            let Some(op) = site.op else {
+                return Err(format!(
+                    "npa-static-unrelocatable (#1568): --native-pointer-abi refused for the \
+                     whole module — in function '{}' (wasm function index {}) a local's \
+                     implicit zero initial value may be read and dereferenced as the static \
+                     address 0x0; an implicit value has no definition to relocate. No object \
+                     is written. Set the local before every read, or drop \
+                     --native-pointer-abi.",
+                    name(site.func),
+                    site.func
+                ));
+            };
+            if obs[site.node] {
+                return Err(format!(
+                    "npa-static-observed (#1568): --native-pointer-abi refused for the whole \
+                     module — in function '{}' (wasm function index {}) the constant 0x{:x} \
+                     at op {op} is dereferenced as a memory-0 static address AND consumed as \
+                     a scalar (a comparison, a branch condition, or arithmetic other than \
+                     add/sub). Relocating it would change what the scalar use sees; not \
+                     relocating it would dereference the wrong address. No object is \
+                     written. Keep the static address and the scalar in separate values, or \
+                     drop --native-pointer-abi.",
+                    name(site.func),
+                    site.func,
+                    site.value
+                ));
+            }
+            relocated.insert(k);
+            plan.reloc_consts.entry(site.func).or_default().push(op);
+        }
+        // Positional fallback: a constant-only address whose static effective
+        // address none of its constants carries (each is below the static
+        // range, e.g. `i32.const 0x1800 … offset=0x1000` under a stack
+        // pointer at 0x2000), but whose address operand IS one `i32.const`
+        // consumed only by this access. That constant is relocated, and the
+        // #1580 fold below makes its relocation carry the effective address.
+        let node_op: HashMap<Node, (u32, usize)> = g
+            .consts
+            .iter()
+            .map(|(&(fi, o), &(_, nd))| (nd, (fi, o)))
+            .collect();
+        let mut fallback: HashMap<(u32, usize), u32> = HashMap::new();
+        for acc in &pure {
+            let s = &sum[acc.addr];
+            let Some(&(fi, op)) = node_op.get(&acc.addr) else {
+                continue;
+            };
+            let c = consts_by_node[&acc.addr];
+            let Some(ea) = c.checked_add(acc.offset) else {
+                continue;
+            };
+            let carried = !s.spz.is_empty()
+                || s.spz_many
+                || s.sites.iter().any(|k| relocated.contains(k))
+                || sp_init.is_some_and(|sp| acc.offset != 0 && acc.offset >= sp);
+            if ea >= pure_lo && u64::from(ea) < mem_end && !carried {
+                plan.reloc_consts.entry(fi).or_default().push(op);
+                fallback.insert((acc.func, acc.op), c);
+            }
+        }
+        for v in plan.reloc_consts.values_mut() {
+            v.sort_unstable();
+            v.dedup();
+        }
+        // The #1580 folds the selector will apply: an access they cover is
+        // relocated by its own effective address.
+        let mut folded: std::collections::HashSet<(u32, usize)> = Default::default();
+        for (&fi, ops) in inp.func_ops {
+            let rel: std::collections::HashSet<usize> = plan
+                .reloc_consts
+                .get(&fi)
+                .map(|v| v.iter().copied().collect())
+                .unwrap_or_default();
+            for (_, idx, _) in npa_offset_folds(
+                ops,
+                inp.stack_pointer.map(|(_, v)| v),
+                inp.memory0_bytes,
+                &rel,
+            ) {
+                folded.insert((fi, idx));
+            }
+        }
+        // #739: with a stack-pointer global a memarg offset at or above its
+        // init is relocated ON ITS OWN by the access (unless a #1580 fold
+        // made it part of the constant): it must not double a relocated
+        // constant, and the bytes it is retargeted by must be one region.
+        let off_relocated = |acc: &M0Access| {
+            sp_init.is_some_and(|sp| acc.offset != 0 && acc.offset >= sp)
+                && acc.width.is_some()
+                && !folded.contains(&(acc.func, acc.op))
+        };
+        for acc in &f.accesses {
+            if !off_relocated(acc) {
+                continue;
+            }
+            let s = &sum[acc.addr];
+            if !s.spz.is_empty() || s.spz_many || s.sites.iter().any(|k| relocated.contains(k)) {
+                return Err(format!(
+                    "npa-double-relocation (#1580): --native-pointer-abi refused for the \
+                     whole module — function '{}' (wasm function index {}): {} at op {} adds \
+                     the memarg offset 0x{:x}, which is relocated on its own, to an address \
+                     that already carries a relocated static constant, so the native address \
+                     would count `__synth_wasm_data` twice. No object is written. Fold the \
+                     offset into the constant, address it positionally, or drop \
+                     --native-pointer-abi.",
+                    name(acc.func),
+                    acc.func,
+                    acc.what,
+                    acc.op,
+                    acc.offset
+                ));
+            }
+            if !split {
+                continue;
+            }
+            let w = acc.width.unwrap_or(1);
+            let (ea, last) = (
+                u64::from(acc.offset),
+                u64::from(acc.offset) + u64::from(w) - 1,
+            );
+            let first_r = region_of(ea);
+            if let Some(other) = segs
+                .iter()
+                .flat_map(|&(_, o, b)| [u64::from(o), u64::from(o) + b.len() as u64])
+                .filter(|&b| ea < b && b <= last)
+                .map(region_of)
+                .find(|r| *r != first_r)
+            {
+                return Err(format!(
+                    "npa-region-straddle (#1604): --native-pointer-abi refused for the whole \
+                     module — function '{}' (wasm function index {}): {} at op {} relocates \
+                     its memarg offset 0x{:x} on its own (a run-time base, #739); the {w} \
+                     byte(s) [0x{ea:x}, 0x{:x}) it is retargeted by, which span {} and {}, \
+                     are not laid out contiguously by the relocatable object, so the access \
+                     would silently read or write the wrong bytes. No object is written. \
+                     Keep the access inside one region, merge the data segments it touches \
+                     into one segment that covers every byte, or drop --native-pointer-abi.",
+                    name(acc.func),
+                    acc.func,
+                    acc.what,
+                    acc.op,
+                    acc.offset,
+                    last + 1,
+                    region_name(first_r),
+                    region_name(other),
+                ));
+            }
+        }
+        // Every constant-only memory-0 address: relocated, inside ONE region.
+        for acc in pure {
+            let s = &sum[acc.addr];
+            let Vals::Known(vals) = &s.vals else { continue };
+            let positional = consts_by_node.contains_key(&acc.addr);
+            // #1604 (gale, 85e5f200): an address whose possible values are
+            // EXACTLY its relocated base constants (one method called on two
+            // statics: `f(0x938)`, `f(0x978)`) is judged PER ELEMENT — each
+            // value is its own base, retargeted by its own region. Any other
+            // mix keeps the union check below.
+            let bases: std::collections::BTreeSet<u32> = s
+                .sites
+                .iter()
+                .filter(|k| relocated.contains(k))
+                .map(|&k| sites[k].value)
+                .chain(s.spz.iter().copied())
+                .collect();
+            // The element's base: the value itself, or — for `x + d` with `d`
+            // a constant that is not relocated and `x`'s values exactly the
+            // bases (a field `+128` of a per-caller static) — the value
+            // minus `d`.
+            // Values below the static window (a local's implicit zero, a
+            // native address) are skipped by the per-value loop below, so
+            // they take no part in the comparison.
+            let in_window =
+                |vs: &std::collections::BTreeSet<u32>| -> std::collections::BTreeSet<u32> {
+                    vs.iter()
+                        .copied()
+                        .filter(|&v| v >= pure_lo && u64::from(v) < mem_end)
+                        .collect()
+                };
+            let shift: Option<u32> = if bases == in_window(vals) {
+                Some(0)
+            } else if let Some(&(x, y, false)) = binop_of.get(&acc.addr) {
+                let side = |bn: Node, dn: Node| -> Option<u32> {
+                    let d = *consts_by_node.get(&dn)?;
+                    let relocated_d = sum[dn].sites.iter().any(|k| relocated.contains(k))
+                        || !sum[dn].spz.is_empty();
+                    match &sum[bn].vals {
+                        Vals::Known(bv) if in_window(bv) == bases && !relocated_d => Some(d),
+                        _ => None,
+                    }
+                };
+                side(x, y).or_else(|| side(y, x))
+            } else {
+                None
+            };
+            let per_element = !s.spz_many
+                && !s.many_sites
+                && !folded.contains(&(acc.func, acc.op))
+                && !off_relocated(acc)
+                && !fallback.contains_key(&(acc.func, acc.op))
+                && shift.is_some();
+            let width: Option<u32> = match (acc.width, acc.len.map(|l| &sum[l].vals)) {
+                (Some(w), _) => Some(w),
+                (None, Some(Vals::Known(ls))) => ls.iter().max().copied(),
+                _ => None,
+            };
+            for &v in vals {
+                let Some(ea) = v.checked_add(acc.offset) else {
+                    continue;
+                };
+                if u64::from(ea) >= mem_end || ea < pure_lo {
+                    // Beyond memory 0 (a native / MMIO address), or the
+                    // shadow-stack zone below every static.
+                    continue;
+                }
+                // A #1580 fold makes the constant the effective address, and
+                // the constant it rewrites is relocated (the #237 window, or
+                // this decision).
+                let carried = fallback.contains_key(&(acc.func, acc.op))
+                    || folded.contains(&(acc.func, acc.op))
+                    || off_relocated(acc)
+                    || !s.spz.is_empty()
+                    || s.spz_many
+                    || s.sites.iter().any(|k| relocated.contains(k));
+                if !carried {
+                    return Err(format!(
+                        "npa-static-unrelocatable (#1568): --native-pointer-abi refused for \
+                         the whole module — function '{}' (wasm function index {}): {} at op \
+                         {} addresses the constant static address 0x{ea:x}, computed from \
+                         constants none of which can carry the relocation. It would be \
+                         emitted as a raw address off R11 = 0 and silently read or write \
+                         absolute 0x{ea:x}. No object is written. Address the static through \
+                         a constant at or above it, or drop --native-pointer-abi.",
+                        name(acc.func),
+                        acc.func,
+                        acc.what,
+                        acc.op
+                    ));
+                }
+                if !split {
+                    continue;
+                }
+                let Some(w) = width else {
+                    return Err(format!(
+                        "npa-region-straddle (#1604): --native-pointer-abi refused for the \
+                         whole module — function '{}' (wasm function index {}): {} at op {} \
+                         starts at the constant static address 0x{ea:x} with a length \
+                         computed at run time. The relocatable object does not lay memory 0 \
+                         out contiguously (the reservation is a .bss; each data segment is \
+                         packed 4-aligned into .data), so the bytes past 0x{ea:x} need not \
+                         be the ones wasm addresses. No object is written. Use a constant \
+                         length that stays inside one region, or drop --native-pointer-abi.",
+                        name(acc.func),
+                        acc.func,
+                        acc.what,
+                        acc.op
+                    ));
+                };
+                if w == 0 {
+                    continue;
+                }
+                let last = u64::from(ea) + u64::from(w) - 1;
+                let first_r = region_of(u64::from(ea));
+                let crossing = segs
+                    .iter()
+                    .flat_map(|&(_, o, b)| [u64::from(o), u64::from(o) + b.len() as u64])
+                    .filter(|&b| u64::from(ea) < b && b <= last)
+                    .map(region_of)
+                    .find(|r| *r != first_r);
+                // The relocated constant is retargeted by ITS region — unless
+                // the #1580 fold made it the effective address, or the access
+                // has no offset and the constant IS the address.
+                let base_r =
+                    if folded.contains(&(acc.func, acc.op)) || (positional && acc.offset == 0) {
+                        None
+                    } else if per_element {
+                        let r = region_of(u64::from(v.wrapping_sub(shift.unwrap_or(0))));
+                        (r != first_r).then_some(r)
+                    } else {
+                        s.sites
+                            .iter()
+                            .filter(|k| relocated.contains(k))
+                            .map(|&k| sites[k].value)
+                            .chain(s.spz.iter().copied())
+                            .chain(fallback.get(&(acc.func, acc.op)).copied())
+                            .chain(off_relocated(acc).then_some(acc.offset))
+                            .map(|b| region_of(u64::from(b)))
+                            .find(|r| *r != first_r)
+                    };
+                if let Some(other) = crossing.or(base_r) {
+                    return Err(format!(
+                        "npa-region-straddle (#1604): --native-pointer-abi refused for the \
+                         whole module — function '{}' (wasm function index {}): {} at op {} \
+                         touches the {w} byte(s) [0x{ea:x}, 0x{:x}) of a constant address, \
+                         which span {} and {} (or whose relocated constant names the \
+                         second). The relocatable object does not lay these out \
+                         contiguously (the reservation is a .bss; each segment is packed \
+                         4-aligned into .data), and the relocation follows one region, so \
+                         the access would silently read or write the wrong bytes. No \
+                         object is written. Keep the access inside one region, merge the \
+                         data segments it touches into one segment that covers every \
+                         byte, or drop --native-pointer-abi.",
+                        name(acc.func),
+                        acc.func,
+                        acc.what,
+                        acc.op,
+                        last + 1,
+                        region_name(first_r),
+                        region_name(other),
+                    ));
+                }
+            }
+        }
+        // A static constant dereferenced only after a round trip through
+        // memory or a global was stored raw.
+        for (k, site) in sites.iter().enumerate() {
+            if base_role.contains(&k)
+                || offset_role.contains(&k)
+                || g.taint[site.node] & 1 == 0
+                || !in_zone(u64::from(site.value), 1)
+                || obs[site.node]
+            {
+                continue;
+            }
+            if let Some(op) = site.op {
+                return Err(format!(
+                    "npa-static-unrelocatable (#1568): --native-pointer-abi refused for the \
+                     whole module — in function '{}' (wasm function index {}) the constant \
+                     0x{:x} at op {op} lies in the static region [0x{zlo:x}, 0x{zhi:x}) and \
+                     reaches a memory-0 address only through memory or a global, where synth \
+                     cannot tell a stored pointer from a stored scalar. No object is written. \
+                     Give the module a stack-pointer global placed below its data, or drop \
+                     --native-pointer-abi.",
+                    name(site.func),
+                    site.func,
+                    site.value
+                ));
+            }
+        }
+        Ok(plan)
+    }
+}
+
+/// The little-endian word the runtime image holds at `a` (later segments win).
+fn word_at(segs: &[(u32, Vec<u8>)], a: u32) -> Option<u32> {
+    let mut w = [0u8; 4];
+    for (k, b) in w.iter_mut().enumerate() {
+        let addr = a.checked_add(k as u32)?;
+        *b = segs
+            .iter()
+            .rev()
+            .find(|(o, d)| addr >= *o && u64::from(addr - o) < d.len() as u64)
+            .map(|(o, d)| d[(addr - o) as usize])?;
+    }
+    Some(u32::from_le_bytes(w))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -859,6 +2812,8 @@ mod tests {
             elem_func_indices: &[],
             memory_count: 2,
             cross_copies_carry_no_pointers: false,
+            start_function: None,
+            canonical_realloc: Vec::new(),
         }
     }
 

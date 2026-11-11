@@ -3080,8 +3080,11 @@ jobs:
       # 0xFFF fold limit, and every one on the i64/float/bulk arms) was baked
       # as `[fp, rX]` and read absolute `addr`. The i32 arms now fold and
       # relocate any static address (executed against wasmtime here, incl.
-      # multi_segment_static_data.wat); the non-folding arms must refuse
-      # loudly with no object written (counted, #1113 non-vacuity).
+      # multi_segment_static_data.wat). Since RQ-91-NPAMODEL the non-folding
+      # arms get the constant relocated by the module-level memory-0 decision
+      # and are EXECUTED (RELOCATED rows); what it cannot relocate soundly is
+      # refused with a named npa-* diagnostic and no object (counted, #1113
+      # non-vacuity).
       # RQ-90-NPASHAPE2 (#1568 shape 2): a DYNAMIC access whose memarg offset
       # lands in the static region of a module with no stack-pointer global
       # refuses the WHOLE module (20 rows, plain and --allow-skipped-exports,
@@ -3104,11 +3107,15 @@ jobs:
       # families; shapes le_fff/gt_fff/gt_ffff/off_gt_fff in the nosp and sp
       # kinds, `sliver` only in spsliver; memory.* has no memarg so skips the
       # offset shapes: 73 + 73 + 16) under --native-pointer-abi, executed
-      # against wasmtime. Pinned EXACT: 99 ok, 63 refused (59 by the
-      # npa_const_addr_guard needle), 0 wrong. RED on the pre-fix f982481f
-      # binary: 81 WRONG, 75 ok, 6 refused.
+      # against wasmtime. Pinned EXACT: 158 ok, 4 refused (the 4 GI-FPU-002
+      # declines the matrix has always carried; 0 by an npa-* diagnostic), 0
+      # wrong. RQ-91-NPAMODEL moved it from 99/63/59: the module-level
+      # memory-0 decision relocates the constant on the non-folding arms
+      # instead of refusing them (59 cells REFUSED -> ok, executed). RED on
+      # the pre-fix f982481f binary: 81 WRONG, 75 ok, 6 refused; eab66646
+      # measures 99/63/59 against this pin.
       - name: Run native-pointer constant-address matrix (#1574, cortex-m3/m7dp)
-        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_const_addr_matrix_1568.py --expect ok=99,refused=63,guard=59,wrong=0
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_const_addr_matrix_1568.py --expect ok=158,refused=4,guard=0,wrong=0
       # #1580: WITH a stack-pointer global, a constant address plus a non-zero
       # memarg offset is relocated on its EFFECTIVE address (the offset is
       # folded into the constant), so the mixed split retargets it to the
@@ -3131,6 +3138,27 @@ jobs:
       # must keep compiling. RED on main c20d37b2: 0 of 255 refused.
       - name: Run native-pointer region-straddle oracle (#1604, cortex-m3/m7dp)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_straddle_1604_differential.py
+      # RQ-91-NPAMODEL (#1672, #1568, #1604, #1661): memory-0 address
+      # provenance decided once per module. One row per shape, executed vs
+      # wasmtime or refused with its named diagnostic: the #1672 data-pointer
+      # repro and a &'static str shape refused (`npa-data-pointer`), the
+      # word-only near miss and gale's bump allocator (HEAP + OFF, plain and
+      # with a pointer word in data) executed; #1568 arithmetic / select /
+      # arithmetic local executed; MMIO base + run-time offset in a module
+      # with no data (R2) executed on the native contract; #1604 arithmetic
+      # straddle and computed bulk destination refused; data below the stack
+      # pointer executed (positional and arithmetic) and its run-time offset
+      # refused; #1661 software bounds refused; the R1 boundary rule: gale's
+      # shape (a flag at the start of the segment after another) executed,
+      # an end pointer compared in a loop refused (npa-end-pointer-compare),
+      # also as `<`, as an i64 comparison and against an i64.const, and a
+      # counter compared with a segment end; the same walk against an
+      # interior constant executed; #1684: an i64.const naming a static,
+      # compared with a static-derived pointer or reaching an address,
+      # refused (npa-i64-static-const), four i64 controls executed.
+      # RED on eab66646: 21 failures.
+      - name: Run native-pointer provenance oracle (RQ-91-NPAMODEL, cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/npa_model_differential.py
       # #746 (the #739 residual): the i64/WIDE static-region arms — i64.load/
       # i64.store pair accesses plus the i64 narrow loads/stores (load8/16/32,
       # store8/16/32) — get the #744 relocation treatment instead of the loud

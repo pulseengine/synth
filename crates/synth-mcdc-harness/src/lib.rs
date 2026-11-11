@@ -737,6 +737,8 @@ pub extern "C" fn npa_plan_gate(
         elem_func_indices: &[],
         memory_count: 2,
         cross_copies_carry_no_pointers: false,
+        start_function: None,
+        canonical_realloc: Vec::new(),
     };
     let Ok(prov) = Provenance::analyze(&m) else {
         return 200;

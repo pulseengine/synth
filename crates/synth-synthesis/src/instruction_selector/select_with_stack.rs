@@ -84,18 +84,40 @@ impl InstructionSelector {
         // a panic deep in the selector's pop sequence (see PR #117).
         synth_core::wasm_stack_check::check_no_underflow(wasm_ops)?;
 
-        // `--native-pointer-abi` pre-flight: no constant static address may be
-        // lowered as a raw linear-memory offset off R11 (R11 is 0 under that
-        // ABI). The i32 arms relocate it through the const-address fold; every
-        // other positional constant-address access is refused here, loudly.
-        // RQ-89-NPARESIDUE (#1568): constants routed through a local are
-        // resolved too — relocated at their definition when the local is used
-        // only as an address, refused otherwise.
-        // #1580: first fold a memarg offset into the constant address feeding
-        // the access wherever a stack-pointer global would relocate only ONE
-        // part of `C + offset` — the relocation must carry the effective
-        // address so the mixed split retargets it to the right region.
-        let npa_rewritten = self.npa_effective_addr_rewrite(wasm_ops);
+        // `--native-pointer-abi`: which memory-0 values are wasm statics is
+        // decided ONCE per module by the provenance pass
+        // (`synth_core::npa_multi_memory::Provenance::memory0_plan`,
+        // RQ-91-NPAMODEL), which refuses the module or names the constants to
+        // relocate (`set_npa_reloc_consts`); the ARM backend checks the
+        // emitted stream against the same ABI. The selector keeps only its
+        // lowering choices.
+        // #1580: fold a memarg offset into the constant address feeding the
+        // access wherever only ONE part of `C + offset` is relocated — the
+        // relocation must carry the effective address so the mixed split
+        // retargets it to the right region. The folds are decided by
+        // `synth_core::npa_multi_memory::npa_offset_folds`, the same function
+        // the memory-0 decision reads.
+        let npa_rewritten: Option<Vec<WasmOp>> = if self.native_pointer_abi {
+            let folds = synth_core::npa_multi_memory::npa_offset_folds(
+                wasm_ops,
+                self.sp_global.map(|(_, v)| v),
+                self.linear_memory_bytes,
+                &self.npa_reloc_consts,
+            );
+            (!folds.is_empty()).then(|| {
+                let mut ops = wasm_ops.to_vec();
+                for (j, idx, eff) in folds {
+                    ops[j] = I32Const(eff as i32);
+                    if let Some(o) = synth_core::npa_multi_memory::memarg_offset_mut(&mut ops[idx])
+                    {
+                        *o = 0;
+                    }
+                }
+                ops
+            })
+        } else {
+            None
+        };
         // #1145: a constant the multi-memory provenance pass keeps raw (a
         // memory-k offset) is never a memory-0 access's producer, so this
         // rewrite must not touch one; refuse rather than relocate it if it did.
@@ -112,12 +134,6 @@ impl InstructionSelector {
             ));
         }
         let wasm_ops: &[WasmOp] = npa_rewritten.as_deref().unwrap_or(wasm_ops);
-        let npa_plan = self.npa_local_const_plan(wasm_ops, num_params);
-        self.npa_const_addr_guard(wasm_ops, &npa_plan)?;
-        // #1604: a constant access whose bytes span two data regions of the
-        // split static-data layout reads/writes the wrong bytes — refused.
-        self.npa_region_straddle_guard(wasm_ops, &npa_plan)?;
-        self.npa_ptr_const_defs = npa_plan.rewrite;
 
         // #1093 pre-flight: a PARAMETER-taking block type declines as a typed
         // error, never a panic — block params pop BELOW the #313 frame-entry
@@ -1428,14 +1444,21 @@ impl InstructionSelector {
                     // const (including stored *values*) would look like an address,
                     // which is unsound — those modules use the positional
                     // load/store promotion only.
-                    // RQ-89-NPARESIDUE (#1568): without one, a const that
-                    // defines a local read ONLY as an address is relocated too
-                    // (`npa_local_const_plan`) — no scalar ever observes it.
+                    // RQ-91-NPAMODEL (#1568, #1672): below that window — and in
+                    // a module without one — the module-level provenance pass
+                    // names the constants that are wasm static addresses
+                    // (`npa_reloc_consts`); they are relocated the same way.
                     // #1145: a memory-k offset in memory 0's window stays raw.
-                    if (self.sp_global.is_some() || self.npa_ptr_const_defs.contains(&idx))
-                        && !self.npa_raw_consts.contains(&idx)
-                        && let Some(addend) = self.static_data_addend(uval)
-                    {
+                    let npa_addend = if self.npa_raw_consts.contains(&idx) {
+                        None
+                    } else if self.npa_reloc_consts.contains(&idx) {
+                        Some(uval as i32)
+                    } else if self.sp_global.is_some() {
+                        self.static_data_addend(uval)
+                    } else {
+                        None
+                    };
+                    if let Some(addend) = npa_addend {
                         Self::emit_wasm_data_addr(&mut instructions, dst, addend, idx);
                         cf.add_instruction();
                         stack.push(StackVal::i32(dst));
@@ -1506,7 +1529,7 @@ impl InstructionSelector {
                             &live_params,
                             idx,
                         )?;
-                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1, false);
                         let a = pop_operand(
                             &mut stack,
                             &mut next_temp,
@@ -1587,7 +1610,7 @@ impl InstructionSelector {
                             &live_params,
                             idx,
                         )?;
-                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1, false);
                         let a = pop_operand(
                             &mut stack,
                             &mut next_temp,
@@ -1708,7 +1731,7 @@ impl InstructionSelector {
                             &live_params,
                             idx,
                         )?;
-                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1, false);
                         let a = pop_operand(
                             &mut stack,
                             &mut next_temp,
@@ -1786,7 +1809,7 @@ impl InstructionSelector {
                             &live_params,
                             idx,
                         )?;
-                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1, false);
                         let a = pop_operand(
                             &mut stack,
                             &mut next_temp,
@@ -1864,7 +1887,7 @@ impl InstructionSelector {
                             &live_params,
                             idx,
                         )?;
-                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1, false);
                         let a = pop_operand(
                             &mut stack,
                             &mut next_temp,
@@ -2580,6 +2603,9 @@ impl InstructionSelector {
                     // miscompile). Dynamic-index loads — falcon's shape — are
                     // unaffected (`try_fold_const_addr` returns None).
                     if let Some(eff) = self.try_fold_const_addr(wasm_ops, idx, *offset)
+                        // RQ-91-NPAMODEL: a constant the memory-0 decision
+                        // relocates arrives here already native.
+                        && !self.npa_reloc_consts.contains(&(idx - 1))
                         && self.static_data_addend(eff).is_some()
                     {
                         return Err(synth_core::Error::synthesis(
@@ -2678,6 +2704,9 @@ impl InstructionSelector {
                 // static-data address mode below is still honest-declined.
                 F32Store { offset, .. } => {
                     if let Some(eff) = self.try_fold_const_addr_store(wasm_ops, idx, *offset)
+                        // RQ-91-NPAMODEL: a constant the memory-0 decision
+                        // relocates arrives here already native.
+                        && !self.npa_reloc_consts.contains(&(idx - 2))
                         && self.static_data_addend(eff).is_some()
                     {
                         return Err(synth_core::Error::synthesis(
@@ -2783,6 +2812,9 @@ impl InstructionSelector {
                         ));
                     }
                     if let Some(eff) = self.try_fold_const_addr(wasm_ops, idx, *offset)
+                        // RQ-91-NPAMODEL: a constant the memory-0 decision
+                        // relocates arrives here already native.
+                        && !self.npa_reloc_consts.contains(&(idx - 1))
                         && self.static_data_addend(eff).is_some()
                     {
                         return Err(synth_core::Error::synthesis(
@@ -2875,6 +2907,9 @@ impl InstructionSelector {
                         ));
                     }
                     if let Some(eff) = self.try_fold_const_addr_store(wasm_ops, idx, *offset)
+                        // RQ-91-NPAMODEL: a constant the memory-0 decision
+                        // relocates arrives here already native.
+                        && !self.npa_reloc_consts.contains(&(idx - 2))
                         && self.static_data_addend(eff).is_some()
                     {
                         return Err(synth_core::Error::synthesis(
@@ -2980,7 +3015,11 @@ impl InstructionSelector {
                     };
 
                     if let Some(eff_offset) = folded {
-                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        Self::drop_prev_const_materialization(
+                            &mut instructions,
+                            idx - 1,
+                            self.npa_reloc_consts.contains(&(idx - 1)),
+                        );
                         if let Some(addend) = self.static_data_addend(eff_offset) {
                             // #237: static → base-independent address in `dst`,
                             // then load `[dst]` (the load overwrites the address).
@@ -3087,6 +3126,7 @@ impl InstructionSelector {
                             &mut instructions,
                             idx - 2,
                             idx - 1,
+                            self.npa_reloc_consts.contains(&(idx - 2)),
                         );
                         if let Some(addend) = self.static_data_addend(eff_offset) {
                             // #237: static store — materialize the base-independent
@@ -3207,7 +3247,11 @@ impl InstructionSelector {
                     };
 
                     if let Some(eff_offset) = folded {
-                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        Self::drop_prev_const_materialization(
+                            &mut instructions,
+                            idx - 1,
+                            self.npa_reloc_consts.contains(&(idx - 1)),
+                        );
                         // #739: same static-region classification as I32Load —
                         // a folded const address in the static region must be
                         // relocated (`__synth_wasm_data + C`), never baked as a
@@ -3327,6 +3371,7 @@ impl InstructionSelector {
                             &mut instructions,
                             idx - 2,
                             idx - 1,
+                            self.npa_reloc_consts.contains(&(idx - 2)),
                         );
                         // #739: same static-region classification as I32Store —
                         // a folded const address in the static region must be
@@ -4301,16 +4346,11 @@ impl InstructionSelector {
                             // in bounds. Memory 0 is R10, exactly as its own
                             // bulk ops; memory k is `__synth_mem_size_k`.
                             if software {
+                                // Under --native-pointer-abi a memory-0 side is a
+                                // native pointer R10 does not bound: the module is
+                                // refused before selection (`npa-software-bounds`,
+                                // #1661, the module-level provenance decision).
                                 for &(reg, m) in &rebased {
-                                    if m == 0 && self.native_pointer_abi {
-                                        return Err(synth_core::Error::synthesis(
-                                            "multi-memory: --safety-bounds software is not \
-                                             lowered for a memory.copy with a memory 0 side \
-                                             under --native-pointer-abi — memory 0's guard \
-                                             compares against R10, which bounds no native \
-                                             pointer (#1619)",
-                                        ));
-                                    }
                                     let size = if m == 0 { Reg::R10 } else { base };
                                     let mut g = Vec::new();
                                     if m != 0 {
@@ -8013,7 +8053,7 @@ impl InstructionSelector {
                             &live_params,
                             idx,
                         )?;
-                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1, false);
                         let a = pop_operand(
                             &mut stack,
                             &mut next_temp,

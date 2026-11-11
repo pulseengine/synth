@@ -3421,26 +3421,14 @@ fn extract_module_from_wast(contents: &str) -> Result<Vec<u8>> {
 /// the stack pointer sits at the top of the wasm address space. Returns
 /// `(index, init_value)`, or `None` if the module has no such global (in which
 /// case the legacy R9 globals-table path is used).
-/// #1145 (RQ-89-MEMLAYER6): run the module-level provenance pass
-/// (`synth_core::npa_multi_memory`) over every complete defined function and
-/// decide the per-memory layering — or the loud refusal text.
-fn npa_multi_memory_plan(
+/// The module-level provenance pass (`synth_core::npa_multi_memory`) over
+/// every complete defined function: ONE walk, read by the #1145 per-memory
+/// layering and by the RQ-91-NPAMODEL memory-0 decision.
+fn npa_provenance(
     module: &synth_core::wasm_decoder::DecodedModule,
-    memory0_bytes: u32,
     copies_carry_no_pointers: bool,
-) -> std::result::Result<synth_core::npa_multi_memory::NpaMultiMemoryPlan, String> {
-    use synth_core::npa_multi_memory::{NpaFunc, NpaGlobal, NpaModule, Provenance, plan};
-    // The window bound is memory 0's extent, and the CLI sizes memory 0 from
-    // the DEFINED list; with an imported memory that list is offset from the
-    // wasm memory index space, so the bound would name the wrong memory.
-    if !module.imported_memories.is_empty() {
-        return Err(format!(
-            "the module imports {} of its memories; per-memory layering sizes \
-             memory 0's static window from the defined memories, so an imported \
-             memory in a multi-memory module is not layered",
-            module.imported_memories.len()
-        ));
-    }
+) -> std::result::Result<synth_core::npa_multi_memory::Provenance, String> {
+    use synth_core::npa_multi_memory::{NpaFunc, NpaModule, Provenance};
     let funcs = module
         .functions
         .iter()
@@ -3472,8 +3460,55 @@ fn npa_multi_memory_plan(
         elem_func_indices: &module.elem_func_indices,
         memory_count: (module.memories.len() + module.imported_memories.len()) as u32,
         cross_copies_carry_no_pointers: copies_carry_no_pointers,
+        start_function: module.start_function,
+        canonical_realloc: module
+            .functions
+            .iter()
+            .filter(|f| {
+                let i = f.index as usize;
+                let named = f
+                    .export_name
+                    .as_deref()
+                    .is_some_and(|n| n == "cabi_realloc" || n.starts_with("cabi_realloc_"));
+                let i32_only = |m: &Vec<Vec<bool>>| {
+                    m.get(i)
+                        .is_some_and(|v| v.len() == 4 && v.iter().all(|&x| !x))
+                };
+                named
+                    && i32_only(&module.func_params_i64)
+                    && i32_only(&module.func_params_f32)
+                    && i32_only(&module.func_params_f64)
+                    && module.func_arg_counts.get(i) == Some(&4)
+                    && module.func_result_counts.get(i) == Some(&1)
+                    && module.func_ret_i64.get(i) == Some(&false)
+                    && module.func_ret_f32.get(i) == Some(&false)
+                    && module.func_ret_f64.get(i) == Some(&false)
+            })
+            .map(|f| f.index)
+            .collect(),
     };
-    let prov = Provenance::analyze(&m)?;
+    Provenance::analyze(&m)
+}
+
+/// #1145 (RQ-89-MEMLAYER6): decide the per-memory layering from the
+/// provenance pass — or the loud refusal text.
+fn npa_multi_memory_plan(
+    module: &synth_core::wasm_decoder::DecodedModule,
+    prov: &synth_core::npa_multi_memory::Provenance,
+    memory0_bytes: u32,
+) -> std::result::Result<synth_core::npa_multi_memory::NpaMultiMemoryPlan, String> {
+    use synth_core::npa_multi_memory::{NpaGlobal, plan};
+    // The window bound is memory 0's extent, and the CLI sizes memory 0 from
+    // the DEFINED list; with an imported memory that list is offset from the
+    // wasm memory index space, so the bound would name the wrong memory.
+    if !module.imported_memories.is_empty() {
+        return Err(format!(
+            "the module imports {} of its memories; per-memory layering sizes \
+             memory 0's static window from the defined memories, so an imported \
+             memory in a multi-memory module is not layered",
+            module.imported_memories.len()
+        ));
+    }
     let globals: Vec<NpaGlobal> = module
         .globals
         .iter()
@@ -3488,7 +3523,7 @@ fn npa_multi_memory_plan(
             },
         })
         .collect();
-    let out = plan(&prov, &globals, memory0_bytes).map_err(|why| {
+    let out = plan(prov, &globals, memory0_bytes).map_err(|why| {
         if prov.joined_by_cross_copy() {
             format!(
                 "{why}. The module copies across memories, and the pass joins the \
@@ -4472,6 +4507,12 @@ fn compile_all_exports(
     // below, consumed at the #406 gate and per function.
     let mut npa_mm_plan: Option<Result<synth_core::npa_multi_memory::NpaMultiMemoryPlan, String>> =
         None;
+    // RQ-91-NPAMODEL: the provenance pass for EVERY `--relocatable
+    // --native-pointer-abi` ARM module (computed on the single-module path
+    // below, decided once the stack pointer and the data layout are known),
+    // and the function names its diagnostics cite.
+    let mut npa_prov: Option<Result<synth_core::npa_multi_memory::Provenance, String>> = None;
+    let mut npa_names: std::collections::HashMap<u32, String> = Default::default();
     let (
         all_exports,
         all_origins, // #1168: per-function owning module + its import count (parallel to all_exports)
@@ -4887,21 +4928,29 @@ fn compile_all_exports(
         // is still whole (the `uses_*` flags are set below, from the op streams
         // this compile will actually feed the backend).
         let a64_inputs = synth_backend_aarch64::substrate::PlanInputs::from_module(&module);
-        if native_pointer_abi
-            && relocatable
-            && backend.name() == "arm"
-            && module.memories.len() + module.imported_memories.len() > 1
-        {
-            let linmem0 = module
-                .memories
-                .first()
-                .map(|m| m.initial_bytes())
-                .unwrap_or(0);
-            npa_mm_plan = Some(npa_multi_memory_plan(
-                &module,
-                linmem0,
-                embedder_copies_carry_no_pointers,
-            ));
+        if native_pointer_abi && relocatable && backend.name() == "arm" {
+            let prov = npa_provenance(&module, embedder_copies_carry_no_pointers);
+            if module.memories.len() + module.imported_memories.len() > 1 {
+                let linmem0 = module
+                    .memories
+                    .first()
+                    .map(|m| m.initial_bytes())
+                    .unwrap_or(0);
+                npa_mm_plan = Some(
+                    prov.as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|p| npa_multi_memory_plan(&module, p, linmem0)),
+                );
+            }
+            for f in &module.functions {
+                npa_names.insert(
+                    f.index,
+                    f.export_name
+                        .clone()
+                        .unwrap_or_else(|| format!("func_{}", f.index)),
+                );
+            }
+            npa_prov = Some(prov);
         }
         let func_arg_counts = module.func_arg_counts;
         let func_result_counts = module.func_result_counts; // #851
@@ -5634,84 +5683,61 @@ fn compile_all_exports(
         ..CompileConfig::default()
     };
 
-    // RQ-90-NPASHAPE2 (#1568 shape 2): under `--relocatable
-    // --native-pointer-abi` R11 is 0, and a memory-0 access with a DYNAMIC
-    // base is lowered as `[R11 + base + offset]` with the memarg offset baked
-    // raw. When the module has no stack-pointer global with a positive init,
-    // nothing marks that offset as a static (`is_native_pointer_static_offset`
-    // needs `wasm_data_base > 0`), so an offset that lands in the module's
-    // static region reads or writes absolute `base + offset` instead of the
-    // module's data — measured: `(i32.load offset=0x1000 (local.get 0))` over
-    // a segment at 0x1000 faulted on an unmapped read where wasmtime returns
-    // the segment's word. synth cannot tell a host-pointer base from a
-    // wasm-offset base, and every remedy measured on #1568 was unsound or not
-    // narrow, so — the maintainer's and gale's decision — the whole MODULE is
-    // refused here, before any function compiles: a non-zero exit and no
-    // object. Deliberately NOT a per-function skip, and NOT waived by
-    // `--allow-skipped-exports` (the #1102 policy: that flag accepts a partial
-    // object, not a wrong one). The self-contained image path is untouched:
-    // it lowers this shape against its own linear-memory base (measured
-    // correct), so the refusal is scoped to the configuration that bakes it.
-    if native_pointer_abi
-        && relocatable
-        && backend.name() == "arm"
-        && !matches!(config.stack_pointer_global, Some((_, init)) if init > 0)
-        // Memory 0's TRUE declaration (RQ-89-IMPSIZE): the ARM
-        // `linear_memory_bytes` reads the DEFINED list, which an imported
-        // memory 0 leaves empty, and that would shrink the region to the
-        // segments alone.
-        && let Some((lo, hi)) = synth_core::backend::npa_static_region(
-            &config.npa_data_regions,
-            memory0_decl
-                .as_ref()
-                .map_or(0, |m| m.initial_bytes())
-                .max(config.linear_memory_bytes),
-        )
-    {
-        let mut hits: Vec<String> = Vec::new();
-        for (func, origin) in all_exports.iter().zip(all_origins.iter()) {
-            if func.unsupported.is_some() {
-                continue; // skipped before the backend: emits no code
-            }
-            let arg_counts = wast_module_tables
-                .as_ref()
-                .and_then(|tables| tables.get(origin.module))
-                .map_or(&config.func_arg_counts, |t| &t.func_arg_counts);
-            let declared = arg_counts
-                .get(func.index as usize)
-                .copied()
-                .unwrap_or_else(|| synth_core::referenced_locals(&func.ops));
-            let name = func
-                .export_name
-                .clone()
-                .unwrap_or_else(|| format!("func_{}", func.index));
-            for h in synth_synthesis::InstructionSelector::npa_dynamic_static_offset_accesses(
-                &func.ops,
-                declared,
-                (lo, hi),
-            ) {
-                hits.push(format!(
-                    "function '{name}' (wasm function index {}): {} at op {} with memarg \
-                     offset 0x{:x} ({}-byte access)",
-                    func.index, h.access, h.op_index, h.offset, h.width
-                ));
-            }
-        }
-        if !hits.is_empty() {
-            anyhow::bail!(
-                "npa-dynamic-static-offset (#1568): --native-pointer-abi refused for the \
-                 whole module — {} access(es) add a constant memarg offset that lands in \
-                 the module's static region [0x{lo:x}, 0x{hi:x}) (memory 0's lowest active \
-                 data segment up to its declared minimum size) to a base computed at run \
-                 time: {}. The module has no stack-pointer global, so synth cannot tell a \
-                 host-pointer base from a wasm-offset base; the offset would be emitted raw \
-                 off R11 = 0 with no relocation and the access would silently read or \
-                 write absolute base + offset instead of the module's data. No object is \
-                 written. --allow-skipped-exports does not cover this. Give the module a \
-                 stack-pointer global (the toolchain `__stack_pointer`), keep dynamic \
-                 memarg offsets below 0x{lo:x}, or drop --native-pointer-abi.",
-                hits.len(),
-                hits.join("; ")
+    // RQ-91-NPAMODEL (#739, #1568, #1604, #1672, #1661): memory 0's address
+    // provenance under `--relocatable --native-pointer-abi`, decided ONCE for
+    // the module by the provenance pass (`Provenance::memory0_plan`): which
+    // constants below the stack-pointer window are relocated to
+    // `__synth_wasm_data + C`, or a module-level refusal naming the shape —
+    // a non-zero exit and no object, NOT waived by `--allow-skipped-exports`
+    // (the #1102 policy: that flag accepts a partial object, not a wrong
+    // one). It replaces the selector's per-shape guards and the shape-2 loop
+    // that stood here. The emitted stream is then checked against the same
+    // ABI by `npa_stream_validate` in the ARM backend.
+    let mut npa_m0_plan = synth_core::npa_multi_memory::Memory0Plan::default();
+    if native_pointer_abi && relocatable && backend.name() == "arm" {
+        let prov = match &npa_prov {
+            Some(Ok(p)) => p,
+            Some(Err(why)) => anyhow::bail!(
+                "npa-provenance (#739): --native-pointer-abi refused — the module-level \
+                 provenance pass cannot model this module ({why}), so synth cannot decide \
+                 which memory-0 values are wasm statics. No object is written. Drop \
+                 --native-pointer-abi."
+            ),
+            None => anyhow::bail!(
+                "npa-provenance (#739): --native-pointer-abi is decided by a module-level \
+                 provenance pass that runs on a single module; this input (a multi-module \
+                 .wast merge) is refused. Compile each module on its own."
+            ),
+        };
+        let npa_raw: std::collections::HashMap<u32, Vec<usize>> = match &npa_mm_plan {
+            Some(Ok(plan)) => plan.raw_consts.clone(),
+            _ => Default::default(),
+        };
+        let func_ops: std::collections::HashMap<u32, &[WasmOp]> = all_exports
+            .iter()
+            .filter(|f| f.unsupported.is_none())
+            .map(|f| (f.index, f.ops.as_slice()))
+            .collect();
+        npa_m0_plan = prov
+            .memory0_plan(&synth_core::npa_multi_memory::Memory0Inputs {
+                func_ops: &func_ops,
+                raw_consts: &npa_raw,
+                func_names: &npa_names,
+                memory0_bytes: config.linear_memory_bytes,
+                memory0_declared_bytes: memory0_decl.as_ref().map_or(0, |m| m.initial_bytes()),
+                stack_pointer: config.stack_pointer_global.filter(|&(_, init)| init > 0),
+                data_segments: &all_data_segments,
+                guarded_bounds: matches!(
+                    config.safety_bounds,
+                    synth_core::SafetyBounds::Software | synth_core::SafetyBounds::Mask
+                ),
+            })
+            .map_err(|why| anyhow::anyhow!("{why}"))?;
+        let n: usize = npa_m0_plan.reloc_consts.values().map(Vec::len).sum();
+        if n > 0 {
+            info!(
+                "RQ-91-NPAMODEL: --native-pointer-abi relocates {n} constant static \
+                 address(es) below the stack-pointer window at their definition"
             );
         }
     }
@@ -5824,6 +5850,10 @@ fn compile_all_exports(
                 && let Some(raw) = plan.raw_consts.get(&func.index)
             {
                 fc.current_func_npa_raw_consts = raw.clone();
+            }
+            // RQ-91-NPAMODEL: THIS function's relocated constant statics.
+            if let Some(rel) = npa_m0_plan.reloc_consts.get(&func.index) {
+                fc.current_func_npa_reloc_consts = rel.clone();
             }
             // #1168: on the .wast merge, compile THIS function against ITS
             // module's signature tables. The merged config carries ONE
@@ -5980,6 +6010,24 @@ fn compile_all_exports(
                         );
                     }
                 }
+                // RQ-91-NPAMODEL: re-key the relocated constants the same way.
+                if !func_config.current_func_npa_reloc_consts.is_empty() {
+                    let old = std::mem::take(&mut func_config.current_func_npa_reloc_consts);
+                    func_config.current_func_npa_reloc_consts = s
+                        .kept
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, o)| old.contains(o))
+                        .map(|(n, _)| n)
+                        .collect();
+                    if func_config.current_func_npa_reloc_consts.len() != old.len() {
+                        anyhow::bail!(
+                            "RQ-91-NPAMODEL: a native-pointer relocated-constant mark in \
+                             function {} was dropped by fact-spec specialization — refusing",
+                            func.index
+                        );
+                    }
+                }
                 // #494 phase 2b: certificate-discharged div/rem guard-elision
                 // marks, keyed by index into the rewritten stream the backend
                 // is about to consume.
@@ -5998,6 +6046,12 @@ fn compile_all_exports(
         };
         let compiled = match backend.compile_function(&name, ops_for_compile, &func_config) {
             Ok(c) => c,
+            // RQ-91-NPAMODEL: the native-pointer emitted-stream validator
+            // found a compiler defect — the whole compile is refused (no
+            // object, not waivable), like a VCR-VER-003 mismatch.
+            Err(e) if e.to_string().contains("npa-addr-validate (#739)") => {
+                anyhow::bail!("function '{name}': {e}");
+            }
             Err(e) => {
                 eprintln!(
                     "warning: skipping function '{}': backend '{}' failed: {}",

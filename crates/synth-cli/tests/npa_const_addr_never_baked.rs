@@ -9,9 +9,12 @@
 //! `addr`. In a module with no stack-pointer global that was every constant
 //! address above the 0xFFF fold limit, and every constant address on the
 //! i64 / float / bulk-memory arms. The i32 arms now fold and relocate any
-//! static address; the other arms refuse loudly. The execution side (the
-//! relocated objects run against wasmtime) is
-//! `scripts/repro/npa_const_addr_differential.py`.
+//! static address. Since RQ-91-NPAMODEL the module-level memory-0 decision
+//! relocates the constant at its definition for every other arm too, and
+//! refuses — with a named `npa-*` diagnostic, for the whole module — what it
+//! cannot relocate soundly. The execution side (the relocated objects run
+//! against wasmtime) is `scripts/repro/npa_const_addr_differential.py`,
+//! `npa_const_addr_matrix_1568.py` and `npa_model_differential.py`.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -84,6 +87,7 @@ const SEGS: &str = r#"(memory (export "mem") 1)
   (data (i32.const 0x1000) "\11\12\13\14\15\16\17\18")
   (func (export "anchor") (result i32) (i32.load (i32.const 0x100)))"#;
 
+/// The retired per-shape guard's text: no diagnostic carries it any more.
 const NEEDLE: &str = "which this lowering would emit as a raw linear-memory offset off R11";
 
 /// i32 accesses at constant static addresses above the 0xFFF imm12 limit, in
@@ -109,56 +113,67 @@ fn i32_const_addresses_above_the_fold_limit_are_relocated() {
     );
 }
 
-/// Every arm that cannot fold a constant address refuses it, loudly, with
-/// the precise reason, and writes no object.
+/// Every arm that cannot fold a constant address receives the constant
+/// RELOCATED at its definition (RQ-91-NPAMODEL; refused per arm before):
+/// each constant address carries its own static-data relocation, beside the
+/// anchor's.
 #[test]
-fn non_folding_arms_refuse_a_constant_static_address() {
-    for (tag, target, body) in [
+fn non_folding_arms_relocate_a_constant_static_address() {
+    for (tag, target, body, relocs) in [
         (
             "i64_load",
             "cortex-m3",
             "(result i64) i32.const 0x1000 i64.load",
+            2,
         ),
         (
             "i64_load_low",
             "cortex-m3",
             "(result i64) i32.const 0x100 i64.load",
+            2,
         ),
         (
             "i64_store32",
             "cortex-m3",
             "i32.const 0x1000 i64.const 7 i64.store32",
+            2,
         ),
         (
             "f32_store",
             "cortex-m7dp",
             "i32.const 0x1000 f32.const 1 f32.store",
+            2,
         ),
         (
             "fill",
             "cortex-m3",
             "i32.const 0x1000 i32.const 9 i32.const 4 memory.fill",
+            2,
         ),
         (
             "copy_dst",
             "cortex-m3",
             "i32.const 0x1000 i32.const 0x104 i32.const 4 memory.copy",
+            3,
         ),
     ] {
         let wat = format!("(module {SEGS} (func (export \"f\") {body}))");
         let (ok, bytes, log) = compile(tag, &wat, target);
-        assert!(
-            !ok && bytes.is_none() && log.contains(NEEDLE),
-            "{tag}: must be refused with the raw-offset diagnostic:\n{log}"
+        assert!(ok && !log.contains(NEEDLE), "{tag}: must compile:\n{log}");
+        assert_eq!(
+            static_relocs(&bytes.expect("object")),
+            relocs,
+            "{tag}: every constant address must carry a static-data relocation"
         );
     }
 }
 
 /// With a stack-pointer global, a constant at or above its init is already a
 /// relocated pointer (`__synth_wasm_data + c`) — the i64 arm lowers it
-/// correctly and must NOT be refused. Only the sliver where neither the
-/// constant nor the offset is at/above the base, but their sum is, would
-/// bake; there the i32 arm folds and the i64 arm refuses.
+/// correctly and must NOT be refused. In the sliver neither the constant nor
+/// the offset is at/above the base, but their sum is: the i32 arm folds, and
+/// since RQ-91-NPAMODEL the i64 arm gets the constant relocated with the
+/// offset folded into it (refused before).
 #[test]
 fn stack_pointer_modules_refuse_only_the_sliver() {
     let wat = |body: &str| {
@@ -185,15 +200,13 @@ fn stack_pointer_modules_refuse_only_the_sliver() {
     );
     assert!(ok, "the sliver folds on the i32 arm:\n{log}");
     assert_eq!(static_relocs(&bytes.expect("object")), 1);
-    let (ok, _, log) = compile(
+    let (ok, bytes, log) = compile(
         "sp_sliver_i64",
         &wat("(result i64) i32.const 0x1800 i64.load offset=0x1000"),
         "cortex-m3",
     );
-    assert!(
-        !ok && log.contains(NEEDLE),
-        "the sliver on the i64 arm must be refused:\n{log}"
-    );
+    assert!(ok, "the sliver on the i64 arm is relocated:\n{log}");
+    assert_eq!(static_relocs(&bytes.expect("object")), 1);
 }
 
 /// RQ-89-NPARESIDUE (#1568), shape 1: a constant pointer routed through a
@@ -219,30 +232,33 @@ fn const_through_an_address_only_local_is_relocated() {
     );
 }
 
-/// Shape 1, the refusals: a local-routed constant address the plan cannot
-/// relocate soundly is refused loudly on EVERY arm (the i32 fold only sees a
-/// positional `i32.const`), one row per relocation condition.
+/// Shape 1, the refusals: a local-routed constant address the memory-0
+/// decision cannot relocate soundly is refused for the whole module, one row
+/// per condition, each with its named diagnostic.
 #[test]
 fn const_through_a_local_that_cannot_be_relocated_is_refused() {
-    for (tag, body) in [
+    for (tag, body, needle) in [
         (
             "nonzero_offset",
             "(result i32) (local i32) i32.const 5 local.set 0 local.get 0 i32.load8_u offset=0x1000",
+            "npa-region-straddle (#1604)",
         ),
         (
             "zero_init_visible",
             "(result i32) (local i32) block i32.const 0x1004 local.set 0 end local.get 0 i32.load",
+            "npa-static-unrelocatable (#1568)",
         ),
         (
             "scalar_observer",
             "(result i32) (local i32) i32.const 0x1004 local.set 0 local.get 0 i32.load local.get 0 i32.add",
+            "npa-static-observed (#1568)",
         ),
     ] {
         let wat = format!("(module {SEGS} (func (export \"f\") {body}))");
         let (ok, bytes, log) = compile(tag, &wat, "cortex-m3");
         assert!(
-            !ok && bytes.is_none() && log.contains(NEEDLE) && log.contains("local 0"),
-            "{tag}: must be refused with the raw-offset diagnostic naming the local:\n{log}"
+            !ok && bytes.is_none() && log.contains(needle) && !log.contains(NEEDLE),
+            "{tag}: must be refused with {needle}:\n{log}"
         );
     }
 }
@@ -277,7 +293,7 @@ fn stack_pointer_modules_relocate_a_local_pointer_and_refuse_the_local_sliver() 
         "cortex-m3",
     );
     assert!(
-        !ok && bytes.is_none() && log.contains(NEEDLE),
+        !ok && bytes.is_none() && log.contains("npa-static-unrelocatable (#1568)"),
         "the sliver through a local must be refused:\n{log}"
     );
 }

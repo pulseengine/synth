@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-NPAMODEL
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "Native-pointer address provenance is decided once and checked by one emitted-stream validator, and the per-shape checks are deleted"
     description: >
         THEME: the native-pointer address-model refactor. Every
@@ -67,7 +67,9 @@ artifacts:
 
         CITATION: #739, #1568, #1604, #1672 and #1661 are where the
         matter was analysed. The numbers name where it was analysed,
-        not an open scope.
+        not an open scope. #1684 is the i64-constant finding this lane
+        made and filed; it is OPEN, and this record's refusal addresses it
+        for v0.91, hence `issue-scope: closes`.
     tags:
       - feature-loop
       - refactor
@@ -80,9 +82,307 @@ artifacts:
     fields:
       req-type: functional
       priority: must
-      issue: "#739"
-      verification-track: manual
+      issue: "#739, #1684"
+      verification-track: execution
       issue-scope: closes
+      landed: "PR #1682 - #739 - DELIVERED. Memory-0 address provenance under --relocatable --native-pointer-abi is decided ONCE per module by Provenance::memory0_plan, which extends the #1145 pass in crates/synth-core/src/npa_multi_memory.rs (one graph walk, read by both). It names the constants to relocate or refuses the module with a named diagnostic: npa-data-pointer, npa-dynamic-static-offset, npa-static-observed, npa-static-unrelocatable, npa-region-straddle, npa-double-relocation, npa-end-pointer-compare, npa-i64-static-const, npa-software-bounds. The emitted ARM stream is checked by arm_backend::npa_stream_validate (npa-addr-validate, fatal). Deleted: 12 of the 13 selector fn npa_* and synth-core npa_static_region, the three refusal call sites, the CLI shape-2 loop and the #1619 memory-0-side refusal."
+      verified-by: >
+        DELIVERED, execution-verified. The refuting command, re-run on the
+        branch: `fn npa_*` above each test module drops from 15 to 5
+        (npa_baked_const_addr in the selector; npa_offset_folds and
+        npa_split_layout in synth-core; npa_multi_memory_plan and the new
+        npa_provenance in main.rs); the refusal grep prints 0 lines (0 of the
+        3 checks, 0 call sites). HONEST SIZE: the grep falls partly by MOVING
+        logic. Over crates/ the diff is about +1930 / -1020 lines: the
+        selector (instruction_selector.rs + select_with_stack.rs) -677 net
+        (claims.yaml selector_lines_code 21715 -> 21038, a FALL, waiver bound;
+        wildcard arms 53 -> 52), the CLI shape-2 loop and synth-core
+        npa_static_region deleted, while synth-core npa_multi_memory.rs grows
+        by +1369 (the decision, its docs and the moved #1580 fold) and
+        arm_backend.rs by +216 (the validator and a grow-fold re-key). It is a
+        net addition of lines and a net DELETION of decision sites: the three
+        selector guards, the local plan, the shape-2 matcher and the #1619
+        memory-0-side refusal become one decision plus one validator. The five native-pointer
+        oracles plus memk_bulk_oob_1619 exit 0 on the branch; three had refusal
+        rows that now compile and are EXECUTED instead (pins moved with paired
+        controls: npa_const_addr_differential 47 -> 65 emulations,
+        npa_multi_memory_1145 51 -> 62, the matrix 99/63/59 -> 158 ok / 4
+        refused / 0 npa-guard / 0 wrong, eab66646 measuring the old pin and
+        failing the new one; under RQ-91-EMUFLOOR's per-oracle protocol
+        each oracle's own `ci-checks: emulations` header carries its floor
+        and `oracle_wiring_check.py --floor-base` sees these three as raised
+        or new, never shrunk). Byte identity: the census of every tracked .wat/.wasm (268 files x cortex-m3 and cortex-m7dp, --relocatable --native-pointer-abi --all-exports --allow-skipped-exports) is 517 of 536 rows byte-identical to eab66646; the same census without --native-pointer-abi is 536 of 536 identical. The 19 that move: 13 rows where eab66646 skipped a function on a per-shape guard (or compiled nothing) and the branch compiles it (bulk_local_clobber_677, bulk_mask_679, home_alias_class_1189_promo, i64_width_vstack_mem_946, vcr_reach_001_i64_pair on both targets; f64_369, aarch64_align_f32_switch_1231 and spill_slot_alias_1321 on cortex-m7dp), 2 where it now refuses the whole module instead of skipping the same function (self_contained_data_758, the same straddle, now npa-region-straddle), and 4 where eab66646 baked a constant address raw (popcnt_r11_clobber_1021 pc_store: base returns 0 where wasmtime returns 1, branch equal; call_indirect_275_selfcontained: the store address now carries its relocation). Executing the changed modules against wasmtime: every i32 export, 108 calls on cortex-m3 with 3 divergent, all call_indirect_275's entry, which this harness cannot dispatch on base or branch either, and 105 calls on cortex-m7dp with 0 divergent; f64_369's 34 i32-signature exports and aarch64_align_f32_switch_1231's f32 export on cortex-m7dp, 0 divergent. spill_slot_alias_1321 is not valid wasm to wasmtime (a register-pressure fixture) and has no reference to execute against. Every object the six pre-existing native-pointer oracles compiled on eab66646 is byte-identical on the branch (recorded through a hashing wrapper around SYNTH). New oracle
+        scripts/repro/npa_model_differential.py: 33 emulations, PASS on the
+        branch, 19 failures on eab66646. Planted mutants, each red: the
+        decision's relocation disabled (npa-addr-validate refuses the arith,
+        inregion and below-SP rows), the #1672 refusal disabled (datap_neg and
+        str_neg compile), the straddle check disabled (straddle_neg compiles).
+        Newly refused over the repo corpus: 0 modules that compiled cleanly on
+        eab66646 (the 2 self_contained_data_758 rows were already skipping the
+        same function). Newly refused outside the corpus, a stated COST: `while
+        p != 0x2008` where a segment DOES start at 0x2008 (the endptr probe's
+        end_sp_adjacent) executed correctly on eab66646 (0x3) and is now
+        refused by npa-end-pointer-compare, which refuses the comparison
+        whichever region follows the segment.
+        R1 BOUNDARY RULE (found probing R1; gale decided it). On the split
+        layout a constant one past a memory-0 segment's end resolves to the
+        START of the region holding that address. gale's image is that case
+        in that sense (adjacent segments [2048, 2056) and [2056, 2057), a flag
+        at 2056 read and written by offset), so the resolution stays: the
+        gale-shaped fixtures (single-memory, npa_model_differential
+        gale_boundary; two-memory, npa_multi_memory_1145 gale_boundary) are
+        byte-identical to eab66646 on cortex-m3 and cortex-m7dp (4 of 4
+        objects) and execute equal to wasmtime. Because gale's segments are
+        adjacent, "start of the next region" and "end of the previous
+        segment" are the same address there, so these fixtures pin that the
+        resolution is unchanged, not which of the two meanings it implements.
+        The narrow refusal, npa-end-pointer-compare (#1604): the boundary
+        constant as an OPERAND OF A COMPARISON, directly or through a local or
+        select, or through `i64.extend_i32_{s,u}`, or an `i64.const` equal to
+        it; the i32 and i64 eq/ne/lt/le/gt/ge forms, signed and unsigned.
+        Rows, each compiled on eab66646 and wrong there, each refused on the
+        branch: end_cmp_neg (`while p != END`, 0x1043 where wasmtime returns
+        0x3), end_ltu_neg (`p < END`, 0x1043), end_i64_neg (an i64 comparison
+        of the extended END, 0x1043), end_i64c_neg (against `i64.const END`, a
+        fault), end_scalar_neg (a counter compared with 0x2008: every constant
+        in the stack-pointer window is relocated on the split layout, so
+        eab66646 compared the counter with a native address and never stopped
+        where wasmtime returns 8200). Near miss interior_cmp (the same walk
+        against 0x2008 inside one segment) executes equal, byte-identical to
+        eab66646. COST, stated: the probe end_sp_adjacent (`while p != 0x2008`
+        where a segment does start at 0x2008) executed correctly on eab66646
+        (0x3) and is now refused: the rule refuses the comparison whichever
+        region follows. Over the repo census the refusal fires on 0 modules.
+        npa_model_differential.py at this point: 33 emulations, PASS on the
+        branch, 19 failures on eab66646 (15 at b5239dab plus the four new
+        refusal rows; 42 and 21 after #1684 below).
+        Planted mutants, each red: the comparison refusal disabled (the five
+        end_* rows compile); the refusal widened to plain address use
+        (gale_boundary refused in both oracles, and mem1_walk); the #1145
+        raw-constant filter removed (mem1_walk refused, below).
+        MEMORY 1 IS NOT AFFECTED, measured. The split layout and this rule are
+        memory 0's only. In the two-memory gale fixture the memory-1 panic
+        path's `i32.load8_u $m1 (i32.const 0x808)` carries one R_ARM_ABS32
+        against __synth_wasm_data_1 with addend 0 (0x808 stays a raw memory-1
+        offset), equal on eab66646 and the branch. A memory-1 pointer walked
+        with `while p != 0x808`, where 0x808 is one past a memory-1 segment AND
+        one past a memory-0 segment (npa_multi_memory_1145 mem1_walk), compiles
+        and executes equal to wasmtime. What keeps the refusal off it is a
+        companion change in this amendment: the constants the #1145 layering
+        keeps RAW (memory-k offsets inside memory 0's window, the plan's
+        raw_consts) are no longer counted as memory-0 statics by
+        Provenance::memory0_plan (main.rs passes them in). Removing that
+        filter refuses mem1_walk; it does not move panic1.
+        npa_multi_memory_1145: 62 emulations (51 at eab66646), PASS.
+        OPTION (d), measured: keep wasm-adjacent memory-0 segments adjacent in
+        the native layout. For gale's shape it ALREADY holds: the object's
+        __synth_wasm_seg_0 is at .data+0x0 and __synth_wasm_seg_1 at .data+0x8,
+        because the packer places each segment 4-aligned in declaration order
+        and segment [2048, 2056) is 8 bytes. It is not guaranteed in general:
+        segments [2048, 2051) and [2051, 2052) are packed at .data+0x0 and
+        .data+0x4 (a 1-byte pad), equal on eab66646 and the branch. Over the
+        repo census (536 objects with the flag) 0 objects hold a wasm-adjacent
+        memory-0 pair, so the corpus cannot show either way; the counter was
+        checked potent on the two probes above (1 adjacent, 1 not). VERDICT:
+        (d) is byte-identical for gale's fixture and for this corpus, but as a
+        guarantee it means dropping the 4-byte alignment pad between
+        wasm-adjacent segments, which moves bytes for any module with an
+        unaligned-length adjacent pair. It is NOT landed here; it is recorded
+        as the follow-on that needs gale's sign-off. gale's real image
+        (seg 6 -> seg 7) is adjacent under today's packing iff segment 6's
+        length is a multiple of 4 and segment 7 is declared next; gale's census
+        on this head is the confirmation.
+        #1684, REFUSED (maintainer decision): an `i64.const` in the static
+        window that is not a boundary, compared with an extended static
+        pointer (`i64.eq (i64.extend_i32_u p) (i64.const 0x2008)` over one
+        segment [0x2000, 0x2010)), was silently wrong on eab66646 (a fault
+        where wasmtime returns 0x3) because i64 constants are never relocated.
+        New module-level refusal npa-i64-static-const (#1684): an i64.const in
+        memory 0's static window [min(lowest segment, stack-pointer init),
+        memory-0 size) that reaches a memory-0 address over the directed value
+        flows, or is a comparison operand against a static-derived pointer
+        (looking through `i64.extend_i32_*`). Only in modules that have a
+        static region (R2 modules have no window). Rows i64_static_cmp_neg
+        (eab66646 compiled it and faulted) and i64_static_addr_neg (eab66646
+        refused it for an unrelated reason) are refused. Controls, each EXEC
+        equal to wasmtime and byte-identical to eab66646: an i64.const outside
+        the window compared with a static pointer (i64_outside_ctl), one inside
+        it used as a plain scalar (i64_scalar_ctl), compared with a host value
+        (i64_hostcmp_ctl), and an i64 counter with an in-window bound
+        (i64_counter_ctl). A planted mutant disabling the refusal turns both
+        refusal rows red. npa_model_differential.py: 42 emulations, PASS on
+        the branch, 21 failures on eab66646 (its header floor rises 33 ->
+        42 with it). Relocating i64
+        constants properly is the follow-on.
+        GALE'S CENSUS OF 257f0067 FOUND THREE FALSE-POSITIVE REFUSAL CLASSES,
+        and the repo census MISSED all three: the 268-file corpus carries no
+        rust core::fmt code and no panic-Location data, which is exactly
+        what gale's images are made of. gale ran 38 core modules (26 driver
+        crates, 9 committed .wasm, and the v11 one- and two-domain images
+        fused by meld 0.66.0 with --memory-page-size 1) on cortex-m3 and
+        cortex-m7dp with --relocatable --native-pointer-abi --all-exports. The
+        result was 56 rows SAME, 6 refused on both, and 14 NEWLY REFUSED (7
+        modules x 2). Its real v11 image was among them. Each class is
+        reproduced by a minimal fixture derived from gale's shape: REFUSED on
+        257f0067, compiled and EXECUTED equal to wasmtime after the fix.
+        (1) npa-i64-static-const fired on a fmt argument packer whose
+        `i64.const 32` is a SHIFT COUNT, stored to MEMORY 1, against an
+        unrelated memory-1 byte compared with 2. The provenance walk crossed
+        from the packer to the comparison through memory 1's content node
+        (a memory-k load takes a plain flow from it) and through the shift.
+        The walk now follows a value only over plain flows and the
+        value-preserving conversions and i64 add/sub. It stops at any other
+        scalar operand, at memory content (any memory) and at globals.
+        Fixture gale_fp1, in npa_multi_memory_1145. (2a) npa-data-pointer
+        fired in DEAD code: core::fmt pad_integral dereferencing a panic
+        Location's file pointer, reachable only through the element table,
+        whose only call_indirect sits in the same dead cluster. The refusal
+        now applies only to functions reachable from the exports and the
+        start function. Every element-segment function counts as reachable
+        once any reachable function executes a call_indirect, and reachability
+        is undecided (everything reachable) when a reachable function calls a
+        defined function the pass did not analyse. Fixture gale_fp2a. Positive
+        controls still refused: the same dereference reached directly
+        (gale_fp2a_direct_neg) and reached ONLY through call_indirect
+        (gale_fp2a_indirect_neg). Measured: under --all-exports the dead
+        functions are not emitted, and the reachable functions' bytes are
+        identical with and without the dead dereference on both targets.
+        (2b) npa-data-pointer fired on a state machine's next-state load. The
+        bucket model ignored the memarg offset, so every `offset=N (i32.const
+        0)` access shared one bucket, and a stored Location pointer polluted
+        the index loads. A load's may-read set is now judged by its whole
+        address: a known static address is exactly value + offset, and a
+        run-time index beside a static memarg base stays in the base's
+        segment. That is R1, and the same assumption the codegen makes when it
+        relocates that offset by the segment holding it (#739). Fixture
+        gale_fp2b. THE SAME CHANGE CLOSES A #1672 HOLE: a pointer table read
+        through a scaled index and dereferenced (ptrtab_idx_neg) compiled on
+        eab66646 AND on 257f0067 and faulted where wasmtime returns 97; it
+        is now refused. Mutants, each red: dropping elem reachability through
+        call_indirect (gale_fp2a_indirect_neg compiles); treating every
+        function as dead (datap_neg, str_neg, both gale_fp2a controls and
+        ptrtab_idx_neg compile); attributing a static-base access to the
+        reservation instead of the base's segment (ptrtab_idx_neg compiles);
+        stopping the i64 walk at conversions (i64_static_addr_neg is no
+        longer refused). npa_model_differential: 51 emulations;
+        npa_multi_memory_1145: 66.
+        GALE'S RE-RUN ON 85e5f200: the v11 two-domain image compiled 56/56,
+        byte-identical to base (object sha 4f91ec458025170f), and mpu-thin
+        and exec-provider were byte-identical. 62 SAME, 0 BYTES-DIFFER, 6
+        BOTH-REFUSE, and 8 NEWLY REFUSED (4 modules x 2) on two more classes,
+        each reproduced as a fixture (refused on 85e5f200, EXEC here).
+        (A) npa-data-pointer whose only SOURCE was dead: a reachable function
+        dereferenced a value whose candidate data word came from a load in
+        an unreachable pad_integral (wcet-fixture func_46, one-domain
+        func_35). A load or copy now puts a data word into flow only when
+        its function is reachable (gale_fpA). Still refused: the same source
+        made reachable through a reachable call_indirect
+        (gale_fpA_indirect_neg). (B) npa-region-straddle on one method called
+        on two statics in two segments (switch-thin MajorFrame::check, with
+        callers 0x938 and 0x978). The check paired one caller's access
+        address with the other caller's base constant. When an address's
+        possible values are exactly its relocated base constants, each value
+        is now judged against its own base's region (gale_fpB). Still
+        refused: one instance straddling its segment's end (gale_fpB_neg).
+        Mutants, each red: a dead source counted (gale_fpA refused), the
+        union check restored (gale_fpB refused), and no source counted at
+        all (every data-pointer refusal row compiles). Per-element judgement
+        applied without the equal-set guard refuses gale_boundary and
+        gale_fp2b, so the guard is load-bearing. npa_model_differential: 54
+        emulations.
+        GALE'S RE-RUN ON c9288222: the v11 two-domain image is still 56/56 and
+        byte-identical (m3 4f91ec458025170f, m7dp 298a11362380d01b), and
+        switch-thin is fixed. 64 SAME, 0 BYTES-DIFFER, and 6 NEWLY REFUSED (3
+        modules x 2) on two classes. (A1) npa-data-pointer in the fused v11
+        one-domain image, whose source load is `local.get 1; i32.load` in a
+        callee reached through two call levels with the constant 4488. The
+        two causes proposed were (i) a closed-range attribution of 4488 to the
+        segment that ends there, and (ii) the constant not carried through
+        two calls. Neither applies, MEASURED: there is no closed-range
+        attribution in the pass, and a minimal fixture of exactly that chain
+        (fpA1) compiles on c9288222. gale's diagnostic reproduces exactly once
+        ANOTHER caller passes a pointer into the Location's segment
+        (`&Location`) through the same chain (gale_fpA1). The cause is
+        context-insensitivity: a callee's parameters and returns are shared by
+        every call site, so that caller's hit marked every call's result. Each
+        call site now has its own result node, and a npa-data-pointer refusal
+        needs a call/return-MATCHED path. That path runs from the dereference
+        back to a source load whose address, in the same context, is a
+        constant naming a pointer word. The search keeps the refusal whenever
+        it cannot decide: arithmetic or a non-constant source in the address,
+        data that came through memory, or the budget. The fixture's `+128`
+        sibling then tripped npa-region-straddle (its values are the bases
+        plus 128). The per-base rule now also covers `x + d`, with d a
+        constant that is not relocated and x's values exactly the bases.
+        Still refused: the same chain dereferenced in the Location caller's
+        own context (gale_fpA1_ctx_neg), and a true 4-byte straddle into the
+        pointer-bearing segment (gale_fpA1_straddle_neg). (A2) npa-data-pointer
+        on a wit-bindgen `cabi_realloc_*` grow copy from `old_ptr`. The
+        maintainer's option (a) is now R4 of the ABI document, the
+        canonical-ABI realloc contract. Under it, a memory.copy whose source
+        is param 0 of an export named cabi_realloc / cabi_realloc_* with the
+        signature (i32,i32,i32,i32)->i32, or of a wrapper that only forwards
+        to one, reads no static. gale_fpA2 is EXEC. Still refused: the same
+        shape under another name and with another signature, an internal copy
+        from a pointer-bearing constant, and a copy from a non-realloc
+        export's param (R3′). Mutants, each red: no call/return matching; a
+        non-constant address atom counted as no hit; memory-borne data
+        counted as no hit; any export name; any signature; option (b), every
+        export parameter. npa_model_differential: 56 emulations.
+        GALE'S RE-RUN ON 3775050e printed the SAME two diagnostics: neither
+        fix had reached gale's modules, because both fixtures modelled
+        guessed shapes. gale's REAL modules were then examined here
+        (sha256-verified, used locally, NOT committed): fused--v11-one-domain
+        e237e5ab158f10fc1d58629c17c460492f99cd19a602df6e3fc05ce3eabf4f81,
+        fused--v11-two-domain 62e70dfe21e7fc7a6cb42bbe9c0157860b7aad499b5828b7a82e7bc3ad5d07c2,
+        switch-thin--gust_switch_thin
+        f9e55af8f03eed0ecf4476b8c48ddd8d7e0a447151a31840b409aa210c79e18f,
+        gustos.loom 62acd3a96e35c9831329b0b8689818047022e8cdc20d16294bac9475bb55c031
+        (gale main 5794643; meld 0.66.0). On 3775050e, one-domain and
+        gustos.loom are refused on both targets with gale's exact text;
+        two-domain and switch-thin are byte-identical to base 0185ba07. THE
+        REAL CAUSES, traced on the modules. (A1, one-domain) The flagged
+        source, func_60 op 78, does not read [4488, 4492): func_60 REASSIGNS
+        local 1 to `(p2 << 5) + p1 + 192`. p2 is a host-supplied value
+        carrying the escaped regions (R3′), the Location's segment among
+        them, so the may-read check attributed the Location word to the
+        load. R1 now judges a static base plus a run-time delta by the
+        base's segment. The word then reached func_6 through stores to cell
+        7372 (func_10 op 112, func_17 op 64) and a REUSED local: `local 2`
+        receives both the cell's load and `idx << 2`, and locals are one
+        node across assignments. The dereference is `i32.load offset=7336
+        (local 2)`, an index beside a static memarg base; that now anchors,
+        like `HEAP + OFF`. The image's NEXT refusal was npa-region-straddle,
+        again from local reuse: func_6's `local 3` is both a memory.fill
+        destination (7384) and a memory.copy destination (7320), plus its
+        implicit zero, so the per-base rule fell back to the union check. The
+        per-base equality now compares in-window values only. (A2,
+        gustos.loom) The copy's source is local 6 := param 0 (rustc's spill).
+        R4 now follows values that are param 0 unchanged, a local's implicit
+        zero being neutral since the contract allows 0. MEASURED which change
+        each module needs, by disabling them in pairs: one-domain passes with
+        either the R1 base rule or the memarg-base anchoring (and needs the
+        in-window rule); gustos.loom passes with either R4's copy tracking
+        or the memarg-base anchoring. AFTER the fix, all four modules compile
+        on cortex-m3 and cortex-m7dp, byte-identical to base 0185ba07:
+        one-domain 8b5970546bbf95a5 / 10be13b7ef5b2a68, two-domain
+        4f91ec458025170f / 298a11362380d01b, switch-thin ce077ab2794aff5e /
+        bdeadf8da9352dce, gustos.loom 1f71874f7c1e5e2e / 2f5f6aa07791d88f.
+        Minimal fixtures, each refused on 3775050e with gale's diagnostic
+        text and EXEC here: gale_gfA1, gale_gfA1_fill, gale_gfA2. Still
+        refused: a pointer table read through an in-address base
+        (gale_gf_ptrtab_site_neg); a data pointer dereferenced with a FIELD
+        offset (gale_gf_field_neg); a realloc copy from old_ptr OR a
+        pointer-bearing constant (gale_gfA2_mixed_neg); a static base plus a
+        choice of offsets crossing into the next segment (gale_gf_union_neg).
+        Mutants, each red: the R1 base rule reading nothing; any memarg
+        offset anchoring; R4 accepting any predecessor; per-base judgement
+        always on; R4's copy tracking dropped. npa_model_differential: 62
+        emulations.
+        The delta-execution figures above were measured on an earlier branch
+        binary; they still hold because those modules' census hashes are
+        identical between that binary and this head (536 of 536 rows with the
+        flag, re-run on this head).
       done-when: >
         manual:2027-03-31 memory-0 address provenance under
         --native-pointer-abi is decided in one place and checked by
