@@ -712,6 +712,20 @@ enum Commands {
         /// functions then carry their domains and `spans_domains`.
         #[arg(long = "memory-domain", value_name = "NAME=MEMORY[,MEMORY...]")]
         memory_domain: Vec<String>,
+
+        /// RQ-91-MPUENFORCE (#1145): lay out every memory section synth places
+        /// (`.synth.wasm_mem_k`, k >= 1) as a legal PMSAv7 region. `pmsav7`
+        /// pads the section to its whole power-of-two region, so the region
+        /// covers that memory and nothing the linker would otherwise place
+        /// beside it; `pmsav7-srd` pads only to the region's subregion granule
+        /// (region / 8), for one region with its top subregions disabled. The
+        /// v0.68 base alignment is unchanged. Refused, by name, on a module
+        /// with one memory or an imported memory, and on a memory no single
+        /// region can cover. Memory 0 stays the embedder's to place (its base
+        /// is the R11 value). Off by default: without it the object is
+        /// byte-identical.
+        #[arg(long, value_name = "LAYOUT")]
+        mpu_layout: Option<String>,
     },
 
     /// Disassemble an ARM ELF file (e.g., synth disasm output.elf)
@@ -877,6 +891,7 @@ fn main() -> Result<()> {
             allow_skipped_exports,
             emit_memory_facts,
             memory_domain,
+            mpu_layout,
         } => {
             // #882: track whether `-b/--backend` was given explicitly (the
             // mismatch diagnostics differ: an explicit backend lists the
@@ -887,12 +902,17 @@ fn main() -> Result<()> {
             // RQ-64-MACHO: `--object-format macho` exists for exactly one
             // backend. Refuse anywhere else rather than silently emitting ELF
             // under a flag that says otherwise (the #865 silent-no-op class).
-            // RQ-91-MPUENFORCE (#1145): gate the facts flags before any
-            // work, so a refusal costs no compile.
+            // RQ-91-MPUENFORCE (#1145): parse and gate the facts/layout
+            // flags before any work, so a refusal costs no compile.
+            let mpu_layout = mpu_layout
+                .as_deref()
+                .map(synth_core::memory_facts::MpuLayout::parse)
+                .transpose()
+                .map_err(anyhow::Error::msg)?;
             memory_facts_emit::check_request(
                 emit_memory_facts,
                 &memory_domain,
-                None,
+                mpu_layout,
                 &backend,
                 relocatable,
                 all_exports,
@@ -1009,6 +1029,7 @@ fn main() -> Result<()> {
                 stack_layout,
                 proven_safe,
                 allow_skipped_exports,
+                mpu_layout,
             )?;
 
             // RQ-91-MPUENFORCE (#1145): the facts are read back from the
@@ -1022,7 +1043,7 @@ fn main() -> Result<()> {
                     &target_spec.triple,
                     native_pointer_abi,
                     &memory_domain,
-                    None,
+                    mpu_layout,
                 )?;
             }
 
@@ -1972,6 +1993,8 @@ fn compile_command(
     // #952: opt-in to keep exiting 0 when a REQUESTED export is declined on
     // the --all-exports path (default is now a hard, non-zero-exit refusal).
     allow_skipped_exports: bool,
+    // RQ-91-MPUENFORCE (#1145): `--mpu-layout`, or `None` (byte-identical).
+    mpu_layout: Option<synth_core::memory_facts::MpuLayout>,
 ) -> Result<()> {
     // Validate backend exists
     let registry = build_backend_registry();
@@ -2094,6 +2117,7 @@ fn compile_command(
             proven_safe,
             allow_skipped_exports,
             single_root,
+            mpu_layout,
         );
     }
 
@@ -4426,6 +4450,8 @@ fn compile_all_exports(
     // from this ONE root instead of every export. `None` (every other caller
     // and invocation) is byte-identical to before.
     single_root: Option<SingleRoot>,
+    // RQ-91-MPUENFORCE (#1145): `--mpu-layout`, or `None` (byte-identical).
+    mpu_layout: Option<synth_core::memory_facts::MpuLayout>,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -4890,6 +4916,16 @@ fn compile_all_exports(
             backend.name(),
         )?;
         refuse_shared_memory(&module.memories)?;
+        // RQ-91-MPUENFORCE (#1145): an imported memory is the embedder's
+        // allocation, never a section synth places, so a layout cannot cover it.
+        if mpu_layout.is_some() && !module.imported_memories.is_empty() {
+            anyhow::bail!(
+                "--mpu-layout (#1145): the module imports {} linear memory(ies); an \
+                 imported memory is allocated by the embedder, not placed by synth, so \
+                 --mpu-layout cannot lay it out — refusing",
+                module.imported_memories.len()
+            );
+        }
         // RQ-59-STARTFN (#1046) / RQ-65-MVPCORE (#1017): a `(start ...)`
         // module is ACCEPTED on exactly one path — the self-contained ARM
         // Cortex-M image, whose Reset_Handler is the instantiation step and
@@ -6925,6 +6961,7 @@ fn compile_all_exports(
                 .map(|m| (m.index, m.initial_bytes()))
                 .collect::<Vec<_>>(),
             &all_extra_memory_segments,
+            mpu_layout,
         )?
     } else if cortex_m {
         // #1640: the Cortex-M image (vector table + Thumb Reset_Handler) can
@@ -7639,6 +7676,9 @@ fn build_relocatable_elf(
     // #406: active const-offset data segments on non-default memories, as
     // `(memory_index, offset, bytes)` — placed inside memory k's section.
     extra_memory_data_segments: &[(u32, u32, Vec<u8>)],
+    // RQ-91-MPUENFORCE (#1145): `--mpu-layout` pads each `.synth.wasm_mem_k`
+    // to a PMSAv7-legal extent. `None` ⇒ byte-identical.
+    mpu_layout: Option<synth_core::memory_facts::MpuLayout>,
 ) -> Result<Vec<u8>> {
     use std::collections::HashMap;
 
@@ -8517,21 +8557,37 @@ fn build_relocatable_elf(
             }
         }
         let name = format!(".synth.wasm_mem_{mem_idx}");
+        // RQ-91-MPUENFORCE (#1145): `--mpu-layout` keeps the v0.68 alignment
+        // and pads the section; without it the section is the declaration.
+        let (sec_align, sec_bytes) = match mpu_layout {
+            Some(layout) => {
+                let p = synth_core::memory_facts::place(
+                    mem_idx,
+                    mem_bytes,
+                    mpu_region_bytes(mem_bytes),
+                    mpu_region_align(mem_bytes),
+                    layout,
+                )
+                .map_err(anyhow::Error::msg)?;
+                (p.align, p.section_bytes)
+            }
+            None => (mpu_region_align(mem_bytes), mem_bytes),
+        };
         let section = if segs.is_empty() {
             Section::new(&name, ElfSectionType::NoBits)
                 .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
                 .with_addr(0)
-                .with_align(mpu_region_align(mem_bytes))
-                .with_size(mem_bytes)
+                .with_align(sec_align)
+                .with_size(sec_bytes)
         } else {
-            let mut blob = vec![0u8; mem_bytes as usize];
+            let mut blob = vec![0u8; sec_bytes as usize];
             for (_, off, d) in &segs {
                 blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
             }
             Section::new(&name, ElfSectionType::ProgBits)
                 .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
                 .with_addr(0)
-                .with_align(mpu_region_align(mem_bytes))
+                .with_align(sec_align)
                 .with_data(blob)
         };
         elf_builder.add_section(section);
@@ -8708,6 +8764,13 @@ fn build_relocatable_elf(
     // gale's #1145 two-tenant criterion executed on Renode and on STM32WB55
     // silicon). Emitted ONLY for
     // a multi-memory object: single-memory output is byte-identical.
+    if mpu_layout.is_some() && extra_memories.is_empty() {
+        anyhow::bail!(
+            "--mpu-layout (#1145): this module has one linear memory, so synth places \
+             no memory section to lay out (memory 0's base is the R11 value the \
+             embedder chooses) — refusing rather than accepting a no-op"
+        );
+    }
     if !extra_memories.is_empty() {
         /// `st_shndx` for an absolute (link-invariant) symbol value.
         const SHN_ABS: u16 = 0xfff1;
@@ -11906,6 +11969,7 @@ mod tests {
             &[],
             &[], // #406: single-memory — no extra regions
             &[],
+            None, // RQ-91-MPUENFORCE: no --mpu-layout
         )
         .expect("#345: native-pointer zero-linmem object builds");
 
@@ -12020,6 +12084,7 @@ mod tests {
             &[],
             &[], // #406: single-memory — no extra regions
             &[],
+            None, // RQ-91-MPUENFORCE: no --mpu-layout
         )
         .expect("#345: native-pointer literal-pool object builds");
 
@@ -12121,6 +12186,7 @@ mod tests {
             &[],
             &[], // #406: single-memory — no extra regions
             &[],
+            None, // RQ-91-MPUENFORCE: no --mpu-layout
         )
         .expect("#354: mixed-case object builds");
 

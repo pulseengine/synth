@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 2197
+# ci-checks: emulations >= 2201
 """RQ-91-MPUENFORCE (#1145) — the `--emit-memory-facts` sidecar is SUFFICIENT
 for every legitimate access, checked by EXECUTION, and exact against the
 hand-written per-function tables the multi-memory oracles already carry.
@@ -37,9 +37,14 @@ not what a grant is for), and its result must equal wasmtime's. Then:
                 `section_align` / `section_bytes` equal the object's own
                 `__synth_mem_size_k`, `__synth_mem_region_k` and section
                 header, read here with pyelftools (a second reader).
+  LAYOUT        `--mpu-layout pmsav7` pads `.synth.wasm_mem_k` to its region
+                and `pmsav7-srd` to the subregion granule, alignment unchanged,
+                execution still equal to wasmtime, and without the flag the
+                v0.68 section shape is unchanged.
   REFUSALS      a single-memory module, a partial or overlapping domain map,
-                a domain map without the facts flag and a non-relocatable
-                compile each refuse, by name.
+                a domain map without the facts flag, a non-relocatable
+                compile, and --mpu-layout on one memory, an imported memory
+                or an unknown layout each refuse, by name.
   DOMAINS       with `--memory-domain`, both readings are pinned with their
                 roles: `direct_spans_domains` (the supervisor-only assertion)
                 and `spans_domains` (the boundary census, where the tenant's
@@ -574,7 +579,46 @@ def mem406_calls():
     return [("store_both_read0", [0x40, 0x11, 0x22]), ("store_both_read1", [0x44, 0x33, 0x44])]
 
 
+def layout_legs(tmp, t):
+    wat = (HERE / "mem406_multi_memory.wat").read_text()
+    for layout, want_bytes in (("pmsav7", 1 << 18), ("pmsav7-srd", 3 * 65536)):
+        label = f"mem406.{layout}"
+        run_fixture(label, wat, mem406_calls(), "plain", tmp, t,
+                    extra=["--mpu-layout", layout])
+        rc, log, obj, side = compile_obj(wat, tmp, f"{label}.plain", MODES["plain"]
+                                         + ["--mpu-layout", layout])
+        if rc != 0 or not side.exists():
+            t.bad(f"{label}: compile rc={rc}")
+            continue
+        s = ELFFile(open(obj, "rb")).get_section_by_name(".synth.wasm_mem_1")
+        if (s["sh_addralign"], s["sh_size"]) != (1 << 18, want_bytes):
+            t.bad(f"{label}: section align/size {s['sh_addralign']}/{s['sh_size']}")
+        doc = json.loads(side.read_text())
+        m1 = doc["memories"][1]
+        sub = 6 if layout == "pmsav7-srd" else None
+        if (m1["section_bytes"], m1["pmsav7_subregions_enabled"], doc["mpu_layout"]) != (
+                want_bytes, sub, layout):
+            t.bad(f"{label}: facts {m1['section_bytes']} {m1['pmsav7_subregions_enabled']}")
+        else:
+            print(f"  [ok ] {label}: .synth.wasm_mem_1 align {1 << 18:#x} size {want_bytes:#x}")
+    # The layout moves only the padded section: without it, the v0.68 shape.
+    rc, _, obj, _ = compile_obj(wat, tmp, "mem406.nolayout", MODES["plain"])
+    if rc != 0:
+        t.bad(f"mem406 without --mpu-layout: compile rc={rc}")
+        return
+    s = ELFFile(open(obj, "rb")).get_section_by_name(".synth.wasm_mem_1")
+    if (s["sh_addralign"], s["sh_size"]) != (1 << 18, 3 * 65536):
+        t.bad("mem406 without --mpu-layout: v0.68 section shape moved")
+
+
 REFUSALS = [
+    ("layout-one-memory", "(module (memory 1) (func (export \"f\") (result i32) "
+     "(i32.load (i32.const 0))))", ["--mpu-layout", "pmsav7"], "--mpu-layout (#1145)"),
+    ("layout-imported", "(module (import \"env\" \"m\" (memory 1 1)) (memory $b 1 1) "
+     "(func (export \"f\") (result i32) (i32.load $b (i32.const 0))))",
+     ["--mpu-layout", "pmsav7"], "imports 1 linear memory"),
+    ("layout-unknown", "(module (memory $a 1) (memory $b 1))",
+     ["--mpu-layout", "pmsav8"], "--mpu-layout \"pmsav8\""),
     # (label, wat, flags, needle)
     ("facts-one-memory", "(module (memory 1) (func (export \"f\") (result i32) "
      "(i32.load (i32.const 0))))", ["--emit-memory-facts"], "carries no region table"),
@@ -724,13 +768,15 @@ def main():
         for mode in ("plain", "npa"):
             run_fixture(f"k1622-{label}", wat, [(fn, a) for fn, a, _ in calls], mode, tmp, t,
                         hand=funcs, hand_kind="direct")
+    print("=== --mpu-layout ===")
+    layout_legs(tmp, t)
     print("=== refusals ===")
     refusal_legs(tmp, t)
     print("=== --memory-domain ===")
     domain_leg(tmp, t)
     print(f"\nlegitimate calls: {t.calls}, attributed memory accesses: {t.accesses}, "
           f"executed call transitions checked against the edges: {t.edge_checks}")
-    if t.calls < 2197:
+    if t.calls < 2201:
         print(f"VACUOUS: {t.calls} calls")
         return 1
     print(f"ORACLE: {'PASS' if t.fails == 0 else f'FAIL ({t.fails})'}")
