@@ -3102,6 +3102,16 @@ jobs:
       # refusal legs silently compiled.
       - name: Run imported-global slot oracle (#1676, npa / self-contained / relocatable)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/imported_global_slots_rq91_differential.py
+      # RQ-91-NAMECOLL (#1698): every object builder resolved a called import's
+      # symbol (its field name) among the object's OWN definitions, so an
+      # import named like an export, a func_N label, __synth_globals, the
+      # aarch64 funcref table or an __aeabi helper bound the call to that
+      # definition, rc 0. Collisions now refuse; this executes the paired
+      # control and the fixed label cases against wasmtime on ARM Thumb-2/A32,
+      # RV32 and AArch64 and pins the undefined import symbols. RED at
+      # 52add192: 24 failures (5 x use_import() = 7 where wasmtime gives 42).
+      - name: Run import-symbol collision oracle (#1698, arm / cortex-r5 / riscv / aarch64)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/import_name_collision_1698_differential.py
       # #1574 / #1568: the v0.88 NPACONST before/after figures, re-derived from
       # a committed generator. 162 constant-address modules (19 access
       # families; shapes le_fff/gt_fff/gt_ffff/off_gt_fff in the nosp and sp

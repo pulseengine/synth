@@ -284,7 +284,14 @@ whatever the region holds), not a trap.
 - **Symbols:** every function is exported twice at the same address
   (`func_N` and, for exports, the wasm export name); imported functions
   become direct `func_N` BLs rewritten to the wasm field name, resolved by
-  the linker (`arm_backend.rs:517-520`, #197). Internal calls also carry
+  the linker (`arm_backend.rs:517-520`, #197). A called import's field name
+  must therefore be a symbol of its own: if it equals a name the object
+  defines (an export, a `func_N` label, a `__synth_*` symbol), equals an
+  external the object references for another purpose (an `__aeabi_*`
+  helper), or is shared by imports from two different modules, the compile
+  REFUSES and names the import and the symbol (RQ-91-NAMECOLL, #1698). It
+  used to bind the call to the object's own definition. An import that is
+  declared but never called emits no symbol and refuses nothing. Internal calls also carry
   `R_ARM_THM_CALL` relocations — an object whose every relocation is
   `R_ARM_THM_CALL` is the expected shape. Read the symbol table by section
   TYPE (`SHT_SYMTAB`), not name: the ARM builder emits its symtab with an
