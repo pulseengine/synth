@@ -197,6 +197,24 @@ impl ObjectPlan {
     }
 }
 
+/// RQ-91-NAMECOLL (#1698): every symbol name [`plan_object`] DEFINES (places)
+/// for these inputs: each function's symbols (its `func_N` label, its export
+/// name, the funcref table's `__synth_func_table`) and each `.data` symbol
+/// (`__synth_globals`). This is the ONE derivation. `plan_object` decides
+/// "placed or external" through it, and the driver checks a called import's
+/// symbol against it.
+pub fn defined_symbol_names<'a>(
+    functions: &'a [ElfFunction],
+    data: &'a DataBlob,
+) -> std::collections::HashSet<&'a str> {
+    functions
+        .iter()
+        .flat_map(|f| &f.symbols)
+        .map(|s| s.as_str())
+        .chain(data.symbols.iter().map(|(n, _)| n.as_str()))
+        .collect()
+}
+
 /// Compute the [`ObjectPlan`] for `functions` + `data` + `undefined_externals`.
 /// The rules (symbol order, first-occurrence name resolution, the #1017
 /// external allowlist, the #1013 unplaced-symbol refusal) are the ELF
@@ -295,8 +313,12 @@ pub fn plan_object(
     }
     // #1017: undefined externals — the ARM `add_undefined_symbol` shape. Only
     // externals a relocation actually references are emitted, in first-listed
-    // order; a name this object already places is skipped (the reloc binds to
-    // the placed symbol, ARM parity).
+    // order; a name this object already places is skipped. RQ-91-NAMECOLL
+    // (#1698): that skip used to be where an import named like a placed symbol
+    // silently bound to it ("ARM parity" — ARM had the same defect). The
+    // driver (`build_multi_func_aarch64_elf`) now REFUSES a called import
+    // whose name is in `defined_symbol_names` before this plan runs, so the
+    // skip is reached only by an allowlisted name that no import call uses.
     {
         let referenced: std::collections::HashSet<&str> = functions
             .iter()
@@ -305,12 +327,7 @@ pub fn plan_object(
             .collect();
         // Defined-name set derived from the same inputs `push_sym` consumed
         // (reading `sym_index` here would conflict with the closure's capture).
-        let defined: std::collections::HashSet<&str> = functions
-            .iter()
-            .flat_map(|f| &f.symbols)
-            .map(|s| s.as_str())
-            .chain(data.symbols.iter().map(|(n, _)| n.as_str()))
-            .collect();
+        let defined = defined_symbol_names(functions, data);
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for name in undefined_externals {
             if referenced.contains(name.as_str())
@@ -988,6 +1005,43 @@ mod tests {
                 && msg.contains("does not place")
                 && msg.contains("#851"),
             "refusal must name the dangling symbol and the #851 class: {msg}"
+        );
+    }
+
+    /// RQ-91-NAMECOLL (#1698): `defined_symbol_names` is the set `plan_object`
+    /// PLACES (every function symbol, every `.data` symbol), and a name in it
+    /// is never emitted as an external even when allowlisted. That is why the
+    /// driver must refuse a called import named like one: here the plan binds
+    /// the `get` relocation to the defined `get`, not to an `SHN_UNDEF`.
+    #[test]
+    fn defined_symbol_names_are_what_the_plan_places_1698() {
+        let funcs = [ElfFunction::code(
+            vec!["func_1".into(), "get".into()],
+            vec![0x00, 0x00, 0x00, 0x94, 0xC0, 0x03, 0x5F, 0xD6], // bl #0 ; ret
+            vec![CodeRelocation {
+                offset: 0,
+                symbol: "get".into(),
+                kind: RelocKind::AArch64Call26,
+                access_width: None,
+            }],
+        )];
+        let data = DataBlob {
+            bytes: vec![0; 4],
+            symbols: vec![("__synth_globals".into(), 0)],
+        };
+        let defined = defined_symbol_names(&funcs, &data);
+        let mut names: Vec<&str> = defined.iter().copied().collect();
+        names.sort_unstable();
+        assert_eq!(names, ["__synth_globals", "func_1", "get"]);
+        let plan = plan_object(&funcs, &data, &["get".into()]).expect("plans");
+        let placed: Vec<&str> = plan.symbols.iter().map(|s| s.name.as_str()).collect();
+        for d in &names {
+            assert!(placed.contains(d), "{d} must be placed");
+        }
+        assert_eq!(
+            placed.iter().filter(|n| **n == "get").count(),
+            1,
+            "an allowlisted name that is also defined is NOT emitted a second time"
         );
     }
 

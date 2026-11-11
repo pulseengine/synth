@@ -245,6 +245,24 @@ impl RiscVElfBuilder {
     /// REFUSED ([`ElfBuildError::DanglingGlobalsReloc`]) rather than emitted
     /// as an undefined symbol — a driver that compiled a global access
     /// without placing the region is a compiler bug, not a link-time surprise.
+    /// RQ-91-NAMECOLL (#1698): every symbol name [`Self::build_object_with_globals`]
+    /// DEFINES for these inputs: one per function (its `name`), plus
+    /// `__synth_globals` ([`crate::globals::GLOBALS_SYMBOL`]) when the globals
+    /// image is non-empty. This is the ONE derivation. The builder's own
+    /// relocation resolution below decides "defined or undefined" through it,
+    /// and the driver checks a called import's symbol against it, so the two
+    /// cannot disagree about which names are taken.
+    pub fn defined_symbol_names(
+        functions: &[RiscVElfFunction],
+        globals_image: &[u8],
+    ) -> Vec<String> {
+        let mut names: Vec<String> = functions.iter().map(|f| f.name.clone()).collect();
+        if !globals_image.is_empty() {
+            names.push(crate::globals::GLOBALS_SYMBOL.to_string());
+        }
+        names
+    }
+
     pub fn build_object_with_globals(
         &self,
         functions: &[RiscVElfFunction],
@@ -299,10 +317,10 @@ impl RiscVElfBuilder {
         // UNDEFINED global symbol (dedup'd, in first-use order so output is
         // deterministic).
         let n_funcs = symbols.len();
+        let defined_names = Self::defined_symbol_names(functions, globals_image);
         let mut undefined: Vec<String> = Vec::new();
         for r in &call_relocs {
-            let defined = symbols.iter().any(|(n, _, _)| n == &r.symbol)
-                || (has_globals && r.symbol == globals_symbol);
+            let defined = defined_names.iter().any(|n| n == &r.symbol);
             if !defined && !undefined.iter().any(|u| u == &r.symbol) {
                 undefined.push(r.symbol.clone());
             }
@@ -1238,6 +1256,30 @@ mod tests {
     /// entries) and an UNDEFINED global symbol per unresolved reloc target,
     /// while a defined function name resolves to its own symtab index. Walk
     /// the section headers by hand, like a linker would.
+    /// RQ-91-NAMECOLL (#1698): the defined set the driver checks a called
+    /// import against is exactly what the builder places: every function
+    /// name, plus `__synth_globals` only when the globals image ships.
+    #[test]
+    fn defined_symbol_names_are_the_placed_symbols_1698() {
+        let f = |n: &str| RiscVElfFunction {
+            name: n.into(),
+            ops: vec![nop_op()],
+        };
+        let funcs = [f("get"), f("func_3")];
+        assert_eq!(
+            RiscVElfBuilder::defined_symbol_names(&funcs, &[]),
+            vec!["get".to_string(), "func_3".to_string()]
+        );
+        assert_eq!(
+            RiscVElfBuilder::defined_symbol_names(&funcs, &[0, 0, 0, 0]),
+            vec![
+                "get".to_string(),
+                "func_3".to_string(),
+                crate::globals::GLOBALS_SYMBOL.to_string()
+            ]
+        );
+    }
+
     #[test]
     fn build_object_emits_rela_text_and_undefined_symbols_871() {
         let builder = RiscVElfBuilder::new_relocatable();

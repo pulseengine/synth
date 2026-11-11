@@ -6764,6 +6764,10 @@ fn compile_all_exports(
             substrate,
             a64_plan_inputs.num_imported_funcs,
             &a64_plan_inputs.import_func_symbols,
+            // RQ-91-NAMECOLL (#1698): the import modules and the funcref slots
+            // the substrate planned its trampolines from.
+            &all_imports,
+            &a64_plan_inputs.funcref_slots,
             object_format,
         )?
     } else if is_riscv {
@@ -7634,6 +7638,12 @@ fn mpu_region_align(mem_bytes: u32) -> u32 {
         .max(PMSAV7_MIN_REGION);
     region.min(1u64 << 31) as u32
 }
+
+/// VCR-DBG-001 (#394): the GLOBAL symbol at `.text + 0` that the DWARF
+/// `.rel.debug_*` records resolve against, defined only under `--debug-line`
+/// on DWARF input. RQ-91-NAMECOLL (#1698): named once so the import-symbol
+/// check and the definition read the same name.
+const DEBUG_TEXT_BASE_SYMBOL: &str = "__synth_text_base";
 
 #[allow(clippy::too_many_arguments)]
 fn build_relocatable_elf(
@@ -8828,26 +8838,75 @@ fn build_relocatable_elf(
         }
     }
 
-    let mut import_label_to_field: HashMap<String, String> = HashMap::new();
+    // The import's `func_{index}` label -> its wasm `(module, field)`.
+    let mut import_label_to_field: HashMap<String, (&str, &str)> = HashMap::new();
     for imp in imports {
         if matches!(imp.kind, synth_core::ImportKind::Function(_)) {
-            import_label_to_field.insert(format!("func_{}", imp.index), imp.name.clone());
+            import_label_to_field.insert(
+                format!("func_{}", imp.index),
+                (imp.module.as_str(), imp.name.as_str()),
+            );
         }
     }
+
+    // RQ-91-NAMECOLL (#1698): refuse a CALLED import whose field name is not a
+    // distinct symbol of its own. Its symbol must not be a name this object
+    // DEFINES: `sym_indices` holds, at this point, exactly the defined symbols
+    // (every export, every `func_N` label, every `__synth_*` data/region
+    // symbol), so the set is this builder's own symbol table and not a hand
+    // list. It must not be an external referenced for another purpose
+    // either (an `__aeabi_*` helper, `__meld_dispatch_import`, an uncompiled
+    // callee's label). And it must not be shared with an import of the same
+    // field from a different module. Before this, the lookup below found the
+    // definition first and bound the import call to it, with rc 0.
+    let mut called_imports: Vec<synth_core::import_symbols::CalledImport> = Vec::new();
+    let mut other_externals: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for func in funcs {
+        for reloc in &func.relocations {
+            if let Some(&(module, field)) = import_label_to_field.get(&reloc.symbol) {
+                called_imports.push(synth_core::import_symbols::CalledImport { module, field });
+            } else if !sym_indices.contains_key(&reloc.symbol) {
+                other_externals.insert(reloc.symbol.as_str());
+            }
+        }
+    }
+    // The one symbol this builder defines AFTER the externals: `--debug-line`'s
+    // `__synth_text_base`, appended last so no earlier symbol index shifts.
+    // The same `debug_text_base` value gates that definition below, so the
+    // check and the definition cannot disagree about whether it exists.
+    let debug_text_base: Option<(&synth_core::dwarf_line::InputDwarfLine, &str)> = dwarf_line
+        .filter(|d| !d.rows.is_empty())
+        .map(|d| (d, DEBUG_TEXT_BASE_SYMBOL));
+    synth_core::import_symbols::check_called_import_symbols(
+        called_imports,
+        |name| {
+            sym_indices.contains_key(name) || debug_text_base.is_some_and(|(_, sym)| sym == name)
+        },
+        |name| other_externals.contains(name),
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
 
     // Any relocation symbol not already defined becomes an undefined external:
     // import calls under their wasm field name, dispatch stubs (`__meld_*`) and
     // skipped-internal callees under their original label.
+    //
+    // RQ-91-NAMECOLL (#1698): an import's label is resolved through the import
+    // table FIRST, by wasm index, never by a name lookup in the defined set,
+    // and its label -> index binding is kept OUT of `sym_indices`
+    // (`import_label_index`). That way an import label cannot be captured by a
+    // same-named export (`(export "func_0")`), and one import's field cannot
+    // capture another import's label (import 0 named `func_1`).
+    let mut import_label_index: HashMap<String, u32> = HashMap::new();
     let mut external_count = 0usize;
     for func in funcs {
         for reloc in &func.relocations {
-            if sym_indices.contains_key(&reloc.symbol) {
-                continue; // internal call to a compiled function — already defined
-            }
-            let effective = import_label_to_field
-                .get(&reloc.symbol)
-                .cloned()
-                .unwrap_or_else(|| reloc.symbol.clone());
+            let effective = match import_label_to_field.get(&reloc.symbol) {
+                Some(&(_, field)) => field.to_string(),
+                None if sym_indices.contains_key(&reloc.symbol) => {
+                    continue; // internal call to a compiled function — already defined
+                }
+                None => reloc.symbol.clone(),
+            };
             let idx = match sym_indices.get(&effective) {
                 Some(&i) => i,
                 None => {
@@ -8857,9 +8916,11 @@ fn build_relocatable_elf(
                     i
                 }
             };
-            // Resolve the original label (func_N) to the effective symbol index
-            // so the relocation-emission loop below finds it.
-            sym_indices.insert(reloc.symbol.clone(), idx);
+            // Resolve an import's label (func_N) to its symbol index so the
+            // relocation-emission loop below finds it.
+            if import_label_to_field.contains_key(&reloc.symbol) {
+                import_label_index.insert(reloc.symbol.clone(), idx);
+            }
         }
     }
 
@@ -8877,7 +8938,10 @@ fn build_relocatable_elf(
                 .get(&(i, reloc.offset))
                 .map(|(s, _)| s.as_str())
                 .unwrap_or(reloc.symbol.as_str());
-            let sym_idx = sym_indices[sym_name];
+            let sym_idx = match import_label_index.get(sym_name) {
+                Some(&i) => i,
+                None => sym_indices[sym_name],
+            };
             // #237: map the relocation kind. BL calls → R_ARM_THM_CALL; the
             // symbol-relative static-data MOVW/MOVT → R_ARM_MOVW_ABS_NC/MOVT_ABS.
             let reloc_type = match reloc.kind {
@@ -9013,9 +9077,7 @@ fn build_relocatable_elf(
     // real `DW_TAG_compile_unit` whose `DW_AT_stmt_list` points at `.debug_line`,
     // so a debugger reaches the line table via the NORMAL `.debug_info` → CU walk.
     // Composed from `func_offsets[i] + machine_offset → op_offsets[op_idx] → src`.
-    if let Some(input_dwarf) = dwarf_line
-        && !input_dwarf.rows.is_empty()
-    {
+    if let Some((input_dwarf, text_base_name)) = debug_text_base {
         use synth_core::dwarf_line::{SourceLoc, op_offsets_to_source};
         // (arm_addr, source line, GLOBAL file index into input_dwarf.files).
         let mut table: Vec<(u64, u32, u32)> = Vec::new();
@@ -9050,7 +9112,7 @@ fn build_relocatable_elf(
         // `--debug-line`, so the no-DWARF symtab stays byte-identical. A local
         // STT_SECTION symbol would have to precede all globals (ELF orders
         // locals first) and bump `sh_info`, shifting every `.rel.text` index.
-        let text_base_sym = Symbol::new("__synth_text_base")
+        let text_base_sym = Symbol::new(text_base_name)
             .with_value(0)
             .with_binding(SymbolBinding::Global)
             .with_type(SymbolType::NoType)
@@ -10623,6 +10685,50 @@ fn build_multi_func_riscv_elf(
         });
     }
 
+    // RQ-91-NAMECOLL (#1698): a CALLED import's symbol (its field name) must
+    // be a distinct undefined symbol. The builder resolves relocations by
+    // NAME, so a field equal to one of its definitions (a function's export
+    // name, a non-exported function's `func_N`, `__synth_globals`) bound the
+    // import call to that definition. The defined set is the builder's own
+    // (`defined_symbol_names`, the derivation its resolution uses), not a list.
+    {
+        let import_of_label: std::collections::HashMap<String, (&str, &str)> = imports
+            .iter()
+            .filter(|imp| matches!(imp.kind, synth_core::ImportKind::Function(_)))
+            .map(|imp| {
+                (
+                    format!("synth_func_{}", imp.index),
+                    (imp.module.as_str(), imp.name.as_str()),
+                )
+            })
+            .collect();
+        let defined = RiscVElfBuilder::defined_symbol_names(&placeholder_funcs, globals_image);
+        let mut called = Vec::new();
+        let mut other_externals: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for func in funcs {
+            for reloc in &func.relocations {
+                if let Some(&(module, field)) = import_of_label.get(&reloc.symbol) {
+                    called.push(synth_core::import_symbols::CalledImport { module, field });
+                } else {
+                    let sym = label_to_symbol
+                        .get(&reloc.symbol)
+                        .cloned()
+                        .unwrap_or_else(|| reloc.symbol.clone());
+                    if !defined.contains(&sym) {
+                        other_externals.insert(sym);
+                    }
+                }
+            }
+        }
+        synth_core::import_symbols::check_called_import_symbols(
+            called,
+            |name| defined.iter().any(|d| d == name),
+            |name| other_externals.contains(name),
+        )
+        .map_err(|e| anyhow::anyhow!("riscv: {e}"))?;
+    }
+
     let builder = RiscVElfBuilder::new_relocatable();
     let mut elf = builder
         .build_object_with_globals(&placeholder_funcs, wasm_data, globals_image, &call_relocs)
@@ -10701,6 +10807,11 @@ fn build_multi_func_aarch64_elf(
     // from the same `PlanInputs` snapshot the substrate was planned from.
     num_imported_funcs: u32,
     import_func_symbols: &[String],
+    // RQ-91-NAMECOLL (#1698): the module's imports (for the module half of
+    // each called import) and the funcref slots the substrate emitted its
+    // table trampolines from (`substrate::plan`, `slots = &input.funcref_slots`).
+    imports: &[ImportEntry],
+    funcref_slots: &[Option<u32>],
     object_format: ObjectFormatArg,
 ) -> Result<Vec<u8>> {
     use synth_backend_aarch64::elf::ElfFunction as A64ElfFunction;
@@ -10747,6 +10858,53 @@ fn build_multi_func_aarch64_elf(
                 r.symbol = name.clone();
             }
         }
+    }
+    // RQ-91-NAMECOLL (#1698): every CALLED import must own a distinct
+    // undefined symbol. "Called" is a direct `bl func_i` (i an import index,
+    // read before the rewrite above, from `funcs`) or a funcref-table slot
+    // holding the import (its trampoline `b <field>`). The defined set is the
+    // plan's own (`defined_symbol_names`), so an import named like an export,
+    // a `func_N` label, `__synth_func_table` or `__synth_globals` refuses here
+    // instead of binding to it in `plan_object`.
+    {
+        let import_of_index: std::collections::HashMap<u32, (&str, &str)> = imports
+            .iter()
+            .filter(|imp| matches!(imp.kind, synth_core::ImportKind::Function(_)))
+            .map(|imp| (imp.index, (imp.module.as_str(), imp.name.as_str())))
+            .collect();
+        let mut called = Vec::new();
+        let mut push = |i: u32| {
+            if let Some(&(module, field)) = import_of_index.get(&i) {
+                called.push(synth_core::import_symbols::CalledImport { module, field });
+            }
+        };
+        for f in funcs {
+            for r in &f.relocations {
+                if let Some(rest) = r.symbol.strip_prefix("func_")
+                    && let Ok(i) = rest.parse::<u32>()
+                    && i < num_imported_funcs
+                {
+                    push(i);
+                }
+            }
+        }
+        if substrate.table.is_some() {
+            for &f in funcref_slots.iter().flatten() {
+                if f < num_imported_funcs {
+                    push(f);
+                }
+            }
+        }
+        let defined =
+            synth_backend_aarch64::elf::defined_symbol_names(&a64_funcs, &substrate.globals);
+        synth_core::import_symbols::check_called_import_symbols(
+            called,
+            |name| defined.contains(name),
+            // Every other unplaced symbol is refused by the #1013 guard, so
+            // no external is shared with a different purpose on this backend.
+            |_| false,
+        )
+        .map_err(|e| anyhow::anyhow!("aarch64: {e}"))?;
     }
     // #1013: a relocation against a symbol the object does not place (a
     // retained function calling a loud-declined one) is a CLEAN refusal —

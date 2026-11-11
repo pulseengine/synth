@@ -10,6 +10,7 @@ pub mod backend;
 pub mod component;
 pub mod dwarf_line;
 pub mod error;
+pub mod import_symbols;
 pub mod ir;
 pub mod memory_facts;
 pub mod npa_multi_memory;
