@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 39
+# ci-checks: emulations >= 43
 """RQ-91-NAMECOLL (#1698): a called import's object symbol must be its own.
 This is an execution differential against wasmtime, with a symbol-table pin,
 on every backend that turns an import call into a symbol.
@@ -44,11 +44,18 @@ WHAT THIS ORACLE CHECKS
     same-named export (must still compile: only a called import becomes a
     symbol); and one `(module, field)` imported twice (one host function,
     which must not refuse).
+  * `--debug-line` (cortex-m4, cortex-r5). The ARM builder defines
+    `__synth_text_base` AFTER the externals, so at 2ef015ee an import of that
+    name kept an `SHN_UNDEF` symbol BESIDE the definition, and a linker binds
+    the undefined reference to the definition (.text + 0). This harness links
+    the same way: an undefined name that the object also defines GLOBAL binds
+    to the definition. The module gets the `.debug_*` sections of
+    `msgq_put_359.wasm`, since the symbol exists only on DWARF input.
   * SYMBOL PIN (pyelftools, by symtab, never disasm text). In every MATCH
     object each import field is `SHN_UNDEF`/`STB_GLOBAL`, and every call
     relocation to it has the ISA's call type (R_ARM_THM_CALL /
     R_ARM_CALL / R_RISCV_CALL_PLT / R_AARCH64_CALL26) and names that
-    undefined symbol.
+    undefined symbol, and no name is both defined and undefined.
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python3 scripts/repro/import_name_collision_1698_differential.py
@@ -80,7 +87,18 @@ CONFIGS = {
     "r5": ("a32", ["--target", "cortex-r5", "--relocatable"]),
     "rv32": ("rv32", ["-b", "riscv", "--relocatable"]),
     "a64": ("a64", ["-b", "aarch64", "--relocatable"]),
+    "m4-dbg": ("thumb", ["--target", "cortex-m4", "--relocatable", "--debug-line"]),
+    "r5-dbg": ("a32", ["--target", "cortex-r5", "--relocatable", "--debug-line"]),
 }
+# A source starting with this marker is compiled to a binary and given the
+# `.debug_*` custom sections of a committed DWARF fixture, so `--debug-line`
+# really emits its `__synth_text_base` symbol (it does so only on DWARF input).
+DWARF = "DWARF:"
+DWARF_DONOR = Path(__file__).resolve().parent / "msgq_put_359.wasm"
+TEXT_BASE_WAT = """(module
+  (import "env" "IMPORT" (func $imp (result i32)))
+  (func (export "first") (result i32) i32.const 7)
+  (func (export "use_import") (result i32) call $imp))"""
 CALL_RELOC = {"thumb": 10, "a32": 28, "rv32": 19, "a64": 283}
 FIVE = ["m4", "m4-cortexm", "r5", "rv32", "a64"]
 FOUR = ["m4", "r5", "rv32", "a64"]
@@ -119,6 +137,8 @@ MATCH = [
   (func (export "use_a") (result i32) call $a)
   (func (export "use_b") (result i32) call $b))""",
      FOUR, {("env", "get"): 42}, ["use_a", "use_b"]),
+    ("debug-line-control", DWARF + TEXT_BASE_WAT.replace("IMPORT", "host_tb"),
+     ["m4-dbg", "r5-dbg"], {("env", "host_tb"): 42}, ["use_import", "first"]),
 ]
 
 # --- REFUSE legs: (name, wat, configs, extra flags, needles in the diagnostic)
@@ -167,7 +187,19 @@ REFUSE = [
   (elem (i32.const 0) $imp)
   (func (export "ci") (param i32) (result i32) local.get 0 call_indirect (type $t)))""",
      ["a64"], [], ["`env`.`__synth_func_table`", "symbol `__synth_func_table`"]),
+    # `--debug-line` defines `__synth_text_base` AFTER the externals. At 2ef015ee
+    # the import kept an SHN_UNDEF `__synth_text_base` BESIDE the defined one, and
+    # a linker binds that undefined reference to the definition (.text + 0).
+    ("debug-line-import-equals-__synth_text_base",
+     DWARF + TEXT_BASE_WAT.replace("IMPORT", "__synth_text_base"),
+     ["m4-dbg", "r5-dbg"], [], ["`env`.`__synth_text_base`", "symbol `__synth_text_base`"]),
 ]
+# Refuse legs that, when they compile (the red half), are executed to show the
+# wrong value: case -> the import field the host stub answers.
+EXEC_WHEN_COMPILED = {
+    "import-equals-own-export": "get",
+    "debug-line-import-equals-__synth_text_base": "__synth_text_base",
+}
 
 STUB_CODE = {
     "thumb": lambda v: struct.pack("<HH", 0x2000 | v, 0x4770),
@@ -186,6 +218,41 @@ def compile_(wat_path, out, flags, extra=()):
     r = subprocess.run([SYNTH, "compile", str(wat_path), *extra, *flags, "-o", str(out)],
                        capture_output=True, text=True)
     return r.returncode, r.stdout + r.stderr
+
+
+def write_source(td, name, src):
+    """Write a case's module; a DWARF-marked one becomes a binary carrying the
+    donor's `.debug_*` custom sections (appended whole: id 0, size, payload)."""
+    if not src.startswith(DWARF):
+        p = td / f"{name}.wat"
+        p.write_text(src)
+        return p, src
+    binary = wasmtime.wat2wasm(src[len(DWARF):])
+    donor = DWARF_DONOR.read_bytes()
+
+    def leb(b, i):
+        r = sh = 0
+        while True:
+            x = b[i]
+            i += 1
+            r |= (x & 0x7F) << sh
+            sh += 7
+            if x < 0x80:
+                return r, i
+
+    extra, i = b"", 8
+    while i < len(donor):
+        size, j = leb(donor, i + 1)
+        if donor[i] == 0:
+            nl, k = leb(donor, j)
+            if donor[k:k + nl].startswith(b".debug_"):
+                extra += donor[i:j + size]
+        i = j + size
+    if not extra:
+        raise RuntimeError(f"{DWARF_DONOR.name} carries no .debug_* section")
+    p = td / f"{name}.wasm"
+    p.write_bytes(bytes(binary) + extra)
+    return p, p.read_bytes()
 
 
 def wasmtime_values(wat, host, exports):
@@ -216,15 +283,24 @@ def link(path, isa, field_value):
         text = bytearray(e.get_section_by_name(".text").data())
         symtab = next(s for s in e.iter_sections() if s["sh_type"] == "SHT_SYMTAB")
         syms = list(symtab.iter_symbols())
+        # A linker binds an undefined reference to a same-named GLOBAL
+        # definition in the same object; so does this harness. Such a name is
+        # a collision and is reported in `pins` as ("DUPLICATE", name).
+        defined_global = {s.name: s for s in syms if s.name and s["st_shndx"] != "SHN_UNDEF"
+                          and s["st_info"]["bind"] == "STB_GLOBAL"}
         stubs = {}
         for s in syms:
-            if s.name and s["st_shndx"] == "SHN_UNDEF":
+            if s.name and s["st_shndx"] == "SHN_UNDEF" and s.name in defined_global:
+                pins.append(("DUPLICATE", s.name))
+            elif s.name and s["st_shndx"] == "SHN_UNDEF":
                 if s.name not in field_value:
                     raise RuntimeError(f"undefined symbol {s.name!r} has no host definition")
                 stubs[s.name] = STUB + 0x40 * len(stubs)
                 pins.append((s.name, s["st_info"]["bind"]))
 
         def addr(s):
+            if s["st_shndx"] == "SHN_UNDEF" and s.name in defined_global:
+                s = defined_global[s.name]
             if s["st_shndx"] == "SHN_UNDEF":
                 return stubs[s.name]
             v = s["st_value"]
@@ -290,9 +366,8 @@ def emulate(isa, text, stubs, field_value, faddr):
 def run_match(td):
     global checks
     for name, wat, cfgs, host, exports in MATCH:
-        src = td / f"{name}.wat"
-        src.write_text(wat)
-        want = wasmtime_values(wat, host, exports)
+        src, module = write_source(td, name, wat)
+        want = wasmtime_values(module, host, exports)
         field_value = {f: v for (_, f), v in host.items()}
         for c in cfgs:
             isa, flags = CONFIGS[c]
@@ -305,7 +380,9 @@ def run_match(td):
             # SYMBOL PIN: every called import is a GLOBAL SHN_UNDEF symbol and
             # every call relocation naming an import field targets it.
             for sym, bind in pins:
-                if bind != "STB_GLOBAL":
+                if sym == "DUPLICATE":
+                    fails.append(f"pin/{name}/{c}: {bind} is both defined and undefined")
+                elif bind != "STB_GLOBAL":
                     fails.append(f"pin/{name}/{c}: {sym} is {bind}, want STB_GLOBAL")
             for t, sym, undef in calls:
                 if sym in field_value and (not undef or t != CALL_RELOC[isa]):
@@ -325,8 +402,7 @@ def run_match(td):
 def run_refuse(td):
     global checks
     for name, wat, cfgs, extra, needles in REFUSE:
-        src = td / f"{name}.wat"
-        src.write_text(wat)
+        src, _ = write_source(td, name, wat)
         for c in cfgs:
             isa, flags = CONFIGS[c]
             out = td / f"{name}.{c}.o"
@@ -334,10 +410,11 @@ def run_refuse(td):
             checks += 1
             if rc == 0:
                 msg = f"refuse/{name}/{c}: compiled (rc 0), must refuse"
-                if name == "import-equals-own-export":
+                if name in EXEC_WHEN_COMPILED:
+                    fv = {EXEC_WHEN_COMPILED[name]: 42}
                     try:
-                        text, stubs, funcs, _, _ = link(out, isa, {"get": 42})
-                        v = emulate(isa, text, stubs, {"get": 42}, funcs["use_import"])
+                        text, stubs, funcs, _, _ = link(out, isa, fv)
+                        v = emulate(isa, text, stubs, fv, funcs["use_import"])
                         msg += f"; use_import() = {v}, wasmtime 42"
                     except Exception as ex:  # report, never mask the red
                         msg += f"; could not execute: {ex}"

@@ -7639,6 +7639,12 @@ fn mpu_region_align(mem_bytes: u32) -> u32 {
     region.min(1u64 << 31) as u32
 }
 
+/// VCR-DBG-001 (#394): the GLOBAL symbol at `.text + 0` that the DWARF
+/// `.rel.debug_*` records resolve against, defined only under `--debug-line`
+/// on DWARF input. RQ-91-NAMECOLL (#1698): named once so the import-symbol
+/// check and the definition read the same name.
+const DEBUG_TEXT_BASE_SYMBOL: &str = "__synth_text_base";
+
 #[allow(clippy::too_many_arguments)]
 fn build_relocatable_elf(
     funcs: &[ElfFunction],
@@ -8864,9 +8870,18 @@ fn build_relocatable_elf(
             }
         }
     }
+    // The one symbol this builder defines AFTER the externals: `--debug-line`'s
+    // `__synth_text_base`, appended last so no earlier symbol index shifts.
+    // The same `debug_text_base` value gates that definition below, so the
+    // check and the definition cannot disagree about whether it exists.
+    let debug_text_base: Option<(&synth_core::dwarf_line::InputDwarfLine, &str)> = dwarf_line
+        .filter(|d| !d.rows.is_empty())
+        .map(|d| (d, DEBUG_TEXT_BASE_SYMBOL));
     synth_core::import_symbols::check_called_import_symbols(
         called_imports,
-        |name| sym_indices.contains_key(name),
+        |name| {
+            sym_indices.contains_key(name) || debug_text_base.is_some_and(|(_, sym)| sym == name)
+        },
         |name| other_externals.contains(name),
     )
     .map_err(|e| anyhow::anyhow!(e))?;
@@ -9062,9 +9077,7 @@ fn build_relocatable_elf(
     // real `DW_TAG_compile_unit` whose `DW_AT_stmt_list` points at `.debug_line`,
     // so a debugger reaches the line table via the NORMAL `.debug_info` → CU walk.
     // Composed from `func_offsets[i] + machine_offset → op_offsets[op_idx] → src`.
-    if let Some(input_dwarf) = dwarf_line
-        && !input_dwarf.rows.is_empty()
-    {
+    if let Some((input_dwarf, text_base_name)) = debug_text_base {
         use synth_core::dwarf_line::{SourceLoc, op_offsets_to_source};
         // (arm_addr, source line, GLOBAL file index into input_dwarf.files).
         let mut table: Vec<(u64, u32, u32)> = Vec::new();
@@ -9099,7 +9112,7 @@ fn build_relocatable_elf(
         // `--debug-line`, so the no-DWARF symtab stays byte-identical. A local
         // STT_SECTION symbol would have to precede all globals (ELF orders
         // locals first) and bump `sh_info`, shifting every `.rel.text` index.
-        let text_base_sym = Symbol::new("__synth_text_base")
+        let text_base_sym = Symbol::new(text_base_name)
             .with_value(0)
             .with_binding(SymbolBinding::Global)
             .with_type(SymbolType::NoType)

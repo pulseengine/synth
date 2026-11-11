@@ -92,50 +92,67 @@ artifacts:
       verified-by: >
         DELIVERED, execution-verified. New wired oracle
         scripts/repro/import_name_collision_1698_differential.py (ci.yml,
-        through oracle_run.py, `emulations >= 39`, 39 measured). The harness
-        host-links each object through its own symtab and runs it under
-        unicorn against wasmtime. MATCH legs: the paired control (export
-        renamed) on cortex-m4 relocatable and --cortex-m, cortex-r5, RV32
-        and AArch64; an import field equal to another import's `func_M`
+        through oracle_run.py, `emulations >= 43`, 43 measured). The harness
+        host-links each object the way ld does: it resolves relocations
+        through the object's own symtab, binds an undefined name that the
+        object also defines GLOBAL to that definition, and runs the result
+        under unicorn against wasmtime. MATCH legs: the paired control
+        (export renamed) on cortex-m4 relocatable and --cortex-m, cortex-r5,
+        RV32 and AArch64; an import field equal to another import's `func_M`
         label; an export named `func_0`; an uncalled import beside a
-        same-named export; and one (module, field) imported twice. Each
-        MATCH object is symbol-pinned with pyelftools: every called import is
-        STB_GLOBAL SHN_UNDEF, and its call relocations carry the ISA's call
-        type and name it. REFUSE legs (20): the #1698 module on all five
-        configs, the single-function shim, an import named `func_1`, the same
-        field from two modules, `__synth_globals` (native-pointer ARM, RV32,
-        AArch64), `__aeabi_l2f` on cortex-m4f, and two AArch64 table-slot
-        imports. Each must exit non-zero, name the import and the symbol, and
-        write no object. RED on main 52add192: 24 failures, among them
-        `use_import() = 7, wasmtime 42` on all five configs, `use_b() = 42,
-        wasmtime 99` (func_M capture) and `use_import() = 7, wasmtime 42`
-        (func_0 capture) on cortex-m4 and cortex-r5, and every refusal leg
-        compiled rc 0. GREEN on the branch: 59 checks, 0 failures. Potency,
-        six planted source mutants, each rebuilt, run and restored: deleting
-        the ARM check reds 10 checks; checking export names only reds 2 (the
-        func_N leg); dropping the cross-module check reds 4; keying on
+        same-named export; one (module, field) imported twice; and a
+        `--debug-line` control on cortex-m4 and cortex-r5 (DWARF input, built
+        from msgq_put_359.wasm's `.debug_*` sections). Each MATCH object is
+        symbol-pinned with pyelftools: every called import is STB_GLOBAL
+        SHN_UNDEF, its call relocations carry the ISA's call type and name
+        it, and no name is both defined and undefined. REFUSE legs (22): the
+        #1698 module on all five configs, the single-function shim, an import
+        named `func_1`, the same field from two modules, `__synth_globals`
+        (native-pointer ARM, RV32, AArch64), `__aeabi_l2f` on cortex-m4f, two
+        AArch64 table-slot imports, and an import named `__synth_text_base`
+        under `--debug-line` on cortex-m4 and cortex-r5. That last name is the
+        one symbol a builder defines AFTER the externals (it is appended last
+        so no index shifts); the check now reads the same `debug_text_base`
+        value that gates the definition. RV32 and AArch64 define nothing
+        outside the set they check (audited: every symbol either writer emits
+        comes from `defined_symbol_names` or is an external). Each REFUSE leg
+        must exit non-zero, name the import and the symbol, and write no
+        object. RED on 52add192 and again on 2ef015ee: 26 failures, among
+        them `use_import() = 7, wasmtime 42` on all five configs and on both
+        `--debug-line` legs (2ef015ee kept `U __synth_text_base` beside `T
+        __synth_text_base`, and arm-none-eabi-ld bound the call to `.text +
+        0`), `use_b() = 42, wasmtime 99` (func_M capture) and `use_import() =
+        7, wasmtime 42` (func_0 capture) on cortex-m4 and cortex-r5, and every
+        refusal leg compiled rc 0. GREEN on the branch: 65 checks, 0
+        failures. Potency, seven planted source mutants, each rebuilt, run and
+        restored: deleting the ARM check reds 12 checks; checking export names
+        only reds 4; dropping the cross-module check reds 4; keying on
         DECLARED instead of called imports reds 2 (the uncalled-import
         control); dropping the AArch64 table leg reds 2; deleting the RV32
-        check reds 4. Unit tests: 6 for the rule
-        (synth-core import_symbols), defined_symbol_names_are_the_placed_symbols_1698
-        (RV32), defined_symbol_names_are_what_the_plan_places_1698
-        (AArch64), and the synth-cli integration test
-        import_name_collision_1698 (refusal on four backends, the control's
-        undefined GLOBAL `get` with one relocation targeting it). REACH, per
-        invocation, base 52add192 against the branch with --all-exports
-        --allow-skipped-exports on {cortex-m4 relocatable, --cortex-m,
-        cortex-r5, RV32, AArch64}: 12,620 invocations over the repo's 297
-        tracked modules, gale's 13 (9 on gale main 1866eff9 and 4 fused
-        modules from the #1682 hand-off), kiln main 78457622's 6 and the 2,208
-        spec modules. 0 changed bytes. 13 newly refused, all spec and all
-        with the #1698 diagnostic: imports.7 x 5 configs, linking.1 x 5,
-        linking.43 x 3 (RV32 declines that export earlier). They are exactly
-        the modules that bound wrongly before; 2,960 are byte-identical and
-        9,647 emit no object on either binary. gale under its own flags
+        check reds 4; running the ARM check without the `--debug-line` symbol
+        reds 2. Unit tests: 6 for the rule (synth-core import_symbols),
+        defined_symbol_names_are_the_placed_symbols_1698 (RV32),
+        defined_symbol_names_are_what_the_plan_places_1698 (AArch64), and the
+        synth-cli integration test import_name_collision_1698 (refusal on four
+        backends, the control's undefined GLOBAL `get` with one relocation
+        targeting it). REACH, per invocation, base 2ef015ee against the
+        branch, with --all-exports --allow-skipped-exports on {cortex-m4
+        relocatable, --cortex-m, cortex-r5, RV32, AArch64}: 12,620 invocations
+        over the repo's 297 tracked modules, gale's 13 (9 on gale main
+        1866eff9 and 4 fused modules from the #1682 hand-off), kiln main
+        78457622's 6 and the 2,208 spec modules. 0 changed bytes. 13 newly
+        refused, all spec and all with the #1698 diagnostic: imports.7 x 5
+        configs, linking.1 x 5, linking.43 x 3 (RV32 declines that export
+        earlier). They are exactly the modules that bound wrongly before;
+        2,960 are byte-identical and 9,647 emit no object on either binary.
+        With `--debug-line` on cortex-m4 and cortex-r5 over the repo, gale and
+        kiln (632 invocations): 408 byte-identical, 224 with no object on
+        either binary, 0 newly refused. gale under its own flags
         (--native-pointer-abi --relocatable on cortex-m3 and cortex-m7dp, 26
-        invocations) is byte-identical; a name census found 0 collisions in
+        invocations) is byte-identical. A name census found 0 collisions in
         gale's 13 modules, kiln's 5 or the repo's 295. falcon was NOT
         measured: its repo returns 404 to GET and the #1318 modules need
         approval to fetch again. The spec compile census (all 257 files, every
-        leg) holds its pins: imports.wast, linking.wast and linking1.wast
-        already refuse as whole modules before reaching a builder.
+        leg) and the spec-exec differential hold their pins: imports.wast,
+        linking.wast and linking1.wast already refuse as whole modules before
+        reaching a builder.
