@@ -30,6 +30,7 @@ use wast::{Wast, WastDirective};
 // Layer-2 budget-derivation logic, landed frozen-safe ahead of the gated call
 // site that runs scry's `analyze()` (the scry production-dep step is a separate,
 // user-gated decision). `allow(dead_code)` until that wiring lands.
+mod memory_facts_emit;
 #[allow(dead_code)]
 mod shadow_budget;
 mod sign;
@@ -687,6 +688,30 @@ enum Commands {
         /// there.
         #[arg(long)]
         allow_skipped_exports: bool,
+
+        /// RQ-91-MPUENFORCE (#1145): write the `synth-memfacts-v1` sidecar
+        /// (`<output>.memfacts.json`) for a multi-memory ARM `--relocatable`
+        /// object: for every function the object defines, the linear memories
+        /// its own body accesses, its direct callees, and the TRANSITIVE set
+        /// over its direct calls (`call_indirect` widens to every memory and
+        /// says so; imported callees are named, not guessed); which functions
+        /// touch more than one memory or span more than one `--memory-domain`,
+        /// in both readings; and for every memory its size, PMSAv7 region,
+        /// required alignment and the section/symbol each is read from. FACTS
+        /// ONLY: synth still emits no MPU programming and no register words —
+        /// the embedder's own MPU driver programs the regions. Every bound is
+        /// read back from the written object, and the object's bytes are
+        /// identical with or without this flag.
+        #[arg(long)]
+        emit_memory_facts: bool,
+
+        /// RQ-91-MPUENFORCE (#1145): `NAME=MEMORY[,MEMORY...]`, repeatable —
+        /// which memories each execution domain owns (a meld `--domain` maps
+        /// to one memory today; nothing assumes it). Every memory must belong
+        /// to exactly one domain. Requires `--emit-memory-facts`, whose
+        /// functions then carry their domains and `spans_domains`.
+        #[arg(long = "memory-domain", value_name = "NAME=MEMORY[,MEMORY...]")]
+        memory_domain: Vec<String>,
     },
 
     /// Disassemble an ARM ELF file (e.g., synth disasm output.elf)
@@ -850,6 +875,8 @@ fn main() -> Result<()> {
             stack_size,
             proven_safe,
             allow_skipped_exports,
+            emit_memory_facts,
+            memory_domain,
         } => {
             // #882: track whether `-b/--backend` was given explicitly (the
             // mismatch diagnostics differ: an explicit backend lists the
@@ -860,6 +887,19 @@ fn main() -> Result<()> {
             // RQ-64-MACHO: `--object-format macho` exists for exactly one
             // backend. Refuse anywhere else rather than silently emitting ELF
             // under a flag that says otherwise (the #865 silent-no-op class).
+            // RQ-91-MPUENFORCE (#1145): gate the facts flags before any
+            // work, so a refusal costs no compile.
+            memory_facts_emit::check_request(
+                emit_memory_facts,
+                &memory_domain,
+                None,
+                &backend,
+                relocatable,
+                all_exports,
+                input.as_deref(),
+                loom,
+            )?;
+            let facts_input = input.clone();
             if object_format == ObjectFormatArg::Macho && backend != "aarch64" {
                 anyhow::bail!(
                     "--object-format macho is only available with -b aarch64 (the \
@@ -970,6 +1010,21 @@ fn main() -> Result<()> {
                 proven_safe,
                 allow_skipped_exports,
             )?;
+
+            // RQ-91-MPUENFORCE (#1145): the facts are read back from the
+            // object just written, so they describe exactly what ships.
+            if emit_memory_facts {
+                memory_facts_emit::emit(
+                    facts_input
+                        .as_deref()
+                        .context("--emit-memory-facts needs an input")?,
+                    &output,
+                    &target_spec.triple,
+                    native_pointer_abi,
+                    &memory_domain,
+                    None,
+                )?;
+            }
 
             // If --link requested, invoke the cross-linker
             if link {

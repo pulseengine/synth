@@ -99,9 +99,11 @@ serde.workspace = true
 serde_json.workspace = true
 wat.workspace = true
 wast.workspace = true
+# RQ-91-MPUENFORCE (#1145): `--emit-memory-facts` reads the written object
+# back, so every bound in the sidecar is the object's own.
+object.workspace = true
 
 [dev-dependencies]
-object.workspace = true
 # VCR-DBG-001 Tier-1 (#394) — oracle E parses the INPUT wasm's `.debug_*` custom
 # sections independently (mirroring the production reader) to derive, at runtime,
 # the real source basenames its `.debug_line` rows reference — so the emitted
