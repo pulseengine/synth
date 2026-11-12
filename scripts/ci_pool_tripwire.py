@@ -86,7 +86,14 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 # across every workflow. Counting the other workflows' jobs too would move the
 # number with no job having moved, which is the silent drift this ceiling
 # exists to make visible. Widen it only with a re-derived ceiling and a reason.
-UBUNTU_LATEST_CEILING = 44
+# v0.91: 44 -> 11. 33 ubuntu-latest jobs with no apt/sudo step moved to the
+# self-hosted rust-cpu pool (fork PRs still get ubuntu-latest). Measured by
+# warte at the move: hosted queue 206 jobs org-wide, median wait 2.2 h;
+# self-hosted p50 wait 3 s. Left hosted: the 8 apt/sudo jobs, kani (its
+# Kani-CBMC bundle is not in the smithy toolchains role), bazel (nix) and
+# mcdc-structural-coverage (its witness install calls `gh`, which the
+# self-hosted runners do not have; it failed there on the PR's own run).
+UBUNTU_LATEST_CEILING = 11
 
 EXACT_LABEL = "ubuntu-latest"
 
