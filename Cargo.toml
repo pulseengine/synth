@@ -77,6 +77,21 @@ object = { version = "0.40", default-features = false, features = ["read", "elf"
 # Uncomment when loom crate is published or available:
 # loom-opt = { git = "https://github.com/pulseengine/loom.git" }
 
+# ordeal is the default SMT solver; its tests (i64_expansion_certification and
+# the synth-verify suite) spend nearly all their time inside it. Building the
+# three ordeal crates optimized in the dev profile takes the I64Popcnt
+# certification from minutes to seconds and keeps it well clear of the 300 s
+# per-query deadline, including under llvm-cov (ordeal#308). It changes no
+# synth code generation: only dependency build settings.
+[profile.dev.package.ordeal]
+opt-level = 3
+
+[profile.dev.package.ordeal-lrat]
+opt-level = 3
+
+[profile.dev.package.ordeal-cert]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = true
