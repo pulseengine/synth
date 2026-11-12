@@ -1659,8 +1659,8 @@ mod joins {
         let mut pins: BTreeMap<usize, usize> = BTreeMap::new();
         let mut assignment: BTreeMap<usize, Reg> = BTreeMap::new();
         let mut pool_nodes: BTreeSet<usize> = BTreeSet::new();
-        for w in 0..webs.n_webs {
-            let r = webs.reg_of[w];
+        // `[..n_webs]` keeps the out-of-range panic the indexed form had.
+        for (w, &r) in webs.reg_of[..webs.n_webs].iter().enumerate() {
             match pool_index.get(&r) {
                 None => {
                     // Reserved (R9-R12, SP, LR, PC): identity, never coloured.
@@ -1888,13 +1888,13 @@ mod joins {
         }
 
         if std::env::var("SYNTH_GRAPH_ALLOC_DUMP").is_ok() {
-            for w in 0..webs.n_webs {
+            for (w, reg) in webs.reg_of[..webs.n_webs].iter().enumerate() {
                 if !pool_nodes.contains(&w) {
                     continue;
                 }
                 eprintln!(
                     "[ga-dump] web {w} reg={:?} pin={:?} -> {:?} nbrs={:?}",
-                    webs.reg_of[w],
+                    reg,
                     pins.get(&w),
                     assignment.get(&w),
                     adj.get(&w)

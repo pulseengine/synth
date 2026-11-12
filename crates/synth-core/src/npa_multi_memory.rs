@@ -1728,8 +1728,9 @@ impl Provenance {
             .filter_map(|a| a.result.map(|r| (r, a)))
             .collect();
         let mut succ: Vec<Vec<Node>> = vec![Vec::new(); n];
-        for v in 0..n {
-            for &p in &f.fpreds[v] {
+        // `[..n]` keeps the out-of-range panic the indexed form had.
+        for (v, preds) in f.fpreds[..n].iter().enumerate() {
+            for &p in preds {
                 succ[p].push(v);
             }
         }
