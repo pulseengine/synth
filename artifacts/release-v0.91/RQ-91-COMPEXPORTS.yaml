@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-COMPEXPORTS
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "A relocatable compile of a component emits the exports it declares and only its real imports, or refuses"
     description: >
         gale's ask, ranked after #1145. On a component, --relocatable
@@ -59,6 +59,42 @@ artifacts:
       issue: "#1191"
       verification-track: manual
       issue-scope: closes
+      landed: "PR #1687 - #1191 - DELIVERED as a LOUD REFUSAL, not a lowering. The refuting command was RUN FIRST on main 6b697bcf and the defect was LIVE (export half: defines t:c/sched#state, nothing for the declared t:c/time#now; rc 0, no warning). Root cause, not specific to --relocatable: both decode functions in crates/synth-core/src/wasm_decoder.rs walked the input with Parser::parse_all, which descends into every nested core module of a component, and had no Payload::Version arm, so a component was decoded as ONE module whose function/import/export index spaces were the concatenation of its nested modules'. Module ORDER decides which symptom shows, so the import half the planning toy missed DOES reproduce on other shapes (an internal `U now`; `U __cabi_arena_realloc` for a component declaring no imports), and on a two-module shape the export name binds to the WRONG BODY (silent wrong code). Fix: `synth_core::refuse_component_encoding` (wasmparser's Parser::is_component), called first in decode_wasm_module and decode_wasm_functions and in the CLI ahead of loom/arena_bind on all three input paths; the diagnostic names the hazard, cites #1191 and gives the `meld fuse` route. NEWLY REFUSED: every component-encoded input (binary layer 1 or component text) on every backend and mode; 0 PRE-EXISTING in-repo inputs are components (measured on 6b697bcf). This change adds 5 component fixtures, refused by design: they are listed in arm_corpus_sweep_973.py REFUSED_BY_DESIGN, the self-contained boot sweep counts them as declines (+10), and the home-alias audit corpus does not see them (its pinned counts move only by the new CORE twin fixture, +6 functions / +10 attributed, decomposed by isolation). The acceptance ladder was NOT re-measured: /Volumes/Work/corpora/wasm-243 was not mounted, so v0.62's 6/5/5-of-112 component accepts (arm/riscv/aarch64) are EXPECTED to become declines and re-measurement is pending until the corpus is mounted (noted beside the ladder header)."
+      verified-by: >
+        DELIVERED, execution-verified red and refusal-verified green, by
+        scripts/repro/component_input_1191_differential.py (wired in the
+        aarch64-oracle job). The declared interface of each fixture is
+        DERIVED from wasmtime 48's component type, and each declared
+        export's value comes from wasmtime's component runtime. RED on
+        6b697bcf (`--expect-red` PASS): 35 of 35 shape x mode cases
+        accepted or wrong (5 shapes x 6 modes + the .wat input) - every
+        one rc 0 except the single-function path, which cannot find a
+        declared export (shapes 1, 2), and shape 5's self-contained path,
+        which fails with a misleading "#418 internal" arena error; 5 of 5
+        symbol tables disagree with the declared interface; shape 4's
+        `g`, EXECUTED under unicorn, returns 2 where wasmtime's component
+        runtime returns 101. GREEN on the branch: 35 of 35 refused, rc 1,
+        naming #1191 and `meld fuse`, no output written. Paired controls,
+        both trees: shape 4's core-module twin and its frozen meld 0.9.0
+        fused module (sha256 de1ed50a..., its attestation's input hash
+        equal to shape 4's assembled bytes) compile and EXECUTE f/g to
+        wasmtime's 1/101, and both objects are byte-identical between
+        6b697bcf and the branch. Crossed: the green assertions FAIL on
+        6b697bcf (0 refusals) and `--expect-red` FAILS on the branch (0
+        red cases). Mutants, each restored after: the helper made
+        always-Ok reds the oracle (0 of 35) and 2 of the 3 new
+        synth-core unit tests; the check removed from
+        decode_wasm_functions only reds
+        `component_1191_refused_by_decode_wasm_functions` (the oracle
+        cannot reach that function in the default build); the three CLI
+        calls removed reds the oracle on shape 5 arm-self-contained (34
+        of 35). The oracle declares `ci-checks: emulations >= 4` (4
+        measured via oracle_run.py: f/g of the twin and of the fused
+        module); under RQ-91-EMUFLOOR's per-oracle protocol it is held
+        against the base tree by `oracle_wiring_check.py --floor-base`,
+        and no summed pin moves. The home-alias audit corpus's exact
+        pins move by the twin fixture alone (+6 functions, +10
+        attributed), decomposed by isolation.
       done-when: >
         manual:2027-03-31 a relocatable compile of a component emits a
         defined symbol for every function of every interface the
