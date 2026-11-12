@@ -1144,7 +1144,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // there was no StartSection arm and the section was silently discarded.
     let mut start_function: Option<u32> = None;
 
-    for payload in Parser::new(0).parse_all(wasm_bytes) {
+    for payload in decode_parser().parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
 
         match payload {
@@ -1885,7 +1885,7 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
     let mut type_has_v128: Vec<bool> = Vec::new();
     let mut func_sig_has_v128: Vec<bool> = Vec::new();
 
-    for payload in Parser::new(0).parse_all(wasm_bytes) {
+    for payload in decode_parser().parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
 
         match payload {
@@ -2309,11 +2309,26 @@ fn decode_function_body(
             // aliased every memory onto the one R11 base (a store to memory
             // `$b` clobbered memory `$a`). memidx 0 stays the bare variant, so
             // single-memory streams are bit-identical by construction.
-            let wasm_op = match memarg_memory_index(&op) {
-                Some(mem) if mem > 0 => WasmOp::MultiMemory {
+            let wasm_op = match memarg_target(&op) {
+                Some(wasmparser::MemArgTarget::Memory(mem)) if mem > 0 => WasmOp::MultiMemory {
                     memory: mem,
                     op: Box::new(wasm_op),
                 },
+                // wasmparser 0.263 (#1649): a memarg may target a GC ARRAY
+                // payload (multibyte-array-access proposal), not a linear
+                // memory. `decode_parser` leaves that proposal off, so this
+                // arm is unreachable today; were it ever enabled, lowering
+                // the access as a linear-memory one would be a silent
+                // miscompile, so the function is loud-skipped instead.
+                Some(wasmparser::MemArgTarget::Array(ty)) => {
+                    if unsupported.is_none() {
+                        unsupported = Some(format!(
+                            "{op:?} targets the payload of GC array type {ty} \
+                             (multibyte-array-access) — no lowering"
+                        ));
+                    }
+                    wasm_op
+                }
                 _ => wasm_op,
             };
             ops.push(wasm_op);
@@ -2382,8 +2397,9 @@ fn is_simd_operator(op: &wasmparser::Operator) -> bool {
     wasmparser::for_each_operator!(define_match_operator)
 }
 
-/// VCR-MEM-002 phase 1 (#406): the `memarg.memory` index of a load/store
-/// operator that [`convert_operator`] lowers, `None` for every other op.
+/// VCR-MEM-002 phase 1 (#406): the memarg target (memory index, or — since
+/// wasmparser 0.263 — a GC array type) of a load/store operator that
+/// [`convert_operator`] lowers, `None` for every other op.
 ///
 /// MIRROR PIN: this list must cover exactly the memarg-carrying arms of
 /// `convert_operator` (every `{ memarg }` load/store it returns `Some` for).
@@ -2392,7 +2408,7 @@ fn is_simd_operator(op: &wasmparser::Operator) -> bool {
 /// drops (`_ => None`) loud-skip their function regardless, so they need no
 /// entry. `memory.size`/`grow`/`copy`/`fill` carry their indices in their own
 /// `WasmOp` variants / decode-time declines, not via this helper.
-fn memarg_memory_index(op: &wasmparser::Operator) -> Option<u32> {
+fn memarg_target(op: &wasmparser::Operator) -> Option<wasmparser::MemArgTarget> {
     use wasmparser::Operator::*;
     match op {
         I32Load { memarg }
@@ -2419,9 +2435,30 @@ fn memarg_memory_index(op: &wasmparser::Operator) -> Option<u32> {
         | F64Load { memarg }
         | F64Store { memarg }
         | V128Load { memarg }
-        | V128Store { memarg } => Some(memarg.memory),
+        | V128Store { memarg } => Some(memarg.target),
         _ => None,
     }
+}
+
+/// #1649: the parser every module DECODE goes through.
+///
+/// `Parser::new` enables `WasmFeatures::all()`. wasmparser 0.263 added two
+/// in-flight proposals to that set — acquire-release-atomics and
+/// multibyte-array-access — and both reassign memarg flag bits that every
+/// earlier release read as alignment: bit 4 becomes "an ordering immediate
+/// follows" (a plain load/store carrying it is now a parse error) and bit 5
+/// becomes "a GC array type index follows" (an extra LEB is consumed before
+/// the offset). Under the standard encoding those bits are part of the
+/// alignment exponent, so a wasm 3.0 decoder must read them that way. Synth
+/// lowers neither proposal, so both stay off and the decode is the 0.262 one.
+fn decode_parser() -> Parser {
+    let mut parser = Parser::new(0);
+    parser.set_features(
+        wasmparser::WasmFeatures::all()
+            .difference(wasmparser::WasmFeatures::ACQUIRE_RELEASE_ATOMICS)
+            .difference(wasmparser::WasmFeatures::MULTIBYTE_ARRAY_ACCESS),
+    );
+    parser
 }
 
 /// Convert a wasmparser Operator to our WasmOp enum
@@ -4882,5 +4919,60 @@ mod tests {
         let g = m.call_indirect_guards();
         assert_eq!(g.tables[0].type_reject[0], None);
         assert!(g.tables[0].type_reject[3].is_some());
+    }
+
+    // ---- #1649: memarg flag bits 4/5 decode as ALIGNMENT, as in 0.262 ----
+    //
+    // wasmparser 0.263's `WasmFeatures::all()` reassigns bit 4 (an ordering
+    // immediate) and bit 5 (a GC array type index). `decode_parser` turns both
+    // proposals off. Reverting it to `Parser::new(0)` makes the first case a
+    // decode error and the second an `Array(4)` target that reads the `end`
+    // byte as its offset.
+
+    fn i32_load_module(memop: &[u8]) -> Vec<u8> {
+        let sec = |id: u8, b: &[u8]| {
+            let mut v = vec![id, b.len() as u8];
+            v.extend_from_slice(b);
+            v
+        };
+        let mut body = vec![0x00, 0x41, 0x00, 0x28];
+        body.extend_from_slice(memop);
+        body.push(0x0b);
+        let mut code = vec![1, body.len() as u8];
+        code.extend_from_slice(&body);
+        let mut m = b"\0asm\x01\0\0\0".to_vec();
+        m.extend(sec(1, &[0x01, 0x60, 0x00, 0x01, 0x7f]));
+        m.extend(sec(3, &[0x01, 0x00]));
+        m.extend(sec(5, &[0x01, 0x00, 0x01]));
+        m.extend(sec(7, &[0x01, 0x01, b'f', 0x00, 0x00]));
+        m.extend(sec(10, &code));
+        m
+    }
+
+    fn only_load(memop: &[u8]) -> (Vec<WasmOp>, Option<String>) {
+        let f = decode_wasm_functions(&i32_load_module(memop))
+            .expect("decodes as 0.262 did")
+            .remove(0);
+        (f.ops, f.unsupported)
+    }
+
+    #[test]
+    fn memarg_bit4_is_alignment_not_an_ordering_flag_1649() {
+        let (ops, unsupported) = only_load(&[0x12, 0x00]);
+        assert_eq!(unsupported, None);
+        assert!(ops.contains(&WasmOp::I32Load {
+            offset: 0,
+            align: 0x12
+        }));
+    }
+
+    #[test]
+    fn memarg_bit5_is_alignment_not_an_array_target_1649() {
+        let (ops, unsupported) = only_load(&[0x22, 0x04]);
+        assert_eq!(unsupported, None);
+        assert!(ops.contains(&WasmOp::I32Load {
+            offset: 4,
+            align: 0x22
+        }));
     }
 }
