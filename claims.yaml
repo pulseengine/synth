@@ -376,7 +376,8 @@ status_fields:
   # filter would be a hole a reworded reason walks through.
   #
   # EXCLUDED, and why:
-  #   PINNED_WRONG (join_alias_1189, home_alias_class_1189) — the RED half:
+  #   PINNED_WRONG (join_alias_1189, home_alias_class_1189,
+  #     stack_top_return_rq91 — RQ-91-MVDROP, the d2094ca4 wrong values) — the RED half:
   #     recorded wrong values of FROZEN pre-fix bytes, the oracles' potency
   #     evidence. They never shrink when a fix lands, so they are not debt.
   #   EXPECTED_DECLINES / EXPECTED_SKIPS — loud refusals. Reach, not silent
@@ -1257,7 +1258,7 @@ claims:
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # function-level pin (file buckets miss in-file float moves)
-        pattern: 'SKIPPED_FUNCTION_PINS = \{"arm_m4f": 1489, "arm_m7dp": 1400\}'
+        pattern: 'SKIPPED_FUNCTION_PINS = \{"arm_m4f": 1491, "arm_m7dp": 1405\}'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-min                      # the job runs the census (all legs by default)
@@ -1971,9 +1972,31 @@ claims:
         # guard, local plan, straddle guard, shape-2 matcher, #1580 rewrite
         # helpers, the #1619 memory-0-side refusal) were deleted; the decision
         # moved to synth_core::npa_multi_memory::Provenance::memory0_plan.
-        value: 21175
+        # RQ-91-MVDROP: 21175 -> 21230, waived below (chained after
+        # RQ-91-NPAMODEL's waiver).
+        value: 21230
         baseline: 17897
         waivers:
+          - to: 21230
+            reason: >-
+              RQ-91-MVDROP: 21175 -> 21230 (+55, re-derived after cargo fmt on
+              the tree rebased over 2ef015ee; the same +55 measured on
+              d2094ca4, 0185ba07 and 52add192; paired control: this tree
+              derives 21230, a pristine 2ef015ee tree derives 21175). Two NEW
+              decisions, replacing no arm, both closing a silent wrong-code
+              path: (a) `CallIndirect` reads the per-TYPE result count
+              (`type_result_counts` + its setter) and a VOID type pushes
+              NOTHING — the #1210 void-callee rule, which covered `Call` only
+              (a void call_indirect returned the callee's R0, 77, where wasm
+              returns 5); (b) `Drop` refuses on an EMPTY operand stack in
+              REACHABLE code (the model under-counted; it popped nothing and
+              the function returned a stale R0). Reachability itself lives in
+              synth-core (`wasm_stack_check::Reachability`), and the
+              multi-result-call refusal is in synth-core and arm_backend.rs, so
+              neither adds selector lines. No wildcard arm was added. Gated by
+              execution: scripts/repro/stack_top_return_rq91_differential.py
+              (d1c_void_call_indirect on 6 legs) and the unit test
+              drop_on_empty_stack_refuses_only_in_reachable_code_rq91_mvdrop.
           - to: 21175
             reason: >-
               RQ-91-NPAMODEL (Refs #1672, #1568, #1604, #1661): 21852 -> 21175
@@ -3340,7 +3363,10 @@ claims:
         # is a scripts/repro differential, outside this population). No waiver.
         # RQ-91-NPAMODEL (#1672, #1568, #1604, #1661): 32713 -> 32036, the same
         # -677 as selector_lines_code. No waiver.
-        value: 32036
+        # RQ-91-MVDROP: 32036 -> 32125, +55 code (waived on
+        # selector_lines_code) and +34 test-module lines (the
+        # drop-on-empty-stack unit test). Re-derived on the rebased tree.
+        value: 32125
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -3611,9 +3637,26 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 131
+        value: 132
         baseline: 27
         waivers:
+          - to: 132
+            reason: >-
+              RQ-91-MVDROP (#539): 131 -> 132 (re-derived on the tree rebased
+              over 2ef015ee, whose pristine tree derives 131). A REACH GAIN,
+              not new wrong code: the spec-execution baseline gains
+              ('cortex-m7dp', 'call.wast', 359, 1) as `#539-grow-fails` —
+              memory.grow returns -1 on a fixed-SRAM image, the envelope the
+              SAME directive is already pinned as on cortex-m4. It was
+              unreachable on cortex-m7dp because call.wast module 0 was a #1102
+              whole-module refusal there (a retained caller relocated against
+              a declined callee); RQ-91-MVDROP refuses that caller by name (a
+              MULTI-RESULT call), so the module compiles and 36 more of its
+              directives execute and pass (35 pass:value, 1 pass:trap). PAIRED
+              CONTROL, run: the branch WITHOUT this entry is red (NEW FAILURE,
+              54 failures vs a 53-entry baseline) and d2094ca4 WITH it is red
+              (the entry's directive is module-declined there, not failing);
+              the branch with it is green.
           - to: 131
             reason: >-
               RQ-90-F64STORE (#1642): 133 -> 131. Not a growth waiver — TWO
@@ -3822,14 +3865,17 @@ claims:
         # spec-execution entries at one directive each.
         # RQ-90-F64STORE (#1642): 199 -> 197, the 2 closed `#1642`
         # spec-execution entries at one directive each.
-        value: 197
+        # RQ-91-MVDROP: 197 -> 198, the newly reached cortex-m7dp call.wast
+        # #539 envelope entry at one directive.
+        value: 198
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the six tables in the
       # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in
       # i64_result_pair_1189_differential.py and
       # self_contained_boot_sweep_1189_differential.py to the original
-      # four) or one of the two PINNED_WRONG red-half fixtures excluded by
-      # name in the status_fields comment (6 + 2). A new oracle's own
+      # four) or one of the PINNED_WRONG red-half fixtures excluded by
+      # name in the status_fields comment (6 + 2 at v0.66; the third,
+      # RQ-91-MVDROP's, is recorded at the count below). A new oracle's own
       # known-open list must be added to the population or written into the
       # exclusion list, and this count moves either way. NARROW ON PURPOSE,
       # documented so the narrowness is a choice and not a blind spot: the
@@ -3854,10 +3900,14 @@ claims:
       # KNOWN, listed in `known_open_pin_tables`. (The comment sits ABOVE the
       # entry: suppression_table_shape_scan.py --self-test reads `expect:` as
       # the line straight after `glob:`.)
+      # RQ-91-MVDROP: 13 -> 14, stack_top_return_rq91_differential.py's
+      # PINNED_WRONG — a THIRD red-half fixture, excluded by name in the
+      # status_fields comment with the other two (recorded wrong values of
+      # d2094ca4, the oracle's potency evidence; it never shrinks on a fix).
       - kind: count-eq
         pattern: '^(?:KNOWN|PINNED)[A-Z0-9_]*\s*(?::[^=\n]*)?=\s*\{'
         glob: ['scripts/repro/**/*.py']
-        expect: 13
+        expect: 14
       - kind: verbatim                       # the prose names what is OUT
         text: "EXCLUDED, by design"
       - kind: count-eq                       # the derivation exists…

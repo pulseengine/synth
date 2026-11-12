@@ -208,10 +208,6 @@ EXPECTED_DECLINES = {
     ("cortex-m7dp", "hand_sub", "via_t1"): "strict subtype in table (#1643)",
     ("aarch64", "hand_sub", "via_t1"): "strict subtype in table (#1643)",
     ("aarch64", "spec_sub_chain", "run"): "strict subtype in table (#1643)",
-    # Pre-existing, not #1643: the five sequential calls exhaust the ARM
-    # selector's callee-saved registers (the same skip on c20d37b2).
-    ("cortex-m4", "spec_sub_chain", "run"): "register exhaustion (pre-existing)",
-    ("cortex-m7dp", "spec_sub_chain", "run"): "register exhaustion (pre-existing)",
 }
 
 TRAP, VOID = "trap", "void"

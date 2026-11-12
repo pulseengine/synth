@@ -108,7 +108,9 @@ fn repro_wasm_ops() -> Vec<WasmOp> {
         WasmOp::I64ExtendI32U,
         // the actual 64-bit logical shift
         WasmOp::I64ShrU,
-        WasmOp::Drop,
+        // RQ-91-MVDROP: the shifted i64 is the function's result, not
+        // dropped — the optimized path pops ONE half of an i64 pair at
+        // `drop` and now declines that to the direct selector.
     ]
 }
 
@@ -219,7 +221,9 @@ fn issue_93_optimized_i64_shl_does_not_use_r0_as_shift_count() {
         WasmOp::LocalGet(2),
         WasmOp::I64ExtendI32U,
         WasmOp::I64Shl,
-        WasmOp::Drop,
+        // RQ-91-MVDROP: the shifted i64 is the function's result, not
+        // dropped — the optimized path pops ONE half of an i64 pair at
+        // `drop` and now declines that to the direct selector.
     ];
     let arm = compile_optimized(&wasm, 4);
     assert!(
@@ -250,7 +254,9 @@ fn issue_93_optimized_i64_shr_s_does_not_use_r0_as_shift_count() {
         WasmOp::LocalGet(3),
         WasmOp::I64ExtendI32S,
         WasmOp::I64ShrS,
-        WasmOp::Drop,
+        // RQ-91-MVDROP: the shifted i64 is the function's result, not
+        // dropped — the optimized path pops ONE half of an i64 pair at
+        // `drop` and now declines that to the direct selector.
     ];
     let arm = compile_optimized(&wasm, 4);
     assert!(

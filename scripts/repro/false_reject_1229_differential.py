@@ -70,13 +70,15 @@ MEASURED (re-derive with `--synth <path>`; every count here is exact-pinned):
   ---------------- ----  -----
   br.wast            12     31
   br_table.wast       4      4
-  call.wast           3      0
+  call.wast           0      0
   loop.wast           1      1
   return.wast        29      0
   unreachable.wast   25     20
-  TOTAL              74     56
+  TOTAL              71     56
 
-(arm total of 74 matches the issue exactly; the riscv split differs in shape
+(RQ-91-MVDROP: call.wast/arm 3 -> 0, the three were multi-result-call
+under-counts, not dead code, and now refuse by name — see the KNOWN entry.
+The arm total of 74 matched the issue exactly before that; the riscv split differs in shape
 from the issue's rougher "3 files each" paraphrase — re-measured here per
 file, which is the authority.)
 
@@ -109,7 +111,15 @@ BACKENDS = {
 KNOWN: dict[tuple[str, str], int] = {
     ("br.wast", "arm"): 12,
     ("br_table.wast", "arm"): 4,
-    ("call.wast", "arm"): 3,
+    # RQ-91-MVDROP: 3 -> 0, a RECLASSIFICATION, not a #1229 fix. The three
+    # were call.wast's as-binary-all-operands, as-mixed-operands and
+    # as-call-all-operands: no dead code at all, each consumes the two
+    # results of a MULTI-RESULT call. The selector modelled that call as
+    # ONE value, so the consumer underflowed with this file's message.
+    # They now refuse by name (`MULTI-RESULT call`), so this class counts 0
+    # there; #1229's dead-code shape is untouched (the other 11 pins hold).
+    # Paired control, run: main e8716535's binary still measures 3.
+    ("call.wast", "arm"): 0,
     ("loop.wast", "arm"): 1,
     ("return.wast", "arm"): 29,
     ("unreachable.wast", "arm"): 25,

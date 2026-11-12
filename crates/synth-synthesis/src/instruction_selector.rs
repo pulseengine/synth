@@ -6453,6 +6453,10 @@ pub struct InstructionSelector {
     /// every function whose callees ALL have a declared result is
     /// byte-identical).
     func_result_counts: Vec<u32>,
+    /// RQ-91-MVDROP: result count of type `i` (the `call_indirect` analogue
+    /// of `func_result_counts`). `Some(0)` = void, so a `call_indirect` of
+    /// that type pushes nothing. Empty ⇒ the legacy one-result push.
+    type_result_counts: Vec<u32>,
     /// #359: declared param widths of the function being compiled —
     /// `params_i64[k]` true ⇒ param `k` is i64/f64. The AAPCS stack-argument
     /// path refuses (Ok-or-Err) when any param is 64-bit. Empty ⇒ assume i32
@@ -6735,6 +6739,7 @@ impl InstructionSelector {
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
             func_result_counts: Vec::new(),
+            type_result_counts: Vec::new(),
             params_i64: Vec::new(),
             declared_i64_locals: Vec::new(),
             declared_float_locals: Vec::new(),
@@ -6795,6 +6800,7 @@ impl InstructionSelector {
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
             func_result_counts: Vec::new(),
+            type_result_counts: Vec::new(),
             params_i64: Vec::new(),
             declared_i64_locals: Vec::new(),
             declared_float_locals: Vec::new(),
@@ -7487,6 +7493,13 @@ impl InstructionSelector {
     /// returns a value (the legacy behavior).
     pub fn set_func_result_counts(&mut self, func_result_counts: Vec<u32>) {
         self.func_result_counts = func_result_counts;
+    }
+
+    /// RQ-91-MVDROP: register the per-TYPE result count (0 = void) so a
+    /// `call_indirect` of a void type pushes no phantom result. Empty ⇒ the
+    /// legacy one-result push.
+    pub fn set_type_result_counts(&mut self, type_result_counts: Vec<u32>) {
+        self.type_result_counts = type_result_counts;
     }
 
     /// #359: register the declared parameter widths of the function about to be
@@ -13282,6 +13295,40 @@ mod tests {
     // =========================================================================
 
     /// Helper: create a fresh InstructionSelector with no optimization rules
+    /// RQ-91-MVDROP: a `drop` on an empty operand stack in REACHABLE code is
+    /// a model under-count and refuses; the stack-polymorphic dead code after
+    /// a terminator (#329) stays accepted.
+    #[test]
+    fn drop_on_empty_stack_refuses_only_in_reachable_code_rq91_mvdrop() {
+        let mut selector = fresh_selector();
+        selector.set_func_result_counts(vec![1]);
+        let r = selector.select_with_stack(&[WasmOp::Call(0), WasmOp::Drop, WasmOp::Drop], 0);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.to_string().contains("drop on an empty operand stack")),
+            "an under-counted drop must refuse: {r:?}"
+        );
+        let mut selector = fresh_selector();
+        selector.set_func_result_counts(vec![1]);
+        assert!(
+            selector
+                .select_with_stack(&[WasmOp::Call(0), WasmOp::Drop], 0)
+                .is_ok()
+        );
+        let mut selector = fresh_selector();
+        selector.set_func_result_counts(vec![1]);
+        let dead = selector.select_with_stack(
+            &[
+                WasmOp::Call(0),
+                WasmOp::Drop,
+                WasmOp::Unreachable,
+                WasmOp::Drop,
+            ],
+            0,
+        );
+        assert!(dead.is_ok(), "dead-code drop must stay accepted: {dead:?}");
+    }
+
     fn fresh_selector() -> InstructionSelector {
         InstructionSelector::new(vec![])
     }

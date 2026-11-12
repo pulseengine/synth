@@ -300,6 +300,93 @@ fn stack_effect_or_bail(op: &WasmOp) -> StackEffect {
     }
 }
 
+/// RQ-91-MVDROP — reachability over a function's op stream, one op at a time.
+///
+/// A terminator (`unreachable`, `br`, `br_table`, `return`) makes the code after
+/// it unreachable, and that code is stack-polymorphic (#329). Code after an
+/// `end` is reachable again only if control can actually arrive there: by
+/// falling through, by a branch to that block (or `if`) taken from REACHABLE
+/// code, or along the false path of an `if` without an `else`. A branch to a
+/// `loop` targets its header, not its end. `step` answers whether the op it is
+/// handed is reachable, then advances past it. A selector that finds its
+/// operand model empty at a reachable consumer has under-counted: the wasm
+/// validator guarantees the operand there.
+#[derive(Debug, Default, Clone)]
+pub struct Reachability {
+    dead: bool,
+    frames: Vec<ReachFrame>,
+}
+
+#[derive(Debug, Clone)]
+struct ReachFrame {
+    is_loop: bool,
+    is_if: bool,
+    entry_reachable: bool,
+    then_fallthrough: Option<bool>,
+    branched_to: bool,
+}
+
+impl Reachability {
+    fn mark_target(&mut self, depth: u32) {
+        let n = self.frames.len();
+        if let Some(i) = n.checked_sub(1 + depth as usize) {
+            self.frames[i].branched_to = true;
+        }
+    }
+
+    /// Is `op` reachable? Advances the state past it.
+    pub fn step(&mut self, op: &WasmOp) -> bool {
+        let reachable = !self.dead;
+        match op {
+            WasmOp::Block | WasmOp::Loop | WasmOp::If => self.frames.push(ReachFrame {
+                is_loop: matches!(op, WasmOp::Loop),
+                is_if: matches!(op, WasmOp::If),
+                entry_reachable: reachable,
+                then_fallthrough: None,
+                branched_to: false,
+            }),
+            WasmOp::Else => {
+                if let Some(f) = self.frames.last_mut() {
+                    f.then_fallthrough = Some(reachable);
+                    self.dead = !f.entry_reachable;
+                }
+            }
+            WasmOp::End => {
+                if let Some(f) = self.frames.pop() {
+                    let false_path = f.is_if && f.then_fallthrough.is_none() && f.entry_reachable;
+                    let arrives = reachable
+                        || f.then_fallthrough == Some(true)
+                        || false_path
+                        || (!f.is_loop && f.branched_to);
+                    self.dead = !arrives;
+                }
+            }
+            WasmOp::Br(d) => {
+                if reachable {
+                    self.mark_target(*d);
+                }
+                self.dead = true;
+            }
+            WasmOp::BrIf(d) => {
+                if reachable {
+                    self.mark_target(*d);
+                }
+            }
+            WasmOp::BrTable { targets, default } => {
+                if reachable {
+                    for d in targets.iter().chain(std::iter::once(default)) {
+                        self.mark_target(*d);
+                    }
+                }
+                self.dead = true;
+            }
+            WasmOp::Unreachable | WasmOp::Return => self.dead = true,
+            _ => {}
+        }
+        reachable
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,5 +650,59 @@ mod tests {
         // net +1 (an over-approximation, never an under-count).
         let ops = vec![WasmOp::I32Const(1), WasmOp::Call(0), WasmOp::I32Add];
         assert!(max_depth_bound(&ops) >= 2);
+    }
+
+    #[test]
+    fn reachability_follows_live_control_to_each_block_end_rq91_mvdrop() {
+        use WasmOp::*;
+        let run = |ops: &[WasmOp]| -> Vec<bool> {
+            let mut r = Reachability::default();
+            ops.iter().map(|op| r.step(op)).collect()
+        };
+        // A terminator kills the rest of its block; falling out of the block
+        // is impossible, and nothing branched to it, so after its `end` is dead.
+        assert_eq!(
+            run(&[Block, Unreachable, Drop, End, Drop]),
+            [true, true, false, false, false]
+        );
+        // A branch taken from LIVE code makes the block's end reachable.
+        assert_eq!(
+            run(&[Block, I32Const(1), BrIf(0), Unreachable, End, Drop]),
+            [true, true, true, true, false, true]
+        );
+        // spec unreached-valid.wast `meet-bottom`: the br_table that names
+        // the inner block is itself dead, so the `drop` after it is dead too.
+        let bt = BrTable {
+            targets: vec![0, 1, 1],
+            default: 1,
+        };
+        assert_eq!(
+            run(&[
+                Block,
+                Block,
+                Unreachable,
+                I32Const(1),
+                bt,
+                End,
+                Drop,
+                F64Const(0.0),
+                End,
+                Drop
+            ]),
+            [
+                true, true, true, false, false, false, false, false, false, false
+            ]
+        );
+        // `if` without `else`: the false path reaches the end; with `else`,
+        // either arm's fall-through does; a `loop`'s end only by falling out.
+        assert_eq!(
+            run(&[I32Const(1), If, Return, End, Drop]),
+            [true, true, true, false, true]
+        );
+        assert_eq!(
+            run(&[I32Const(1), If, Return, Else, Return, End, Drop]),
+            [true, true, true, false, true, false, false]
+        );
+        assert_eq!(run(&[Loop, Br(0), End, Drop]), [true, true, false, false]);
     }
 }

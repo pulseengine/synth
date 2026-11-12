@@ -3112,6 +3112,15 @@ jobs:
       # 52add192: 24 failures (5 x use_import() = 7 where wasmtime gives 42).
       - name: Run import-symbol collision oracle (#1698, arm / cortex-r5 / riscv / aarch64)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/import_name_collision_1698_differential.py
+      # RQ-91-MVDROP: an ARM function returns its wasm stack TOP (the optimized
+      # path returned the last value PRODUCED, so `x; y; drop`, a trailing
+      # store or local/global set, and the mem::take shape returned the wrong
+      # value), a multi-result call is REFUSED (`call $two; drop` returned 20,
+      # wasm 10), and a void call_indirect pushes no phantom result. Executed
+      # against wasmtime on Thumb and A32 images and relocatable objects; the
+      # 111 wrong cells of d2094ca4 are pinned in the script (`--red`).
+      - name: Run stack-top return / multi-result call oracle (RQ-91-MVDROP)
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/stack_top_return_rq91_differential.py
       # #1574 / #1568: the v0.88 NPACONST before/after figures, re-derived from
       # a committed generator. 162 constant-address modules (19 access
       # families; shapes le_fff/gt_fff/gt_ffff/off_gt_fff in the nosp and sp
@@ -4973,7 +4982,22 @@ jobs:
           # still return 5, 8 and 16 executed). The fixture adds +78 functions
           # (16 integer exports x 2 soft-float legs + 23 x 2 hard-float legs),
           # +78 homes and +1168 instructions. `hits: 0` on every run.
-          grep -Eq '^functions audited: 7743$' haa1189.txt
+          # RQ-91-MVDROP: 7743 -> 7739 functions and (below) 244147 -> 244173
+          # attributed, 9312 homes unchanged, by paired control: main
+          # e8716535's binary over THIS tree prints 7743 / 9312 / 244147, this
+          # branch's 7739 / 9312 / 244173 (the branch adds no .wat fixture).
+          # Per (module, leg): control_call_drop.wat -1 function and -1
+          # attributed on each of the 4 legs (its multi-result call is now
+          # REFUSED); spec call.wast -2 / -4 per leg (the multi-result
+          # forwarders, refused); and +1 / +2 (local_set.wast type-local-i64)
+          # and +3 / +21 (unwind.wast block-unwind-by-br_if,
+          # block-nested-unwind-by-br and -by-br_if) on the two SELF-CONTAINED
+          # legs, functions the optimized path now declines to the direct
+          # selector, which this audit observes. Net -4 / +26. The local_set
+          # one exposed a real D2 shape (an i64 local.set pops one slot, so an
+          # i32 result under it returned the pair's low half), now a pinned
+          # case of stack_top_return_rq91_differential.py. `hits: 0`.
+          grep -Eq '^functions audited: 7739$' haa1189.txt
           grep -Eq '^homes watched: 9312$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
@@ -4989,7 +5013,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 244147 ' haa1189.txt
+          grep -Eq '^attributed instructions: 244173 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
@@ -6331,7 +6355,10 @@ jobs:
           set -euo pipefail
           python scripts/oracle_run.py \
             scripts/repro/false_reject_1229_differential.py | tee /tmp/1229.txt
-          grep -qE '^#1229 CHECKS=12/12 \(file,backend\) cells; TOTAL false-rejects=130$' /tmp/1229.txt
+          # RQ-91-MVDROP: TOTAL 130 -> 127. call.wast/arm's 3 were multi-result
+          # call under-counts, not dead code; they now refuse by name
+          # (`MULTI-RESULT call`). Paired control: e8716535's binary prints 130.
+          grep -qE '^#1229 CHECKS=12/12 \(file,backend\) cells; TOTAL false-rejects=127$' /tmp/1229.txt
           grep -q '^RESULT: PASS' /tmp/1229.txt
       # RQ-73-FALCONFIXTURE (#1318): 6 of the 7 declines in the reporter's
       # opt.wasm are ONE shape — a value-carrying branch at float type — and

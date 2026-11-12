@@ -794,6 +794,26 @@ pub struct OptimizerBridge {
     /// functions, so a flag-on compile leaves every untouched function
     /// byte-identical (the `vcr_ver_001_gate_242` lock's contract).
     spill_on_exhaust_fired: std::cell::Cell<bool>,
+    /// RQ-91-MVDROP: why the LAST `wasm_to_ir` declined the function to the
+    /// direct selector, when it was one of the stack-top declines — a typed
+    /// fact for the backend, so a caller need not match on the message text.
+    /// Reset at the start of every `wasm_to_ir`.
+    stack_top_decline: std::cell::Cell<Option<StackTopDecline>>,
+}
+
+/// RQ-91-MVDROP: the optimized path's two stack-top declines, as a typed fact
+/// (read with [`OptimizerBridge::stack_top_decline`] after `optimize_full`
+/// returns `Err`). Both send the function to the direct selector; the error
+/// message text is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackTopDecline {
+    /// The function's result (the wasm stack top at its end) is not the last
+    /// value produced — a drop, store or local/global set consumed a later
+    /// value — and `ir_to_arm`'s epilogue would return that later value.
+    ResultNotLastProduced,
+    /// A `drop` of an i64 value, which this path would pop as ONE slot of
+    /// its two-slot lo/hi pair.
+    I64PairDrop,
 }
 
 impl OptimizerBridge {
@@ -807,6 +827,7 @@ impl OptimizerBridge {
             bounds_check: BoundsCheckConfig::None,
             linmem_base: BASE_CSE_LINMEM_BASE,
             spill_on_exhaust_fired: std::cell::Cell::new(false),
+            stack_top_decline: std::cell::Cell::new(None),
         }
     }
 
@@ -820,6 +841,7 @@ impl OptimizerBridge {
             bounds_check: BoundsCheckConfig::None,
             linmem_base: BASE_CSE_LINMEM_BASE,
             spill_on_exhaust_fired: std::cell::Cell::new(false),
+            stack_top_decline: std::cell::Cell::new(None),
         }
     }
 
@@ -827,6 +849,13 @@ impl OptimizerBridge {
     /// get shaped by the spill-on-exhaustion machinery? See the field doc.
     pub fn spill_on_exhaust_fired(&self) -> bool {
         self.spill_on_exhaust_fired.get()
+    }
+
+    /// RQ-91-MVDROP: the typed reason the last `wasm_to_ir` (and so the last
+    /// `optimize_full`) declined, when it was a stack-top decline; `None`
+    /// when it succeeded or declined for any other reason.
+    pub fn stack_top_decline(&self) -> Option<StackTopDecline> {
+        self.stack_top_decline.get()
     }
 
     /// #377: set the `--safety-bounds` mode (see [`OptimizerBridge::bounds_check`]).
@@ -1336,6 +1365,7 @@ impl OptimizerBridge {
     /// stale or unmapped slot — either silently miscompiling or tripping the
     /// `get_arm_reg` defensive panic (issue #121, Gale silicon report).
     fn wasm_to_ir(&self, wasm_ops: &[WasmOp]) -> Result<(Vec<Instruction>, Cfg)> {
+        self.stack_top_decline.set(None);
         let mut builder = CfgBuilder::new();
         let mut instructions = Vec::new();
         let mut inst_id: usize = 0;
@@ -1354,12 +1384,19 @@ impl OptimizerBridge {
         // op stream. An i32 vreg that becomes a pair's lo half by aliasing
         // (the `i64.extend_i32_*` lowerings) is in the set too.
         let mut i64_halves: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        // RQ-91-MVDROP: the vreg most recently pushed onto `slot_stack` — the
+        // value `ir_to_arm`'s epilogue returns (its `last_result_vreg`, the
+        // last value PRODUCED, re-pointed at the stack top after a `br_if`).
+        // The end-of-function check below compares it with the stack top.
+        let mut last_pushed: Option<u32> = None;
         fn push_i64(
             slot_stack: &mut Vec<u32>,
             i64_halves: &mut std::collections::HashSet<u32>,
             lo: u32,
             hi: u32,
+            last_pushed: &mut Option<u32>,
         ) {
+            *last_pushed = Some(hi);
             i64_halves.insert(lo);
             i64_halves.insert(hi);
             slot_stack.push(lo);
@@ -1703,7 +1740,7 @@ impl OptimizerBridge {
                             block_id: 0,
                             is_dead: false,
                         });
-                        push_i64(&mut slot_stack, &mut i64_halves, lo, hi);
+                        push_i64(&mut slot_stack, &mut i64_halves, lo, hi, &mut last_pushed);
                         inst_id += 2; // Two unique IR ids for lo/hi
                         builder.add_instruction(); // Add extra instruction for hi part
                         continue; // Skip the normal instruction push at end of loop
@@ -1765,7 +1802,7 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    push_i64(&mut slot_stack, &mut i64_halves, lo, hi);
+                    push_i64(&mut slot_stack, &mut i64_halves, lo, hi, &mut last_pushed);
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
@@ -1954,7 +1991,13 @@ impl OptimizerBridge {
                         is_dead: false,
                     });
                     // pushes 2 (dest_lo, dest_hi)
-                    push_i64(&mut slot_stack, &mut i64_halves, dest_lo_v, dest_hi_v);
+                    push_i64(
+                        &mut slot_stack,
+                        &mut i64_halves,
+                        dest_lo_v,
+                        dest_hi_v,
+                        &mut last_pushed,
+                    );
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
@@ -2077,7 +2120,11 @@ impl OptimizerBridge {
                         is_dead: false,
                     });
                     // Single i32 result pushed.
-                    slot_stack.push(dest_v);
+                    {
+                        let pushed = dest_v;
+                        last_pushed = Some(pushed);
+                        slot_stack.push(pushed);
+                    }
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
@@ -2107,7 +2154,11 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    slot_stack.push(dest_v);
+                    {
+                        let pushed = dest_v;
+                        last_pushed = Some(pushed);
+                        slot_stack.push(pushed);
+                    }
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
@@ -2137,7 +2188,11 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    slot_stack.push(dest_v);
+                    {
+                        let pushed = dest_v;
+                        last_pushed = Some(pushed);
+                        slot_stack.push(pushed);
+                    }
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
@@ -2167,7 +2222,11 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    slot_stack.push(dest_v);
+                    {
+                        let pushed = dest_v;
+                        last_pushed = Some(pushed);
+                        slot_stack.push(pushed);
+                    }
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
@@ -2197,7 +2256,11 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    slot_stack.push(dest_v);
+                    {
+                        let pushed = dest_v;
+                        last_pushed = Some(pushed);
+                        slot_stack.push(pushed);
+                    }
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
@@ -2229,7 +2292,13 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    push_i64(&mut slot_stack, &mut i64_halves, dest_lo_v, dest_hi_v);
+                    push_i64(
+                        &mut slot_stack,
+                        &mut i64_halves,
+                        dest_lo_v,
+                        dest_hi_v,
+                        &mut last_pushed,
+                    );
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
@@ -2259,7 +2328,13 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    push_i64(&mut slot_stack, &mut i64_halves, dest_lo_v, dest_hi_v);
+                    push_i64(
+                        &mut slot_stack,
+                        &mut i64_halves,
+                        dest_lo_v,
+                        dest_hi_v,
+                        &mut last_pushed,
+                    );
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
@@ -2289,7 +2364,13 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    push_i64(&mut slot_stack, &mut i64_halves, dest_lo_v, dest_hi_v);
+                    push_i64(
+                        &mut slot_stack,
+                        &mut i64_halves,
+                        dest_lo_v,
+                        dest_hi_v,
+                        &mut last_pushed,
+                    );
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
@@ -2320,7 +2401,13 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    push_i64(&mut slot_stack, &mut i64_halves, src_v, dest_hi_v); // dest_lo aliases src
+                    push_i64(
+                        &mut slot_stack,
+                        &mut i64_halves,
+                        src_v,
+                        dest_hi_v,
+                        &mut last_pushed,
+                    ); // dest_lo aliases src
                     inst_id += 1; // only dest_hi is a fresh IR id; dest_lo reuses src
                     builder.add_instruction();
                     continue;
@@ -2345,7 +2432,13 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    push_i64(&mut slot_stack, &mut i64_halves, src_v, dest_hi_v);
+                    push_i64(
+                        &mut slot_stack,
+                        &mut i64_halves,
+                        src_v,
+                        dest_hi_v,
+                        &mut last_pushed,
+                    );
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
@@ -2380,7 +2473,11 @@ impl OptimizerBridge {
                     // result. No new inst_id needed because dest reuses
                     // src_lo's vreg — but we still consumed one Instruction
                     // slot for the I32WrapI64 op itself, so inst_id += 1.
-                    slot_stack.push(src_lo_v);
+                    {
+                        let pushed = src_lo_v;
+                        last_pushed = Some(pushed);
+                        slot_stack.push(pushed);
+                    }
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
@@ -2511,6 +2608,12 @@ impl OptimizerBridge {
                         ));
                     };
                     let (_block_type, target_inst) = block_stack[target_idx];
+                    // RQ-91-MVDROP: `ir_to_arm` re-points its result tracker
+                    // at the stack top once a `br_if` has popped its
+                    // condition; track the same value here.
+                    if let Some(&top) = slot_stack.last() {
+                        last_pushed = Some(top);
+                    }
                     Opcode::CondBranch {
                         cond: OptReg(cond_v),
                         target: target_inst,
@@ -2772,6 +2875,20 @@ impl OptimizerBridge {
                 // misread `inst_id-1` as "the value Drop discarded" instead
                 // of "the value beneath Drop's consumed slot." Issue #121.
                 WasmOp::Drop => {
+                    // RQ-91-MVDROP (F2b): an i64 occupies TWO slots (lo, hi)
+                    // and this arm pops one, so `i64.const A; i64.const B;
+                    // drop` left B's low half on the stack and the next i64
+                    // op read a mixed pair. Decline to the direct selector,
+                    // whose operand stack carries an i64 as one entry.
+                    if slot_stack.last().is_some_and(|v| i64_halves.contains(v)) {
+                        self.stack_top_decline
+                            .set(Some(StackTopDecline::I64PairDrop));
+                        return Err(synth_core::Error::validation(
+                            "optimized lowering path pops one half of an i64 pair at \
+                             `drop`; the direct instruction selector lowers it — \
+                             RQ-91-MVDROP",
+                        ));
+                    }
                     slot_stack.pop().ok_or_else(|| {
                         synth_core::Error::validation(
                             "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
@@ -2902,7 +3019,9 @@ impl OptimizerBridge {
                 | Opcode::Select { .. }
                 | Opcode::TeeStore { .. }
                 | Opcode::Call { .. } => {
-                    slot_stack.push(inst_id as u32);
+                    let pushed = inst_id as u32;
+                    last_pushed = Some(pushed);
+                    slot_stack.push(pushed);
                 }
                 // Pure consumers / control flow / no-ops: no slot push.
                 Opcode::Store { .. }
@@ -2930,6 +3049,27 @@ impl OptimizerBridge {
             inst_id += 1;
         }
 
+        // RQ-91-MVDROP (F2): `ir_to_arm`'s epilogue returns the LAST value
+        // produced, not the wasm stack top. They differ exactly when the
+        // function's result was produced before a value that was then consumed
+        // without producing one — `drop` (which emits no IR at all), a store,
+        // `local.set`, `global.set`, `local.tee; drop`. That returned the
+        // consumed value: the `mem::take` shape (load the old value, store 0)
+        // returned 0. Decline to the direct selector, which returns its operand
+        // stack's top. Nothing newly refuses: the direct path lowers every
+        // such shape.
+        if let Some(&top) = slot_stack.last()
+            && Some(top) != last_pushed
+        {
+            self.stack_top_decline
+                .set(Some(StackTopDecline::ResultNotLastProduced));
+            return Err(synth_core::Error::validation(
+                "optimized lowering path would return the last value produced, \
+                 not the wasm stack top (a drop, store or local/global set \
+                 consumed it); the direct instruction selector lowers it — \
+                 RQ-91-MVDROP",
+            ));
+        }
         let cfg = builder.build();
         Ok((instructions, cfg))
     }
@@ -10397,5 +10537,83 @@ mod tests {
             2,
             "redefined divisor vreg: every guard must stay: {arm:#?}"
         );
+    }
+
+    /// RQ-91-MVDROP (F2/F2b): the optimized path declines — so the backend
+    /// falls back to the direct selector — when its epilogue would return the
+    /// last value produced instead of the wasm stack top, and when a `drop`
+    /// would pop one half of an i64 pair. Each control stays accepted.
+    #[test]
+    fn stack_top_return_and_i64_drop_decline_rq91_mvdrop() {
+        let bridge = OptimizerBridge::with_config(OptimizationConfig::all());
+        let declines = |ops: &[WasmOp]| {
+            bridge
+                .optimize_full(ops)
+                .err()
+                .is_some_and(|e| e.to_string().contains("RQ-91-MVDROP"))
+        };
+        // The typed fact rides beside the (unchanged) message.
+        let _ = bridge.optimize_full(&[WasmOp::I32Const(10), WasmOp::I32Const(20), WasmOp::Drop]);
+        assert_eq!(
+            bridge.stack_top_decline(),
+            Some(StackTopDecline::ResultNotLastProduced)
+        );
+        let _ = bridge.optimize_full(&[WasmOp::I64Const(1), WasmOp::I64Const(2), WasmOp::Drop]);
+        assert_eq!(
+            bridge.stack_top_decline(),
+            Some(StackTopDecline::I64PairDrop)
+        );
+        let _ = bridge.optimize_full(&[WasmOp::I32Const(10)]);
+        assert_eq!(bridge.stack_top_decline(), None);
+        // `10 20 drop` returns 10; the last value produced is 20.
+        assert!(declines(&[
+            WasmOp::I32Const(10),
+            WasmOp::I32Const(20),
+            WasmOp::Drop
+        ]));
+        // The result is under a `local.set` of a later value.
+        assert!(declines(&[
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(9),
+            WasmOp::LocalSet(1)
+        ]));
+        // An i64 `drop` pops two slots on wasm and one here.
+        assert!(declines(&[
+            WasmOp::I64Const(1),
+            WasmOp::I64Const(2),
+            WasmOp::Drop
+        ]));
+        // Controls: the result IS the last value produced.
+        for ops in [
+            vec![WasmOp::I32Const(10)],
+            vec![WasmOp::I32Const(10), WasmOp::I32Const(20), WasmOp::I32Add],
+            vec![
+                WasmOp::I32Const(5),
+                WasmOp::LocalSet(1),
+                WasmOp::LocalGet(1),
+            ],
+            vec![WasmOp::I32Const(5), WasmOp::Drop],
+            // optloop_backedge_1206 `countdown`: after the `br_if`, the stack
+            // top is the `local.tee` — the value `ir_to_arm` re-points at.
+            vec![
+                WasmOp::LocalGet(0),
+                WasmOp::LocalSet(1),
+                WasmOp::Loop,
+                WasmOp::LocalGet(1),
+                WasmOp::I32Const(1),
+                WasmOp::I32Sub,
+                WasmOp::LocalTee(1),
+                WasmOp::LocalGet(1),
+                WasmOp::I32Const(0),
+                WasmOp::I32GtS,
+                WasmOp::BrIf(0),
+                WasmOp::End,
+            ],
+        ] {
+            assert!(
+                !declines(&ops),
+                "control must stay on the optimized path: {ops:?}"
+            );
+        }
     }
 }

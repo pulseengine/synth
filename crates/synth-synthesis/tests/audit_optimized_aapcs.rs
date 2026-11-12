@@ -112,6 +112,13 @@ fn optimized_i32_add_4params_does_not_clobber_r3() {
         WasmOp::Drop,
         WasmOp::LocalGet(3),
         WasmOp::Drop,
+        // RQ-91-MVDROP: drop the computed value too, so the body is VOID.
+        // With it left on the stack the function's result would be that
+        // value, but the optimized epilogue returned the LAST value pushed
+        // (local.get 3) — the stack-top defect — and the optimized path now
+        // declines such a body to the direct selector instead of compiling
+        // it. The clobber property under audit is unchanged.
+        WasmOp::Drop,
     ];
     let arm = compile_optimized(&wasm, 4);
     assert_no_clobber_before_epilogue(&arm, 4, "i32_add_4params");
@@ -127,6 +134,13 @@ fn optimized_i32_sub_4params_does_not_clobber_r3() {
         WasmOp::Drop,
         WasmOp::LocalGet(3),
         WasmOp::Drop,
+        // RQ-91-MVDROP: drop the computed value too, so the body is VOID.
+        // With it left on the stack the function's result would be that
+        // value, but the optimized epilogue returned the LAST value pushed
+        // (local.get 3) — the stack-top defect — and the optimized path now
+        // declines such a body to the direct selector instead of compiling
+        // it. The clobber property under audit is unchanged.
+        WasmOp::Drop,
     ];
     let arm = compile_optimized(&wasm, 4);
     assert_no_clobber_before_epilogue(&arm, 4, "i32_sub_4params");
@@ -141,6 +155,13 @@ fn optimized_i32_mul_4params_does_not_clobber_r3() {
         WasmOp::LocalGet(2),
         WasmOp::Drop,
         WasmOp::LocalGet(3),
+        WasmOp::Drop,
+        // RQ-91-MVDROP: drop the computed value too, so the body is VOID.
+        // With it left on the stack the function's result would be that
+        // value, but the optimized epilogue returned the LAST value pushed
+        // (local.get 3) — the stack-top defect — and the optimized path now
+        // declines such a body to the direct selector instead of compiling
+        // it. The clobber property under audit is unchanged.
         WasmOp::Drop,
     ];
     let arm = compile_optimized(&wasm, 4);
@@ -167,6 +188,13 @@ fn optimized_i32_load_does_not_clobber_and_lowers_180() {
         WasmOp::Drop,
         WasmOp::LocalGet(3),
         WasmOp::Drop,
+        // RQ-91-MVDROP: drop the computed value too, so the body is VOID.
+        // With it left on the stack the function's result would be that
+        // value, but the optimized epilogue returned the LAST value pushed
+        // (local.get 3) — the stack-top defect — and the optimized path now
+        // declines such a body to the direct selector instead of compiling
+        // it. The clobber property under audit is unchanged.
+        WasmOp::Drop,
     ];
     let arm = compile_optimized(&wasm, 4);
     assert_no_clobber_before_epilogue(&arm, 4, "i32_load_4params");
@@ -187,6 +215,13 @@ fn optimized_i32_load8u_does_not_clobber_and_lowers_180() {
         WasmOp::LocalGet(2),
         WasmOp::Drop,
         WasmOp::LocalGet(3),
+        WasmOp::Drop,
+        // RQ-91-MVDROP: drop the computed value too, so the body is VOID.
+        // With it left on the stack the function's result would be that
+        // value, but the optimized epilogue returned the LAST value pushed
+        // (local.get 3) — the stack-top defect — and the optimized path now
+        // declines such a body to the direct selector instead of compiling
+        // it. The clobber property under audit is unchanged.
         WasmOp::Drop,
     ];
     let arm = compile_optimized(&wasm, 4);

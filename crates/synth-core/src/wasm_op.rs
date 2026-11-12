@@ -808,6 +808,76 @@ pub fn param_block_decline_msg(backend: &str, what: &str, ord: usize, arity: (u8
     )
 }
 
+/// RQ-91-MVDROP — the first `call`/`call_indirect` in `wasm_ops` whose callee
+/// (or type) returns MORE THAN ONE result: `(what, index, result_count)`,
+/// `index` being the function index for `call` and the type index for
+/// `call_indirect`. A missing table entry is unknown and never fires (the
+/// hand-built op streams and the paths that thread no table).
+///
+/// Why ARM refuses the shape rather than lowering it: the callee's multi-value
+/// return convention is unspecified and leaves only its LAST result in R0
+/// (#1450), and both ARM selectors model a call as producing one value. A
+/// consumer that never underflows that short model — `drop`, `local.tee;drop`,
+/// an `if` arm, a forwarding function — compiled and returned the wrong value
+/// (`call $two; drop` returned 20 where wasm returns 10). RV32 (#871) and
+/// aarch64 (#851) already refuse it.
+pub fn find_multi_result_call(
+    wasm_ops: &[WasmOp],
+    func_result_counts: &[u32],
+    type_result_counts: &[u32],
+) -> Option<(&'static str, u32, u32)> {
+    wasm_ops.iter().find_map(|op| match op {
+        WasmOp::Call(f) => func_result_counts
+            .get(*f as usize)
+            .filter(|&&c| c > 1)
+            .map(|&c| ("call to function", *f, c)),
+        WasmOp::CallIndirect { type_index, .. } => type_result_counts
+            .get(*type_index as usize)
+            .filter(|&&c| c > 1)
+            .map(|&c| ("call_indirect of type", *type_index, c)),
+        _ => None,
+    })
+}
+
+/// RQ-91-MVDROP — the one shared refusal message for [`find_multi_result_call`].
+/// The needle is "MULTI-RESULT call".
+pub fn multi_result_call_decline_msg(backend: &str, what: &str, index: u32, count: u32) -> String {
+    format!(
+        "{what} {index} returns {count} results — a MULTI-RESULT call is not \
+         lowered on {backend}: the callee's multi-value return convention is \
+         unspecified and leaves only its last result in R0 (#1450), so the \
+         caller would read one value where wasm has {count}; loud-declining \
+         (RQ-91-MVDROP, as RV32 #871 and aarch64 #851 do)"
+    )
+}
+
+#[cfg(test)]
+mod multi_result_call_tests {
+    use super::*;
+
+    #[test]
+    fn multi_result_call_is_found_and_single_or_void_or_unknown_is_not() {
+        let ops = [WasmOp::Call(0), WasmOp::Call(1), WasmOp::Drop];
+        // f0 void, f1 two results
+        assert_eq!(
+            find_multi_result_call(&ops, &[0, 2], &[]),
+            Some(("call to function", 1, 2))
+        );
+        assert_eq!(find_multi_result_call(&ops, &[0, 1], &[]), None);
+        // unknown (empty table) never fires
+        assert_eq!(find_multi_result_call(&ops, &[], &[]), None);
+        let ci = [WasmOp::CallIndirect {
+            type_index: 3,
+            table_index: 0,
+        }];
+        assert_eq!(
+            find_multi_result_call(&ci, &[], &[1, 1, 1, 3]),
+            Some(("call_indirect of type", 3, 3))
+        );
+        assert_eq!(find_multi_result_call(&ci, &[], &[1, 1, 1, 1]), None);
+    }
+}
+
 #[cfg(test)]
 mod grow_zero_tests {
     use super::*;

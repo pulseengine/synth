@@ -886,6 +886,19 @@ fn compile_wasm_to_arm(
             arity,
         ));
     }
+    // RQ-91-MVDROP: a call whose callee (or call_indirect type) returns more
+    // than one result is refused here, at the choke point both ARM selectors
+    // and the optimized path's import calls pass through. Missing table
+    // entries never fire, so a path that threads no table is unchanged.
+    if let Some((what, index, count)) = synth_core::find_multi_result_call(
+        wasm_ops,
+        &config.func_result_counts,
+        &config.type_result_counts,
+    ) {
+        return Err(synth_core::multi_result_call_decline_msg(
+            "ARM", what, index, count,
+        ));
+    }
     // #539: `memory.grow(0)` must return the CURRENT page count, not the
     // fixed-memory `-1` sentinel — growing by zero pages can never fail (WASM
     // Core §4.4.7), so a guest doing `if (memory.grow(0) < 0) trap;` wrongly
@@ -1107,6 +1120,7 @@ fn compile_wasm_to_arm(
         // #1210: per-function result COUNT (0 = void) — `func_ret_i64` alone
         // cannot tell a void callee from an i32-returning one.
         selector.set_func_result_counts(config.func_result_counts.clone());
+        selector.set_type_result_counts(config.type_result_counts.clone());
         // #359: declared param widths of THIS function, so the AAPCS stack-arg
         // path can refuse 64-bit params (Ok-or-Err). Empty ⇒ assume i32.
         selector.set_params_i64(config.current_func_params_i64.clone());
@@ -4145,7 +4159,14 @@ mod tests {
             WasmOp::End, // end $l0
             WasmOp::End,
         ];
-        let config = CompileConfig::default();
+        // RQ-91-MVDROP: the two `(result i32)` blocks carry their arity, as
+        // every decoded function does. Without it both were modelled VOID, the
+        // `drop` after the `br_if` popped an empty operand stack, and the
+        // selector now refuses that (a model under-count, in reachable code).
+        let config = CompileConfig {
+            current_func_block_arity: vec![(0, 1), (0, 0), (0, 1)],
+            ..CompileConfig::default()
+        };
         let func = backend
             .compile_function("t", &ops, &config)
             .expect("#930 shape must compile (SC-5 gate passes)");
