@@ -1,0 +1,81 @@
+artifacts:
+  - id: RQ-91-I64SEL
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "An i64 select on a fused compare picks both halves of the right operand on ARM"
+    description: >
+        SILENT MISCOMPILE, filed as #1711 from a differential test against
+        wasmtime. `(select (i64.const -1) (i64.const 0x123456789abcdef0)
+        (i32.eq (local.get 0) (local.get 1)))` compiled `--relocatable -t
+        cortex-m4f` or `-t cortex-m7dp` returned the false operand for equal
+        arguments and mixed the two operands' halves otherwise.
+
+        THE DEFECT. The VCR-SEL-004 cmp->select fusion
+        (`liveness::fuse_cmp_select_with_stats`, run in
+        `arm_backend::finish_allocated_stream`) deletes a select's `SetCond
+        D,c; cmp D,#0` and retargets the predicated moves onto the
+        comparison's own flags. It retargeted only the i32 select's shape,
+        `movne dst,v1` plus an optional `moveq dst,v2` to the same
+        destination. The i64-pair select (`rule_i64_select`) emits four moves
+        (movne lo; movne hi; moveq lo; moveq hi) and the in-place pair select
+        (`rule_i64_select_inplace`, the VFP f64 select) two `movne`s, so every
+        move after the first kept its NE/EQ predicate, which now read the
+        comparison's flags. The stream is shared by the direct selector
+        (--relocatable), the self-contained path (whose optimized lowering
+        declines an i64 select and falls back to direct, #1213) and the A32
+        cortex-r5 backend, so all three were wrong for every fused i32
+        compare kind except `ne`. With c == NE the moves that were not
+        retargeted happen to be right, so `ne` was correct by coincidence.
+        i64-compare conditions (I64SetCond) are never fused. The VFP f64
+        select never fuses today, because the VMOVs between the SetCond and
+        the `cmp D,#0` fail the flag-window check, so its shape was latent.
+        RV32 fuses with one branch per select and measured correct.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact: compile
+        the select above with `synth compile x.wat -t cortex-m4f --relocatable
+        --all-exports -o x.o` and call it under unicorn with (1,1) and (1,2).
+        If both calls equal wasmtime (0xffffffffffffffff and
+        0x123456789abcdef0), the defect is refuted.
+
+        MEASURED 2026-11-13 on main e918c711: LIVE. sel(1,1) =
+        0x123456789abcdef0 and sel(1,2) = 0xffffffff00000000.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - selector
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1711"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 a fused-compare select retargets every predicated
+        move it covers, on every i32 compare kind, for i64 const and register
+        operands, on Thumb-2 (relocatable and self-contained) and A32. This
+        is executed against wasmtime, red before and green after.
+      landed: "v0.91 I64SEL - #1711 - DELIVERED: a wrong-code fix at the fusion. `fuse_cmp_select_with_stats` now retargets the WHOLE run of consecutive SelectMoves after the deleted `cmp D,#0` (movne -> c, moveq -> invert(c)). It declines the site if the run holds any other predicate or writes D, or if the op right after the run reads flags (SetCond, a conditional branch, Adc/Sbc). The one- and two-move fusions that existed before are unchanged."
+      verified-by: >
+        DELIVERED, execution-verified. New wired oracle
+        scripts/repro/i64_select_fused_cmp_1711_differential.py (ci.yml, job
+        repro-sweep-arm-corpus-oracle, through oracle_run.py, `emulations >=
+        4188`, ledger --min-oracles 3 -> 4). It covers every i32 compare kind
+        (10 + eqz) x {i64 const, i64 register, f64, f32, i32} select, plus
+        i64-compare conditions, a nested i64 select, and an i64 select feeding
+        i64.add. Each runs on cortex-m4, cortex-m4f and cortex-m7dp
+        (relocatable and self-contained) and on cortex-r5 A32 relocatable,
+        against wasmtime under unicorn. RED on main e918c711: 3131/4188 (every
+        failure an i64c_, i64p_ or chain2 vector, on all 7 legs). GREEN on the
+        branch: 4188/4188. Paired control: main's binary with
+        SYNTH_NO_CMP_SELECT_FUSE=1 gives 4188/4188, which puts the defect in
+        the fusion. Three new liveness unit tests cover the four-move pair,
+        the two-movne in-place pair, and the decline cases. Unchanged on the
+        branch: the home-alias audit (7745 / 9312 / 244183, hits 0), the ARM
+        corpus sweep (#973), selector parity (#197, 17933/17933), the
+        spec-suite compile census (pins match), the #1225 identity, and
+        spec-exec (#1636, failures exactly the 54 baseline entries).

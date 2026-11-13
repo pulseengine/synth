@@ -370,52 +370,92 @@ pub fn fuse_cmp_select_with_stats(
         if !window_ok {
             continue;
         }
-        // (next) `movne dst,v1`.
-        let ne_idx = cmp_idx + 1;
-        let (dst, v1) = match instrs.get(ne_idx).map(|x| &x.op) {
+        // (next) the select's predicated moves: the MAXIMAL run of
+        // consecutive `SelectMove`s after the `cmp D,#0`. #1711: every one of
+        // them reads the flags of the `cmp D,#0` this fusion deletes, so every
+        // one must be retargeted — not just the first one or two. The i32
+        // select emits `movne dst,v1[; moveq dst,v2]`, but the i64-pair select
+        // (`rule_i64_select`) emits FOUR moves (`movne lo; movne hi; moveq lo;
+        // moveq hi`) and the in-place pair select (`rule_i64_select_inplace`,
+        // the f64 select) TWO `movne`s. Retargeting only the first move left
+        // the rest predicated on NE/EQ of the COMPARISON's flags — silent
+        // wrong halves (`sel(1,1)` returned the false operand).
+        let run_start = cmp_idx + 1;
+        let mut run_end = run_start;
+        while matches!(
+            instrs.get(run_end).map(|x| &x.op),
+            Some(ArmOp::SelectMove { .. })
+        ) {
+            run_end += 1;
+        }
+        // The run must start with a `movne` (the select's v1 arm) and contain
+        // only `movne`/`moveq` (the only conditions a `cmp D,#0` select
+        // emits); none may write `D` (keeps the dead-check unambiguous).
+        if !matches!(
+            instrs.get(run_start).map(|x| &x.op),
             Some(ArmOp::SelectMove {
-                rd,
-                rm,
                 cond: Condition::NE,
-            }) => (*rd, *rm),
-            _ => continue,
-        };
-        if dst == d {
+                ..
+            })
+        ) {
             continue;
         }
-        // optional `moveq dst,v2` (the in-place select omits it).
-        let eq_idx = match instrs.get(ne_idx + 1).map(|x| &x.op) {
-            Some(ArmOp::SelectMove {
-                rd,
-                cond: Condition::EQ,
-                ..
-            }) if *rd == dst => Some(ne_idx + 1),
-            _ => None,
-        };
+        let run_ok = instrs[run_start..run_end].iter().all(|x| {
+            matches!(&x.op,
+                ArmOp::SelectMove { rd, cond: Condition::NE | Condition::EQ, .. }
+                    if *rd != d)
+        });
+        if !run_ok {
+            continue;
+        }
+        // #1711: the op right after the run must not READ the deleted
+        // compare's flags either (a conditional branch / SetCond / carry op
+        // would silently switch to the comparison's flags). The selector never
+        // emits one there — every consumer sets its own flags first — so this
+        // declines rather than retargets.
+        if matches!(
+            instrs.get(run_end).map(|x| &x.op),
+            Some(
+                ArmOp::SetCond { .. }
+                    | ArmOp::BCondOffset { .. }
+                    | ArmOp::Bcc { .. }
+                    | ArmOp::Bhs { .. }
+                    | ArmOp::Blo { .. }
+                    | ArmOp::Adc { .. }
+                    | ArmOp::Sbc { .. }
+            )
+        ) {
+            continue;
+        }
         // (3) D must be dead after the select block: a redefinition (def, no use)
         // strictly before any use / unmodeled op / branch / end.
-        let after = eq_idx.unwrap_or(ne_idx) + 1;
-        if !reg_dead_by_redef(d, &instrs[after..]) {
+        if !reg_dead_by_redef(d, &instrs[run_end..]) {
             continue;
         }
 
-        // Commit: delete SetCond and the select's cmp; retarget the moves.
+        // Commit: delete SetCond and the select's cmp; retarget EVERY move of
+        // the run — `movne → mov{c}` (fires iff `c` held), `moveq →
+        // mov{invert(c)}`.
         delete[i] = true;
         delete[cmp_idx] = true;
-        out[ne_idx].op = ArmOp::SelectMove {
-            rd: dst,
-            rm: v1,
-            cond: c,
-        };
-        if let Some(eq) = eq_idx
-            && let ArmOp::SelectMove { rd, rm, .. } = out[eq].op
-        {
-            out[eq].op = ArmOp::SelectMove {
-                rd,
-                rm,
-                cond: c.invert(),
-            };
-            // The optional `moveq` arm is present ⇒ this is the two-move form.
+        let mut saw_eq = false;
+        for mv in &mut out[run_start..run_end] {
+            if let ArmOp::SelectMove { rd, rm, cond } = mv.op {
+                let new_cond = if cond == Condition::NE {
+                    c
+                } else {
+                    saw_eq = true;
+                    c.invert()
+                };
+                mv.op = ArmOp::SelectMove {
+                    rd,
+                    rm,
+                    cond: new_cond,
+                };
+            }
+        }
+        // A `moveq` arm is present ⇒ this is the two-move form.
+        if saw_eq {
             two_move += 1;
         }
         fusions += 1;
@@ -10095,6 +10135,92 @@ mod tests {
             assert_eq!(c.invert().invert(), c, "invert∘invert on {c:?}");
             assert_ne!(c.invert(), c, "a condition is never its own inverse");
         }
+    }
+
+    /// #1711: the conditions of every `SelectMove` in `out`, in order.
+    fn selmov_conds(out: &[ArmInstruction]) -> Vec<Condition> {
+        out.iter()
+            .filter_map(|i| match i.op {
+                ArmOp::SelectMove { cond, .. } => Some(cond),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fuse_cmp_select_retargets_all_four_i64_pair_moves_1711() {
+        // `rule_i64_select`: cmp D,#0; movne lo,v1lo; movne hi,v1hi;
+        // moveq lo,v2lo; moveq hi,v2hi. Pre-fix only the FIRST move was
+        // retargeted (EQ, NE, EQ, EQ for c = EQ) — wrong halves.
+        let seq = vec![
+            cmp(Reg::R0, Reg::R1),
+            setcond(Reg::R6, Condition::EQ),
+            cmp0(Reg::R6),
+            selmov(Reg::R7, Reg::R2, Condition::NE),
+            selmov(Reg::R8, Reg::R3, Condition::NE),
+            selmov(Reg::R7, Reg::R4, Condition::EQ),
+            selmov(Reg::R8, Reg::R5, Condition::EQ),
+            redef(Reg::R6),
+        ];
+        let (out, fused, two_move) = fuse_cmp_select_with_stats(&seq);
+        assert_eq!((fused, two_move), (1, 1));
+        assert_eq!(out.len(), 6);
+        use Condition::*;
+        assert_eq!(selmov_conds(&out), vec![EQ, EQ, NE, NE]);
+        // Every kind: movne -> c, moveq -> invert(c), on all four moves.
+        for c in [EQ, NE, LT, LE, GT, GE, LO, LS, HI, HS] {
+            let mut s = seq.clone();
+            s[1] = setcond(Reg::R6, c);
+            let (o, f) = fuse_cmp_select(&s);
+            assert_eq!(f, 1, "{c:?}");
+            assert_eq!(
+                selmov_conds(&o),
+                vec![c, c, c.invert(), c.invert()],
+                "{c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fuse_cmp_select_retargets_both_inplace_pair_moves_1711() {
+        // `rule_i64_select_inplace` (the VFP f64 select): two `movne`s.
+        let seq = vec![
+            cmp(Reg::R0, Reg::R1),
+            setcond(Reg::R6, Condition::LT),
+            cmp0(Reg::R6),
+            selmov(Reg::R2, Reg::R4, Condition::NE),
+            selmov(Reg::R3, Reg::R5, Condition::NE),
+            redef(Reg::R6),
+        ];
+        let (out, fused, two_move) = fuse_cmp_select_with_stats(&seq);
+        assert_eq!((fused, two_move), (1, 0));
+        assert_eq!(selmov_conds(&out), vec![Condition::LT, Condition::LT]);
+    }
+
+    #[test]
+    fn fuse_cmp_select_declines_a_non_ne_eq_move_or_flag_reader_after_1711() {
+        // A move predicated on anything but NE/EQ in the run cannot be the
+        // select's own, so the site is declined (stream unchanged).
+        let mut seq = vec![
+            cmp(Reg::R0, Reg::R1),
+            setcond(Reg::R6, Condition::LT),
+            cmp0(Reg::R6),
+            selmov(Reg::R2, Reg::R4, Condition::NE),
+            selmov(Reg::R3, Reg::R5, Condition::GE),
+            redef(Reg::R6),
+        ];
+        let (out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 0);
+        assert_eq!(out, seq);
+        // A flag reader right after the run would silently switch to the
+        // comparison's flags — declined too.
+        seq[4] = ins(ArmOp::SetCond {
+            rd: Reg::R7,
+            cond: Condition::EQ,
+        });
+        let (out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 0);
+        assert_eq!(out, seq);
     }
 
     #[test]
