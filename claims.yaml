@@ -2064,9 +2064,26 @@ claims:
         # Gated by execution: scripts/repro/i64_explicit_return_1710_differential.py.
         # v0.91 BRDIV (#1712): 21309 -> 21311, waived below.
         # PARAMI64 (#1714): 21311 -> 21352, waived below (chained after BRDIV's).
-        value: 21352
+        # I64TEE (#1713): 21352 -> 21427, waived below (chained after PARAMI64's).
+        value: 21427
         baseline: 17897
         waivers:
+          - to: 21427
+            reason: >-
+              I64TEE (Refs #1713, #1241): 21352 -> 21427 (+75, re-derived after
+              cargo fmt on the tree rebased over a155ca7f; first measured +86 on
+              332a22db, before PARAMI64 landed the narrow-param set/tee fix this
+              branch had duplicated and now drops). The selector's local-width
+              set was an unseeded dataflow walk with the i64 params OR-ed in
+              AFTER it, so a local an i64 param was copied into came out i32, was
+              promoted to ONE register and lost its high word. It is now ONE set,
+              `function_i64_locals`: the core-pair params and the DECLARED i64
+              locals seed the walk, which runs to a fixpoint (a loop back-edge
+              reads before the defining write). `infer_i64_locals` keeps its
+              signature as a wrapper over the seeded walk so the RV32 selector
+              and the unit tests are untouched. No new lowering arm, no wildcard
+              arm. Gated by scripts/repro/i64_local_roundtrip_1713_differential.py
+              (RED on a155ca7f: 228 of 851 calls wrong; GREEN: 0 of 855).
           - to: 21352
             reason: >-
               PARAMI64 (Refs #1714): 21311 -> 21352 (re-derived on the tree rebased
@@ -3516,7 +3533,10 @@ claims:
         # selector_lines_code (waived there). No test-module change.
         # PARAMI64 (#1714): 32234 -> 32320: the selector_lines_code growth
         # (waived there) plus the `_1714` narrow-param set/tee unit test. No waiver.
-        value: 32320
+        # I64TEE (#1713): 32320 -> 32447: +75 code (waived on
+        # selector_lines_code) and +52 test module (three `_1713` width-set
+        # unit tests). No waiver.
+        value: 32447
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -3790,9 +3810,25 @@ claims:
       - kind: ratchet
         name: known_open_pins
         direction: down
-        value: 132
+        # I64TEE (#1713): 132 -> 129, the three #1241 boot-sweep pins
+        # (12 / 9 / 12 mismatches) measure 0 and are deleted.
+        value: 129
         baseline: 27
         waivers:
+          - to: 129
+            reason: >-
+              I64TEE (#1713): 132 -> 129. Not a growth waiver — THREE pins
+              CLOSED BY A FIX, not deleted or merged: the self-contained boot
+              sweep's three #1241 entries (aarch64_locals_851 i64_local 12,
+              brif_local_zeroinit_990 bl_brif_i64 9, i64_width_vstack_946
+              f_brif 12) each measure 0, because every function touching a
+              64-bit non-param local now routes to the direct selector (the
+              optimized path has no 64-bit local model). Executed, red on main
+              332a22db and green on the fix, by the boot sweep itself (its
+              "PIN MOVED ... now 0" on the unedited table) and by
+              scripts/repro/i64_local_roundtrip_1713_differential.py against
+              wasmtime. An entry is still required because 129 remains above
+              the baseline of 27.
           - to: 132
             reason: >-
               RQ-91-MVDROP (#539): 131 -> 132 (re-derived on the tree rebased
@@ -4020,7 +4056,9 @@ claims:
         # spec-execution entries at one directive each.
         # RQ-91-MVDROP: 197 -> 198, the newly reached cortex-m7dp call.wast
         # #539 envelope entry at one directive.
-        value: 198
+        # I64TEE (#1713): 198 -> 165, the three closed #1241 boot-sweep pins'
+        # 12 + 9 + 12 = 33 cases.
+        value: 165
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the six tables in the
       # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in

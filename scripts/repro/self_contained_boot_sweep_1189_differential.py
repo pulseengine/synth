@@ -198,10 +198,16 @@ KNOWN: dict[tuple[str, str, str, str], tuple[str, int]] = {
     # in the same function the fallback was unreachable and the epilogue
     # returned the STALE pair's hi — the operand's high word, which is exactly
     # what this oracle observed. Fix: the three arms clear it.
-    # #1241 — found by this oracle
-    ('aarch64_locals_851.wat', 'self', 'i64_local', 'mismatch'): ('#1241', 12),
-    ('brif_local_zeroinit_990.wat', 'self', 'bl_brif_i64', 'mismatch'): ('#1241', 9),
-    ('i64_width_vstack_946.wat', 'self', 'f_brif', 'mismatch'): ('#1241', 12),
+    # #1241 — found by this oracle, and FIXED by I64TEE (#1713). The three
+    # entries recorded 12 / 9 / 12 mismatches and now measure 0, so they are
+    # DELETED per this sweep's "fixed: delete the pin" instruction. The root
+    # was not #1204's register preservation (measured: that fix moved none of
+    # them): the optimized path has NO 64-bit non-param local model — its
+    # `Store` moves one register (the i64's high half; the low half stayed on
+    # the slot stack) and its `I64Load` of a non-param local hands out a
+    # fresh, never-written pair. Every function touching a 64-bit non-param
+    # local (`function_i64_locals`, the direct selector's own width set) now
+    # routes to the direct selector (path-debug `i64-local`).
     # the envelope
     ('aarch64_surface_851.wat', 'self', 'mgrow', 'mismatch'): (GROW_ENVELOPE, 2),
     ('mem_grow_539.wat', 'self', 'grow2', 'mismatch'): (GROW_ENVELOPE, 12),

@@ -1758,6 +1758,19 @@ impl OptimizerBridge {
                 // binary op, it would read the same slot, double-using it.
                 // Issue #121.
                 WasmOp::LocalSet(idx) => {
+                    // #1713 / #1241: an i64 is TWO slot-stack entries and this
+                    // arm stores ONE register into the local's home — the
+                    // high half, leaving the low half on the stack. The
+                    // backend pre-gate routes every declared/inferred 64-bit
+                    // local to the direct selector; this is the in-bridge
+                    // backstop for a caller that supplied no declarations.
+                    if slot_stack.last().is_some_and(|v| i64_halves.contains(v)) {
+                        return Err(synth_core::Error::validation(format!(
+                            "optimized lowering path has no 64-bit local model \
+                             (local.set {idx} of an i64 pair); the direct instruction \
+                             selector lowers it — #1713"
+                        )));
+                    }
                     let src = slot_stack.pop().ok_or_else(|| {
                         synth_core::Error::validation(
                             "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
@@ -2624,6 +2637,19 @@ impl OptimizerBridge {
                 // TeeStore = Store + Copy: writes to local and produces a
                 // fresh dest vreg holding the same value for the next op.
                 WasmOp::LocalTee(idx) => {
+                    // #1713 / #1241: an i64 is TWO slot-stack entries and this
+                    // arm stores ONE register into the local's home — the
+                    // high half, leaving the low half on the stack. The
+                    // backend pre-gate routes every declared/inferred 64-bit
+                    // local to the direct selector; this is the in-bridge
+                    // backstop for a caller that supplied no declarations.
+                    if slot_stack.last().is_some_and(|v| i64_halves.contains(v)) {
+                        return Err(synth_core::Error::validation(format!(
+                            "optimized lowering path has no 64-bit local model \
+                             (local.tee {idx} of an i64 pair); the direct instruction \
+                             selector lowers it — #1713"
+                        )));
+                    }
                     let src_v = slot_stack.pop().ok_or_else(|| {
                         synth_core::Error::validation(
                             "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",

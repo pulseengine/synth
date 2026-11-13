@@ -2336,8 +2336,17 @@ fn compute_local_layout(
     vfp_wide_file: bool,
 ) -> LocalLayout {
     use std::collections::{BTreeSet, HashMap};
-    let i64_set = infer_i64_locals(
+    // #1713: the selector's own seeded set (core-pair params seed the walk).
+    let params_wide: Vec<bool> = params_i64
+        .iter()
+        .enumerate()
+        .map(|(k, &w)| w && !params_f64_vfp.get(k).copied().unwrap_or(false))
+        .collect();
+    let i64_set = function_i64_locals(
         wasm_ops,
+        num_params,
+        &params_wide,
+        declared_i64_locals,
         func_ret_i64,
         type_ret_i64,
         func_arg_counts,
@@ -2778,8 +2787,68 @@ pub fn infer_i64_locals(
     func_arg_counts: &[u32],
     type_arg_counts: &[u32],
 ) -> std::collections::HashSet<u32> {
+    infer_i64_locals_seeded(
+        wasm_ops,
+        &std::collections::HashSet::new(),
+        func_ret_i64,
+        type_ret_i64,
+        func_arg_counts,
+        type_arg_counts,
+    )
+}
+
+/// #1713: the i64-local set every consumer (layout, promotion, operand
+/// stack, the optimized-path pre-gate) consults. `params_wide[k]` (a core-pair
+/// param) and `declared_i64_locals[k]` (non-param `num_params + k` declared
+/// i64) SEED the dataflow walk, so a `local.get` of one pushes a 64-bit width
+/// into whatever it is copied to. Pre-fix the params were OR-ed in after an
+/// unseeded walk: `local.get 0 (i64) local.tee 1` inferred local 1 i32, it was
+/// promoted to one register and every copy dropped its high word. Empty
+/// slices (hand-built op streams) degrade to the unseeded walk.
+#[allow(clippy::too_many_arguments)]
+pub fn function_i64_locals(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    params_wide: &[bool],
+    declared_i64_locals: &[bool],
+    func_ret_i64: &[bool],
+    type_ret_i64: &[bool],
+    func_arg_counts: &[u32],
+    type_arg_counts: &[u32],
+) -> std::collections::HashSet<u32> {
+    let mut seed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for (k, &wide) in params_wide.iter().take(num_params as usize).enumerate() {
+        if wide {
+            seed.insert(k as u32);
+        }
+    }
+    for (k, &wide) in declared_i64_locals.iter().enumerate() {
+        if wide {
+            seed.insert(num_params + k as u32);
+        }
+    }
+    infer_i64_locals_seeded(
+        wasm_ops,
+        &seed,
+        func_ret_i64,
+        type_ret_i64,
+        func_arg_counts,
+        type_arg_counts,
+    )
+}
+
+/// [`infer_i64_locals`] with `seed` locals known 64-bit before the walk
+/// starts (see [`function_i64_locals`], #1713).
+pub fn infer_i64_locals_seeded(
+    wasm_ops: &[WasmOp],
+    seed: &std::collections::HashSet<u32>,
+    func_ret_i64: &[bool],
+    type_ret_i64: &[bool],
+    func_arg_counts: &[u32],
+    type_arg_counts: &[u32],
+) -> std::collections::HashSet<u32> {
     use WasmOp::*;
-    let mut i64_locals: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut i64_locals: std::collections::HashSet<u32> = seed.clone();
     let mut vstack: Vec<bool> = Vec::new(); // true = i64
 
     let is_i64_producer = |op: &WasmOp| -> bool {
@@ -2840,79 +2909,88 @@ pub fn infer_i64_locals(
         )
     };
 
-    for op in wasm_ops {
-        match op {
-            LocalGet(idx) => {
-                let is_i64 = i64_locals.contains(idx);
-                vstack.push(is_i64);
-            }
-            LocalSet(idx) => {
-                if let Some(true) = vstack.pop() {
-                    i64_locals.insert(*idx);
+    // #1713: to a fixpoint — a loop back-edge reads a local before its
+    // defining write in op order. The set only grows, so this terminates.
+    loop {
+        let known = i64_locals.len();
+        vstack.clear();
+        for op in wasm_ops {
+            match op {
+                LocalGet(idx) => {
+                    let is_i64 = i64_locals.contains(idx);
+                    vstack.push(is_i64);
                 }
-            }
-            LocalTee(idx) => {
-                if let Some(&true) = vstack.last() {
-                    i64_locals.insert(*idx);
+                LocalSet(idx) => {
+                    if let Some(true) = vstack.pop() {
+                        i64_locals.insert(*idx);
+                    }
                 }
-            }
-            Select => {
-                // pops [val1, val2, cond], pushes one value with width of val1/val2
-                let _cond = vstack.pop();
-                let v2 = vstack.pop();
-                let v1 = vstack.pop();
-                vstack.push(v1.or(v2).unwrap_or(false));
-            }
-            // #311: a call's result width comes from the callee's signature —
-            // without this, an i64-returning call feeding `local.set` left the
-            // local inferred as i32 (4-byte slot, single-word store: the hi
-            // half of gale's packed u64 decision was silently dropped).
-            // #946: and a call's ARGUMENTS leave the stack — the former
-            // `wasm_stack_effect` row `(0, 1)` left one stale width per arg,
-            // shifting every entry below (the same executed-miscompile class
-            // as the `br_if` condition). An absent table entry degrades to
-            // zero args, mirroring the call lowering's own #195 fallback.
-            Call(func_idx) => {
-                let pops = func_arg_counts
-                    .get(*func_idx as usize)
-                    .copied()
-                    .unwrap_or(0);
-                for _ in 0..pops {
+                LocalTee(idx) => {
+                    if let Some(&true) = vstack.last() {
+                        i64_locals.insert(*idx);
+                    }
+                }
+                Select => {
+                    // pops [val1, val2, cond], pushes one value with width of val1/val2
+                    let _cond = vstack.pop();
+                    let v2 = vstack.pop();
+                    let v1 = vstack.pop();
+                    vstack.push(v1.or(v2).unwrap_or(false));
+                }
+                // #311: a call's result width comes from the callee's signature —
+                // without this, an i64-returning call feeding `local.set` left the
+                // local inferred as i32 (4-byte slot, single-word store: the hi
+                // half of gale's packed u64 decision was silently dropped).
+                // #946: and a call's ARGUMENTS leave the stack — the former
+                // `wasm_stack_effect` row `(0, 1)` left one stale width per arg,
+                // shifting every entry below (the same executed-miscompile class
+                // as the `br_if` condition). An absent table entry degrades to
+                // zero args, mirroring the call lowering's own #195 fallback.
+                Call(func_idx) => {
+                    let pops = func_arg_counts
+                        .get(*func_idx as usize)
+                        .copied()
+                        .unwrap_or(0);
+                    for _ in 0..pops {
+                        vstack.pop();
+                    }
+                    let w = func_ret_i64
+                        .get(*func_idx as usize)
+                        .copied()
+                        .unwrap_or(false);
+                    vstack.push(w);
+                }
+                CallIndirect { type_index, .. } => {
+                    // The dynamic table INDEX operand is popped unconditionally —
+                    // it exists regardless of signature-table availability.
                     vstack.pop();
+                    let pops = type_arg_counts
+                        .get(*type_index as usize)
+                        .copied()
+                        .unwrap_or(0);
+                    for _ in 0..pops {
+                        vstack.pop();
+                    }
+                    let w = type_ret_i64
+                        .get(*type_index as usize)
+                        .copied()
+                        .unwrap_or(false);
+                    vstack.push(w);
                 }
-                let w = func_ret_i64
-                    .get(*func_idx as usize)
-                    .copied()
-                    .unwrap_or(false);
-                vstack.push(w);
-            }
-            CallIndirect { type_index, .. } => {
-                // The dynamic table INDEX operand is popped unconditionally —
-                // it exists regardless of signature-table availability.
-                vstack.pop();
-                let pops = type_arg_counts
-                    .get(*type_index as usize)
-                    .copied()
-                    .unwrap_or(0);
-                for _ in 0..pops {
-                    vstack.pop();
-                }
-                let w = type_ret_i64
-                    .get(*type_index as usize)
-                    .copied()
-                    .unwrap_or(false);
-                vstack.push(w);
-            }
-            _ => {
-                let (pops, pushes) = wasm_stack_effect(op);
-                for _ in 0..pops {
-                    vstack.pop();
-                }
-                let push_width = is_i64_producer(op);
-                for _ in 0..pushes {
-                    vstack.push(push_width);
+                _ => {
+                    let (pops, pushes) = wasm_stack_effect(op);
+                    for _ in 0..pops {
+                        vstack.pop();
+                    }
+                    let push_width = is_i64_producer(op);
+                    for _ in 0..pushes {
+                        vstack.push(push_width);
+                    }
                 }
             }
+        }
+        if i64_locals.len() == known {
+            break;
         }
     }
 
@@ -17929,6 +18007,58 @@ mod tests {
         ];
         let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
         assert!(i64_locals.contains(&5));
+    }
+
+    /// #1713: an i64 PARAM seeds the walk, so the local it is copied into
+    /// (`local.tee` / `local.set`) is inferred i64 too. Pre-fix the params
+    /// were OR-ed in after the walk and the copy target came out i32 —
+    /// promoted to one register, high word dropped.
+    #[test]
+    fn test_1713_param_copy_target_is_i64() {
+        let tee = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalTee(1),
+            WasmOp::LocalGet(1),
+            WasmOp::I64Add,
+        ];
+        let set = vec![WasmOp::LocalGet(0), WasmOp::LocalSet(1)];
+        for ops in [&tee, &set] {
+            let seeded = function_i64_locals(ops, 1, &[true], &[], &[], &[], &[], &[]);
+            assert!(seeded.contains(&0) && seeded.contains(&1), "{ops:?}");
+            // The unseeded walk is exactly the pre-fix blind spot.
+            assert!(!infer_i64_locals(ops, &[], &[], &[], &[]).contains(&1));
+        }
+        // An i32 param seeds nothing.
+        let narrow = function_i64_locals(&set, 1, &[false], &[], &[], &[], &[], &[]);
+        assert!(!narrow.contains(&1));
+    }
+
+    /// #1713: a DECLARED i64 non-param local seeds the walk (indexed from
+    /// the declared param count), so a read-before-write copy of it is i64.
+    #[test]
+    fn test_1713_declared_local_seeds_copy() {
+        let ops = vec![WasmOp::LocalGet(1), WasmOp::LocalSet(2)];
+        let set = function_i64_locals(&ops, 1, &[false], &[true, true], &[], &[], &[], &[]);
+        assert!(set.contains(&1) && set.contains(&2));
+        assert!(!set.contains(&0));
+    }
+
+    /// #1713: the walk runs to a fixpoint — a loop back-edge reads `$a`
+    /// before its defining i64 write in op order.
+    #[test]
+    fn test_1713_fixpoint_reaches_backedge_read() {
+        let ops = vec![
+            WasmOp::Loop,
+            WasmOp::LocalGet(1),
+            WasmOp::LocalSet(2),
+            WasmOp::I64Const(1),
+            WasmOp::LocalSet(1),
+            WasmOp::I32Const(0),
+            WasmOp::BrIf(0),
+            WasmOp::End,
+        ];
+        let set = infer_i64_locals(&ops, &[], &[], &[], &[]);
+        assert!(set.contains(&1) && set.contains(&2), "{set:?}");
     }
 
     // VCR-RA local promotion (#390, #242) — candidate-filter soundness. Each test
