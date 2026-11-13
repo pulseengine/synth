@@ -673,7 +673,7 @@
       "want_classification": "UNTESTED"
     },
     {
-      "id": "R4-shared/REG/liveness.rs:7449:36",
+      "id": "R4-shared/REG/liveness.rs:7489:36",
       "want_bytes": "changed",
       "want_changed": [
         "aarch64_param_homing_851.wat|reloc",
@@ -2300,7 +2300,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "5f6aef20",
+    "reanchored_at": "444145fc",
     "seed": 1189
   },
   "mutants": [
@@ -2620,13 +2620,13 @@
       "before": "            op2: Operand2::Imm(v),",
       "build_error": "error: expected a pattern, found an expression",
       "classification": "UNCOMPILABLE",
-      "end": 9026,
+      "end": 9066,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/IMM/liveness.rs:9026:17",
+      "id": "R4-shared/IMM/liveness.rs:9066:17",
       "op": "IMM",
       "region": "R4-shared",
       "seconds": 1.4,
-      "start": 9026,
+      "start": 9066,
       "status": "uncompilable"
     },
     {
@@ -5404,13 +5404,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 7449,
+      "end": 7489,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/REG/liveness.rs:7449:36",
+      "id": "R4-shared/REG/liveness.rs:7489:36",
       "op": "REG",
       "region": "R4-shared",
       "seconds": 326.8,
-      "start": 7449,
+      "start": 7489,
       "status": "survived",
       "suite_seconds": 290.1
     },
@@ -6986,13 +6986,13 @@
       "before": "            op2: Operand2::Imm(c),",
       "build_error": "error: expected a pattern, found an expression",
       "classification": "UNCOMPILABLE",
-      "end": 1258,
+      "end": 1293,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/IMM/liveness.rs:1258:17",
+      "id": "R4-shared/IMM/liveness.rs:1293:17",
       "op": "IMM",
       "region": "R4-shared",
       "seconds": 1.6,
-      "start": 1258,
+      "start": 1293,
       "status": "uncompilable"
     },
     {
@@ -7452,13 +7452,13 @@
       "before": "                op2: Operand2::Imm(c),",
       "build_error": "error: expected a pattern, found an expression",
       "classification": "UNCOMPILABLE",
-      "end": 2175,
+      "end": 2215,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/IMM/liveness.rs:2175:21",
+      "id": "R4-shared/IMM/liveness.rs:2215:21",
       "op": "IMM",
       "region": "R4-shared",
       "seconds": 1.3,
-      "start": 2175,
+      "start": 2215,
       "status": "uncompilable"
     },
     {
@@ -10466,14 +10466,14 @@
       "bytes": "identical",
       "changed": [],
       "classification": "EQUIVALENT",
-      "end": 1242,
+      "end": 1282,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/REG/liveness.rs:1242:17",
+      "id": "R4-shared/REG/liveness.rs:1282:17",
       "op": "REG",
       "reach": "reached",
       "region": "R4-shared",
       "seconds": 27.9,
-      "start": 1242,
+      "start": 1282,
       "status": "identical"
     },
     {
@@ -10753,13 +10753,13 @@
       "before": "        Condition::GE => sa >= sb,",
       "build_error": "error[E0004]: non-exhaustive patterns: `rules::Condition::GE` not covered",
       "classification": "UNCOMPILABLE",
-      "end": 1460,
+      "end": 1500,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/COND/liveness.rs:1460:8",
+      "id": "R4-shared/COND/liveness.rs:1500:8",
       "op": "COND",
       "region": "R4-shared",
       "seconds": 1.3,
-      "start": 1460,
+      "start": 1500,
       "status": "uncompilable"
     },
     {

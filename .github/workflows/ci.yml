@@ -6979,6 +6979,14 @@ jobs:
         run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
       - name: "#973 i64-cmp select execution differential (both ARM legs)"
         run: python scripts/oracle_run.py scripts/repro/select_i64cmp_973_arm_differential.py
+      # #1711: a fused-compare select with MORE than two predicated moves (the
+      # i64-pair select's four, the in-place pair select's two `movne`s) —
+      # the cmp->select fusion retargeted only the first move, so every i64
+      # select on a fused i32 compare returned wrong halves. Every compare
+      # kind x {i64 const, i64 register, f64, f32, i32} x Thumb-2 m4/m4f/m7dp
+      # (relocatable AND self-contained) + A32 cortex-r5.
+      - name: "#1711 fused-compare multi-move select execution differential (Thumb-2 + A32)"
+        run: python scripts/oracle_run.py scripts/repro/i64_select_fused_cmp_1711_differential.py
       - name: "#989 local.set/tee WAR-aliasing execution differential (both ARM legs)"
         run: python scripts/oracle_run.py scripts/repro/war_aliasing_989_arm_differential.py
       - name: "ARM corpus sweep — compile census + execution differential (#973)"
@@ -6993,7 +7001,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 3
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 4
 
   repro-sweep-wcet-oracle:
     name: repro sweep — WCET bound soundness cross-checks (phases 2-6)
