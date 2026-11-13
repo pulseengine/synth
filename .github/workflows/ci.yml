@@ -6989,6 +6989,8 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/i64_select_fused_cmp_1711_differential.py
       - name: "#989 local.set/tee WAR-aliasing execution differential (both ARM legs)"
         run: python scripts/oracle_run.py scripts/repro/war_aliasing_989_arm_differential.py
+      - name: "#1712 div/rem/rotl scratch-alias execution differential (m4 + m7dp, both ARM legs)"
+        run: python scripts/oracle_run.py scripts/repro/div_scratch_alias_1712_differential.py
       - name: "ARM corpus sweep — compile census + execution differential (#973)"
         run: python scripts/oracle_run.py scripts/repro/arm_corpus_sweep_973.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
