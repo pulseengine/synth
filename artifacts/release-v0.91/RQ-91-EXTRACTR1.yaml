@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-EXTRACTR1
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "extract_r1_numbers drops binary-name digits and normalises thousands separators"
     description: >
         Carried from the v0.90 cold review (R2.3). The round-2 number
@@ -50,3 +50,24 @@ artifacts:
         result where the lane is a wrong-code fix, or REFUTED with the
         measurement that refutes it; and the refuting command above is
         RUN FIRST and its result reported either way
+      landed: "this PR - #1575 - DELIVERED: a tooling fix, not wrong code. The refuting command was RUN FIRST on main 617e440b: the prefix hashes to f41f9750120ca805, and scripts/extract_r1_numbers.py read 156 distinct numbers, with 090 21 times, 0892 12 times, and 11634, 24042, 57588 each twice plus 11,634, 24,042, 57,588 once each. LIVE. Fix, in scripts/extract_r1_numbers.py: (1) a `tool-name-digits` scrubber removes ONLY the digits of a run of three or more digits with a leading zero glued by one hyphen to a preceding ASCII letter (`synth-090`, `synth-0892`, `review-088`); the stem stays. It is narrow on purpose: letter-hyphen-digits without a leading zero (`9-to-10`, `line-81`, `synth-90`) are real figures or positions and stay in the queue, and a standalone `090` still counts. Underscore names never needed a rule (`_` is a word character). (2) one `extract()` normalises a token NUMBER already accepted as a thousands form (a comma followed by exactly three digits) to its plain spelling, so `11,634` and `11634` are one entry; `1, 2, 3`, `1, 234`, `92,11` and `(1,2,3)` do not merge. v0.90 style version strings are removed by the existing `version` scrubber and are NOT counted, before and after."
+      verified-by: >
+        DELIVERED. Frozen v0.90 round 1 (head -c 29642, sha256
+        f41f9750...): 156 -> 151 distinct numbers, 518 -> 485
+        occurrences. Every change: 090 (21) and 0892 (12) gone, equal to
+        the 10 synth-090 + 11 review-090 and 12 synth-0892 names; 11,634,
+        24,042 and 57,588 merged into 11634, 24042 and 57588 (2 -> 3
+        each). Canonical old minus new is exactly {090: 21, 0892: 12};
+        no key appears in new that is absent from old. v0.89 round 1
+        (head -c 32167, sha256 fe3c70f4...): 151 -> 149; 087 (1) and 088
+        (7) gone, 162,217 and 32,898 renamed to their plain forms; same
+        canonical-diff check. Self-test: 21 paired fixtures in
+        --self-test (name digits, standalone 090 kept, 1,111 kept as
+        1111, pair merge, punctuation, v0.90 not counted, 9-to-10,
+        line-81, synth-90, and the list traps 1, 2, 3 / 1, 234 / 92,11 /
+        1234,567 / 5,1234). Mutants, each RED: no name rule (5 failures),
+        no comma normalisation (5), list-merging comma regex (5), name
+        rule widened to any digits (5, 9-to-10 loses its 10), space-
+        tolerant thousands (1, 234 merges into 1234); a no-op mutant
+        stays green. Residual, by design: wasm-243, image-1206 and other
+        hyphen-glued non-leading-zero names stay in the queue.

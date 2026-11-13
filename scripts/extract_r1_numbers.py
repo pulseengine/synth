@@ -111,6 +111,21 @@ SCRUBBERS: list[tuple[str, str]] = [
     # identifiers, not quantities. A bare `F3` is already unreachable by
     # construction (no word boundary). Costs: "finding 3 hits" would be eaten.
     ("finding-label", r"\b[A-Z]\d+(?:-\d+)+\b|\b[Ff]indings?\s+\d+\b"),
+    # BINARY / TOOL NAME VERSION SUFFIXES (RQ-91-EXTRACTR1, #1575): `synth-090`,
+    # `synth-0892`, `review-090` name a build, not a quantity -- the v0.90 round 1
+    # read `090` 21 times and `0892` 12 times out of them. THE RULE, deliberately
+    # narrow: a run of three or more digits WITH A LEADING ZERO, glued by ONE
+    # hyphen to a preceding ASCII letter. Only the digits go (a lookbehind), the
+    # stem stays, so the spelled-out bucket still sees `ten-090`'s `ten`. Why not
+    # "any digits after letter-hyphen": that eats `9-to-10` (a real 10) and
+    # `line-81`/`phase-1`, which are positions or counts, and a false negative
+    # means an unreviewed figure is never reviewed. A leading-zero 3+ digit run
+    # glued to a word is a build/version tag in every observed instance and has no
+    # observed counter-example; a STANDALONE `090` (no letter-hyphen before it)
+    # still counts. Residual, by design: `wasm-243`, `image-1206`, `synth-90`
+    # (no leading zero) stay in the queue -- one glance each. Underscore names
+    # (`flow_1639`) never needed a rule: `_` is a word character, so no `\b`.
+    ("tool-name-digits", r"(?<=[A-Za-z]-)0\d{2,}\b"),
     # artifact ids: RQ-85-FALCON2, BR-001
     ("artifact-id", r"\b(?:RQ|BR|LS|VCR|GI)-[0-9A-Za-z-]+"),
     # runner names: ci-01-8, pulseengine-ci-01-10
@@ -165,6 +180,21 @@ def withheld_decimals(text: str) -> collections.Counter:
 # FIRST and keeps the `0x` prefix, so the token is the figure as written.
 NUMBER = re.compile(r"\b0[xX][0-9a-fA-F]+\b|\b\d{1,3}(?:,\d{3})+\b|\b\d+\b")
 
+# THOUSANDS-SEPARATOR NORMALISATION (RQ-91-EXTRACTR1, #1575). `11,634` and `11634`
+# are ONE figure, and the v0.90 round 1 queued three such pairs as six entries.
+# NUMBER already admits a comma only as `\d{1,3}(,\d{3})+`, i.e. a comma followed
+# by EXACTLY three digits inside one number token, so `1, 234` (space), `1,2,3`
+# and `92,11` never reach this function as one token; it only strips the commas
+# of a token NUMBER already accepted as a thousands form. Hex is untouched.
+_THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
+
+
+def extract(text: str) -> collections.Counter:
+    """The ONE place a (scrubbed) text becomes a number Counter."""
+    return collections.Counter(
+        t.replace(",", "") if _THOUSANDS.fullmatch(t) else t
+        for t in NUMBER.findall(text))
+
 # SPELLED-OUT NUMBERS (RQ-88-EXTRACTOR, #1553). This programme writes its
 # load-bearing counts as capitalised WORDS ("FOUR hits", "ELEVEN comments"), and
 # NUMBER sees only digits, so every word-number correction round 1 made was
@@ -192,14 +222,14 @@ def scrub(text: str) -> str:
 
 
 def numbers(text: str) -> collections.Counter:
-    return collections.Counter(NUMBER.findall(scrub(text)))
+    return extract(scrub(text))
 
 
 def numbers_with(scrubbers, text: str) -> collections.Counter:
     """`numbers()` under an ARBITRARY scrubber list — the leave-one-out primitive."""
     for _name, pat in scrubbers:
         text = re.sub(pat, " ", text)
-    return collections.Counter(NUMBER.findall(text))
+    return extract(text)
 
 
 def self_test() -> int:
@@ -225,6 +255,8 @@ def self_test() -> int:
         ("bare-clock-hhmmssz", "started_at=09:51:39Z != completed_at=09:57:58Z"),
         ("bare-clock-naked", "between 09:51 and 09:57 it ran"),
         ("artifact-id", "RQ-85-FALCON2 and BR-001 say"),
+        # RQ-91-EXTRACTR1: binary/tool-name digits are not quantities.
+        ("tool-name-digits", "ran synth-090 and synth-0892 under review-088"),
         ("runner", "ran on pulseengine-ci-01-10 and ci-01-8"),
         ("file-line", "ARCHMODEL3.yaml:16 says exactly that"),
         ("version", "the layer 2026.10.9 pin at v0.85.0 and 0.84.0"),
@@ -310,15 +342,59 @@ def self_test() -> int:
     # thousands separator must SPLIT (or two numbers merge into a third that was
     # never claimed). Either assertion alone permits the opposite error.
     keep = numbers("the asset is 4,770,546 bytes")
-    if dict(keep) != {"4,770,546": 1}:
+    if dict(keep) != {"4770546": 1}:
         failures.append(f"EXTRACTION keep: thousands separator not held whole: {dict(keep)}")
     else:
-        print("  ok  extract-keep   a thousands-separated figure stays ONE token")
+        print("  ok  extract-keep   a thousands-separated figure stays ONE token, commas stripped")
     split = numbers("rows 92,11 and the pair 1,2")
     if sorted(split) != ["1", "11", "2", "92"]:
         failures.append(f"EXTRACTION split: comma-joined numbers not split: {dict(split)}")
     else:
         print(f"  ok  extract-split  comma-joined numbers split: {sorted(split)}")
+
+    # RQ-91-EXTRACTR1 (#1575): paired POSITIVE and NEGATIVE fixtures for both
+    # defects. Each (sample, expected) pair is asserted EXACTLY (Counter equality),
+    # so a drop AND a merge both fail. The negatives are the point: a rule that
+    # removes the defect by also removing a real number is the failure to avoid.
+    C = collections.Counter
+    r91 = [
+        # defect 1: name-derived digits go; the standalone figure stays.
+        ("name digits dropped", "synth-090 and synth-0892 and review-090", {}),
+        ("standalone 090 KEPT", "a standalone 090 here", {"090": 1}),
+        ("name dropped, bare kept", "synth-090 reported 090 twice", {"090": 1}),
+        ("bare 090 in parens/punct", "(090), [0892]; 090.", {"090": 2, "0892": 1}),
+        ("name then punct", "built synth-090. Then synth-0892, and (synth-088).", {}),
+        # narrowness: letter-hyphen-digits WITHOUT a leading zero is a real figure.
+        ("9-to-10 keeps 9 and 10", "the 9-to-10 change", {"9": 1, "10": 1}),
+        ("line-81 kept (narrow)", "the line-81 module", {"81": 1}),
+        ("synth-90 kept (narrow)", "synth-90 differs", {"90": 1}),
+        ("two-digit leading zero kept", "pad-07 and pad-007", {"07": 1}),
+        # versions: v0.90 is removed by the `version` scrubber (NOT counted), as
+        # before this change; stated here so it cannot move silently.
+        ("v0.90 not counted", "at v0.90 and v0.89.2 and 0.90", {}),
+        ("v0.90 beside real 090", "v0.90 build, 090 units", {"090": 1}),
+        # defect 2: thousands forms merge with their plain spelling.
+        ("1,111 kept as 1111", "1,111 refused", {"1111": 1}),
+        ("pair merges", "11,634 vs 11634 and 11634", {"11634": 3}),
+        # (a plain 7+ digit all-digit run is eaten by the `sha` scrubber -- the
+        # documented blind spot -- so the multi-group fixture stays below 7 digits.)
+        ("multi-group", "123,456 bytes, then 123456.", {"123456": 2}),
+        ("sentence-final thousands", "it was 24,042.", {"24042": 1}),
+        # the classic trap: lists must NOT merge into a third number.
+        ("list 1, 2, 3", "items 1, 2, 3 done", {"1": 1, "2": 1, "3": 1}),
+        ("space blocks merge", "1, 234", {"1": 1, "234": 1}),
+        ("2-digit tail blocks merge", "92,11 and 1,23", {"92": 1, "11": 1, "1": 1, "23": 1}),
+        ("4-digit head not a group", "1234,567", {"1234": 1, "567": 1}),
+        ("4-digit tail not a group", "5,1234", {"5": 1, "1234": 1}),
+        ("tuple of numbers", "(1,2,3)", {"1": 1, "2": 1, "3": 1}),
+    ]
+    for label, sample, want_r91 in r91:
+        got_r91 = numbers(sample)
+        if got_r91 != C(want_r91):
+            failures.append(f"R91 {label}: {sample!r} -> {dict(got_r91)}, expected {want_r91}")
+    if not any(f.startswith("R91 ") for f in failures):
+        print(f"  ok  r91-fixtures   {len(r91)} paired fixtures (name digits, "
+              f"thousands, list trap, narrowness, versions)")
 
     # WITHHELD-DECIMAL BUCKET, asserted as a PAIRED control. The positive half
     # proves the bucket surfaces a real quantity the `version` scrubber eats; the
