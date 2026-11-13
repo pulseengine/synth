@@ -6899,6 +6899,15 @@ jobs:
         run: |
           ./target/debug/synth compile scripts/repro/i64_divs_317.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/i317.o
           python scripts/oracle_run.py scripts/repro/i64_divs_317_riscv_differential.py /tmp/i317.o
+      - name: RV32 value pending across i64 div/rem differential (#1717)
+        # The i64 div/rem core runs on a fixed register file that bypasses the
+        # allocator, so a value pending BELOW its operands was overwritten
+        # (`5 + 7/2` returned 6). Grades the class (all four i64 div/rem ops)
+        # and its siblings at pending depth 1 and 2, i32 and i64, plus two
+        # `if`-arm shapes and a br_if / loop shape, vs wasmtime; ARM control
+        # legs on the class. RED on main 34781a8c: 108 wrong vectors over 27
+        # exports, all in the class.
+        run: python scripts/oracle_run.py scripts/repro/rv32_pending_operand_1717_differential.py
       - name: RV32 i64-param LOUD-SKIP contrast oracle (#518)
         run: python scripts/oracle_run.py scripts/repro/i64_param_518_riscv_loudskip.py
       - name: RV32 if-with-result join reconciliation (#343)
@@ -6941,7 +6950,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 11
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 12
 
   repro-sweep-arm-corpus-oracle:
     name: "repro sweep — ARM corpus (#973: CI never compiled these for ARM)"
