@@ -23,7 +23,9 @@
 //! | i64 access on memory k > 0 (#1622)     | GREEN (execution differential) |
 //! | memory-k op × `--safety-bounds software` | GREEN: `__synth_mem_size_k` guard (#1619) |
 //! | memory-k op × `--safety-bounds mask`   | refuse (mask needs a 2^n size) |
-//! | f32/f64 access on memory k > 0         | loud-skip (integer family only)|
+//! | f32/f64 access on memory k > 0 (#1673) | GREEN (execution differential) |
+//! | f32 on m3 / f64 on m4f/m7, memory k    | FPU decline = memory 0's twin  |
+//! | v128 access on memory k > 0            | loud-skip (no SIMD lowering)   |
 //! | non-const data-segment offset on mem k | refuse at decode               |
 //!
 //! Execution ground truth: `scripts/repro/multi_memory_406_differential.py`
@@ -668,24 +670,104 @@ fn i64_access_on_non_default_memory_inline_bounds_1619() {
     );
 }
 
-/// The non-default-memory scope is the INTEGER access family: a float
-/// access on memory k > 0 loud-skips its function (never aliases memory 0)
-/// and the refusal names what IS lowered.
+/// #1673: the f32/f64 accesses on memory k > 0 are LOWERED (memory 0's
+/// integer-word + `VMOV` shape on memory k's own region symbol), under the
+/// native-pointer ABI and without it; cortex-m4f lowers the f32 pair only.
+/// Execution equivalence (NaN bits, traps, every memory's image) is
+/// scripts/repro/memk_float_1673_differential.py's job.
+#[test]
+fn float_access_on_non_default_memory_lowered_1673() {
+    let f32_funcs = r#"
+      (func (export "lf32") (param $p i32) (result f32)
+        (f32.load $b offset=4 (local.get $p)))
+      (func (export "sf32") (param $p i32) (param $v f32)
+        (f32.store $b (local.get $p) (local.get $v)))"#;
+    let f64_funcs = r#"
+      (func (export "lf64") (param $p i32) (result f64)
+        (f64.load $b offset=8 (local.get $p)))
+      (func (export "sf64") (param $p i32) (param $v f64)
+        (f64.store $b (local.get $p) (local.get $v)))"#;
+    for (target, funcs, names) in [
+        ("cortex-m4f", f32_funcs.to_string(), &["lf32", "sf32"][..]),
+        (
+            "cortex-m7dp",
+            format!("{f32_funcs}{f64_funcs}"),
+            &["lf32", "sf32", "lf64", "sf64"][..],
+        ),
+    ] {
+        let wat = format!("(module (memory $a 1 1) (memory $b 1 1) {funcs})");
+        let f = wat_file(&format!("float_memk_1673_{target}.wat"), &wat);
+        for extra in [&[][..], &["--native-pointer-abi"][..]] {
+            let mut args = vec!["--relocatable", "--target", target];
+            args.extend_from_slice(extra);
+            let bytes = compile_read(&f, &args);
+            let obj = object::File::parse(&*bytes).expect("parse ELF");
+            for name in names.iter().chain(&["__synth_wasm_data_1"]) {
+                assert!(
+                    obj.symbols().any(|s| s.name() == Ok(name)),
+                    "{name} missing from the {target} object ({extra:?})"
+                );
+            }
+        }
+    }
+}
+
+/// #1673 matches memory 0 exactly where the FPU cannot: an f64 access on
+/// memory k declines on a single-precision core, and an f32 access on a core
+/// with no FPU, with the SAME refusal as the memory-0 twin (never VFP code on
+/// a core without it), and `--safety-bounds mask` still loud-skips.
+#[test]
+fn float_access_on_non_default_memory_declines_like_memory0_1673() {
+    for (target, ty, needle) in [
+        ("cortex-m4f", "f64", "double-precision"),
+        ("cortex-m3", "f32", "hardware FPU"),
+    ] {
+        for mem in ["$b", "$a"] {
+            let wat = format!(
+                r#"(module (memory $a 1 1) (memory $b 1 1)
+                  (func (export "w") (param $p i32) (param $q i32)
+                    ({ty}.store {mem} (local.get $p) ({ty}.load {mem} (local.get $q)))))"#
+            );
+            let f = wat_file(
+                &format!("float_decline_1673_{target}_{ty}_{}.wat", &mem[1..]),
+                &wat,
+            );
+            let out = compile(&f, &["--relocatable", "--target", target]);
+            assert_refused(
+                &out,
+                &[needle, "#369"],
+                &format!("{ty} on {mem} / {target}"),
+            );
+        }
+    }
+    let wat = r#"(module (memory $a 1 1) (memory $b 1 1)
+      (func (export "w") (param $p i32) (result f32) (f32.load $b (local.get $p))))"#;
+    let f = wat_file("float_mask_1673.wat", wat);
+    let out = compile(
+        &f,
+        &[
+            "--relocatable",
+            "--target",
+            "cortex-m4f",
+            "--safety-bounds",
+            "mask",
+        ],
+    );
+    assert_refused(&out, &["mask", "#1619"], "mask on an f32 memory-1 access");
+}
+
+/// v128 on memory k > 0 still loud-skips its function (never aliases memory
+/// 0): synth has no SIMD lowering on ARM at all.
 #[test]
 fn wide_access_on_non_default_memory_loud_skips() {
     let wat = r#"(module
       (memory $a 1 1)
       (memory $b 1 1)
-      (func (export "w") (param $p i32) (result f64)
-        (f64.load $b (local.get $p))))"#;
+      (func (export "w") (param $p i32)
+        (v128.store $b (local.get $p) (v128.load $b (local.get $p)))))"#;
     let f = wat_file("wide1.wat", wat);
-    let out = compile(&f, &["--relocatable", "--target", "cortex-m3"]);
-    assert_refused(&out, &["#406", "F64Load"], "f64 access on memory 1");
-    assert!(
-        stderr(&out).contains("i32 and i64 integer load/store families"),
-        "must name the lowered scope.\nstderr: {}",
-        stderr(&out)
-    );
+    let out = compile(&f, &["--relocatable", "--target", "cortex-m7dp"]);
+    assert_refused(&out, &["V128Load", "SIMD"], "v128 access on memory 1");
 }
 
 /// An active data segment on memory k > 0 with a NON-constant offset cannot

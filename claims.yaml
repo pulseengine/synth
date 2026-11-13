@@ -1974,9 +1974,25 @@ claims:
         # moved to synth_core::npa_multi_memory::Provenance::memory0_plan.
         # RQ-91-MVDROP: 21175 -> 21230, waived below (chained after
         # RQ-91-NPAMODEL's waiver).
-        value: 21230
+        # RQ-91-MEMKFLOAT (#1673): 21230 -> 21310, waived below (chained after
+        # RQ-91-MVDROP's waiver).
+        value: 21310
         baseline: 17897
         waivers:
+          - to: 21310
+            reason: >-
+              RQ-91-MEMKFLOAT (Refs #1673): 21230 -> 21310 (+80, re-derived on
+              the tree rebased over b0b643f1; the same +80 measured on
+              617e440b, where 21795 held and 21715 red). f32.load/f32.store/
+              f64.load/f64.store on memory k were a loud function-level skip.
+              They are lowered by JOINING the shipped i32 and i64 memory-k arms
+              rather than as four new arms: the same integer word access, guard
+              and region base, plus memory 0's bit-exact VMOV (+1 decision per
+              op). A first draft with four separate arms cost +254 and was
+              replaced. The f32/f64 scope classifiers now see through the
+              MultiMemory wrapper (+12), so m3 and the single-precision cores
+              decline exactly as memory 0's twins do. No wildcard arm added.
+              Gated by scripts/repro/memk_float_1673_differential.py.
           - to: 21230
             reason: >-
               RQ-91-MVDROP: 21175 -> 21230 (+55, re-derived after cargo fmt on
@@ -3366,7 +3382,11 @@ claims:
         # RQ-91-MVDROP: 32036 -> 32125, +55 code (waived on
         # selector_lines_code) and +34 test-module lines (the
         # drop-on-empty-stack unit test). Re-derived on the rebased tree.
-        value: 32125
+        # RQ-91-MEMKFLOAT (#1673): 32125 -> 32233: +80 code (waived on
+        # selector_lines_code) and +28 test module (the `_1673`
+        # scope-classifier unit test). Re-derived on the tree rebased over
+        # b0b643f1. No waiver.
+        value: 32233
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

@@ -3254,6 +3254,13 @@ fn pop_float(stack: &mut Vec<StackVal>) -> Result<VfpReg> {
 /// f32 local are handled separately (they need the f32-local map to classify).
 fn is_scope_f32_op(op: &WasmOp) -> bool {
     use WasmOp::*;
+    // #1673: an f32 access on a non-default memory is in scope exactly like
+    // its memory-0 twin — the FPU gate (m3 honest-reject), the VFP call-spill
+    // area and the #881 demand must see through the `MultiMemory` wrapper.
+    // Only the float accesses: an integer access on memory k stays out.
+    if let MultiMemory { op, .. } = op {
+        return matches!(op.as_ref(), F32Load { .. } | F32Store { .. });
+    }
     matches!(
         op,
         F32Add
@@ -4559,6 +4566,11 @@ fn vfp_op_demand(op: &WasmOp) -> (usize, usize, usize) {
 /// only f64 op is a memory access.
 fn is_scope_f64_op(op: &WasmOp) -> bool {
     use WasmOp::*;
+    // #1673: as `is_scope_f32_op` — an f64 access on memory k must trip the
+    // double-precision gate (m4f/m7 decline it exactly as memory 0's).
+    if let MultiMemory { op, .. } = op {
+        return matches!(op.as_ref(), F64Load { .. } | F64Store { .. });
+    }
     matches!(
         op,
         F64Const(_)
@@ -17837,6 +17849,34 @@ mod tests {
             let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::LocalSet(1)];
             let i64_locals = infer_i64_locals(&ops, &[], &[], &[], &[]);
             assert_eq!(i64_locals.contains(&1), is_i64, "{op:?}");
+        }
+    }
+
+    /// #1673: a memory-k float access is in the float scope (FPU gates, VFP
+    /// call-spill area, #881 demand); a memory-k integer access is not.
+    #[test]
+    fn test_scope_float_ops_see_through_multi_memory_1673() {
+        let mm = |op| WasmOp::MultiMemory {
+            memory: 1,
+            op: Box::new(op),
+        };
+        let (offset, a2, a3) = (0, 2, 3);
+        let f32l = mm(WasmOp::F32Load { offset, align: a2 });
+        let f32s = mm(WasmOp::F32Store { offset, align: a2 });
+        let f64l = mm(WasmOp::F64Load { offset, align: a3 });
+        let f64s = mm(WasmOp::F64Store { offset, align: a3 });
+        let i32l = mm(WasmOp::I32Load { offset, align: a2 });
+        let i64l = mm(WasmOp::I64Load { offset, align: a3 });
+        for (op, f32, f64) in [
+            (&f32l, true, false),
+            (&f32s, true, false),
+            (&f64l, false, true),
+            (&f64s, false, true),
+            (&i32l, false, false),
+            (&i64l, false, false),
+        ] {
+            assert_eq!(is_scope_f32_op(op), f32, "{op:?}");
+            assert_eq!(is_scope_f64_op(op), f64, "{op:?}");
         }
     }
 
