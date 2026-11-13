@@ -5416,6 +5416,7 @@ impl InstructionSelector {
                             // (mirrors the `Return` arm; the push-trim post-pass
                             // rewrites this Pop symmetrically with the prologue).
                             if !stack.is_empty() {
+                                let is_i64 = top_is_i64(&stack); // #1710
                                 let val = pop_operand(
                                     &mut stack,
                                     &mut next_temp,
@@ -5424,12 +5425,9 @@ impl InstructionSelector {
                                     &live_params,
                                     idx,
                                 )?;
-                                if val != Reg::R0 {
+                                for op in int_return_moves(val, is_i64)? {
                                     instructions.push(ArmInstruction {
-                                        op: ArmOp::Mov {
-                                            rd: Reg::R0,
-                                            op2: Operand2::Reg(val),
-                                        },
+                                        op,
                                         source_line: Some(idx),
                                     });
                                     cf.add_instruction();
@@ -5525,6 +5523,7 @@ impl InstructionSelector {
                             // top may need a reload, which must not sit between
                             // CMP and Bcc). The stack is NOT popped: on the
                             // fall-through path the value stays live.
+                            let val_is_i64 = top_is_i64(&stack); // #1710
                             let val = if stack.is_empty() {
                                 None
                             } else {
@@ -5563,17 +5562,14 @@ impl InstructionSelector {
 
                             // Taken region: result to R0, frame dealloc, pop+PC
                             // (mirrors the `Return` arm).
-                            if let Some(val) = val
-                                && val != Reg::R0
-                            {
-                                instructions.push(ArmInstruction {
-                                    op: ArmOp::Mov {
-                                        rd: Reg::R0,
-                                        op2: Operand2::Reg(val),
-                                    },
-                                    source_line: Some(idx),
-                                });
-                                cf.add_instruction();
+                            if let Some(val) = val {
+                                for op in int_return_moves(val, val_is_i64)? {
+                                    instructions.push(ArmInstruction {
+                                        op,
+                                        source_line: Some(idx),
+                                    });
+                                    cf.add_instruction();
+                                }
                             }
                             if layout.frame_size > 0 {
                                 instructions.push(ArmInstruction {
@@ -5693,6 +5689,7 @@ impl InstructionSelector {
                     // returned 52, wasmtime 50). The cascade between the peek
                     // and the label is CMP/Bcc only and writes no register,
                     // so `val` is still live at the label.
+                    let fn_ret_is_i64 = top_is_i64(&stack); // #1710
                     let fn_ret_val = if moved_fn_return && !stack.is_empty() {
                         let mut peek_reserved = live_params.clone();
                         peek_reserved.push(index_reg);
@@ -5759,17 +5756,14 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
-                        if let Some(val) = fn_ret_val
-                            && val != Reg::R0
-                        {
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::Mov {
-                                    rd: Reg::R0,
-                                    op2: Operand2::Reg(val),
-                                },
-                                source_line: Some(idx),
-                            });
-                            cf.add_instruction();
+                        if let Some(val) = fn_ret_val {
+                            for op in int_return_moves(val, fn_ret_is_i64)? {
+                                instructions.push(ArmInstruction {
+                                    op,
+                                    source_line: Some(idx),
+                                });
+                                cf.add_instruction();
+                            }
                         }
                         if layout.frame_size > 0 {
                             instructions.push(ArmInstruction {
@@ -5889,6 +5883,7 @@ impl InstructionSelector {
                     // reload-aware (#171): a spilled return value is reloaded
                     // from its frame slot first.
                     if !stack.is_empty() {
+                        let is_i64 = top_is_i64(&stack); // #1710
                         let val = pop_operand(
                             &mut stack,
                             &mut next_temp,
@@ -5897,12 +5892,9 @@ impl InstructionSelector {
                             &live_params,
                             idx,
                         )?;
-                        if val != Reg::R0 {
+                        for op in int_return_moves(val, is_i64)? {
                             instructions.push(ArmInstruction {
-                                op: ArmOp::Mov {
-                                    rd: Reg::R0,
-                                    op2: Operand2::Reg(val),
-                                },
+                                op,
                                 source_line: Some(idx),
                             });
                             cf.add_instruction();
@@ -9644,11 +9636,7 @@ impl InstructionSelector {
                 });
             }
         } else {
-            let result_is_i64 = matches!(
-                stack.last(),
-                Some(StackVal::Reg { is_i64: true, .. })
-                    | Some(StackVal::Spilled { is_i64: true, .. })
-            );
+            let result_is_i64 = top_is_i64(&stack);
             let result_reg = if stack.is_empty() {
                 None
             } else {
@@ -9662,30 +9650,11 @@ impl InstructionSelector {
                 )?)
             };
             if let Some(result_reg) = result_reg {
-                // lo move FIRST: for a consecutive pair (hi = lo+1) the only
-                // overlap case is lo == R1 (hi == R2), where r1 must be READ by
-                // the lo move before the hi move WRITES it — lo-first is safe for
-                // every possible pair (hi == R0 would require lo == "R-1").
-                if result_reg != Reg::R0 {
+                for op in int_return_moves(result_reg, result_is_i64)? {
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Mov {
-                            rd: Reg::R0,
-                            op2: Operand2::Reg(result_reg),
-                        },
+                        op,
                         source_line: None,
                     });
-                }
-                if result_is_i64 {
-                    let hi = i64_pair_hi(result_reg)?;
-                    if hi != Reg::R1 {
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Mov {
-                                rd: Reg::R1,
-                                op2: Operand2::Reg(hi),
-                            },
-                            source_line: None,
-                        });
-                    }
                 }
             }
         } // GI-FPU-002: end of the integer-result `else` branch

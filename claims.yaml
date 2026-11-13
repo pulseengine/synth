@@ -2057,9 +2057,23 @@ claims:
         # RQ-91-NPAMODEL's waiver).
         # RQ-91-MEMKFLOAT (#1673): 21230 -> 21310, waived below (chained after
         # RQ-91-MVDROP's waiver).
-        value: 21310
+        # I64RET (#1710): 21310 -> 21309, a FALL. The direct selector's five
+        # function-return sites (fall-through epilogue, `return`, function-level
+        # br/br_if/br_table) now share ONE landing, `int_return_moves`; four of
+        # them had a lo-only `mov r0` copy and returned an i64's high word stale.
+        # Gated by execution: scripts/repro/i64_explicit_return_1710_differential.py.
+        value: 21309
         baseline: 17897
         waivers:
+          - to: 21309
+            reason: >-
+              I64RET (Refs #1710): 21310 -> 21309 (-1, re-derived on the tree
+              rebased over 5f6aef20; the same -1 measured on e918c711). Not
+              growth: the ceiling FELL, and a value above the baseline still
+              needs a waiver bound to it. Five hand copies of the return landing
+              became one helper, `int_return_moves`. No wildcard arm added.
+              Gated by execution:
+              scripts/repro/i64_explicit_return_1710_differential.py.
           - to: 21310
             reason: >-
               RQ-91-MEMKFLOAT (Refs #1673): 21230 -> 21310 (+80, re-derived on
@@ -3467,7 +3481,9 @@ claims:
         # selector_lines_code) and +28 test module (the `_1673`
         # scope-classifier unit test). Re-derived on the tree rebased over
         # b0b643f1. No waiver.
-        value: 32233
+        # I64RET (#1710): 32233 -> 32232, the same -1 as selector_lines_code.
+        # No waiver.
+        value: 32232
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

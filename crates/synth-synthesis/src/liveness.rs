@@ -7358,6 +7358,19 @@ pub fn reallocate_function_post_exhaust(
             process(seg_start, i, &mut out, &mut stats);
             out.push(ins.clone());
             seg_start = i + 1;
+        } else if is_return_terminator(&ins.op) {
+            // #1710: a `pop {…, pc}` RETURN ends its segment (inclusively, so
+            // the segment is `ends_in_return` and its R0/R1 exit-holders are
+            // pinned). `Pop` is straight-line with a modeled effect, so before
+            // this cut a mid-function return followed by more straight-line
+            // code — the dead epilogue after a function-level `br_table`, or
+            // dead code after a `return` — sat INSIDE one segment: the return
+            // value's R0/R1 defs looked segment-locally dead (a later def
+            // overwrote them before any modeled read; `reg_effect(Pop)` reads
+            // nothing) and were recoloured. Measured: `mov r1, r7` became
+            // `mov r0, r7` ahead of a `br_table` function return.
+            process(seg_start, i + 1, &mut out, &mut stats);
+            seg_start = i + 1;
         }
     }
     process(seg_start, instrs.len(), &mut out, &mut stats);
@@ -8989,6 +9002,11 @@ pub fn apply_spill_realloc_post_exhaust(
         if !(is_straight_line(&ins.op) && reg_effect(&ins.op).is_some()) {
             process(seg_start, i, &mut out, &mut total);
             out.push(ins.clone());
+            seg_start = i + 1;
+        } else if is_return_terminator(&ins.op) {
+            // #1710: a `pop {…, pc}` return ends its segment — see
+            // `reallocate_function_post_exhaust`.
+            process(seg_start, i + 1, &mut out, &mut total);
             seg_start = i + 1;
         }
     }
@@ -19807,5 +19825,65 @@ mod tests {
             ),
             "S0/S1 across a call is the float-return pattern, not a clobber"
         );
+    }
+
+    /// #1710: a `pop {…, pc}` return ends its range-realloc segment. The
+    /// stream is the direct selector's function-level `br_table` return
+    /// followed by the (dead) fall-through epilogue: before the cut both sat in
+    /// ONE segment, the first `mov r1, r7` looked dead (redefined by the
+    /// second before any modeled read — `Pop` reads nothing), and it was
+    /// recoloured to `mov r0, r7`, so the return read a stale R1.
+    #[test]
+    fn return_pop_ends_the_realloc_segment_1710() {
+        let mov = |rd, rm| {
+            ins(ArmOp::Mov {
+                rd,
+                op2: Operand2::Reg(rm),
+            })
+        };
+        let dealloc = || {
+            ins(ArmOp::Add {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(64),
+            })
+        };
+        let pop = || {
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
+            })
+        };
+        let ret = [
+            mov(Reg::R0, Reg::R6),
+            mov(Reg::R1, Reg::R7),
+            dealloc(),
+            pop(),
+        ];
+        let seq: Vec<ArmInstruction> = ret.iter().chain(ret.iter()).cloned().collect();
+        let (out, _) = reallocate_function(&seq, &crate::reg_contract::ALLOCATABLE);
+        for at in [0, 4] {
+            assert!(
+                matches!(
+                    &out[at].op,
+                    ArmOp::Mov {
+                        rd: Reg::R0,
+                        op2: Operand2::Reg(Reg::R6)
+                    }
+                ),
+                "return {at}: lo landing moved: {:?}",
+                out[at].op
+            );
+            assert!(
+                matches!(
+                    &out[at + 1].op,
+                    ArmOp::Mov {
+                        rd: Reg::R1,
+                        op2: Operand2::Reg(Reg::R7)
+                    }
+                ),
+                "return {at}: hi landing moved: {:?}",
+                out[at + 1].op
+            );
+        }
     }
 }
