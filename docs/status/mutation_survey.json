@@ -2300,7 +2300,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "444145fc",
+    "reanchored_at": "dd473651",
     "seed": 1189
   },
   "mutants": [
@@ -2594,9 +2594,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 3008,
+      "end": 3009,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/REG/select_with_stack.rs:3008:24",
+      "id": "R3-direct/REG/select_with_stack.rs:3009:24",
       "killed_by": {
         "binaries": [
           "issue_95_const_addr_load"
@@ -2612,7 +2612,7 @@
       "op": "REG",
       "region": "R3-direct",
       "seconds": 277.5,
-      "start": 3008,
+      "start": 3009,
       "status": "killed"
     },
     {
@@ -6971,13 +6971,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 8221,
+      "end": 8222,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/COND/select_with_stack.rs:8221:37",
+      "id": "R3-direct/COND/select_with_stack.rs:8222:37",
       "op": "COND",
       "region": "R3-direct",
       "seconds": 329.4,
-      "start": 8221,
+      "start": 8222,
       "status": "survived",
       "suite_seconds": 301.7
     },
@@ -7430,9 +7430,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 7426,
+      "end": 7427,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/GUARD/select_with_stack.rs:7426:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:7427:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -7444,7 +7444,7 @@
       "op": "GUARD",
       "region": "R3-direct",
       "seconds": 22.6,
-      "start": 7426,
+      "start": 7427,
       "status": "killed"
     },
     {

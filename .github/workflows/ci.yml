@@ -6991,6 +6991,8 @@ jobs:
         run: python scripts/oracle_run.py scripts/repro/war_aliasing_989_arm_differential.py
       - name: "#1712 div/rem/rotl scratch-alias execution differential (m4 + m7dp, both ARM legs)"
         run: python scripts/oracle_run.py scripts/repro/div_scratch_alias_1712_differential.py
+      - name: "#1721 value pending below a temp-using expansion, execution differential (m4 + m7dp, both ARM legs)"
+        run: python scripts/oracle_run.py scripts/repro/pending_below_temp_1721_differential.py
       - name: "ARM corpus sweep — compile census + execution differential (#973)"
         run: python scripts/oracle_run.py scripts/repro/arm_corpus_sweep_973.py
       # #910: close the job with what it EXECUTED. Asserts every oracle
@@ -7003,7 +7005,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 4
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 6
 
   repro-sweep-wcet-oracle:
     name: repro sweep — WCET bound soundness cross-checks (phases 2-6)

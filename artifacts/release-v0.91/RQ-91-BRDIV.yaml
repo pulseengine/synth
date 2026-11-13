@@ -1,0 +1,67 @@
+artifacts:
+  - id: RQ-91-BRDIV
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "ARM div/rem/rotl scratch temps never land on the op's own operands"
+    description: >
+        SILENT MISCOMPILE, filed as #1712 from a differential test against
+        wasmtime, with #1715 and #1716 found by a cross-backend differential and
+        #1721 while fixing #1717. A nested block/br_if/if/br function returned 0
+        on every path through `i32.div_s` (f(7,2) gave 0 where wasmtime gives 3);
+        three div/rem terms in one expression summed wrong (f(100) gave
+        0xffffffc9 instead of 34); a div_s after an early return gave 0xc0000000;
+        an i32 div_s/rem_u with an i64 pending below it gave garbage.
+
+        THE DEFECT. The ARM direct selector (`select_with_stack.rs`) pops an op's
+        operands, then allocates its scratch temps, reserving only registers
+        still on the virtual stack and params read again later. A just-popped
+        operand is in neither set. Four expansions write a scratch temp BEFORE
+        they read their operands again: the I32DivS INT_MIN/-1 guard temp, the
+        I32RemU and I32RemS quotient temps, and the I32Rotl shift temp. The
+        allocator hands out registers in rotation, so whether a temp hit an
+        operand depended only on where the rotation sat: nested blocks, earlier
+        terms or a pending value below simply moved it. In #1712 the guard loaded
+        0x80000000 into the divisor (`movw r1,#0; movt r1,#0x8000; sdiv r0,r0,r1`).
+        div_s/rem_s/rem_u were silent wrong code; rotl's proved rule already
+        refused an overlapping temp, so it declined loudly. RV32 has protected
+        the same guard's operands since #232. The optimized path uses R12 for
+        these temps and is not affected.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact: compile the
+        #1712 module with `synth compile x.wat -t cortex-m4 --relocatable
+        --all-exports -o x.o` and call f(7,2) under unicorn. If it returns 3
+        (wasmtime), the defect is refuted.
+
+        MEASURED 2026-11-13 on main 34781a8c: LIVE.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - selector
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1712"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 no ARM div/rem/rotl scratch temp aliases the op's own
+        operands at any allocator rotation position, with param, temp and
+        constant operands and with i32/i64 values pending below. This is executed
+        against wasmtime on cortex-m4 and cortex-m7dp, relocatable and
+        self-contained, red before and green after.
+      landed: "v0.91 BRDIV - #1712 (also #1715, #1716, #1721) - DELIVERED: a wrong-code fix. The four scratch temps (I32DivS guard, I32RemU/I32RemS quotient, I32Rotl shift) also reserve the operands they were popped from, using the file's existing idiom."
+      verified-by: >
+        DELIVERED, execution-verified by two wired oracles in
+        repro-sweep-arm-corpus-oracle. scripts/repro/div_scratch_alias_1712_differential.py
+        covers every class op at every rotation position k=0..9 with param, temp
+        and constant-divisor operands, plus the #1712, #1715 and #1716 modules
+        (528 exports, m4/m7dp, relocatable and self-contained): RED on main
+        21548/23056, GREEN 23232/23232. scripts/repro/pending_below_temp_1721_differential.py
+        (RQ-91-ARMDIVPEND) covers 26 temp-using ops with i32/i64 values pending
+        at depth 1 and 2: RED on main 34781a8c 116016/117544 (64 declines),
+        GREEN 117992/117992.
