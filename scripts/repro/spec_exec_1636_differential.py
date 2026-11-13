@@ -34,7 +34,11 @@ lands in exactly one bucket, attributed to its own line:
          expected), fail:missing-trap, fail:contract-violation (R4..R8,
          S16..S31, R9/R10/R11 or SP not preserved), fail:state-dependent-memory
          (the zeroed and garbage machine states left different linear
-         memory), fail:wrong-vs-reference (see state-skew below)
+         memory), fail:wrong-vs-reference (see state-skew below),
+         fail:literal-vs-reference (the .wast expectation disagrees with
+         wasmtime with no declined action before it in the module: suite
+         drift — a wrong assert_return value, an assert_return rewritten as
+         assert_trap, or the reverse; RQ-91-SPECDRIFT)
   notrep:<reason>  not representable on this leg, and WHY — module-level
          (no-module, module-form:<kind>, imports, module-declined,
          wasmtime-instantiate, boot-fault, harness-error) or directive-level
@@ -51,7 +55,11 @@ lands in exactly one bucket, attributed to its own line:
            state-skew  wasmtime itself disagrees with a non-NaN literal (an
              action declined on BOTH engines left the module state behind the
              script) and the image AGREES with wasmtime. If the image disagrees
-             with wasmtime too it is `fail:wrong-vs-reference`.
+             with wasmtime too it is `fail:wrong-vs-reference`. ONLY after a
+             declined action in the same module (RQ-91-SPECDRIFT): with no
+             decline before it, wasmtime's state IS the script's state, so a
+             literal wasmtime disagrees with is the SUITE's defect and the
+             directive is `fail:literal-vs-reference` (below), never absorbed.
 
 `synth-test stats` (the Rust `wast`-crate parser, #1570) is an independent
 second count of the same files: with `SYNTH_TEST` set, every file's
@@ -110,6 +118,22 @@ RED when:
 The table may only shrink; it is listed in claims.yaml's
 `known_open_pin_tables`, so it is pin debt under `known_open_pins` (direction
 down) and its population is declared there.
+
+# Suite drift (RQ-91-SPECDRIFT)
+
+wasmtime is the reference, so before v0.91 a .wast expectation that disagreed
+with it was filed `notrep:state-skew` and only lowered the executed count: a
+corrupted suite stayed green (v0.90 cold review N3). Two checks close that:
+  * `state-skew` is legal only after a declined action in the same module
+    (the one cause it exists for); any other literal/wasmtime disagreement is
+    `fail:literal-vs-reference`, red through the KNOWN ratchet like any fail;
+  * on the default corpus, the superproject's gitlink for tests/spec-testsuite
+    must equal SUITE_COMMIT — the commit every KNOWN position is measured at —
+    so a submodule bump is a reviewed edit of this file, never a silent move.
+Residual, stated: a corruption AFTER a declined action in its module is still
+absorbed as state-skew on that leg (measured at SUITE_COMMIT: 2034 of 11967
+graded directives on cortex-m4, 1870 of 24078 on cortex-m7dp, come after a
+decline), and a corruption in a directive no leg executes is not graded at all.
 
 # Non-vacuity
 
@@ -188,6 +212,10 @@ CONTRACT = [(A.UC_ARM_REG_R9, "R9"), (A.UC_ARM_REG_R10, "R10"), (A.UC_ARM_REG_R1
 # lower it to green a run.
 # ---------------------------------------------------------------------------
 SUITE_FILES = 257
+# RQ-91-SPECDRIFT: the submodule commit SUITE_FILES / DIRECTIVES_TOTAL / KNOWN
+# positions are measured at. Checked against the superproject gitlink on the
+# default corpus (a `--suite-dir` control copy has no gitlink to read).
+SUITE_COMMIT = "345367358f065375524498749470720d9cdd1418"
 DIRECTIVES_TOTAL = 57588
 # RQ-90-CALLINDTYPE (#1643): 11636 -> 11634 and 24044 -> 24042. The fix
 # makes type-rec.wast:183/192 (`run`) a LOUD closed-world decline on both
@@ -650,6 +678,11 @@ class FileRun:
         # is what puts the module state behind the script (`state-skew`), so
         # they are tallied too — never a silent drop.
         self.invokes: Counter = Counter()
+        # RQ-91-SPECDRIFT: executed in-scope directives whose literal is held
+        # to wasmtime as suite drift (no declined action before them in their
+        # module) vs. those after a decline, where disagreement is state-skew.
+        self.drift_guarded = 0
+        self.drift_exposed = 0
 
     def put(self, line, outcome, func="", detail=""):
         assert line not in self.outcomes, f"{self.file}:{line} counted twice"
@@ -724,6 +757,11 @@ def run_group(engine, leg, fr: FileRun, mline, mtext, items, bits, tmp: Path):
         return
     rng = random.Random(zlib.crc32(f"{leg}|{fr.file}|{mline[0]}".encode()))
     after_envelope = False
+    # RQ-91-SPECDRIFT: set by the first declined action (scoped or a bare
+    # invoke) in this module. Every Decl is raised before wasmtime runs the
+    # action, so from then on wasmtime's state may be behind the script and a
+    # literal/wasmtime disagreement may be state-skew. Before it, it cannot.
+    state_behind = False
     for line, kind, form in items:
         scoped_kind = kind in IN_SCOPE
         if kind not in IN_SCOPE + ("invoke",):
@@ -771,6 +809,7 @@ def run_group(engine, leg, fr: FileRun, mline, mtext, items, bits, tmp: Path):
                 raise Decl("f64-on-sp-target")
             core, sregs = marshal(args, dp, fpu)
         except Decl as e:
+            state_behind = True
             if scoped_kind:
                 fr.put(line, f"notrep:{e.reason}")
             else:
@@ -799,6 +838,10 @@ def run_group(engine, leg, fr: FileRun, mline, mtext, items, bits, tmp: Path):
         if not scoped_kind:
             fr.invokes["executed"] += 1
             continue
+        if state_behind:
+            fr.drift_exposed += 1
+        else:
+            fr.drift_guarded += 1
         detail = f"{fn}({','.join(f'{t}:0x{v:x}' for t, v in args)})"
 
         def failed(outcome, text):
@@ -807,10 +850,19 @@ def run_group(engine, leg, fr: FileRun, mline, mtext, items, bits, tmp: Path):
             else:
                 fr.put(line, outcome, fn, text)
 
+        def skew_or_drift(text):
+            # The literal disagrees with wasmtime and the image agrees with
+            # wasmtime. Not routed through failed(): the image's envelope says
+            # nothing about whether the .wast literal is right.
+            if state_behind:
+                fr.put(line, "notrep:state-skew", fn, text)
+            else:
+                fr.put(line, "fail:literal-vs-reference", fn, text + " (no declined action before it: suite drift)")
+
         if kind == "assert_trap":
             msg = act[-1].text() if isinstance(act[-1], WastStr) else ""
             if wref[0] != "trap":
-                fr.put(line, "notrep:state-skew", fn, detail + " wasmtime did not trap")
+                skew_or_drift(detail + " wasmtime did not trap")
                 continue
             if all(o[0][0] in ("trap", "fault") for o in outs.values()):
                 fr.put(line, "pass:trap", fn)
@@ -828,7 +880,7 @@ def run_group(engine, leg, fr: FileRun, mline, mtext, items, bits, tmp: Path):
             # skipped — bulk.wast's `table.copy`) left the state behind the
             # script. The image is held to wasmtime: trapping too is skew.
             if all(o[0][0] in ("trap", "fault") for o in outs.values()):
-                fr.put(line, "notrep:state-skew", fn, detail + " wasmtime and image both trapped")
+                skew_or_drift(detail + " wasmtime and image both trapped")
             else:
                 failed("fail:wrong-vs-reference", detail + " wasmtime trapped, image " +
                        " ".join(f"{k}={fmt(o[0])}" for k, o in outs.items()))
@@ -850,7 +902,7 @@ def run_group(engine, leg, fr: FileRun, mline, mtext, items, bits, tmp: Path):
             continue
         if all(v is not None for v in verdicts.values()):
             if skew:
-                fr.put(line, "notrep:state-skew", fn, detail + " image == wasmtime != literal")
+                skew_or_drift(detail + " image == wasmtime != literal")
             else:
                 v = "nan-class" if "nan-class" in verdicts.values() else "value"
                 fr.put(line, f"pass:{v}", fn)
@@ -928,6 +980,15 @@ def main() -> int:
     if not Path(SYNTH).is_file():
         print(f"FAIL: synth not found at {SYNTH}")
         return 1
+    if suite.resolve() == SUITE_DIR.resolve():
+        r = subprocess.run(["git", "-C", str(ROOT), "ls-tree", "HEAD", "tests/spec-testsuite"],
+                           capture_output=True, text=True)
+        m = re.match(r"160000 commit ([0-9a-f]{40})\t", r.stdout)
+        gitlink = m.group(1) if (r.returncode == 0 and m) else None
+        print(f"  suite commit: gitlink {gitlink or 'UNREADABLE'}, pinned {SUITE_COMMIT}")
+        if gitlink != SUITE_COMMIT:
+            fails.append(f"SUITE COMMIT: tests/spec-testsuite gitlink {gitlink or 'unreadable'} != pinned "
+                         f"{SUITE_COMMIT} (a bump re-measures SUITE_FILES, DIRECTIVES_TOTAL and KNOWN here)")
 
     # The denominator — before anything executes.
     census = {f.name: directive_census(f.read_text(errors="replace")) for f in files}
@@ -994,6 +1055,13 @@ def main() -> int:
                                          if k.startswith("notrep:")))
         print("     bare invokes (state only, not graded): " +
               ", ".join(f"{k}={v}" for k, v in sorted(invokes[leg].items(), key=lambda kv: -kv[1])))
+        guarded = sum(fr.drift_guarded for fr in runs if fr.leg == leg)
+        exposed = sum(fr.drift_exposed for fr in runs if fr.leg == leg)
+        print(f"     suite drift: {guarded} executed directives held to wasmtime with no declined action "
+              f"before them; {exposed} after one (state-skew {c['notrep:state-skew']}, "
+              f"literal-vs-reference {c['fail:literal-vs-reference']})")
+        if p + fl and not guarded:
+            fails.append(f"NON-VACUITY: {leg} suite-drift check guarded 0 executed directives")
         if full and p + fl < EXECUTED_FLOOR[leg]:
             fails.append(f"NON-VACUITY: {leg} executed {p + fl} < floor {EXECUTED_FLOOR[leg]}")
         if p + fl == 0 and total:
