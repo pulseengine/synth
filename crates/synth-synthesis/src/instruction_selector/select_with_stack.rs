@@ -2300,13 +2300,14 @@ impl InstructionSelector {
                         let needs_ovf_guard =
                             cdiv.is_none_or(|c| c == -1) && !self.fact_div_ovf_elide.contains(&idx);
                         if needs_ovf_guard {
-                            // We need a temp register for INT_MIN (0x80000000)
+                            // Temp for INT_MIN. #1712: it is written before the
+                            // POPPED operands are read, so reserve them (RV32 #232).
                             let tmp = alloc_temp_or_spill(
                                 &mut next_temp,
                                 &mut stack,
                                 &mut instructions,
                                 &mut spill,
-                                &live_params,
+                                &[live_params.as_slice(), &[dividend, divisor]].concat(),
                                 idx,
                             )?;
 
@@ -2448,13 +2449,13 @@ impl InstructionSelector {
                         }
 
                         // Remainder: dst = dividend - (dividend / divisor) * divisor
-                        // quotient = UDIV tmp, dividend, divisor
+                        // quotient = UDIV tmp, dividend, divisor (#1712: reserved)
                         let tmp = alloc_temp_or_spill(
                             &mut next_temp,
                             &mut stack,
                             &mut instructions,
                             &mut spill,
-                            &live_params,
+                            &[live_params.as_slice(), &[dividend, divisor]].concat(),
                             idx,
                         )?;
                         instructions.push(ArmInstruction {
@@ -2550,13 +2551,13 @@ impl InstructionSelector {
                             });
                         }
 
-                        // Signed remainder: dst = dividend - (dividend/divisor)*divisor
+                        // dst = dividend - (dividend/divisor)*divisor (#1712: reserved)
                         let tmp = alloc_temp_or_spill(
                             &mut next_temp,
                             &mut stack,
                             &mut instructions,
                             &mut spill,
-                            &live_params,
+                            &[live_params.as_slice(), &[dividend, divisor]].concat(),
                             idx,
                         )?;
                         instructions.push(ArmInstruction {
@@ -8369,12 +8370,13 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
+                    // #1712: reserve the POPPED `value` (`rs <> rn` below).
                     let tmp = alloc_temp_or_spill(
                         &mut next_temp,
                         &mut stack,
                         &mut instructions,
                         &mut spill,
-                        &live_params,
+                        &[live_params.as_slice(), &[value]].concat(),
                         idx,
                     )?;
                     // RSB+ROR from the Rocq-proved rule — the only path

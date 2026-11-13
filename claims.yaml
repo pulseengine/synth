@@ -2062,9 +2062,24 @@ claims:
         # br/br_if/br_table) now share ONE landing, `int_return_moves`; four of
         # them had a lo-only `mov r0` copy and returned an i64's high word stale.
         # Gated by execution: scripts/repro/i64_explicit_return_1710_differential.py.
-        value: 21309
+        # v0.91 BRDIV (#1712): 21309 -> 21311, waived below.
+        value: 21311
         baseline: 17897
         waivers:
+          - to: 21311
+            reason: >-
+              v0.91 BRDIV (#1712): 21309 -> 21311 (+2, re-derived on the tree
+              cherry-picked over 34781a8c; the same +2 measured on e918c711,
+              21230 -> 21232). No new decision and no new arm:
+              four existing scratch allocations (i32.div_s's INT_MIN guard
+              temp, i32.rem_s/i32.rem_u's quotient temp, i32.rotl's RSB temp)
+              now reserve the op's own POPPED operands, which the allocator
+              could otherwise hand back while they were still to be read —
+              silent wrong code for div_s/rem_s/rem_u, a loud decline for
+              rotl. The argument lists change in place; the +2 is two comment
+              lines naming the reason. Oracle:
+              scripts/repro/div_scratch_alias_1712_differential.py (red on
+              main, green here).
           - to: 21309
             reason: >-
               I64RET (Refs #1710): 21310 -> 21309 (-1, re-derived on the tree
@@ -3483,7 +3498,9 @@ claims:
         # b0b643f1. No waiver.
         # I64RET (#1710): 32233 -> 32232, the same -1 as selector_lines_code.
         # No waiver.
-        value: 32232
+        # v0.91 BRDIV (#1712): 32232 -> 32234, the same +2 as
+        # selector_lines_code (waived there). No test-module change.
+        value: 32234
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

@@ -1,0 +1,74 @@
+artifacts:
+  - id: RQ-91-ARMDIVPEND
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "A value pending below an ARM div/rem expansion, and the op's own operands, survive it"
+    description: >
+        SILENT MISCOMPILE, filed as #1721. On ARM Thumb-2 (`--relocatable`,
+        cortex-m4 and cortex-m7dp), with an i64 pending on the operand stack
+        below an i32 `div_s` or `rem_u`, the function returned a wrong i64:
+        div_s(1000003, 7) gave 0xffffffffedc62199 where wasmtime gives
+        0x117434.
+
+        THE MECHANISM, measured from the emitted code on main 34781a8c. The
+        issue read it as the pending i64 being overwritten. It is not: the
+        pending pair (r6:r7) is intact. The div_s INT_MIN guard temp lands on
+        the division's own dividend, the popped param alias r0 (`movw r0, #0;
+        movt r0, #0x8000; cmp r0, r0; ...; sdiv r8, r0, r1`), so the quotient
+        is INT_MIN / divisor; rem_u's UDIV quotient temp lands on the dividend
+        the same way. This is the #1712 class: a scratch written before the
+        op's popped operands are read again, allocated in `select_with_stack.rs`
+        with only `live_params` reserved. The pending i64 only moved the
+        round-robin cursor onto r0. Values still on the stack were always
+        reserved (`stack_live_regs` reserves both halves of an i64 pair).
+
+        THE FIX is the #1712 fix (branch v091-brdiv-1712, a65c116c): the
+        i32.div_s guard temp, the i32.rem_s/i32.rem_u quotient temps and the
+        i32.rotl RSB temp reserve the popped operands. This record adds no
+        code change on top of it. What it adds is the class oracle that
+        refutes the "pending value" reading over every temp-using ARM
+        expansion.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact:
+        `python3 scripts/repro/pending_below_temp_1721_differential.py` with
+        SYNTH set to the binary under test. Any wrong vector or declined export
+        refutes it.
+
+        MEASURED 2026-11-13 on main 34781a8c: LIVE.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - selector
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1721"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 every ARM expansion with internal temps or a
+        multi-instruction sequence (i32 and i64 div_s, div_u, rem_s, rem_u,
+        rotl, rotr, shl, shr_s, shr_u, mul, popcnt, clz, ctz) returns the
+        wasmtime value with an i32 or i64 value pending below it at depth 1 and
+        2, and with a param alias pending, at every round-robin cursor offset,
+        on cortex-m4 and cortex-m7dp, relocatable and self-contained. This is
+        executed against wasmtime, red before and green after.
+      landed: "v0.91 ARMDIVPEND - #1721 - DELIVERED: a wrong-code fix, carried by the #1712 scratch-reservation change in select_with_stack.rs, plus the class oracle scripts/repro/pending_below_temp_1721_differential.py."
+      verified-by: >
+        DELIVERED, execution-verified. New wired oracle
+        scripts/repro/pending_below_temp_1721_differential.py (ci.yml, job
+        repro-sweep-arm-corpus-oracle, through oracle_run.py, `emulations >=
+        110000`). 4214 exports: 26 ops x 5-6 pending shapes x param or temp
+        operands x 9 cursor offsets x 3 signatures, plus the issue's two
+        exports, on cortex-m4 and cortex-m7dp, relocatable and self-contained
+        (the self-contained leg asserts at least 194 functions lowered by the
+        optimized path), against wasmtime under unicorn. RED on main
+        34781a8c: 116016/117544 with 64 declined exports; the wrong exports
+        are only i32 div_s, rem_s and rem_u plus the issue's two, and the
+        declines are only i32.rotl. GREEN on main + the #1712 fix:
+        117992/117992, 0 declined.
