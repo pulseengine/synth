@@ -2,7 +2,7 @@ artifacts:
   - id: RQ-91-SUPPORTLEVELS
     type: system-req
     release: v0.91
-    status: proposed
+    status: implemented
     title: "Each backend carries a support level, L1 to L3, whose criteria are pinned in claims.yaml"
     description: >
         THEME: backend support levels, adopted by the maintainer on
@@ -57,6 +57,63 @@ artifacts:
       issue: "#1286"
       verification-track: manual
       issue-scope: closes
+      landed: >
+        #1286 - DELIVERED: docs/status/FEATURE_MATRIX.md (generated from
+        scripts/templates/feature_matrix.md.tmpl) carries a `## Support
+        levels` table with six rows: Cortex-M Thumb-2 L1, RISC-V RV32 L2,
+        AArch64 L2, Cortex-R5 --relocatable L2, Cortex-R5 self-contained
+        image L3, x86-64 L3. Cortex-M0/M0+ is noted as pending #1685, not
+        listed. claims.yaml `support_levels:` is the ledger, and the new
+        scripts/support_level_check.py re-derives every L1/L2 criterion
+        from the tree in two new Claim Check steps (self-test + live).
+        oracle_wiring_check.py gains `step_chunks`, factored out of
+        `executable_surface` unchanged so both read a step the same way.
+      verified-by: >
+        DELIVERED, with one L1 criterion found NOT MET and recorded as such.
+        REFUTING COMMAND, run first on origin/main 617e440b: LIVE. 0
+        support-level hits in docs, claims.yaml, README.md and scripts; 9
+        hit lines in artifacts, all in the v0.91 planning records
+        themselves (RQ-91-ARMV6M, RQ-91-R5DATAINIT, RQ-91-SUPPORTLEVELS,
+        _release.yaml), so the MEASURED line above, taken before those
+        records existed, no longer holds for artifacts; no x86 crate; 0
+        x86-64 mentions in any crate's src; FEATURE_MATRIX.md had the
+        seven sections that line names and no level table. THE FINDING:
+        the acceptance ladder's `arm` rung does not measure Thumb-2.
+        partial_census_1017.py compiles `-b arm --all-exports
+        --relocatable` and no LADDER_RUNGS entry adds --target or
+        --cortex-m; synth-cli resolve_target_spec maps an ARM build with
+        neither to IsaVariant::Arm32. Executed on a debug build of
+        617e440b: an i32.add module under `-b arm --relocatable` emits A32
+        words (10402de9 = push {r4, lr}) with even STT_FUNC values, while
+        `--cortex-m` and `--target cortex-m4` emit Thumb (10b5) at odd
+        values. The ladder's own `LdrSym` Thumb-2-only NEVER bucket fits
+        that reading. So Cortex-M Thumb-2 sits at L1 by the maintainer's
+        placement with its ladder criterion OPEN; the table row says `not
+        met`, and the checker accepts the open entry only while it can see
+        that cause (it reds once the census selects a Cortex-M target).
+        The other L1 criteria are met: spec_exec_1636_differential.py runs
+        in the required `spec-suite execution (#1636)` check (its only
+        wasmtime differential in a required context), `--test
+        wcet_bound_gate` in `Test`, `bazel test //coq:verify_proofs` in
+        `Bazel Build & Proofs`. L2's every-shape loud-decline clause is
+        not mechanically checkable; the gate holds the named decline
+        tripwires, and the table says so. PAIRED CONTROLS on a copy of
+        the branch tree: demote (rv32_br_table_882 step body replaced in
+        ci.yml) reds support_level_check (not WIRED, DEMOTION) and
+        oracle_wiring_check; drift (RV32 row L2 to L3) reds
+        support_level_check (DRIFT) and claim_check
+        (SYNTH-SUPPORT-LEVELS-RQ91 and the pinned floor); promotion by
+        assertion (x86-64 L2 in table, ledger and claim) reds
+        support_level_check (no BACKENDS entry); with x86-64 also
+        registered in BACKENDS it reds for no differential and no decline
+        tripwire, and with RV32's evidence borrowed it reds because that
+        evidence never invokes x86-64. Also red: the WCET step pointed at
+        another test, and --cortex-m added to the census (open gap now
+        met). The base tree 617e440b reds for lack of a support_levels
+        section. The self-test runs 18 cases on a synthetic tree, a
+        green baseline and one mutation per way a level can lie.
+        oracle_wiring_check --json and its stdout are byte-identical
+        before and after the step_chunks refactor.
       done-when: >
         manual:2027-03-31 docs/status/FEATURE_MATRIX.md carries a
         support-level table for every backend that cites

@@ -625,7 +625,9 @@ feature_matrix_facts:
   # coverage never reddens, the ratchet direction is UP.
   floors:
     derived: 25            # {{field}} substitutions re-derived every run
-    pinned: 12             # spans pinned by a claim whose doc: is the template
+    pinned: 20             # spans pinned by a claim whose doc: is the template
+                           # (12 -> 20 RQ-91-SUPPORTLEVELS: the live count with the six
+                           # support-level row pins; was 14 on 617e440b)
 
   # Identifier-shaped tokens that carry a digit but assert nothing measurable.
   # This list is the RESIDUAL TRUST in the exhaustiveness gate: a real fact
@@ -827,6 +829,85 @@ repo_metadata:
     - rust
     - wcet
     - webassembly
+
+# -----------------------------------------------------------------------------
+# support_levels — RQ-91-SUPPORTLEVELS. Each backend's SUPPORT LEVEL (never
+# "tier": T1/T2/T3 are the Rocq proof tiers) and the NAMES of the evidence each
+# criterion rests on. `scripts/support_level_check.py` (Claim Check job)
+# re-derives every criterion from the tree: the oracle is wired
+# (oracle_wiring_check.classify), the L1 differential / WCET gate / proof
+# compile run in a REQUIRED check (ci_pool_tripwire.REQUIRED_CONTEXTS), the
+# evidence invokes THIS backend, and the `## Support levels` table of the
+# generated docs/status/FEATURE_MATRIX.md carries the same level and names the
+# same evidence. No number is copied here: the acceptance figures are cited
+# from docs/status/ACCEPTANCE_LADDER.md (#1286).
+#
+# A backend above L3 must also be registered in the checker's BACKENDS map, so
+# raising a level string here is never a promotion on its own. Only the L1
+# `ladder` criterion may be declared open, and only while the checker can see
+# its cause; the open entry reds once the cause is gone.
+# -----------------------------------------------------------------------------
+support_levels:
+  backends:
+    - id: cortex-m-thumb2
+      row: "Cortex-M Thumb-2 (`--cortex-m`, `--target cortex-m*`)"
+      level: L1
+      differentials:
+        - scripts/repro/spec_exec_1636_differential.py
+        - scripts/repro/call_indirect_642_differential.py
+      declines:
+        - crates/synth-cli/tests/call_indirect_275_selfcontained.rs
+        - crates/synth-cli/tests/i64_call_arg_decline_929.rs
+      proofs:
+        - coq/Synth/Synth/VcrSelRules.v
+      wcet_gate: crates/synth-cli/tests/wcet_bound_gate.rs
+      ladder_rung: arm
+      open:
+        - criterion: ladder
+          reason: >-
+            partial_census_1017.py measures the `arm` rung as `-b arm
+            --relocatable` with no --target and no --cortex-m, which resolves to
+            IsaVariant::Arm32 (synth-cli resolve_target_spec), so the rung
+            measures the A32 encoder; no ladder rung measures Thumb-2.
+    - id: rv32
+      row: "RISC-V RV32 (`-b riscv`)"
+      level: L2
+      differentials:
+        - scripts/repro/rv32_br_table_882_differential.py
+        - scripts/repro/rv32_globals_1163_boot_differential.py
+      declines:
+        - crates/synth-backend-riscv/tests/param_block_decline_1093.rs
+    - id: aarch64
+      row: "AArch64 (`-b aarch64`)"
+      level: L2
+      differentials:
+        - scripts/repro/aarch64_call_valstack_rq63_differential.py
+        - scripts/repro/arm64_linux_host_link_rq64_differential.py
+      declines:
+        - scripts/repro/aarch64_m2_decline_538.py
+        - crates/synth-cli/tests/aarch64_f32_loudskip_554.rs
+    - id: cortex-r5-relocatable
+      row: "Cortex-R5 `--relocatable` (`--target cortex-r5 --relocatable`)"
+      level: L2
+      differentials:
+        - scripts/repro/a32_control_flow_1639_differential.py
+        - scripts/repro/a32_i64_615_differential.py
+      declines:
+        - crates/synth-backend/tests/a32_no_silent_nop_615.rs
+    # L3: fails L2's loud-decline rule (RQ-91-R5DATAINIT). Promoted only when
+    # the image builder places data segments and global inits, or refuses.
+    - id: cortex-r5-image
+      row: "Cortex-R5 self-contained image (`--target cortex-r5`)"
+      level: L3
+    # L3: a maintainer-relayed request; no code, no crate, no issue.
+    - id: x86-64
+      row: "x86-64"
+      level: L3
+    # L3: refuse-only (#1301, RQ-91-ARMV6M): every module is declined loudly;
+    # no ARMv6-M code is generated, so there is no correctness claim to hold.
+    - id: cortex-m0-armv6m
+      row: "Cortex-M0/M0+ (ARMv6-M, `--target cortex-m0`, `cortex-m0plus`)"
+      level: L3
 
 claims:
   # ---------------------------------------------------------------------------
@@ -5869,3 +5950,31 @@ claims:
         pattern: '^def is_loud_effect\('
         glob: ['scripts/mutation_survey.py']
         expect: 1
+
+  # RQ-91-SUPPORTLEVELS (#1286): the support-level table. The level cell of
+  # every row is pinned here (so a drifted level reds claim_check as well as
+  # the checker), and the checker that re-derives each criterion from the
+  # tree must exist and run, self-test included, in the Claim Check job.
+  # The `support_levels:` section above is that checker's ledger.
+  - id: SYNTH-SUPPORT-LEVELS-RQ91
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "| x86-64 | L3 experimental |"
+    evidence:
+      - kind: verbatim
+        text: "| Cortex-M Thumb-2 (`--cortex-m`, `--target cortex-m*`) | L1 verified (ladder criterion not met) |"
+      - kind: verbatim
+        text: "| RISC-V RV32 (`-b riscv`) | L2 execution-tested |"
+      - kind: verbatim
+        text: "| AArch64 (`-b aarch64`) | L2 execution-tested |"
+      - kind: verbatim
+        text: "| Cortex-R5 `--relocatable` (`--target cortex-r5 --relocatable`) | L2 execution-tested |"
+      - kind: verbatim
+        text: "| Cortex-M0/M0+ (ARMv6-M, `--target cortex-m0`, `cortex-m0plus`) | L3 experimental |"
+      - kind: verbatim
+        text: "| Cortex-R5 self-contained image (`--target cortex-r5`) | L3 experimental |"
+      - kind: file-exists
+        path: scripts/support_level_check.py
+      - kind: count-eq                       # the checker and its self-test both run
+        pattern: '^\s+run: python3 scripts/support_level_check\.py (?:--self-test|claims\.yaml)$'
+        glob: ['.github/workflows/ci.yml']
+        expect: 2
