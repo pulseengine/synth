@@ -144,8 +144,10 @@ LIVE_LEGS = {
     "call": ["arm-reloc", "arm-self"],
 }
 # (module, leg) pairs the live half must REFUSE, with the needle that names
-# why. RV32 declines an i64 param (#312); #952 then fails the module.
-LIVE_DECLINES = {("i64", "rv32-reloc"): "stack type mismatch at op I32WrapI64"}
+# why. RV32 declines an i64 param (#312); #952 then fails the module. Since
+# #1714 the refusal fires at the first access to the DECLARED i64 param
+# (`local.get 0`), not later at a type mismatch the body happened to expose.
+LIVE_DECLINES = {("i64", "rv32-reloc"): "unsupported wasm op for RV32 skeleton: LocalGet(0)"}
 # The fixture (RED half) holds main's objects for the two ARM legs.
 FIXTURE_LEGS = [("main", "arm-reloc"), ("main", "arm-self"),
                 ("i64", "arm-reloc"), ("i64", "arm-self")]

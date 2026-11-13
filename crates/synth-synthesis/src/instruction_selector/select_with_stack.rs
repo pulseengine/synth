@@ -583,8 +583,15 @@ impl InstructionSelector {
         // entry and accessed only through it, so it can never be clobbered in
         // its home register between reads. Params with no slot (unused) stay
         // register-backed via local_to_reg.
+        //
+        // #1714: walk EVERY param, not `0..min(4)`. Under AAPCS-VFP a float
+        // param takes no core register, so `(f32 f32 f32 f32 i32)` homes
+        // param 4 in R0: the old bound left it out of `local_to_reg` (a loud
+        // "absent from the frame layout" decline) and, in a body with a call,
+        // never stored its frame-backing slot — every read of it loaded an
+        // uninitialised word, silently.
         let param_aapcs = &param_layout.regs;
-        for i in 0..num_params.min(4) {
+        for i in 0..num_params {
             if let Some(&(off, is_i64)) = layout.param_slots.get(&i) {
                 // #503-i64: `param_slots` only contains REGISTER-resident
                 // params now, so the AAPCS map has this index. #719 phase 2:
@@ -6972,7 +6979,7 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
-                    } else if *local_idx < num_params.min(4) {
+                    } else if param_aapcs.contains_key(local_idx) {
                         if i64_locals.contains(local_idx)
                             && declared_wide_params
                                 .get(*local_idx as usize)
@@ -6996,7 +7003,8 @@ impl InstructionSelector {
                             cf.add_instructions(n);
                             continue;
                         }
-                        let target = index_to_reg(*local_idx as u8);
+                        // #1714: the param's AAPCS home, NOT `index_to_reg(i)`.
+                        let target = narrow_param_home(*local_idx, param_aapcs, idx)?;
                         if val != target {
                             // #989: an EARLIER `local.get` of this same param
                             // pushed `target` by reference — copy any such
@@ -7145,7 +7153,7 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
-                    } else if *local_idx < num_params.min(4) {
+                    } else if param_aapcs.contains_key(local_idx) {
                         if i64_locals.contains(local_idx)
                             && declared_wide_params
                                 .get(*local_idx as usize)
@@ -7171,7 +7179,8 @@ impl InstructionSelector {
                             cf.add_instructions(n);
                             continue;
                         }
-                        let target = index_to_reg(*local_idx as u8);
+                        // #1714: the param's AAPCS home, NOT `index_to_reg(i)`.
+                        let target = narrow_param_home(*local_idx, param_aapcs, idx)?;
                         if val != target {
                             // #989: snapshot earlier `local.get` aliases of this
                             // param's home register before overwriting it. The
@@ -9755,6 +9764,38 @@ impl InstructionSelector {
 
         Ok(instructions)
     }
+}
+
+/// #1714: the register a NARROW (i32/f32-in-core) param's `local.set` /
+/// `local.tee` writes — its AAPCS home from `aapcs_param_layout`, the same map
+/// the prologue seeded `local_to_reg` from and every `local.get` reads.
+///
+/// The arm this serves wrote `index_to_reg(local_idx)`, which is the home only
+/// for a signature whose earlier params each took exactly one core register.
+/// A wide param takes an even-aligned PAIR and a VFP-homed float takes none,
+/// so `(i64 i32)` homes the i32 in R2 (not R1), `(f32 i32)` homes it in R0
+/// (not R1), and `(f32 i32 i32)` homes local 1 in R0 and local 2 in R1. The
+/// write went to the sequential register — the i64's high half, or ANOTHER
+/// live param — and re-pointed `local_to_reg` there, while a read already
+/// emitted against the true home (a loop header) kept reading the old value:
+/// `f(0, 3)` of a countdown loop over the i32 of `(i64 i32)` never ended.
+///
+/// A param with no register home is not register-written here: stack-passed
+/// params route through `incoming_params` and frame-backed ones through
+/// `param_slots` before this arm. Reaching it without a home is a compiler
+/// bug, refused loudly rather than guessed (#378).
+fn narrow_param_home(
+    local_idx: u32,
+    param_aapcs: &std::collections::HashMap<u32, Reg>,
+    idx: usize,
+) -> Result<Reg> {
+    param_aapcs.get(&local_idx).copied().ok_or_else(|| {
+        synth_core::Error::synthesis(format!(
+            "#1714: param {local_idx} has no AAPCS register home at op {idx} \
+             (compiler bug: the register-homed set/tee arm was reached for an \
+             unhomed param) — refusing to guess `index_to_reg({local_idx})`"
+        ))
+    })
 }
 
 /// #1222 (RQ-65-ALIASCLASS): write `val` (the LO register of an i64 vstack

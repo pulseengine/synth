@@ -49,12 +49,15 @@ identical):
 
 | family | files | arm (m3) | arm_m4f | arm_m7dp |
 |--------|-------|----------|---------|----------|
-| **MVP core** | 80 | **13** / 19 | **16** / 20 | **19** / 20 |
+| **MVP core** | 80 | **13** / 19 | **16** / 20 | **22** / 16 |
 | memory64 | 14 | 1 / 0 | 1 / 0 | 2 / 0 |
 
 The MVP-core gain is `f32_bitwise`, `f32_cmp`, `memory_redundancy` (m4f) and
 `f64_bitwise`, `f64_cmp` (m7dp); `f32` and `float_misc` move all_declined ->
-partial on m4f. memory64's m7dp gain is `f64.wast` — the `64\.wast$`
+partial on m4f. PARAMI64 (#1714, v0.91) moved m7dp 19 -> 22: `local_get`, `local_set` and
+`local_tee` go partial -> ok, because an i32 param at index 4 after
+VFP-homed float params (core register R0) is now homed instead of declined.
+memory64's m7dp gain is `f64.wast` — the `64\.wast$`
 filename mis-attribution noted above, an MVP-core numeric file. These are
 compile counts only: no spec float assertion is executed on any target today
 (see #1609).

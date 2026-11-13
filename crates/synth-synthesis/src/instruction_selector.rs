@@ -18817,6 +18817,51 @@ mod tests {
         );
     }
 
+    /// #1714: `local.set`/`local.tee` of a NARROW param writes its AAPCS home,
+    /// not `index_to_reg(local_idx)`. In `(i64 i32)` the i32 lives in R2; the
+    /// pre-fix arm wrote R1 — the i64's high half — and re-pointed the home
+    /// there, so a loop header already emitted against R2 never saw the write
+    /// (the issue's countdown never ended).
+    #[test]
+    fn narrow_param_set_writes_the_aapcs_home_1714() {
+        use WasmOp::*;
+        for (op, name) in [(LocalSet(1), "set"), (LocalTee(1), "tee")] {
+            let mut s = fresh_selector();
+            s.set_params_i64(vec![true, false]);
+            let mut ops = vec![LocalGet(1), I32Const(1), I32Sub, op];
+            if name == "tee" {
+                ops.push(Drop);
+            }
+            ops.extend([LocalGet(1), End]);
+            let arm = s
+                .select_with_stack(&ops, 2)
+                .unwrap_or_else(|e| panic!("{name} of the i32 after an i64 lowers: {e}"));
+            let writes: Vec<Reg> = arm
+                .iter()
+                .filter(|i| i.source_line == Some(3))
+                .filter_map(|i| match &i.op {
+                    ArmOp::Mov { rd, .. } => Some(*rd),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                writes,
+                vec![Reg::R2],
+                "local.{name} 1 of (i64 i32) must write R2, its home: {arm:#?}"
+            );
+            assert!(
+                arm.iter().any(|i| matches!(
+                    &i.op,
+                    ArmOp::Mov {
+                        rd: Reg::R0,
+                        op2: Operand2::Reg(Reg::R2)
+                    }
+                )),
+                "the later local.get 1 still reads R2: {arm:#?}"
+            );
+        }
+    }
+
     /// #1189: the join register must never be a LIVE register-homed local's
     /// home. Param 0 is homed in R0 (call-free function); the then-arm's bare
     /// `local.get 0` used to push R0 itself, and the #313 reconciliation on

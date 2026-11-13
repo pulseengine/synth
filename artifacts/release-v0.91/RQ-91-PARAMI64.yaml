@@ -1,0 +1,62 @@
+artifacts:
+  - id: RQ-91-PARAMI64
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "A param after a wide param is read and written at its ABI home on ARM and RV32"
+    description: >
+        SILENT MISCOMPILE on two backends, filed as #1714 from a cross-backend
+        differential test against wasmtime. On ARM, `(param i64 i32)` with a
+        `local.set 1` in a countdown loop never terminated: the loop tested the
+        i32 in R2 while the set wrote R1, the i64's high half. On RV32,
+        `(param i64 i32) local.get 1` returned 0 for f(0,2) where wasmtime
+        returns 2: the i32 was read from a1, the i64's high word.
+
+        THE DEFECT. Both selectors derived a param's register from its INDEX, not
+        from where the calling convention puts it. ARM: the narrow
+        `local.set`/`local.tee` arms of select_with_stack wrote
+        `index_to_reg(local_idx)` while every read used the AAPCS home already
+        computed, and the home walk stopped at param 4, so `(f32 x4, i32)` param
+        4 (in R0 under the VFP convention) was read from a frame slot never
+        stored in a body with a call. RV32: param k was always `a(k)`, and the
+        i64-param refusal (#312) keyed on the width the body INFERRED, not the
+        declared width.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact: compile
+        `(module (func (export "f") (param i64 i32) (result i32) local.get 1))`
+        with `synth compile x.wat -b riscv -t rv32imac --relocatable
+        --all-exports -o x.o` and call f(0,2) under unicorn. If it returns 2
+        (or the export is refused loudly), the RV32 half is refuted.
+
+        MEASURED 2026-11-13 on main 332a22db: LIVE on both backends.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - selector
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1714"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 every narrow param after a wide one is read and written
+        at its ABI home on ARM (m4, m7dp, r5; relocatable and image), and on RV32
+        any access to a declared i64/f64 or stack-passed param is refused loudly.
+        This is executed against wasmtime, red before and green after.
+      landed: "v0.91 PARAMI64 - #1714 - DELIVERED: ARM narrow set/tee write the AAPCS home through `narrow_param_home` (loud refusal if none), and the home walk covers every param. RV32 places params by ilp32 (`rv32_param_homes`, checked against clang -mabi=ilp32) and refuses any access to a declared i64/f64 or stack-passed param."
+      verified-by: >
+        DELIVERED, execution-verified. New wired oracle
+        scripts/repro/param_after_wide_1714_differential.py (job
+        cond-write-param-970-oracle, `emulations >= 4614`): 12 signatures plus
+        all-i32 controls x read/set/tee/loop/call/set-then-read, on cortex-m4,
+        m7dp and r5 (relocatable and image) and RV32, with the compiled set
+        asserted exactly per leg. RED on main 332a22db (961 failures), GREEN on
+        the branch (0). Ablations: ARM fix reverted gives 596 failures (ARM legs
+        red), RV32 fix reverted 365 (RV32 red). Reach: cortex-m7dp gains 7 spec
+        functions; RV32 now refuses 12 spec functions that touched an i64 param,
+        some of which were wrong on main and some right only by chance.

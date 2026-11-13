@@ -273,7 +273,12 @@ PINS = {
     "arm_m4f": dict(ok=19, partial=28, all_declined=88, module_decline=103,
                     no_module=9, no_exports=9, parse_fail=1, panic=0,
                     other_error=0),
-    "arm_m7dp": dict(ok=23, partial=27, all_declined=85, module_decline=103,
+    # PARAMI64 (#1714): arm_m7dp ok 23 -> 26, partial 27 -> 24 — local_get,
+    # local_set, local_tee partial -> ok. Their `read` / `type-mixed` /
+    # `write` / `result` exports (7 functions) have an i32 param at index 4
+    # after VFP-homed float params (core register R0); the param-home walk
+    # stopped at index 4 and declined them as "absent from the frame layout".
+    "arm_m7dp": dict(ok=26, partial=24, all_declined=85, module_decline=103,
                      no_module=9, no_exports=9, parse_fail=1, panic=0,
                      other_error=0),
 }
@@ -298,7 +303,7 @@ PINS = {
 # wasm's results are (2, 1). On arm_m7dp the five never shipped at all:
 # with --allow-skipped-exports the module was refused whole by #1102
 # (`type-all-f32-f64 -> func_11`). No file bucket moves.
-SKIPPED_FUNCTION_PINS = {"arm_m4f": 1491, "arm_m7dp": 1405}
+SKIPPED_FUNCTION_PINS = {"arm_m4f": 1491, "arm_m7dp": 1398}
 
 # Doc-cited derived figure, re-asserted at runtime against the pins above so
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:
@@ -503,7 +508,7 @@ FAMILY_OK_PINS = {
                  "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                  "memory64": 1, "bulk memory": 1, "reference types": 0,
                  "multi-value": 0},
-    "arm_m7dp": {"MVP core": 19, "multi-memory": 1, "SIMD": 0, "GC": 0,
+    "arm_m7dp": {"MVP core": 22, "multi-memory": 1, "SIMD": 0, "GC": 0,
                  "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                  "memory64": 2, "bulk memory": 1, "reference types": 0,
                  "multi-value": 0},
