@@ -1642,11 +1642,23 @@ def main():
         sys.exit(f"claim_check: {path} not found")
     root = path.parent
     data = strict_load(path.read_text(), str(path)) or {}
-    claims = data.get("claims", [])
+    if not isinstance(data, dict):
+        sys.exit(f"claim_check: {path}: top level is not a mapping — refusing to gate nothing.")
+    claims = data.get("claims")
     status_spec = data.get("status_fields", {}) or {}
-    if not claims:
-        print("claim_check: no claims declared — nothing to gate.")
-        return
+    # An empty or missing `claims:` list used to print "nothing to gate" and
+    # exit 0 — BEFORE the surface gates below (generated-file freshness,
+    # fixtures, template facts, README links) ever ran. A ledger truncated to
+    # `claims: []`, a renamed key, or an empty file therefore turned the whole
+    # required check green while checking nothing. That is fail-OPEN; the
+    # ledger is never legitimately empty in this repo, so refuse it.
+    if not isinstance(claims, list) or not claims:
+        shape = "missing" if claims is None else (
+            "empty" if isinstance(claims, list) else f"not a list ({type(claims).__name__})")
+        sys.exit(
+            f"claim_check: {path}: `claims:` is {shape} — an empty ledger gates "
+            "nothing, so it is a failure, not a pass."
+        )
 
     status = derive_status(status_spec, root) if status_spec else {}
 
