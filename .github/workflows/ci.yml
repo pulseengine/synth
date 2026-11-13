@@ -2031,11 +2031,21 @@ jobs:
       - name: Verify Rocq proofs
         run: bazel test //coq:verify_proofs
       - name: Run Renode emulation tests
-        # #945: `|| [ $? -eq 4 ]` swallows Bazel exit 4 = NO TESTS MATCHED, so
-        # this step passed while selecting nothing. Keep tolerating a genuinely
-        # empty Renode matrix (the emulator is not always available), but SAY so
-        # rather than reporting a silent pass — an unreachable gate that prints
-        # nothing is the class this release exists to remove.
+        # INTENT (41d651b4, the commit that added this step): "Added bazel test
+        # //tests/renode/... to Bazel CI job" — run the Renode emulation tests
+        # in tests/renode. But it filtered on `--test_tag_filters=wast`, and
+        # every target in tests/renode/BUILD.bazel is tagged `renode` (the
+        # `wast` tag belongs to the build/wast_test.bzl macros used under
+        # tests/wast and tests/spec). So the filter selected NOTHING, from the
+        # day it landed: `bazel query 'attr(tags, "\bwast\b",
+        # tests(//tests/renode/...))'` is empty, and the same query on
+        # `renode` lists the four targets (cortex_m_add_test,
+        # cortex_m7_add_test, memory_test, riscv_add_test).
+        #
+        # #945 then made exit 4 (NO TESTS MATCHED) print a warning instead of
+        # passing silently, but still tolerated it, so this required check
+        # stayed green on zero tests. Exit 4 is now FATAL: a filter that
+        # selects nothing is a broken gate, not an absent emulator.
         #
         # NOTE (updated by #1095, CORRECTED by #1217 in v0.65): this target
         # tree still references `tests/spec-testsuite` ZERO times — but the
@@ -2072,10 +2082,10 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          bazel test //tests/renode/... --test_tag_filters=wast || rc=$?
+          bazel test //tests/renode/... --test_tag_filters=renode || rc=$?
           if [ "$rc" -eq 4 ]; then
-            echo "::warning::renode wast matrix selected ZERO tests (bazel exit 4)"
-            echo "  This step is TOLERATED-EMPTY, not passing on evidence."
+            echo "::error::the Renode test filter selected ZERO tests (bazel exit 4) — the gate is checking nothing"
+            exit 4
           elif [ "$rc" -ne 0 ]; then
             exit "$rc"
           fi
