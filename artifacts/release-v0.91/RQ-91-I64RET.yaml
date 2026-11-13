@@ -1,0 +1,70 @@
+artifacts:
+  - id: RQ-91-I64RET
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "An i64 result reaches R1 at every function exit on ARM"
+    description: >
+        SILENT MISCOMPILE, filed as #1710 from a differential test against
+        wasmtime. `(return (i64.shl (local.get $x) (i64.const 31)))` compiled
+        `--relocatable -t cortex-m4f` or `-t cortex-m7dp` returned the
+        argument's high word in R1: shl(0x0123456789abcdef, 0) gave
+        0x0123456780000000 where wasmtime gives 0xc4d5e6f780000000. The same
+        body without `return` was correct.
+
+        THE DEFECT, two layers. (1) The direct selector
+        (`select_with_stack.rs`) has five function-exit sites: the
+        fall-through epilogue, `return`, and a function-level `br`, `br_if`
+        and `br_table`. Only the fall-through epilogue moved an i64's high
+        word into R1; the other four each had a lo-only `mov r0` copy. (2)
+        With layer 1 fixed, `br_table` exits were still wrong: the default
+        post-exhaust re-allocator (`liveness.rs`) grouped instructions across
+        a mid-function `pop {..., pc}` return, saw the dead code after it
+        redefine R1, and renamed the `mov r1, hi` before the return to `mov
+        r0, hi`. The class covers every i64-producing op at every explicit
+        exit, on Thumb-2 (relocatable, and the self-contained image wherever
+        it falls back to the direct selector) and on A32 (cortex-r5).
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact: compile
+        the function above with `synth compile x.wat -t cortex-m4f
+        --relocatable --all-exports -o x.o` and call it under unicorn with
+        (0x0123456789abcdef, 0). If R1:R0 equals wasmtime
+        (0xc4d5e6f780000000), the defect is refuted.
+
+        MEASURED 2026-11-13 on main e918c711: LIVE.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - selector
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1710"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 every i64-producing op returns both halves at every
+        function exit (tail and non-tail `return`, function-level br, br_if
+        and br_table, return inside if/else and loop, dead code after a
+        return) on Thumb-2 (relocatable and self-contained) and A32. This is
+        executed against wasmtime, red before and green after.
+      landed: "v0.91 I64RET - #1710 - DELIVERED: a wrong-code fix. The five function-exit sites of the direct selector share one landing, `int_return_moves`, which moves an i64 into R0:R1. The post-exhaust re-allocator (and apply_spill_realloc_post_exhaust) end a group at a mid-function return, so a return's R1 landing is no longer renamed."
+      verified-by: >
+        DELIVERED, execution-verified. New wired oracle
+        scripts/repro/i64_explicit_return_1710_differential.py (ci.yml, job
+        repro-sweep-selector-oracle, through oracle_run.py, `emulations >=
+        50000`). It covers 32 i64 producers x 11 exits x 3 signatures on
+        cortex-m4, m4f, m7dp and r5 relocatable and on self-contained m4 and
+        m7dp booted through their Reset_Handler, against wasmtime under
+        unicorn, with poisoned argument registers and checked callee-saved
+        registers and SP. RED on main 5f6aef20: 29450/52800. GREEN on the
+        branch: 52800/52800. A layer-1-only control gives 48744/52800, every
+        remaining failure on br_table. Unit test
+        `return_pop_ends_the_realloc_segment_1710` fails with the new cut
+        disabled. The home-alias audit moves +14 attributed (244358 ->
+        244372, hits 0; main's binary over the same tree prints 244358), and
+        selector_lines_code falls by 1 (21310 -> 21309).

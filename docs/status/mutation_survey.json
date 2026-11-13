@@ -673,7 +673,7 @@
       "want_classification": "UNTESTED"
     },
     {
-      "id": "R4-shared/REG/liveness.rs:7436:36",
+      "id": "R4-shared/REG/liveness.rs:7449:36",
       "want_bytes": "changed",
       "want_changed": [
         "aarch64_param_homing_851.wat|reloc",
@@ -2300,7 +2300,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "b0b643f1",
+    "reanchored_at": "5f6aef20",
     "seed": 1189
   },
   "mutants": [
@@ -2620,13 +2620,13 @@
       "before": "            op2: Operand2::Imm(v),",
       "build_error": "error: expected a pattern, found an expression",
       "classification": "UNCOMPILABLE",
-      "end": 9008,
+      "end": 9026,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/IMM/liveness.rs:9008:17",
+      "id": "R4-shared/IMM/liveness.rs:9026:17",
       "op": "IMM",
       "region": "R4-shared",
       "seconds": 1.4,
-      "start": 9008,
+      "start": 9026,
       "status": "uncompilable"
     },
     {
@@ -5404,13 +5404,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 7436,
+      "end": 7449,
       "file": "crates/synth-synthesis/src/liveness.rs",
-      "id": "R4-shared/REG/liveness.rs:7436:36",
+      "id": "R4-shared/REG/liveness.rs:7449:36",
       "op": "REG",
       "region": "R4-shared",
       "seconds": 326.8,
-      "start": 7436,
+      "start": 7449,
       "status": "survived",
       "suite_seconds": 290.1
     },
@@ -6971,13 +6971,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 8229,
+      "end": 8221,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/COND/select_with_stack.rs:8229:37",
+      "id": "R3-direct/COND/select_with_stack.rs:8221:37",
       "op": "COND",
       "region": "R3-direct",
       "seconds": 329.4,
-      "start": 8229,
+      "start": 8221,
       "status": "survived",
       "suite_seconds": 301.7
     },
@@ -7430,9 +7430,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 7434,
+      "end": 7426,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/GUARD/select_with_stack.rs:7434:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:7426:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -7444,7 +7444,7 @@
       "op": "GUARD",
       "region": "R3-direct",
       "seconds": 22.6,
-      "start": 7434,
+      "start": 7426,
       "status": "killed"
     },
     {

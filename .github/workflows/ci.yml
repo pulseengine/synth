@@ -5063,6 +5063,19 @@ jobs:
           # main skipped now compile and are audited. Paired control: main
           # b0b643f1's binary over this tree prints 7767 / 9342 / 244235.
           # `hits: 0`.
+          # I64RET (#1710, v0.91), re-derived on the tree rebased onto 5f6aef20:
+          # attributed 244358 -> 244372 (functions and homes unchanged); paired
+          # control: main 5f6aef20's binary over this tree prints 244358.
+          # The branch adds no .wat fixture; first measured on e918c711 as
+          # 244183 -> 244197 (+14). Per
+          # (module, leg), from disassembly diffs: int_literals.wast +1 on
+          # m4-reloc and m4f-reloc (`i64.inc_smin`, `return (i64.add ..)`:
+          # the sum's hi word now reaches R1; on main R1 still held the
+          # operand's hi, 0x80000000, which is also the sum's — right only by
+          # coincidence); unwind.wast +3 on all four legs (the VOID
+          # func-unwind-by-br/-br_if/-return now also move the unwound i64's
+          # hi to R1, as the fall-through epilogue always did — unobservable in
+          # a void function). `hits: 0`.
           grep -Eq '^functions audited: 7773$' haa1189.txt
           grep -Eq '^homes watched: 9357$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
@@ -5079,7 +5092,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 244358 ' haa1189.txt
+          grep -Eq '^attributed instructions: 244372 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
@@ -6564,6 +6577,20 @@ jobs:
           python scripts/oracle_run.py scripts/repro/brvalue_operand_1215_differential.py | tee /tmp/brvalue1215.log
           grep -qE '^#1215 CHECKS=[0-9]{3,}/[0-9]{3,}$' /tmp/brvalue1215.log
           grep -q '^RESULT: PASS' /tmp/brvalue1215.log
+      - name: i64 result through an explicit exit (#1710, Thumb-2 + A32, both selectors)
+        # v0.91 I64RET: every i64 producer x every function exit (`return`,
+        # function-level br/br_if/br_table, return in if/loop, dead code
+        # after the exit; fall-through as the control) on --relocatable
+        # cortex-m4/m4f/m7dp/r5 and the self-contained m4/m7dp images, vs
+        # wasmtime. Red on e918c711 (the four explicit-exit sites landed only
+        # R0; the range re-allocator recoloured R1 across a mid-segment pop).
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py scripts/repro/i64_explicit_return_1710_differential.py | tee /tmp/i64ret1710.log
+          # NON-VACUITY: tens of thousands of vectors compared (the script
+          # itself fails on any disagreement; no backreference, see #1189's).
+          grep -Eq '^#1710 I64RET CHECKS=[1-9][0-9]{4,}/[1-9][0-9]{4,} ' /tmp/i64ret1710.log
+          grep -q '^RESULT: PASS' /tmp/i64ret1710.log
       - name: optimized-path forward-branch shapes (#500)
         run: python scripts/oracle_run.py scripts/repro/cf_shapes_500_differential.py
       - name: const-only-body return differential (#791)
@@ -6687,7 +6714,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 32
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 33
 
   repro-sweep-memory-oracle:
     name: repro sweep — linear memory / static data / native-pointer differentials

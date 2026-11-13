@@ -2020,6 +2020,36 @@ fn i64_pair_hi(lo_reg: Reg) -> Result<Reg> {
     )))
 }
 
+/// Whether the stack top is an i64 — read BEFORE a pop/peek (they return the lo only).
+fn top_is_i64(stack: &[StackVal]) -> bool {
+    matches!(
+        stack.last(),
+        Some(StackVal::Reg { is_i64: true, .. }) | Some(StackVal::Spilled { is_i64: true, .. })
+    )
+}
+
+/// #1710: the AAPCS integer return-value landing (`val` to R0; an i64's hi to
+/// R1), shared by EVERY direct-selector return site — the fall-through
+/// epilogue, `return`, and function-level `br`/`br_if`/`br_table`. Only the
+/// epilogue used to land the hi (#311 defect 3); the four other sites each
+/// had a lo-only copy and returned R1 stale. lo move FIRST: the only overlap
+/// is lo == R1 (hi == R2), where r1 must be read before it is written.
+fn int_return_moves(val: Reg, is_i64: bool) -> Result<Vec<ArmOp>> {
+    let hi = if is_i64 {
+        Some(i64_pair_hi(val)?)
+    } else {
+        None
+    };
+    Ok([(Reg::R0, Some(val)), (Reg::R1, hi)]
+        .into_iter()
+        .filter_map(|(rd, src)| src.filter(|&s| s != rd).map(|s| (rd, s)))
+        .map(|(rd, s)| ArmOp::Mov {
+            rd,
+            op2: Operand2::Reg(s),
+        })
+        .collect())
+}
+
 /// Per-function stack-frame layout for non-parameter locals.
 ///
 /// `offsets[idx]` gives the byte offset (relative to SP after the frame
