@@ -3929,9 +3929,26 @@ claims:
         # v0.61 RQ-61-FUZZWINDOW (#1055): 60 -> 59 — issue_103_i64_aapcs.rs
         # no longer says "mirrors" (the first-read checker doc it described
         # was replaced by the while-live invariant, stated in its own terms).
-        value: 60
+        value: 61
         baseline: 57
         waivers:
+          - to: 61
+            reason: >-
+              RQ-91-ARMV6M (#1301): 60 -> 61. The new
+              crates/synth-backend/src/armv6m.rs says why the ARMv6-M check
+              reads ENCODED BYTES: "a list of refused variants would be a
+              hand-maintained mirror of 224 encoder arms". It names the
+              mirror it declines to build; it is not one. The 16-bit legal
+              table in that file is DERIVED (enumerated by LLVM's thumbv6m
+              decoder, frozen in tests/fixtures/armv6m_legal16_1301.json, and
+              unit-tested equal to it). One real second copy exists, outside
+              this glob and stated here so it is counted somewhere: the
+              two-line 32-bit rule (BL, DMB/DSB/ISB SY) is re-stated in
+              scripts/repro/armv6m_1301_differential.py and
+              armv6m_llvm_crosscheck_1301.py, as INDEPENDENT checkers of the
+              objects the Rust check accepted. Same over-count class as the
+              RQ-64-MACHO waiver below; rewording to dodge the proxy would
+              delete the explanation.
           - to: 60
             reason: >-
               RQ-64-MACHO (#242): 59 -> 60. Two new files contain the word
@@ -3984,9 +4001,19 @@ claims:
       - kind: ratchet
         name: mirror_obligation_files
         direction: down
-        value: 24
+        value: 25
         baseline: 23
         waivers:
+          - to: 25
+            reason: >-
+              RQ-91-ARMV6M (#1301): 24 -> 25. The same sentence as the
+              mirror_marker_files waiver ("would be a hand-maintained
+              mirror of 224 encoder arms") matches the obligation pattern
+              through "hand-maintained". It states the obligation the
+              byte-level design AVOIDS, not one it creates: no file is kept
+              in sync with armv6m.rs by hand (its 16-bit table is
+              fixture-checked; its 32-bit rule's script restatements are
+              independent checkers, disclosed in that waiver).
           - to: 24
             reason: >-
               RQ-58-SPLIT (#242) unit 2: one existing obligation-pattern
@@ -4644,9 +4671,33 @@ claims:
         # What would make this the WRONG call: if the reporter's module is ever
         # vendored, or the maintainer approves a pinned fetch in CI, the script
         # must be WIRED, with the ceiling falling back to 11.
+        #
+        # 12 -> 13 (RQ-91-ARMV6M #1301, v0.91). The conversation, since the
+        # rule at the top of this block requires one:
+        #
+        # armv6m_llvm_crosscheck_1301.py checks synth's ARMv6-M byte check
+        # against an INDEPENDENT decoder, LLVM's thumbv6m-none-eabi: it
+        # re-enumerates all 59,392 non-prefix 16-bit halfwords and requires the
+        # result to equal the committed fixture, samples 786,432 32-bit pairs
+        # (every pair synth's rule accepts must be accepted by LLVM), and
+        # decodes every cortex-m0 object the repo corpus produces with a
+        # planted MOVW control. It is `toolchain`: the CI image installs only
+        # GNU binutils-arm-none-eabi, which is NOT an ARMv6-M oracle (measured:
+        # `--architecture=armv6-m` decodes movw, udiv, it and cbz without
+        # complaint), and pinning a distro LLVM in CI would compare the fixture
+        # against a DIFFERENT LLVM version's decoder than the one that wrote
+        # it. What IS gated in CI: the Rust unit test pinning the in-tree table
+        # to the frozen fixture, and the wired armv6m_1301_differential.py,
+        # which re-checks every accepted object's whole .text against that
+        # fixture and executes it against wasmtime. This script is how the
+        # fixture is re-derived and re-checked when the decoder moves.
+        #
+        # What would make this the WRONG call: if CI gains a pinned LLVM (the
+        # same major version as the fixture's provenance), the script must be
+        # WIRED, with the ceiling falling back to 12.
         pattern: '^# ci-status: manual'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
-        max: 12
+        max: 13
       - kind: count-max                      # known debt: zero, and it stays zero
         pattern: '^# ci-status: unwired'
         glob: ['scripts/repro/*.py', 'scripts/repro/*.sh']
@@ -4655,7 +4706,7 @@ claims:
         # 7 -> 8 (RQ-69-PROSEGATE #1319): moved in the same PR that raised the
         # count-max above, which is the point of pinning the sentence as well
         # as the number — the prose cannot lag the budget it describes.
-        text: "**12 manual**"
+        text: "**13 manual**"
       - kind: verbatim
         text: "**0 unwired**"
 

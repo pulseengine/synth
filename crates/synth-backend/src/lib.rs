@@ -28,6 +28,8 @@ pub use w2c2_wrapper::{TranspileOptions, TranspileResult, W2C2Backend, W2C2Trans
 pub mod arm_backend;
 #[cfg(feature = "arm-cortex-m")]
 pub mod arm_encoder;
+/// RQ-91-ARMV6M (#1301): the ARMv6-M instruction check over encoded bytes.
+pub mod armv6m;
 
 #[cfg(feature = "arm-cortex-m")]
 pub mod arm_startup;

@@ -5025,8 +5025,13 @@ jobs:
           # held aside, this branch's binary prints main's own 7739 / 9312 / 244173.
           # The five new COMPONENT fixtures contribute 0: they are refused before
           # selection. `hits: 0`.
-          grep -Eq '^functions audited: 7745$' haa1189.txt
-          grep -Eq '^homes watched: 9312$' haa1189.txt
+          # RQ-91-ARMV6M (#1301, v0.91): 7745 -> 7767 functions, 9312 -> 9342
+          # homes and (below) 244183 -> 244235 attributed. CORPUS GROWTH ONLY: the
+          # one new fixture scripts/repro/armv6m_1301.wat contributes all of it
+          # (+22 / +30 / +52); held aside, this branch's binary prints main's own
+          # 7745 / 9312 / 244183. `hits: 0`.
+          grep -Eq '^functions audited: 7767$' haa1189.txt
+          grep -Eq '^homes watched: 9342$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
           # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
@@ -5041,7 +5046,7 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          grep -Eq '^attributed instructions: 244183 ' haa1189.txt
+          grep -Eq '^attributed instructions: 244235 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the
           # same decline / needle / parse path — per (fixture, leg) EXACTLY
           # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
@@ -6566,6 +6571,11 @@ jobs:
         run: |
           ./target/debug/synth compile scripts/repro/high_pressure_i64.wat -o /tmp/hp64.elf --target cortex-m4 --relocatable
           python scripts/oracle_run.py scripts/repro/high_pressure_i64_differential.py /tmp/hp64.elf
+      - name: ARMv6-M cortex-m0/m0plus profile — byte check, loud declines, execution (#1301)
+        # Level 3. The llvm-objdump thumbv6m cross-check of the same predicate is
+        # scripts/repro/armv6m_llvm_crosscheck_1301.py (manual: this image has no
+        # LLVM objdump); here the frozen LLVM-derived table gates it.
+        run: python scripts/oracle_run.py scripts/repro/armv6m_1301_differential.py
       - name: i64.div_s(INT64_MIN,-1) overflow-trap differential (#633)
         run: python scripts/oracle_run.py scripts/repro/i64_divs_overflow_633_differential.py
       - name: i64 global.get/set pair differential (#643, both selectors)

@@ -88,10 +88,18 @@ argued **down** over time and cannot grow silently:
 
 - **145 wired** — a floor (`count-min`). The surface cannot be emptied by
   deleting oracles instead of fixing them.
-- **12 manual** — a ceiling (`count-max`). A thirteenth needs a conversation, not a
+- **13 manual** — a ceiling (`count-max`). A fourteenth needs a conversation, not a
   commit. (This sentence said **9 manual** for one release after the ceiling
   reached 10, because the pin checks the sentence's presence, not its number;
-  the tenth, eleventh and twelfth are itemized below.)
+  the tenth through thirteenth are itemized below.)
+
+  The thirteenth is `armv6m_llvm_crosscheck_1301.py` (RQ-91-ARMV6M, #1301,
+  v0.91): it checks synth's ARMv6-M byte check against LLVM's `thumbv6m`
+  decoder, and the CI image has no LLVM objdump. GNU binutils, which CI does
+  install, is not an ARMv6-M oracle: with `--architecture=armv6-m` it decodes
+  movw, udiv, it and cbz without complaint. In CI the same legality is gated by
+  the Rust unit test that pins the in-tree table to the LLVM-derived fixture
+  this script writes, and by the wired `armv6m_1301_differential.py`.
 
   The twelfth is `falcon_exec_1318.py` (RQ-90-FALCON7, #1318, v0.90): it
   executes the reporter's `opt.wasm` against wasmtime, and that module is not
@@ -151,7 +159,7 @@ The gate also writes a table (and the unwired-debt list) to
 `$GITHUB_STEP_SUMMARY`, so the backlog is visible on every run rather than only
 in a log nobody opens.
 
-## The manual twelve
+## The manual thirteen
 
 | script | category | why |
 |---|---|---|
@@ -166,6 +174,7 @@ in a log nobody opens.
 | `diagnostic_issue_census_345.py` | measurement | RQ-74-STALEMSG's refutation evidence (#345): the lane set out to build a tripwire refusing a diagnostic that cites a CLOSED issue, and this census found 93% of citation sites already do (363 of 389), because a `#N` names where the limitation was ANALYSED and that issue is normally closed. The refusal would have red 363 sites on landing. Prints counts, no verdict about the compiler |
 | `literal_table_census_1403.py` | measurement | RQ-77-CENSUS (#1403): the literal-table population under five named readings, because the stated predicate is ambiguous; no single figure, so no verdict for CI |
 | `jessdiverge10_localise_1436.py` | external-input | RQ-88-JESSDIVERGE10 (#1436): needs the reporter's module (sha256 in the header), not vendored here. The defect it localised is gated by the wired `vfp_home_alias_1436_differential.py` |
+| `armv6m_llvm_crosscheck_1301.py` | toolchain | RQ-91-ARMV6M (#1301): the LLVM `thumbv6m` cross-check of the ARMv6-M byte check (fixture re-derivation, 32-bit sample, every corpus object with a planted MOVW control). CI has no LLVM objdump, and GNU binutils is not an ARMv6-M oracle. Gated in CI by the Rust fixture test and the wired `armv6m_1301_differential.py` |
 | `falcon_exec_1318.py` | external-input | RQ-90-FALCON7 (#1318): needs the reporter's `opt.wasm` (sha256 in the header), not vendored here, and a re-fetch needs the maintainer's approval. Its defect classes are gated by the wired `vfp_wide_stage_1593_differential.py`, `float_local_zero_init_1594_differential.py` and `vfp_high_bank_restore_1318_differential.py` |
 
 ## Anti-vacuity — the gate must not become the thing it polices
