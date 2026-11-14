@@ -1567,9 +1567,22 @@ jobs:
             exit 1
           fi
           grep -E "ERROR:" /tmp/rivet-output.txt > /tmp/rivet-errors.txt || true
+          # #1723: rivet reported a failure the classifier cannot read. A
+          # non-zero rc with no `ERROR:` line (e.g. "error: N artifacts failed
+          # schema validation") used to classify as nothing and pass.
+          if [ "$RIVET_RC" -eq 1 ] && [ ! -s /tmp/rivet-errors.txt ]; then
+            echo "::error::rivet validate exited 1 but printed no ERROR: line; the classifier cannot tell ours from cross-repo, so this fails closed (#1723):"
+            tail -20 /tmp/rivet-output.txt
+            exit 1
+          fi
           # Everything that is NOT a foreign-prefix broken link, ...
+          # #1723: a missing-link error is exempt ONLY when the artifact it
+          # names carries a foreign `repo:` prefix (`ERROR: [repo:ID] ...`).
+          # With externals stripped, every loaded artifact is synth's own, so
+          # an unprefixed `[ID]` missing a required link is OURS and reds here.
+          # The old filter dropped every "missing '...' link to" line.
           grep -vE "targets '[A-Za-z0-9_.-]+:[^']*' which does not exist" /tmp/rivet-errors.txt \
-            | grep -v "missing '.*' link to" > /tmp/rivet-ours.txt || true
+            | grep -vE "ERROR: \[[A-Za-z0-9_.-]+:[^]]*\] .*missing '[^']*' link to" > /tmp/rivet-ours.txt || true
           # ... plus foreign-looking links that actually carry OUR prefix.
           grep -E "targets 'synth:[^']*' which does not exist" /tmp/rivet-errors.txt >> /tmp/rivet-ours.txt || true
           NON_XREF=$(grep -c . /tmp/rivet-ours.txt || true)
