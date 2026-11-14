@@ -4513,13 +4513,33 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/oracle_run.py scripts/repro/cond_write_param_970_riscv_differential.py
-      # #910: close the job with what it EXECUTED. Both oracles must report, so
-      # deleting or skipping either leaves the ledger short and reds the job.
+      # PARAMI64 (#1714, v0.91): a narrow param AFTER a wide (or VFP-homed)
+      # param was written / read at an index-derived register instead of its
+      # ABI home. ARM: the direct selector's narrow `local.set`/`local.tee`
+      # wrote `index_to_reg(k)` (R1 for the i32 of `(i64 i32)`, whose home is
+      # R2: the issue's countdown never ended), and the home walk stopped at
+      # `min(4)` (a VFP-skipped `(f32 x4, i32)` param 4 lived in R0, and in a
+      # call body its frame slot was read but never stored). RV32: param k was
+      # `a(k)` (the i32 of `(i64 i32)` read from a1, the i64's high word) and a
+      # stack-passed param in a call body read an unstored slot. EXECUTED vs
+      # wasmtime on cortex-m4 / m7dp / r5, relocatable and image, and RV32,
+      # with all-i32 CONTROLS; every leg's compiled set pinned exactly (RV32
+      # must REFUSE every export touching a wide or stack-passed param).
+      # Unfixed (main 332a22db): 961 failures.
+      - name: "a param after a wide param uses its ABI home (#1714, ARM + RV32)"
+        run: |
+          set -euo pipefail
+          SYNTH_BIN=./target/debug/synth python3 scripts/oracle_run.py \
+            scripts/repro/param_after_wide_1714_differential.py | tee /tmp/1714.txt
+          grep -q '^RESULT: PASS' /tmp/1714.txt
+      # #910: close the job with what it EXECUTED. All three oracles must
+      # report, so deleting or skipping any leaves the ledger short and reds
+      # the job.
       - name: Differential evidence ledger (#910)
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 2
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 3
 
   brif-local-zeroinit-990-oracle:
     name: "br_if-local zero-init oracle (#990, Thumb-2 + RV32)"

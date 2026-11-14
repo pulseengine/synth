@@ -103,6 +103,7 @@ fn riscv_lowers(ops: &[WasmOp], num_params: u32) -> bool {
         &[],
         &[],
         &rv32_globals_ctx(),
+        &[],
     )
     .is_ok()
 }

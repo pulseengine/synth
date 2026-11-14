@@ -431,6 +431,7 @@ fn compile_function_with_opts(
         &config.func_arg_counts,
         &config.func_result_counts,
         &globals_ctx(config),
+        &config.current_func_params_i64,
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
 
@@ -612,6 +613,7 @@ fn compile_to_riscv_ops(
         &config.func_arg_counts,
         &config.func_result_counts,
         &globals_ctx(config),
+        &config.current_func_params_i64,
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
     Ok(selection.ops)

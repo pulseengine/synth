@@ -222,7 +222,12 @@ DIRECTIVES_TOTAL = 57588
 # legs (notrep:symbol-missing), where they had executed as missing-trap
 # failures: the two directives per leg left the executed set for a named
 # decline, not for a silent skip, and their 4 KNOWN entries left with them.
-EXECUTED_FLOOR = {"cortex-m4": 11634, "cortex-m7dp": 24042}
+# PARAMI64 (#1714): cortex-m7dp 24042 -> 24087, the measured count on this
+# branch; main 332a22db measures 24080 (and cortex-m4 11635 on both). The +7
+# are local_get/local_set/local_tee directives whose exports have an i32
+# param at index 4 after VFP-homed float params, which now compile; all 7
+# pass (fail stays 27 on both binaries).
+EXECUTED_FLOOR = {"cortex-m4": 11634, "cortex-m7dp": 24087}
 
 # ---------------------------------------------------------------------------
 # KNOWN — the ratchet baseline of FAILING directives.

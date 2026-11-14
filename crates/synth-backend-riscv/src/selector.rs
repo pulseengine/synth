@@ -341,6 +341,7 @@ pub fn select_with_signatures(
         func_arg_counts,
         func_result_counts,
         &RvGlobalsCtx::default(),
+        &[],
     )
 }
 
@@ -360,6 +361,7 @@ pub fn select_with_module(
     func_arg_counts: &[u32],
     func_result_counts: &[u32],
     globals: &RvGlobalsCtx,
+    params_wide: &[bool],
 ) -> Result<RiscVSelection, SelectorError> {
     // #472: read the local-promotion flag exactly once, here, so the rest of the
     // selector (and its unit tests) work off a plain bool.
@@ -402,6 +404,7 @@ pub fn select_with_module(
         promote_locals,
         cmp_select_fuse,
         globals,
+        params_wide,
     )
 }
 
@@ -434,6 +437,7 @@ fn select_inner(
     promote_locals: bool,
     cmp_select_fuse: bool,
     globals: &RvGlobalsCtx,
+    params_wide: &[bool],
 ) -> Result<RiscVSelection, SelectorError> {
     // The unpromoted lowering. With the flag off this IS the result (single
     // run, byte-identical baseline); with the flag on it is the size bar every
@@ -452,6 +456,7 @@ fn select_inner(
         None,
         cmp_select_fuse,
         globals,
+        params_wide,
     );
     if !promote_locals {
         return baseline.map(|(sel, _)| sel);
@@ -470,6 +475,7 @@ fn select_inner(
         None,
         cmp_select_fuse,
         globals,
+        params_wide,
     ) {
         Ok((_, promoted)) => promoted,
         Err(_) => Vec::new(),
@@ -501,6 +507,7 @@ fn select_inner(
             Some(&subset),
             cmp_select_fuse,
             globals,
+            params_wide,
         ) else {
             continue;
         };
@@ -556,6 +563,7 @@ fn select_attempt(
     promo_allow: Option<&std::collections::HashSet<u32>>,
     cmp_select_fuse: bool,
     globals: &RvGlobalsCtx,
+    params_wide: &[bool],
 ) -> Result<(RiscVSelection, Vec<u32>), SelectorError> {
     let mut ctx = Selector::new_with_options(num_params, options);
     ctx.globals = globals.clone();
@@ -566,6 +574,7 @@ fn select_attempt(
     ctx.promote_locals = promote_locals;
     ctx.promo_allow = promo_allow.cloned();
     ctx.cmp_select_fuse = cmp_select_fuse;
+    ctx.param_homes = rv32_param_homes(num_params, params_wide); // #1714
     ctx.compute_local_layout(wasm_ops, num_params); // #223 / #312
     // #472: zero-init any promoted local whose first access is a read (#457).
     // Emitted BEFORE the body so (a) `preserve_callee_saved`'s dest scan sees
@@ -629,15 +638,18 @@ fn select_attempt(
     // deterministic output; call-free bodies reserved no param slots, so
     // this emits nothing and their bytes are unchanged.
     {
-        let mut param_spills: Vec<(u32, i32)> = ctx
+        // #1714: the incoming register is the param's psABI home, which
+        // `compute_local_layout` only gives a slot to when it HAS one.
+        let mut param_spills: Vec<(Reg, i32)> = ctx
             .local_offsets
             .iter()
-            .filter(|(idx, _)| (**idx as usize) < ctx.arg_regs.len())
-            .map(|(idx, (off, _))| (*idx, *off))
+            .filter_map(|(idx, (off, _))| match ctx.param_homes.get(*idx as usize) {
+                Some(ParamHome::Reg(r)) => Some((*r, *off)),
+                _ => None,
+            })
             .collect();
-        param_spills.sort_unstable();
-        for (idx, off) in param_spills {
-            let arg = ctx.arg_regs[idx as usize];
+        param_spills.sort_unstable_by_key(|&(r, _)| r.num());
+        for (arg, off) in param_spills {
             ctx.out.push(RiscVOp::Sw {
                 rs1: Reg::SP,
                 rs2: arg,
@@ -1359,6 +1371,45 @@ enum FrameKind {
     Else,
 }
 
+/// #1714: where the RV32 ilp32 psABI passes one parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParamHome {
+    /// A narrow (32-bit) param in this a-register.
+    Reg(Reg),
+    /// A 2×XLEN (i64/f64) param — an a-register pair, or a7 + stack, or
+    /// stack. Not lowered (#312): every access declines.
+    Wide,
+    /// A narrow param the psABI passes on the stack. Not lowered: declines.
+    Stack,
+}
+
+/// #1714: the RV32 integer calling convention (ilp32, soft-float — synth's
+/// RV32 targets have no F extension, so f32 is a narrow core param and f64 a
+/// wide one) over the DECLARED param widths. A 32-bit scalar takes the next
+/// free a-register; a 2×XLEN scalar takes the next TWO, with NO even
+/// alignment (that is only for variadic args), splitting a7 + stack when one
+/// register is left; past a7 everything is on the stack. So `(i64 i32)` puts
+/// the i32 in a2 and `(i32 i64 i32)` in a3 — verified against clang
+/// `--target=riscv32 -mabi=ilp32`. An empty `params_wide` (hand-built op
+/// streams) is all-narrow: `a(idx)` for `idx < 8`, exactly the pre-#1714 map.
+fn rv32_param_homes(num_params: u32, params_wide: &[bool]) -> Vec<ParamHome> {
+    let mut next = 0u8; // next free argument register, a0 + next
+    (0..num_params as usize)
+        .map(|i| {
+            if params_wide.get(i).copied().unwrap_or(false) {
+                next = (next + 2).min(8);
+                ParamHome::Wide
+            } else if next < 8 {
+                let r = Reg::from_num(10 + next).expect("a0..a7 are x10..x17");
+                next += 1;
+                ParamHome::Reg(r)
+            } else {
+                ParamHome::Stack
+            }
+        })
+        .collect()
+}
+
 struct Selector {
     out: Vec<RiscVOp>,
     /// Virtual stack of values produced by lowering. i32s occupy a single
@@ -1366,8 +1417,11 @@ struct Selector {
     vstack: Vec<VstackVal>,
     /// Control-flow frames; index 0 is the outermost.
     ctrl: Vec<ControlFrame>,
-    /// Argument registers for the current function's params (a0..a7).
-    arg_regs: Vec<Reg>,
+    /// #1714: where the RV32 ilp32 psABI put each of the function's params —
+    /// one entry per param index (see [`rv32_param_homes`]). Built from the
+    /// DECLARED widths, so an i32 after an i64 maps to the a-register past the
+    /// i64's PAIR, not to `a(index)`.
+    param_homes: Vec<ParamHome>,
     /// Available temporary registers; `alloc_temp` hands out the lowest-indexed
     /// free one, so the caller-saved `t`-registers (listed first) are preferred
     /// over the callee-saved `s`-registers.
@@ -1505,7 +1559,7 @@ impl Selector {
             out: Vec::new(),
             vstack: Vec::new(),
             ctrl: Vec::new(),
-            arg_regs: Reg::arg_regs(num_params as usize),
+            param_homes: rv32_param_homes(num_params, &[]),
             temps,
             alloc_exhausted: false,
             op_pinned: Vec::new(),
@@ -1616,7 +1670,8 @@ impl Selector {
             for op in wasm_ops {
                 match op {
                     WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i)
-                        if *i < num_params && !self.i64_locals.contains(i) =>
+                        if matches!(self.param_homes.get(*i as usize), Some(ParamHome::Reg(_)))
+                            && !self.i64_locals.contains(i) =>
                     {
                         param_used.insert(*i);
                     }
@@ -2356,14 +2411,14 @@ impl Selector {
     // ────────── Locals ──────────
 
     fn lower_local_get(&mut self, idx: u32, op: &WasmOp) -> Result<(), SelectorError> {
-        if (idx as usize) < self.arg_regs.len() {
+        if (idx as usize) < self.param_homes.len() {
             // #312: param handling is i32-only (one a-register per param). An
-            // i64 param occupies an aligned even/odd a-register pair per the
-            // RV32 psABI — not modeled yet, so bail honestly (skip-and-continue
-            // under --all-exports) rather than read half the value.
-            if self.i64_locals.contains(&idx) {
-                return Err(SelectorError::Unsupported(op.clone()));
-            }
+            // i64 param occupies an a-register pair per the RV32 psABI — not
+            // modeled yet, so bail honestly (skip-and-continue under
+            // --all-exports) rather than read half the value. #1714: so does a
+            // param the psABI passes on the STACK, and the home is the
+            // psABI's, not `a(idx)`.
+            let arg = self.narrow_param_reg(idx, op)?;
             let dst = self.alloc_temp();
             if let Some(&(off, _)) = self.local_offsets.get(&idx) {
                 // #882: call-containing body — the param was spilled to its
@@ -2378,7 +2433,7 @@ impl Selector {
                 // mv dst, arg
                 self.out.push(RiscVOp::Addi {
                     rd: dst,
-                    rs1: self.arg_regs[idx as usize],
+                    rs1: arg,
                     imm: 0,
                 });
             }
@@ -2425,6 +2480,22 @@ impl Selector {
         Ok(())
     }
 
+    /// #1714: the a-register param `idx` arrives in, or a loud `Unsupported`.
+    ///
+    /// Refused: a DECLARED wide (i64/f64) param — its a-register pair is not
+    /// modeled (#312) — and a body-inferred i64 one (the pre-#1714 test,
+    /// kept for op streams with no declared widths); a param the psABI passes
+    /// on the stack (past a7, or after a wide param split a7/stack), which has
+    /// no incoming-stack lowering here. Before #1714 the home was `a(idx)`
+    /// and the refusal keyed on the INFERRED width of the accessed param
+    /// only, so the i32 of `(i64 i32)` was read from a1 — the i64's high word.
+    fn narrow_param_reg(&self, idx: u32, op: &WasmOp) -> Result<Reg, SelectorError> {
+        match self.param_homes.get(idx as usize) {
+            Some(ParamHome::Reg(r)) if !self.i64_locals.contains(&idx) => Ok(*r),
+            _ => Err(SelectorError::Unsupported(op.clone())),
+        }
+    }
+
     /// #223: `(byte offset, is_i64)` of a non-parameter local's frame slot.
     fn local_slot(&self, idx: u32, op: &WasmOp) -> Result<(i32, bool), SelectorError> {
         self.local_offsets
@@ -2434,11 +2505,9 @@ impl Selector {
     }
 
     fn lower_local_set(&mut self, idx: u32, op: &WasmOp) -> Result<(), SelectorError> {
-        if (idx as usize) < self.arg_regs.len() {
-            // #312: i64 params are unsupported — see lower_local_get.
-            if self.i64_locals.contains(&idx) {
-                return Err(SelectorError::Unsupported(op.clone()));
-            }
+        if (idx as usize) < self.param_homes.len() {
+            // #312/#1714: see lower_local_get.
+            let arg = self.narrow_param_reg(idx, op)?;
             let src = self.pop_i32(op)?;
             if let Some(&(off, _)) = self.local_offsets.get(&idx) {
                 // #882: call-containing body — the param lives in its frame
@@ -2451,7 +2520,7 @@ impl Selector {
             } else {
                 // mv arg, src
                 self.out.push(RiscVOp::Addi {
-                    rd: self.arg_regs[idx as usize],
+                    rd: arg,
                     rs1: src,
                     imm: 0,
                 });
@@ -2510,11 +2579,9 @@ impl Selector {
             .last()
             .copied()
             .ok_or_else(|| SelectorError::StackUnderflow(op.clone()))?;
-        if (idx as usize) < self.arg_regs.len() {
-            // #312: i64 params are unsupported — see lower_local_get.
-            if self.i64_locals.contains(&idx) {
-                return Err(SelectorError::Unsupported(op.clone()));
-            }
+        if (idx as usize) < self.param_homes.len() {
+            // #312/#1714: see lower_local_get.
+            let arg = self.narrow_param_reg(idx, op)?;
             let src = match top {
                 VstackVal::I32(r) => r,
                 other => {
@@ -2535,7 +2602,7 @@ impl Selector {
                 });
             } else {
                 self.out.push(RiscVOp::Addi {
-                    rd: self.arg_regs[idx as usize],
+                    rd: arg,
                     rs1: src,
                     imm: 0,
                 });
@@ -9705,6 +9772,7 @@ mod tests {
             promote,
             false,
             &RvGlobalsCtx::default(),
+            &[],
         )
         .unwrap()
         .ops
@@ -9987,6 +10055,7 @@ mod tests {
             None,
             false,
             &RvGlobalsCtx::default(),
+            &[],
         )
         .unwrap();
         assert_eq!(promoted, vec![1], "local 1 must promote under force");
@@ -10277,6 +10346,7 @@ mod tests {
             &[],
             &[],
             ctx,
+            &[],
         )
         .map(|s| s.ops)
     }
@@ -10446,6 +10516,7 @@ mod tests {
             false,
             fuse,
             &RvGlobalsCtx::default(),
+            &[],
         )
         .unwrap()
         .ops
@@ -10865,5 +10936,132 @@ mod tests {
             0,
             "call-free body must not touch the frame for params: {out:?}"
         );
+    }
+
+    // ─────────── #1714: psABI param homes after a wide param ───────────
+
+    fn sel_params(
+        ops: &[WasmOp],
+        num_params: u32,
+        wide: &[bool],
+    ) -> Result<Vec<RiscVOp>, SelectorError> {
+        select_with_module(
+            ops,
+            num_params,
+            SelectorOptions::wasm_compliant(),
+            &[],
+            &[],
+            &[],
+            &[],
+            &RvGlobalsCtx::default(),
+            wide,
+        )
+        .map(|s| s.ops)
+    }
+
+    /// The ilp32 walk, checked against clang `--target=riscv32 -mabi=ilp32`:
+    /// a 2xXLEN param takes the next TWO a-registers with no even alignment,
+    /// splits a7/stack with one left, and everything past a7 is on the stack.
+    #[test]
+    fn rv32_param_homes_follow_the_ilp32_psabi_1714() {
+        use ParamHome::*;
+        let a = |n: u8| Reg(super::Reg::from_num(10 + n).unwrap());
+        assert_eq!(rv32_param_homes(2, &[true, false]), vec![Wide, a(2)]);
+        assert_eq!(
+            rv32_param_homes(3, &[false, true, false]),
+            vec![a(0), Wide, a(3)],
+            "no even alignment: (i32 i64 i32) puts the last i32 in a3"
+        );
+        let mut w = vec![false; 7];
+        w.extend([true, false]);
+        let homes = rv32_param_homes(9, &w);
+        assert_eq!(homes[6], a(6));
+        assert_eq!(homes[7], Wide, "a7 + stack split");
+        assert_eq!(homes[8], Stack);
+        // No declared widths: exactly the pre-#1714 a(idx) map, stack past a7.
+        let seq = rv32_param_homes(9, &[]);
+        assert!((0..8).all(|i| seq[i] == a(i as u8)));
+        assert_eq!(seq[8], Stack);
+    }
+
+    /// `(i64 i32)`: the i32 is read from a2, written to a2, and the wide
+    /// param is refused even when the body never makes it look i64.
+    #[test]
+    fn narrow_param_after_i64_uses_its_psabi_register_1714() {
+        let wide = [true, false];
+        let get = sel_params(&[WasmOp::LocalGet(1), WasmOp::End], 2, &wide).unwrap();
+        assert!(
+            get.iter().any(|op| matches!(
+                op,
+                RiscVOp::Addi {
+                    rs1: Reg::A2,
+                    imm: 0,
+                    ..
+                }
+            )),
+            "local.get 1 must read a2: {get:?}"
+        );
+        assert!(
+            !get.iter().any(|op| matches!(
+                op,
+                RiscVOp::Addi {
+                    rs1: Reg::A1,
+                    imm: 0,
+                    ..
+                }
+            )),
+            "a1 is the i64's high word: {get:?}"
+        );
+        let set = sel_params(
+            &[
+                WasmOp::I32Const(7),
+                WasmOp::LocalSet(1),
+                WasmOp::LocalGet(1),
+                WasmOp::End,
+            ],
+            2,
+            &wide,
+        )
+        .unwrap();
+        assert!(
+            writes_reg(&set, Reg::A2),
+            "local.set 1 must write a2: {set:?}"
+        );
+        assert!(
+            !writes_reg(&set, Reg::A1),
+            "local.set 1 must not write a1: {set:?}"
+        );
+        // The i64 param itself: declared wide, refused although only read.
+        assert!(matches!(
+            sel_params(
+                &[
+                    WasmOp::LocalGet(0),
+                    WasmOp::Drop,
+                    WasmOp::I32Const(0),
+                    WasmOp::End
+                ],
+                2,
+                &wide
+            ),
+            Err(SelectorError::Unsupported(WasmOp::LocalGet(0)))
+        ));
+    }
+
+    /// A narrow param the psABI passes on the STACK is refused, including in
+    /// a call-containing body, where the pre-#1714 selector gave it a frame
+    /// slot that the prologue never stored and read it back uninitialised.
+    #[test]
+    fn stack_passed_param_is_refused_1714() {
+        let ops = [
+            WasmOp::I32Const(1),
+            WasmOp::Call(0),
+            WasmOp::LocalGet(8),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        assert!(matches!(
+            sel_params(&ops, 9, &[]),
+            Err(SelectorError::Unsupported(WasmOp::LocalGet(8)))
+        ));
     }
 }
