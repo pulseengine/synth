@@ -1808,6 +1808,26 @@ impl Selector {
         self.vstack.push(VstackVal::I64 { lo, hi });
     }
 
+    /// Push `lo` as the low word of an i64 whose high word is ZERO — the
+    /// result shape of `i64.extend_i32_u` and of every i64 op whose value is
+    /// computed in one word (`i64.clz`/`ctz`/`popcnt`, result `0..=64`).
+    ///
+    /// #1720: the wasm result type of those three is i64, and they used to
+    /// push an i32-typed entry. Returned directly, the epilogue moved only
+    /// `a0` and the caller read a stale `a1` as the high word (silent wrong
+    /// code); consumed by any i64 op, the function declined on a type
+    /// mismatch. The high word is written here, once, for every such op.
+    fn push_i64_zero_hi(&mut self, lo: Reg) {
+        let hi = self.alloc_temp();
+        // hi = 0 (via `addi hi, zero, 0` — no dedicated li-zero op).
+        self.out.push(RiscVOp::Addi {
+            rd: hi,
+            rs1: Reg::ZERO,
+            imm: 0,
+        });
+        self.push_i64(lo, hi);
+    }
+
     /// #472 WAR fix: before a promoted `local.set`/`local.tee` overwrites its
     /// s-register `reg`, snapshot any still-live vstack entry that aliases `reg`
     /// (pushed by an EARLIER `local.get` of this same promoted local) into a
@@ -4342,14 +4362,7 @@ impl Selector {
     /// Zero-extend i32 → i64: lo = src, hi = 0.
     fn lower_i64_extend_i32_u(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
         let src = self.pop_i32(op)?;
-        let hi = self.alloc_temp();
-        // hi = 0 (via `addi hi, zero, 0` — no dedicated li-zero op).
-        self.out.push(RiscVOp::Addi {
-            rd: hi,
-            rs1: Reg::ZERO,
-            imm: 0,
-        });
-        self.push_i64(src, hi);
+        self.push_i64_zero_hi(src);
         Ok(())
     }
 
@@ -4985,7 +4998,7 @@ impl Selector {
         (res_lo, res_hi)
     }
 
-    /// 64-bit count-leading-zeros → i32 result in `0..=64`.
+    /// 64-bit count-leading-zeros → i64 result in `0..=64` (high word 0).
     ///
     /// RV32IMAC has no `clz` (that's Zbb), so each 32-bit half uses a
     /// software `clz_word` (an unrolled binary-search sequence — see
@@ -5028,11 +5041,11 @@ impl Selector {
             imm: 32,
         });
         self.out.push(RiscVOp::Label { name: done });
-        self.push_i32(result);
+        self.push_i64_zero_hi(result); // #1720: the result type is i64
         Ok(())
     }
 
-    /// 64-bit count-trailing-zeros → i32 result in `0..=64`.
+    /// 64-bit count-trailing-zeros → i64 result in `0..=64` (high word 0).
     ///
     /// Mirror of clz: branch on the *low* half.
     /// ```text
@@ -5071,11 +5084,11 @@ impl Selector {
             imm: 32,
         });
         self.out.push(RiscVOp::Label { name: done });
-        self.push_i32(result);
+        self.push_i64_zero_hi(result); // #1720: the result type is i64
         Ok(())
     }
 
-    /// 64-bit population count → i32 result in `0..=64`.
+    /// 64-bit population count → i64 result in `0..=64` (high word 0).
     ///
     /// `popcnt(x) = popcnt(x_lo) + popcnt(x_hi)` — the two halves are
     /// independent, no carry. Each `popcnt_word` is the classic SWAR
@@ -5083,6 +5096,11 @@ impl Selector {
     fn lower_i64_popcnt(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
         let (lo, hi) = self.pop_i64(op)?;
         let lo_pc = self.emit_popcnt_word(lo);
+        // #312/#1720: `lo` is dead once its word count is in `lo_pc`. Released
+        // so the second SWAR word fits the pool with an i64 pending below the
+        // operand (pinned through both words it exhausted the 13-register pool
+        // and the function declined).
+        self.unpin(&[lo]);
         let hi_pc = self.emit_popcnt_word(hi);
         let result = self.alloc_temp();
         self.out.push(RiscVOp::Add {
@@ -5090,7 +5108,7 @@ impl Selector {
             rs1: lo_pc,
             rs2: hi_pc,
         });
-        self.push_i32(result);
+        self.push_i64_zero_hi(result); // #1720: the result type is i64
         Ok(())
     }
 
@@ -8278,6 +8296,34 @@ mod tests {
             count(&out, |op| matches!(op, RiscVOp::Srli { shamt: 24, .. })) >= 2,
             "each word popcount finishes with `>> 24`"
         );
+    }
+
+    /// #1720: `i64.clz`/`ctz`/`popcnt` have wasm result type i64. Each must
+    /// push an i64 PAIR whose high word is a distinct register written to zero
+    /// by the op itself — an i32-typed push left the returned `a1` stale.
+    #[test]
+    fn i64_bitcount_pushes_zero_hi_pair_1720() {
+        for op in [WasmOp::I64Clz, WasmOp::I64Ctz, WasmOp::I64Popcnt] {
+            let mut sel = Selector::new_with_options(0, SelectorOptions::wasm_compliant());
+            sel.lower_one(&WasmOp::I64Const(0x1_0000_0004)).unwrap();
+            let before = sel.out.len();
+            sel.lower_one(&op).unwrap();
+            let Some(&VstackVal::I64 { lo, hi }) = sel.vstack.last() else {
+                panic!("{op:?} must push an i64 pair (#1720)");
+            };
+            assert_ne!(lo, hi, "{op:?}: hi aliases the count register");
+            assert!(
+                matches!(
+                    sel.out.last(),
+                    Some(RiscVOp::Addi { rd, rs1: Reg::ZERO, imm: 0 }) if *rd == hi
+                ),
+                "{op:?}: the last instruction must zero the pushed high word"
+            );
+            assert!(sel.out.len() > before);
+            // The pair is consumable as an i64 (the pre-fix push declined here).
+            sel.lower_one(&WasmOp::I64Const(1)).unwrap();
+            sel.lower_one(&WasmOp::I64Add).unwrap();
+        }
     }
 
     // -------- I64 comparisons --------

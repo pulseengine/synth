@@ -6914,6 +6914,14 @@ jobs:
         run: |
           ./target/debug/synth compile scripts/repro/if_else_result_343.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/if343.o
           python scripts/oracle_run.py scripts/repro/if_else_result_343_riscv_differential.py /tmp/if343.o
+      - name: RV32 i64 clz/ctz/popcnt high word differential (#1720)
+        # i64.clz/ctz/popcnt pushed an i32-typed result, so a direct return
+        # left a1 stale (clz(4) read back 0x<stale>0000001f) and every i64
+        # consumer declined on a type mismatch. Grades the class and its
+        # one-word-result siblings (extend*, eqz, wrap) through seven consumer
+        # shapes, vs wasmtime; ARM control legs. RED on main 34781a8c: 54
+        # wrong vectors over 9 exports and 15 declines, all in the class.
+        run: python scripts/oracle_run.py scripts/repro/rv32_i64_bitcount_hi_1720_differential.py
       - name: RV32 br-with-value exit-edge reconciliation (#931, CRITICAL)
         run: |
           ./target/debug/synth compile scripts/repro/rv32_br_value_931.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/br931.o
@@ -6950,7 +6958,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 12
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 13
 
   repro-sweep-arm-corpus-oracle:
     name: "repro sweep — ARM corpus (#973: CI never compiled these for ARM)"
