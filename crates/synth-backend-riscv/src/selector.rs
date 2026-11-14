@@ -1477,7 +1477,15 @@ struct Selector {
     /// 8-byte-aligned slot (lo word at `off`, hi word at `off+4`).
     local_offsets: std::collections::HashMap<u32, (i32, bool)>,
     /// Bytes reserved for non-parameter locals (4 per i32, 8 per i64).
+    /// #1717: grown during lowering by the i64 div/rem core's preservation
+    /// slots (see `div_save_base`), which is why `preserve_callee_saved` reads
+    /// it only after the body is lowered.
     local_frame_bytes: i32,
+    /// #1717: frame offset of the i64 div/rem core's register-preservation
+    /// area — fixed at the first div/rem that needs it (the end of the locals
+    /// region at that point) and shared by every later one, since each op's
+    /// store/reload pair is complete within that op.
+    div_save_base: Option<i32>,
     /// #312: every local index (param or not) inferred as i64 by
     /// `synth_synthesis::infer_i64_locals`. Param entries are used only to
     /// bail out honestly — the RV32 i64-*param* ABI (an i64 param occupies an
@@ -1570,6 +1578,7 @@ impl Selector {
             options,
             local_offsets: std::collections::HashMap::new(),
             local_frame_bytes: 0,
+            div_save_base: None,
             i64_locals: std::collections::HashSet::new(),
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
@@ -5501,6 +5510,12 @@ impl Selector {
     /// back via dedicated result registers, after which the caller is free
     /// to move them into `alloc_temp` temporaries.
     ///
+    /// #1717: because the core bypasses the allocator, a LIVE value that the
+    /// allocator placed in one of these registers before the op — anything
+    /// pending below the operands — is not protected by `alloc_temp`'s
+    /// liveness rule. `lower_i64_div` therefore brackets the core with
+    /// `save_div_preserved` / `restore_div_preserved`.
+    ///
     /// The seven state registers (`q_lo, q_hi, r_lo, r_hi, d_lo, d_hi, cnt`)
     /// plus three loop-body scratch registers are all distinct and avoid the
     /// reserved `s0` (fp) / `s11` (linear-memory base).
@@ -5897,8 +5912,10 @@ impl Selector {
 
         if !signed {
             // ── Unsigned: feed the operands straight to the core. ────────
+            let saved = self.save_div_preserved(op)?;
             self.emit_i64_udiv_inline((nl, nh), (dl, dh));
             let res = self.copy_div_result(want_rem);
+            self.restore_div_preserved(&saved);
             self.push_i64(res.0, res.1);
             return Ok(());
         }
@@ -5937,10 +5954,14 @@ impl Selector {
         let (dabs_lo, dabs_hi) = self.emit_i64_abs(dl, dh, dsign);
         self.unpin(&[dl, dh]); // #312: divisor halves replaced by |divisor|
 
+        // #1717: values pending BELOW the operands; the sign masks are this
+        // op's own and already sit outside the core's registers (#317).
+        let saved = self.save_div_preserved(op)?;
         self.emit_i64_udiv_inline((nabs_lo, nabs_hi), (dabs_lo, dabs_hi));
         // #312: the core copied its inputs into the fixed DIV_* registers.
         self.unpin(&[nabs_lo, nabs_hi, dabs_lo, dabs_hi]);
         let (mag_lo, mag_hi) = self.copy_div_result(want_rem);
+        self.restore_div_preserved(&saved);
 
         // Result sign:
         //  - quotient: negative iff the operand signs differ → nsign ^ dsign
@@ -5963,6 +5984,71 @@ impl Selector {
         Ok(())
     }
 
+    /// #1717: store every register that holds a LIVE value — a value-stack
+    /// entry below this op's operands, or an open frame's branch result — and
+    /// that the long-division core is about to overwrite, into this function's
+    /// div preservation slots. Returns the `(reg, slot)` pairs for
+    /// [`Self::restore_div_preserved`].
+    ///
+    /// The core runs on a fixed register file (`DIV_CORE_TEMPS`, plus
+    /// `DIV_MOVE_SCRATCH`) that bypasses the allocator, so the #226 rule every
+    /// other lowering gets from `alloc_temp` — never write a register pinned
+    /// by a live value — does not reach it. Without this, `5 + 7/2` computed
+    /// with the `5` still pending came back 6: the `5` lived in a `t`-register
+    /// the loop used as state. The store and the reload are on the same
+    /// straight-line path through this op (the loop is internal to it), so
+    /// the rule holds for any stack depth, any value type and inside any
+    /// control frame. A function with nothing live in the core's registers
+    /// emits nothing extra — its bytes are unchanged.
+    fn save_div_preserved(&mut self, op: &WasmOp) -> Result<Vec<(Reg, i32)>, SelectorError> {
+        let mut regs: Vec<Reg> = Vec::new();
+        for r in self.live_regs() {
+            let clobbered = Self::DIV_CORE_TEMPS.contains(&r) || r == Self::DIV_MOVE_SCRATCH;
+            if clobbered && !regs.contains(&r) {
+                regs.push(r);
+            }
+        }
+        if regs.is_empty() {
+            return Ok(Vec::new());
+        }
+        regs.sort_by_key(|r| *r as u8); // deterministic slot order
+        let base = *self.div_save_base.get_or_insert(self.local_frame_bytes);
+        let end = base + 4 * regs.len() as i32;
+        // Every slot must be reachable by an sp-relative 12-bit immediate; a
+        // frame that large is declined loudly rather than mis-addressed.
+        if end > 2047 {
+            return Err(SelectorError::Unsupported(op.clone()));
+        }
+        self.local_frame_bytes = self.local_frame_bytes.max(end);
+        let saved: Vec<(Reg, i32)> = regs
+            .into_iter()
+            .enumerate()
+            .map(|(k, r)| (r, base + 4 * k as i32))
+            .collect();
+        for &(r, off) in &saved {
+            self.out.push(RiscVOp::Sw {
+                rs1: Reg::SP,
+                rs2: r,
+                imm: off,
+            });
+        }
+        Ok(saved)
+    }
+
+    /// #1717: reload the registers [`Self::save_div_preserved`] stored. Called
+    /// after the core's result has been copied out of its fixed registers, so
+    /// the reload cannot overwrite the result (the copy's destination came from
+    /// `alloc_temp`, which never returns a live register).
+    fn restore_div_preserved(&mut self, saved: &[(Reg, i32)]) {
+        for &(r, off) in saved {
+            self.out.push(RiscVOp::Lw {
+                rd: r,
+                rs1: Reg::SP,
+                imm: off,
+            });
+        }
+    }
+
     /// Copy the long-division core's fixed result registers into fresh
     /// `alloc_temp` temporaries — `want_rem` picks the remainder pair, else
     /// the quotient pair. Done immediately after the core so the fixed
@@ -5975,16 +6061,27 @@ impl Selector {
         };
         let lo = self.alloc_temp();
         let hi = self.alloc_temp();
-        self.out.push(RiscVOp::Addi {
-            rd: lo,
-            rs1: src_lo,
-            imm: 0,
-        });
-        self.out.push(RiscVOp::Addi {
-            rd: hi,
-            rs1: src_hi,
-            imm: 0,
-        });
+        // #1717: `lo`/`hi` come from the allocator and the sources are the
+        // core's fixed registers, so `lo` can BE `src_hi` (the core's state
+        // registers are ordinary pool temps once it has finished). Copying lo
+        // first would then overwrite the high word before it is read — the
+        // high half of the remainder came back as the low half. Order the two
+        // copies so each source is read before it is written; the swap cycle
+        // goes through `DIV_MOVE_SCRATCH`. A non-conflicting pair keeps the
+        // original lo-then-hi order (and its exact bytes, `mv r, r` included).
+        let mv = |rd: Reg, rs1: Reg| RiscVOp::Addi { rd, rs1, imm: 0 };
+        if lo != src_hi {
+            self.out.push(mv(lo, src_lo));
+            self.out.push(mv(hi, src_hi));
+        } else if hi != src_lo {
+            self.out.push(mv(hi, src_hi));
+            self.out.push(mv(lo, src_lo));
+        } else {
+            let scratch = Self::DIV_MOVE_SCRATCH;
+            self.out.push(mv(scratch, src_hi));
+            self.out.push(mv(lo, src_lo));
+            self.out.push(mv(hi, scratch));
+        }
         (lo, hi)
     }
 
@@ -8510,6 +8607,104 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #1717: a value PENDING below an i64 div/rem's operands must survive the
+    /// long-division core. The core writes its fixed register file without
+    /// asking the allocator, so the pending value — here the `5` of
+    /// `5 + 7/2`, materialized by its two `addi rd, zero, imm` — lives in a
+    /// register the core overwrites, and must be stored before the loop and
+    /// reloaded from the same slot after it.
+    #[test]
+    fn i64_divrem_preserves_a_pending_value_across_the_core_1717() {
+        for op in [
+            WasmOp::I64DivS,
+            WasmOp::I64DivU,
+            WasmOp::I64RemS,
+            WasmOp::I64RemU,
+        ] {
+            let out = run_i64(&[
+                WasmOp::I64Const(5),
+                WasmOp::I64Const(7),
+                WasmOp::I64Const(2),
+                op.clone(),
+                WasmOp::I64Add,
+                WasmOp::Drop,
+            ]);
+            // The pending i64's two halves are the first two materializations.
+            let pending: Vec<Reg> = out
+                .iter()
+                .filter_map(|o| match o {
+                    RiscVOp::Addi {
+                        rd, rs1: Reg::ZERO, ..
+                    } => Some(*rd),
+                    _ => None,
+                })
+                .take(2)
+                .collect();
+            let lp = out
+                .iter()
+                .position(
+                    |o| matches!(o, RiscVOp::Label { name } if name.starts_with("Ludiv_loop")),
+                )
+                .expect("the long-division core's loop label");
+            let mut checked = 0;
+            for r in pending {
+                if !Selector::DIV_CORE_TEMPS.contains(&r) {
+                    continue;
+                }
+                let slot = out[..lp]
+                    .iter()
+                    .find_map(|o| match o {
+                        RiscVOp::Sw {
+                            rs1: Reg::SP,
+                            rs2,
+                            imm,
+                        } if *rs2 == r => Some(*imm),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{op:?}: pending {r:?} is not stored before the core (#1717)")
+                    });
+                assert!(
+                    out[lp..].iter().any(|o| matches!(o,
+                        RiscVOp::Lw { rd, rs1: Reg::SP, imm } if *rd == r && *imm == slot)),
+                    "{op:?}: pending {r:?} is not reloaded from slot {slot} after the core"
+                );
+                checked += 1;
+            }
+            assert!(
+                checked > 0,
+                "{op:?}: the pending value no longer lands in the core's registers — \
+                 this test would be vacuous; choose a shape where it does"
+            );
+        }
+    }
+
+    /// #1717 (second half): the core's result is copied out of its fixed
+    /// registers into allocator temps, and the allocator may return the core's
+    /// `src_hi` as `lo`. With `t0..t2` live, the remainder copy's `lo` is `t3`
+    /// = `DIV_R_HI`; copying lo first overwrote the high word before reading it.
+    #[test]
+    fn copy_div_result_reads_each_source_before_writing_it_1717() {
+        let mut ctx = Selector::new_with_options(0, SelectorOptions::wasm_compliant());
+        for r in [Reg::T0, Reg::T1, Reg::T2] {
+            ctx.push_i32(r);
+        }
+        let (lo, hi) = ctx.copy_div_result(true);
+        assert_eq!(lo, Selector::DIV_R_HI, "precondition: lo aliases src_hi");
+        // Simulate the copies on symbolic register contents.
+        let mut val: std::collections::HashMap<Reg, &str> = std::collections::HashMap::new();
+        val.insert(Selector::DIV_R_LO, "rem_lo");
+        val.insert(Selector::DIV_R_HI, "rem_hi");
+        for o in &ctx.out {
+            if let RiscVOp::Addi { rd, rs1, imm: 0 } = o {
+                let v = val.get(rs1).copied().unwrap_or("?");
+                val.insert(*rd, v);
+            }
+        }
+        assert_eq!(val.get(&lo), Some(&"rem_lo"));
+        assert_eq!(val.get(&hi), Some(&"rem_hi"));
     }
 
     #[test]

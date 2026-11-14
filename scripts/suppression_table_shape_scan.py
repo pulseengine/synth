@@ -87,6 +87,7 @@ CLASSIFIED = {
     ("reinterpret_pair_1603_differential.py", "EXPECTED_DECLINES"): ("decline", "loud refusals a plain value of the same type hits identically (#929/#509/#313/#1318); reds if one starts compiling"),
     ("call_indirect_type_1643_differential.py", "EXPECTED_DECLINES"): ("decline", "loud refusals where one equality compare cannot be sound (#1643) or the #642 closed world fails; exact both ways, reds if one starts compiling"),
     ("armv6m_1301_differential.py", "EXPECTED_DECLINES"): ("decline", "ARMv6-M refusals (#1301): each export the encoder emits a non-ARMv6-M instruction for, with its class; exact both ways, reds if one starts compiling or changes class"),
+    ("rv32_pending_operand_1717_differential.py", "EXPECTED_RV32_DECLINES"): ("decline", "RV32 register-pool exhaustion skips at the deepest pending shapes (#226 loud skip), the same 18 before and after #1717; an unlisted decline reds, a listed export that starts compiling is executed and graded"),
     ("litpool_islands_345_differential.py", "INTENDED_ACCEPTANCES"): ("decline", "declines with islands off, compiles with them on, by design"),
     ("home_alias_audit_corpus_1189.py", "PLANT_EXPECTED"): ("red-half", "DERIVED plant expectations, the potency evidence"),
     ("invalid_accept_1207_differential.py", "DECLINES"): ("red-half", "the exact-pin companion: expected verdict per cell, exact BOTH ways"),

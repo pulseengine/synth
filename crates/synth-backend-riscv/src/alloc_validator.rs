@@ -66,13 +66,19 @@
 //! save. If the RV selector ever spilled a callee-saved temp (s1/s2..s10) to the
 //! frame IN THE BODY, that body `sw` would mask a genuine unsaved clobber → a
 //! false NEGATIVE (the checker-safe direction, FN < FP, exactly as the ARM
-//! validator excludes R0/R1 across a call). This is NOT reachable on current
-//! selector output: the RV selector has NO Belady / spill-realloc body spilling
-//! (`preserve_callee_saved` is the only site that stores an s-register to the
-//! frame, and it is the prologue), and it DECLINES rather than body-spills when
-//! it cannot allocate. If cross-call/Belady spilling is wired for RV later, this
-//! boundary must be re-examined (anchor the save-set on the prologue window, not
-//! any-sw). Named here so the boundary is visible, not silent.
+//! validator excludes R0/R1 across a call). The RV selector has NO Belady /
+//! spill-realloc body spilling, and it DECLINES rather than body-spills when it
+//! cannot allocate. ONE body site does store an s-register to the frame since
+//! #1717: the i64 div/rem lowering stores a live value it is about to clobber
+//! (`save_div_preserved`), and that value may sit in `s1..s3`. Such a store
+//! masks a missing prologue save only for the register it stores: the core it
+//! brackets WRITES all three of `s1..s3`, so with the pass reverted the check
+//! still fires on any of them that is not also live below the divide — full
+//! masking needs a pending value in each of `s1`, `s2` and `s3` at once. This
+//! is the FN direction, not a false positive. If cross-call/Belady spilling is
+//! wired for RV later, this boundary must be re-examined (anchor the save-set on
+//! the prologue window, not any-sw). Named here so the boundary is visible, not
+//! silent.
 
 use crate::register::Reg;
 use crate::riscv_op::RiscVOp;

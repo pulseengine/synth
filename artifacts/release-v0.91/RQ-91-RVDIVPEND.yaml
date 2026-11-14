@@ -1,0 +1,72 @@
+artifacts:
+  - id: RQ-91-RVDIVPEND
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "A value pending below an RV32 i64 div/rem survives the long-division core"
+    description: >
+        SILENT MISCOMPILE, filed as #1717 from a cross-backend differential
+        test against wasmtime. `(module (func (export "f") (result i64)
+        i64.const 5 i64.const 7 i64.const 2 i64.div_u i64.add))` compiled
+        `-b riscv --target riscv32imac --relocatable` returned 6 where
+        wasmtime returns 8. ARM is correct on this shape.
+
+        THE DEFECT, two layers of one seam. (1) RV32 lowers all four i64
+        div/rem ops to an inline long-division loop
+        (`emit_i64_udiv_inline`, crates/synth-backend-riscv/src/selector.rs)
+        that runs on a fixed register file, t0..t6 plus s1..s3, without
+        asking the allocator. Every other lowering allocates through
+        `alloc_temp`, which skips registers pinned by live value-stack
+        entries (#226). A value pending BELOW the divide's operands, i32 or
+        i64, that sat in one of those registers was overwritten. #317 had
+        protected the signed path's own sign masks and nothing else. (2)
+        With layer 1 fixed, `copy_div_result` still copied `lo` before `hi`,
+        and the allocator can return the core's `src_hi` register as `lo`,
+        so the remainder's high word was overwritten before it was read.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact: compile
+        the module above with `synth compile x.wat -b riscv --target
+        riscv32imac --relocatable --all-exports -o x.o` and call `f` under
+        unicorn (UC_ARCH_RISCV). If a0:a1 equals 8, the defect is refuted.
+
+        MEASURED 2026-11-13 on main 34781a8c: LIVE (returns 6).
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - selector
+      - riscv
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1717"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 every i64 div_s/div_u/rem_s/rem_u on RV32 leaves
+        every value pending below its operands intact, at pending depth 1 and
+        2, of i32 and i64 kind, in straight-line code, inside an if arm,
+        across a br_if fall-through and in a loop body. This is executed
+        against wasmtime, red before and green after.
+      landed: "v0.91 RVDIVPEND - #1717 - DELIVERED: a wrong-code fix. lower_i64_div brackets the long-division core with save_div_preserved / restore_div_preserved, which store every live register the core writes to a frame slot and reload it after the result is copied out. copy_div_result orders its two copies so each source is read before it is written."
+      verified-by: >
+        DELIVERED, execution-verified. New wired oracle
+        scripts/repro/rv32_pending_operand_1717_differential.py (ci.yml, job
+        repro-sweep-rv32-oracle, through oracle_run.py, `emulations >=
+        1396`). It runs the four i64 div/rem ops and their siblings (i64 mul,
+        shifts, rotates, add/sub/and, compares, eqz, sign-extends, wrap,
+        store/load; i32 div/rem on the #232 guard path, mul, shifts, lt_s)
+        with nothing pending and with i32/i64 values pending at depth 1 and
+        2, plus if-arm, br_if and loop shapes, on RV32 against wasmtime under
+        unicorn, with cortex-m4 and cortex-m7dp control legs on the class.
+        RED on main 34781a8c: 108 wrong vectors over 27 exports, all in the
+        class. GREEN on the branch: 1396/1396. A layer-1-only build leaves
+        12 wrong vectors over 3 rem_u exports. Unit tests
+        `i64_divrem_preserves_a_pending_value_across_the_core_1717` and
+        `copy_div_result_reads_each_source_before_writing_it_1717` fail with
+        the fix reverted. RV32 bytes are unchanged for all 867 functions of
+        the scripts/repro and tests .wat/.wasm corpus; the spec-suite compile
+        census matches its pins.
