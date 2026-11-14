@@ -13,7 +13,7 @@ use synth_core::wasm_decoder::DecodedModule;
 use synth_core::wasm_op::WasmOp;
 use synth_synthesis::{
     ArmInstruction, ArmOp, BoundsCheckConfig, InstructionSelector, OptimizationConfig,
-    OptimizerBridge, RuleDatabase, validate_instructions,
+    OptimizerBridge, RuleDatabase, function_i64_locals, validate_instructions,
 };
 
 /// ARM Cortex-M backend using Synth's custom compiler pipeline
@@ -1744,6 +1744,37 @@ fn compile_wasm_to_arm(
         && wasm_ops
             .iter()
             .any(|op| matches!(op, WasmOp::GlobalGet(_) | WasmOp::GlobalSet(_)));
+    // #1713 / #1241: the optimized path has no model of a 64-bit NON-PARAM
+    // local. Its `Store` moves ONE register into the local's home (an i64
+    // occupies two slot-stack entries, so `local.set` stored the HIGH half and
+    // left the low half on the stack), and its `I64Load` of a non-param local
+    // hands out a fresh register pair that was never written. The executed
+    // result was the high half in both words, or an unrelated pair (#1241's
+    // three corpus shapes). Route every function that touches a 64-bit
+    // non-param local to the direct selector, whose operand stack carries an
+    // i64 as one entry and whose frame/promotion homes are width-aware. The
+    // width set is the SAME declaration-seeded one the direct selector
+    // consults (`function_i64_locals`), so the two paths cannot disagree
+    // about which locals are 64-bit.
+    let has_i64_local = {
+        // Declarations are indexed from the DECLARED param count (the
+        // access-pattern `num_params` can be smaller when trailing params are
+        // never read).
+        let wide = function_i64_locals(
+            wasm_ops,
+            config.current_func_param_count.unwrap_or(num_params),
+            &config.current_func_params_i64,
+            &config.current_func_declared_i64_locals,
+            &config.func_ret_i64,
+            &config.type_ret_i64,
+            &config.func_arg_counts,
+            &config.type_arg_counts,
+        );
+        wasm_ops.iter().any(|op| {
+            matches!(op, WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i)
+                if *i >= num_params && wide.contains(i))
+        })
+    };
     // VCR-VER-001 (#242): `post_exhaust` scopes the post-exhaustion cleanup
     // extensions to functions whose bytes the #580 spill-on-exhaustion
     // machinery actually shaped (bridge-reported). Everything else — the
@@ -1764,6 +1795,7 @@ fn compile_wasm_to_arm(
         // #457: route read-before-write non-param locals to the direct
         // selector, whose prologue zero-init lands the wasm-mandated 0.
         || has_rbw_local
+        || has_i64_local
     {
         if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
             // RQ-65-PARITY (#197): name WHICH pre-gate predicate diverted the
@@ -1781,6 +1813,7 @@ fn compile_wasm_to_arm(
                 (has_global_access, "wide-global-access"),
                 (has_fact_div_elide, "fact-elide"),
                 (has_rbw_local, "rbw-local"),
+                (has_i64_local, "i64-local"),
             ]
             .iter()
             .filter(|(on, _)| *on)

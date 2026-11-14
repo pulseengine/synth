@@ -632,29 +632,26 @@ impl InstructionSelector {
             // `layout.incoming_params`; there is no register home.
         }
 
-        let mut i64_locals = infer_i64_locals(
+        // #518 / #1713: i64 params (not a D-homed f64, #369) and declared-i64
+        // locals SEED the width walk (`function_i64_locals`), so a local an
+        // i64 param is copied into is i64 too — not promoted to one register.
+        let params_wide: Vec<bool> = self
+            .params_i64
+            .iter()
+            .take(num_params as usize)
+            .enumerate()
+            .map(|(k, &w)| w && !params_f64_vfp.get(k).copied().unwrap_or(false))
+            .collect();
+        let i64_locals = function_i64_locals(
             wasm_ops,
+            num_params,
+            &params_wide,
+            &self.declared_i64_locals,
             &self.func_ret_i64,
             &self.type_ret_i64,
             &self.func_arg_counts,
             &self.type_arg_counts,
         );
-        // #518: an i64/f64 PARAM is 64-bit by signature even if it is only READ
-        // (never `local.set`/`tee`), which `infer_i64_locals` — driven by
-        // LocalSet/Tee/Call result widths — cannot see. Seed those indices so a
-        // `LocalGet` of an i64 param pushes a `StackVal::i64` (whose hi register
-        // is reserved via `i64_pair_hi`) instead of an i32 entry that left the hi
-        // unreserved — the exact direct-path #518 mechanism (a following
-        // `i64.const` was then allocated into the param's hi register).
-        // GI-FPU-002 phase 3 (#369): a D-HOMED f64 param (double-precision
-        // target) is NOT a core-register pair — `params_i64` lumps i64/f64 by
-        // width, but its home is the VFP D-register, so seeding it here would
-        // make `LocalGet` push a phantom core pair. Skip the VFP-homed ones.
-        for (k, &wide) in self.params_i64.iter().take(num_params as usize).enumerate() {
-            if wide && !params_f64_vfp.get(k).copied().unwrap_or(false) {
-                i64_locals.insert(k as u32);
-            }
-        }
 
         // VCR-RA local promotion (#390, #242): choose non-param i32 locals to keep
         // in callee-saved registers (r4..r8) instead of frame slots, and seed them

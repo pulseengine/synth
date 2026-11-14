@@ -656,20 +656,18 @@
       }
     },
     {
-      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:6978:0",
+      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:7004:0",
       "want_bytes": "changed",
       "want_changed": [
         "a32_i64_615.wat|self",
-        "aarch64_locals_851.wat|self",
         "aarch64_surface_851.wat|self",
-        "brif_local_zeroinit_990.wat|self",
         "const_body_791.wat|self",
         "i64_divs_317.wat|self",
         "i64_high_reg_zero_fill_916.wat|self",
         "i64_result_pair_1189.wat|self",
         "select_i64cmp_973.wat|self"
       ],
-      "want_changed_note": "re-pinned at v0.66 from mutants[].changed by pin-subset's own rule (sorted module names), after RQ-66-BOTHWRONG widened the set 8 -> 9. The ninth module is i64_result_pair_1189.wat, a fixture RQ-66-WATCHED ADDED this release \u2014 so the set grew because the CORPUS grew, not because codegen changed for an existing module.",
+      "want_changed_note": "re-pinned at v0.91 I64TEE (#1713/#1241) 9 -> 7, measured by evaluate() on the mutated shadow tree of 158f6799: aarch64_locals_851.wat and brif_local_zeroinit_990.wat left the set because their i64-local functions now route to the DIRECT selector (the optimizer bridge no longer lowers them, so a mutant in it cannot change their bytes); the same two modules are among the four that home-alias audit gained (+8 functions). Earlier: re-pinned at v0.66 from mutants[].changed by pin-subset's own rule (sorted module names), after RQ-66-BOTHWRONG widened the set 8 -> 9. The ninth module is i64_result_pair_1189.wat, a fixture RQ-66-WATCHED ADDED this release \u2014 so the set grew because the CORPUS grew, not because codegen changed for an existing module.",
       "want_classification": "UNTESTED"
     },
     {
@@ -748,7 +746,7 @@
       "reanchor_note": "v0.73 RQ-73-ISLANDPASS: a PURE LINE DRIFT of -22, unlike the v0.72 reanchor recorded after this sentence. place_literal_islands_fixedpoint replaced the span guard inside the same functions, so every R1-routing site in arm_backend.rs moved by exactly 22 lines and none changed meaning: 444->422, 1597->1575, 1059->1037, 1093->1071, 1030->1008. Each new id was DERIVED from enumerate_sites() rather than computed by hand, and the one ambiguous text match (the file holds three `if grown.is_ok() {`) was disambiguated by diffing surrounding context against origin/main. Only the ci_subset ids are re-pointed: the .mutants[] records are the HISTORY of a survey run, and rewriting them would change what was measured. | v0.72 RQ-72-ISLANDS: NOT a line drift. The pool emitter was LIFTED OUT of `compile_wasm_to_arm` into `emit_literal_pool`, and R1-routing is a list of FUNCTIONS \u2014 so this site left the scanned region and enumerate_sites() stopped producing it. `reanchor` reported NOT FOUND correctly: there was nothing to find. Remedy was to name emit_literal_pool in R1-routing (also bringing the new island trigger under mutation), then re-point at the id the enumerator emits. The mutation is unchanged: `>` -> `>=` on the bound whose loosening turns a refusal into a wrong-address load."
     },
     {
-      "id": "R1-routing/BOUND/arm_backend.rs:2061:36",
+      "id": "R1-routing/BOUND/arm_backend.rs:2094:36",
       "want_bytes": "identical",
       "want_classification": "DEAD",
       "want_reach": "unreached",
@@ -2300,7 +2298,7 @@
     "oversample": 4,
     "per_region": 8,
     "per_region_note": "The sample reproduces at --per-region 8 (38/38 by region+operator); it does NOT at 12 (14/38). `cmd_run` rewrites meta on every invocation with its default 12, which overwrote the value the survey actually used. Corrected from the v0.65 cold review.",
-    "reanchored_at": "705b7029",
+    "reanchored_at": "e3b07e1b",
     "seed": 1189
   },
   "mutants": [
@@ -2365,13 +2363,13 @@
       ],
       "changed_note": "RE-MEASURED at v0.66 against a LIVE baseline (compile the corpus with the unmutated current binary, then with the mutation, diff those) after RQ-66-BOTHWRONG widened it 8 -> 9. Byte triage only \u2014 Edit/build_synth/compile_corpus/diff_corpus, no L2 and no kill scoring, so the L2 guard (which protects kill scoring against an unvalidated baseline) is respected rather than bypassed. A first attempt diffed against the ledger's RECORDED baseline at ad52535a and got 33: that folded in 46 entries of tree drift the survey itself warns about. The wrong REFERENCE, not a wrong operation.",
       "classification": "UNTESTED",
-      "end": 6981,
+      "end": 7007,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:6978:0",
+      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:7004:0",
       "op": "DROPMOV",
       "region": "R2-ir_to_arm",
       "seconds": 270.4,
-      "start": 6978,
+      "start": 7004,
       "status": "survived",
       "suite_seconds": 240.1
     },
@@ -2594,9 +2592,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 3016,
+      "end": 3013,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/REG/select_with_stack.rs:3016:24",
+      "id": "R3-direct/REG/select_with_stack.rs:3013:24",
       "killed_by": {
         "binaries": [
           "issue_95_const_addr_load"
@@ -2612,7 +2610,7 @@
       "op": "REG",
       "region": "R3-direct",
       "seconds": 277.5,
-      "start": 3016,
+      "start": 3013,
       "status": "killed"
     },
     {
@@ -3400,9 +3398,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 1758,
+      "end": 1789,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/GUARD/arm_backend.rs:1758:8",
+      "id": "R1-routing/GUARD/arm_backend.rs:1789:8",
       "killed_by": {
         "binaries": [
           "base_cse_flip_468",
@@ -3442,7 +3440,7 @@
       "op": "GUARD",
       "region": "R1-routing",
       "seconds": 314.0,
-      "start": 1758,
+      "start": 1789,
       "status": "killed"
     },
     {
@@ -3451,14 +3449,14 @@
       "bytes": "identical",
       "changed": [],
       "classification": "EQUIVALENT",
-      "end": 7121,
+      "end": 7147,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/BOUND/optimizer_bridge.rs:7121:40",
+      "id": "R2-ir_to_arm/BOUND/optimizer_bridge.rs:7147:40",
       "op": "BOUND",
       "reach": "reached",
       "region": "R2-ir_to_arm",
       "seconds": 31.3,
-      "start": 7121,
+      "start": 7147,
       "status": "identical"
     },
     {
@@ -5168,9 +5166,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 1215,
+      "end": 1212,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/GUARD/select_with_stack.rs:1215:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:1212:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -5182,7 +5180,7 @@
       "op": "GUARD",
       "region": "R3-direct",
       "seconds": 10.6,
-      "start": 1215,
+      "start": 1212,
       "status": "killed"
     },
     {
@@ -6572,9 +6570,9 @@
       "bytes": "identical",
       "changed": [],
       "classification": "DEAD",
-      "end": 2061,
+      "end": 2094,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/BOUND/arm_backend.rs:2061:36",
+      "id": "R1-routing/BOUND/arm_backend.rs:2094:36",
       "op": "BOUND",
       "published_as": "v0.65.0 published this site as 'DEAD \u2014 a deletion candidate for the subtraction ratchet' (CHANGELOG 0.65.0, MUTATION_SURVEY.md section (b), RQ-65-MUTANTS). That statement is FALSE: reached under graph-alloc-reloc, graph-alloc-self (see reach_wide). Classification left as v0.65 recorded it; under classify_identical the same measurement is UNRESOLVED, not DEAD.",
       "reach": "unreached",
@@ -6869,7 +6867,7 @@
       "reach_wide_at": "a73d5ac2",
       "region": "R1-routing",
       "seconds": 26.6,
-      "start": 2061,
+      "start": 2094,
       "status": "identical"
     },
     {
@@ -6939,9 +6937,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 4330,
+      "end": 4356,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/GUARD/optimizer_bridge.rs:4330:0",
+      "id": "R2-ir_to_arm/GUARD/optimizer_bridge.rs:4356:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -6953,7 +6951,7 @@
       "op": "GUARD",
       "region": "R2-ir_to_arm",
       "seconds": 16.5,
-      "start": 4330,
+      "start": 4356,
       "status": "killed"
     },
     {
@@ -6971,13 +6969,13 @@
         }
       ],
       "classification": "UNTESTED",
-      "end": 8231,
+      "end": 8228,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/COND/select_with_stack.rs:8231:37",
+      "id": "R3-direct/COND/select_with_stack.rs:8228:37",
       "op": "COND",
       "region": "R3-direct",
       "seconds": 329.4,
-      "start": 8231,
+      "start": 8228,
       "status": "survived",
       "suite_seconds": 301.7
     },
@@ -7378,13 +7376,13 @@
       "before": "                                op2: Operand2::Imm(n),",
       "build_error": "error: expected one of `)`, `,`, `if`, or `|`, found `.`",
       "classification": "UNCOMPILABLE",
-      "end": 7127,
+      "end": 7153,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:7127:37",
+      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:7153:37",
       "op": "IMM",
       "region": "R2-ir_to_arm",
       "seconds": 1.0,
-      "start": 7127,
+      "start": 7153,
       "status": "uncompilable"
     },
     {
@@ -7430,9 +7428,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 7436,
+      "end": 7433,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/GUARD/select_with_stack.rs:7436:0",
+      "id": "R3-direct/GUARD/select_with_stack.rs:7433:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -7444,7 +7442,7 @@
       "op": "GUARD",
       "region": "R3-direct",
       "seconds": 22.6,
-      "start": 7436,
+      "start": 7433,
       "status": "killed"
     },
     {
@@ -8875,9 +8873,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 6663,
+      "end": 6689,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:6663:46",
+      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:6689:46",
       "killed_by": {
         "binaries": [
           "base_cse_flip_468"
@@ -8893,7 +8891,7 @@
       "op": "IMM",
       "region": "R2-ir_to_arm",
       "seconds": 396.9,
-      "start": 6663,
+      "start": 6689,
       "status": "killed"
     },
     {
@@ -10427,9 +10425,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 3880,
+      "end": 3906,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/GUARD/optimizer_bridge.rs:3880:0",
+      "id": "R2-ir_to_arm/GUARD/optimizer_bridge.rs:3906:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -10441,7 +10439,7 @@
       "op": "GUARD",
       "region": "R2-ir_to_arm",
       "seconds": 17.0,
-      "start": 3880,
+      "start": 3906,
       "status": "killed"
     },
     {
@@ -10450,14 +10448,14 @@
       "bytes": "identical",
       "changed": [],
       "classification": "EQUIVALENT",
-      "end": 2015,
+      "end": 2012,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/BOUND/select_with_stack.rs:2015:39",
+      "id": "R3-direct/BOUND/select_with_stack.rs:2012:39",
       "op": "BOUND",
       "reach": "reached",
       "region": "R3-direct",
       "seconds": 28.8,
-      "start": 2015,
+      "start": 2012,
       "status": "identical"
     },
     {
@@ -10731,9 +10729,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 5922,
+      "end": 5948,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:5919:0",
+      "id": "R2-ir_to_arm/DROPMOV/optimizer_bridge.rs:5945:0",
       "killed_by": {
         "exit": 1,
         "job": "repro-sweep-arm-corpus-oracle",
@@ -10745,7 +10743,7 @@
       "op": "DROPMOV",
       "region": "R2-ir_to_arm",
       "seconds": 17.6,
-      "start": 5919,
+      "start": 5945,
       "status": "killed"
     },
     {
@@ -12102,15 +12100,15 @@
       "bytes": "identical",
       "changed": [],
       "classification": "UNRESOLVED",
-      "end": 2074,
+      "end": 2107,
       "file": "crates/synth-backend/src/arm_backend.rs",
-      "id": "R1-routing/BOUND/arm_backend.rs:2074:67",
+      "id": "R1-routing/BOUND/arm_backend.rs:2107:67",
       "op": "BOUND",
       "probe_error": "error: prefix `REACHED` is unknown",
       "reach": "unknown",
       "region": "R1-routing",
       "seconds": 16.0,
-      "start": 2074,
+      "start": 2107,
       "status": "identical"
     },
     {
@@ -12118,13 +12116,13 @@
       "before": "                            op2: Operand2::Imm(0),",
       "build_error": "error[E0689]: can't call method `wrapping_add` on ambiguous numeric type `{integer}`",
       "classification": "UNCOMPILABLE",
-      "end": 6123,
+      "end": 6149,
       "file": "crates/synth-synthesis/src/optimizer_bridge.rs",
-      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:6123:33",
+      "id": "R2-ir_to_arm/IMM/optimizer_bridge.rs:6149:33",
       "op": "IMM",
       "region": "R2-ir_to_arm",
       "seconds": 1.1,
-      "start": 6123,
+      "start": 6149,
       "status": "uncompilable"
     },
     {
@@ -12146,9 +12144,9 @@
         }
       ],
       "classification": "KILLED",
-      "end": 737,
+      "end": 734,
       "file": "crates/synth-synthesis/src/instruction_selector/select_with_stack.rs",
-      "id": "R3-direct/BOUND/select_with_stack.rs:737:46",
+      "id": "R3-direct/BOUND/select_with_stack.rs:734:46",
       "killed_by": {
         "job": "(compiler hang)",
         "layer": "timeout",
@@ -12157,7 +12155,7 @@
       "op": "BOUND",
       "region": "R3-direct",
       "seconds": 185.7,
-      "start": 737,
+      "start": 734,
       "status": "killed",
       "triage_note": "aborted-after-first-compiler-hang"
     }
