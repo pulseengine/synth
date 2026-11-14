@@ -899,5 +899,54 @@ class GeneratedFixtures1282(unittest.TestCase):
         self.assertEqual(check_generated_fixtures(root), [])
 
 
+@unittest.skipIf(yaml is None, "PyYAML not installed")
+class EmptyLedgerIsRed(unittest.TestCase):
+    """An empty or missing `claims:` list must FAIL the gate.
+
+    `main()` used to print "no claims declared — nothing to gate." and return
+    0 before any surface gate (freshness, fixtures, template facts, README
+    links) ran, so truncating the ledger turned the required check green while
+    it checked nothing. Driven through the real CLI entry point in a
+    subprocess, because the defect was in `main()`'s control flow.
+    """
+
+    SCRIPT = pathlib.Path(__file__).resolve().parent / "claim_check.py"
+
+    def _run(self, ledger_text):
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as td:
+            ledger = pathlib.Path(td) / "claims.yaml"
+            ledger.write_text(ledger_text)
+            return subprocess.run(
+                [sys.executable, str(self.SCRIPT), str(ledger)],
+                capture_output=True, text=True, cwd=td,
+            )
+
+    def test_empty_claims_list_is_red(self):
+        r = self._run("claims: []\n")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("`claims:` is empty", r.stderr)
+
+    def test_missing_claims_key_is_red(self):
+        r = self._run("status_fields: {}\n")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("`claims:` is missing", r.stderr)
+
+    def test_empty_file_is_red(self):
+        r = self._run("")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("`claims:` is missing", r.stderr)
+
+    def test_claims_not_a_list_is_red(self):
+        r = self._run("claims: {}\n")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_no_nothing_to_gate_pass(self):
+        # The exact fail-open message must not come back as a pass.
+        r = self._run("claims: []\n")
+        self.assertNotIn("nothing to gate.", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

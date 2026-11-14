@@ -43,6 +43,31 @@ fn create_seq_rule(name: &str, wasm_op: WasmOp, arm_ops: Vec<ArmOp>) -> Synthesi
     }
 }
 
+/// Pin the verdict of a structural op with PLACEHOLDER semantics (see the
+/// `smoke_*_placeholder_semantics` tests). These are smoke tests, not proofs:
+/// they assert the exact verdict returned today — `Invalid` with an empty
+/// counterexample, on ordeal and on the Z3 differential — so that a change
+/// (a real model landing, or the validator starting to return `Verified` or
+/// `Unknown`) turns the test red and is looked at, instead of being accepted
+/// silently as the former three-way-tolerant matches did.
+fn assert_placeholder_invalid(
+    label: &str,
+    result: Result<ValidationResult, synth_verify::VerificationError>,
+) {
+    match result {
+        Ok(ValidationResult::Invalid { counterexample }) if counterexample.is_empty() => {
+            println!(
+                "smoke: {} returns the pinned placeholder verdict (Invalid, no model)",
+                label
+            );
+        }
+        other => panic!(
+            "smoke test {}: placeholder verdict CHANGED (pinned: Invalid with empty counterexample), got {:?}",
+            label, other
+        ),
+    }
+}
+
 /// The SHIPPED ÷0 guard prefix: CMP divisor,#0 ; BNE +0 (skip the UDF) ; UDF.
 /// Since VCR-VER-002 (#166) wired the mandatory trap-preservation VC into
 /// `verify_rule`, every div/rem rule MUST carry its trap guard to verify —
@@ -765,9 +790,12 @@ fn verify_i32_clz() {
             },
         );
 
-        // CLZ semantics in our implementation are simplified
-        // Full verification would require complete CLZ encoding
-        if let Ok(ValidationResult::Unknown { .. }) = validator.verify_rule(&rule) {}
+        // The test previously discarded the verdict (an empty `if let`), so it
+        // passed whatever the validator returned. It must now be Verified.
+        match validator.verify_rule(&rule) {
+            Ok(ValidationResult::Verified) => println!("✓ I32Clz verified"),
+            other => panic!("Expected Verified for i32.clz, got {:?}", other),
+        }
     });
 }
 
@@ -1507,25 +1535,22 @@ fn verify_global_set() {
     });
 }
 
+/// SMOKE TEST, NOT A PROOF. `nop` has placeholder semantics in the
+/// validator (a structure marker / control transfer modelled as a constant or
+/// fresh symbol on the WASM side), so no correctness verdict exists for it.
+/// This only checks that `verify_rule` runs on the rule without error and
+/// pins the verdict it returns TODAY (`Invalid`, no counterexample, under both
+/// ordeal and the Z3 differential), so any change in that verdict is visible.
+/// It must never be counted as a verified rule.
 #[test]
-fn verify_nop() {
+fn smoke_nop_placeholder_semantics() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Nop does nothing
         let rule = create_rule("nop", WasmOp::Nop, ArmOp::Nop);
 
-        match validator.verify_rule(&rule) {
-            Ok(ValidationResult::Verified) => {
-                println!("✓ Nop verified");
-            }
-            Ok(ValidationResult::Invalid { .. }) | Ok(ValidationResult::Unknown { .. }) => {
-                // Structural operations may not verify meaningfully
-                // The semantics returns placeholder values that don't match
-                println!("✓ Nop handled (structural operation)");
-            }
-            other => panic!("Unexpected verification result for Nop: {:?}", other),
-        }
+        assert_placeholder_invalid("nop", validator.verify_rule(&rule));
     });
 }
 
@@ -1533,71 +1558,72 @@ fn verify_nop() {
 // CONTROL FLOW OPERATIONS
 // ============================================================================
 
+/// SMOKE TEST, NOT A PROOF. `block` has placeholder semantics in the
+/// validator (a structure marker / control transfer modelled as a constant or
+/// fresh symbol on the WASM side), so no correctness verdict exists for it.
+/// This only checks that `verify_rule` runs on the rule without error and
+/// pins the verdict it returns TODAY (`Invalid`, no counterexample, under both
+/// ordeal and the Z3 differential), so any change in that verdict is visible.
+/// It must never be counted as a verified rule.
 #[test]
-fn verify_block() {
+fn smoke_block_placeholder_semantics() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Block is a structure marker
         let rule = create_rule("block", WasmOp::Block, ArmOp::Nop);
 
-        match validator.verify_rule(&rule) {
-            Ok(ValidationResult::Verified) => {
-                println!("✓ Block verified");
-            }
-            Ok(ValidationResult::Invalid { .. }) | Ok(ValidationResult::Unknown { .. }) => {
-                // Structural control flow markers don't have computational semantics
-                println!("✓ Block handled (structural operation)");
-            }
-            other => panic!("Unexpected verification result for Block: {:?}", other),
-        }
+        assert_placeholder_invalid("block", validator.verify_rule(&rule));
     });
 }
 
+/// SMOKE TEST, NOT A PROOF. `loop` has placeholder semantics in the
+/// validator (a structure marker / control transfer modelled as a constant or
+/// fresh symbol on the WASM side), so no correctness verdict exists for it.
+/// This only checks that `verify_rule` runs on the rule without error and
+/// pins the verdict it returns TODAY (`Invalid`, no counterexample, under both
+/// ordeal and the Z3 differential), so any change in that verdict is visible.
+/// It must never be counted as a verified rule.
 #[test]
-fn verify_loop() {
+fn smoke_loop_placeholder_semantics() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Loop is a structure marker
         let rule = create_rule("loop", WasmOp::Loop, ArmOp::Nop);
 
-        match validator.verify_rule(&rule) {
-            Ok(ValidationResult::Verified) => {
-                println!("✓ Loop verified");
-            }
-            Ok(ValidationResult::Invalid { .. }) | Ok(ValidationResult::Unknown { .. }) => {
-                // Structural control flow markers don't have computational semantics
-                println!("✓ Loop handled (structural operation)");
-            }
-            other => panic!("Unexpected verification result for Loop: {:?}", other),
-        }
+        assert_placeholder_invalid("loop", validator.verify_rule(&rule));
     });
 }
 
+/// SMOKE TEST, NOT A PROOF. `end` has placeholder semantics in the
+/// validator (a structure marker / control transfer modelled as a constant or
+/// fresh symbol on the WASM side), so no correctness verdict exists for it.
+/// This only checks that `verify_rule` runs on the rule without error and
+/// pins the verdict it returns TODAY (`Invalid`, no counterexample, under both
+/// ordeal and the Z3 differential), so any change in that verdict is visible.
+/// It must never be counted as a verified rule.
 #[test]
-fn verify_end() {
+fn smoke_end_placeholder_semantics() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // End is a structure marker
         let rule = create_rule("end", WasmOp::End, ArmOp::Nop);
 
-        match validator.verify_rule(&rule) {
-            Ok(ValidationResult::Verified) => {
-                println!("✓ End verified");
-            }
-            Ok(ValidationResult::Invalid { .. }) | Ok(ValidationResult::Unknown { .. }) => {
-                // Structural control flow markers don't have computational semantics
-                println!("✓ End handled (structural operation)");
-            }
-            other => panic!("Unexpected verification result for End: {:?}", other),
-        }
+        assert_placeholder_invalid("end", validator.verify_rule(&rule));
     });
 }
 
+/// SMOKE TEST, NOT A PROOF. `if` has placeholder semantics in the
+/// validator (a structure marker / control transfer modelled as a constant or
+/// fresh symbol on the WASM side), so no correctness verdict exists for it.
+/// This only checks that `verify_rule` runs on the rule without error and
+/// pins the verdict it returns TODAY (`Invalid`, no counterexample, under both
+/// ordeal and the Z3 differential), so any change in that verdict is visible.
+/// It must never be counted as a verified rule.
 #[test]
-fn verify_if() {
+fn smoke_if_placeholder_semantics() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
@@ -1618,37 +1644,26 @@ fn verify_if() {
             },
         };
 
-        match validator.verify_rule(&rule) {
-            Ok(ValidationResult::Verified) => {
-                println!("✓ If verified");
-            }
-            Ok(ValidationResult::Invalid { .. }) | Ok(ValidationResult::Unknown { .. }) => {
-                // Structural control flow markers don't have computational semantics
-                println!("✓ If handled (structural operation)");
-            }
-            other => panic!("Unexpected verification result for If: {:?}", other),
-        }
+        assert_placeholder_invalid("if", validator.verify_rule(&rule));
     });
 }
 
+/// SMOKE TEST, NOT A PROOF. `else` has placeholder semantics in the
+/// validator (a structure marker / control transfer modelled as a constant or
+/// fresh symbol on the WASM side), so no correctness verdict exists for it.
+/// This only checks that `verify_rule` runs on the rule without error and
+/// pins the verdict it returns TODAY (`Invalid`, no counterexample, under both
+/// ordeal and the Z3 differential), so any change in that verdict is visible.
+/// It must never be counted as a verified rule.
 #[test]
-fn verify_else() {
+fn smoke_else_placeholder_semantics() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Else is a structure marker
         let rule = create_rule("else", WasmOp::Else, ArmOp::Nop);
 
-        match validator.verify_rule(&rule) {
-            Ok(ValidationResult::Verified) => {
-                println!("✓ Else verified");
-            }
-            Ok(ValidationResult::Invalid { .. }) | Ok(ValidationResult::Unknown { .. }) => {
-                // Structural control flow markers don't have computational semantics
-                println!("✓ Else handled (structural operation)");
-            }
-            other => panic!("Unexpected verification result for Else: {:?}", other),
-        }
+        assert_placeholder_invalid("else", validator.verify_rule(&rule));
     });
 }
 
@@ -1921,8 +1936,15 @@ fn verify_i32_const() {
     });
 }
 
+/// SMOKE TEST, NOT A PROOF. `br_table` has placeholder semantics in the
+/// validator (a structure marker / control transfer modelled as a constant or
+/// fresh symbol on the WASM side), so no correctness verdict exists for it.
+/// This only checks that `verify_rule` runs on the rule without error and
+/// pins the verdict it returns TODAY (`Invalid`, no counterexample, under both
+/// ordeal and the Z3 differential), so any change in that verdict is visible.
+/// It must never be counted as a verified rule.
 #[test]
-fn verify_br_table() {
+fn smoke_br_table_placeholder_semantics() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
@@ -1951,29 +1973,23 @@ fn verify_br_table() {
                 },
             );
 
-            match validator.verify_rule(&rule) {
-                Ok(ValidationResult::Verified) => {
-                    println!("✓ BrTable verified ({}, {} targets)", name, targets.len());
-                }
-                Ok(ValidationResult::Invalid { .. }) | Ok(ValidationResult::Unknown { .. }) => {
-                    // Structural control flow operations don't have computational semantics
-                    println!(
-                        "✓ BrTable handled ({}, {} targets - structural operation)",
-                        name,
-                        targets.len()
-                    );
-                }
-                other => panic!(
-                    "Unexpected verification result for br_table ({}): {:?}",
-                    name, other
-                ),
-            }
+            assert_placeholder_invalid(
+                &format!("br_table ({})", name),
+                validator.verify_rule(&rule),
+            );
         }
     });
 }
 
+/// SMOKE TEST, NOT A PROOF. `br_table` has placeholder semantics in the
+/// validator (a structure marker / control transfer modelled as a constant or
+/// fresh symbol on the WASM side), so no correctness verdict exists for it.
+/// This only checks that `verify_rule` runs on the rule without error and
+/// pins the verdict it returns TODAY (`Invalid`, no counterexample, under both
+/// ordeal and the Z3 differential), so any change in that verdict is visible.
+/// It must never be counted as a verified rule.
 #[test]
-fn verify_br_table_empty() {
+fn smoke_br_table_empty_placeholder_semantics() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
@@ -1992,19 +2008,7 @@ fn verify_br_table_empty() {
             },
         );
 
-        match validator.verify_rule(&rule) {
-            Ok(ValidationResult::Verified) => {
-                println!("✓ BrTable empty targets verified");
-            }
-            Ok(ValidationResult::Invalid { .. }) | Ok(ValidationResult::Unknown { .. }) => {
-                // Structural control flow operations don't have computational semantics
-                println!("✓ BrTable empty targets handled (structural operation)");
-            }
-            other => panic!(
-                "Unexpected verification result for br_table_empty: {:?}",
-                other
-            ),
-        }
+        assert_placeholder_invalid("br_table_empty", validator.verify_rule(&rule));
     });
 }
 
@@ -2036,8 +2040,15 @@ fn verify_call() {
     });
 }
 
+/// SMOKE TEST, NOT A PROOF. `call_indirect` has placeholder semantics in the
+/// validator (a structure marker / control transfer modelled as a constant or
+/// fresh symbol on the WASM side), so no correctness verdict exists for it.
+/// This only checks that `verify_rule` runs on the rule without error and
+/// pins the verdict it returns TODAY (`Invalid`, no counterexample, under both
+/// ordeal and the Z3 differential), so any change in that verdict is visible.
+/// It must never be counted as a verified rule.
 #[test]
-fn verify_call_indirect() {
+fn smoke_call_indirect_placeholder_semantics() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
@@ -2062,28 +2073,23 @@ fn verify_call_indirect() {
                 },
             );
 
-            match validator.verify_rule(&rule) {
-                Ok(ValidationResult::Verified) => {
-                    println!("✓ CallIndirect({}) verified", type_idx);
-                }
-                Ok(ValidationResult::Invalid { .. }) | Ok(ValidationResult::Unknown { .. }) => {
-                    // Structural control flow operations don't have computational semantics
-                    println!(
-                        "✓ CallIndirect({}) handled (structural operation)",
-                        type_idx
-                    );
-                }
-                other => panic!(
-                    "Unexpected verification result for call_indirect({}): {:?}",
-                    type_idx, other
-                ),
-            }
+            assert_placeholder_invalid(
+                &format!("call_indirect({})", type_idx),
+                validator.verify_rule(&rule),
+            );
         }
     });
 }
 
+/// SMOKE TEST, NOT A PROOF. `unreachable` has placeholder semantics in the
+/// validator (a structure marker / control transfer modelled as a constant or
+/// fresh symbol on the WASM side), so no correctness verdict exists for it.
+/// This only checks that `verify_rule` runs on the rule without error and
+/// pins the verdict it returns TODAY (`Invalid`, no counterexample, under both
+/// ordeal and the Z3 differential), so any change in that verdict is visible.
+/// It must never be counted as a verified rule.
 #[test]
-fn verify_unreachable() {
+fn smoke_unreachable_placeholder_semantics() {
     with_verification_context(|| {
         let validator = TranslationValidator::new();
 
@@ -2096,18 +2102,6 @@ fn verify_unreachable() {
             ArmOp::Nop, // Simplified for verification
         );
 
-        match validator.verify_rule(&rule) {
-            Ok(ValidationResult::Verified) => {
-                println!("✓ Unreachable verified");
-            }
-            Ok(ValidationResult::Unknown { reason }) => {
-                // Unreachable might be Unknown due to trap semantics
-                println!("⚠ Unreachable verification unknown: {}", reason);
-            }
-            other => {
-                // Either verified or unknown is acceptable
-                println!("Note: Unreachable result: {:?}", other);
-            }
-        }
+        assert_placeholder_invalid("unreachable", validator.verify_rule(&rule));
     });
 }
