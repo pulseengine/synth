@@ -23,8 +23,8 @@ pub use control_flow::{
 };
 pub use instruction_selector::{
     ArmInstruction, BoundsCheckConfig, InstructionSelector, RegisterState, SelectionStats,
-    infer_i64_locals, read_before_write_locals, validate_instructions,
-    validate_instructions_with_helium,
+    function_i64_locals, infer_i64_locals, infer_i64_locals_seeded, read_before_write_locals,
+    validate_instructions, validate_instructions_with_helium,
 };
 pub use optimizer_bridge::{
     OptimizationConfig, OptimizationStats, OptimizerBridge, StackTopDecline, estimate_arm_byte_size,

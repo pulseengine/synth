@@ -1,0 +1,63 @@
+artifacts:
+  - id: RQ-91-I64TEE
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "An i64 local round trip keeps both words on both ARM selectors"
+    description: >
+        SILENT MISCOMPILE, filed as #1713 from a differential test against
+        wasmtime, and the open #1241 on the default self-contained image. On ARM,
+        `local.get 0 (i64 param) local.tee 1` returned the i64 with its high word
+        lost. On the self-contained image, aarch64_locals_851:i64_local returned
+        1, brif_local_zeroinit_990:bl_brif_i64 returned the high half in both
+        words and i64_width_vstack_946:f_brif returned 0.
+
+        THE DEFECT. One width decision was made in two places that disagreed.
+        The direct selector's local-width set was the dataflow walk
+        `infer_i64_locals` with the i64 params OR-ed in AFTER it, so a local an
+        i64 param was copied into came out i32, was promoted to ONE register and
+        lost its high word, while the frame layout (which also reads the declared
+        widths, #1214) sized the same local 8 bytes. The optimized path had no
+        64-bit non-param local model at all: a store moved one register, and an
+        `i64.load` of a non-param local handed out a fresh pair that was never
+        written.
+
+        THE FIX. ONE set, `function_i64_locals`: the core-pair params and the
+        declared i64 locals seed the walk, which runs to a fixpoint. Layout,
+        promotion and the operand stack consult it. The ARM backend routes every
+        function touching a 64-bit non-param local to the direct selector
+        (path-debug `i64-local`), and the optimizer bridge refuses an i64
+        local.set/tee itself as a backstop.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact: run
+        `SYNTH=./target/debug/synth python3 scripts/repro/i64_local_roundtrip_1713_differential.py`.
+        Any wrong call refutes it.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - selector
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1713, #1241"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 every i64 local round trip (get/set/tee of params and
+        declared locals, across loops, branches and calls) returns both words
+        right on ARM (cortex-m4, m7dp, r5 relocatable; cortex-m4 self-contained,
+        optimized and --no-optimize). This is executed against wasmtime, red
+        before and green after.
+      landed: "v0.91 I64TEE - #1713, #1241 - DELIVERED: one seeded width set (`function_i64_locals`) drives layout, promotion and the operand stack on the direct selector; functions with a 64-bit non-param local route to it from the optimized path, which refuses an i64 local.set/tee as a backstop."
+      verified-by: >
+        DELIVERED, execution-verified. New wired oracle
+        scripts/repro/i64_local_roundtrip_1713_differential.py (job
+        watched-1189-oracle): 27 shapes on relocatable cortex-m4, m7dp and r5,
+        RV32 i64-param-free shapes, and self-contained cortex-m4 optimized and
+        --no-optimize. RED on main a155ca7f (228 of 851 calls wrong), GREEN on
+        the branch (0 of 855). #1241's three boot-sweep pins now measure 0 and
+        are deleted.
