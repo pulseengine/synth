@@ -80,7 +80,7 @@ synth-synthesis = { path = "../synth-synthesis", version = "0.90.0", optional = 
 # suite gives the identical per-test verdict sequence on 0.22.1 and 0.36.0 (182
 # tests, 1283 verdicts, 0 disagreements), with 40 of those queries carrying a
 # Rotl/Sdiv node.
-ordeal = "=0.36.0"
+ordeal = "=0.36.1"
 
 # Z3: optional differential oracle (feature `z3-solver`) — no longer default.
 # Default features only (NO `static-link-z3`/`bundled`): z3-sys links the
