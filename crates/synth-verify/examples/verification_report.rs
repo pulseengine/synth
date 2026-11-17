@@ -218,10 +218,13 @@ fn main() {
         );
         println!("===================================================================\n");
 
-        println!(
-            "Report generated: {}",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-        );
+        // UNIX seconds, UTC: std only, so the example pulls in no date crate
+        // (chrono is unmaintained, RUSTSEC-2026-0543).
+        let generated = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        println!("Report generated: {generated} (UNIX seconds, UTC)");
         println!();
     });
 }

@@ -182,7 +182,6 @@ rust_library(
         ":synth-opt",
         ":synth-synthesis",
         "@crates//:anyhow",
-        "@crates//:chrono",
         "@crates//:ordeal",
         "@crates//:proptest",
         "@crates//:serde",
