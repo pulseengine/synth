@@ -1,0 +1,73 @@
+artifacts:
+  - id: RQ-91-RVBITCNT
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "RV32 i64.clz/ctz/popcnt write the result's high word"
+    description: >
+        SILENT MISCOMPILE, filed as #1720 while fixing #1717. On RV32
+        (`-b riscv --target riscv32imac --relocatable`) `i64.clz`, `i64.ctz`
+        and `i64.popcnt` produced the right low word, but returned as an i64
+        the high word was whatever was left in `a1`: clz(4) of
+        `a | 1 << 32` read back 0xc0de00010000001f under a poisoned `a1`,
+        where wasmtime gives 0x1f.
+
+        THE DEFECT. The wasm result type of the three ops is i64, but the RV32
+        selector's `lower_i64_clz`, `lower_i64_ctz` and `lower_i64_popcnt`
+        (crates/synth-backend-riscv/src/selector.rs) pushed an i32-typed
+        value-stack entry. The epilogue moves the stack top into the return
+        registers by the entry's type, so it wrote only `a0`. Any i64 consumer
+        (an add, a store, a local.set, a select, an xor with a pending value)
+        popped the entry as an i64 and the function declined on a type
+        mismatch. The class is every RV32 op that computes an i64 result in
+        one word: the three bit-count ops are its only members that pushed
+        i32. `i64.extend_i32_u` and `i64.extend_i32_s` and the in-place
+        `i64.extend8/16/32_s` already wrote their high word, and `i64.eqz`,
+        the i64 compares and `i32.wrap_i64` are i32 in wasm. Each of these
+        was checked by reading every push site in the selector and is graded
+        by the oracle. The ARM backends are not in the class: their legs of
+        the same oracle pass on main.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact: compile
+        peerbugs-style `(func (param $a i32) (result i64) local.get $a
+        i64.extend_i32_u i64.const 0x100000000 i64.or i64.clz)` with `synth
+        compile x.wat -b riscv --target riscv32imac --relocatable
+        --all-exports -o x.o`, and call it under unicorn RV32 with a0 = 4 and
+        a poisoned a1. If a1:a0 equals wasmtime (0x1f), the defect is
+        refuted.
+
+        MEASURED 2026-11-13 on main 34781a8c: LIVE.
+    tags:
+      - feature-loop
+      - bug
+      - wrong-code
+      - selector
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1720"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 on RV32, i64.clz, i64.ctz and i64.popcnt return
+        their full i64 result directly and through every consumer shape
+        (i64.add, an i64 local, i64.store and i64.load, a block result, an
+        xor with a pending i64, select). This is executed against wasmtime,
+        red before and green after.
+      landed: "v0.91 RVBITCNT - #1720 - DELIVERED: a wrong-code fix. The three RV32 i64 bit-count lowerings push an i64 pair whose high word they zero, through one helper, push_i64_zero_hi, which i64.extend_i32_u now shares. i64.popcnt releases its dead low operand between its two word counts, so it also fits the register pool with an i64 pending below it."
+      verified-by: >
+        DELIVERED, execution-verified. New wired oracle
+        scripts/repro/rv32_i64_bitcount_hi_1720_differential.py (ci.yml, job
+        repro-sweep-rv32-oracle, through oracle_run.py, `emulations >=
+        1752`). It covers 10 ops (the 3 bit-count ops, 5 extend siblings and
+        2 i32-result controls) through 7 consumer shapes, plus the issue's
+        3 functions, with 8 vectors each. It runs on RV32 and on the
+        cortex-m4 and cortex-m7dp control legs, against wasmtime under
+        unicorn. RED on main 34781a8c: 1632/1752 executed, 54 wrong vectors
+        over 9 exports and 15 declines, all in the class. GREEN on the
+        branch: 1752/1752 and 0 wrong. Without the popcnt unpin, the branch
+        declines one export (i64_popcnt__pend) on register-pool exhaustion.
+        Unit test `i64_bitcount_pushes_zero_hi_pair_1720`.
