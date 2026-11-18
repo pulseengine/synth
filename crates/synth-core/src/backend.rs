@@ -799,6 +799,26 @@ pub struct CodeRelocation {
     /// falls back to its conservative maximum on `None`. Metadata only — never
     /// serialized into the object, so emitted bytes are unchanged.
     pub access_width: Option<u32>,
+    /// RQ-91-X86OBJPLAN (#1741): the `RELA` addend THIS instruction site needs,
+    /// stated where the instruction is encoded — never derived from `kind`
+    /// (x86-64 `R_X86_64_PC32` measures -4, -5 or -8 by the trailing immediate).
+    /// The shared object plan (`crate::object_plan`) writes it to `r_addend`.
+    /// The REL-container writers (ARM ELF32, which keeps the addend in the
+    /// instruction word) and the RV32 builder do not read it; their sites set 0.
+    pub addend: i64,
+}
+
+impl CodeRelocation {
+    /// A relocation site with no proven access width and an explicit addend.
+    pub fn site(offset: u32, symbol: impl Into<String>, kind: RelocKind, addend: i64) -> Self {
+        Self {
+            offset,
+            symbol: symbol.into(),
+            kind,
+            access_width: None,
+            addend,
+        }
+    }
 }
 
 /// Symbol BINDING — whether a symbol takes part in cross-object resolution

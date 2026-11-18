@@ -2938,19 +2938,19 @@ pub fn select_typed_cf_calls(
 /// #717 collided on ARM).
 fn emit_sym_addr(words: &mut Vec<u32>, relocs: &mut Vec<CodeRelocation>, rd: Reg, symbol: &str) {
     let off = (words.len() * 4) as u32;
-    relocs.push(CodeRelocation {
-        offset: off,
-        symbol: symbol.to_string(),
-        kind: RelocKind::AArch64AdrPrelPgHi21,
-        access_width: None,
-    });
+    relocs.push(CodeRelocation::site(
+        off,
+        symbol,
+        RelocKind::AArch64AdrPrelPgHi21,
+        0,
+    ));
     words.push(enc::adrp(rd, 0));
-    relocs.push(CodeRelocation {
-        offset: off + 4,
-        symbol: symbol.to_string(),
-        kind: RelocKind::AArch64AddAbsLo12Nc,
-        access_width: None,
-    });
+    relocs.push(CodeRelocation::site(
+        off + 4,
+        symbol,
+        RelocKind::AArch64AddAbsLo12Nc,
+        0,
+    ));
     words.push(enc::add_imm64(rd, rd, 0));
 }
 

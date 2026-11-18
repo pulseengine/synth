@@ -58,7 +58,7 @@ artifacts:
         exported names global; `af819788` fails the same link with `duplicate
         symbol: func_0`. The collision class was wider than `func_N` —
         `__synth_globals` and `__synth_func_table` moved GLOBAL -> LOCAL too.
-      done-when: "contains:crates/synth-backend-aarch64/src/elf.rs:pub binding: SymbolBinding,"
+      done-when: "contains:crates/synth-core/src/object_plan.rs:pub binding: SymbolBinding,"
       verified-by: >-
         IMPLEMENTED. WHERE BINDING LIVES: `synth_core::backend::SymbolBinding`
         + `locals_first()` are the ONE definition of the enum and of the
