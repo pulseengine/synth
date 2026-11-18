@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 575
+# ci-checks: emulations >= 602
 """#1739 — RV32 returned a dead if-arm's value.
 
 On RV32 (`-b riscv --target riscv32imac --relocatable`), three exports of
@@ -415,6 +415,44 @@ EXTRA_WAT = """(module
     end
     i32.const 16 i32.shl i32.or
     i32.sub)
+  (func (export "perm_ifelse_select") (param i32) (result i32)
+    local.get 0 i32.const 1 i32.and
+    if (result i32 i32)
+      i32.const 1
+      i32.const 2
+    else
+      i32.const 30
+      i32.const 40
+      local.get 0 i32.const 2 i32.and
+      select
+      i32.const 50
+    end
+    i32.const 16 i32.shl i32.or)
+  (func (export "perm_ifelse_64") (param i32) (result i64)
+    local.get 0 i32.const 1 i32.and
+    if (result i64 i64)
+      i64.const 0x100000002
+      i64.const 0x300000004
+    else
+      i64.const 30
+      i64.const 40
+      i64.sub
+      i64.const 0x5000000060
+    end
+    i64.const 3 i64.mul i64.add)
+  (func (export "perm_ifelse_mixed") (param i32) (result i64)
+    local.get 0 i32.const 1 i32.and
+    if (result i64 i32)
+      i64.const 0x100000002
+      i32.const 4
+    else
+      i32.const 30
+      i32.const 40
+      i32.sub
+      i64.extend_i32_s
+      i32.const 50
+    end
+    i64.extend_i32_u i64.add)
   (func (export "d_live_below_if") (param i32) (result i32)
     block (result i32)
       i32.const 6

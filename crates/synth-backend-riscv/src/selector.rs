@@ -3977,9 +3977,9 @@ impl Selector {
                 };
             }
         }
-        for i in 0..n {
+        for (i, dst) in dsts.iter().enumerate() {
             let src = self.vstack[base + i];
-            self.reconcile_if_result(dsts[i], src)?;
+            self.reconcile_if_result(*dst, src)?;
         }
         Ok(())
     }

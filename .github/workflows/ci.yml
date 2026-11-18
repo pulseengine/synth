@@ -6991,10 +6991,11 @@ jobs:
         # t_i32_void_target(0) returned 0xfffffffa, wasmtime 93. Pins the
         # exact compiled set of if_arm_dead_value_1691.wat on RV32 (a decline
         # is a FAIL), plus same-class shapes (two value-carrying edges into
-        # one frame, multi-value joins, a br_table dead tail, one pinned
-        # decline) and every corpus export whose bytes the fix moved, vs
-        # wasmtime. RED on main 265235dc: 122 failures over all four legs
-        # (23 pinned exports declined, 99 wrong vectors).
+        # one frame, multi-value joins incl. permuted branch-free if/else,
+        # a br_table dead tail, one pinned decline) and every corpus export
+        # whose bytes the fix moved, vs wasmtime. RED on main 265235dc: 137
+        # failures over all four legs (23 pinned exports declined, 114 wrong
+        # vectors).
         run: python scripts/oracle_run.py scripts/repro/rv32_dead_arm_value_1739_differential.py
       - name: RV32 br-with-value exit-edge reconciliation (#931, CRITICAL)
         run: |
