@@ -83,7 +83,7 @@ artifacts:
         evidence, and its open ladder entry stays valid, because the `arm`
         rung still selects no Cortex-M token.
       verified-by: >
-        PRE-PUSH REVIEW 3 (FIX FIRST) found the ladder bound by mention, the
+        DELIVERED. Pre-push review 3 (FIX FIRST) found the ladder bound by mention, the
         WCET gate bound by any literal, a comment case that tested no
         comment handling, single-pass Rocq comment stripping and the id
         written with a v0.92 prefix. All five addressed. Self-test now 38 cases, all
