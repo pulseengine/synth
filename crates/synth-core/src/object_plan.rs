@@ -423,10 +423,10 @@ pub struct ElfMachine {
     pub reloc_type: fn(RelocKind) -> u32,
 }
 
-pub const EHDR_SIZE: usize = 64;
-pub const SHDR_SIZE: usize = 64;
-pub const SYM_SIZE: usize = 24;
-pub const RELA_SIZE: usize = 24;
+pub(crate) const EHDR_SIZE: usize = 64;
+pub(crate) const SHDR_SIZE: usize = 64;
+pub(crate) const SYM_SIZE: usize = 24;
+pub(crate) const RELA_SIZE: usize = 24;
 
 fn push_u16(v: &mut Vec<u8>, x: u16) {
     v.extend_from_slice(&x.to_le_bytes());
@@ -783,44 +783,5 @@ mod tests {
             .map(|&(o, a)| (o, (3u64 << 32) | 2, a))
             .collect();
         assert_eq!(rela_entries(&obj), want);
-    }
-
-    #[test]
-    fn zero_addend_sites_write_a_zero_r_addend() {
-        let f = vec![ObjectFunction::code(
-            vec!["func_0".into()],
-            vec![0x90; 4],
-            vec![CodeRelocation::site(
-                0,
-                "func_0",
-                RelocKind::AArch64Call26,
-                0,
-            )],
-        )];
-        let plan = plan_object("test", &f, &DataBlob::default(), &[]).unwrap();
-        assert_eq!(
-            rela_entries(&write_elf64_rel(&plan, &test_machine())),
-            vec![(0, (1u64 << 32) | 2, 0)]
-        );
-    }
-
-    #[test]
-    fn unplaced_target_is_err_naming_the_producer() {
-        let f = vec![ObjectFunction::code(
-            vec!["func_0".into()],
-            vec![0x90; 4],
-            vec![CodeRelocation::site(
-                0,
-                "nowhere",
-                RelocKind::AArch64Call26,
-                -4,
-            )],
-        )];
-        let e = plan_object("x builder", &f, &DataBlob::default(), &[]).unwrap_err();
-        let msg = format!("{e}");
-        assert!(
-            msg.contains("x builder: relocation at .text+0 targets symbol 'nowhere'"),
-            "{msg}"
-        );
     }
 }

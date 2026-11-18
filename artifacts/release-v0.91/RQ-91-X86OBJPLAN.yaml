@@ -23,20 +23,35 @@ artifacts:
         copies it into PlannedReloc::addend, and the ELF writer writes that
         value to r_addend. The machine descriptor (ElfMachine) has no addend
         field. Every AArch64 site states 0. The REL-container writers (ARM ELF32)
-        and the RV32 builder do not read the field and their sites set 0. The
+        and the RV32 builder cannot carry it and their sites set 0. The
         Mach-O writer cannot express an addend (no ARM64_RELOC_ADDEND pair), so
-        it now asserts the addend is 0 instead of dropping it.
+        it now asserts the addend is 0 instead of dropping it, and so do the
+        ARM ELF32 writer and the RV32 writer (CodeRelocation::assert_no_addend);
+        each assert has a should_panic test.
 
         No x86 code is in this lane.
 
         REFUTING COMMAND, to be RUN BEFORE building on this artifact: build
         synth (--features riscv) at main 265235dc and at this branch in separate
         target directories, then compile every .wat/.wasm/.wast under
-        scripts/repro and tests with both, in four AArch64 invocations (-b
-        aarch64; -b aarch64 --all-exports; --target cortex-a53 --relocatable
-        --all-exports as ELF and as --object-format macho), and compare exit
-        code, object bytes, sidecar bytes and stderr. Any difference refutes it.
-        Also `cargo test -p synth-core --lib object_plan`.
+        scripts/repro and tests with both binaries, in these four invocations
+        exactly (each one names the backend; without `-b aarch64` the
+        cortex-a53 target is refused on every input and the comparison is
+        vacuous):
+        `synth compile IN -o OUT -b aarch64`;
+        `synth compile IN -o OUT -b aarch64 --all-exports`;
+        `synth compile IN -o OUT -b aarch64 --target cortex-a53 --relocatable --all-exports`;
+        `synth compile IN -o OUT -b aarch64 --target cortex-a53 --relocatable --all-exports --object-format macho`.
+        Compare exit code, object bytes, sidecar bytes and stderr. Any
+        difference refutes it. Also `cargo test -p synth-core --lib
+        object_plan`.
+
+        WHAT THE SHARED API DOES NOT YET EXPRESS, for the later x86-64 lanes:
+        a symbol visibility (`st_other` is always 0, so a HIDDEN memory symbol
+        cannot be planned), an undefined DATA symbol (every undefined external
+        is planned as a GLOBAL function), and a `.note.GNU-stack` section (the
+        writer's section set is fixed). Each is a change to the plan or the
+        writer that re-opens this byte-identity check; none is built here.
 
         CITATION: #1741 is the architecture-support issue this lane is one step
         of. It stays open: the x86-64 backend itself is later lanes.
@@ -72,10 +87,15 @@ artifacts:
         .rela.text. NEGATIVE CONTROL: r_addend written as addend+1 in the shared
         writer turned 198 of 1180 red (the 66 relocation-carrying objects in
         the three ELF invocations; Mach-O does not use that path), then
-        reverted. Unit tests: four in object_plan.rs, including three sites of
-        ONE kind with addends -4, -5 and -8 that must reach the plan and
-        r_addend unchanged; forcing the plan's addend to 0 turns two of them
-        red. The ARM determinism gate run across the two binaries: 312 of 312
+        reverted. Unit tests: two in object_plan.rs put three sites of ONE
+        kind with addends -4, -5 and -8 through the plan and r_addend unchanged;
+        forcing the plan's addend to 0 turns both red. Three should_panic
+        tests (Mach-O, ARM ELF32, RV32) each go red when their assert is
+        removed. RE-MEASURED after the review fixes: 306 inputs (adding
+        examples/), seven invocations (the four above plus `--target cortex-m4
+        --relocatable --all-exports`, `--target cortex-r5 --relocatable
+        --all-exports` and `-b riscv --relocatable --all-exports`): 2142 of
+        2142 identical, 1360 objects, 0 stderr differences. The ARM determinism gate run across the two binaries: 312 of 312
         compared outputs identical. The aarch64-oracle job's run blocks pass on
         the branch except the qemu-user leg, which needs qemu-aarch64 (not on
         this host) and fails the same way on main.

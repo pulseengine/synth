@@ -136,7 +136,11 @@ pub fn build_relocatable_object_full(
 mod tests {
     use super::*;
     use synth_core::backend::{CodeRelocation, SymbolBinding};
-    use synth_core::object_plan::{EHDR_SIZE, RELA_SIZE, SHDR_SIZE, SYM_SIZE};
+    // ELF64 record sizes (the shared writer's are crate-private).
+    const EHDR_SIZE: usize = 64;
+    const SHDR_SIZE: usize = 64;
+    const SYM_SIZE: usize = 24;
+    const RELA_SIZE: usize = 24;
 
     #[test]
     fn well_formed_header_and_symbols() {

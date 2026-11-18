@@ -411,6 +411,20 @@ mod tests {
     use crate::elf::{DataBlob, ElfFunction, build_relocatable_object_full};
     use synth_core::backend::CodeRelocation;
 
+    /// RQ-91-X86OBJPLAN: Mach-O ARM64 has no addend slot here; a nonzero site
+    /// addend is refused, never dropped.
+    #[test]
+    #[should_panic(expected = "aarch64 Mach-O writer: nonzero addend")]
+    fn nonzero_addend_is_refused() {
+        let site = CodeRelocation::site(0, "func_0", RelocKind::AArch64Call26, -4);
+        let f = [ElfFunction::code(
+            vec!["func_0".into()],
+            vec![0; 4],
+            vec![site],
+        )];
+        let _ = build_macho_object_full(&f, &DataBlob::default(), &[]);
+    }
+
     fn u32_at(b: &[u8], off: usize) -> u32 {
         u32::from_le_bytes(b[off..off + 4].try_into().unwrap())
     }

@@ -7740,6 +7740,11 @@ fn build_relocatable_elf(
     // to a PMSAv7-legal extent. `None` ⇒ byte-identical.
     mpu_layout: Option<synth_core::memory_facts::MpuLayout>,
 ) -> Result<Vec<u8>> {
+    // RQ-91-X86OBJPLAN: R_ARM_* REL keeps the addend in the instruction word.
+    funcs
+        .iter()
+        .flat_map(|f| &f.relocations)
+        .for_each(|r| r.assert_no_addend("ARM ELF32 writer"));
     use std::collections::HashMap;
 
     // #598: only Thumb-encoded functions get the interworking bit.
@@ -10660,6 +10665,11 @@ fn build_multi_func_riscv_elf(
     use synth_backend_riscv::{
         Reg, RiscVCallReloc, RiscVElfBuilder, RiscVElfFunction, RiscVOp, RiscVRelocKind,
     };
+    // RQ-91-X86OBJPLAN: `RiscVCallReloc` has no addend; its r_addend is 0.
+    funcs
+        .iter()
+        .flat_map(|f| &f.relocations)
+        .for_each(|r| r.assert_no_addend("RV32 ELF writer"));
 
     // #871: label → symbol mapping (imports first, then compiled functions —
     // a local function shadows nothing because wasm indices are disjoint).
@@ -12906,6 +12916,43 @@ mod tests {
             op_offsets: vec![],
             line_map: vec![],
         }
+    }
+
+    /// RQ-91-X86OBJPLAN: a nonzero site addend reaching a writer that cannot
+    /// carry one is refused, never dropped — ARM ELF32 (REL) and RV32.
+    fn with_addend(mut f: ElfFunction, addend: i64) -> ElfFunction {
+        f.relocations[0].addend = addend;
+        f
+    }
+
+    #[test]
+    #[should_panic(expected = "ARM ELF32 writer: relocation at +0 against 'func_1' has addend -4")]
+    fn arm_elf32_writer_refuses_a_nonzero_addend() {
+        let f = with_addend(a32_func("main", 0, vec![0; 4], &[(0, "func_1")]), -4);
+        let _ = build_relocatable_elf(
+            &[f],
+            &[],
+            &[],
+            0,
+            false,
+            &[],
+            false,
+            None,
+            None,
+            &TargetSpec::cortex_m3(),
+            &[],
+            &[],
+            &[],
+            None,
+        );
+    }
+
+    #[cfg(feature = "riscv")]
+    #[test]
+    #[should_panic(expected = "RV32 ELF writer: relocation at +0 against 'func_1' has addend -4")]
+    fn rv32_elf_writer_refuses_a_nonzero_addend() {
+        let f = with_addend(a32_func("main", 0, vec![0; 8], &[(0, "func_1")]), -4);
+        let _ = build_multi_func_riscv_elf(&[f], &[], &[], &[]);
     }
 
     /// #1645 + #1640: the self-contained A32 builder patches every internal

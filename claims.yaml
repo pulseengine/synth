@@ -4597,9 +4597,11 @@ claims:
         path: crates/synth-backend-aarch64/src/substrate.rs
       # The regions are placed in the object, not assumed: a `.data` blob and a
       # `.text`-resident table, reached PC-relatively (no base register).
+      # (RQ-91-X86OBJPLAN: the `.data` blob's DEFINITION moved to the shared
+      # object plan; the aarch64 elf.rs only re-exports it.)
       - kind: count-min
-        pattern: 'DataBlob'
-        glob: ['crates/synth-backend-aarch64/src/elf.rs']
+        pattern: 'pub struct DataBlob \{'
+        glob: ['crates/synth-core/src/object_plan.rs']
         min: 1
       - kind: count-min
         pattern: 'AArch64AdrPrelPgHi21'
