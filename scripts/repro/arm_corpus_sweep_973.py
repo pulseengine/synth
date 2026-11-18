@@ -258,6 +258,16 @@ EXPECTED_DECLINES = {
     # truth, all 8 ARM legs including cortex-m7dp for f64, is
     # if_arm_dead_value_1691_differential.py.
     "if_arm_dead_value_1691.wat": "f64 on a single-precision FPU (GI-FPU-002) + the #1691 below-entry refusal pin (#952)",
+    # RQ-91-A64BELOW (#1740). An AARCH64 fixture: dead code that pops below its
+    # frame's entry height, which the aarch64 selector now skips. 13 of its 22
+    # exports decline on this sweep's cortex-m4f, measured: 7 below-entry
+    # shapes on ARM's own #1691 refusal, `b_after_unreachable` and
+    # `b_after_br_table` on the unnamed direct-selector "stack underflow" (the
+    # same loud class #1740 named on aarch64, left on ARM by design of this
+    # lane), the i64 pair on #509 (an i64 carried over a br), and the f64 pair
+    # on GI-FPU-002 — so the module fails via #952. Its execution truth is the
+    # aarch64 oracle aarch64_dead_below_1740_differential.py.
+    "aarch64_dead_below_1740.wat": "an aarch64 fixture: #1691 below-entry refusal + direct-selector stack underflow + #509 i64 carry + GI-FPU-002 f64 (#952)",
 }
 
 # RQ-69-PAGESIZE (#1315): fixtures REFUSED AT THE MODULE LEVEL, by design.

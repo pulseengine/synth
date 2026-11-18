@@ -1,0 +1,128 @@
+artifacts:
+  - id: RQ-91-A64BELOW
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "AArch64 compiles dead code that pops below its frame's entry height, instead of panicking or declining with a nameless underflow"
+    description: >
+        LOUD DEFECT, not wrong code, found by the #1691 review and filed as
+        #1740. Refs epic #1741. On AArch64 (`-b aarch64`), dead code after an
+        unconditional transfer that pops BELOW its frame's entry height (the
+        #1691 fixture's `refuse_below`: `i32.const 100 block (result i32) ...
+        if i32.const 1 br 1 drop drop end ... end i32.sub`) made a debug build
+        PANIC (exit 101, selector.rs:2242, "void frame must restore stack
+        height") and a release build decline with `aarch64 selector: binop
+        underflow`, a message that does not name the cause. CI runs debug
+        binaries, so any AArch64 oracle leg over such a fixture panicked.
+
+        THE DEFECT. WASM validates code after br / br_table / return /
+        unreachable against a POLYMORPHIC stack, so it may pop values that are
+        not there, or pop the values the selector's straight-line model holds
+        for the code BENEATH the frame. The AArch64 selector lowered that dead
+        code against its model, so the dead `drop drop` removed the live 100
+        from the model and the code after the join then underflowed (or, in
+        debug, tripped the join's height assertion). The same mechanism gave
+        `ctz underflow`, `br_if underflow` and operand-class confusions on
+        spec return.wast, whose dead code also reads the polymorphic stack.
+
+        THE FIX. The selector SKIPS dead code instead of lowering it. Once the
+        position is unreachable, every op is skipped except the control
+        structure: a block/loop/if opened in dead code advances the
+        blocktype-arity ordinal (the side-table is keyed by EVERY frame's
+        ordinal) and increments a dead-frame depth, and its else/end are
+        skipped; the else/end of the LIVE frame the transfer sat in are
+        lowered as before (that join is reached by the frame's other edges,
+        and the model is truncated to the frame's entry height). Sound because
+        nothing reaches dead code at runtime: a frame opened in it is entered
+        only by falling into it, and a branch to its label sits inside it, so
+        it is dead in its entirety, and so is the fall-through past its end.
+        Chosen over a named decline because it is the same size, it compiles
+        every shape correctly rather than refusing valid wasm, and it also
+        makes the reachability flag exact (the old code set it true again at
+        the end of a dead nested frame).
+
+        CITATION: #1740 is where this was filed; #1691 (closed) is where the
+        ARM selector's dead-arm rule and the `refuse_below` fixture were
+        analysed. #1741 is the epic it belongs to.
+    tags:
+      - feature-loop
+      - bug
+      - selector
+      - aarch64
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1740"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 dead code below a frame's entry height compiles on
+        AArch64 on both build profiles and executes equal to wasmtime; a Rust
+        test in crates/synth-backend-aarch64/tests is red on the base and
+        green after; every byte or acceptance change over the spec suite and
+        the tracked .wat/.wasm files is counted and executed
+      landed: "lane v092-a64below - #1740 - DELIVERED: compiles, not a refusal. crates/synth-backend-aarch64/src/selector.rs skips ops while unreachable (dead_depth counter; block/loop/if in dead code advance ctrl_ord)."
+      verified-by: >
+        DELIVERED, execution-verified, measured 2026-11-18 on base 265235dc vs
+        the lane branch (debug and release builds). RUST TEST
+        crates/synth-backend-aarch64/tests/dead_below_entry_1740.rs (runs in
+        the required Test check): every export of if_arm_dead_value_1691.wat
+        compiles except the two value-carrying br_table exports, which keep
+        their named VCR-A64-CF-001 decline (exact both ways); and each of the
+        11 `b_*` below-entry exports of the new
+        scripts/repro/aarch64_dead_below_1740.wat compiles to text
+        BYTE-IDENTICAL to its `l_*` twin (the same function with the dead code
+        deleted). RED on 265235dc under `cargo test` (exit 101, both tests
+        panic "void frame must restore stack height: entry=1 now=0"), and
+        under `cargo test --release` (exit 101: `binop underflow`). GREEN on
+        the branch. MUTANTS, each red: dropping the dead-frame ordinal advance
+        (b_ordinal_after declines on a misread multi-value block type), and
+        dropping the dead-frame depth (b_dead_frames panics). NEW WIRED ORACLE
+        scripts/repro/aarch64_dead_below_1740_differential.py (ci.yml, beside
+        the #851 control-flow oracle, through oracle_run.py, `emulations >=
+        368`, floor derived from the fixtures): every export of both fixtures,
+        compiled per export with `-b aarch64 --relocatable`, x in {0,1,5,7},
+        zeroed and garbage registers, bit-exact against wasmtime under
+        unicorn. GREEN on the branch, 368 emulations, 0 failures. RED on the
+        265235dc debug binary (11 failures, 10 panics plus a drop-underflow
+        decline, 280 of 368 emulations) and on its release binary (11
+        declines naming only `binop`/`drop`/`fbinop underflow` or a dead
+        multi-value block type). Every #1691 dead-arm shape is correct on
+        AArch64 on the base too, as the #1691 record said. BYTE CENSUS, base vs
+        branch, `-b aarch64 --all-exports` with and without --relocatable,
+        over the 257 spec .wast files plus 291 tracked .wat/.wasm/.wast files
+        (2192 compiles): 6 objects differ (labels.wast,
+        scripts/repro/aarch64_cf_538.wat, scripts/repro/rv32_br_value_931.wat,
+        2 legs each: a dead instruction after a transfer is no longer
+        emitted), 4 rc changes (return.wast 1 -> 0 on both legs: its 10
+        skipped exports now compile; the #1691 fixture 101 -> 1, its panic
+        replaced by the #952 exit for the two declined br_table exports), base
+        panics 2, branch panics 0. All four moved modules EXECUTED on the
+        branch's whole-module objects (call relocations patched), every export
+        against wasmtime with up to 12 argument tuples: 215 calls, 0 wrong
+        (local evidence; the spec suite is not executed on AArch64 in CI).
+        SPEC CENSUS: aarch64 ok 21 -> 22, partial 20 -> 19, MVP core 18 -> 19
+        (return.wast only); pins, SPEC_FAMILY_CENSUS.md, README, the
+        feature-matrix template and claims.yaml moved together. The new
+        fixture is also swept by arm_corpus_sweep_973.py on cortex-m4f, where
+        13 of its 22 exports decline (EXPECTED_DECLINES entry added): 7 on
+        ARM's own #1691 refusal, the i64 pair on #509, the f64 pair on
+        GI-FPU-002, and b_after_unreachable / b_after_br_table on the direct
+        selector's unnamed "stack underflow: malformed WASM or compiler bug".
+        RESIDUALS, loud and not wrong code, NOT changed by this record: that
+        unnamed ARM underflow, and RV32, whose selector declines 7 of the 11
+        below-entry shapes with "invalid program — stack underflow at op X"
+        (the same class #1740 named on aarch64). The library entry point
+        `AArch64Backend::compile_module` does not thread a function's
+        blocktype-arity side-table (`..config.clone()` keeps the caller's
+        empty table), so every value-carrying block reads as void there; the
+        CLI is unaffected (it threads the table). Found while writing the
+        Rust test, measured on 265235dc through compile_module on the
+        `l_refuse_below` function alone (no dead code): debug panics ("void
+        frame must restore stack height: entry=1 now=2"), release declines
+        with `binop underflow`. Loud on that shape, not shown wrong; not
+        fixed here, so the Rust test drives `compile_function` with the
+        table threaded, as the CLI does.

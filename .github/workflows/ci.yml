@@ -2414,6 +2414,14 @@ jobs:
           grep -q '^RESULT: PASS' paramhoming851.txt
       - name: Run #851 control-flow (if/else + loop back-edge + return) execution oracle
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_ctrlflow_851_differential.py
+      - name: "Run #1740 dead-code-below-entry execution oracle (AArch64 vs wasmtime)"
+        # RQ-92-A64BELOW (#1740): dead code after a transfer may pop BELOW its
+        # frame's entry height (wasm's polymorphic stack); lowering it popped the
+        # live values beneath out of the selector's model — a debug panic, a
+        # release `binop underflow`. Dead code is now skipped. Executes the
+        # #1740 below-entry shapes and every #1691 dead-arm shape on AArch64,
+        # bit-exact vs wasmtime; the br_table decline set is pinned exactly.
+        run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_dead_below_1740_differential.py
       - name: Run #865 linear-memory BOUNDS oracle (OOB traps + modes differ + mask/mpu hard-error)
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_bounds_865_differential.py
       - name: "Run #1584 imported-memory sizing oracle (ARM self-contained + relocatable, RV32, AArch64 vs wasmtime)"

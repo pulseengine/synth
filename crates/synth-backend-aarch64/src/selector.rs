@@ -683,6 +683,20 @@ pub fn select_typed_cf_calls(
     // fall-through height assert when unreachable (it only holds on a reachable
     // fall-through). `br_if` is conditional, so its fall-through stays reachable.
     let mut reachable = true;
+    // #1740 — dead code is SKIPPED, not lowered. WASM validates unreachable
+    // code against a POLYMORPHIC stack, so it may pop values that are not
+    // there, or pop below its frame's entry height (`br 1 ; drop ; drop`).
+    // Lowering it against the straight-line model popped the live values
+    // BENEATH the frame out of the model (the code after the join then read
+    // nothing: `binop underflow`, and a debug-build panic at the join), or
+    // underflowed outright. Nothing can reach that code at runtime: a frame
+    // opened in it is entered only by falling into it, and a branch to such a
+    // frame's label sits inside it — so it is dead in its entirety, and so is
+    // the fall-through past its `end`. `dead_depth` counts the frames opened
+    // in dead code; `else`/`end` at depth 0 close the LIVE frame the transfer
+    // sat in and are lowered as before (that join is reached by the frame's
+    // other edges, and the model is truncated to the frame's entry height).
+    let mut dead_depth: usize = 0;
 
     // VCR-A64-CF-001 (#851/#509) — RESERVED reconciliation registers.
     //
@@ -1562,6 +1576,24 @@ pub fn select_typed_cf_calls(
     };
 
     for op in ops {
+        if !reachable {
+            match op {
+                WasmOp::Block | WasmOp::Loop | WasmOp::If => {
+                    // Keep the `block_arity` side-table aligned: it is keyed by
+                    // the ordinal of EVERY block/loop/if, dead ones included.
+                    ctrl_ord += 1;
+                    dead_depth += 1;
+                    continue;
+                }
+                WasmOp::Else if dead_depth > 0 => continue,
+                WasmOp::End if dead_depth > 0 => {
+                    dead_depth -= 1;
+                    continue;
+                }
+                WasmOp::Else | WasmOp::End => {}
+                _ => continue,
+            }
+        }
         match op {
             WasmOp::LocalGet(i) => {
                 if slot_resident(*i) {
@@ -4964,11 +4996,12 @@ mod tests {
             WasmOp::End,
         ];
         let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
-        // [0] b +2 ; [1] brk ; [2] ret  (local.get 0 is w0 → no mov)
-        assert_eq!(w[0], enc::b_uncond(2), "br must jump to the block end (+2)");
-        assert_eq!(w[1], enc::brk(0));
-        assert_eq!(w[2], enc::ret());
-        assert_eq!(w.len(), 3);
+        // [0] b +1 ; [1] ret  (local.get 0 is w0 → no mov). The `unreachable`
+        // after `br 0` is DEAD and is skipped, not lowered (#1740), so the
+        // branch lands on the very next word, the block end.
+        assert_eq!(w[0], enc::b_uncond(1), "br must jump to the block end (+1)");
+        assert_eq!(w[1], enc::ret());
+        assert_eq!(w.len(), 2);
     }
 
     #[test]
