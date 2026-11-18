@@ -47,6 +47,27 @@ artifacts:
         registers before the then-arm's `jal`. Hand-built op streams with no
         blocktype table keep the previous `br` behaviour.
 
+        THE RECONCILIATION THE ARITY EXPOSED. The first value-carrying edge
+        into a frame donates its operand's register as the frame's result
+        register, and after a `br_if` that operand is still live on the
+        not-taken path. While every edge carried the whole stack delta, a
+        later edge or a fall-through at another stack position was declined
+        (`br edges disagree on result arity (#931)`); with the declared
+        arity it reaches the per-position `mv`, which overwrote the live
+        value. A first revision of this fix (e272a5e7) compiled those shapes
+        and returned wrong values, for example `g3(0)` = 0x42 where wasmtime
+        gives 0x2c. Every edge and join site now reconciles through one
+        parallel move, `move_top_into`. Any live holder of a destination
+        register is first copied to a fresh register and its stack entry is
+        renamed. The `br_if` condition is relocated the same way. A holder
+        below the innermost frame's entry (for an edge) or the join's entry
+        (for a join) is shared with another path into the join, so renaming
+        it on one path would be wrong; that shape is LOUDLY DECLINED
+        instead (`a join's result register holds a value live on another
+        path into the join (#1739)`). Main declined every such shape too.
+        When nothing holds a destination, the emitted moves are exactly the
+        previous ones.
+
         REFUTING COMMAND, to be RUN BEFORE building on this artifact: compile
         `synth compile scripts/repro/if_arm_dead_value_1691.wat --func-name
         t_i32_void_target --relocatable -b riscv -o x.o` and call the
@@ -72,28 +93,49 @@ artifacts:
         manual:2027-03-31 on RV32, every i32/i64 export of
         if_arm_dead_value_1691.wat except the value-carrying br_table
         compiles and equals wasmtime, including refuse_below and
-        ctl_i32_arity_held, and so do branch shapes that unwind values
-        beneath their operands. This is executed against wasmtime, red before
-        and green after.
+        ctl_i32_arity_held. Every branch shape the oracle carries beyond the
+        fixture either compiles and equals wasmtime or is a pinned loud
+        decline. This is executed against wasmtime, red before and green
+        after.
       landed: "v0.91 RV32DEADARM - #1739 - DELIVERED: a wrong-code fix. The RV32 selector receives the decoder's blocktype table, so a branch carries its target's declared arity; unreachable, br_table and br end the reachable region as return already did; an if/else join that a branch also targets reads one set of registers on every path."
       verified-by: >
         DELIVERED, execution-verified. New wired oracle
         scripts/repro/rv32_dead_arm_value_1739_differential.py (ci.yml, job
-        repro-sweep-rv32-oracle, through oracle_run.py, `emulations >= 467`).
+        repro-sweep-rv32-oracle, through oracle_run.py, `emulations >= 575`).
         It pins the exact compiled set of the #1691 fixture on RV32
         (`--all-exports`; only the value-carrying br_table and the f32/f64
         exports decline), compiles the issue's three exports with
-        `--func-name`, grades 11 same-class shapes, and executes every corpus
-        export whose RV32 bytes the fix moved or newly compiles, against
-        wasmtime under unicorn for 9 inputs each. RED on main 265235dc: 350
-        emulations, 108 failures (13 pinned exports declined; 95 wrong
-        vectors, among them the issue's three exports on 23 vectors on each
-        of the two compile paths). GREEN on the branch: 467 emulations, 0
-        failures. Each of the five parts of the fix, reverted alone, reds
-        the oracle. Unit tests
+        `--func-name`, grades 23 extra shapes and pins one decline
+        (`d_live_below_if`), and executes every corpus export whose RV32
+        bytes the fix moved or newly compiles. Every compiled export runs
+        against wasmtime under unicorn for 9 inputs. An emulator budget
+        overrun is its own outcome and never equals a trap. The extra shapes
+        include two value-carrying edges into one frame (g3, k1, k4, k5,
+        g2), multi-value joins (k2, c1, c4, m_ifelse_edges,
+        m_two_edges_permuted) and a br_table dead tail (h1). RED on main
+        265235dc: 368 emulations, 122 failures (23 pinned exports declined,
+        99 wrong vectors). RED on the first revision e272a5e7: 566
+        emulations, 28 failures (g3, k1, k2, k4, k5, g2 and
+        m_two_edges_permuted wrong, d_live_below_if compiled wrong, f3
+        declined). GREEN on the branch: 575 emulations, 0 failures. Each of
+        the ten parts of the fix, reverted alone, reds the oracle: arity
+        trim 83, unreachable dead mode 16, br dead mode 47, br_table dead
+        mode 1 (h1), dead-end publish 51, else-edge into then registers 10,
+        then-arm move at else 2, holder relocation 27, below-floor decline 1,
+        condition relocation 3. Unit tests
         `dead_arm_value_1739_void_target_reads_the_value_beneath` and
-        `dead_arm_value_1739_unreachable_arm_leaves_nothing`. BYTE MOVEMENT,
-        main vs branch, `--all-exports` over the 190 RV32-compiling
-        scripts/repro fixtures: 28 functions moved, all smaller or equal
-        (dead code after a transfer is no longer emitted), 11 newly compile,
-        0 lost. The spec-suite RV32 compile census is unchanged.
+        `dead_arm_value_1739_unreachable_arm_leaves_nothing`.
+        RANDOM DIFFERENTIAL (local, not wired): the review's structured
+        control-flow generator (blocks, loops, ifs, arities 0-2, br, br_if,
+        br_table, return, unreachable, dead tails; 16 inputs each), seeds
+        1-6, 6750 functions. 0 wrong on the branch. 790 correct on both, 28
+        wrong on main and correct here, 4965 declined (or in a module main
+        panicked on) on main and correct here, 967 declined on both. No
+        function main compiled correctly regresses. Of the declines, 781
+        carry the new below-floor message. f3 (an i64 if/else whose then-arm
+        falls through, with a br_if then unreachable in the else arm) was
+        wrong on main, declined on the first revision and is correct here.
+        BYTE MOVEMENT, main vs branch, `--all-exports` over the 190
+        RV32-compiling scripts/repro fixtures: 28 functions moved, none
+        larger (dead code after a transfer is no longer emitted), 11 newly
+        compile, 0 lost. The spec-suite RV32 compile census is unchanged.

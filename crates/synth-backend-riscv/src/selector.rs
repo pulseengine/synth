@@ -1604,6 +1604,11 @@ struct Selector {
     /// one, including those opened inside a dead region, so it indexes
     /// `block_arity` in op-stream order.
     block_ord: usize,
+    /// #1739: the `br_if` condition register while its edge is reconciled —
+    /// popped, so no operand-stack entry protects it, yet read by the branch
+    /// after the edge's moves. `move_top_into` relocates it if a move would
+    /// overwrite it.
+    edge_cond: Option<Reg>,
 }
 
 impl Selector {
@@ -1656,6 +1661,7 @@ impl Selector {
             globals: RvGlobalsCtx::default(),
             block_arity: Vec::new(),
             block_ord: 0,
+            edge_cond: None,
         }
     }
 
@@ -3586,27 +3592,12 @@ impl Selector {
         // before its `jal` — the join's own reconciliation sits on the else
         // path and never ran for this one.
         if !canonical.is_empty() && self.vstack.len() >= entry {
-            let then_vals: Vec<VstackVal> = self.vstack[entry..].to_vec();
-            if then_vals.len() != canonical.len() {
+            if self.vstack.len() - entry != canonical.len() {
                 return Err(SelectorError::ControlMismatch(
                     "br edge and then-arm disagree on if/else result arity (#1739)",
                 ));
             }
-            // Sequential moves are safe only if no destination is a later
-            // move's source.
-            for (i, dst) in canonical.iter().enumerate() {
-                for src in &then_vals[i + 1..] {
-                    if dst.regs().iter().any(|r| src.regs().contains(r)) {
-                        return Err(SelectorError::ControlMismatch(
-                            "if/else then-arm results overlap the join's br registers \
-                             (#1739)",
-                        ));
-                    }
-                }
-            }
-            for (dst, src) in canonical.iter().zip(then_vals.iter()) {
-                self.reconcile_if_result(*dst, *src)?;
-            }
+            self.move_top_into(&canonical, entry)?;
             self.vstack.truncate(entry);
             self.vstack.extend(canonical);
         }
@@ -3667,15 +3658,18 @@ impl Selector {
                     // against the empty `then_results`.
                 } else {
                     let then_results = frame.then_results;
-                    let else_results = self.vstack.split_off(frame.stack_height_at_entry);
-                    if then_results.len() != else_results.len() {
+                    let entry = frame.stack_height_at_entry;
+                    if then_results.len() != self.vstack.len().saturating_sub(entry)
+                        || self.vstack.len() < entry
+                    {
                         return Err(SelectorError::ControlMismatch(
                             "if/else arms disagree on result arity (#343)",
                         ));
                     }
-                    for (then_v, else_v) in then_results.iter().zip(else_results.iter()) {
-                        self.reconcile_if_result(*then_v, *else_v)?;
-                    }
+                    // #1739: a parallel move — an else-arm value may sit in a
+                    // then-arm register at another position.
+                    self.move_top_into(&then_results, entry)?;
+                    self.vstack.truncate(entry);
                     // The merged results live in the then-arm's registers —
                     // push them back so the surrounding code (return / outer
                     // op) reads them.
@@ -3690,7 +3684,8 @@ impl Selector {
             // playing the then-arm.
             if !frame.br_results.is_empty() {
                 let canonical = frame.br_results;
-                let fallthrough = self.vstack.split_off(frame.stack_height_at_entry);
+                let entry = frame.stack_height_at_entry;
+                let fallthrough = self.vstack[entry.min(self.vstack.len())..].to_vec();
                 if fallthrough.is_empty() {
                     // The fallthrough path died (a `return`/`unreachable` tail,
                     // or a block whose body ends in the `br` itself): nothing
@@ -3701,10 +3696,13 @@ impl Selector {
                         "br edge and fallthrough disagree on result arity (#931)",
                     ));
                 } else {
-                    for (dst, src) in canonical.iter().zip(fallthrough.iter()) {
-                        self.reconcile_if_result(*dst, *src)?;
-                    }
+                    // #1739: a parallel move — the fall-through's values may
+                    // sit in canonical registers at other positions (a
+                    // `br_if` donated its operand's register and that operand
+                    // fell through).
+                    self.move_top_into(&canonical, entry)?;
                 }
+                self.vstack.truncate(entry.min(self.vstack.len()));
                 self.vstack.extend(canonical);
             }
             self.out.push(RiscVOp::Label {
@@ -3847,31 +3845,18 @@ impl Selector {
                     "br edge and then-arm disagree on if/else result arity (#1739)",
                 ));
             }
-            let live = self.live_regs();
             let promoted: Vec<Reg> = self.promoted.values().copied().collect();
-            for (dst, src) in then_regs.iter().zip(carried.iter()) {
-                if std::mem::discriminant(dst) != std::mem::discriminant(src) {
-                    return Err(SelectorError::ControlMismatch(
-                        "if/else result width mismatch between arms (#343)",
-                    ));
-                }
-                for (d, s) in dst.regs().into_iter().zip(src.regs()) {
-                    if d != s
-                        && (live.contains(&d)
-                            || self.op_pinned.contains(&d)
-                            || promoted.contains(&d))
-                    {
-                        return Err(SelectorError::ControlMismatch(
-                            "a value-carrying br into an if/else join cannot reach the \
-                             then-arm's result register without clobbering a live value \
-                             (#1739)",
-                        ));
-                    }
-                }
+            if then_regs
+                .iter()
+                .flat_map(|v| v.regs())
+                .any(|r| promoted.contains(&r))
+            {
+                return Err(SelectorError::ControlMismatch(
+                    "an if/else then-arm result lives in a promoted local's register (#1739)",
+                ));
             }
-            for (dst, src) in then_regs.iter().zip(carried.iter()) {
-                self.reconcile_if_result(*dst, *src)?;
-            }
+            let floor = self.innermost_entry();
+            self.move_top_into(&then_regs, floor)?;
             self.ctrl[idx].br_results = then_regs;
         } else if self.ctrl[idx].br_results.is_empty() {
             // First value-carrying edge — it defines the canonical registers.
@@ -3892,11 +3877,111 @@ impl Selector {
                     "br edges disagree on result arity (#931)",
                 ));
             }
-            for (dst, src) in canonical.iter().zip(carried.iter()) {
-                self.reconcile_if_result(*dst, *src)?;
-            }
+            // #1739: the first edge donated its own register(s), and after a
+            // `br_if` that value is still live on the not-taken path — now
+            // possibly at a different stack position than this edge's
+            // operands. A plain `mv canonical, src` would overwrite it.
+            let floor = self.innermost_entry();
+            self.move_top_into(&canonical, floor)?;
         }
         Ok(carried.len())
+    }
+
+    /// #1739: operand-stack height at which the innermost open frame was
+    /// entered (0 at function level).
+    fn innermost_entry(&self) -> usize {
+        self.ctrl.last().map_or(0, |f| f.stack_height_at_entry)
+    }
+
+    /// #1739: move the top `dsts.len()` operand-stack values into the
+    /// register(s) `dsts` names, position by position, as a PARALLEL move.
+    ///
+    /// Emitting `mv dst, src` per position is wrong when a destination
+    /// register still holds a live value: another operand-stack entry (a
+    /// first `br_if` edge donates its register as the frame's canonical one
+    /// and leaves the value on the stack for the not-taken path), or a later
+    /// position's source (a multi-value join whose registers are permuted).
+    /// Every such holder is first copied to a fresh register and its stack
+    /// entry renamed, so the moves overwrite nothing still needed.
+    ///
+    /// Renaming is only sound for entries at or above `floor`: an entry below
+    /// it is shared with another path into a join (the arm's or the frame's
+    /// entry), which would still hold the value in the old register. Such a
+    /// holder declines. So does a destination pinned by the current op (a
+    /// `br_if` condition) that is not already the source at that position.
+    /// When nothing holds a destination, the emitted moves are exactly the
+    /// per-position `reconcile_if_result` sequence.
+    fn move_top_into(&mut self, dsts: &[VstackVal], floor: usize) -> Result<(), SelectorError> {
+        let n = dsts.len();
+        if self.vstack.len() < n {
+            return Err(SelectorError::ControlMismatch(
+                "a join has fewer operand-stack values than its result count (#1739)",
+            ));
+        }
+        let base = self.vstack.len() - n;
+        for (d, s) in dsts.iter().zip(&self.vstack[base..]) {
+            if std::mem::discriminant(d) != std::mem::discriminant(s) {
+                return Err(SelectorError::ControlMismatch(
+                    "if/else result width mismatch between arms (#343)",
+                ));
+            }
+        }
+        let dst_regs: Vec<Reg> = dsts.iter().flat_map(|v| v.regs()).collect();
+        let at_own_slot = |j: usize, k: usize, r: Reg| j >= base && dsts[j - base].regs()[k] == r;
+        let cond_reg = self.edge_cond;
+        if let Some(c) = cond_reg
+            && dst_regs.contains(&c)
+        {
+            let fresh = self.alloc_temp_avoiding(&dst_regs);
+            self.out.push(RiscVOp::Addi {
+                rd: fresh,
+                rs1: c,
+                imm: 0,
+            });
+            self.edge_cond = Some(fresh);
+        }
+        for (i, d) in dsts.iter().enumerate() {
+            for (k, r) in d.regs().into_iter().enumerate() {
+                if Some(r) != cond_reg
+                    && self.op_pinned.contains(&r)
+                    && !at_own_slot(base + i, k, self.vstack[base + i].regs()[k])
+                {
+                    return Err(SelectorError::ControlMismatch(
+                        "a join's result register is held by the branch's own operand \
+                         (#1739)",
+                    ));
+                }
+            }
+        }
+        for j in 0..self.vstack.len() {
+            for (k, r) in self.vstack[j].regs().into_iter().enumerate() {
+                if !dst_regs.contains(&r) || at_own_slot(j, k, r) {
+                    continue;
+                }
+                if j < floor {
+                    return Err(SelectorError::ControlMismatch(
+                        "a join's result register holds a value live on another path \
+                         into the join (#1739)",
+                    ));
+                }
+                let fresh = self.alloc_temp_avoiding(&dst_regs);
+                self.out.push(RiscVOp::Addi {
+                    rd: fresh,
+                    rs1: r,
+                    imm: 0,
+                });
+                self.vstack[j] = match (self.vstack[j], k) {
+                    (VstackVal::I32(_), _) => VstackVal::I32(fresh),
+                    (VstackVal::I64 { hi, .. }, 0) => VstackVal::I64 { lo: fresh, hi },
+                    (VstackVal::I64 { lo, .. }, _) => VstackVal::I64 { lo, hi: fresh },
+                };
+            }
+        }
+        for i in 0..n {
+            let src = self.vstack[base + i];
+            self.reconcile_if_result(dsts[i], src)?;
+        }
+        Ok(())
     }
 
     /// Pick the canonical register for one result position of a `br` edge,
@@ -4012,7 +4097,13 @@ impl Selector {
         // the value on the taken edge. Unlike `br` the vstack is NOT truncated
         // — `br_if` leaves its operand in place for the not-taken path, which
         // keeps running with the value on the stack.
-        self.reconcile_br_edge(depth)?;
+        // #1739: the condition is popped but still read by the `bne` below;
+        // if a join register the edge writes is the condition's, the edge
+        // moves it aside first and hands back where it went.
+        self.edge_cond = Some(cond);
+        let reconciled = self.reconcile_br_edge(depth);
+        let cond = self.edge_cond.take().unwrap_or(cond);
+        reconciled?;
         let target_label = self.target_label_for_depth(depth)?;
         // bne cond, zero, target — branch when condition is true (non-zero)
         self.out.push(RiscVOp::Branch {

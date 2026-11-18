@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 467
+# ci-checks: emulations >= 575
 """#1739 — RV32 returned a dead if-arm's value.
 
 On RV32 (`-b riscv --target riscv32imac --relocatable`), three exports of
@@ -85,6 +85,7 @@ RV = ["-b", "riscv", "--target", "riscv32imac", "--relocatable"]
 # `t_i32_loop_exit` counts up to x + 3: x = 0x80000000 is two billion
 # iterations, past the emulator's instruction budget, so it is not run there.
 SKIP_VECTORS = {"t_i32_loop_exit": {0x80000000}}
+BUDGET = 500_000
 
 FIXTURE_1691 = os.path.join(HERE, "if_arm_dead_value_1691.wat")
 TARGETS = ["t_i32_void_target", "t_i32_unreachable", "t_i64_void_target"]
@@ -261,8 +262,197 @@ EXTRA_WAT = """(module
       i64.const 33
     end
     i64.sub)
+  (func (export "g3") (param i32) (result i32)
+    block (result i32)
+      i32.const 11
+      local.get 0 i32.const 1 i32.and
+      br_if 0
+      i32.const 33
+      local.get 0 i32.const 2 i32.and
+      br_if 0
+      i32.add
+    end)
+  (func (export "k1") (param i32) (result i32)
+    block (result i32)
+      i32.const 5
+      i32.const 11
+      local.get 0 i32.const 1 i32.and
+      br_if 0
+      i32.const 33
+      local.get 0 i32.const 2 i32.and
+      br_if 0
+      drop
+      i32.add
+    end)
+  (func (export "k2") (param i32) (result i32)
+    block (result i32 i32)
+      i32.const 5
+      i32.const 11
+      i32.const 22
+      local.get 0 i32.const 1 i32.and
+      br_if 0
+      drop
+    end
+    i32.const 8 i32.shl i32.or)
+  (func (export "k4") (param i32) (result i32)
+    block (result i32)
+      block
+        i32.const 11
+        local.get 0 i32.const 1 i32.and
+        br_if 1
+        i32.const 33
+        local.get 0 i32.const 2 i32.and
+        br_if 1
+        i32.add
+        local.set 0
+      end
+      local.get 0
+    end)
+  (func (export "k5") (param i32) (result i64)
+    block (result i64)
+      i64.const 5
+      i64.const 0x1100000011
+      local.get 0 i32.const 1 i32.and
+      br_if 0
+      i64.const 0x3300000033
+      local.get 0 i32.const 2 i32.and
+      br_if 0
+      drop
+      i64.add
+    end)
+  (func (export "g2") (param i32) (result i32)
+    i32.const 1000
+    local.get 0 i32.const 1 i32.and
+    if (result i32)
+      i32.const 5
+      i32.const 11
+      local.get 0 i32.const 2 i32.and
+      br_if 0
+      i32.const 33
+      local.get 0 i32.const 4 i32.and
+      br_if 0
+      drop
+      i32.add
+    else
+      i32.const 9
+    end
+    i32.sub)
+  (func (export "f3") (param i32) (result i64)
+    i64.const 0x7000000000
+    local.get 0 i32.const 1 i32.and
+    if (result i64)
+      i64.const 0x100000001
+      i64.const 0x200000002
+      i64.add
+    else
+      i64.const 0x1600000016
+      local.get 0 i32.const 4 i32.and
+      br_if 0
+      unreachable
+    end
+    i64.sub)
+  (func (export "h1") (param i32) (result i32) (local i32)
+    i32.const 100
+    block
+      block
+        local.get 0
+        br_table 0 1 0
+        drop drop
+        i32.const 5 local.set 1
+      end
+      i32.const 1
+      local.set 1
+    end
+    local.get 1
+    i32.sub)
+  (func (export "c1") (param i32) (result i32)
+    i32.const 1000
+    block (result i32 i32)
+      i32.const 11
+      i32.const 22
+      local.get 0 i32.const 1 i32.and
+      br_if 0
+      drop drop
+      i32.const 3
+      i32.const 44
+    end
+    i32.sub i32.sub)
+  (func (export "c4") (param i32) (result i32)
+    block (result i32 i32)
+      i32.const 1
+      i32.const 2
+      local.get 0 i32.const 1 i32.and
+      br_if 0
+      i32.const 10 i32.add
+      local.set 0
+      i32.const 20 i32.add
+      local.get 0
+      local.get 0 i32.const 3 i32.sub
+      local.get 0 i32.const 100 i32.gt_u
+      br_if 0
+      drop
+    end
+    i32.const 16 i32.shl i32.or)
+  (func (export "m_ifelse_edges") (param i32) (result i32)
+    i32.const 1000
+    local.get 0 i32.const 1 i32.and
+    if (result i32 i32)
+      i32.const 1
+      i32.const 2
+    else
+      i32.const 3
+      i32.const 4
+      local.get 0 i32.const 2 i32.and
+      br_if 0
+      i32.const 5
+      local.get 0 i32.const 4 i32.and
+      br_if 0
+      drop
+      drop
+      drop
+      i32.const 9
+      i32.const 8
+    end
+    i32.const 16 i32.shl i32.or
+    i32.sub)
+  (func (export "d_live_below_if") (param i32) (result i32)
+    block (result i32)
+      i32.const 6
+      local.get 0 i32.const 1 i32.and
+      br_if 0
+      local.get 0 i32.const 2 i32.and
+      if
+        i32.const 7
+        local.get 0 i32.const 4 i32.and
+        br_if 1
+        drop
+      end
+    end)
+  (func (export "m_two_edges_permuted") (param i32) (result i32)
+    block (result i32 i32)
+      i32.const 7
+      i32.const 1
+      i32.const 2
+      local.get 0 i32.const 1 i32.and
+      br_if 0
+      local.get 0 i32.const 2 i32.and
+      br_if 0
+      drop
+    end
+    i32.const 16 i32.shl i32.or)
 )
 """
+
+# Exports of EXTRA_WAT that must DECLINE on RV32. `d_live_below_if`: the
+# block's first `br_if` donates its operand's register as the block's result
+# register, and that operand is still live beneath the inner `if` when the
+# second edge must write the same register. Renaming it on that path would
+# leave the if's other path reading the old register, so the edge declines.
+# (The previous revision of this fix compiled it and returned 7 for x=2,
+# wasmtime 6.)
+EXTRA_DECLINES = {
+    "d_live_below_if": "join register live below the inner if's entry (#1739)",
+}
 
 # (fixture, export): the corpus exports whose RV32 bytes this fix moves, or
 # that it newly compiles, with an i32/i64 signature and no imports. Measured
@@ -332,11 +522,13 @@ def run_rv32(code, faddr, args):
     for i, a in enumerate(args):
         mu.reg_write(rc.UC_RISCV_REG_A0 + i, a & M32)
     try:
-        mu.emu_start(CODE + faddr, RET, count=500_000)
+        mu.emu_start(CODE + faddr, RET, count=BUDGET)
     except UcError:
         return "trap"
     if mu.reg_read(rc.UC_RISCV_REG_PC) != RET:
-        return "trap"
+        # Stopped by the instruction budget, not by a fault: an outcome of
+        # its own, which never equals a wasmtime result or trap.
+        return "budget-overrun"
     return (mu.reg_read(rc.UC_RISCV_REG_A0) & M32) | ((mu.reg_read(rc.UC_RISCV_REG_A1) & M32) << 32)
 
 
@@ -456,7 +648,7 @@ def main():
         extra = os.path.join(td, "extra_1739.wat")
         with open(extra, "w") as fh:
             fh.write(EXTRA_WAT)
-        e, f = module_leg("extra", extra, wasmtime.Module(ENGINE, EXTRA_WAT), {}, td)
+        e, f = module_leg("extra", extra, wasmtime.Module(ENGINE, EXTRA_WAT), EXTRA_DECLINES, td)
         total += e
         fails += f
 
