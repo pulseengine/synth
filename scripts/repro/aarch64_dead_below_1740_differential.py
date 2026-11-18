@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 368
-"""RQ-92-A64BELOW (#1740) — AArch64 dead code below a frame's entry height,
+# ci-checks: emulations >= 424
+"""RQ-91-A64BELOW (#1740) — AArch64 dead code below a frame's entry height,
 EXECUTED against wasmtime.
 
 THE DEFECT. WASM validates the code after an unconditional transfer (br /
@@ -11,14 +11,23 @@ frame (`br 1 ; drop ; drop`). The AArch64 selector lowered that dead code
 against its model and popped the live values beneath out of it: a debug build
 PANICKED at the join ("void frame must restore stack height"), a release build
 declined with an uninformative `binop underflow`. The selector now SKIPS dead
-code (nothing can reach it at runtime), so these shapes compile.
+code (nothing can reach it at runtime), so these shapes compile. It also
+treats the code after a frame's `end` as dead when no live edge enters that
+join (every path through the frame ended in br-outward / return /
+unreachable).
 
 THE FIXTURES. `aarch64_dead_below_1740.wat`: eleven below-entry `b_*` shapes
 (the #1691 `refuse_below`, a value beneath inside the block, a dead binop, a
 dead then-arm beside a live else, dead if/block/loop frames nested in the dead
 code, a dead multi-value block before a live value-carrying one, after
 `unreachable` and `br_table`, at i64/f32/f64), each with an `l_*` twin that is
-the same function with the dead code deleted. `if_arm_dead_value_1691.wat`:
+the same function with the dead code deleted; ten of the eleven were red on
+265235dc (`b_then_below_else_live` compiled and ran correctly there and stays
+as a control). Seven `r_*` frames that no live edge enters: an earlier cut of
+this change still lowered the code after their `end` and regressed three of
+them (`r_f64_deadbr`, `r_f64_ret_br`, `r_f32_deadbr`, all correct on
+265235dc) to `funop: expected FP operand, got GP`; `r_f64_plain` and
+`r_f64_store` were declined on 265235dc too. `if_arm_dead_value_1691.wat`:
 the #1691 dead-arm shapes, which never ran on AArch64 before, executed here so
 the skip is checked on every dead-value shape the ARM lane collected. Its two
 `br_table` exports carry a value through the table and are loud-declined by
@@ -31,8 +40,11 @@ seeded RNG) under unicorn, and compared BIT-EXACT with wasmtime: same value,
 or a trap on both sides (`brk`). The floor is derived from the fixtures and
 checked against the header before anything runs.
 
-RED on 265235dc: debug `synth` panics (exit 101) on the #1740 fixture and on
-the #1691 one (`refuse_below`). GREEN after -> RESULT: PASS.
+RED on 265235dc (debug): 13 failures, 320 of 424 emulations — 7 panics
+(exit 101: six `b_*` and the #1691 `refuse_below`) and 6 declines
+(`b_dead_frames` drop underflow, `b_ordinal_after` multi-value block type,
+`b_after_unreachable` and `b_after_br_table` binop underflow, `r_f64_plain`
+funop, `r_f64_store` local.set operand class). GREEN after -> RESULT: PASS.
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python3 scripts/oracle_run.py \\

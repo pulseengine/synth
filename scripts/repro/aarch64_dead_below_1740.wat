@@ -1,4 +1,4 @@
-;; #1740 (RQ-92-A64BELOW): AArch64 dead code that pops BELOW its frame's entry
+;; #1740 (RQ-91-A64BELOW): AArch64 dead code that pops BELOW its frame's entry
 ;; height. WASM validates code after an unconditional transfer (br / br_table /
 ;; return / unreachable) against a POLYMORPHIC stack, so it may pop values the
 ;; straight-line model holds for the code BENEATH the frame. The AArch64
@@ -6,7 +6,9 @@
 ;; values beneath out of it: a debug build panicked ("void frame must restore
 ;; stack height"), a release build declined with `binop underflow`.
 ;;
-;; Every `b_*` export is a below-entry shape; each has a `l_*` twin that is the
+;; Every `b_*` export is a below-entry shape (all but `b_then_below_else_live`
+;; were red on 265235dc; that one compiled and ran correctly there and is kept
+;; as a control); each has a `l_*` twin that is the
 ;; SAME function with the dead code deleted. Dead code is never executed, so the
 ;; pair must agree with wasmtime and (the Rust test pins this) compile to
 ;; byte-identical AArch64 text. Every export takes one i32 `x`; the oracle calls
@@ -334,4 +336,31 @@
     end
     f64.const 7
     f64.sub)
+;; ---- `r_*`: frames that NO live edge enters (pre-review regression) --------
+  ;; Every path into the join is dead, so the code after `end` is dead too. An
+  ;; earlier cut of #1740 still lowered that code against a frame whose result
+  ;; register class was never set and declined (`funop: expected FP operand,
+  ;; got GP`); 265235dc compiled the first three. `r_f64_plain` was declined on
+  ;; 265235dc as well.
+  (func (export "r_f64_deadbr") (param i32) (result f64)
+    block (result f64) unreachable f64.const 1 br 0 end
+    f64.neg)
+  (func (export "r_f64_ret_br") (param i32) (result f64)
+    block (result f64) f64.const 1 return f64.const 2 br 0 end
+    f64.neg)
+  (func (export "r_f32_deadbr") (param i32) (result f32)
+    local.get 0
+    if (result f32) f32.const 1 return f32.const 3 br 0 else f32.const 2 return f32.const 4 end
+    f32.neg)
+  (func (export "r_f64_plain") (param i32) (result f64)
+    block (result f64) unreachable end
+    f64.neg)
+  (func (export "r_f64_end") (param i32) (result f64)
+    block (result f64) f64.const 4 return end)
+  (func (export "r_f64_store") (param i32) (result f64) (local f64)
+    block (result f64) f64.const 4 return f64.const 1 br 0 end
+    local.set 1 local.get 1)
+  (func (export "r_i64_deadbr") (param i32) (result i64)
+    block (result i64) unreachable i64.const 1 br 0 end
+    i64.const 1 i64.add)
 )

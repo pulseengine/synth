@@ -2415,7 +2415,7 @@ jobs:
       - name: Run #851 control-flow (if/else + loop back-edge + return) execution oracle
         run: SYNTH=./target/debug/synth python scripts/oracle_run.py scripts/repro/aarch64_ctrlflow_851_differential.py
       - name: "Run #1740 dead-code-below-entry execution oracle (AArch64 vs wasmtime)"
-        # RQ-92-A64BELOW (#1740): dead code after a transfer may pop BELOW its
+        # RQ-91-A64BELOW (#1740): dead code after a transfer may pop BELOW its
         # frame's entry height (wasm's polymorphic stack); lowering it popped the
         # live values beneath out of the selector's model — a debug panic, a
         # release `binop underflow`. Dead code is now skipped. Executes the

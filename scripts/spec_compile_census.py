@@ -261,13 +261,18 @@ PINS = {
     "riscv": dict(ok=9, partial=30, all_declined=94, module_decline=105,
                   no_module=9, no_exports=9, parse_fail=1, panic=0,
                   other_error=0),
-    # RQ-92-A64BELOW (#1740): aarch64 ok 21 -> 22, partial 20 -> 19 — EXACTLY
+    # RQ-91-A64BELOW (#1740): aarch64 ok 21 -> 22, partial 20 -> 19 — EXACTLY
     # one file moves, return.wast partial -> ok (MVP core 18 -> 19). Its 10
     # previously skipped exports (type-i32/i64/f32/f64, as-br_if-cond,
     # as-br_table-value(-index), as-load-address, as-compare-left/right) carry
     # dead code after `return` that popped below its frame's entry height or
-    # mis-typed the polymorphic stack; the selector now skips dead code. Every
-    # export of the module was executed against wasmtime (215 calls, 0 wrong).
+    # mis-typed the polymorphic stack; the selector now skips dead code. A
+    # file bucket hides moves inside files that stay `partial`: measured per
+    # function (--allow-skipped-exports), 56 exports newly compile over the
+    # suite and 116 functions change bytes in 10 files, and the CLI's skipped
+    # count below moves 1313 -> 1264; the suite's directives on those
+    # functions were executed, 0 wrong (RQ-91-A64BELOW records the numbers).
+    # The aarch64 skipped count is NOT pinned (FPU legs only).
     "aarch64": dict(ok=22, partial=19, all_declined=78, module_decline=119,
                     no_module=9, no_exports=9, parse_fail=1, panic=0,
                     other_error=0),

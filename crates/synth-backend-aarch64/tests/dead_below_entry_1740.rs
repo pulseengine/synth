@@ -1,5 +1,5 @@
-//! RQ-92-A64BELOW (#1740): AArch64 dead code that pops BELOW its frame's
-//! entry height, through the published `Backend::compile_module` API.
+//! RQ-91-A64BELOW (#1740): AArch64 dead code that pops BELOW its frame's
+//! entry height, through the published `Backend::compile_function` API.
 //!
 //! WASM validates code after an unconditional transfer against a polymorphic
 //! stack, so it may pop the values the selector's model holds for the code
@@ -10,7 +10,9 @@
 //!
 //! Two pins, both RED on 265235dc (a panic under `cargo test`):
 //! 1. every export of both fixtures compiles (the #1691 fixture, whose
-//!    `refuse_below` is the reported shape, and the #1740 fixture);
+//!    `refuse_below` is the reported shape, and the #1740 fixture, including
+//!    its seven `r_*` frames that no live edge enters — three of which an
+//!    earlier cut of this change regressed to a `funop` decline);
 //! 2. each `b_*` below-entry export of the #1740 fixture compiles to text
 //!    BYTE-IDENTICAL to its `l_*` twin — the same function with the dead code
 //!    deleted. Dead code is never executed, so it may contribute no bytes and
@@ -32,10 +34,10 @@ const FIXTURE_1740: &str = include_str!("../../../scripts/repro/aarch64_dead_bel
 ///
 /// Each function goes through `Backend::compile_function` with the per-function
 /// facts the CLI threads (declared param count, blocktype-arity side-table).
-/// NOT `compile_module`: on 265235dc it does not thread a function's
-/// `block_arity` (`..config.clone()` keeps the caller's empty table), so every
-/// value-carrying block reads as void there — a separate defect, reported with
-/// this lane rather than masked by it.
+/// NOT `compile_module`: it does not thread a function's `block_arity`
+/// (`..config.clone()` keeps the caller's empty table), so every
+/// value-carrying block reads as void there — a separate defect, #1745, not
+/// fixed or masked here.
 fn compile(wat: &str) -> BTreeMap<String, Result<Vec<u8>, String>> {
     let wasm = wat::parse_str(wat).expect("fixture parses");
     let module = decode_wasm_module(&wasm).expect("fixture decodes");
@@ -100,6 +102,8 @@ fn dead_code_below_entry_contributes_no_bytes_1740() {
     let below: Vec<&String> = funcs.keys().filter(|n| n.starts_with("b_")).collect();
     // Population pin: an export silently missing would shrink the check.
     assert_eq!(below.len(), 11, "every b_* shape compiled: {below:?}");
+    let no_live_edge = funcs.keys().filter(|n| n.starts_with("r_")).count();
+    assert_eq!(no_live_edge, 7, "every r_* shape compiled");
     for name in below {
         let twin = format!("l_{}", &name[2..]);
         let (b, l) = (&funcs[name], &funcs[&twin]);
