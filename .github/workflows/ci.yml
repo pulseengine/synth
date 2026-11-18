@@ -1845,31 +1845,38 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - name: Cache varve client binary (v0.33.0 floor — see varve.toml)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.varve/bin/varve
-          key: ${{ runner.os }}-varve-client-v0.33.0
-      - name: Install varve client v0.33.0 (additive default dir — never touches an ambient varve elsewhere on PATH)
-        # 0.32.0 and earlier HARD-REFUSE this repo's varve-realms.toml
-        # (`unknown field 'retired-roots'`) — the rotated realm's diagnostic
-        # extension didn't exist yet. Pinned exactly, not "latest", for the
-        # same reason every other tool in this file is pinned. Default
-        # VARVE_INSTALL_DIR ($HOME/.varve/bin) matches `varve docs bootstrap`
-        # and the floor recorded in varve.toml — deliberately not a
-        # CI-specific path, so a repro of this step off-CI behaves the same.
-        env:
-          VARVE_VERSION: v0.33.0
+      - name: A fresh varve root for this job (never the shared ~/.varve)
+        # On the self-hosted pool ~/.varve persists across jobs AND repos. A
+        # newer layer installed there by another repo raises the line's
+        # anti-rollback high-water mark, and this job's pinned layer was then
+        # refused ("rollback refused: layer presents counter 10 but the
+        # 2026.10 line's high-water mark is 39"), so `varve verify` never ran
+        # and this job was red on every run. Worse, the old step re-installed
+        # varve 0.33.0 over the shared "$VARVE_INSTALL_DIR/varve" ("replaced varve
+        # 0.47.0"), downgrading it for every other repo on that runner. Same
+        # pattern as ordeal#322: VARVE_ROOT and VARVE_INSTALL_DIR live under
+        # $RUNNER_TEMP, so nothing this job does touches ~/.varve.
         run: |
-          if ! ~/.varve/bin/varve --version 2>/dev/null | grep -q "0.33.0"; then
-            curl -fsSL https://github.com/pulseengine/varve/releases/download/v0.33.0/install.sh | sh
-          fi
-          ~/.varve/bin/varve --version
+          echo "VARVE_ROOT=$RUNNER_TEMP/varve" >> "$GITHUB_ENV"
+          echo "VARVE_INSTALL_DIR=$RUNNER_TEMP/varve/bin" >> "$GITHUB_ENV"
+      - name: Install varve client v0.47.0 into the per-job root
+        # 0.47.0 is the floor the owner decided (varve#256): it installs a
+        # digest-pinned supported layer past a raised mark with a note instead
+        # of refusing. Pinned exactly, like every other tool in this file.
+        env:
+          VARVE_VERSION: v0.47.0
+        run: |
+          set -euo pipefail
+          case "$VARVE_ROOT" in "$RUNNER_TEMP"/*) ;; *) echo "::error::VARVE_ROOT is not per-job: $VARVE_ROOT"; exit 1 ;; esac
+          case "$VARVE_INSTALL_DIR" in "$RUNNER_TEMP"/*) ;; *) echo "::error::VARVE_INSTALL_DIR is not per-job: $VARVE_INSTALL_DIR"; exit 1 ;; esac
+          curl -fsSL https://github.com/pulseengine/varve/releases/download/v0.47.0/install.sh | sh
+          "$VARVE_INSTALL_DIR/varve" --version | grep -q "0.47.0"
+          "$VARVE_INSTALL_DIR/varve" --version
       - name: varve install — resolve + fetch + verify the pinned layer
         # Fetches from oci://ghcr.io/pulseengine/layers per varve-realms.toml.
         # Signature + per-platform digest verification happens here, offline
         # thereafter; `varve verify` below re-checks without re-fetching.
-        run: ~/.varve/bin/varve install
+        run: '"$VARVE_INSTALL_DIR/varve" install'
       - name: varve verify — signature, digest AND PATH-shadowing (REQ-SHADOW-001)
         # This IS the shadowing check the RQ-66-VARVE brief asked for — varve
         # already ships one (`varve verify` / `varve which` both exit 1 when a
@@ -1895,7 +1902,7 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          ~/.varve/bin/varve verify 2>&1 | tee /tmp/varve-verify.txt
+          "$VARVE_INSTALL_DIR/varve" verify 2>&1 | tee /tmp/varve-verify.txt
       - name: Sync externals (network — clones the 7 sibling repos)
         # #1143: AUTHENTICATE FOR QUOTA, NOT FOR ACCESS. All seven siblings are
         # PUBLIC, so this clone needs no permission — but GitHub rate-limits
@@ -1919,13 +1926,13 @@ jobs:
           set -euo pipefail
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           trap 'git config --global --unset-all url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf || true' EXIT
-          ~/.varve/bin/varve run -- rivet sync
+          "$VARVE_INSTALL_DIR/varve" run -- rivet sync
       - name: Validate the federated graph
         # Exit code IS the gate (rivet validate exits non-zero on FAIL). tee'd
         # under pipefail so the log keeps the full diagnostic list.
         run: |
           set -o pipefail
-          ~/.varve/bin/varve run -- rivet validate 2>&1 | tee /tmp/rivet-federated.txt
+          "$VARVE_INSTALL_DIR/varve" run -- rivet validate 2>&1 | tee /tmp/rivet-federated.txt
       - name: Non-vacuity guard — resolution must actually have run
         # The #1012 signature was "FAIL (50 errors, ..., 0 broken cross-refs)":
         # zero broken cross-refs beside dozens of link errors because rivet
