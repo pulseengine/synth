@@ -1,0 +1,107 @@
+artifacts:
+  - id: RQ-91-LEVELGATE
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "The support-level gate binds L1 proof, WCET and ladder evidence to the row's own backend, and the RV32 and AArch64 selectors carry a subtraction ratchet"
+    description: >
+        THEME: hold the support-level promotions planned under
+        RQ-91-SUPPORTLEVELS, the first increment of the architecture push
+        (epic #1741). A cold review of the architecture plan
+        found that scripts/support_level_check.py could not hold an L1
+        promotion of any backend other than Thumb-2. (1) The ladder
+        criterion was unmeetable: it matched each backend's `ladder` regex
+        against the string constants of run_synth and LADDER_RUNGS in
+        scripts/repro/partial_census_1017.py, where the backend is the
+        `backend` parameter, not a constant. (2) The Rocq and WCET criteria
+        were not bound to the backend: an RV32 row naming Thumb-2's
+        VcrSelRules.v and wcet_bound_gate.rs failed those two criteria only
+        on table-row naming. The maintainer also decided that the RV32 and
+        AArch64 selectors get the subtraction ratchet the ARM selector has
+        had since RQ-58-METRIC. The record cites RQ-91-SUPPORTLEVELS and
+        the epic #1741, and it changes no row's level and no emitted code.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers: on the
+        base tree, promote rv32, aarch64 and cortex-r5-relocatable to L1 in
+        an in-memory copy of the `support_levels:` ledger, with proofs
+        [coq/Synth/Synth/VcrSelRules.v], wcet_gate
+        crates/synth-cli/tests/wcet_bound_gate.rs and ladder_rung riscv /
+        aarch64 / arm, call `check()` directly, and list the failures on the
+        proof, WCET and ladder criteria.
+
+        MEASURED 2026-11-18 on main 265235dc: LIVE, both claims. For all
+        three rows the only proof- and WCET-related failures were "not named
+        in its table row"; no failure said the proof or the gate was about
+        another backend. The ladder criterion was NOT MET for rv32 on the
+        `riscv` rung and aarch64 on the `aarch64` rung, although those rungs
+        are measured with `-b riscv` and `-b aarch64`. The token list the
+        old checker matched held `compile`, `-b`, `--all-exports`,
+        `--relocatable` and the rung flags, and no backend name.
+    tags:
+      - process
+      - claims
+      - backends
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      issue: "#1741"
+      verification-track: manual
+      issue-scope: outlives
+      landed: >
+        #1741 - DELIVERED, base main 265235dc. #1741 is the architecture-
+        push epic and STAYS OPEN: this record is `issue-scope: outlives`. scripts/support_level_check.py: (a)
+        each BACKENDS entry gains `proof_isa`, a regex over the modules a
+        named proof file itself `Require`s. Thumb-2 binds to
+        Synth.ARM.ArmSemantics. rv32, aarch64 and cortex-r5-relocatable bind
+        to None, because no Rocq model of their ISA (or of A32 encoding)
+        exists, so no proof file can be cited for them. (b) The WCET gate
+        must pass the backend's target in a Rust string literal (the
+        `invocation` regex over a lexer's literals: raw strings, escapes,
+        char literals and nested comments handled), so a gate that only
+        mentions the backend in a comment does not bind. (c)
+        `census_invocation` replaces `census_constants`: every reference to
+        run_synth's `backend` PARAMETER becomes the rung's own name, so the
+        `riscv` rung's tokens include `riscv`, while a hard-coded `"-b",
+        "arm"` keeps its constant. claims.yaml gains status fields
+        rv32_selector_lines_code and aarch64_selector_lines_code (same
+        engine, marker and family-glob shape as selector_lines_code) and two
+        `direction: down` ratchets on them under SYNTH-SUBTRACTION-SELECTOR,
+        with value == baseline == the live derivation. The pin population
+        counts in SYNTH-SUBTRACTION-PINS-DECLARED move 10 -> 12 ratchets and
+        6 -> 8 `direction: down`. artifacts/status.json regenerated with
+        --emit-status. No row's level moved: Thumb-2 stays L1 with the same
+        evidence, and its open ladder entry stays valid, because the `arm`
+        rung still selects no Cortex-M token.
+      verified-by: >
+        Self-test (support_level_check.py --self-test, 26 cases, all ok).
+        The 8 new cases were run with check() swapped for the base tree's:
+        6 red there (RV32 L1 citing the ARM-model proof; a proof whose
+        ArmSemantics Require is commented out; RV32 L1 citing a cortex-m4-only
+        WCET gate; a gate naming its target only in a comment; RV32 L1 on a
+        real `riscv` rung meeting the ladder; an open ladder gap on that rung
+        reported as now MET). The other 2 are paired controls, green on both
+        trees: the census hard-coding `-b arm` leaves the riscv rung NOT MET,
+        and a Thumb-2 row on the `riscv` rung is NOT MET. Lexer control: with
+        the naive quote-pairing regex substituted, the self-test's green
+        baseline reds, because the fixture's raw string carries an odd
+        number of quotes, as the real wcet_bound_gate.rs fixtures do. Live:
+        support_level_check claims.yaml 0 failures. The in-memory L1
+        simulation now reds each of the three rows on the proof criterion
+        (BORROWED) and the WCET criterion (BORROWED). Ratchets: the live
+        derivations, 6242 (RV32) and 3067 (AArch64), equal an independent
+        count of newlines before `#[cfg(test)]\nmod tests`. One line added to
+        either selector's non-test region reds claim_check with "MOVED the
+        WRONG way"; the same line added inside the test module leaves it
+        green (rc 0).
+      done-when: >
+        manual:2026-12-31 an L1 row citing another backend's proof file or
+        WCET gate is red in support_level_check, a backend with a real
+        acceptance-ladder rung can meet the ladder criterion, no row's level
+        moved, and the RV32 and AArch64 selectors' non-test line counts are
+        `direction: down` ratchets equal to their live derivation; or this
+        is REFUTED with the measurement that refutes it; and the refuting
+        command above is RUN FIRST and its result reported either way
