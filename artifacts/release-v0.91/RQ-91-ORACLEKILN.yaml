@@ -44,6 +44,11 @@ artifacts:
         first draft of the trap rule misclassified it as ILLEGAL and the
         trap-idiom control leg caught that too.
 
+        LICENCE, a maintainer decision (2026-11-18): unicorn-engine is
+        GPL-2.0, accepted here as "GPL-2.0 in an unpublished test-only harness; never linked into the synth binary or any published crate". Recorded in deny.toml; the
+        two facts it rests on (no dependents, publish = false) are pinned in
+        claims.yaml SYNTH-UNLINKED-LIBRARIES-1277.
+
         REFUTING COMMAND, to be RUN BEFORE building on this artifact:
         `SYNTH=./target/debug/synth cargo test -p synth-oracle --features
         exec -- --nocapture`. Any failing test, or a sweep line other than

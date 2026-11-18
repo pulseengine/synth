@@ -4387,7 +4387,10 @@ claims:
                                              # infrastructure by the two pins below
       # synth-oracle is the execution-oracle harness (kiln + unicorn). It must
       # never be linked into the binary or published: no crate depends on it,
-      # and it is publish = false.
+      # and it is publish = false. THESE TWO PINS ARE WHY unicorn-engine's
+      # GPL-2.0 is accepted (maintainer decision, 2026-11-18, recorded in
+      # deny.toml): "GPL-2.0 in an unpublished test-only harness; never linked into the synth binary or any published crate".
+      # Moving either pin removes the ground for that acceptance.
       - kind: count-eq
         pattern: '^synth-oracle(\.workspace)?\s*='
         glob: ['crates/*/Cargo.toml']
