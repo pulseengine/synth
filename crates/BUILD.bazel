@@ -6,6 +6,14 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_binary", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
+# NOT BUILT HERE, deliberately: `synth-oracle` (RQ-91-ORACLEKILN, #1741), the
+# execution-oracle harness. It is test infrastructure that nothing shipped
+# links (pinned in claims.yaml, SYNTH-UNLINKED-LIBRARIES-1277), and its engines
+# are a git dependency (kiln) and a cmake + bindgen C build (unicorn) behind an
+# off-by-default cargo feature. Its only runner is the `oracle-kiln` job in
+# .github/workflows/ci.yml, through cargo. A Bazel target would add a second,
+# hand-maintained build of a test harness and buy no coverage of synth.
+
 # Core WebAssembly parsing and IR (includes WasmOp, wasm_decoder, Backend trait)
 rust_library(
     name = "synth-core",

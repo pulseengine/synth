@@ -2272,6 +2272,71 @@ jobs:
           set -euo pipefail
           python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 1
 
+  oracle-kiln:
+    name: Rust execution oracle — kiln reference vs unicorn (RQ-91-ORACLEKILN)
+    # Refs #1741. The FIRST oracle on `crates/synth-oracle`, the Rust harness
+    # that replaces the Python differentials (no new Python, 2026-11-18). The
+    # reference engine is kiln (PulseEngine's interpreter, git dep pinned by
+    # rev to tag v0.7.3), not wasmtime. The engines sit behind the crate's
+    # `exec` feature so `cargo test --workspace` (the required Test job) never
+    # builds them: unicorn is a cmake + bindgen C build. This job is the only
+    # place they are built, linted and run.
+    #
+    # The test compiles an embedded probe set for cortex-m3 AND rv32imac,
+    # requires every probe x vector to AGREE with kiln, and carries four
+    # potency legs that must stay red-capable: a planted wrong reference, a
+    # planted illegal instruction, a dropped i64 high word, and a budget
+    # overrun that must never count as a trap.
+    #
+    # NOT a required context, so it can be added and renamed freely.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-oracle-kiln-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-oracle-kiln-
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.x"
+      # unicorn-engine-sys builds unicorn with cmake and generates its
+      # bindings with bindgen, which loads libclang. The smithy runners have no
+      # sudo, so both come from pip wheels (the same fallback the pip-based
+      # oracle jobs use) and LIBCLANG_PATH points bindgen at the wheel's copy.
+      - name: Install unicorn's build tools (cmake, libclang)
+        run: |
+          set -euo pipefail
+          command -v cmake >/dev/null || pip install cmake || pip install --break-system-packages cmake
+          pip install libclang || pip install --break-system-packages libclang
+          loc=$(pip show libclang | sed -n 's/^Location: //p')
+          lib=$(find "$loc/clang/native" -name 'libclang*.so*' | head -n 1)
+          test -n "$lib"
+          echo "LIBCLANG_PATH=$(dirname "$lib")" >> "$GITHUB_ENV"
+          cmake --version
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - name: Clippy (synth-oracle with the engines)
+        run: cargo clippy -p synth-oracle --features exec --all-targets -- -D warnings
+      - name: kiln probe oracle (cortex-m3 + rv32imac, with potency legs)
+        run: |
+          set -euo pipefail
+          SYNTH="$PWD/target/debug/synth" cargo test -p synth-oracle --features exec \
+            -- --nocapture 2>&1 | tee /tmp/oracle-kiln.log
+          # NON-VACUITY: the sweep line must report a four-digit case count
+          # over both legs; a probe set filtered to nothing cannot print it.
+          grep -qE '^ORACLE kiln-probe: [1-9][0-9]{3,} cases agree across 2 legs, [1-9][0-9]* trap/trap$' /tmp/oracle-kiln.log
+          grep -qE '^test result: ok\. 7 passed; 0 failed' /tmp/oracle-kiln.log
+
   provenance-gate:
     name: synth-provenance-v1 reconciliation gate (#396)
     # VCR-DEC-003 (#396, witness#130): the source-to-object branch-transformation

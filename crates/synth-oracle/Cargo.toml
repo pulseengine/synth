@@ -1,0 +1,39 @@
+[package]
+name = "synth-oracle"
+description = "Execution-oracle harness: kiln reference vs unicorn emulation of synth output (test-only, never shipped)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+# Test infrastructure. NEVER a dependency of synth-cli or any shipped crate,
+# and never published: it pulls a git dependency (kiln is not on crates.io)
+# and unicorn (GPL-2.0, a C build) into whatever links it.
+publish = false
+
+[features]
+# The engines. OFF by default so `cargo test --workspace` builds neither
+# kiln nor unicorn (unicorn is a cmake + bindgen C build). The value model,
+# the comparison matrix and the synth/ELF driver compile and unit-test
+# without it; the `oracle-kiln` CI job runs `--features exec`.
+default = []
+exec = ["dep:kiln-runtime", "dep:kiln-decoder", "dep:kiln-foundation", "dep:kiln-error", "dep:unicorn-engine"]
+
+[dependencies]
+object = { workspace = true }
+wasmparser = { workspace = true }
+# kiln, PulseEngine's wasm interpreter, is the REFERENCE engine. Not on
+# crates.io: a git dependency pinned by REV to the commit tag v0.7.3 names
+# (annotated tag object 853c5d84 -> commit fa16dc8d). A rev pin cannot move
+# under us the way a tag can be re-pointed.
+kiln-runtime = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d9945f191c272d0be73c3d046b2aebdee", features = ["std"], optional = true }
+kiln-decoder = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d9945f191c272d0be73c3d046b2aebdee", features = ["std"], optional = true }
+kiln-foundation = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d9945f191c272d0be73c3d046b2aebdee", features = ["std"], optional = true }
+kiln-error = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d9945f191c272d0be73c3d046b2aebdee", features = ["std"], optional = true }
+# Only the two architectures synth targets in this harness: ARM (Thumb-2 /
+# A32) and RISC-V. `arch_all` would build eight more QEMU targets.
+unicorn-engine = { version = "2.1.5", default-features = false, features = ["arch_arm", "arch_riscv"], optional = true }
+
+[dev-dependencies]
+wat = { workspace = true }

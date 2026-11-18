@@ -1,0 +1,99 @@
+artifacts:
+  - id: RQ-91-ORACLEKILN
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "A Rust execution-oracle harness with kiln as the reference engine, and its first oracle"
+    description: >
+        FOUNDATION LANE. Under the no-new-Python rule (2026-11-18) synth's
+        execution oracles move to Rust, and the maintainer chose kiln,
+        PulseEngine's interpreter, as the reference engine in place of
+        wasmtime. This artifact delivers the reusable harness and ONE oracle
+        that proves it. It ports no existing Python differential; each port
+        is its own lane, gated by an equivalence test against the script it
+        replaces.
+
+        THE HARNESS, `crates/synth-oracle` (publish = false; a dependency of
+        no crate, pinned in claims.yaml SYNTH-UNLINKED-LIBRARIES-1277):
+        `reference` runs a wasm export on kiln (git dependency pinned by rev
+        fa16dc8d, the commit tag v0.7.3 names) with fuel, an EXACT import
+        resolver, and host functions whose calls are logged (an MMIO trace).
+        A run returns values, a trap with kiln's code and a message class, a
+        Budget, or an engine fault. `emulate` runs synth's compiled function
+        under unicorn (Cortex-M0/M3/M4, RV32IMAC as SiFive E31) with AAPCS or
+        ILP32 argument setup, seeded callee-saved registers and a balanced-SP
+        check, and asserts the CPU model it reads back. A stop is a TRAP only
+        when the stop path AND the bytes agree on a trap idiom (UDF on ARM;
+        ebreak, c.ebreak, unimp, c.unimp on RV32); any other fault is
+        ILLEGAL; budget overrun is its own outcome. `compare` holds the value
+        rule (i64 both words; NaN equals NaN, otherwise bit-equal) and the
+        reference x emulator verdict matrix. `synth` drives the binary
+        (`$SYNTH` or a cargo build) and reads function bytes from the ELF
+        symbol table, never from disasm text. The engines sit behind the
+        crate's `exec` feature, so `cargo test --workspace` builds neither.
+
+        WHAT THE HARNESS FOUND ABOUT ITS OWN EMULATOR, measured here and
+        pinned by the control legs: unicorn 2.1.x forces every
+        `UC_MODE_MCLASS` CPU to Cortex-M33 whatever model is requested
+        (unicorn-engine-sys 2.1.5, qemu/target/arm/cpu.c:2113). The readback
+        assertion caught it on the first run (requested 8, read 11). The
+        harness therefore uses plain Thumb mode plus the M-profile model,
+        which reads back as requested. On RV32 unicorn adds 4 to the PC
+        before the interrupt hook for every non-breakpoint exception
+        (qemu/accel/tcg/cpu-exec.c), so `unimp` reported its successor; the
+        first draft of the trap rule misclassified it as ILLEGAL and the
+        trap-idiom control leg caught that too.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact:
+        `SYNTH=./target/debug/synth cargo test -p synth-oracle --features
+        exec -- --nocapture`. Any failing test, or a sweep line other than
+        `ORACLE kiln-probe: 6048 cases agree across 2 legs`, refutes it.
+    tags:
+      - feature-loop
+      - oracle
+      - verification
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1741"
+      verification-track: execution
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 the Rust harness in crates/synth-oracle runs a
+        wasm export on kiln and the compiled function under unicorn, and
+        judges the pair; its first oracle executes a probe set on cortex-m3
+        and rv32imac with every case agreeing, and its potency legs (a
+        planted wrong reference, a planted illegal instruction, a dropped
+        i64 high word, a budget overrun offered as a trap) each red. The
+        support-level lanes of #1741 then run their execution oracles on it,
+        and every ported Python differential is gated by an equivalence test
+        against the script it replaces.
+      landed: "v0.91 ORACLEKILN - #1741 - DELIVERED, FOUNDATION ONLY: crates/synth-oracle (reference on kiln v0.7.3, emulate on unicorn 2.1.5, compare, synth/ELF driver) and the first oracle, crates/synth-oracle/tests/kiln_probe_oracle.rs, run by the new `oracle-kiln` CI job. No Python differential is ported yet."
+      verified-by: >
+        DELIVERED as the foundation, execution-verified. The probe oracle
+        compiles 22 embedded probes (i32 arithmetic, compares, if/else,
+        loop, br_table, i64 results, div/rem, unreachable) for cortex-m3
+        and rv32imac --relocatable and runs 21 of them on 144 argument
+        pairs on each leg: 6048 cases, all AGREE with kiln, 72 of them
+        trap on both sides (IntegerDivideByZero and Unreachable). POTENCY,
+        each a committed test: kiln running i32.sub for the compiled
+        i32.add gives exactly 120 of 144 disagreements per leg (add equals
+        sub only when the second operand is 0 or 0x80000000); a planted
+        undefined encoding, BKPT, VFP-on-M3 (ARM) and a reserved encoding,
+        ecall, F-on-E31 (RV32) are each ILLEGAL and Disagree, while every
+        trap idiom planted at +0 and +4 is a trap at its own PC; dropping
+        the high word of an i64 result reds 266 of 266 nonzero-high cases
+        per leg; kiln out of fuel and unicorn out of instructions are each
+        Budget, never Trap, and no Budget pairing agrees. The 22nd probe,
+        `spin`, is that budget probe. EQUIVALENCE (one-off, not a gate): the
+        3024 kiln reference outcomes were re-run on wasmtime 48.0.0 (Python)
+        and 0 diverged; the trap classes pair as IntegerDivideByZero /
+        INTEGER_DIVISION_BY_ZERO (24) and Unreachable / UNREACHABLE (12).
+        WHY outlives: #1741 is the push to raise every planned backend
+        through the support levels, each lane with an execution oracle red
+        on main and green on the fix. This lane builds the Rust harness
+        those oracles run on, against kiln; it raises no backend's level and
+        ports no existing oracle.

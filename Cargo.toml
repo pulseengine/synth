@@ -19,6 +19,7 @@ members = [
     "crates/synth-backend-riscv",
     "crates/synth-backend-aarch64",
     "crates/synth-mcdc-harness",
+    "crates/synth-oracle",
 ]
 resolver = "2"
 
@@ -90,6 +91,26 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.ordeal-cert]
+opt-level = 3
+
+# synth-oracle's reference engine (RQ-91-ORACLEKILN, #1741). kiln is an
+# interpreter and the probe oracle runs it thousands of times; unoptimized it
+# dominates the test's wall clock. Dependency build settings only, built only
+# under synth-oracle's off-by-default `exec` feature: no effect on synth's
+# code generation or on the default workspace build.
+[profile.dev.package.kiln-runtime]
+opt-level = 3
+
+[profile.dev.package.kiln-decoder]
+opt-level = 3
+
+[profile.dev.package.kiln-foundation]
+opt-level = 3
+
+[profile.dev.package.kiln-format]
+opt-level = 3
+
+[profile.dev.package.kiln-instructions]
 opt-level = 3
 
 [profile.release]

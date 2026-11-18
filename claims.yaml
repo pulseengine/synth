@@ -4382,7 +4382,20 @@ claims:
       - kind: count-eq                       # population: a NEW workspace member
         pattern: '^    "crates/'             # must be classified linked / feature-
         glob: ['Cargo.toml']                 # gated / unlinked before this moves
-        expect: 19
+        expect: 20                           # 19 -> 20: synth-oracle (RQ-91-ORACLEKILN,
+                                             # #1741), classified UNLINKED test
+                                             # infrastructure by the two pins below
+      # synth-oracle is the execution-oracle harness (kiln + unicorn). It must
+      # never be linked into the binary or published: no crate depends on it,
+      # and it is publish = false.
+      - kind: count-eq
+        pattern: '^synth-oracle(\.workspace)?\s*='
+        glob: ['crates/*/Cargo.toml']
+        expect: 0
+      - kind: count-eq
+        pattern: '^publish = false$'
+        glob: ['crates/synth-oracle/Cargo.toml']
+        expect: 1
 
   # #1281 (RQ-68-ORACLEABI): the number below is a COUNT OF DECLARATIONS
   # (`^pub open spec fn `), and the verifier that would check them is run by no
