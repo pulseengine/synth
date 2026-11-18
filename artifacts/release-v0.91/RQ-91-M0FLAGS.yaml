@@ -53,7 +53,20 @@ artifacts:
         the bytes write, and every write by a call or an undecodable
         instruction, must be dead (W). Every decode group ends in an unknown
         arm unless the encoding is positively recognised, and an unknown
-        reads, may write and leaves live every flag. A branch into the middle
+        reads, may write and leaves live every flag. ONE GROUP IS RECOGNISED
+        BY FAMILY, NOT BY ENCODING: in coprocessor space the FP coprocessors
+        (10/11) and the MVE space (coprocessor 14/15, the EF/FF vector
+        prefixes) are accepted, since neither writes APSR except VMRS
+        APSR_nzcv nor reads it except VSEL; an undefined encoding inside those
+        two families is accepted as flag-neutral. Every other coprocessor (MRC
+        to APSR_nzcv writes NZCV), FP transfers to PC, LDM/CLRM with Rn = PC,
+        LDRD/STRD with PC, single loads/stores outside the defined forms, and
+        data-processing encodings with PC where only a compare or MOV/MVN may
+        have it (incl. the MVE long shifts ASRL, UQSHLL, …) are unknown.
+        BY DESIGN, valid instructions synth never emits are unknown too and a
+        function containing one is refused: PLD/PLI, LDREX/STREX, CPSID/CPSIE,
+        TT, UMAAL, the DSP multiplies and the parallel add/sub family, WLS/DLS,
+        VCTP (review 10 N4). A branch into the middle
         of an IT block is refused; an IT-conditional return falls through;
         MSR to a non-APSR register is not a kill; VSEL reads its condition.
         It runs at the end of the encode loop on ARMv6-M (always) and on
@@ -85,8 +98,9 @@ artifacts:
         literally true: release binaries ignore it.
 
         REFUTING COMMAND, to be RUN BEFORE building on this artifact:
-        `cargo test -p synth-backend --lib nzcv` (19 tests incl. the 443-case
-        llvm-mc probe set `tests/fixtures/nzcv_probe_review7_1301.txt`) and
+        `cargo test -p synth-backend --lib nzcv` (20 tests incl. the llvm-mc
+        probe sets `tests/fixtures/nzcv_probe_review7_1301.txt`, 443 cases,
+        and `tests/fixtures/nzcv_probe_review10_1301.txt`, 237 cases) and
         `cargo test -p synth-cli --test nzcv_verifier_wiring_1301`. Any
         failure refutes it.
     tags:
@@ -115,7 +129,7 @@ artifacts:
         runs on ARMv6-M, and the ARMv7-M decision is measured.
       landed: "v0.91 M0FLAGS - #1301 - DELIVERED AS FOUNDATION (no v6-M lowering rule yet): nine explicit flag-setting ArmOp variants (Movs, Mvns, Ands, Orrs, Eors, Lsls, Lsrs, Asrs, Muls) with llvm-mc-equal Thumb and A32 bytes, declaring no flag result; `synth_backend::nzcv`, an NZCV-liveness check over the ENCODED Thumb bytes with Preserves/Scratch/Writes(declared) contracts, run on ARMv6-M always and on ARMv7-M by default (`SYNTH_NO_NZCV_VERIFY` skips v7-M only, with a stderr notice), wiring pinned by a synth-cli test; A32 non-LSL RegShift now refused. Every existing encoding is byte-identical over 14 ARM configurations. #1301 stays open."
       verified-by: >
-        RED-FIRST, unit level (`cargo test -p synth-backend --lib nzcv`, 19
+        RED-FIRST, unit level (`cargo test -p synth-backend --lib nzcv`, 20
         tests). Refused: `cmp; movs r0,#1; beq` (R1); both naive SetCond
         rewrites; the real encoder's `Cmp; Mov r0,#1; BCondOffset EQ`; the
         SAME naive rewrite written with the new `Movs` variant and `Adds;
@@ -128,11 +142,18 @@ artifacts:
         mid-stream literal island, a 16-bit dp member inside IT. The 443-case
         llvm-mc probe set from cold review 7 matches its expected verdicts
         443/443 (one expectation changed from the draft: WFI is a recognised
-        hint).
+        hint). The 237-case set from cold review 10 (228 + 9) matches 237/237;
+        22 of its draft expectations are changed, each with its rule, in the
+        fixture header (14 by-design unknowns and two VMRS-in-a-Preserves-op
+        streams to REJECT; a VSEL that only reads and seven producers that
+        fully rewrite Z to ACCEPT).
 
-        MUTATION (one-off sweep, 60 mutants of `nzcv.rs` covering the
-        review's 41 incl. its 23 survivors re-targeted at the reworked code,
-        plus 19 for the new arms): 59 killed, 0 survived, 1 does not build.
+        MUTATION (one-off sweep, 72 mutants of `nzcv.rs`: review 7's 41
+        re-targeted, review 10's six behaviour-changing survivors — ldr pc
+        falling through, LDM with PC from any base as a return, C as a
+        must-write for 16-bit and wide shift-by-register, the plain-binary-
+        immediate unknown arm, the truncated tail — and one per hardened
+        arm): 71 killed, 0 survived, 1 does not build.
         Stubbed always-accept and always-reject verifiers were shown red at
         the first round (8/12 and 10/12).
 
@@ -141,7 +162,10 @@ artifacts:
         self-contained) with the debug-only plant: refused by default, and
         accepted with `SYNTH_NO_NZCV_VERIFY` plus its stderr notice and the
         control's exact bytes. With the call site unplugged (`if false &&
-        nzcv_on`) the test is RED ("the planted compile was NOT refused").
+        nzcv_on`) the test is RED ("the planted compile was NOT refused"). A
+        third test compiles the four island fixtures on cortex-m7 and
+        cortex-m4f under --native-pointer-abi; with the island segment push
+        dropped it is RED ("an island function was refused").
 
         BYTE IDENTITY against a FRESH main 265235dc control built in its own
         detached worktree and target (md5 differs): 559 md5-distinct modules

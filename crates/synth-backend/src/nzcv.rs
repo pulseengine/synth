@@ -45,7 +45,15 @@
 //! CONSERVATIVE BY CONSTRUCTION. Every decode group ends in an `unknown`
 //! arm unless the encoding is positively recognised; an unknown instruction
 //! reads every flag, may write every flag (kills none), and leaves every flag
-//! live after it. An indirect jump, a branch to a non-instruction offset, or
+//! live after it. ONE GROUP IS RECOGNISED BY FAMILY, NOT BY ENCODING: the
+//! coprocessor space is accepted for the FP coprocessors (10/11) and the MVE
+//! space (coprocessor field 14/15 and the EF/FF vector prefixes), which never
+//! write APSR except `VMRS APSR_nzcv` and never read it except VSEL; an
+//! undefined encoding INSIDE those families is accepted as flag-neutral.
+//! Every other coprocessor (MRC to `APSR_nzcv` writes NZCV) is unknown. Valid
+//! instructions synth never emits (PLD, LDREX, CPS, TT, UMAAL, the DSP and
+//! parallel add/sub families, WLS/DLS, VCTP, …) are unknown BY DESIGN: a
+//! function containing one is refused, which is the safe direction. An indirect jump, a branch to a non-instruction offset, or
 //! falling off the end / into a data gap leaves every flag live; only a
 //! return (`BX LR`, `MOV PC, LR`, `POP {…, PC}`, `LDM SP!` with PC) and a
 //! trap (`UDF`, `BKPT`) end liveness, and only when unconditional — inside an
@@ -280,6 +288,14 @@ fn dp_effect(op: u16, rd: u16, s: bool, c_logical: bool) -> (u8, u8, u8, bool) {
     }
 }
 
+/// Whether a Thumb-2 data-processing `op` with these `rd`/`rn` fields is a
+/// defined encoding: `rd == PC` only for TST/TEQ/CMN/CMP (S set), `rn == PC`
+/// only for MOV/MVN (ORR/ORN with Rn = 1111). Everything else with PC there
+/// is UNPREDICTABLE or another instruction (e.g. the v8.1-M long shifts).
+fn dp_pc_fields_ok(op: u16, rd: u16, rn: u16, s: bool) -> bool {
+    (rd != 15 || (s && matches!(op, 0 | 4 | 8 | 13))) && (rn != 15 || matches!(op, 2 | 3))
+}
+
 /// Mark `i` as an instruction this decoder does not positively recognise.
 fn unknown(i: &mut Insn) {
     i.reads = NZCV;
@@ -473,11 +489,12 @@ fn decode32(i: &mut Insn, hw: u16, hw2: u16) {
         if hw & 0x0200 == 0 {
             // data processing (modified immediate)
             let op = (hw >> 5) & 0xF;
-            if !matches!(op, 0..=4 | 8 | 10 | 11 | 13 | 14) {
-                return unknown(i);
-            }
             let s = hw & 0x10 != 0;
             let rd = (hw2 >> 8) & 0xF;
+            if !matches!(op, 0..=4 | 8 | 10 | 11 | 13 | 14) || !dp_pc_fields_ok(op, rd, hw & 0xF, s)
+            {
+                return unknown(i);
+            }
             // ThumbExpandImm_C writes C only for a rotated immediate.
             let rot = (((hw >> 10) & 1) << 3) | ((hw2 >> 12) & 7);
             let (reads, must, may, producer) = dp_effect(op, rd, s, rot >= 4);
@@ -510,11 +527,18 @@ fn decode32(i: &mut Insn, hw: u16, hw2: u16) {
         0xEA | 0xEB => {
             // data processing (shifted register)
             let op = (hw >> 5) & 0xF;
-            if hw2 & 0x8000 != 0 || !matches!(op, 0..=4 | 6 | 8 | 10 | 11 | 13 | 14) {
-                return unknown(i); // incl. v8.1-M CSEL & co, which read flags
-            }
             let s = hw & 0x10 != 0;
             let rd = (hw2 >> 8) & 0xF;
+            // Rm = PC, and PC where `dp_pc_fields_ok` forbids it, are the
+            // v8.1-M CSEL family (reads flags) and the MVE long shifts
+            // (ASRL, UQSHLL, …: no flags) — never a data-processing op.
+            if hw2 & 0x8000 != 0
+                || hw2 & 0xF == 15
+                || !matches!(op, 0..=4 | 6 | 8 | 10 | 11 | 13 | 14)
+                || !dp_pc_fields_ok(op, rd, hw & 0xF, s)
+            {
+                return unknown(i);
+            }
             let imm = (((hw2 >> 12) & 7) << 2) | ((hw2 >> 6) & 3);
             let ty = (hw2 >> 4) & 3;
             if ty == 3 && imm == 0 {
@@ -527,7 +551,9 @@ fn decode32(i: &mut Insn, hw: u16, hw2: u16) {
         }
         0xE8 | 0xE9 if hw & 0x0040 == 0 => {
             // LDM / STM (incl. PUSH.W / POP.W): only IA (01) and DB (10)
-            if !matches!((hw >> 7) & 3, 1 | 2) {
+            // Rn = PC is UNPREDICTABLE in v7-M and is CLRM in v8.1-M (which
+            // clears APSR when the list names it).
+            if !matches!((hw >> 7) & 3, 1 | 2) || hw & 0xF == 15 {
                 return unknown(i);
             }
             if hw & 0x10 != 0 && hw2 & 0x8000 != 0 {
@@ -550,13 +576,37 @@ fn decode32(i: &mut Insn, hw: u16, hw2: u16) {
                 } else {
                     unknown(i);
                 }
-            } else if hw & 0xF == 15 && wb {
-                unknown(i); // LDRD literal with writeback: undefined (SG)
+            } else if (hw & 0xF == 15 && (wb || hw & 0x10 == 0))
+                || hw2 >> 12 == 15
+                || (hw2 >> 8) & 0xF == 15
+            {
+                // LDRD literal with writeback (SG), STRD to a literal, or PC
+                // as either transfer register: not a defined LDRD/STRD.
+                unknown(i);
             }
             // else LDRD / STRD: no flags
         }
         0xF8 | 0xF9 => {
-            // single load / store
+            // single load / store, positively recognised by form:
+            // imm12 (hw<7> = 1); register offset (hw2<11:6> = 000000); imm8
+            // with P = 1 or (P = 0, W = 1). Size 11, a store with S set, a
+            // store to a literal, and every other hw2 pattern are unknown.
+            let load = hw & 0x10 != 0;
+            // imm12 (hw<7> = 1) or register offset (hw2<11:6> = 000000)
+            let form_ok = if hw & 0x80 != 0 || hw2 & 0x0FC0 == 0 {
+                true
+            } else if hw2 & 0x0800 != 0 {
+                let p = hw2 & 0x0400 != 0;
+                let wb = hw2 & 0x0100 != 0;
+                p || wb
+            } else {
+                false
+            };
+            let size_ok = (hw >> 5) & 3 != 3;
+            let store_ok = load || (hw & 0x0100 == 0 && hw & 0xF != 15);
+            if !(form_ok && size_ok && store_ok) {
+                return unknown(i);
+            }
             if hw2 >> 12 == 15 {
                 let ldr_word = hw & 0x10 != 0 && hw & 0x0160 == 0x0040;
                 if ldr_word {
@@ -590,8 +640,24 @@ fn decode32(i: &mut Insn, hw: u16, hw2: u16) {
             }
         }
         _ if hw & 0xEC00 == 0xEC00 => {
-            // coprocessor / VFP / MVE
-            if hw == 0xEEF1 && hw2 == 0xFA10 {
+            // coprocessor / VFP / MVE, recognised by FAMILY: the FP
+            // coprocessors (10/11) and the MVE space (coprocessor field 14/15,
+            // and the EF/FF vector data-processing prefixes). Neither writes
+            // APSR except VMRS APSR_nzcv, and only VSEL reads it. Every other
+            // coprocessor (0-9, 12, 13: MRC to APSR_nzcv writes NZCV) is
+            // unknown. LIMIT: inside the FP and MVE families an encoding is
+            // not decoded instruction by instruction, so an undefined one there
+            // is accepted as flag-neutral; synth emits only FP/MVE forms.
+            let cp = (hw2 >> 8) & 0xF;
+            let vector = hw & 0xEF00 == 0xEF00;
+            let fp_transfer_to_pc = matches!(cp, 10 | 11)
+                && hw & 0xEF00 == 0xEE00
+                && hw2 & 0x0010 != 0
+                && hw2 >> 12 == 15
+                && !(hw == 0xEEF1 && hw2 == 0xFA10);
+            if !(vector || matches!(cp, 10 | 11 | 14 | 15)) || fp_transfer_to_pc {
+                unknown(i);
+            } else if hw == 0xEEF1 && hw2 == 0xFA10 {
                 w(i, NZCV, 0, true); // VMRS APSR_nzcv, FPSCR
             } else if hw & 0xFF80 == 0xFE00 && hw2 & 0x0E50 == 0x0A00 {
                 // VSEL<cc> (FPv5): cc = EQ, VS, GE, GT
@@ -1543,18 +1609,12 @@ mod tests {
         }
     }
 
-    /// The 443-case llvm-mc probe set from cold review 7 (#1301): every
-    /// stream gets exactly its expected verdict. Covers the per-flag write
-    /// table (16-bit and wide), carry readers, IT blocks (incl. conditional
-    /// returns and branches INTO a block), CBZ, loops (the fixpoint), calls,
-    /// VMRS/MSR/MRS, VSEL, returns, indirect jumps and undefined encodings.
-    #[test]
-    fn llvm_mc_probe_set_review7() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/nzcv_probe_review7_1301.txt"
-        );
-        let text = std::fs::read_to_string(path).expect("fixture");
+    /// Run a probe fixture (`name|hex|segments|EXPECTED` per line; contracts
+    /// P, S, W = Writes(NZCV), W0 = Writes(0), Wc = Writes(N|Z)) and return
+    /// the number of cases and the mismatches.
+    fn run_probe_fixture(file: &str) -> (usize, Vec<String>) {
+        let path = format!("{}/../../tests/fixtures/{file}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).expect("fixture");
         let mut n = 0;
         let mut bad = Vec::new();
         for line in text.lines().filter(|l| !l.starts_with('#')) {
@@ -1573,7 +1633,10 @@ mod tests {
                         contract: match q[2] {
                             "P" => P,
                             "S" => S,
-                            _ => W,
+                            "W" => W,
+                            "W0" => FlagContract::Writes(0),
+                            "Wc" => FlagContract::Writes(N | Z),
+                            other => panic!("unknown contract {other} in {line}"),
                         },
                     }
                 })
@@ -1587,7 +1650,35 @@ mod tests {
             }
             n += 1;
         }
+        (n, bad)
+    }
+
+    /// The 443-case llvm-mc probe set from cold review 7 (#1301): every
+    /// stream gets exactly its expected verdict. Covers the per-flag write
+    /// table (16-bit and wide), carry readers, IT blocks (incl. conditional
+    /// returns and branches INTO a block), CBZ, loops (the fixpoint), calls,
+    /// VMRS/MSR/MRS, VSEL, returns, indirect jumps and undefined encodings.
+    #[test]
+    fn llvm_mc_probe_set_review7() {
+        let (n, bad) = run_probe_fixture("nzcv_probe_review7_1301.txt");
         assert_eq!(n, 443, "probe set size");
+        assert!(
+            bad.is_empty(),
+            "{} mismatches:\n{}",
+            bad.len(),
+            bad.join("\n")
+        );
+    }
+
+    /// The 237-case probe set from cold review 10 (#1301): islands,
+    /// `Writes(declared)`, IT control flow, calls, must-write precision for C
+    /// and V, `ldr pc`/`ldm rN,{pc}` as indirect jumps, a truncated tail, an
+    /// undefined plain-binary-immediate op, and the three classes review 10
+    /// found decoded wrongly (MRC to APSR_nzcv, CLRM, the MVE long shifts).
+    #[test]
+    fn llvm_mc_probe_set_review10() {
+        let (n, bad) = run_probe_fixture("nzcv_probe_review10_1301.txt");
+        assert_eq!(n, 237, "probe set size");
         assert!(
             bad.is_empty(),
             "{} mismatches:\n{}",
@@ -1810,6 +1901,63 @@ mod tests {
             ),
             Ok(())
         );
+        // Review 10 N1: encodings this decoder must NOT accept as flag-
+        // neutral. `cmp; X; beq` with X in a Preserves op: an unknown X is
+        // refused (a neutral X would be accepted).
+        for x in [
+            &[0xEC00u16, 0x0A00][..], // FP coprocessor, op1 = 00000x: undefined
+            &[0xEE10, 0xFA10],        // FP transfer with Rt = PC (not VMRS APSR_nzcv)
+            &[0xEE10, 0xF110],        // MRC p1 to APSR_nzcv: writes NZCV
+            &[0xE9CF, 0x0100],        // STRD to a literal address
+            &[0xE9C0, 0xF100],        // STRD with Rt = PC
+            &[0xF850, 0x0040],        // STR.W with an undefined hw2 pattern
+            &[0xF840, 0x0800],        // STR.W imm8 with P = 0, W = 0
+            &[0xF860, 0x0000],        // size 11: undefined
+        ] {
+            let mut hws = vec![CMP_R0_R1];
+            hws.extend_from_slice(x);
+            hws.extend([0xD000, 0xBF00, BX_LR]);
+            let n = 2 + 2 * x.len();
+            let code = le(&hws);
+            let segs = [
+                seg(0, 2, W),
+                seg(2, 2 * x.len(), P),
+                seg(n, 2, P),
+                seg(n + 2, 2, P),
+                seg(n + 4, 2, P),
+            ];
+            assert!(
+                verify(&code, &segs).is_err(),
+                "{x:04x?} accepted as neutral"
+            );
+        }
+        // ... and those that a wrong decode would turn into a flag KILL:
+        // `cmp; movs; X; beq` with X in a Writes(NZCV) op hides the movs
+        // clobber if X is decoded as a flag-setting data-processing op.
+        for x in [
+            &[0xEA50u16, 0x01EF][..], // ASRL (MVE long shift, Rm = PC): no flags
+            &[0xEA1F, 0x0001],        // ANDS with Rn = PC: UNPREDICTABLE
+            &[0xF01F, 0x0001],        // ANDS #imm with Rn = PC: UNPREDICTABLE
+            &[0xE89F, 0x8001],        // CLRM {r0, apsr}: clears NZCV
+        ] {
+            let mut hws = vec![CMP_R0_R1, MOVS_R0_1];
+            hws.extend_from_slice(x);
+            hws.extend([0xD000, 0xBF00, BX_LR]);
+            let n = 4 + 2 * x.len();
+            let code = le(&hws);
+            let segs = [
+                seg(0, 2, W),
+                seg(2, 2, P),
+                seg(4, 2 * x.len(), W),
+                seg(n, 2, P),
+                seg(n + 2, 2, P),
+                seg(n + 4, 2, P),
+            ];
+            assert!(
+                verify(&code, &segs).is_err(),
+                "{x:04x?} decoded as a flag kill"
+            );
+        }
         // A call inside a Writes op is never a declared result.
         let code = le(&[CMP_R0_R1, 0xF000, 0xF800, 0xD0FF, BX_LR]);
         let v = verify(

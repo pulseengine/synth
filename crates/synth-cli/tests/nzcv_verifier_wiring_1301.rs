@@ -23,8 +23,13 @@ const WAT: &str = r#"(module
     (i32.const 9)))
 "#;
 
-fn dir() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("synth_nzcv_wiring_1301_{}", std::process::id()));
+/// A per-test scratch directory (tests run in parallel and each removes its
+/// own directory when done).
+fn dir(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!(
+        "synth_nzcv_wiring_1301_{}_{tag}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&d).expect("mkdir");
     d
 }
@@ -53,7 +58,7 @@ fn nzcv_verifier_runs_by_default_and_its_opt_out_is_loud() {
     if !cfg!(debug_assertions) {
         return;
     }
-    let d = dir();
+    let d = dir("wiring");
     let wat = d.join("cmp_branch.wat");
     std::fs::write(&wat, WAT).unwrap();
     for (name, flags) in [
@@ -110,8 +115,7 @@ fn nzcv_opt_out_does_not_apply_to_armv6m() {
     if !cfg!(debug_assertions) {
         return;
     }
-    let d = dir().join("v6m");
-    std::fs::create_dir_all(&d).unwrap();
+    let d = dir("v6m");
     // `inc` is accepted on cortex-m0 today (armv6m_1301 fixture shape).
     let wat = d.join("inc.wat");
     std::fs::write(
@@ -131,5 +135,45 @@ fn nzcv_opt_out_does_not_apply_to_armv6m() {
         !err.contains("SYNTH_NO_NZCV_VERIFY is set"),
         "the opt-out must not be honoured (or announced) on ARMv6-M: {err}"
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review 10 N2: the island segment push is pinned in Rust, not only by the
+/// Python island oracles in ci.yml. Every committed island fixture compiles
+/// under `--native-pointer-abi` (the only route that emits mid-stream
+/// literal islands). If the island's branch-over is not recorded as a
+/// segment, the instruction before it "falls into a gap", all flags look
+/// live, and these compiles are refused with `NZCV live across a clobber`.
+#[test]
+fn nzcv_accepts_mid_stream_literal_islands() {
+    let repro = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/repro");
+    let d = dir("islands");
+    for f in [
+        "litpool_islands_345",
+        "islandpass_1331_backspan",
+        "islandpass_1331_nested",
+        "islandpass_1331_spanning",
+    ] {
+        for target in ["cortex-m7", "cortex-m4f"] {
+            let o = compile(
+                Path::new(&format!("{repro}/{f}.wat")),
+                &d.join(format!("{f}-{target}.o")),
+                &[
+                    "--target",
+                    target,
+                    "--relocatable",
+                    "--all-exports",
+                    "--native-pointer-abi",
+                ],
+                &[],
+            );
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert!(
+                o.status.success() && !err.contains("NZCV"),
+                "{f} on {target}: an island function was refused — is the island's \
+                 branch-over still recorded as an NZCV segment? stderr: {err}"
+            );
+        }
+    }
     let _ = std::fs::remove_dir_all(&d);
 }
