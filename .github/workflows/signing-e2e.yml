@@ -80,7 +80,7 @@ env:
 jobs:
   signing-e2e:
     name: synth compile --sign-output e2e
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       # Required for `wsc sign --keyless` to obtain an OIDC token from

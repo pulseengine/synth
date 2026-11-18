@@ -93,9 +93,18 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 # Kani-CBMC bundle is not in the smithy toolchains role), bazel (nix) and
 # mcdc-structural-coverage (its witness install calls `gh`, which the
 # self-hosted runners do not have; it failed there on the PR's own run).
-UBUNTU_LATEST_CEILING = 11
+# v0.91 (owner decision 2026-11-18): the LABEL moves, the pool does not.
+# Every GitHub-hosted x86_64 job is pinned from `ubuntu-latest` to
+# `ubuntu-24.04`, so counting `ubuntu-latest` would read 0 and stop measuring
+# the hosted quota at all. EXACT_LABEL follows the pin; the population is still
+# ci.yml's job definitions and still matched EXACTLY (`ubuntu-24.04-arm` is a
+# different pool and stays out). 11 -> 13 is NOT growth: the 11 former
+# ubuntu-latest jobs plus aarch64-oracle and repro-sweep-memory-oracle, which
+# v0.88 (#1564) already pinned to ubuntu-24.04 and which this count could not
+# see while it matched `ubuntu-latest` only. No ci.yml job moved pools.
+UBUNTU_LATEST_CEILING = 13
 
-EXACT_LABEL = "ubuntu-latest"
+EXACT_LABEL = "ubuntu-24.04"
 
 
 # RQ-73-CIPOOL (#1062 increment 4): WHICH ubuntu-latest jobs can move, derived

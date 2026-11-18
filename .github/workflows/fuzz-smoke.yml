@@ -39,12 +39,12 @@ concurrency:
 jobs:
   fuzz:
     name: "${{ matrix.target }} (60s)"
-    # Match ci.yml: rust-cpu self-hosted pool, with ubuntu-latest fallback if
+    # Match ci.yml: rust-cpu self-hosted pool, with ubuntu-24.04 fallback if
     # the pool is unavailable (cargo-fuzz needs Linux for libfuzzer-sys ASan).
     # Routes fork PRs to GitHub-hosted runners by default. This is NOT a security
     # boundary: a fork PR can edit this file. Isolation is enforced by the org's
     # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     timeout-minutes: 10
     strategy:
       fail-fast: false

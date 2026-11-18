@@ -62,7 +62,7 @@ permissions:
 jobs:
   compliance:
     name: Generate compliance report
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Resolve tag
         id: tag
