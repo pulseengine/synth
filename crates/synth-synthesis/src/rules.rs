@@ -249,10 +249,12 @@ pub enum ArmOp {
     // writes N and Z from its result and leaves V alone. C: a shift by a
     // nonzero amount writes the last bit shifted out; a wide (32-bit)
     // logical/move with a rotated modified immediate MAY write it; the
-    // 16-bit register forms leave it. The verifier reads C off the BYTES.
-    // Nothing selects them yet; the NZCV-liveness verifier
-    // (`synth_backend::nzcv`) checks the emitted bytes of every flag-
-    // preserving op against live flags either way.
+    // 16-bit register forms leave it. Nothing selects them yet. The
+    // NZCV-liveness verifier (`synth_backend::nzcv`) gives them the contract
+    // `Writes(0)`: their flag result is not yet a declared input to anything,
+    // so every flag their BYTES write (C included, read off the bytes) must
+    // be dead afterwards. A lowering that consumes one's flags must declare
+    // that in `op_flag_contract` first.
     /// `MOVS rd, op2` — flag-setting move (N, Z).
     Movs {
         rd: Reg,

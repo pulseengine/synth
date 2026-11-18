@@ -787,10 +787,14 @@ fn emit_literal_pool(
     relocations: &mut Vec<CodeRelocation>,
     pending: &[PendingLiteral],
     branch_over: Option<&ArmEncoder>,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     if pending.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
+    // RQ-91-M0FLAGS (#1301): the branch-over's byte length is returned so the
+    // NZCV verifier can decode it as an instruction (the pool words after it
+    // are data and are never decoded).
+    let mut branch_len = 0;
     // A mid-stream island sits in the instruction stream, so execution must be
     // carried over it. The end-of-function pool needs no branch: those bytes
     // are past the final return and are never reached.
@@ -801,6 +805,7 @@ fn emit_literal_pool(
         // fixed point rather than assuming one — the same shape
         // `resolve_label_branches` already uses for label branches.
         let (bytes, _pad) = island_branch_over(code.len(), n, enc)?;
+        branch_len = bytes.len();
         code.extend_from_slice(&bytes);
     }
     // 4-byte align the pool start (Thumb-2 word loads require it, and
@@ -844,7 +849,7 @@ fn emit_literal_pool(
         code[hw2_off] = hw2_bytes[0];
         code[hw2_off + 1] = hw2_bytes[1];
     }
-    Ok(())
+    Ok(branch_len)
 }
 
 fn compile_wasm_to_arm(
@@ -2277,7 +2282,7 @@ fn compile_wasm_to_arm(
     // contract, for the NZCV-liveness verifier after the loop. Additive: it
     // does not touch `code`.
     let mut nzcv_segments: Vec<crate::nzcv::Segment> = Vec::new();
-    let mut nzcv_segment_op: Vec<usize> = Vec::new();
+    let mut nzcv_segment_op: Vec<Option<usize>> = Vec::new();
 
     for (instr_index, instr) in arm_instrs.iter().enumerate() {
         // ORDER IS LOAD-BEARING, and getting it wrong was a SILENT MISCOMPILE.
@@ -2352,12 +2357,22 @@ fn compile_wasm_to_arm(
                     pending_literals.len()
                 ));
             }
-            emit_literal_pool(
+            let island_at = code.len();
+            let branch_len = emit_literal_pool(
                 &mut code,
                 &mut relocations,
                 &pending_literals,
                 Some(&encoder),
             )?;
+            // RQ-91-M0FLAGS (#1301): the island's branch-over is an
+            // instruction (an unconditional B over the pool); its pool words
+            // are data and stay outside every segment.
+            nzcv_segments.push(crate::nzcv::Segment {
+                start: island_at,
+                len: branch_len,
+                contract: crate::nzcv::FlagContract::Preserves,
+            });
+            nzcv_segment_op.push(None);
             pending_literals.clear();
         }
 
@@ -2449,7 +2464,7 @@ fn compile_wasm_to_arm(
             len: encoded.len(),
             contract: crate::nzcv::op_flag_contract(&instr.op),
         });
-        nzcv_segment_op.push(instr_index);
+        nzcv_segment_op.push(Some(instr_index));
 
         code.extend_from_slice(&encoded);
     }
@@ -2497,28 +2512,71 @@ fn compile_wasm_to_arm(
     // ARMv7-M: on by default too, because the hazard is live there today —
     // `ArmOp::Mov rd, #imm8` is `MOVS`, `ArmOp::Add` on low registers is
     // `ADDS`, and #709 shipped exactly this clobber inside an f32 compare.
-    // MEASURED before turning it on (481 modules: scripts/repro + the spec
-    // suite, on cortex-m4f relocatable/self-contained, cortex-m3
-    // --no-optimize and cortex-m7dp): 0 rejections, 0 output bytes changed,
-    // wall time within run-to-run noise. The check is read-only, so the bytes
-    // are unchanged whenever it passes. `SYNTH_NZCV_VERIFY=off` skips it on
-    // ARMv7-M only (an escape hatch for a false rejection; never ARMv6-M).
+    // MEASURED before turning it on (artifact RQ-91-M0FLAGS: 14 ARM
+    // configurations incl. --native-pointer-abi, main vs branch): 0
+    // rejections, 0 output bytes changed. The check is read-only, so the
+    // bytes are unchanged whenever it passes. `SYNTH_NO_NZCV_VERIFY` (set,
+    // any value — the `SYNTH_NO_*` convention) skips it on ARMv7-M only, an
+    // escape hatch for a false rejection, and says so on stderr; ARMv6-M
+    // always runs it. Its wiring is pinned by
+    // `crates/synth-cli/tests/nzcv_verifier_wiring_1301.rs`.
     let nzcv_on = match config.target.isa {
         IsaVariant::Thumb => true,
-        IsaVariant::Thumb2 => !std::env::var("SYNTH_NZCV_VERIFY").is_ok_and(|v| v == "off"),
+        IsaVariant::Thumb2 => {
+            let off = std::env::var_os("SYNTH_NO_NZCV_VERIFY").is_some();
+            if off {
+                static NOTICE: std::sync::Once = std::sync::Once::new();
+                NOTICE.call_once(|| {
+                    eprintln!(
+                        "warning: SYNTH_NO_NZCV_VERIFY is set: the NZCV-liveness check over \
+                         the emitted Thumb bytes is DISABLED for ARMv7-M (RQ-91-M0FLAGS, #1301)"
+                    )
+                });
+            }
+            !off
+        }
         _ => false,
     };
-    if nzcv_on && let Err(v) = crate::nzcv::verify(&code, &nzcv_segments) {
-        let op = nzcv_segments
-            .iter()
-            .position(|s| s.start <= v.at && v.at < s.start + s.len)
-            .and_then(|k| arm_instrs.get(nzcv_segment_op[k]))
-            .map(|i| format!(", emitted for `{:?}`", i.op))
-            .unwrap_or_default();
-        return Err(format!(
-            "{v}{op}. The bytes set flags the op's model preserves, and a later \
-             instruction reads them: refusing to emit (RQ-91-M0FLAGS, #1301)."
-        ));
+    if nzcv_on {
+        // Wiring self-test (DEBUG BUILDS ONLY, never a release binary):
+        // `SYNTH_NZCV_SELFTEST_PLANT` re-labels every `Cmp` as
+        // flag-PRESERVING without changing a byte, so any compare whose flags
+        // reach a branch must be refused. The wiring test uses it to prove
+        // this call site runs; the bytes emitted are never affected.
+        let plant =
+            cfg!(debug_assertions) && std::env::var_os("SYNTH_NZCV_SELFTEST_PLANT").is_some();
+        let segments: Vec<crate::nzcv::Segment> = if plant {
+            nzcv_segments
+                .iter()
+                .zip(&nzcv_segment_op)
+                .map(|(s, k)| match k.and_then(|k| arm_instrs.get(k)) {
+                    Some(i) if matches!(i.op, ArmOp::Cmp { .. }) => crate::nzcv::Segment {
+                        contract: crate::nzcv::FlagContract::Preserves,
+                        ..*s
+                    },
+                    _ => *s,
+                })
+                .collect()
+        } else {
+            nzcv_segments.clone()
+        };
+        if let Err(v) = crate::nzcv::verify(&code, &segments) {
+            let op = segments
+                .iter()
+                .position(|s| s.start <= v.at && v.at < s.start + s.len)
+                .map(
+                    |k| match nzcv_segment_op[k].and_then(|i| arm_instrs.get(i)) {
+                        Some(i) => format!(", emitted for `{:?}`", i.op),
+                        None => ", in a literal island's branch-over".to_string(),
+                    },
+                )
+                .unwrap_or_default();
+            return Err(format!(
+                "{v}{op}. The emitted bytes write flags that are live afterwards, \
+                 which the op's model does not allow: refusing to emit \
+                 (RQ-91-M0FLAGS, #1301)."
+            ));
+        }
     }
 
     Ok((
