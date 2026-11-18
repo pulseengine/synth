@@ -6984,6 +6984,16 @@ jobs:
         # shapes, vs wasmtime; ARM control legs. RED on main 34781a8c: 54
         # wrong vectors over 9 exports and 15 declines, all in the class.
         run: python scripts/oracle_run.py scripts/repro/rv32_i64_bitcount_hi_1720_differential.py
+      - name: RV32 dead if-arm value differential (#1739)
+        # A br carried its whole operand-stack delta (a void target got the
+        # unwound value as its "result"), and only `return` ended the
+        # reachable region, so code after an if read a dead arm's register:
+        # t_i32_void_target(0) returned 0xfffffffa, wasmtime 93. Pins the
+        # exact compiled set of if_arm_dead_value_1691.wat on RV32 (a decline
+        # is a FAIL), plus same-class shapes and every corpus export whose
+        # bytes the fix moved, vs wasmtime. RED on main 265235dc: 108 failures
+        # (5 pinned exports declined, 3 issue exports wrong on 23 vectors).
+        run: python scripts/oracle_run.py scripts/repro/rv32_dead_arm_value_1739_differential.py
       - name: RV32 br-with-value exit-edge reconciliation (#931, CRITICAL)
         run: |
           ./target/debug/synth compile scripts/repro/rv32_br_value_931.wat -b riscv --target riscv32imac --relocatable --all-exports -o /tmp/br931.o
@@ -7020,7 +7030,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 13
+          python3 scripts/oracle_evidence.py "$ORACLE_EVIDENCE_JSONL" --min-oracles 14
 
   repro-sweep-arm-corpus-oracle:
     name: "repro sweep — ARM corpus (#973: CI never compiled these for ARM)"

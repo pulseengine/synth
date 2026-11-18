@@ -218,7 +218,7 @@ pub enum SelectorError {
 /// A value sitting on the selector's virtual stack. RV32 is a 32-bit ISA so
 /// i32s map to a single register, while i64s require a `(lo, hi)` pair (see
 /// the module-level docs for the bit-ordering convention).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VstackVal {
     I32(Reg),
     I64 { lo: Reg, hi: Reg },
@@ -228,6 +228,14 @@ enum VstackVal {
 type I64Pair = (Reg, Reg);
 
 impl VstackVal {
+    /// The register(s) this value occupies (`lo` then `hi` for an i64).
+    fn regs(self) -> Vec<Reg> {
+        match self {
+            VstackVal::I32(r) => vec![r],
+            VstackVal::I64 { lo, hi } => vec![lo, hi],
+        }
+    }
+
     fn type_name(self) -> &'static str {
         match self {
             VstackVal::I32(_) => "i32",
@@ -363,6 +371,38 @@ pub fn select_with_module(
     globals: &RvGlobalsCtx,
     params_wide: &[bool],
 ) -> Result<RiscVSelection, SelectorError> {
+    select_with_block_arity(
+        wasm_ops,
+        num_params,
+        options,
+        func_ret_i64,
+        type_ret_i64,
+        func_arg_counts,
+        func_result_counts,
+        globals,
+        params_wide,
+        &[],
+    )
+}
+
+/// Same as [`select_with_module`], plus the decoder's blocktype-arity
+/// side-table for this function (#1739, `FunctionOps::block_arity`): a branch
+/// then carries exactly its target's declared arity — the values beneath
+/// those are unwound — instead of the whole operand-stack delta. An empty
+/// table keeps the delta.
+#[allow(clippy::too_many_arguments)]
+pub fn select_with_block_arity(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    options: SelectorOptions,
+    func_ret_i64: &[bool],
+    type_ret_i64: &[bool],
+    func_arg_counts: &[u32],
+    func_result_counts: &[u32],
+    globals: &RvGlobalsCtx,
+    params_wide: &[bool],
+    block_arity: &[(u8, u8)],
+) -> Result<RiscVSelection, SelectorError> {
     // #472: read the local-promotion flag exactly once, here, so the rest of the
     // selector (and its unit tests) work off a plain bool.
     //
@@ -405,6 +445,7 @@ pub fn select_with_module(
         cmp_select_fuse,
         globals,
         params_wide,
+        block_arity,
     )
 }
 
@@ -438,6 +479,7 @@ fn select_inner(
     cmp_select_fuse: bool,
     globals: &RvGlobalsCtx,
     params_wide: &[bool],
+    block_arity: &[(u8, u8)],
 ) -> Result<RiscVSelection, SelectorError> {
     // The unpromoted lowering. With the flag off this IS the result (single
     // run, byte-identical baseline); with the flag on it is the size bar every
@@ -457,6 +499,7 @@ fn select_inner(
         cmp_select_fuse,
         globals,
         params_wide,
+        block_arity,
     );
     if !promote_locals {
         return baseline.map(|(sel, _)| sel);
@@ -476,6 +519,7 @@ fn select_inner(
         cmp_select_fuse,
         globals,
         params_wide,
+        block_arity,
     ) {
         Ok((_, promoted)) => promoted,
         Err(_) => Vec::new(),
@@ -508,6 +552,7 @@ fn select_inner(
             cmp_select_fuse,
             globals,
             params_wide,
+            block_arity,
         ) else {
             continue;
         };
@@ -564,9 +609,11 @@ fn select_attempt(
     cmp_select_fuse: bool,
     globals: &RvGlobalsCtx,
     params_wide: &[bool],
+    block_arity: &[(u8, u8)],
 ) -> Result<(RiscVSelection, Vec<u32>), SelectorError> {
     let mut ctx = Selector::new_with_options(num_params, options);
     ctx.globals = globals.clone();
+    ctx.block_arity = block_arity.to_vec(); // #1739
     ctx.func_ret_i64 = func_ret_i64.to_vec();
     ctx.type_ret_i64 = type_ret_i64.to_vec();
     ctx.func_arg_counts = func_arg_counts.to_vec();
@@ -1360,6 +1407,13 @@ struct ControlFrame {
     /// reconcile registers with (and `then_results` is empty, so the #343
     /// arity check must not fire).
     then_unreachable: bool,
+    /// #1739: how many values a branch to this frame carries, from the
+    /// decoder's blocktype side-table — the result count for a block/if, the
+    /// param count for a loop (whose branches target the head). `None` when
+    /// the table has no entry (hand-built op streams): the carried count is
+    /// then the operand-stack delta above `stack_height_at_entry`, which
+    /// over-counts whenever the branch unwinds values beneath its operands.
+    br_arity: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1541,6 +1595,15 @@ struct Selector {
     /// `Default` (no region ⇒ every global access declines) unless the
     /// driver supplied one via [`select_with_module`].
     globals: RvGlobalsCtx,
+    /// #1739: the decoder's blocktype-arity side-table for this function —
+    /// `(param_count, result_count)` of the k-th `block`/`loop`/`if` in the op
+    /// stream (`CompileConfig::current_func_block_arity`). Empty for
+    /// hand-built op streams.
+    block_arity: Vec<(u8, u8)>,
+    /// #1739: ordinal of the next `block`/`loop`/`if` — advanced for every
+    /// one, including those opened inside a dead region, so it indexes
+    /// `block_arity` in op-stream order.
+    block_ord: usize,
 }
 
 impl Selector {
@@ -1591,6 +1654,8 @@ impl Selector {
             cmp_select_fuse: false,
             pending_cmp: None,
             globals: RvGlobalsCtx::default(),
+            block_arity: Vec::new(),
+            block_ord: 0,
         }
     }
 
@@ -1991,7 +2056,11 @@ impl Selector {
     fn lower_one_dead(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
         use WasmOp::*;
         match op {
-            Block | Loop | If => self.dead_nest += 1,
+            Block | Loop | If => {
+                // #1739: dead frames still consume a blocktype ordinal.
+                self.block_ord += 1;
+                self.dead_nest += 1;
+            }
             Else if self.dead_nest == 0 => {
                 let frame = self
                     .ctrl
@@ -2031,8 +2100,25 @@ impl Selector {
                         self.out.push(RiscVOp::Label { name: else_label });
                     }
                     if frame.kind == FrameKind::Else && !frame.then_unreachable {
+                        if !frame.br_results.is_empty() && frame.br_results != frame.then_results {
+                            // Two producers reach this join in different
+                            // registers (the then-arm's fall-through and a
+                            // branch edge), and no move can be placed on the
+                            // then-arm's path any more.
+                            return Err(SelectorError::ControlMismatch(
+                                "if/else join reached by both a then-arm \
+                                 fall-through and a value-carrying br (#1739)",
+                            ));
+                        }
                         // The then-arm jumped here with its results live.
                         self.vstack.extend(frame.then_results.iter().copied());
+                    } else if resume && frame.kind != FrameKind::If && !frame.br_results.is_empty()
+                    {
+                        // #1739: the fall-through died, so the join is reached
+                        // only by branch edges, which left the frame's results
+                        // in its canonical registers (#931) — the same values
+                        // `lower_end` publishes when the fall-through is empty.
+                        self.vstack.extend(frame.br_results.iter().copied());
                     }
                     self.out.push(RiscVOp::Label {
                         name: frame.end_label,
@@ -2239,10 +2325,17 @@ impl Selector {
                 // but `ebreak` is universally recognized as a trap and works in
                 // bare-metal firmware. Use ebreak for now.
                 self.out.push(RiscVOp::Ebreak);
+                // #1739: `unreachable` traps, so the ops after it are dead
+                // code exactly as after a `return` (#882): skipped, with the
+                // next reachable join resetting the operand stack. Lowering
+                // them left their values on the stack, and an else-less if's
+                // `end` handed a dead then-arm's value to the code after it.
+                self.dead_code = true;
             }
 
             // ─── Control flow ───────────────────────────────────────────
             Block => {
+                let br_arity = self.next_block_arity().map(|(_, r)| r);
                 let end = self.fresh_label("Lend");
                 self.ctrl.push(ControlFrame {
                     kind: FrameKind::Block,
@@ -2254,9 +2347,11 @@ impl Selector {
                     br_results: Vec::new(),
                     end_referenced: false,
                     then_unreachable: false,
+                    br_arity,
                 });
             }
             Loop => {
+                let br_arity = self.next_block_arity().map(|(p, _)| p);
                 let end = self.fresh_label("Lloop_end");
                 let head = self.fresh_label("Lloop_head");
                 self.out.push(RiscVOp::Label { name: head.clone() });
@@ -2270,6 +2365,7 @@ impl Selector {
                     br_results: Vec::new(),
                     end_referenced: false,
                     then_unreachable: false,
+                    br_arity,
                 });
             }
             If => self.lower_if(op)?,
@@ -3439,6 +3535,7 @@ impl Selector {
     // ────────── Control flow ──────────
 
     fn lower_if(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
+        let br_arity = self.next_block_arity().map(|(_, r)| r);
         let cond = self.pop_i32(op)?;
         let else_label = self.fresh_label("Lelse");
         let end_label = self.fresh_label("Lif_end");
@@ -3459,6 +3556,7 @@ impl Selector {
             br_results: Vec::new(),
             end_referenced: false,
             then_unreachable: false,
+            br_arity,
         });
         Ok(())
     }
@@ -3481,6 +3579,37 @@ impl Selector {
             .clone()
             .ok_or(SelectorError::ControlMismatch("if frame has no else label"))?;
         let entry = frame.stack_height_at_entry;
+        let canonical = frame.br_results.clone();
+        // #1739: a value-carrying br from INSIDE the then-arm already fixed the
+        // join's canonical registers (#931). The then-arm falls through to the
+        // join too, so its results move into them here, on the then path
+        // before its `jal` — the join's own reconciliation sits on the else
+        // path and never ran for this one.
+        if !canonical.is_empty() && self.vstack.len() >= entry {
+            let then_vals: Vec<VstackVal> = self.vstack[entry..].to_vec();
+            if then_vals.len() != canonical.len() {
+                return Err(SelectorError::ControlMismatch(
+                    "br edge and then-arm disagree on if/else result arity (#1739)",
+                ));
+            }
+            // Sequential moves are safe only if no destination is a later
+            // move's source.
+            for (i, dst) in canonical.iter().enumerate() {
+                for src in &then_vals[i + 1..] {
+                    if dst.regs().iter().any(|r| src.regs().contains(r)) {
+                        return Err(SelectorError::ControlMismatch(
+                            "if/else then-arm results overlap the join's br registers \
+                             (#1739)",
+                        ));
+                    }
+                }
+            }
+            for (dst, src) in canonical.iter().zip(then_vals.iter()) {
+                self.reconcile_if_result(*dst, *src)?;
+            }
+            self.vstack.truncate(entry);
+            self.vstack.extend(canonical);
+        }
         // jal zero, Lif_end  → end of then-branch jumps past the else
         self.out.push(RiscVOp::Jal {
             rd: Reg::ZERO,
@@ -3683,9 +3812,68 @@ impl Selector {
         if self.vstack.len() <= entry {
             return Ok(0);
         }
-        let carried: Vec<VstackVal> = self.vstack[entry..].to_vec();
+        // #1739: with the target's declared arity, the edge carries exactly
+        // the TOP `arity` values; anything between them and the target's
+        // entry height is unwound by the branch, not carried. A void target
+        // carries nothing. Taking the whole delta made a `br` to a void block
+        // publish an unwound value as that block's result, which the code
+        // after the block then read in place of the value beneath it.
+        let n = match self.ctrl[idx].br_arity {
+            Some(arity) => arity.min(self.vstack.len() - entry),
+            None => self.vstack.len() - entry,
+        };
+        if n == 0 {
+            return Ok(0);
+        }
+        let carried: Vec<VstackVal> = self.vstack[self.vstack.len() - n..].to_vec();
 
-        if self.ctrl[idx].br_results.is_empty() {
+        let then_live_results = {
+            let f = &self.ctrl[idx];
+            (f.kind == FrameKind::Else && !f.then_unreachable && !f.then_results.is_empty())
+                .then(|| f.then_results.clone())
+        };
+        if self.ctrl[idx].br_results.is_empty()
+            && let Some(then_regs) = then_live_results
+        {
+            // #1739: the first edge into an if/else join whose then-arm FELL
+            // THROUGH. The then-arm already jumped to the join with its
+            // results in `then_results`' registers, and no move can be placed
+            // on its path any more, so those registers are the canonical ones:
+            // this edge moves its values INTO them. Donating the edge's own
+            // registers instead left the then path's value where the join
+            // never read it.
+            if then_regs.len() != carried.len() {
+                return Err(SelectorError::ControlMismatch(
+                    "br edge and then-arm disagree on if/else result arity (#1739)",
+                ));
+            }
+            let live = self.live_regs();
+            let promoted: Vec<Reg> = self.promoted.values().copied().collect();
+            for (dst, src) in then_regs.iter().zip(carried.iter()) {
+                if std::mem::discriminant(dst) != std::mem::discriminant(src) {
+                    return Err(SelectorError::ControlMismatch(
+                        "if/else result width mismatch between arms (#343)",
+                    ));
+                }
+                for (d, s) in dst.regs().into_iter().zip(src.regs()) {
+                    if d != s
+                        && (live.contains(&d)
+                            || self.op_pinned.contains(&d)
+                            || promoted.contains(&d))
+                    {
+                        return Err(SelectorError::ControlMismatch(
+                            "a value-carrying br into an if/else join cannot reach the \
+                             then-arm's result register without clobbering a live value \
+                             (#1739)",
+                        ));
+                    }
+                }
+            }
+            for (dst, src) in then_regs.iter().zip(carried.iter()) {
+                self.reconcile_if_result(*dst, *src)?;
+            }
+            self.ctrl[idx].br_results = then_regs;
+        } else if self.ctrl[idx].br_results.is_empty() {
             // First value-carrying edge — it defines the canonical registers.
             let promoted: Vec<Reg> = self.promoted.values().copied().collect();
             let mut canonical = Vec::with_capacity(carried.len());
@@ -3790,11 +3978,24 @@ impl Selector {
             let floor = entry.max(self.ctrl[ctrl_height - 1].stack_height_at_entry);
             self.vstack.truncate(floor);
         }
+        let arity_known = self.ctrl[ctrl_height - 1 - (depth as usize)]
+            .br_arity
+            .is_some();
         let target_label = self.target_label_for_depth(depth)?;
         self.out.push(RiscVOp::Jal {
             rd: Reg::ZERO,
             label: target_label,
         });
+        // #1739: nothing after an unconditional branch is reachable until the
+        // next join control can land on — the #882 dead-code walk. Only with
+        // the target's declared arity: a join reached by branch edges alone
+        // then publishes the edges' values, so their count must be the
+        // declared one. Without it (hand-built op streams) the dead tail is
+        // still lowered, and the fall-through count it produces is what
+        // `lower_end` checks the edge count against (#931).
+        if arity_known {
+            self.dead_code = true;
+        }
         Ok(())
     }
 
@@ -3919,7 +4120,20 @@ impl Selector {
             rd: Reg::ZERO,
             label: default_label,
         });
+        // #1739: every path leaves through the chain; the rest is dead code.
+        self.dead_code = true;
         Ok(())
+    }
+
+    /// #1739: the `(params, results)` blocktype arity of the NEXT
+    /// `block`/`loop`/`if` in op-stream order, advancing the ordinal. `None`
+    /// when the side-table has no entry for it.
+    fn next_block_arity(&mut self) -> Option<(usize, usize)> {
+        let ord = self.block_ord;
+        self.block_ord += 1;
+        self.block_arity
+            .get(ord)
+            .map(|&(p, r)| (p as usize, r as usize))
     }
 
     fn target_label_for_depth(&mut self, depth: u32) -> Result<String, SelectorError> {
@@ -6408,6 +6622,92 @@ mod tests {
     /// value, which wasm permits: `br` is stack-polymorphic and discards the
     /// excess.
     ///
+    /// #1739: the `i32.sub` after a void block must read the value BENEATH
+    /// the block (`li 100`), not the value a dead then-arm's `br` carried and
+    /// the branch unwound. Shape: `t_i32_void_target` of
+    /// `if_arm_dead_value_1691.wat`, with the decoder's blocktype table
+    /// (both the block and the if are void).
+    fn sub_operands_1739(ops: &[WasmOp], block_arity: &[(u8, u8)]) -> (Reg, Reg, Reg) {
+        let out = select_with_block_arity(
+            ops,
+            1,
+            SelectorOptions::wasm_compliant(),
+            &[],
+            &[],
+            &[],
+            &[],
+            &RvGlobalsCtx::default(),
+            &[],
+            block_arity,
+        )
+        .expect("compiles")
+        .ops;
+        let hundred = out
+            .iter()
+            .find_map(|op| match op {
+                RiscVOp::Addi { rd, rs1, imm: 100 } if *rs1 == Reg::ZERO => Some(*rd),
+                _ => None,
+            })
+            .expect("li 100");
+        let (lhs, rhs) = out
+            .iter()
+            .rev()
+            .find_map(|op| match op {
+                RiscVOp::Sub { rs1, rs2, .. } => Some((*rs1, *rs2)),
+                _ => None,
+            })
+            .expect("sub");
+        (hundred, lhs, rhs)
+    }
+
+    #[test]
+    fn dead_arm_value_1739_void_target_reads_the_value_beneath() {
+        let ops = [
+            WasmOp::I32Const(100),
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::I32Eqz,
+            WasmOp::If,
+            WasmOp::I32Const(1),
+            WasmOp::Br(1),
+            WasmOp::End,
+            WasmOp::End,
+            WasmOp::I32Const(7),
+            WasmOp::I32Sub,
+            WasmOp::End,
+        ];
+        let (hundred, lhs, _) = sub_operands_1739(&ops, &[(0, 0), (0, 0)]);
+        assert_eq!(
+            lhs, hundred,
+            "i32.sub must read the value beneath the void block"
+        );
+    }
+
+    /// #1739: `unreachable` ends the arm too — the else-less if's join must
+    /// not hand the dead arm's `i32.const 1` to the code after it. No branch,
+    /// so this holds with or without the blocktype table.
+    #[test]
+    fn dead_arm_value_1739_unreachable_arm_leaves_nothing() {
+        let ops = [
+            WasmOp::I32Const(100),
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::I32Eqz,
+            WasmOp::If,
+            WasmOp::I32Const(1),
+            WasmOp::Unreachable,
+            WasmOp::End,
+            WasmOp::I32Const(7),
+            WasmOp::End,
+            WasmOp::I32Sub,
+            WasmOp::End,
+        ];
+        for table in [&[][..], &[(0, 1), (0, 0)][..]] {
+            let (hundred, lhs, _) = sub_operands_1739(&ops, table);
+            assert_eq!(lhs, hundred, "table {table:?}");
+        }
+    }
+
     /// Where the over-count is harmless it must still compile — a value-carrying
     /// `br` to the INNERMOST frame, where the extra values are all above the
     /// same checkpoint and the branch is the block's last act, so nothing falls
@@ -10014,6 +10314,7 @@ mod tests {
             false,
             &RvGlobalsCtx::default(),
             &[],
+            &[],
         )
         .unwrap()
         .ops
@@ -10296,6 +10597,7 @@ mod tests {
             None,
             false,
             &RvGlobalsCtx::default(),
+            &[],
             &[],
         )
         .unwrap();
@@ -10757,6 +11059,7 @@ mod tests {
             false,
             fuse,
             &RvGlobalsCtx::default(),
+            &[],
             &[],
         )
         .unwrap()

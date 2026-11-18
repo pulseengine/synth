@@ -30,8 +30,13 @@ artifacts:
         end; f32.sub` subtracted from the dead `0.0`, not from `1.0`. The
         class is not float-specific (the i32 twin returns 0 where wasmtime
         returns 99) and covers every ARM profile and rung (cortex-m3/m4/m4f/
-        m7/m7dp relocatable and self-contained, cortex-r5 A32); RV32 and
-        AArch64 have their own selectors and are not affected. When a dead
+        m7/m7dp relocatable and self-contained, cortex-r5 A32). RV32 and
+        AArch64 have their own selectors, which this fix did not touch. RV32
+        WAS affected: three exports of the same fixture compiled and returned
+        the dead arm's value there (Refs #1739, record RQ-91-RV32DEADARM).
+        AArch64 produced no wrong code on the measured shapes; its
+        below-entry-height dead code declines, and panics on a debug build
+        (Refs #1740). When a dead
         arm happened to leave exactly the if's arity, the junk acted as a
         placeholder and the output was already correct, which is why the
         spec suite (#1636) never saw it: no spec function consumes a value
