@@ -27,6 +27,13 @@ WHERE EACH FACT LIVES (one source each, nothing hand-copied)
     not ledger data, ON PURPOSE: a backend absent from it can only be L3, so
     promoting one (x86-64, say) needs a reviewed change here plus evidence
     that passes, never an edited level string.
+  * that L1 evidence is ABOUT the row's backend (RQ-92-LEVELGATE): a proof
+    file must `Require` the backend's Rocq ISA model (`proof_isa`); a WCET
+    gate must pass the backend's target in a string literal (`invocation`);
+    a ladder rung measures the backend only if the census command run for
+    that rung selects it (`census_invocation`). Before RQ-92-LEVELGATE an
+    RV32 row could cite Thumb-2's proofs and WCET gate, and no rung could
+    meet the ladder criterion for any backend.
   * the published level: the `## Support levels` table of the generated
     docs/status/FEATURE_MATRIX.md, which must EQUAL the ledger row for row and
     name every piece of evidence the ledger cites.
@@ -70,28 +77,47 @@ SECTION = "## Support levels"
 #   invocation — must match a wasmtime differential's own text or the text of a
 #                workflow step that runs it (where the compile line usually is)
 #   identity   — must match a decline tripwire's path or text
-#   ladder     — must match a string constant of the census invocation for the
-#                ladder rung to measure this backend
+#   ladder     — must match one token of the rung's EFFECTIVE census
+#                invocation (`census_invocation`): run_synth's command with the
+#                `backend` parameter bound to the rung's own name, plus the
+#                rung flags — so a rung measures this backend only if the
+#                command it really runs selects it
+#   proof_isa  — must match a module the Rocq proof file itself
+#                `Require`s: the ISA semantics its theorems are stated over.
+#                A proof about another ISA's model cannot be cited (RQ-92-LEVELGATE).
+#                None = no Rocq ISA model exists for this backend, so NO proof
+#                file can be bound and L1 is unreachable until one is written.
+# The WCET gate is bound by `invocation`, matched against the gate's STRING
+# LITERALS (full-line comments dropped): the gate must pass this backend's
+# target to the compiler, so a gate that never compiles for it — or merely
+# mentions it in a comment — cannot be cited.
 BACKENDS = {
     "cortex-m-thumb2": {
         "invocation": r"cortex-m(?:3|4|4f|7|7dp)\b|--cortex-m\b",
         "identity": r"cortex-m|Thumb",
         "ladder": r"^--cortex-m$|^cortex-m",
+        "proof_isa": r"^Synth\.ARM\.ArmSemantics$",
     },
     "rv32": {
         "invocation": r"\briscv\b|\brv32",
         "identity": r"riscv|rv32|RV32",
         "ladder": r"^riscv$",
+        "proof_isa": None,
     },
     "aarch64": {
         "invocation": r"\baarch64\b",
         "identity": r"aarch64",
         "ladder": r"^aarch64$",
+        "proof_isa": None,
     },
+    # The A32 encoder consumes the same ArmOp stream as Thumb-2, but no Rocq
+    # file models A32 ENCODING; binding it to ArmSemantics would let it borrow
+    # Thumb-2's proofs, so it binds to nothing until an A32 model exists.
     "cortex-r5-relocatable": {
         "invocation": r"cortex-r5\b[^\n]*--relocatable",
         "identity": r"cortex-r5|\bA32\b",
         "ladder": r"^cortex-r5$",
+        "proof_isa": None,
     },
 }
 
@@ -164,20 +190,84 @@ def parse_table(doc_text):
     return rows, sec
 
 
-def census_constants(root):
-    """String constants of the ladder census's compile invocation: `run_synth`
-    and `LADDER_RUNGS`."""
+def census_invocation(root, rung):
+    """Tokens of the command the ladder census runs for the rung `rung`.
+
+    The `## The ladder` row name is the value the census was run with
+    (`--backend <rung>`), which reaches `run_synth` as its `backend` parameter.
+    So every string constant of `run_synth` is a token, every reference to the
+    `backend` PARAMETER is the rung name — and only if `backend` really is a
+    parameter: a hard-coded `"-b", "arm"` keeps its constant and measures arm
+    whatever the row is called. `LADDER_RUNGS`' flags are appended (they apply
+    to every rung). Before RQ-92-LEVELGATE this matched the constants alone,
+    where the backend is a variable, so no rung could ever measure any backend."""
     tree = ast.parse((root / LADDER_SCRIPT).read_text())
-    consts = []
+    toks = []
     for node in tree.body:
-        hit = (isinstance(node, ast.FunctionDef) and node.name == "run_synth") or (
-            isinstance(node, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "LADDER_RUNGS" for t in node.targets)
-        )
-        if hit:
-            consts += [n.value for n in ast.walk(node)
-                       if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-    return consts
+        if isinstance(node, ast.FunctionDef) and node.name == "run_synth":
+            params = {a.arg for a in node.args.args}
+            for n in ast.walk(node):
+                if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                    toks.append(n.value)
+                elif (isinstance(n, ast.Name) and n.id == "backend"
+                      and "backend" in params and isinstance(n.ctx, ast.Load)):
+                    toks.append(rung)
+        elif isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "LADDER_RUNGS" for t in node.targets):
+            toks += [n.value for n in ast.walk(node)
+                     if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    return toks
+
+
+def rust_string_literals(text):
+    """Contents of a Rust source's string literals — plain, byte and raw
+    (`r#"..."#`) — skipping `//` and nested `/* */` comments and char
+    literals, so a quote inside a WAT raw string or a comment cannot shift
+    the pairing. A lexer, not a parser: tokens only."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if text.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif text.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+        elif (m := re.match(r'b?r(#*)"', text[i:i + 300])) and (
+                i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_")):
+            close = '"' + m.group(1)
+            start = i + m.end()
+            j = text.find(close, start)
+            j = n if j < 0 else j
+            out.append(text[start:j])
+            i = j + len(close)
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i + 1:j])
+            i = j + 1
+        elif c == "'" and (m := re.match(r"'(?:\\.[^']*|[^\\'])'", text[i:i + 12])):
+            i += m.end()
+        else:
+            i += 1
+    return out
+
+
+def rocq_requires(text):
+    """Module paths a Rocq file `Require`s (Import/Export), comments stripped."""
+    text = re.sub(r"\(\*.*?\*\)", " ", text, flags=re.S)
+    mods = []
+    for m in re.finditer(r"\bRequire\s+(?:(?:Import|Export)\s+)?(.+?)\.(?=\s|$)",
+                         text, re.S):
+        mods += m.group(1).split()
+    return mods
 
 
 def ladder_rows(root):
@@ -317,10 +407,21 @@ def check(root, ledger, required):
         proofs = e.get("proofs") or []
         if not proofs:
             fails.append(f"{where}: L1 needs Rocq proofs; none named")
+        isa = spec.get("proof_isa")
         for v in proofs:
             p = root / v
-            if not p.exists() or "Qed." not in p.read_text(errors="ignore"):
+            ptext = p.read_text(errors="ignore") if p.exists() else ""
+            if "Qed." not in ptext:
                 fails.append(f"{where}: proof file {v} is missing or holds no Qed.")
+            elif isa is None:
+                fails.append(f"{where}: proof file {v} cannot be bound to this "
+                             f"backend — no Rocq ISA model exists for it "
+                             f"(BACKENDS proof_isa is None); a proof about "
+                             f"another ISA is BORROWED evidence")
+            elif not any(re.search(isa, m) for m in rocq_requires(ptext)):
+                fails.append(f"{where}: proof file {v} Requires no module matching "
+                             f"/{isa}/ — its theorems are not about this "
+                             f"backend's ISA (BORROWED evidence)")
             named(v, "proof file")
         pctx = [c for c, s in req.items() if "//coq:verify_proofs" in s]
         if not pctx:
@@ -333,6 +434,11 @@ def check(root, ledger, required):
         stem = pathlib.Path(wcet).stem if wcet else None
         if not wcet or not (root / wcet).exists():
             fails.append(f"{where}: L1 needs a WCET gate test file; got {wcet!r}")
+        elif not any(inv.search(s) for s in
+                     rust_string_literals((root / wcet).read_text(errors="ignore"))):
+            fails.append(f"{where}: WCET gate {wcet} never compiles for this "
+                         f"backend (no string literal matches "
+                         f"/{spec['invocation']}/) — BORROWED evidence")
         else:
             wctx = [c for c, s in req.items()
                     if re.search(r"--test\s+" + re.escape(stem) + r"\b", s)]
@@ -351,11 +457,11 @@ def check(root, ledger, required):
             why = f"{LADDER_DOC} has no `**{rung}**` row under `## The ladder`"
         else:
             lad = re.compile(spec["ladder"])
-            if any(lad.search(c) for c in census_constants(root)):
+            if any(lad.search(c) for c in census_invocation(root, rung)):
                 met = True
             else:
                 why = (f"the `{rung}` rung is measured by {LADDER_SCRIPT}, whose "
-                       f"compile invocation selects no constant matching "
+                       f"compile invocation for that rung selects no token matching "
                        f"/{spec['ladder']}/ — it measures a different target")
         if met and "ladder" in open_:
             fails.append(f"{where}: ladder criterion declared OPEN but it is now "
@@ -439,8 +545,14 @@ def _tree(tmp):
         "scripts/repro/rv_diff.py": _DIFF.format(inv="-b riscv"),
         "crates/c/tests/m_decl.rs": "// Thumb decline\n#[test]\nfn t() {}\n",
         "crates/c/tests/rv_decl.rs": "// riscv decline\n#[test]\nfn t() {}\n",
-        "crates/c/tests/wcet_gate.rs": "#[test]\nfn w() {}\n",
-        "coq/P.v": "Theorem t : True. Proof. exact I. Qed.\n",
+        # The raw string holds an ODD number of quotes before the target
+        # literal: a quote-pairing regex mis-pairs everything after it (as it
+        # did on the real wcet_bound_gate.rs), so the green baseline itself
+        # holds the lexer.
+        "crates/c/tests/wcet_gate.rs": ('const W: &str = r#"(module (; a lone " ;))"#;\n'
+                                        '#[test]\nfn w() { compile_wcet(W, "cortex-m4"); }\n'),
+        "coq/P.v": ("Require Import Synth.ARM.ArmSemantics.\n"
+                    "Theorem t : True. Proof. exact I. Qed.\n"),
         ".github/workflows/ci.yml": _CI,
         LADDER_SCRIPT: _CENSUS,
         LADDER_DOC: _LADDER,
@@ -463,7 +575,7 @@ def self_test():
     required = ["Test", "Bazel", "Spec Exec"]
     bad = 0
 
-    def case(name, mutate, needle, ledger_mut=None):
+    def case(name, mutate, needle, ledger_mut=None, absent=None):
         nonlocal bad
         tmp = pathlib.Path(tempfile.mkdtemp(prefix="slc-"))
         try:
@@ -476,7 +588,9 @@ def self_test():
             fails = check(tmp, led, required)
         finally:
             shutil.rmtree(tmp)
-        if needle is None:
+        if absent is not None:
+            ok = not any(absent in f for f in fails)
+        elif needle is None:
             ok = fails == []
         else:
             ok = any(needle in f for f in fails)
@@ -549,6 +663,42 @@ def self_test():
          lambda t: _edit(t, DOC, "rv_diff.py; ", ""),
          "is not named in its table row")
     case("empty ledger", None, "EMPTY", lambda led: led.update(backends=[]))
+
+    # --- RQ-92-LEVELGATE: L1 evidence must be ABOUT the row's backend --------
+    def rv_l1(**kw):
+        def m(led):
+            led["backends"][1].update(level="L1", **kw)
+        return m
+    case("BORROWED proofs: RV32 L1 citing the ARM-model proof file",
+         None, "'rv32': proof file coq/P.v cannot be bound",
+         rv_l1(proofs=["coq/P.v"]))
+    case("proof file that Requires no ArmSemantics (named in a comment only)",
+         lambda t: _edit(t, "coq/P.v", "Require Import Synth.ARM.ArmSemantics.\n",
+                         "(* Require Import Synth.ARM.ArmSemantics. *)\n"),
+         "Requires no module matching")
+    case("BORROWED WCET gate: RV32 L1 citing a gate that compiles cortex-m4 only",
+         None, "'rv32': WCET gate crates/c/tests/wcet_gate.rs never compiles",
+         rv_l1(wcet_gate="crates/c/tests/wcet_gate.rs"))
+    case("WCET gate naming the backend in a COMMENT only does not bind",
+         lambda t: _edit(t, "crates/c/tests/wcet_gate.rs", '"cortex-m4"',
+                         '"x"); // cortex-m4 (\n'),
+         "never compiles for this backend")
+    lad_rv = (lambda t: _edit(t, LADDER_DOC, "| **arm** | x |\n",
+                              "| **arm** | x |\n| **riscv** | x |\n"))
+    case("a real rung MEETS the ladder: RV32 L1 on the `riscv` rung",
+         lad_rv, None, rv_l1(ladder_rung="riscv"),
+         absent="'rv32': L1 ladder criterion NOT MET")
+    case("a real rung MEETS the ladder: an open gap on it reds as now MET",
+         lad_rv, "'rv32': ladder criterion declared OPEN but it is now MET",
+         rv_l1(ladder_rung="riscv", open=[{"criterion": "ladder",
+                                           "reason": "x" * 40}]))
+    case("the rung does not measure it when the census hard-codes `-b arm`",
+         lambda t: (lad_rv(t), _edit(t, LADDER_SCRIPT, '"-b", backend', '"-b", "arm"')),
+         "'rv32': L1 ladder criterion NOT MET", rv_l1(ladder_rung="riscv"))
+    case("a rung named for ANOTHER backend does not measure this one",
+         lad_rv, "'cortex-m-thumb2': L1 ladder criterion NOT MET",
+         lambda led: (led["backends"][0].pop("open"),
+                      led["backends"][0].update(ladder_rung="riscv")))
     print(f"support_level_check self-test: {bad} failure(s)")
     return 1 if bad else 0
 
