@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 746
+# ci-checks: emulations >= 783
 """RQ-91-ARMV6M (#1301) — the cortex-m0 / cortex-m0plus profile, SUPPORT LEVEL 3.
 
 WHAT EXISTS. `--target cortex-m0` and `--target cortex-m0plus` (ARMv6-M,
@@ -38,9 +38,12 @@ THE LEGS
      `and.w` (the `i32_and` probe) is executed by the SAME harness as leg C:
      on the M0 model it MUST fault as an ILLEGAL INSTRUCTION at the `and.w`;
      on the M3 model (control) the same bytes MUST return wasmtime's value.
-     Plus the classifier's own pair on synthetic bytes: `udf #0` is a TRAP,
-     `and.w` is ILLEGAL. If the model were not set, or set too late, or the
-     classifier counted every invalid-instruction error as a trap, this leg
+     Plus the classifier on synthetic bytes: `udf #0` is a TRAP, `and.w` and
+     the 16-bit undefined halfword 0xB800 are ILLEGAL; and the comparator
+     (`verdict()`) on every (wasmtime outcome, unicorn outcome) pair. If the
+     model were not set, or set too late, or the classifier counted any other
+     invalid instruction (32- or 16-bit) as a trap, or the comparator let an
+     illegal, fault or hang stand for a wasm trap or a budget pass, this leg
      reds.
   E  per-op probes (`PROBES`, 112 single-export modules, embedded here so they
      move no corpus-derived pin). Each compiles for cortex-m0, cortex-m0plus
@@ -49,6 +52,23 @@ THE LEGS
      `PROBE_M3_DECLINED` (the control: a probe that does not compile on v7-M
      says nothing about v6-M). Each accepted probe's v6-M .text is identical
      on both targets, passes leg B, and executes as leg C.
+  V  the value comparison's red half. Real cortex-m0 bytes from leg E against
+     a DELIBERATELY WRONG wasmtime reference under the same export name (a
+     wrong operation, an off-by-one result, an i64 reference with the high
+     word dropped) must disagree on exactly the vectors where the two
+     functions differ, computed independently. Run on the M0 model, recorded
+     under its own leg, so no real pin or count sees it.
+  BINDING. `execute()` takes the CPU model and the leg as REQUIRED arguments,
+     records the model the live `Uc` reads back under that leg, and the run
+     reds unless legs C, E and V ran on the M0 model and nothing else. It also
+     counts VALUE COMPARISONS (wasmtime and unicorn both returned a value) for
+     legs C and E and holds them to `VALUE_COMPARISONS_FLOOR`, printed as
+     `#1301 M0ORACLE VALUE-COMPARISONS=N` — the header's emulation floor
+     counts emulator entries, which a comparator that ignored the value would
+     still produce. The comparison rule itself lives in `verdict()`, and leg D
+     checks it on every outcome kind. Every vector of legs C and E lands in
+     exactly one bucket (compared, trap, void, budget, disagree) and the
+     buckets must sum to the vectors run, so no pass goes uncounted.
 
 THE CPU MODEL. unicorn is constructed as `Uc(UC_ARCH_ARM, UC_MODE_THUMB)` with
 `ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M0)` BEFORE the first `mem_map`, and the
@@ -467,8 +487,58 @@ def aapcs_regs(ps):
     return slots if n <= 4 else None
 
 
-def execute(path, wasm_bytes, only=None, model=M0_MODEL):
+# What each leg ACTUALLY ran on, read back from the live Uc (not the argument),
+# and how many result VALUES each leg compared. Legs C and E must have run on
+# the M0 model only, and must have compared at least the floor below — the
+# emulation floor in the header counts emulator ENTRIES, which a comparator
+# that ignores the value would still produce.
+EXEC_MODELS = collections.defaultdict(set)
+COMPARED = collections.Counter()
+VECTORS_RUN = collections.Counter()
+OUTCOMES = collections.defaultdict(collections.Counter)
+# Measured at v0.91 M0ORACLE: 666 (vectors of the value-returning functions of
+# legs C and E where wasmtime returned and unicorn returned a value to compare;
+# trap and budget vectors are not comparisons). A floor: adding a fixture
+# cannot redden it.
+VALUE_COMPARISONS_FLOOR = 666
+
+
+def vector_args(ps, slots, k):
+    """Vector k for params `ps`: (core registers R0-R3, wasm arguments)."""
+    regs, args = [0, 0, 0, 0], []
+    for j, (p, slot) in enumerate(zip(ps, slots)):
+        a = VECTORS[(k + j * 5) % len(VECTORS)]
+        if p == "i64":
+            hi = VECTORS[(k + j * 5 + 3) % len(VECTORS)]
+            regs[slot], regs[slot + 1] = a, hi
+            args.append(s64(a | (hi << 32)))
+        else:
+            regs[slot] = a
+            args.append(s32(a))
+    return regs, args
+
+
+def verdict(trapped, budget, exp, got):
+    """The comparison rule, in one place: "agree" | "budget" | "disagree".
+
+    - wasmtime ran out of FUEL: no reference exists. "budget" if unicorn
+      returned or hit its own budget; an illegal instruction, a CPU fault or
+      a UDF trap is still "disagree".
+    - wasmtime TRAPPED: "agree" only on a UDF trap. ILLEGAL, FAULT and HANG
+      are "disagree" whatever wasmtime did.
+    - otherwise: "agree" only on a return with the identical value (all 64
+      bits for an i64 result)."""
+    if budget:
+        return "budget" if got[0] in ("hang", "ok") else "disagree"
+    if trapped:
+        return "agree" if got[0] == "trap" else "disagree"
+    return "agree" if got[0] == "ok" and got[1] == exp else "disagree"
+
+
+def execute(path, wasm_bytes, model, leg, only=None):
     """Run every executable accepted function of `path` vs wasmtime on `model`.
+    `model` and `leg` have NO default: every caller states the CPU it means,
+    and the model the Uc reads back is recorded under `leg`.
     Returns (#functions run, [problem strings]); the caller decides."""
     text, syms, _, relocs = load(path)
     cfg = wasmtime.Config()
@@ -483,6 +553,7 @@ def execute(path, wasm_bytes, only=None, model=M0_MODEL):
         return 0, []  # imports / unsupported: not executable standalone
     exports = inst.exports(store)
     mu = make_uc(model)
+    EXEC_MODELS[leg].add(mu.ctl_get_cpu_model())
     size = (len(text) + 0x1FFF) & ~0xFFF
     mu.mem_map(CODE, size + 0x1000)
     mu.mem_write(CODE, text)
@@ -511,17 +582,7 @@ def execute(path, wasm_bytes, only=None, model=M0_MODEL):
             continue  # calls something: needs a link step this leg does not do
         ran += 1
         for k in range(len(VECTORS)):
-            regs = [0, 0, 0, 0]
-            args = []
-            for j, (p, slot) in enumerate(zip(ps, slots)):
-                a = VECTORS[(k + j * 5) % len(VECTORS)]
-                if p == "i64":
-                    hi = VECTORS[(k + j * 5 + 3) % len(VECTORS)]
-                    regs[slot], regs[slot + 1] = a, hi
-                    args.append(s64(a | (hi << 32)))
-                else:
-                    regs[slot] = a
-                    args.append(s32(a))
+            regs, args = vector_args(ps, slots, k)
             budget = False
             try:
                 store.set_fuel(FUEL)
@@ -534,23 +595,31 @@ def execute(path, wasm_bytes, only=None, model=M0_MODEL):
             except Exception:
                 trapped, exp = True, None
             got = run_one(mu, CODE + lo, ret, regs, rs)
-            if budget:
-                # wasmtime ran out of fuel: there is NO reference value and no
-                # wasm trap. The vector is unchecked, counted and printed, but
-                # an illegal instruction or a CPU fault still fails it.
-                BUDGET[Path(path).name + ":" + name] += 1
-                ok = got[0] in ("hang", "ok")
+            v = verdict(trapped, budget, exp, got)
+            # Every vector lands in exactly ONE bucket; main() checks the
+            # buckets sum to VECTORS_RUN, so a pass that is not counted
+            # anywhere (an uncounted budget pass, say) reds.
+            VECTORS_RUN[leg] += 1
+            if v == "budget":
+                # The ONLY path to a non-compared pass, and it is counted.
+                BUDGET[f"{leg} {Path(path).name}:{name}"] += 1
+            elif v == "disagree":
+                OUTCOMES[leg]["disagree"] += 1
+            elif trapped:
+                OUTCOMES[leg]["trap"] += 1
+            elif rs:
+                COMPARED[leg] += 1
             else:
-                ok = (got[0] == "trap") if trapped else (got[0] == "ok" and got[1] == exp)
-            if not ok:
+                OUTCOMES[leg]["void"] += 1
+            if v == "disagree":
                 problems.append(
                     (got[0], f"{Path(path).name}:{name}{tuple(args)} = {describe(got)} expect "
                              f"{'trap' if trapped else '-' if exp is None else hex(exp)}"))
     return ran, problems
 
 
-def run_exec(path, wasm_bytes, label, only=None):
-    ran, problems = execute(path, wasm_bytes, only=only)
+def run_exec(path, wasm_bytes, label, model, only=None):
+    ran, problems = execute(path, wasm_bytes, model, label, only=only)
     for _, msg in problems:
         fail(f"{label} {msg}")
     return ran
@@ -559,8 +628,12 @@ def run_exec(path, wasm_bytes, label, only=None):
 # ---- leg D -----------------------------------------------------------------
 def leg_d(td):
     # (1) the classifier, on synthetic bytes, each in a FRESH Uc.
+    # 0xB800 is a 16-bit undefined encoding that is NOT UDF: a classifier
+    # widened from "16-bit UDF" to "any 16-bit halfword" reads it as a trap.
     for what, code, want in (("udf #0", struct.pack("<HH", 0x2001, 0xDE00), "trap"),
-                             ("and.w", struct.pack("<HHH", 0x2001, 0xEA00, 0x0001), "illegal")):
+                             ("and.w", struct.pack("<HHH", 0x2001, 0xEA00, 0x0001), "illegal"),
+                             ("0xb800 (16-bit undefined, not UDF)",
+                              struct.pack("<HH", 0x2001, 0xB800), "illegal")):
         mu = make_uc(M0_MODEL)
         mu.mem_map(CODE, 0x1000)
         mu.mem_map(STK, 0x10000)
@@ -570,7 +643,28 @@ def leg_d(td):
             fail(f"D classifier: `{what}` on the M0 model = {describe(r)}, must be {want}")
         else:
             print(f"D classifier: `{what}` -> {describe(r)}")
-    # (2) real v7-M compiler output, through leg C's own harness.
+    # (2) the comparator, on every outcome kind. Pure: no emulation.
+    outcomes = {"ok": ("ok", 5), "ok-wrong": ("ok", 6), "trap": ("trap", 0),
+                "illegal": ("illegal", 0, 0xEA00), "fault": ("fault", "x"), "hang": ("hang", 0)}
+    want = {
+        # (trapped, budget) -> outcome -> verdict
+        (False, False): {"ok": "agree", "ok-wrong": "disagree", "trap": "disagree",
+                         "illegal": "disagree", "fault": "disagree", "hang": "disagree"},
+        (True, False): {"ok": "disagree", "ok-wrong": "disagree", "trap": "agree",
+                        "illegal": "disagree", "fault": "disagree", "hang": "disagree"},
+        (True, True): {"ok": "budget", "ok-wrong": "budget", "trap": "disagree",
+                       "illegal": "disagree", "fault": "disagree", "hang": "budget"},
+    }
+    bad = [(tb, o, verdict(tb[0], tb[1], None if tb[0] else 5, outcomes[o]), w)
+           for tb, row in want.items() for o, w in row.items()
+           if verdict(tb[0], tb[1], None if tb[0] else 5, outcomes[o]) != w]
+    if bad:
+        fail(f"D comparator: (trapped, budget), outcome, got, want: {bad}")
+    else:
+        print(f"D comparator: {sum(len(r) for r in want.values())}/"
+              f"{sum(len(r) for r in want.values())} outcome rules hold (UDF-only traps; "
+              "budget never passes an illegal, fault or trap)")
+    # (3) real v7-M compiler output, through leg C's own harness.
     wat = os.path.join(td, f"potency_{POTENCY_PROBE}.wat")
     Path(wat).write_text(probe_module(POTENCY_PROBE, PROBES[POTENCY_PROBE]))
     o = os.path.join(td, "potency.cortex-m3.o")
@@ -585,7 +679,7 @@ def leg_d(td):
              "the potency control would be vacuous")
         return
     src = Path(wat).read_text()
-    ran, probs = execute(o, src, only={POTENCY_PROBE}, model=M0_MODEL)
+    ran, probs = execute(o, src, M0_MODEL, "D", only={POTENCY_PROBE})
     kinds = collections.Counter(k for k, _ in probs)
     if ran != 1 or kinds != {"illegal": len(VECTORS)}:
         fail(f"D: v7-M {POTENCY_PROBE} on the M0 model must be ILLEGAL on all "
@@ -594,7 +688,7 @@ def leg_d(td):
     else:
         print(f"D v7-M and.w on the M0 model: ILLEGAL on {len(VECTORS)}/{len(VECTORS)} "
               f"vectors ({probs[0][1].split(' = ', 1)[1].split(' expect')[0]})")
-    ran, probs = execute(o, src, only={POTENCY_PROBE}, model=M3_MODEL)
+    ran, probs = execute(o, src, M3_MODEL, "D-control", only={POTENCY_PROBE})
     if ran != 1 or probs:
         fail(f"D control: the same bytes on the M3 model must equal wasmtime; ran={ran} "
              f"{probs[:2]}")
@@ -639,12 +733,52 @@ def leg_e(td):
             fail(f"E {name}: cortex-m0 and cortex-m0plus emit different .text")
         o = os.path.join(pdir, f"{name}.cortex-m0.o")
         leg_b(o, f"probe {name}")
-        ran += run_exec(o, Path(pdir, f"{name}.wat").read_text(), "E", only={name})
+        ran += run_exec(o, Path(pdir, f"{name}.wat").read_text(), "E", M0_MODEL, only={name})
     print(f"E probes: {ran} accepted probes executed on the M0 model vs wasmtime")
     # Every accepted probe is register-signature and call-free today; one that
     # silently stops executing would shrink this leg to nothing.
     if ran != len(PROBE_ACCEPTED):
         fail(f"E: executed {ran} of {len(PROBE_ACCEPTED)} accepted probes")
+    leg_v(pdir)
+
+
+# ---- leg V: the value comparison's red half --------------------------------
+# Real cortex-m0 bytes from leg E, held against a DELIBERATELY WRONG wasmtime
+# reference under the same export name. Each must disagree on EXACTLY the
+# vectors where the two functions differ (computed here, independently of the
+# harness). Recorded under leg "V", so the real pins and counts never see them.
+M32, M64 = (1 << 32) - 1, (1 << 64) - 1
+VALUE_CONTROLS = (
+    # (label, probe object, wrong body, params, truth, wrong)
+    ("wrong expected value: i32.add bytes vs an i32.sub reference", "i32_add",
+     "(param i32 i32) (result i32) (i32.sub (local.get 0) (local.get 1))", ["i32", "i32"],
+     lambda a, b: (a + b) & M32, lambda a, b: (a - b) & M32),
+    ("off-by-one in the result word: i32.add bytes vs add+1", "i32_add",
+     "(param i32 i32) (result i32) (i32.add (i32.add (local.get 0) (local.get 1)) (i32.const 1))",
+     ["i32", "i32"], lambda a, b: (a + b) & M32, lambda a, b: (a + b + 1) & M32),
+    ("dropped i64 high word: i64_ident bytes vs a low-word-only reference", "i64_ident",
+     "(param i64) (result i64) (i64.and (local.get 0) (i64.const 0xFFFFFFFF))", ["i64"],
+     lambda x: x & M64, lambda x: x & M32),
+)
+
+
+def leg_v(pdir):
+    for label, probe, wrong, ps, truth, bad_fn in VALUE_CONTROLS:
+        o = os.path.join(pdir, f"{probe}.cortex-m0.o")
+        if not os.path.exists(o) or probe not in load(o)[1]:
+            fail(f"V {label}: no cortex-m0 object for {probe}; the control is vacuous")
+            continue
+        slots = aapcs_regs(ps)
+        want = sum(truth(*[a & M64 for a in vector_args(ps, slots, k)[1]])
+                   != bad_fn(*[a & M64 for a in vector_args(ps, slots, k)[1]])
+                   for k in range(len(VECTORS)))
+        ran, probs = execute(o, probe_module(probe, wrong), M0_MODEL, "V", only={probe})
+        kinds = collections.Counter(k for k, _ in probs)
+        if want == 0 or ran != 1 or kinds != {"ok": want}:
+            fail(f"V {label}: expected {want} value disagreements on {len(VECTORS)} vectors, "
+                 f"got ran={ran} {dict(kinds)} — the value comparison is not potent")
+        else:
+            print(f"V {label}: {want}/{len(VECTORS)} vectors disagree, as computed")
 
 
 def main():
@@ -707,7 +841,8 @@ def main():
         leg_d(td)
         # ---- leg C: execution ------------------------------------------------
         o = os.path.join(td, "cortex-m0.o")
-        fns = run_exec(o, WAT.read_bytes(), "C", only=ACCEPTED) if os.path.exists(o) else 0
+        fns = (run_exec(o, WAT.read_bytes(), "C", M0_MODEL, only=ACCEPTED)
+               if os.path.exists(o) else 0)
         if fns != len(ACCEPTED):
             fail(f"C fixture: executed {fns} of {len(ACCEPTED)} accepted functions")
         corpus_fns = corpus_objs = 0
@@ -731,7 +866,7 @@ def main():
             corpus_objs += 1
             leg_b(co, f)
             try:
-                corpus_fns += run_exec(co, data, "C")
+                corpus_fns += run_exec(co, data, "C", M0_MODEL)
             except SystemExit:
                 raise
             except Exception as ex:  # a harness gap is a failure, not a skip
@@ -744,8 +879,27 @@ def main():
               f"of fuel ({FUEL}) — {dict(BUDGET) or 'none'}")
         if sum(BUDGET.values()) > BUDGET_CEILING:
             fail(f"C budget: {sum(BUDGET.values())} unchecked vectors > ceiling {BUDGET_CEILING}")
-        # ---- leg E: per-op probes -------------------------------------------
+        # ---- leg E: per-op probes (and leg V, the value red half) -----------
         leg_e(td)
+    # ---- the binding: what legs C, E and V actually executed on ---------------
+    for leg in ("C", "E", "V"):
+        if EXEC_MODELS[leg] != {M0_MODEL}:
+            fail(f"binding: leg {leg} executed on CPU model(s) {sorted(EXEC_MODELS[leg])}, "
+                 f"must be exactly {{{M0_MODEL}}} (Cortex-M0)")
+    print(f"binding: legs C/E/V ran on model(s) {sorted(EXEC_MODELS['C'] | EXEC_MODELS['E'] | EXEC_MODELS['V'])}")
+    n_cmp = COMPARED["C"] + COMPARED["E"]
+    print(f"#1301 M0ORACLE VALUE-COMPARISONS={n_cmp} (C {COMPARED['C']}, E {COMPARED['E']}; "
+          f"floor {VALUE_COMPARISONS_FLOOR})")
+    if n_cmp < VALUE_COMPARISONS_FLOOR:
+        fail(f"value comparisons {n_cmp} < floor {VALUE_COMPARISONS_FLOOR}")
+    for leg in ("C", "E"):
+        n_budget = sum(n for k, n in BUDGET.items() if k.split(" ", 1)[0] == leg)
+        parts = COMPARED[leg] + sum(OUTCOMES[leg].values()) + n_budget
+        print(f"partition {leg}: {VECTORS_RUN[leg]} vectors = {COMPARED[leg]} compared + "
+              f"{dict(OUTCOMES[leg])} + {n_budget} budget")
+        if parts != VECTORS_RUN[leg]:
+            fail(f"partition {leg}: {VECTORS_RUN[leg]} vectors run but {parts} accounted for — "
+                 "an outcome passed without being counted")
     print("ORACLE:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     sys.exit(0 if not FAILS else 1)
 

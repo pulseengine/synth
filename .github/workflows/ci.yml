@@ -6709,8 +6709,15 @@ jobs:
         # runs on unicorn's Cortex-M0 model (read back and asserted), which
         # faults v7-M encodings but EXECUTES IT and CBZ/CBNZ, so the byte check
         # stays the guard for those. Leg D proves the model refuses a real
-        # cortex-m3 `and.w` every run; leg E pins the 112 per-op probes.
-        run: python scripts/oracle_run.py scripts/repro/armv6m_1301_differential.py
+        # cortex-m3 `and.w` every run; leg E pins the 112 per-op probes; leg V
+        # holds wrong references that must disagree. The emulation floor counts
+        # emulator entries, so the VALUE comparisons are asserted here too (the
+        # script holds them to its own measured floor; this is non-vacuity).
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py scripts/repro/armv6m_1301_differential.py | tee /tmp/armv6m1301.log
+          grep -Eq '^#1301 M0ORACLE VALUE-COMPARISONS=[1-9][0-9]{2,} ' /tmp/armv6m1301.log
+          grep -q '^ORACLE: PASS' /tmp/armv6m1301.log
       - name: i64.div_s(INT64_MIN,-1) overflow-trap differential (#633)
         run: python scripts/oracle_run.py scripts/repro/i64_divs_overflow_633_differential.py
       - name: i64 global.get/set pair differential (#643, both selectors)
