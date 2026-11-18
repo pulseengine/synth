@@ -811,6 +811,15 @@ feature_matrix_facts:
         Not a function of a WasmOp, so it is outside the derived op-surface
         artifact; converting it needs a probe harness per shape claim, named as
         follow-up work in this lane's report.
+    - text: "32 tracked corpus inputs"
+      rationale: >
+        RQ-91-M0ORACLE (#1301): a MEASUREMENT of the compiler over the tracked
+        .wat/.wasm corpus, printed on every CI run by
+        armv6m_1301_differential.py ("C corpus: N objects with accepted code").
+        It moves whenever a fixture is added, so it is not pinned; the
+        script's own non-vacuity check is that it executes at least one
+        function. The 8-of-112 probe figure beside it IS pinned
+        (SYNTH-MATRIX-ARMV6M-PROBES).
 
 # -----------------------------------------------------------------------------
 # readme_link_coverage — the README-linked .md surface is CLOSED. A linked doc
@@ -925,8 +934,12 @@ support_levels:
     - id: x86-64
       row: "x86-64"
       level: L3
-    # L3: refuse-only (#1301, RQ-91-ARMV6M): every module is declined loudly;
-    # no ARMv6-M code is generated, so there is no correctness claim to hold.
+    # L3: partial, --relocatable only (#1301, RQ-91-ARMV6M, RQ-91-M0ORACLE).
+    # No ARMv6-M lowering: a function compiles only when the v7-M encoder's
+    # output is already ARMv6-M, every other function is declined loudly.
+    # Measured v0.91: 8 of 112 per-op probes accepted, 32 tracked corpus
+    # inputs yield objects with accepted code; the accepted code is
+    # byte-checked and executed vs wasmtime on unicorn's Cortex-M0 model.
     - id: cortex-m0-armv6m
       row: "Cortex-M0/M0+ (ARMv6-M, `--target cortex-m0`, `cortex-m0plus`)"
       level: L3
@@ -4498,6 +4511,29 @@ claims:
         pattern: 'MemBounds::Software'
         glob: ['crates/synth-backend-aarch64/src/selector.rs']
         min: 1
+
+  # RQ-91-M0ORACLE (#1301) — the Cortex-M0/M0+ row's acceptance figure. The
+  # row said "refuse-only ... no object is written" while the profile's own
+  # oracle compiled accepted code from 32 corpus inputs. The probe figure is
+  # bound to the oracle's EXACT pin: the 8-name accepted set (exact both ways,
+  # on both ARMv6-M targets) and the 112-probe count. A lowering lane that
+  # moves the probe pin moves this literal and reds here until the row moves.
+  - id: SYNTH-MATRIX-ARMV6M-PROBES
+    doc: scripts/templates/feature_matrix.md.tmpl
+    text: "8 of 112 per-op probes accepted (i32 add/sub/extend, `local.tee`, a void function, i64 identity)"
+    evidence:
+      - kind: count-eq
+        pattern: '^PROBE_COUNT = 112$'
+        glob: ['scripts/repro/armv6m_1301_differential.py']
+        expect: 1
+      - kind: count-eq
+        pattern: '^PROBE_ACCEPTED = \{"add_imm1", "i32_add", "i32_sub", "i32_extend8_s", "i32_extend16_s",\n\s+"local_tee", "void_fn", "i64_ident"\}$'
+        glob: ['scripts/repro/armv6m_1301_differential.py']
+        expect: 1
+      - kind: count-eq                       # the oracle is CI-wired, once
+        pattern: 'oracle_run\.py scripts/repro/armv6m_1301_differential\.py'
+        glob: ['.github/workflows/ci.yml']
+        expect: 1
 
   # #851 lane L3 — the load-bearing HONESTY claim of this lane. v0.52's cold
   # review caught a doc that described a shipped feature as "not yet"; v0.53
