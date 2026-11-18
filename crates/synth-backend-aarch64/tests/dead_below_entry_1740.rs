@@ -8,7 +8,7 @@
 //! a release build declined with an uninformative `binop underflow`. The
 //! selector now skips dead code, so these shapes compile.
 //!
-//! Two pins, both RED on 265235dc (a panic under `cargo test`):
+//! Three pins, RED on 265235dc (the first two panic under `cargo test`):
 //! 1. every export of both fixtures compiles (the #1691 fixture, whose
 //!    `refuse_below` is the reported shape, and the #1740 fixture, including
 //!    its seven `r_*` frames that no live edge enters — three of which an
@@ -17,6 +17,11 @@
 //!    BYTE-IDENTICAL to its `l_*` twin — the same function with the dead code
 //!    deleted. Dead code is never executed, so it may contribute no bytes and
 //!    must not perturb the live code around it.
+//!
+//! 3. each `w_*` float-result export returns through the FP result register:
+//!    every `ret` is preceded by an `fmov` into v0. 265235dc compiled three of
+//!    them to `mov x0, x9 ; ret` — silent wrong code, Refs #1747 — because it
+//!    reconciled the GP placeholder of an inner float frame no edge enters.
 //!
 //! Execution against wasmtime: scripts/repro/aarch64_dead_below_1740_differential.py.
 
@@ -39,6 +44,15 @@ const FIXTURE_1740: &str = include_str!("../../../scripts/repro/aarch64_dead_bel
 /// value-carrying block reads as void there — a separate defect, #1745, not
 /// fixed or masked here.
 fn compile(wat: &str) -> BTreeMap<String, Result<Vec<u8>, String>> {
+    compile_where(wat, |_| true)
+}
+
+/// [`compile`] restricted to the exports `keep` selects (so a pin on some
+/// exports is not masked by another export panicking on the base).
+fn compile_where(
+    wat: &str,
+    keep: impl Fn(&str) -> bool,
+) -> BTreeMap<String, Result<Vec<u8>, String>> {
     let wasm = wat::parse_str(wat).expect("fixture parses");
     let module = decode_wasm_module(&wasm).expect("fixture decodes");
     let mut out = BTreeMap::new();
@@ -47,6 +61,9 @@ fn compile(wat: &str) -> BTreeMap<String, Result<Vec<u8>, String>> {
             .export_name
             .clone()
             .expect("every fixture function is exported");
+        if !keep(&name) {
+            continue;
+        }
         assert!(func.unsupported.is_none(), "{name}: decoder dropped an op");
         let cfg = CompileConfig {
             target: TargetSpec::cortex_a53(),
@@ -110,4 +127,42 @@ fn dead_code_below_entry_contributes_no_bytes_1740() {
         assert!(!b.is_empty(), "{name}: emitted no code");
         assert_eq!(b, l, "{name}: dead code changed the emitted text vs {twin}");
     }
+}
+
+/// Refs #1747: a float frame whose only live edge is a `br` from an inner float
+/// frame that no edge enters. Every return path must write v0 (`fmov d0/s0`);
+/// 265235dc returned through `mov x0, xN` and never wrote v0.
+#[test]
+fn float_join_returns_through_v0_1747() {
+    use synth_backend_aarch64::encoder as enc;
+    let funcs = compile_where(FIXTURE_1740, |n| n.starts_with("w_"));
+    let fp_to_v0: Vec<u32> = (0..32u8)
+        .flat_map(|r| [enc::fmov_d(0, r), enc::fmov_s(0, r)])
+        .collect();
+    let gp_to_x0: Vec<u32> = (0..32u8).map(|r| enc::mov_reg64(0, r)).collect();
+    let mut checked = 0;
+    for (name, r) in funcs.iter().filter(|(n, _)| n.starts_with("w_")) {
+        let code = r.as_ref().unwrap_or_else(|e| panic!("{name}: {e}"));
+        let words: Vec<u32> = code
+            .chunks(4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        let rets: Vec<usize> = (0..words.len())
+            .filter(|&i| words[i] == enc::ret())
+            .collect();
+        assert!(!rets.is_empty(), "{name}: no ret");
+        for i in rets {
+            assert!(i > 0, "{name}: ret at word 0");
+            assert!(
+                !gp_to_x0.contains(&words[i - 1]),
+                "{name}: returns a float through x0 (word {i}, #1747)"
+            );
+            assert!(
+                fp_to_v0.contains(&words[i - 1]),
+                "{name}: ret at word {i} not preceded by an fmov into v0"
+            );
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 4, "every w_* shape checked");
 }

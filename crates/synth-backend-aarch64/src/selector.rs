@@ -5015,6 +5015,63 @@ mod tests {
         assert_eq!(w.len(), 4);
     }
 
+    /// #1740 — the code after a frame's `end` is lowered iff a LIVE edge
+    /// enters the join. One test per edge kind; each would silently DROP the
+    /// live `i32.const 7` (and return garbage) if its edge stopped counting.
+    /// `TAIL` is that live code lowered on its own, with the same param count.
+    fn join_tail() -> Vec<u32> {
+        select_typed_cf(&[WasmOp::I32Const(7), WasmOp::End], 1, &[], &[], &[]).unwrap()
+    }
+
+    #[test]
+    fn join_live_by_fall_through_1740() {
+        // block ; end ; i32.const 7 ; end — the join's ONLY edge is the
+        // fall-through. A void empty block emits nothing, so the function is
+        // exactly the tail.
+        let ops = vec![WasmOp::Block, WasmOp::End, WasmOp::I32Const(7), WasmOp::End];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        assert_eq!(
+            w,
+            join_tail(),
+            "fall-through edge: the tail must be lowered"
+        );
+    }
+
+    #[test]
+    fn join_live_by_forward_branch_1740() {
+        // block ; br 0 ; end ; i32.const 7 ; end — the join's ONLY edge is
+        // the `br` (the fall-through after it is dead).
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::Br(0),
+            WasmOp::End,
+            WasmOp::I32Const(7),
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        let mut want = vec![enc::b_uncond(1)];
+        want.extend(join_tail());
+        assert_eq!(w, want, "forward-branch edge: the tail must be lowered");
+    }
+
+    #[test]
+    fn join_live_by_else_less_if_cbz_1740() {
+        // local.get 0 ; if ; unreachable ; end ; i32.const 7 ; end — the
+        // then-arm traps, so the join's ONLY edge is the if's `cbz` (x == 0).
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::If,
+            WasmOp::Unreachable,
+            WasmOp::End,
+            WasmOp::I32Const(7),
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        let mut want = vec![enc::cbz(0, 2), enc::brk(0)];
+        want.extend(join_tail());
+        assert_eq!(w, want, "else-less if cbz edge: the tail must be lowered");
+    }
+
     #[test]
     fn void_block_with_unconditional_br() {
         // block ; br 0 ; unreachable ; end ; local.get0 ; end

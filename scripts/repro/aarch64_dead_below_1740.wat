@@ -363,4 +363,30 @@
   (func (export "r_i64_deadbr") (param i32) (result i64)
     block (result i64) unreachable i64.const 1 br 0 end
     i64.const 1 i64.add)
+;; ---- `w_*`: SILENT WRONG CODE on 265235dc (#1747) --------------------------
+  ;; A float frame whose only live edge is a `br` from an inner float frame that
+  ;; no edge enters. 265235dc set reachability true at the inner `end`, pushed
+  ;; the inner frame's GP placeholder and reconciled it into the outer float
+  ;; slot: the function returned x0 and never wrote d0 / s0. Compiled, exit 0,
+  ;; wrong value. The #1740 end-reachability rule skips that placeholder.
+  (func (export "w_f32_conv") (param i32) (result f32)
+    block (result f32)
+      block (result f32) local.get 0 f32.convert_i32_s br 1 end
+    end)
+  (func (export "w_f64_const") (param i32) (result f64)
+    block (result f64)
+      block (result f64) f64.const 2.5 br 1 end
+    end
+    f64.neg)
+  (func (export "w_f64_if") (param i32) (result f64)
+    block (result f64)
+      local.get 0
+      if (result f64) f64.const 1.5 br 1 else f64.const 2.5 br 1 end
+    end)
+  (func (export "w_f32_ret_tail") (param i32) (result f32)
+    block (result f32)
+      block (result f32) f32.const 7.5 br 1 end
+    end
+    return
+    f32.const 9.5)
 )

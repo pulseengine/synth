@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 424
+# ci-checks: emulations >= 456
 """RQ-91-A64BELOW (#1740) — AArch64 dead code below a frame's entry height,
 EXECUTED against wasmtime.
 
@@ -27,7 +27,10 @@ as a control). Seven `r_*` frames that no live edge enters: an earlier cut of
 this change still lowered the code after their `end` and regressed three of
 them (`r_f64_deadbr`, `r_f64_ret_br`, `r_f32_deadbr`, all correct on
 265235dc) to `funop: expected FP operand, got GP`; `r_f64_plain` and
-`r_f64_store` were declined on 265235dc too. `if_arm_dead_value_1691.wat`:
+`r_f64_store` were declined on 265235dc too. Four `w_*` float frames whose
+only live edge is a `br` from an inner float frame that no edge enters:
+265235dc compiled three of them to SILENT WRONG CODE (it returned x0 and
+never wrote d0/s0; Refs #1747) and declined `w_f64_const`. `if_arm_dead_value_1691.wat`:
 the #1691 dead-arm shapes, which never ran on AArch64 before, executed here so
 the skip is checked on every dead-value shape the ARM lane collected. Its two
 `br_table` exports carry a value through the table and are loud-declined by
@@ -40,11 +43,13 @@ seeded RNG) under unicorn, and compared BIT-EXACT with wasmtime: same value,
 or a trap on both sides (`brk`). The floor is derived from the fixtures and
 checked against the header before anything runs.
 
-RED on 265235dc (debug): 13 failures, 320 of 424 emulations — 7 panics
-(exit 101: six `b_*` and the #1691 `refuse_below`) and 6 declines
+RED on 265235dc (debug): 37 failures, 344 of 456 emulations — 7 panics
+(exit 101: six `b_*` and the #1691 `refuse_below`), 7 declines
 (`b_dead_frames` drop underflow, `b_ordinal_after` multi-value block type,
 `b_after_unreachable` and `b_after_br_table` binop underflow, `r_f64_plain`
-funop, `r_f64_store` local.set operand class). GREEN after -> RESULT: PASS.
+and `w_f64_const` funop, `r_f64_store` local.set operand class), and 23 WRONG
+VALUES from `w_f32_conv`, `w_f64_if` and `w_f32_ret_tail` (exit 0; the one
+call that matched returns 0.0 by coincidence). GREEN after -> RESULT: PASS.
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python3 scripts/oracle_run.py \\
