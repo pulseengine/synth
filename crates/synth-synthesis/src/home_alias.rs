@@ -127,6 +127,15 @@ pub fn gp_defs(op: &ArmOp) -> Vec<Reg> {
         | Uxth { rd, .. }
         | Mov { rd, .. }
         | Mvn { rd, .. }
+        | Movs { rd, .. }
+        | Mvns { rd, .. }
+        | Ands { rd, .. }
+        | Orrs { rd, .. }
+        | Eors { rd, .. }
+        | Lsls { rd, .. }
+        | Lsrs { rd, .. }
+        | Asrs { rd, .. }
+        | Muls { rd, .. }
         | Movw { rd, .. }
         | Movt { rd, .. }
         | MovwSym { rd, .. }
@@ -463,6 +472,15 @@ pub fn vfp_defs(op: &ArmOp) -> Vec<u8> {
         | Uxth { .. }
         | Mov { .. }
         | Mvn { .. }
+        | Movs { .. }
+        | Mvns { .. }
+        | Ands { .. }
+        | Orrs { .. }
+        | Eors { .. }
+        | Lsls { .. }
+        | Lsrs { .. }
+        | Asrs { .. }
+        | Muls { .. }
         | Movw { .. }
         | Movt { .. }
         | MovwSym { .. }
@@ -1899,8 +1917,10 @@ mod tests {
             // makes a new op a CONSCIOUS addition to the def/use tables rather
             // than a silent one, and this lane had to classify both ops in
             // `gp_defs` and `vfp_defs` before it would pass.
+            // RQ-91-M0FLAGS (#1301): 224 -> 233, the nine flag-setting
+            // forms (each defines only `rd`, no VFP register).
             assert_eq!(
-                variants, 224,
+                variants, 233,
                 "ArmOp variant count drifted from the #615/#946 pin"
             );
         }

@@ -2273,6 +2273,11 @@ fn compile_wasm_to_arm(
     // VCR-DEC-003 (#396): object-branch class per emitted instruction, parallel
     // to `line_map`. Cheap, additive, does not touch `code`.
     let mut branch_map: synth_core::backend::BranchMap = Vec::new();
+    // RQ-91-M0FLAGS (#1301): the byte range each op emitted, with its flag
+    // contract, for the NZCV-liveness verifier after the loop. Additive: it
+    // does not touch `code`.
+    let mut nzcv_segments: Vec<crate::nzcv::Segment> = Vec::new();
+    let mut nzcv_segment_op: Vec<usize> = Vec::new();
 
     for (instr_index, instr) in arm_instrs.iter().enumerate() {
         // ORDER IS LOAD-BEARING, and getting it wrong was a SILENT MISCOMPILE.
@@ -2439,6 +2444,12 @@ fn compile_wasm_to_arm(
         // so the recorded offset is where the instruction really lands).
         line_map.push((code.len() as u32, instr.source_line));
         branch_map.push((code.len() as u32, classify_arm_branch(&instr.op)));
+        nzcv_segments.push(crate::nzcv::Segment {
+            start: code.len(),
+            len: encoded.len(),
+            contract: crate::nzcv::op_flag_contract(&instr.op),
+        });
+        nzcv_segment_op.push(instr_index);
 
         code.extend_from_slice(&encoded);
     }
@@ -2477,6 +2488,36 @@ fn compile_wasm_to_arm(
                  instruction {}, but the stream has only {} instruction(s).",
             last,
             arm_instrs.len()
+        ));
+    }
+
+    // RQ-91-M0FLAGS (#1301): NZCV liveness over the ENCODED bytes. Every
+    // flag a flag-preserving op's bytes write must be dead — see `nzcv`.
+    // ARMv6-M: always (every 16-bit data-processing form sets flags there).
+    // ARMv7-M: on by default too, because the hazard is live there today —
+    // `ArmOp::Mov rd, #imm8` is `MOVS`, `ArmOp::Add` on low registers is
+    // `ADDS`, and #709 shipped exactly this clobber inside an f32 compare.
+    // MEASURED before turning it on (481 modules: scripts/repro + the spec
+    // suite, on cortex-m4f relocatable/self-contained, cortex-m3
+    // --no-optimize and cortex-m7dp): 0 rejections, 0 output bytes changed,
+    // wall time within run-to-run noise. The check is read-only, so the bytes
+    // are unchanged whenever it passes. `SYNTH_NZCV_VERIFY=off` skips it on
+    // ARMv7-M only (an escape hatch for a false rejection; never ARMv6-M).
+    let nzcv_on = match config.target.isa {
+        IsaVariant::Thumb => true,
+        IsaVariant::Thumb2 => !std::env::var("SYNTH_NZCV_VERIFY").is_ok_and(|v| v == "off"),
+        _ => false,
+    };
+    if nzcv_on && let Err(v) = crate::nzcv::verify(&code, &nzcv_segments) {
+        let op = nzcv_segments
+            .iter()
+            .position(|s| s.start <= v.at && v.at < s.start + s.len)
+            .and_then(|k| arm_instrs.get(nzcv_segment_op[k]))
+            .map(|i| format!(", emitted for `{:?}`", i.op))
+            .unwrap_or_default();
+        return Err(format!(
+            "{v}{op}. The bytes set flags the op's model preserves, and a later \
+             instruction reads them: refusing to emit (RQ-91-M0FLAGS, #1301)."
         ));
     }
 

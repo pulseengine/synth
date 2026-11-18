@@ -182,6 +182,17 @@ fn op_cost(op: &ArmOp) -> OpCost {
         | Eor { .. }
         | Rsb { .. }
         | Mvn { .. } => Cycles(1),
+        // RQ-91-M0FLAGS (#1301): the flag-setting forms retire like their
+        // flag-preserving twins (1 cycle on M3 and M4, MULS included).
+        Movs { .. }
+        | Mvns { .. }
+        | Ands { .. }
+        | Orrs { .. }
+        | Eors { .. }
+        | Lsls { .. }
+        | Lsrs { .. }
+        | Asrs { .. }
+        | Muls { .. } => Cycles(1),
         Mov { .. } | Movw { .. } | Movt { .. } | MovwSym { .. } | MovtSym { .. } => Cycles(1),
         Clz { .. } | Rbit { .. } => Cycles(1),
         Sxtb { .. } | Sxth { .. } | Uxtb { .. } | Uxth { .. } => Cycles(1),

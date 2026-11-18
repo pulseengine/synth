@@ -1,0 +1,136 @@
+artifacts:
+  - id: RQ-91-M0FLAGS
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "Flag-setting ARM ops are their own variants, and no emitted Thumb byte clobbers a live NZCV flag"
+    description: >
+        FOUNDATION for the ARMv6-M (Cortex-M0/M0+) lowering, before any v6-M
+        lowering rule exists. Refs #1301 (the ARMv6-M target) and #1741.
+
+        THE HAZARD. ARMv6-M's 16-bit data-processing encodings (ANDS, ORRS,
+        EORS, MOVS, LSLS, MULS, ADDS, SUBS ...) SET FLAGS outside an IT block,
+        and ARMv6-M has no other encoding for them. synth's `ArmOp::And`,
+        `Orr`, `Eor`, `Mov`, `Mvn`, `Lsl`, `Lsr`, `Asr` and `Mul` mean the
+        flag-PRESERVING operation, and the Rocq model's `AND`/`MOV`/... leave
+        NZCV alone (REVIEW_2 M1). A v6-M lowering that encoded them as the
+        16-bit forms would emit bytes with an effect the op does not have:
+        the #1021 shape (an atomic model silently claiming an expansion is
+        effect-free). 274 of the corpus's 490 IT blocks are
+        `ite c; mov #1; mov #0`, whose members become MOVS outside an IT
+        block (REVIEW_2 M2): both naive rewrites destroy the compare.
+
+        THE HAZARD IS ALREADY LIVE ON ARMv7-M, measured by this lane:
+        `ArmOp::Mov rd, #imm8` is encoded as `MOVS` and `ArmOp::Add`/`Sub`/
+        `Lsl`/`Lsr`/`Mvn` on low registers as `ADDS`/`SUBS`/`LSLS`/`LSRS`/
+        `MVNS`, outside any IT block, on the default target. They are correct
+        only while the flags they clobber are dead. #709 shipped exactly this
+        clobber inside one op (`MOVS rd, #0` between `VMRS APSR_nzcv` and the
+        `IT` reading it: every f32 compare returned 0), fixed then by a
+        reorder that nothing checked afterwards.
+
+        THE CHANGE. (1) Nine explicit flag-setting `ArmOp` variants: `Movs`,
+        `Mvns`, `Ands`, `Orrs`, `Eors`, `Lsls`, `Lsrs`, `Asrs`, `Muls`
+        (`ARM_OP_VARIANT_COUNT` 224 -> 233 in both tripwires). Every existing
+        variant keeps its exact meaning and encoding. Thumb: the 16-bit
+        ARMv6-M form when the registers fit, else the Thumb-2 S=1 wide form,
+        else a typed refusal (MULS has no wide form). A32: the twin's word
+        with the S bit set. Nothing selects them yet; the allocator's
+        `reg_effect` answers `None` (unknown, bail) for them until a v6-M
+        rule models them. (2) `synth_backend::nzcv`: an NZCV-liveness
+        verifier over the EMITTED bytes. It decodes the function's Thumb
+        stream (flag reads/writes come from the bytes, never the ArmOp), runs
+        a backwards per-flag liveness fixpoint over the decoded CFG, and
+        checks each op's bytes against its model's flag contract
+        (`Preserves` by default: an incidental flag write must be dead
+        immediately (R1) and no write may be live where control leaves the
+        op (R2); `Scratch` for the i64 expansions that chain flags
+        internally by design: R2 only; `Writes` for compares and the
+        flag-setting variants). Unknowns answer in the rejecting direction.
+        It runs in the encode loop's function epilogue on ARMv6-M (always)
+        and on ARMv7-M (default-on, `SYNTH_NZCV_VERIFY=off` skips it on v7-M
+        only). A violation refuses the function, naming the offset, the
+        bytes, the clobbered flags, the reader and the op.
+
+        NOT DONE HERE, by scope: no v6-M lowering rule; no Rocq constructors
+        for the new variants (the generated model has no rule that emits
+        them, and a rule that does must add them); no check of the VALUES
+        `Writes`/`Scratch` ops leave in the flags (an execution/proof
+        question); A32 (cortex-r5) is not decoded.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact:
+        `cargo test -p synth-backend --lib nzcv` (12 tests: 7 red streams
+        rejected incl. `cmp; movs; beq`, both naive SetCond rewrites and the
+        real encoder's `Cmp; Mov #1; BCondOffset`, 4 green streams incl. the
+        correct diamond), then compile `scripts/repro/f32_vfp_619.wat
+        --target cortex-m4f --relocatable --all-exports` after re-planting
+        #709 (move the `MOVS rd, #0` after `VMRS` in
+        `encode_thumb_f32_compare`): every f32 compare function must be
+        refused with `NZCV live across a clobber (R1)`. Any accepted
+        refutes it.
+    tags:
+      - feature-loop
+      - target
+      - armv6-m
+      - verifier
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1301"
+      verification-track: execution
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 the flag-setting forms exist as explicit ArmOp
+        variants whose Thumb and A32 bytes equal llvm-mc's; every existing
+        ArmOp encoding is byte-identical (frozen fixtures, ARM corpus sweep,
+        selector parity and home-alias audit unchanged against a main
+        control); an NZCV-liveness check over the EMITTED bytes refuses a
+        flag-preserving op whose bytes clobber a live flag, red-first on
+        `cmp; movs; beq` and the naive `ite; mov #1; mov #0` rewrites, green
+        on the diamond, and its tests fail under an always-accept stub; it
+        runs on ARMv6-M, and the ARMv7-M decision is measured.
+      landed: "v0.91 M0FLAGS - #1301 - DELIVERED AS FOUNDATION (no v6-M lowering rule yet): nine explicit flag-setting ArmOp variants (Movs, Mvns, Ands, Orrs, Eors, Lsls, Lsrs, Asrs, Muls) with llvm-mc-equal Thumb and A32 bytes, and `synth_backend::nzcv`, an NZCV-liveness check over the ENCODED Thumb bytes, run on ARMv6-M always and on ARMv7-M by default (`SYNTH_NZCV_VERIFY=off` skips v7-M only). Every existing encoding is byte-identical. #1301 stays open."
+      verified-by: >
+        RED-FIRST, unit level (`cargo test -p synth-backend --lib nzcv`, 12
+        tests): `cmp r0,r1; movs r0,#1; beq` is refused (R1, at +2, reader
+        +4); both naive SetCond rewrites (`movs #0; bne; movs #1` and
+        branch-over-each-member) are refused; the real Thumb encoder's
+        `Cmp; Mov r0,#1; BCondOffset EQ` (Mov encodes as MOVS on v7-M) is
+        refused; #709's VMRS-then-MOVS order inside one op is refused; a
+        Scratch op leaking its carry across a compare is refused (R2); a
+        call between compare and branch and an incidental write before an
+        indirect jump are refused. GREEN: the diamond, MOVS before CMP, an
+        IT block, #709's fixed order. POTENCY: with `verify` stubbed to
+        always accept, 8 of the 12 fail (every rejecting test); stubbed to
+        always reject, 10 fail (every accepting test plus the mixed ones).
+        END TO END: re-planting #709 in `encode_thumb_f32_compare` and
+        compiling f32_vfp_619.wat for cortex-m4f refuses flt/fgt/feq/fne
+        with `NZCV live across a clobber (R1)`; `SYNTH_NZCV_VERIFY=off`
+        accepts the same miscompile silently.
+
+        v7-M DECISION, MEASURED: 481 modules (scripts/repro + the spec
+        suite) on cortex-m4f relocatable, cortex-m4f self-contained,
+        cortex-m3 --no-optimize, cortex-m7dp relocatable. Before the i64
+        expansions were classified Scratch: 147 module-level hits, every one
+        an INTRA-op chain inside I64Shl/ShrU/ShrS/Rotl/Rotr/DivS/DivU/RemS/
+        RemU/SetCond/Sub, none crossing an op boundary and none from a simple
+        flag-preserving op. After: 0 rejections, 0 output bytes changed, wall
+        time within run-to-run noise. So v7-M is on by default.
+
+        BYTE IDENTITY against a main 265235dc control built in its own
+        detached worktree (md5 differs): 481 modules x 6 configs (adds
+        cortex-m0 and cortex-r5 relocatable), 5772 compiles, 0 rc
+        differences, 0 byte differences. Oracles on control and branch,
+        same figures both: armv6m_1301_differential 624 emulations,
+        arm_corpus_sweep_973 3861, selector_parity_197 25326,
+        home_alias_audit_corpus_1189 7781, select_i64cmp_973_arm 360/360,
+        f32_vfp_619 84, f32_mem_trunc_708_709 48; spec census PASS, spec
+        exec 49181 emulations PASS; armv6m_llvm_crosscheck_1301 --objects
+        PASS (planted MOVW control red). Workspace tests 3337 pass, 0 fail.
+
+        NOT VERIFIED: the Rocq model has no constructors for the new
+        variants; the VALUES that Writes/Scratch ops leave in the flags are
+        not checked here; A32 bytes are not decoded.

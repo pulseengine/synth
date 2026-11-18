@@ -238,6 +238,75 @@ pub enum ArmOp {
         rd: Reg,
         op2: Operand2,
     },
+    // RQ-91-M0FLAGS (#1301): the FLAG-SETTING forms, as their own variants.
+    //
+    // The variants above (`Mov`, `Mvn`, `And`, `Orr`, `Eor`, `Lsl`, `Lsr`,
+    // `Asr`, `Mul`) mean the flag-PRESERVING operation — the Rocq model's
+    // `MOV`/`AND`/... leave NZCV alone. ARMv6-M's 16-bit data-processing
+    // encodings ALWAYS set flags outside an IT block, so a v6-M lowering that
+    // encoded `ArmOp::And` as `ANDS` would emit bytes with an effect the op
+    // does not have. These variants carry that effect in their NAME: each
+    // writes N and Z from its result and leaves V alone. C: a shift by a
+    // nonzero amount writes the last bit shifted out; a wide (32-bit)
+    // logical/move with a rotated modified immediate MAY write it; the
+    // 16-bit register forms leave it. The verifier reads C off the BYTES.
+    // Nothing selects them yet; the NZCV-liveness verifier
+    // (`synth_backend::nzcv`) checks the emitted bytes of every flag-
+    // preserving op against live flags either way.
+    /// `MOVS rd, op2` — flag-setting move (N, Z).
+    Movs {
+        rd: Reg,
+        op2: Operand2,
+    },
+    /// `MVNS rd, op2` — flag-setting bitwise NOT (N, Z).
+    Mvns {
+        rd: Reg,
+        op2: Operand2,
+    },
+    /// `ANDS rd, rn, op2` — flag-setting AND (N, Z).
+    Ands {
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
+    /// `ORRS rd, rn, op2` — flag-setting OR (N, Z).
+    Orrs {
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
+    /// `EORS rd, rn, op2` — flag-setting XOR (N, Z).
+    Eors {
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
+    /// `LSLS rd, rn, #shift` (0..=31) — flag-setting (N, Z; C when shift > 0).
+    Lsls {
+        rd: Reg,
+        rn: Reg,
+        shift: u32,
+    },
+    /// `LSRS rd, rn, #shift` (1..=32) — flag-setting (N, Z, C).
+    Lsrs {
+        rd: Reg,
+        rn: Reg,
+        shift: u32,
+    },
+    /// `ASRS rd, rn, #shift` (1..=32) — flag-setting (N, Z, C).
+    Asrs {
+        rd: Reg,
+        rn: Reg,
+        shift: u32,
+    },
+    /// `MULS rd, rn, rm` — flag-setting multiply (N, Z). The only Thumb
+    /// encoding is the 16-bit `MULS rdm, rn, rdm`, so `rd` must equal `rn` or
+    /// `rm` and all three must be low registers; anything else is refused.
+    Muls {
+        rd: Reg,
+        rn: Reg,
+        rm: Reg,
+    },
     // Move Wide (load 16-bit immediate into low half, zero upper)
     Movw {
         rd: Reg,

@@ -675,7 +675,18 @@ fn coverage(op: &ArmOp) -> Coverage {
         //    SURVIVING i64 ops above).
         //  - all F32*/F64* scalar VFP (dropped at the decoder today, #369) and
         //    all Mve* vector ops (not on the scalar integer path).
+        //  - the RQ-91-M0FLAGS (#1301) flag-setting forms: no selector emits
+        //    them yet.
         Mvn { .. }
+        | Movs { .. }
+        | Mvns { .. }
+        | Ands { .. }
+        | Orrs { .. }
+        | Eors { .. }
+        | Lsls { .. }
+        | Lsrs { .. }
+        | Asrs { .. }
+        | Muls { .. }
         | Umull { .. }
         | Mla { .. }
         | MovwSym { .. }
