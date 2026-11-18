@@ -3774,7 +3774,7 @@ claims:
   # "can this check still fail" audit applied to the check being added.
   - id: SYNTH-SUBTRACTION-PINS-DECLARED
     doc: CLAUDE.md
-    text: "Ten `kind: ratchet` pins in"
+    text: "Twelve `kind: ratchet` pins in"
     evidence:
       # RQ-65-MUTANTS (v0.65): 7 -> 8 — the eighth is `mutants_untested`, a
       # ceiling over the mutation-survey ledger (SYNTH-MUTATION-SURVEY-RQ65).
@@ -3783,7 +3783,7 @@ claims:
       # complement `known_open_pinned_cases` (tracked); see
       # SYNTH-KNOWN-OPEN-PINS-RQ66. 6 ceilings + 1 floor + 3 tracked, and
       # CLAUDE.md says "Ten".
-      # RQ-92-LEVELGATE (v0.92): 10 -> 12 — `rv32_selector_lines_code` and
+      # RQ-91-LEVELGATE (v0.91): 10 -> 12 — `rv32_selector_lines_code` and
       # `aarch64_selector_lines_code`, two more ceilings. 8 + 1 + 3.
       - kind: count-eq
         pattern: '^      - kind: ratchet$'
