@@ -10,6 +10,11 @@
 //! `synth-cli` or of any crate that ships. The engines are behind the `exec`
 //! feature, so the default workspace build compiles only the value model,
 //! the comparison matrix and the ELF driver.
+//!
+//! WHAT IS COMPARED: return values and trap-versus-return, nothing else.
+//! Memory effects are not compared, so `run_case` refuses a module with a
+//! linear memory; the emulator refuses float signatures, calls and
+//! multi-value results (see `emulate`).
 
 pub mod compare;
 pub mod synth;
@@ -29,7 +34,7 @@ mod run_case {
     use crate::emulate::{self, EmuConfig, EmuError};
     use crate::reference::{self, HostCall, Imports, RefError};
     use crate::synth::CompiledObject;
-    use crate::value::{WasmValue, export_signature};
+    use crate::value::{WasmValue, export_signature, has_linear_memory};
 
     /// One executed comparison.
     #[derive(Clone, Debug)]
@@ -45,6 +50,10 @@ mod run_case {
     #[derive(Clone, Debug)]
     pub enum CaseError {
         Signature(String),
+        /// The module has a linear memory. Memory effects are not compared
+        /// and no memory is mapped for the emulator, so it is refused rather
+        /// than judged on return values alone.
+        LinearMemory,
         Reference(RefError),
         Emulator(EmuError),
     }
@@ -61,6 +70,9 @@ mod run_case {
         cfg: &EmuConfig,
     ) -> Result<Case, CaseError> {
         let sig = export_signature(wasm, export).map_err(CaseError::Signature)?;
+        if has_linear_memory(wasm).map_err(CaseError::Signature)? {
+            return Err(CaseError::LinearMemory);
+        }
         let r = reference::run(wasm, export, args, fuel, imports).map_err(CaseError::Reference)?;
         let e = emulate::run(obj, export, &sig, args, cfg).map_err(CaseError::Emulator)?;
         Ok(Case {

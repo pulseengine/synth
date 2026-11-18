@@ -9,19 +9,31 @@
 //! sentinel address. What is stricter here:
 //!
 //! - The CPU model is set before anything is mapped and READ BACK; a mismatch
-//!   refuses the run. (unicorn applies the model only when the CPU is first
-//!   materialized, so a model set after `mem_map` is silently ignored. The
-//!   Python oracle recorded exactly that, as "M0 reads back as M33".)
-//! - A fault is a TRAP only when the faulting instruction is a trap idiom:
-//!   UDF on ARM, `ebreak`/`c.ebreak`/`unimp`/`c.unimp` on RV32. Any other
-//!   stop is ILLEGAL.
+//!   refuses the run.
+//! - A stop is a TRAP only when the way unicorn stopped AND the instruction
+//!   bytes both say so, the bytes are exactly the trap synth emits (Thumb
+//!   `udf` T1; RV32 32-bit `ebreak`), and the PC lies inside the function.
+//!   Any other fault is ILLEGAL.
 //! - Running out of the instruction budget is its own outcome, never a trap.
+//!
+//! WHAT IS REFUSED, with a typed error, rather than run and judged wrongly:
+//! floating-point signatures (synth's hard-float targets pass them in S
+//! registers and the soft-float convention is not shown on real code), stack
+//! arguments, multi-value results, and any function carrying a relocation.
+//! No linear memory is mapped: modules with a memory are refused one level up
+//! ([`crate::run_case`]), because memory effects are not compared.
+//!
+//! There is NO wall-clock timeout. unicorn's timeout thread reads a
+//! process-global clock that every engine init rewrites, and under concurrent
+//! engines it stopped healthy runs (52 spurious Budget stops in 32,000 runs on
+//! 8 threads, REVIEW_11 F2). The instruction count alone bounds a run.
 
 use std::cell::Cell;
+use std::ops::Range;
 use std::rc::Rc;
 
 use unicorn_engine::{
-    Arch, ArmCpuModel, Mode, Prot, RegisterARM, RegisterRISCV, Riscv32CpuModel, Unicorn,
+    Arch, ArmCpuModel, Mode, Prot, RegisterARM, RegisterRISCV, Riscv32CpuModel, Unicorn, uc_error,
 };
 
 use crate::compare::EmuOutcome;
@@ -35,7 +47,7 @@ pub enum Cpu {
     CortexM0,
     /// ARMv7-M, Thumb-2.
     CortexM3,
-    /// ARMv7E-M, Thumb-2 (soft-float calling convention).
+    /// ARMv7E-M, Thumb-2. Float signatures are refused (see the module doc).
     CortexM4,
     /// RV32IMAC: unicorn's SiFive E31, which is exactly RV32IMAC (+U), so an
     /// F/D instruction is undefined here as it is on the target.
@@ -66,21 +78,15 @@ pub const TEXT_BASE: u64 = 0x0001_0000;
 pub const STACK_TOP: u64 = 0x0030_0000;
 const STACK_SIZE: u64 = 0x0002_0000;
 pub const RETURN_ADDR: u64 = 0x0040_0000;
-/// Linear memory, when configured: ARM R11 / RV32 s11 hold this base.
-pub const LINEAR_BASE: u64 = 0x2000_0000;
 const POISON: u32 = 0xFEED_FACE;
 
 /// Per-run configuration.
 #[derive(Clone, Debug)]
 pub struct EmuConfig {
     pub cpu: Cpu,
-    /// Maximum instructions; reaching it is [`EmuOutcome::Budget`].
+    /// Maximum instructions; reaching it is [`EmuOutcome::Budget`]. The only
+    /// bound on a run (there is deliberately no wall-clock timeout).
     pub budget: usize,
-    /// Wall-clock backstop in microseconds (also [`EmuOutcome::Budget`]).
-    pub timeout_us: u64,
-    /// Initial linear memory, mapped at [`LINEAR_BASE`] (rounded up to 4 KiB).
-    /// ARM: R11 = base, R10 = byte size. RV32: s11 = base.
-    pub linear_memory: Option<Vec<u8>>,
 }
 
 impl EmuConfig {
@@ -88,8 +94,6 @@ impl EmuConfig {
         Self {
             cpu,
             budget: 1_000_000,
-            timeout_us: 10_000_000,
-            linear_memory: None,
         }
     }
 }
@@ -114,11 +118,19 @@ pub enum EmuError {
         relocs: usize,
     },
     NotThumb(String),
+    /// An f32/f64 parameter or result. On a hard-float ARM target synth
+    /// passes them in S/D registers, which this harness does not set up or
+    /// read, so a wrong result could agree. Refused on every core until the
+    /// float convention is set up and shown right on real code.
+    FloatAbi {
+        func: String,
+        machine: Machine,
+    },
     /// Argument or result shape the calling-convention setup does not carry.
     Abi(String),
 }
 
-fn uc<T>(r: Result<T, unicorn_engine::uc_error>, what: &str) -> Result<T, EmuError> {
+fn uc<T>(r: Result<T, uc_error>, what: &str) -> Result<T, EmuError> {
     r.map_err(|e| EmuError::Unicorn(format!("{what}: {e:?}")))
 }
 
@@ -130,7 +142,7 @@ pub struct EmuRun {
     pub cpu_model_readback: i32,
 }
 
-/// The register words of a soft-float AAPCS call (i64/f64 in an even pair).
+/// The register words of an AAPCS call (i64 in an even pair).
 fn aapcs_words(params: &[ValType], args: &[WasmValue]) -> Result<Vec<u32>, EmuError> {
     let mut w: Vec<u32> = Vec::new();
     for (t, v) in params.iter().zip(args) {
@@ -148,7 +160,7 @@ fn aapcs_words(params: &[ValType], args: &[WasmValue]) -> Result<Vec<u32>, EmuEr
     Ok(w)
 }
 
-/// The register words of an RV32 ILP32 soft-float call (pairs not aligned).
+/// The register words of an RV32 ILP32 call (pairs not aligned).
 fn ilp32_words(args: &[WasmValue]) -> Result<Vec<u32>, EmuError> {
     let w: Vec<u32> = args.iter().flat_map(|v| v.to_words()).collect();
     if w.len() > 8 {
@@ -160,44 +172,102 @@ fn ilp32_words(args: &[WasmValue]) -> Result<Vec<u32>, EmuError> {
     Ok(w)
 }
 
+/// How a run stopped, other than by returning or running out of budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TrapKind {
-    Udf,
-    Ebreak,
-    Unimp,
+enum Fault {
+    /// The interrupt hook fired. `reported_pc` is what `pc_read` gave inside
+    /// the hook.
+    Hook { reported_pc: u64, intno: u32 },
+    /// `emu_start` returned an error, with the PC read afterwards.
+    Error { pc: u64, err: uc_error },
 }
 
-/// Decode the trap idiom at the start of `bytes`, if they are one.
-fn trap_idiom(machine: Machine, bytes: &[u8]) -> Option<(TrapKind, &'static str)> {
+/// The address of the faulting instruction.
+///
+/// On RV32 unicorn adds 4 to the PC before calling the interrupt hook, for
+/// every exception it delivers there (unicorn-engine-sys 2.1.5,
+/// qemu/accel/tcg/cpu-exec.c, the TARGET_RISCV block), whatever the
+/// instruction's length.
+fn fault_pc(machine: Machine, fault: Fault) -> u64 {
+    match (machine, fault) {
+        (Machine::RiscV32, Fault::Hook { reported_pc, .. }) => reported_pc.wrapping_sub(4),
+        (Machine::Arm, Fault::Hook { reported_pc, .. }) => reported_pc & !1,
+        (_, Fault::Error { pc, .. }) => pc & !1,
+    }
+}
+
+/// The trap synth emits, if the stop path and the bytes both say this is it.
+///
+/// Matched EXACTLY against what synth emits, nothing wider:
+/// - Thumb: `udf #imm8` T1 (`0xDExx`; `arm_encoder.rs`, the Thumb-2 `Udf`
+///   arm and every inline guard). synth emits no `udf.w`. unicorn stops on it
+///   with UC_ERR_INSN_INVALID, PC at the instruction, and no hook.
+/// - RV32: the 32-bit `ebreak` (`0x00100073`; `RiscVOp::Ebreak`, the only trap
+///   the RV32 selector emits; the encoder has no compressed forms). It is a
+///   unicorn "stop interrupt" (riscv_stop_interrupt): no hook,
+///   UC_ERR_INSN_INVALID, PC at the instruction.
+///
+/// A hook stop is never a trap: BKPT, NOCP, ecall, an illegal instruction
+/// (including `c.unimp` = `0x0000`, which zero padding decodes as) are all
+/// ILLEGAL.
+fn trap_insn(machine: Machine, fault: Fault, bytes: &[u8]) -> Option<&'static str> {
+    let Fault::Error {
+        err: uc_error::INSN_INVALID,
+        ..
+    } = fault
+    else {
+        return None;
+    };
     let h = |i: usize| -> Option<u16> {
         Some(u16::from_le_bytes([*bytes.get(i)?, *bytes.get(i + 1)?]))
     };
     match machine {
-        Machine::Arm => {
-            let h1 = h(0)?;
-            if h1 & 0xFF00 == 0xDE00 {
-                return Some((TrapKind::Udf, "udf (T1)"));
-            }
-            let h2 = h(2)?;
-            if h1 & 0xFFF0 == 0xF7F0 && h2 & 0xF000 == 0xA000 {
-                return Some((TrapKind::Udf, "udf.w (T2)"));
-            }
-            None
-        }
+        Machine::Arm => (h(0)? & 0xFF00 == 0xDE00).then_some("udf"),
         Machine::RiscV32 => {
-            let h1 = h(0)?;
-            if h1 == 0x9002 {
-                return Some((TrapKind::Ebreak, "c.ebreak"));
-            }
-            if h1 == 0x0000 {
-                return Some((TrapKind::Unimp, "c.unimp"));
-            }
-            let w = u32::from(h1) | (u32::from(h(2)?) << 16);
-            match w {
-                0x0010_0073 => Some((TrapKind::Ebreak, "ebreak")),
-                0xC000_1073 => Some((TrapKind::Unimp, "unimp")),
-                _ => None,
-            }
+            let w = u32::from(h(0)?) | (u32::from(h(2)?) << 16);
+            (w == 0x0010_0073).then_some("ebreak")
+        }
+    }
+}
+
+/// Judge a fault: a trap only per [`trap_insn`] AND with the PC inside the
+/// function (`func` is its absolute address range).
+fn judge(machine: Machine, fault: Fault, bytes: &[u8], func: &Range<u64>) -> EmuOutcome {
+    let pc = fault_pc(machine, fault);
+    match trap_insn(machine, fault, bytes) {
+        Some(insn) if func.contains(&pc) => EmuOutcome::Trap {
+            pc,
+            insn: insn.to_string(),
+        },
+        Some(insn) => EmuOutcome::Illegal {
+            pc,
+            reason: format!("{insn} outside the function {func:x?}"),
+        },
+        None => EmuOutcome::Illegal {
+            pc,
+            reason: format!("{fault:?}; insn bytes {bytes:02x?}"),
+        },
+    }
+}
+
+/// The registers a run checks preserved, by name.
+fn callee_saved(machine: Machine) -> Vec<(i32, String)> {
+    match machine {
+        Machine::Arm => (4..12)
+            .map(|i| (RegisterARM::R0 as i32 + i, format!("R{i}")))
+            .collect(),
+        Machine::RiscV32 => {
+            let x = |n: i32| RegisterRISCV::X0 as i32 + n;
+            // gp and tp are not callee-saved in the ILP32 sense: no function
+            // may change them at all.
+            let mut s = vec![
+                (x(3), "gp".to_string()),
+                (x(4), "tp".to_string()),
+                (x(8), "s0".to_string()),
+                (x(9), "s1".to_string()),
+            ];
+            s.extend((18..28).map(|n| (x(n), format!("s{}", n - 16))));
+            s
         }
     }
 }
@@ -231,6 +301,17 @@ pub fn run(
     if machine == Machine::Arm && !sym.thumb {
         return Err(EmuError::NotThumb(func.to_string()));
     }
+    if sig
+        .params
+        .iter()
+        .chain(&sig.results)
+        .any(|t| matches!(t, ValType::F32 | ValType::F64))
+    {
+        return Err(EmuError::FloatAbi {
+            func: func.to_string(),
+            machine,
+        });
+    }
     if sig.results.len() > 1 {
         return Err(EmuError::Abi(
             "multi-value results are not read back".into(),
@@ -242,6 +323,10 @@ pub fn run(
             sig.params
         )));
     }
+    let words = match machine {
+        Machine::Arm => aapcs_words(&sig.params, args)?,
+        Machine::RiscV32 => ilp32_words(args)?,
+    };
 
     let (arch, mode) = match machine {
         // NOT `Mode::MCLASS`: unicorn 2.1.x forces any MCLASS-mode CPU to
@@ -253,7 +338,7 @@ pub fn run(
     };
     let mut emu = uc(Unicorn::new(arch, mode), "Unicorn::new")?;
     // BEFORE any mapping: the CPU is materialized on first use, after which a
-    // model change is ignored.
+    // model change is refused.
     let requested = cfg.cpu.model_id();
     uc(emu.ctl_set_cpu_model(requested), "ctl_set_cpu_model")?;
     let readback = uc(emu.ctl_get_cpu_model(), "ctl_get_cpu_model")?;
@@ -282,17 +367,8 @@ pub fn run(
         emu.mem_map(RETURN_ADDR, 0x1000, Prot::ALL),
         "map return page",
     )?;
-    let lin_size = cfg.linear_memory.as_ref().map(|m| m.len() as u64);
-    if let Some(mem) = &cfg.linear_memory {
-        let sz = ((mem.len() as u64 + 0xFFF) & !0xFFF).max(0x1000);
-        uc(
-            emu.mem_map(LINEAR_BASE, sz, Prot::READ | Prot::WRITE),
-            "map linear memory",
-        )?;
-        uc(emu.mem_write(LINEAR_BASE, mem), "write linear memory")?;
-    }
 
-    // The trap hook: record where the exception was raised and stop.
+    // The hook: record where the exception was raised and stop.
     let hit: Rc<Cell<Option<(u64, u32)>>> = Rc::new(Cell::new(None));
     let hit2 = Rc::clone(&hit);
     uc(
@@ -304,24 +380,9 @@ pub fn run(
         "add_intr_hook",
     )?;
 
-    // Argument registers, callee-saved seeds, SP, return address.
-    let (arg_regs, callee): (Vec<i32>, Vec<(i32, String)>) = match machine {
-        Machine::Arm => (
-            (0..4).map(|i| RegisterARM::R0 as i32 + i).collect(),
-            (4..12)
-                .map(|i| (RegisterARM::R0 as i32 + i, format!("R{i}")))
-                .collect(),
-        ),
-        Machine::RiscV32 => {
-            let x = |n: i32| RegisterRISCV::X0 as i32 + n;
-            let mut s = vec![(x(8), "s0".to_string()), (x(9), "s1".to_string())];
-            s.extend((18..28).map(|n| (x(n), format!("s{}", n - 16))));
-            ((10..18).map(x).collect(), s)
-        }
-    };
-    let words = match machine {
-        Machine::Arm => aapcs_words(&sig.params, args)?,
-        Machine::RiscV32 => ilp32_words(args)?,
+    let arg_regs: Vec<i32> = match machine {
+        Machine::Arm => (0..4).map(|i| RegisterARM::R0 as i32 + i).collect(),
+        Machine::RiscV32 => (10..18).map(|n| RegisterRISCV::X0 as i32 + n).collect(),
     };
     for (i, r) in arg_regs.iter().enumerate() {
         uc(
@@ -330,14 +391,10 @@ pub fn run(
         )?;
     }
     let mut seeds = Vec::new();
-    for (k, (r, name)) in callee.iter().enumerate() {
-        let v: u64 = match (machine, name.as_str(), lin_size) {
-            (Machine::Arm, "R11", Some(_)) | (Machine::RiscV32, "s11", Some(_)) => LINEAR_BASE,
-            (Machine::Arm, "R10", Some(sz)) => sz,
-            _ => 0xC0DE_0000 | k as u64,
-        };
-        uc(emu.reg_write(*r, v), "seed callee-saved")?;
-        seeds.push((*r, name.clone(), v));
+    for (k, (r, name)) in callee_saved(machine).into_iter().enumerate() {
+        let v = 0xC0DE_0000 | k as u64;
+        uc(emu.reg_write(r, v), "seed callee-saved")?;
+        seeds.push((r, name, v));
     }
     let (sp_reg, pc_reg) = match machine {
         Machine::Arm => (RegisterARM::SP as i32, RegisterARM::PC as i32),
@@ -362,72 +419,25 @@ pub fn run(
         }
     };
 
-    let r = emu.emu_start(begin, RETURN_ADDR, cfg.timeout_us, cfg.budget);
+    // timeout 0: no wall-clock thread (see the module doc).
+    let r = emu.emu_start(begin, RETURN_ADDR, 0, cfg.budget);
     let pc_now = uc(emu.reg_read(pc_reg), "read PC")? & !1;
 
-    let read_insn = |emu: &Unicorn<()>, pc: u64| -> Vec<u8> {
-        let mut b = vec![0u8; 4];
-        if emu.mem_read(pc, &mut b).is_ok() {
-            return b;
-        }
-        let mut b = vec![0u8; 2];
-        if emu.mem_read(pc, &mut b).is_ok() {
-            b
-        } else {
-            vec![]
-        }
+    let fault = match (hit.get(), r) {
+        (Some((reported_pc, intno)), _) => Some(Fault::Hook { reported_pc, intno }),
+        (None, Err(err)) => Some(Fault::Error { pc: pc_now, err }),
+        (None, Ok(())) => None,
     };
-    // Which stops are traps. The STOP PATH and the bytes both have to say so, and
-    // the PC each path reports is pinned by unicorn-engine-sys 2.1.5's source:
-    //
-    // * ARM UDF: no hook; `emu_start` returns UC_ERR_INSN_INVALID with the PC
-    //   AT the instruction (measured, as is every row here, by the control
-    //   leg of potency_planted_illegal_instruction_reds). Every other ARM
-    //   exception (BKPT 7, NOCP 17, ...) reaches the hook and is ILLEGAL.
-    // * RV32 `ebreak` / `c.ebreak`: RISCV_EXCP_BREAKPOINT is a "stop
-    //   interrupt" (qemu/target/riscv/unicorn.c, riscv_stop_interrupt): no
-    //   hook, PC AT the instruction, and `emu_start` returns
-    //   UC_ERR_INSN_INVALID (measured; not the UC_ERR_EXCEPTION that
-    //   riscv_stop_interrupt writes to `invalid_error`).
-    // * RV32 `unimp` / `c.unimp`: an illegal-instruction exception (2),
-    //   delivered to the hook AFTER unicorn's unconditional `env->pc += 4`
-    //   (qemu/accel/tcg/cpu-exec.c, the TARGET_RISCV block), so the faulting
-    //   instruction starts at the reported PC minus 4, whatever its length.
-    const RISCV_EXCP_ILLEGAL_INST: u32 = 2;
-    let judge = |emu: &Unicorn<()>, pc: u64, allowed: &[TrapKind], why: String| -> EmuOutcome {
-        let bytes = read_insn(emu, pc);
-        match trap_idiom(machine, &bytes) {
-            Some((kind, insn)) if allowed.contains(&kind) => EmuOutcome::Trap {
-                pc,
-                insn: insn.to_string(),
-            },
-            _ => EmuOutcome::Illegal {
-                pc,
-                reason: format!("{why}; insn bytes {bytes:02x?}"),
-            },
-        }
-    };
-
-    let outcome = if let Some((raw_pc, intno)) = hit.get() {
-        let why = format!("exception {intno}");
-        match (machine, intno) {
-            (Machine::Arm, _) => judge(&emu, raw_pc & !1, &[], why),
-            (Machine::RiscV32, RISCV_EXCP_ILLEGAL_INST) => {
-                judge(&emu, raw_pc.wrapping_sub(4), &[TrapKind::Unimp], why)
+    let outcome = if let Some(fault) = fault {
+        let pc = fault_pc(machine, fault);
+        let mut bytes = vec![0u8; 4];
+        if emu.mem_read(pc, &mut bytes).is_err() {
+            bytes.truncate(2);
+            if emu.mem_read(pc, &mut bytes).is_err() {
+                bytes.clear();
             }
-            (Machine::RiscV32, _) => judge(&emu, raw_pc.wrapping_sub(4), &[], why),
         }
-    } else if let Err(e) = r {
-        let why = format!("unicorn error {e:?}");
-        match (machine, e) {
-            (Machine::RiscV32, unicorn_engine::uc_error::INSN_INVALID) => {
-                judge(&emu, pc_now, &[TrapKind::Ebreak], why)
-            }
-            (Machine::Arm, unicorn_engine::uc_error::INSN_INVALID) => {
-                judge(&emu, pc_now, &[TrapKind::Udf], why)
-            }
-            _ => judge(&emu, pc_now, &[], why),
-        }
+        judge(machine, fault, &bytes, &(entry..entry + sym.size))
     } else if pc_now != RETURN_ADDR {
         EmuOutcome::Budget
     } else {
@@ -471,31 +481,95 @@ pub fn run(
 mod tests {
     use super::*;
 
+    const UDF: [u8; 2] = [0x00, 0xDE];
+    const EBREAK: [u8; 4] = 0x0010_0073u32.to_le_bytes();
+    const F: Range<u64> = 0x1000..0x1100;
+
+    fn err(pc: u64, err: uc_error) -> Fault {
+        Fault::Error { pc, err }
+    }
+
     #[test]
-    fn trap_idioms() {
+    fn trap_needs_the_stop_path_and_the_bytes() {
+        // The two real traps.
         assert_eq!(
-            trap_idiom(Machine::Arm, &[0x00, 0xDE]),
-            Some((TrapKind::Udf, "udf (T1)"))
+            judge(Machine::Arm, err(0x1010, uc_error::INSN_INVALID), &UDF, &F),
+            EmuOutcome::Trap {
+                pc: 0x1010,
+                insn: "udf".into()
+            }
         );
-        assert_eq!(
-            trap_idiom(Machine::Arm, &[0xF0, 0xF7, 0x00, 0xA0]),
-            Some((TrapKind::Udf, "udf.w (T2)"))
-        );
-        // BKPT (0xBE00) is not a trap idiom.
-        assert_eq!(trap_idiom(Machine::Arm, &[0x00, 0xBE]), None);
-        assert_eq!(
-            trap_idiom(Machine::RiscV32, &0x0010_0073u32.to_le_bytes()),
-            Some((TrapKind::Ebreak, "ebreak"))
-        );
-        assert_eq!(
-            trap_idiom(Machine::RiscV32, &0xC000_1073u32.to_le_bytes()),
-            Some((TrapKind::Unimp, "unimp"))
-        );
-        // ecall is not a trap idiom.
-        assert_eq!(
-            trap_idiom(Machine::RiscV32, &0x0000_0073u32.to_le_bytes()),
-            None
-        );
+        assert!(matches!(
+            judge(
+                Machine::RiscV32,
+                err(0x1010, uc_error::INSN_INVALID),
+                &EBREAK,
+                &F
+            ),
+            EmuOutcome::Trap { pc: 0x1010, .. }
+        ));
+        // Right bytes, wrong stop path: ILLEGAL. (A bytes-only rule reds here.)
+        for fault in [
+            Fault::Hook {
+                reported_pc: 0x1010,
+                intno: 7,
+            },
+            err(0x1010, uc_error::EXCEPTION),
+            err(0x1010, uc_error::READ_UNMAPPED),
+        ] {
+            assert!(
+                matches!(
+                    judge(Machine::Arm, fault, &UDF, &F),
+                    EmuOutcome::Illegal { .. }
+                ),
+                "{fault:?}"
+            );
+        }
+        let rv_hook = Fault::Hook {
+            reported_pc: 0x1014,
+            intno: 2,
+        };
+        assert!(matches!(
+            judge(Machine::RiscV32, rv_hook, &EBREAK, &F),
+            EmuOutcome::Illegal { pc: 0x1010, .. }
+        ));
+        // Right path, wrong bytes: ILLEGAL. Includes what synth never emits.
+        for bytes in [
+            vec![0x00u8, 0xBE],           // bkpt
+            vec![0xF0, 0xF7, 0x00, 0xA0], // udf.w
+            vec![0xFF, 0xFF, 0xFF, 0xFF], // undefined
+        ] {
+            assert!(matches!(
+                judge(
+                    Machine::Arm,
+                    err(0x1010, uc_error::INSN_INVALID),
+                    &bytes,
+                    &F
+                ),
+                EmuOutcome::Illegal { .. }
+            ));
+        }
+        for bytes in [
+            vec![0x00u8, 0x00, 0x00, 0x00],        // c.unimp (zero padding)
+            vec![0x02, 0x90, 0x00, 0x00],          // c.ebreak
+            0xC000_1073u32.to_le_bytes().to_vec(), // unimp
+            0x0000_0073u32.to_le_bytes().to_vec(), // ecall
+        ] {
+            assert!(matches!(
+                judge(
+                    Machine::RiscV32,
+                    err(0x1010, uc_error::INSN_INVALID),
+                    &bytes,
+                    &F
+                ),
+                EmuOutcome::Illegal { .. }
+            ));
+        }
+        // A real trap instruction OUTSIDE the function: ILLEGAL.
+        assert!(matches!(
+            judge(Machine::Arm, err(0x2000, uc_error::INSN_INVALID), &UDF, &F),
+            EmuOutcome::Illegal { .. }
+        ));
     }
 
     #[test]

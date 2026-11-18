@@ -22,16 +22,17 @@ use std::path::PathBuf;
 use synth_oracle::compare::{EmuOutcome, RefOutcome, TrapClass, Verdict, verdict};
 use synth_oracle::emulate::{self, Cpu, EmuConfig};
 use synth_oracle::reference::{self, Imports};
-use synth_oracle::synth::{CompiledObject, compile};
+use synth_oracle::synth::{CompiledObject, FuncSym, Machine, compile};
 use synth_oracle::value::{Signature, ValType, WasmValue, export_signature};
-use synth_oracle::{Case, run_case};
+use synth_oracle::{Case, CaseError, run_case};
 
 const FUEL: u64 = 1_000_000;
 
-/// Every probe is call-free (no relocations), takes only i32 params (the RV32
-/// selector's i64-PARAM homing is a separate, known defect — see
-/// i64_local_roundtrip_1713_differential.py's RV_LEGS note) and returns at
-/// most one value.
+/// Every probe is call-free (no relocations), memory-free, float-free, takes
+/// only i32 params and returns at most one value. i64 PARAMS are left out
+/// because synth's RV32 backend declines exports that read one (#952 skip), so
+/// they would not compile on the rv32imac leg; the ILP32 pair layout is
+/// covered by the `aapcs_aligns_i64_pairs` unit test only, never by real code.
 const PROBES_WAT: &str = r#"
 (module
   (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add)
@@ -291,6 +292,10 @@ fn probes_agree_with_kiln_on_m3_and_rv32() {
         total += cases.len();
         traps += leg_traps;
     }
+    // EXACT, as literals, not derived from the constants above: shrinking the
+    // probe set or the vectors reds here (and in the CI grep), not silently.
+    assert_eq!(total, 6048, "case count moved");
+    assert_eq!(traps, 72, "trap/trap count moved");
     eprintln!(
         "ORACLE kiln-probe: {total} cases agree across {} legs, {traps} trap/trap",
         LEGS.len()
@@ -374,7 +379,9 @@ fn potency_planted_illegal_instruction_reds() {
     let args = [WasmValue::I32(2), WasmValue::I32(3)];
     // ARM: 0xFFFF 0xFFFF is a 32-bit Thumb encoding in the undefined space,
     // not UDF. RV32: 0xFFFFFFFF is a reserved (>32-bit-length) encoding, not
-    // ebreak/unimp. Also a NON-trap fault: BKPT on ARM, ecall on RV32.
+    // ebreak. Also NON-trap faults: BKPT on ARM, ecall on RV32, and the trap
+    // forms synth NEVER emits (udf.w; c.ebreak, unimp, c.unimp = 0x0000), which
+    // the harness accepts no more than any other fault.
     for leg in LEGS {
         let obj = compile_leg(leg);
         let off = obj.func("add").unwrap().offset as usize;
@@ -386,11 +393,15 @@ fn potency_planted_illegal_instruction_reds() {
                     "fadd.s (no F on E31)",
                     0x0000_0053u32.to_le_bytes().to_vec(),
                 ),
+                ("c.ebreak", vec![0x02, 0x90, 0x02, 0x90]),
+                ("unimp", 0xC000_1073u32.to_le_bytes().to_vec()),
+                ("c.unimp", vec![0x00, 0x00, 0x00, 0x00]),
             ],
             _ => vec![
                 ("undefined", vec![0xFF, 0xFF, 0xFF, 0xFF]),
                 ("bkpt", vec![0x00, 0xBE, 0x00, 0xBE]),
                 ("vadd.f32 (no FPU on M3)", vec![0x30, 0xEE, 0x00, 0x0A]),
+                ("udf.w", vec![0xF0, 0xF7, 0x00, 0xA0]),
             ],
         };
         for (what, bytes) in plants {
@@ -408,20 +419,12 @@ fn potency_planted_illegal_instruction_reds() {
             );
             assert!(matches!(v, Verdict::Disagree(_)));
         }
-        // CONTROL: every trap idiom IS a trap, at the first instruction and at
-        // a later one (so the leg above is not ILLEGAL for every fault, and the
-        // reported fault PC is the idiom's own on each stop path).
+        // CONTROL: the trap synth emits IS a trap, at the first instruction
+        // and at a later one, at its own PC (so the leg above is not ILLEGAL
+        // for every fault).
         let idioms: Vec<(&str, Vec<u8>)> = match leg.cpu {
-            Cpu::Rv32Imac => vec![
-                ("ebreak", 0x0010_0073u32.to_le_bytes().to_vec()),
-                ("c.ebreak", vec![0x02, 0x90]),
-                ("unimp", 0xC000_1073u32.to_le_bytes().to_vec()),
-                ("c.unimp", vec![0x00, 0x00]),
-            ],
-            _ => vec![
-                ("udf", vec![0x00, 0xDE]),
-                ("udf.w", vec![0xF0, 0xF7, 0x00, 0xA0]),
-            ],
+            Cpu::Rv32Imac => vec![("ebreak", 0x0010_0073u32.to_le_bytes().to_vec())],
+            _ => vec![("udf", vec![0x00, 0xDE])],
         };
         for (what, idiom) in idioms {
             for at in [0usize, 4] {
@@ -640,5 +643,346 @@ fn host_imports_resolve_exactly_and_log() {
             module: "mmio".into(),
             field: "read32".into()
         }
+    );
+}
+
+// ------------------------------------------------- guards (REVIEW_11 F4) --
+
+/// A one-function object built by hand, so a guard can be shown red on bytes
+/// synth would never emit.
+fn hand_object(machine: Machine, text: Vec<u8>, relocs: Vec<u64>) -> CompiledObject {
+    let size = text.len() as u64;
+    CompiledObject {
+        path: PathBuf::from("hand.o"),
+        machine,
+        text,
+        funcs: [(
+            "f".to_string(),
+            FuncSym {
+                offset: 0,
+                size,
+                thumb: machine == Machine::Arm,
+                global: true,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        text_relocs: relocs,
+    }
+}
+
+fn words(ws: &[u32]) -> Vec<u8> {
+    ws.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+fn halves(hs: &[u16]) -> Vec<u8> {
+    hs.iter().flat_map(|h| h.to_le_bytes()).collect()
+}
+
+const RET_I32: fn() -> Signature = || Signature {
+    params: vec![],
+    results: vec![ValType::I32],
+};
+
+#[test]
+fn guard_callee_saved_and_sp_are_checked() {
+    // ARM: movs r0,#5 / movs r4,#0 / sub sp,#8, each then `bx lr`.
+    // RV32: li a0,5 / li s1,0 / li gp,0 / addi sp,sp,-16, each then `ret`.
+    let cases: Vec<(&str, Machine, Cpu, Vec<u8>, bool)> = vec![
+        (
+            "arm control",
+            Machine::Arm,
+            Cpu::CortexM3,
+            halves(&[0x2005, 0x4770]),
+            true,
+        ),
+        (
+            "arm R4",
+            Machine::Arm,
+            Cpu::CortexM3,
+            halves(&[0x2005, 0x2400, 0x4770]),
+            false,
+        ),
+        (
+            "arm SP",
+            Machine::Arm,
+            Cpu::CortexM3,
+            halves(&[0x2005, 0xB082, 0x4770]),
+            false,
+        ),
+        (
+            "rv control",
+            Machine::RiscV32,
+            Cpu::Rv32Imac,
+            words(&[0x0050_0513, 0x0000_8067]),
+            true,
+        ),
+        (
+            "rv s1",
+            Machine::RiscV32,
+            Cpu::Rv32Imac,
+            words(&[0x0050_0513, 0x0000_0493, 0x0000_8067]),
+            false,
+        ),
+        (
+            "rv gp",
+            Machine::RiscV32,
+            Cpu::Rv32Imac,
+            words(&[0x0050_0513, 0x0000_0193, 0x0000_8067]),
+            false,
+        ),
+        (
+            "rv SP",
+            Machine::RiscV32,
+            Cpu::Rv32Imac,
+            words(&[0x0050_0513, 0xFF01_0113, 0x0000_8067]),
+            false,
+        ),
+    ];
+    for (what, machine, cpu, text, ok) in cases {
+        let obj = hand_object(machine, text, vec![]);
+        let e = emulate::run(&obj, "f", &RET_I32(), &[], &EmuConfig::new(cpu)).unwrap();
+        if ok {
+            assert_eq!(
+                e.outcome,
+                EmuOutcome::Values(vec![WasmValue::I32(5)]),
+                "{what}"
+            );
+        } else {
+            assert!(
+                matches!(&e.outcome, EmuOutcome::Illegal { reason, .. } if reason.starts_with("ABI violated")),
+                "{what}: {:?}",
+                e.outcome
+            );
+        }
+    }
+}
+
+#[test]
+fn guard_relocations_are_read_and_refused() {
+    // A real call: synth's relocatable object carries a relocation in `f`,
+    // and the emulator refuses to run it unlinked.
+    let w = wat::parse_str(
+        r#"(module
+             (func $g (result i32) i32.const 1)
+             (func (export "f") (result i32) call $g i32.const 1 i32.add))"#,
+    )
+    .unwrap();
+    let dir = scratch();
+    std::fs::write(dir.join("call.wasm"), &w).unwrap();
+    for leg in LEGS {
+        let run = compile(&dir.join("call.wasm"), leg.flags, &dir.join("call.o")).unwrap();
+        let obj = run
+            .object
+            .unwrap_or_else(|| panic!("{}: {}", leg.name, run.stderr));
+        assert!(
+            obj.relocs_in("f") > 0,
+            "{}: no relocation read in `f`",
+            leg.name
+        );
+        let e = emulate::run(&obj, "f", &RET_I32(), &[], &EmuConfig::new(leg.cpu));
+        assert!(
+            matches!(e, Err(emulate::EmuError::NeedsLink { .. })),
+            "{}: {e:?}",
+            leg.name
+        );
+    }
+    // And on a hand object whose bytes would run fine: the relocation alone
+    // refuses it.
+    let obj = hand_object(Machine::Arm, halves(&[0x2005, 0x4770]), vec![0]);
+    assert!(matches!(
+        emulate::run(&obj, "f", &RET_I32(), &[], &EmuConfig::new(Cpu::CortexM3)),
+        Err(emulate::EmuError::NeedsLink { relocs: 1, .. })
+    ));
+}
+
+#[test]
+fn guard_multi_value_results_are_refused() {
+    let obj = hand_object(Machine::Arm, halves(&[0x2005, 0x4770]), vec![]);
+    let sig = Signature {
+        params: vec![],
+        results: vec![ValType::I32, ValType::I32],
+    };
+    assert!(matches!(
+        emulate::run(&obj, "f", &sig, &[], &EmuConfig::new(Cpu::CortexM3)),
+        Err(emulate::EmuError::Abi(_))
+    ));
+}
+
+#[test]
+fn guard_float_signatures_are_refused_on_m4f() {
+    // synth's cortex-m4f passes floats in S registers; the harness reads R0,
+    // so it must refuse rather than judge (REVIEW_11 F1).
+    let w = wat::parse_str(
+        r#"(module (func (export "fabs") (param f32) (result f32) local.get 0 f32.abs))"#,
+    )
+    .unwrap();
+    let dir = scratch();
+    std::fs::write(dir.join("f.wasm"), &w).unwrap();
+    let run = compile(
+        &dir.join("f.wasm"),
+        &["--target", "cortex-m4f", "--relocatable", "--all-exports"],
+        &dir.join("f.o"),
+    )
+    .unwrap();
+    let obj = run.object.unwrap_or_else(|| panic!("m4f: {}", run.stderr));
+    let one = [WasmValue::F32(1.0f32.to_bits())];
+    for cpu in [Cpu::CortexM4, Cpu::CortexM3] {
+        let r = run_case(
+            &w,
+            &obj,
+            "fabs",
+            &one,
+            FUEL,
+            &Imports::new(),
+            &EmuConfig::new(cpu),
+        );
+        assert!(
+            matches!(
+                r,
+                Err(CaseError::Emulator(emulate::EmuError::FloatAbi { .. }))
+            ),
+            "{cpu:?}: {r:?}"
+        );
+    }
+    // Refused on RV32 too: no float convention is shown on real code there.
+    let obj = hand_object(Machine::RiscV32, words(&[0x0000_8067]), vec![]);
+    let sig = Signature {
+        params: vec![ValType::F64],
+        results: vec![],
+    };
+    assert!(matches!(
+        emulate::run(
+            &obj,
+            "f",
+            &sig,
+            &[WasmValue::F64(0)],
+            &EmuConfig::new(Cpu::Rv32Imac)
+        ),
+        Err(emulate::EmuError::FloatAbi { .. })
+    ));
+}
+
+#[test]
+fn guard_linear_memory_modules_are_refused() {
+    let w = wat::parse_str(
+        r#"(module (memory 1) (data (i32.const 16) "\2a")
+             (func (export "f") (result i32) i32.const 16 i32.load8_u))"#,
+    )
+    .unwrap();
+    let obj = hand_object(Machine::Arm, halves(&[0x2005, 0x4770]), vec![]);
+    let r = run_case(
+        &w,
+        &obj,
+        "f",
+        &[],
+        FUEL,
+        &Imports::new(),
+        &EmuConfig::new(Cpu::CortexM3),
+    );
+    assert!(matches!(r, Err(CaseError::LinearMemory)), "{r:?}");
+}
+
+#[test]
+fn guard_zeroed_body_is_not_a_trap() {
+    // REVIEW_11 F5: on RV32 0x0000 is c.unimp, which the text padding decodes
+    // as. A function whose body is zeroed must never agree with a trapping
+    // reference.
+    let w = wasm();
+    let args = [WasmValue::I32(7), WasmValue::I32(0)];
+    for leg in LEGS {
+        let obj = compile_leg(leg);
+        let f = obj.func("div_u").unwrap().clone();
+        let mut z = obj.clone();
+        z.text[f.offset as usize..(f.offset + f.size) as usize].fill(0);
+        let c = run_case(
+            &w,
+            &z,
+            "div_u",
+            &args,
+            FUEL,
+            &Imports::new(),
+            &EmuConfig::new(leg.cpu),
+        )
+        .unwrap();
+        assert!(matches!(c.reference, RefOutcome::Trap { .. }));
+        assert!(!c.verdict.is_agree(), "{}: {:?}", leg.name, c.emulator);
+        if leg.cpu == Cpu::Rv32Imac {
+            assert!(
+                matches!(c.emulator, EmuOutcome::Illegal { .. }),
+                "{:?}",
+                c.emulator
+            );
+        }
+        // Control: the real body traps and agrees.
+        let c = run_case(
+            &w,
+            &obj,
+            "div_u",
+            &args,
+            FUEL,
+            &Imports::new(),
+            &EmuConfig::new(leg.cpu),
+        )
+        .unwrap();
+        assert!(c.verdict.is_agree(), "{}: {:?}", leg.name, c.verdict);
+    }
+}
+
+#[test]
+fn stress_concurrent_runs_never_stop_spuriously() {
+    // REVIEW_11 F2: with a wall-clock timeout, 8 threads x 4000 runs gave 52
+    // spurious Budget stops. With the instruction count alone: 0.
+    let obj = compile_leg(&LEGS[0]);
+    let sig = export_signature(&wasm(), "add").unwrap();
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let (obj, sig) = (obj.clone(), sig.clone());
+            std::thread::spawn(move || {
+                let cfg = EmuConfig::new(Cpu::CortexM3);
+                let mut bad = 0usize;
+                for _ in 0..4000 {
+                    let e = emulate::run(
+                        &obj,
+                        "add",
+                        &sig,
+                        &[WasmValue::I32(2), WasmValue::I32(3)],
+                        &cfg,
+                    )
+                    .unwrap();
+                    if e.outcome != EmuOutcome::Values(vec![WasmValue::I32(5)]) {
+                        bad += 1;
+                    }
+                }
+                bad
+            })
+        })
+        .collect();
+    let bad: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+    eprintln!("stress: 32000 concurrent runs of add(2,3), {bad} not Values(5)");
+    assert_eq!(bad, 0);
+}
+
+#[test]
+fn guard_start_function_runs_under_fuel() {
+    // REVIEW_11 F8: a looping start function must end on the budget (a
+    // refusal), not hang the job.
+    let w = wat::parse_str(
+        r#"(module (func $s loop br 0 end) (start $s)
+             (func (export "f") (result i32) i32.const 1))"#,
+    )
+    .unwrap();
+    // Bounded by the TEST too, so a regression reds in a minute instead of
+    // hanging the job until its timeout.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(reference::run(&w, "f", &[], 10_000, &Imports::new()));
+    });
+    let r = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("a looping start function ran past 60 s: fuel is not applied to it");
+    assert!(
+        matches!(&r, Err(reference::RefError::Instantiate(m)) if m.contains("fuel exhausted")),
+        "{r:?}"
     );
 }

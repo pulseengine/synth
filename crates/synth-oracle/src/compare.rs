@@ -222,6 +222,16 @@ mod tests {
             reason: "x".into(),
         };
         assert!(verdict(&v, &ev).is_agree());
+        // A result-count mismatch never agrees (a void emulator result
+        // against a one-value reference, and the reverse).
+        assert!(matches!(
+            verdict(&v, &EmuOutcome::Values(vec![])),
+            Verdict::Disagree(_)
+        ));
+        assert!(matches!(
+            verdict(&RefOutcome::Values(vec![]), &ev),
+            Verdict::Disagree(_)
+        ));
         assert!(matches!(verdict(&v, &emu_trap()), Verdict::Disagree(_)));
         assert!(matches!(verdict(&v, &ill), Verdict::Disagree(_)));
         assert!(matches!(

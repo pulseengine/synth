@@ -163,3 +163,46 @@ pub fn export_signature(wasm: &[u8], export: &str) -> Result<Signature, String> 
         .flatten()
         .ok_or_else(|| format!("export `{export}` has type {ty}, which is not a function type"))
 }
+
+/// Whether the module has a linear memory at all: a memory section, a memory
+/// import, or a data section.
+///
+/// The harness maps no linear memory and compares no memory effects, so a
+/// module with one is refused by `run_case` rather than run and
+/// judged on return values alone (REVIEW_11 F3). `run_case` exists only
+/// with the `exec` feature.
+pub fn has_linear_memory(wasm: &[u8]) -> Result<bool, String> {
+    use wasmparser::{Parser, Payload, TypeRef};
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload.map_err(|e| e.to_string())? {
+            Payload::MemorySection(r) if r.count() > 0 => return Ok(true),
+            Payload::DataSection(r) if r.count() > 0 => return Ok(true),
+            Payload::ImportSection(r) => {
+                for imp in r.into_imports() {
+                    if let TypeRef::Memory(_) = imp.map_err(|e| e.to_string())?.ty {
+                        return Ok(true);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linear_memory_is_detected() {
+        let with = wat::parse_str("(module (memory 1) (func (export \"f\")))").unwrap();
+        let imported =
+            wat::parse_str("(module (import \"env\" \"m\" (memory 1)) (func (export \"f\")))")
+                .unwrap();
+        let without = wat::parse_str("(module (func (export \"f\")))").unwrap();
+        assert_eq!(has_linear_memory(&with), Ok(true));
+        assert_eq!(has_linear_memory(&imported), Ok(true));
+        assert_eq!(has_linear_memory(&without), Ok(false));
+    }
+}

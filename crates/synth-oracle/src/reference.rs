@@ -222,7 +222,13 @@ fn scan_imports(wasm: &[u8], imports: &Imports) -> Result<ImportScan, RefError> 
     Ok(ImportScan { imported_funcs })
 }
 
-fn load(engine: &mut StacklessEngine, wasm: &[u8]) -> Result<(Arc<Module>, usize), RefError> {
+/// Load and instantiate. The start function, if any, runs under `fuel`, so a
+/// looping start function ends as a refusal instead of hanging.
+fn load(
+    engine: &mut StacklessEngine,
+    wasm: &[u8],
+    fuel: u64,
+) -> Result<(Arc<Module>, usize), RefError> {
     let e = |stage: &str, err: kiln_error::Error| RefError::Instantiate(format!("{stage}: {err}"));
     let km = decode_module(wasm).map_err(|x| e("decode", x))?;
     let module = Arc::new(*Module::from_kiln_module(&km).map_err(|x| e("convert", x))?);
@@ -249,6 +255,7 @@ fn load(engine: &mut StacklessEngine, wasm: &[u8]) -> Result<(Arc<Module>, usize
     inst.initialize_data_segments().map_err(|x| e("data", x))?;
     if let Some(start) = module.start {
         engine.reset_call_depth();
+        engine.set_fuel(fuel);
         engine
             .execute(idx, start as usize, vec![])
             .map_err(|x| e("start function", x))?;
@@ -305,7 +312,7 @@ pub fn run(
                 imports,
                 log: Arc::clone(&log),
             }));
-            let (module, inst) = load(&mut engine, &wasm)?;
+            let (module, inst) = load(&mut engine, &wasm, fuel)?;
             let ex = module
                 .get_export(&export)
                 .filter(|x| x.kind == ExportKind::Function)
@@ -338,4 +345,50 @@ pub fn run(
         .map_err(|e| RefError::Instantiate(format!("spawn: {e}")))?
         .join()
         .map_err(|_| RefError::Instantiate("kiln panicked".into()))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_separates_traps_budget_and_faults() {
+        // A recognised spec trap.
+        assert!(matches!(
+            classify(&kiln_error::Error::runtime_trap("integer divide by zero")),
+            RefOutcome::Trap {
+                class: TrapClass::IntegerDivideByZero,
+                ..
+            }
+        ));
+        // kiln's own internal error through the SAME trap constructor: it must
+        // stay Unclassified (which the matrix never accepts as agreement).
+        assert!(matches!(
+            classify(&kiln_error::Error::runtime_trap(
+                "table.set: expected value on stack"
+            )),
+            RefOutcome::Trap {
+                class: TrapClass::Unclassified,
+                ..
+            }
+        ));
+        // Fuel exhaustion: Budget, never a trap.
+        assert_eq!(
+            classify(&kiln_error::Error::runtime_trap(FUEL_EXHAUSTED)),
+            RefOutcome::Budget
+        );
+        // A host error is a HostTrap.
+        assert!(matches!(
+            classify(&kiln_error::Error::runtime_trap(HOST_TRAP)),
+            RefOutcome::Trap {
+                class: TrapClass::HostTrap,
+                ..
+            }
+        ));
+        // A non-trap category with an unknown message: an engine fault.
+        assert!(matches!(
+            classify(&kiln_error::Error::validation_error("bad module")),
+            RefOutcome::EngineFault(_)
+        ));
+    }
 }

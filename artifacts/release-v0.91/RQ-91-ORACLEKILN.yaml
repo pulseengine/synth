@@ -22,10 +22,22 @@ artifacts:
         Budget, or an engine fault. `emulate` runs synth's compiled function
         under unicorn (Cortex-M0/M3/M4, RV32IMAC as SiFive E31) with AAPCS or
         ILP32 argument setup, seeded callee-saved registers and a balanced-SP
-        check, and asserts the CPU model it reads back. A stop is a TRAP only
-        when the stop path AND the bytes agree on a trap idiom (UDF on ARM;
-        ebreak, c.ebreak, unimp, c.unimp on RV32); any other fault is
-        ILLEGAL; budget overrun is its own outcome. `compare` holds the value
+        check (gp and tp too on RV32), and asserts the CPU model it reads back.
+        A stop is a TRAP only when the stop path AND the bytes agree on
+        exactly the trap synth emits (Thumb `udf` T1; RV32 32-bit `ebreak`)
+        AND the PC lies inside the function; any other fault, including
+        `udf.w`, `c.ebreak`, `unimp` and `c.unimp` (0x0000, what zero padding
+        decodes as), is ILLEGAL; budget overrun is its own outcome, and the
+        instruction count is the only bound (no wall-clock timeout).
+        WHAT IS COMPARED: return values and trap-versus-return only. So the
+        harness REFUSES, with a typed error, what it would otherwise judge
+        wrongly: a module with a linear memory (`CaseError::LinearMemory`;
+        memory effects are not compared and the emulator image could not
+        match kiln's data segments), an f32/f64 parameter or result
+        (`EmuError::FloatAbi`, on every core: synth's cortex-m4f passes
+        floats in S registers, and no soft-float convention is shown on real
+        code), a function with a relocation, stack arguments and multi-value
+        results. `compare` holds the value
         rule (i64 both words; NaN equals NaN, otherwise bit-equal) and the
         reference x emulator verdict matrix. `synth` drives the binary
         (`$SYNTH` or a cargo build) and reads function bytes from the ELF
@@ -44,6 +56,29 @@ artifacts:
         first draft of the trap rule misclassified it as ILLEGAL and the
         trap-idiom control leg caught that too.
 
+        COLD REVIEW 11 (FIX FIRST) AND WHAT CHANGED. F1: on cortex-m4f the
+        harness read a float result from R0 while synth returns it in S0, so
+        a planted wrong VFP instruction agreed; float signatures are now
+        refused. F2: unicorn's wall-clock timeout thread reads a
+        process-global clock that every engine init rewrites, and under
+        concurrency it stopped healthy runs (52 spurious Budget stops in
+        32,000 runs on 8 threads; 4 of 32 suite runs red); the timeout is
+        gone, and a committed stress test runs the same 32,000 runs on 8
+        threads and requires 0. F3: memory effects were not compared; such
+        modules are refused. F4: six guards had no test that could red; each
+        now has one. F5: RV32 accepted trap forms synth never emits,
+        including `c.unimp` = 0x0000, so a zeroed body "trapped" and agreed;
+        only `ebreak` is accepted now, with a zeroed-body control. F7: the CI
+        grep is exact. F8: a looping start function now ends on the fuel
+        budget, and the no-dependents pin catches the table and `package =`
+        forms.
+
+        THE CI JOB IS UNPROVEN ON THE RUNNER until its first run there: it is
+        the first job to compile C on the smithy pool (unicorn via cmake and
+        bindgen), with cmake, ninja and libclang from pip wheels and bindgen
+        pointed at gcc's include directory, none of which has run on that
+        image yet.
+
         LICENCE, a maintainer decision (2026-11-18): unicorn-engine is
         GPL-2.0, accepted here as "GPL-2.0 in an unpublished test-only harness; never linked into the synth binary or any published crate". Recorded in deny.toml; the
         two facts it rests on (no dependents, publish = false) are pinned in
@@ -52,7 +87,8 @@ artifacts:
         REFUTING COMMAND, to be RUN BEFORE building on this artifact:
         `SYNTH=./target/debug/synth cargo test -p synth-oracle --features
         exec -- --nocapture`. Any failing test, or a sweep line other than
-        `ORACLE kiln-probe: 6048 cases agree across 2 legs`, refutes it.
+        `ORACLE kiln-probe: 6048 cases agree across 2 legs, 72 trap/trap`,
+        refutes it.
     tags:
       - feature-loop
       - oracle
@@ -88,12 +124,28 @@ artifacts:
         i32.add gives exactly 120 of 144 disagreements per leg (add equals
         sub only when the second operand is 0 or 0x80000000); a planted
         undefined encoding, BKPT, VFP-on-M3 (ARM) and a reserved encoding,
-        ecall, F-on-E31 (RV32) are each ILLEGAL and Disagree, while every
-        trap idiom planted at +0 and +4 is a trap at its own PC; dropping
+        ecall, F-on-E31 (RV32), and the trap forms synth never emits (udf.w;
+        c.ebreak, unimp, c.unimp), are each ILLEGAL and Disagree, while the
+        trap synth emits (udf; ebreak) planted at +0 and +4 is a trap at its
+        own PC, and a zeroed div_u body never agrees with kiln's trap; dropping
         the high word of an i64 result reds 266 of 266 nonzero-high cases
         per leg; kiln out of fuel and unicorn out of instructions are each
         Budget, never Trap, and no Budget pairing agrees. The 22nd probe,
-        `spin`, is that budget probe. EQUIVALENCE (one-off, not a gate): the
+        `spin`, is that budget probe. GUARDS, each with a committed test
+        that reds without it: callee-saved, gp/tp and SP (hand-built
+        objects), the relocation read and refusal (a real call on both legs),
+        the stop-path-and-bytes trap rule and the in-function PC (unit test
+        on the pure rule), kiln message classification through
+        `reference::classify`, the result-count check, the multi-value,
+        float and linear-memory refusals, and fuel on the start function.
+        STRESS: 32,000 concurrent runs of add(2,3) on 8 threads, 0 not
+        Values(5) (the same stress gave 52 spurious Budget stops with the
+        old wall-clock timeout). MUTATION SURVEY, REVIEW_11's 26 mutants
+        re-anchored to the new code plus 7 for the fixes, run against the
+        committed tests: 32 of 33 killed. The survivor is m21 (the readback
+        comparison dropped), which the review classes as equivalent: the
+        test asserts the readback itself and m17 (`Mode::MCLASS`) is
+        killed. Of the review's 26: 25 killed (was 18). EQUIVALENCE (one-off, not a gate): the
         3024 kiln reference outcomes were re-run on wasmtime 48.0.0 (Python)
         and 0 diverged; the trap classes pair as IntegerDivideByZero /
         INTEGER_DIVISION_BY_ZERO (24) and Unreachable / UNREACHABLE (12).

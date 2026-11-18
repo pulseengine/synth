@@ -2309,19 +2309,27 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      # unicorn-engine-sys builds unicorn with cmake and generates its
-      # bindings with bindgen, which loads libclang. The smithy runners have no
-      # sudo, so both come from pip wheels (the same fallback the pip-based
-      # oracle jobs use) and LIBCLANG_PATH points bindgen at the wheel's copy.
-      - name: Install unicorn's build tools (cmake, libclang)
+      # unicorn-engine-sys builds unicorn with cmake and ALWAYS generates its
+      # bindings with bindgen, which loads libclang. This is the first job to
+      # compile C on the smithy pool, which has no sudo, so cmake, ninja and
+      # libclang come from pip wheels and LIBCLANG_PATH points bindgen at the
+      # wheel's copy. The libclang wheel carries NO headers, and unicorn.h
+      # includes the compiler's <stdarg.h>/<stdbool.h>, so bindgen is pointed
+      # at gcc's own include directory (REVIEW_11 F6). UNPROVEN ON THE POOL
+      # until this job's first run there.
+      - name: Install unicorn's build tools (cmake, ninja, libclang)
         run: |
           set -euo pipefail
           command -v cmake >/dev/null || pip install cmake || pip install --break-system-packages cmake
+          command -v ninja >/dev/null || command -v make >/dev/null || pip install ninja || pip install --break-system-packages ninja
           pip install libclang || pip install --break-system-packages libclang
           loc=$(pip show libclang | sed -n 's/^Location: //p')
           lib=$(find "$loc/clang/native" -name 'libclang*.so*' | head -n 1)
           test -n "$lib"
           echo "LIBCLANG_PATH=$(dirname "$lib")" >> "$GITHUB_ENV"
+          gccinc=$(gcc -print-file-name=include)
+          test -f "$gccinc/stdarg.h"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-I$gccinc" >> "$GITHUB_ENV"
           cmake --version
       - name: Build synth
         run: cargo build -p synth-cli
@@ -2330,12 +2338,15 @@ jobs:
       - name: kiln probe oracle (cortex-m3 + rv32imac, with potency legs)
         run: |
           set -euo pipefail
+          log="$RUNNER_TEMP/oracle-kiln.log"
           SYNTH="$PWD/target/debug/synth" cargo test -p synth-oracle --features exec \
-            -- --nocapture 2>&1 | tee /tmp/oracle-kiln.log
-          # NON-VACUITY: the sweep line must report a four-digit case count
-          # over both legs; a probe set filtered to nothing cannot print it.
-          grep -qE '^ORACLE kiln-probe: [1-9][0-9]{3,} cases agree across 2 legs, [1-9][0-9]* trap/trap$' /tmp/oracle-kiln.log
-          grep -qE '^test result: ok\. 7 passed; 0 failed' /tmp/oracle-kiln.log
+            -- --nocapture 2>&1 | tee "$log"
+          # NON-VACUITY, EXACT: the artifact's counts (RQ-91-ORACLEKILN). A
+          # shrunk probe set or vector list reds here as well as in the test.
+          grep -qx 'ORACLE kiln-probe: 6048 cases agree across 2 legs, 72 trap/trap' "$log"
+          grep -qx 'stress: 32000 concurrent runs of add(2,3), 0 not Values(5)' "$log"
+          grep -qE '^test result: ok\. 15 passed; 0 failed' "$log"
+          grep -qE '^test result: ok\. 8 passed; 0 failed' "$log"
 
   provenance-gate:
     name: synth-provenance-v1 reconciliation gate (#396)
