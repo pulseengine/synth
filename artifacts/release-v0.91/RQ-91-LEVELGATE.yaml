@@ -58,15 +58,21 @@ artifacts:
         named proof file itself `Require`s. Thumb-2 binds to
         Synth.ARM.ArmSemantics. rv32, aarch64 and cortex-r5-relocatable bind
         to None, because no Rocq model of their ISA (or of A32 encoding)
-        exists, so no proof file can be cited for them. (b) The WCET gate
-        must pass the backend's target in a Rust string literal (the
-        `invocation` regex over a lexer's literals: raw strings, escapes,
-        char literals and nested comments handled), so a gate that only
-        mentions the backend in a comment does not bind. (c)
-        `census_invocation` replaces `census_constants`: every reference to
-        run_synth's `backend` PARAMETER becomes the rung's own name, so the
-        `riscv` rung's tokens include `riscv`, while a hard-coded `"-b",
-        "arm"` keeps its constant. claims.yaml gains status fields
+        exists, so no proof file can be cited for them. Rocq comments are
+        stripped innermost-first to a fixpoint (they nest), so neither a
+        `Require` nor a `Qed.` inside a comment counts. (b) The WCET gate
+        must pass the backend's target in a compile-TARGET position: a
+        string literal that is a direct argument of a `compile*` call, or
+        that follows a `-t`/`--target`/`-b` literal. A Rust lexer finds the
+        literals and blanks comments, strings and char literals so brackets
+        match on code alone. A literal in an attribute, an assert message or
+        an unused `let` does not bind. RESIDUAL: a gate that compiles for a
+        target only to assert that WCET declines there still binds. (c)
+        `census_invocation` replaces `census_constants`: the rung name is a
+        token only by POSITION, where the element after a backend flag in
+        run_synth's command list is the name `backend`, a parameter the
+        function never rebinds. A hard-coded `"-b", "arm"` keeps its
+        constant whatever else mentions `backend`. claims.yaml gains status fields
         rv32_selector_lines_code and aarch64_selector_lines_code (same
         engine, marker and family-glob shape as selector_lines_code) and two
         `direction: down` ratchets on them under SYNTH-SUBTRACTION-SELECTOR,
@@ -77,7 +83,28 @@ artifacts:
         evidence, and its open ladder entry stays valid, because the `arm`
         rung still selects no Cortex-M token.
       verified-by: >
-        Self-test (support_level_check.py --self-test, 26 cases, all ok).
+        PRE-PUSH REVIEW 3 (FIX FIRST) found the ladder bound by mention, the
+        WCET gate bound by any literal, a comment case that tested no
+        comment handling, single-pass Rocq comment stripping and the id
+        written with a v0.92 prefix. All five addressed. Self-test now 38 cases, all
+        ok. 13 cases added; 8 are red with check() swapped for the
+        previous commit 01c1db5e's (ladder `-b arm` plus a log mention;
+        `backend` rebound; WCET target only in #[cfg], in an assert
+        message, in an unused `let`; Require in a nested Rocq comment;
+        `Qed.` in a comment; `Qed.` in a nested comment). The other 5 hold
+        behaviour the previous commit already had, and each kills a mutant:
+        the target in a `//`, a `/* */` and behind a `'"'` char literal
+        (lexer mutants line-comments-kept, block-comments-kept and
+        char-literals-kept), the `-t` flag position binding (flag rule
+        dropped), and a module-global `backend` (parameter check dropped).
+        18 gate-code mutants, all red: rv32 borrowing the ARM model, WCET
+        binding removed, rung bound by mention, rebinding ignored,
+        parameter check dropped, the three lexer mutants, raw strings off,
+        Rocq single-pass stripping, no Rocq stripping, unstripped Qed,
+        ladder forced met, rung token always added, any literal a target,
+        callee unchecked, flag rule dropped; the `proof_isa is None` skip
+        reds by a crash, fail-closed.
+        FIRST ROUND: self-test (support_level_check.py --self-test, 26 cases, all ok).
         The 8 new cases were run with check() swapped for the base tree's:
         6 red there (RV32 L1 citing the ARM-model proof; a proof whose
         ArmSemantics Require is commented out; RV32 L1 citing a cortex-m4-only

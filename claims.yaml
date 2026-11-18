@@ -300,7 +300,7 @@ status_fields:
            'crates/synth-synthesis/src/instruction_selector/**/*.rs']
     before: "#[cfg(test)]\nmod tests"
     before_missing: whole-file
-  # RQ-92-LEVELGATE (maintainer decision): the same subtraction metric for the
+  # RQ-91-LEVELGATE (maintainer decision): the same subtraction metric for the
   # RV32 and AArch64 instruction selectors, so the L1 promotions RQ-91-
   # SUPPORTLEVELS plans for those backends cannot be bought with an unmeasured
   # pile of hand-written lowering arms. Same engine, same marker, same FAMILY
@@ -3681,7 +3681,7 @@ claims:
         # `narrow_param_set_writes_the_aapcs_home_1714`'s MOV filter (test
         # region; the directed code-region count is unchanged).
         value: 93
-      # RQ-92-LEVELGATE (maintainer decision): the RV32 and AArch64 selectors
+      # RQ-91-LEVELGATE (maintainer decision): the RV32 and AArch64 selectors
       # get the ceiling the ARM selector has had since RQ-58-METRIC, measured
       # over the non-test region by the same derivation. Baseline = the value at
       # pin creation (main 265235dc); growth needs a waiver bound to its value.
