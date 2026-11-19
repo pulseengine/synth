@@ -116,6 +116,11 @@ const CASES: &[(&str, &str, &str)] = &[
         "no exported functions",
     ),
     (
+        "export named like its own label",
+        r#"(module (func (export "func_0") (param i32) (result i32) local.get 0))"#,
+        "same name as its own object-local label `func_0`",
+    ),
+    (
         "unsupported helper",
         r#"(module
              (func (param i32) (result i32) local.get 0 i32.eqz)
@@ -145,4 +150,33 @@ fn invalid_wasm_is_refused_before_lowering() {
              (func (export "f") (result i32) call $g))"#,
     );
     assert!(e.contains("invalid wasm"), "{e}");
+}
+
+/// The one exception to "everything else is refused": the shared decoder drops
+/// `nop` before the selector sees it, so a body with `nop` compiles (as
+/// nothing). Pinned so the exception stays stated (REVIEW_13 F4).
+#[test]
+fn nop_is_dropped_by_the_decoder_and_compiles() {
+    let wasm = wat::parse_str(
+        r#"(module (func (export "f") (param i32) (result i32) nop local.get 0 nop))"#,
+    )
+    .unwrap();
+    let obj = compile_wasm(&wasm).expect("nop is dropped at decode, not refused");
+    assert_eq!(obj.functions[0].insts.len(), 2, "mov + ret, no nop");
+}
+
+/// The cross case stays accepted: `func_1` exported from function 0 beside a
+/// real function 1 names a different body, so it is a GLOBAL alias of
+/// function 0 and function 1 keeps its LOCAL label.
+#[test]
+fn an_export_named_like_another_functions_label_is_kept() {
+    let wasm = wat::parse_str(
+        r#"(module
+             (func (export "func_1") (param i32) (result i32) local.get 0)
+             (func (param i32) (result i32) local.get 0))"#,
+    )
+    .unwrap();
+    let obj = compile_wasm(&wasm).unwrap();
+    assert_eq!(obj.functions[0].symbols, vec!["func_0", "func_1"]);
+    assert_eq!(obj.functions[1].symbols, vec!["func_1"]);
 }

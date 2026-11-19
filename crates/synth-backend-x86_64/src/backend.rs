@@ -222,9 +222,18 @@ pub fn compile_wasm(wasm: &[u8]) -> Result<X86Object, BackendError> {
         let (code, lens) = encoder::encode_all(&insts);
         let mut symbols = vec![sym.clone()];
         for e in shape.exports.get(&func.index).into_iter().flatten() {
-            if *e != sym {
-                symbols.push(e.clone());
+            // REVIEW_13 F3: an export named exactly like this function's own
+            // `func_N` label used to be deduplicated against it, and the label
+            // is LOCAL — so the export vanished from the object with exit 0
+            // and the embedder's link failed later on an undefined symbol.
+            // Refused by name instead. (AArch64 has the same dedup today.)
+            if *e == sym {
+                return Err(fail(format!(
+                    "x86_64: function {} is exported as '{e}', the same name as its own object-local label `{sym}`; the label is LOCAL, so the export would be silently missing from the object — refusing (rename the export)",
+                    func.index
+                )));
             }
+            symbols.push(e.clone());
         }
         functions.push(X86Function {
             index: func.index,

@@ -30,7 +30,7 @@ bazel test //tests/...             # Renode ARM Cortex-M4 emulation tests
 | `synth-backend` | ARM Thumb-2 (Cortex-M) + A32 (Cortex-R5) encoder, ELF builder, vector table, linker scripts, MPU |
 | `synth-backend-riscv` | RISC-V RV32IMAC backend (selector, encoder, relocatable ELF) — qemu_riscv32 / ESP32-C3 |
 | `synth-backend-aarch64` | AArch64 (A64) host-native backend — i32/i64 core, complete scalar f32/f64, globals, `call_indirect`, bounds-checked linear memory; `-b aarch64` |
-| `synth-backend-x86_64` | x86-64 (SysV AMD64) host-native backend, lane X1 skeleton — leaf i32 `local.get`/`i32.add`/`return` into an ELF64 `ET_REL`, everything else refused by name; `-b x86_64` (VCR-X86-001, #1741) |
+| `synth-backend-x86_64` | x86-64 (SysV AMD64) host-native backend, lane X1 skeleton — leaf i32 `local.get`/`i32.add`/`return` into an ELF64 `ET_REL`, everything else refused by name (except `nop`, which the decoder drops); `-b x86_64` (VCR-X86-001, #1741) |
 | `synth-backend-awsm` | aWsm backend integration (WASM→native via aWsm) |
 | `synth-backend-wasker` | Wasker backend integration (WASM→Rust transpiler) |
 | `synth-synthesis` | WASM→ARM instruction selection, peephole optimizer, pattern matcher |
@@ -207,15 +207,16 @@ ever-growing pile of locally-correct patches.**
 > fall; the rule count is a FLOOR that must rise. Adding a hand-written lowering
 > without deleting one must turn the gate red.
 >
-> **The ratchet, and how to move it.** Fourteen `kind: ratchet` pins in
+> **The ratchet, and how to move it.** Fifteen `kind: ratchet` pins in
 > `claims.yaml` (seven from RQ-58-METRIC, plus v0.65's `mutants_untested` —
 > the mutation survey's surviving-mutant ceiling over
 > `docs/status/mutation_survey.json`, RQ-65-MUTANTS — plus v0.66's
 > `known_open_pins` / `known_open_pinned_cases`, the pin debt, below, plus
 > v0.91's `rv32_selector_lines_code` / `aarch64_selector_lines_code`, the
 > RV32 and AArch64 selector ceilings, RQ-91-LEVELGATE, plus v0.91's
-> `x86_selector_lines_code` (tracked until x86-64 reaches L2, then a ceiling)
-> and its floor `x86_ops_lowered`, RQ-91-X86SKEL;
+> `x86_selector_lines_code` (tracked until x86-64 reaches L2, then a ceiling),
+> the independent floor `x86_ops_lowered` and the ceiling
+> `x86_selector_wildcard_arms_code`, RQ-91-X86SKEL;
 > engine + escape hatch documented in `scripts/claim_check.py`,
 > unit-tested in `scripts/test_claim_check.py`, printed every CI run by
 > `claim_check.py claims.yaml --metric`). Each carries a `value:` that must

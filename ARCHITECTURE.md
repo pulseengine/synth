@@ -29,7 +29,7 @@ It carries **five backends**:
 | ARM Cortex-R | `synth-backend` | A32 | cortex-r5 |
 | RISC-V | `synth-backend-riscv` | RV32IMAC | qemu_riscv32, ESP32-C3 |
 | AArch64 (host-native) | `synth-backend-aarch64` | A64 | cortex-a53 (host-linkable ET_REL) |
-| x86-64 (host-native, skeleton) | `synth-backend-x86_64` | x86-64 baseline | x86_64 (SysV ELF64 ET_REL; lane X1: leaf i32 `local.get`/`i32.add`/`return`, all else refused) |
+| x86-64 (host-native, skeleton) | `synth-backend-x86_64` | x86-64 baseline | x86_64 (SysV ELF64 ET_REL; lane X1: leaf i32 `local.get`/`i32.add`/`return`, all else refused except `nop`, which the decoder drops) |
 
 **Key properties:**
 

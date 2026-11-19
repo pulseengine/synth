@@ -337,11 +337,26 @@ status_fields:
   # RQ-91-X86SKEL (#1741, maintainer decision 2026-11-18): the x86-64
   # selector, measured the same way. It is pinned `direction: track` while the
   # backend is being built (L3), and flipped to `down` in the lane that
-  # promotes it to L2; the `up` floor on `x86_ops_lowered` below is its pair,
-  # so its lines cannot grow without the derived surface growing too.
+  # promotes it to L2. `track` asserts NO direction: it only makes every
+  # movement a visible claims.yaml diff. The `up` floor on `x86_ops_lowered`
+  # below is a SEPARATE pin (the plan's addition, not the maintainer's): it
+  # stops the derived lowered set shrinking. Nothing joins the two — the
+  # selector can grow while the lowered set stands still (REVIEW_13 F1).
   x86_selector_lines_code:
     kind: count
     pattern: '\n'
+    glob: ['crates/synth-backend-x86_64/src/selector.rs',
+           'crates/synth-backend-x86_64/src/selector/**/*.rs']
+    before: "#[cfg(test)]\nmod tests"
+    before_missing: whole-file
+  # The plan's third X1 pin (X86_PLAN 2.4), added after REVIEW_13 F5: `_ =>`
+  # arms in the same region. Live value 1 (the both-parameters case of the
+  # i32.add operand match), not the plan's 0. The catch-all over WasmOp is
+  # `other => Err(Unsupported(..))`, which declines BY NAME and which this
+  # pattern deliberately does not count.
+  x86_selector_wildcard_arms_code:
+    kind: count
+    pattern: '^[ \t]*_ =>'
     glob: ['crates/synth-backend-x86_64/src/selector.rs',
            'crates/synth-backend-x86_64/src/selector/**/*.rs']
     before: "#[cfg(test)]\nmod tests"
@@ -3984,13 +3999,21 @@ claims:
         name: x86_selector_lines_code
         direction: track
         value: 250
-      # Its pair: the derived x86-64 surface is a FLOOR, so the selector
-      # cannot grow while the lowered set stands still or shrinks.
+      # Beside it, independently: the derived x86-64 surface is a FLOOR, so
+      # the lowered set cannot shrink. It does NOT bound the selector's lines
+      # (a line can be added while this stays 3; REVIEW_13 F1 measured it).
       - kind: ratchet
         name: x86_ops_lowered
         direction: up
         value: 3
         baseline: 3
+      # The plan's third X1 pin (REVIEW_13 F5): the x86-64 selector's `_ =>`
+      # arms are a ceiling from creation, at the live value 1.
+      - kind: ratchet
+        name: x86_selector_wildcard_arms_code
+        direction: down
+        value: 1
+        baseline: 1
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -4070,7 +4093,7 @@ claims:
   # "can this check still fail" audit applied to the check being added.
   - id: SYNTH-SUBTRACTION-PINS-DECLARED
     doc: CLAUDE.md
-    text: "Fourteen `kind: ratchet` pins in"
+    text: "Fifteen `kind: ratchet` pins in"
     evidence:
       # RQ-65-MUTANTS (v0.65): 7 -> 8 — the eighth is `mutants_untested`, a
       # ceiling over the mutation-survey ledger (SYNTH-MUTATION-SURVEY-RQ65).
@@ -4081,13 +4104,14 @@ claims:
       # CLAUDE.md says "Ten".
       # RQ-91-LEVELGATE (v0.91): 10 -> 12 — `rv32_selector_lines_code` and
       # `aarch64_selector_lines_code`, two more ceilings. 8 + 1 + 3.
-      # RQ-91-X86SKEL (v0.91, #1741): 12 -> 14 — `x86_selector_lines_code`
-      # (tracked until L2, maintainer decision 2026-11-18) and its floor
-      # `x86_ops_lowered`. 8 + 2 + 4.
+      # RQ-91-X86SKEL (v0.91, #1741): 12 -> 15 — `x86_selector_lines_code`
+      # (tracked until L2, maintainer decision 2026-11-18), the floor
+      # `x86_ops_lowered` and the ceiling `x86_selector_wildcard_arms_code`
+      # (the plan's additions). 9 + 2 + 4.
       - kind: count-eq
         pattern: '^      - kind: ratchet$'
         glob: ['claims.yaml']
-        expect: 14
+        expect: 15
       # THE DIRECTION BREAKDOWN, pinned — and this one was earned. While
       # building this lane the `direction: track` change to the two whole-file
       # pins was silently reverted by an unrelated `git checkout -- claims.yaml`
@@ -4105,7 +4129,7 @@ claims:
       - kind: count-eq
         pattern: '^        direction: down$'
         glob: ['claims.yaml']
-        expect: 8
+        expect: 9
       - kind: count-eq
         pattern: '^        direction: up$'
         glob: ['claims.yaml']

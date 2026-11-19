@@ -61,7 +61,7 @@ pub(crate) fn compile(
             other => anyhow::bail!(
                 "--safety-bounds {} is not implemented on the x86_64 backend — \
                  refusing rather than silently emitting unchecked accesses. \
-                 Use software (the default) or none.",
+                 Use software or none.",
                 other.as_str()
             ),
         }

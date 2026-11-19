@@ -5,7 +5,9 @@
 //! from `local.get` (of a parameter), `i32.add`, `return` and `end`, with at
 //! most six i32 parameters and at most one i32 result, into a SysV ELF64
 //! `ET_REL` (`EM_X86_64`) written by the SHARED object plan
-//! (`synth_core::object_plan`). Everything else is refused loudly, by name.
+//! (`synth_core::object_plan`). Everything else is refused loudly, by name —
+//! except `nop`, which the shared decoder drops before the selector sees it, so
+//! it compiles as nothing.
 //!
 //! Structure, after `synth-backend-aarch64`:
 //! - [`inst`]: the instruction type, one variant per emitted form, and its

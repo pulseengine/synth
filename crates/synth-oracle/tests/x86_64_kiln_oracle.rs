@@ -432,3 +432,48 @@ fn potency_the_cpu_model_pin_is_load_bearing() {
     u.emu_start(0x1000, 0x1004, 0, 1).unwrap();
     assert_eq!(u.reg_read(RegisterX86::RAX as i32).unwrap() as u32, 31);
 }
+
+/// REVIEW_13 F2: the three emulator rules that had no red test. Each body
+/// reads a register the harness must have POISONED (or seeded in all 64
+/// bits); with the rule removed, the read sees unicorn's zero and the body
+/// passes as correct.
+#[test]
+fn potency_scratch_unused_args_and_upper_seed_are_poisoned() {
+    // r10 is caller-saved scratch and carries no argument: `movl %r10d, %eax`
+    // must not return a fixed zero.
+    match run_hand(&[0x44, 0x89, 0xD0, 0xC3], &sig(&[], &[ValType::I32]), &[]) {
+        EmuOutcome::Values(v) => assert_ne!(v, vec![WasmValue::I32(0)], "r10 not poisoned"),
+        o => panic!("{o:?}"),
+    }
+    // r11 likewise: `movl %r11d, %eax`.
+    match run_hand(&[0x44, 0x89, 0xD8, 0xC3], &sig(&[], &[ValType::I32]), &[]) {
+        EmuOutcome::Values(v) => assert_ne!(v, vec![WasmValue::I32(0)], "r11 not poisoned"),
+        o => panic!("{o:?}"),
+    }
+    // An UNUSED argument register: a one-parameter function reading esi.
+    match run_hand(
+        &[0x89, 0xF0, 0xC3],
+        &sig(&[ValType::I32], &[ValType::I32]),
+        &[WasmValue::I32(5)],
+    ) {
+        EmuOutcome::Values(v) => {
+            assert_ne!(v, vec![WasmValue::I32(0)], "unused rsi not poisoned");
+            assert_ne!(v, vec![WasmValue::I32(5)]);
+        }
+        o => panic!("{o:?}"),
+    }
+    // `movl %ebx, %ebx` changes ONLY rbx's upper half (it zeroes it). Caught
+    // only if the callee-saved seed has a nonzero upper half.
+    let mut t = vec![0x89, 0xDB];
+    t.extend_from_slice(MOV_EAX_EDI_RET);
+    match run_hand(
+        &t,
+        &sig(&[ValType::I32], &[ValType::I32]),
+        &[WasmValue::I32(5)],
+    ) {
+        EmuOutcome::Illegal { reason, .. } => {
+            assert!(reason.contains("rbx clobbered"), "{reason}")
+        }
+        o => panic!("upper-half-only rbx clobber not caught: {o:?}"),
+    }
+}

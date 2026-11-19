@@ -4728,8 +4728,9 @@ artifacts:
       costs 2 and 3 by making NO proof claim — x86-64 is capped at support
       level L2, and no vendor-authoritative x86 semantics exists in Rocq
       (surveyed 2026-11-18). The same day the maintainer decided the x86
-      selector's line count is pinned `track` until L2 and then `down`, paired
-      with an `up` floor on the derived lowered-op surface; that the linear
+      selector's line count is pinned `track` until L2 and then `down` (the
+      `up` floor on the derived lowered-op surface beside it is the plan's
+      addition, not a maintainer decision); that the linear
       memory base is a LINKER-PLACED symbol addressed RIP-relative, one
       instance per object; and that REVIEW_2's corrections apply (unicorn CPU
       model pinned, `ud2` checked at RIP, per-instruction addends,

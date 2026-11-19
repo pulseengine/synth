@@ -107,6 +107,12 @@ fn every_refusal_names_its_cause_and_writes_nothing() {
             "does not accept --target cortex-a53",
         ),
         (ADD, &["--func-name", "add"], "--func-name"),
+        // REVIEW_13 F3: used to exit 0 with the export missing from the object.
+        (
+            r#"(module (func (export "func_0") (param i32) (result i32) local.get 0))"#,
+            &[],
+            "same name as its own object-local label `func_0`",
+        ),
     ];
     for (wat, extra, needle) in cases {
         let mut flags = vec!["-b", "x86_64"];

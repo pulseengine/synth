@@ -2520,9 +2520,14 @@ fn a64_op_surface_artifact_is_fresh_242() {
 // selector accepts the probe (with one result, or with none); otherwise it is
 // "declined" and the selector's own message is the reason. The committed
 // `artifacts/x86_64-op-surface.json` must equal this derivation, and
-// `x86_ops_lowered` (claims.yaml) counts its "lowered" rows — the `up` floor
-// on the x86-64 surface, so the selector's line count (pinned `track`) cannot
-// grow without the surface growing beside it.
+// `x86_ops_lowered` (claims.yaml) counts its "lowered" rows — an `up` floor,
+// so the lowered set cannot shrink. It is independent of the selector's line
+// count (pinned `track`, which asserts no direction): lines can grow while
+// this count stands still; each movement is only made visible.
+//
+// THE SELECTOR, NOT THE SHIPPED PATH: this probes `select()`. The shared
+// decoder drops `nop` before selection, so `nop` is "declined" here and yet a
+// module containing it compiles (as nothing) through `compile_wasm`.
 //
 // SCOPE, as for aarch64: OP-LEVEL ONLY. The x86-64 backend also refuses at
 // MODULE level (any non-i32 signature, imports, memory, tables, globals, ...);
