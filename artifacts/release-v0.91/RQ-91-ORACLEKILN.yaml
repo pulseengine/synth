@@ -76,11 +76,23 @@ artifacts:
         The job lives in .github/workflows/oracle-kiln.yml, not ci.yml: ci.yml
         is at its size ceiling (a 514,837-byte ci.yml was rejected as a workflow
         file issue with 0 jobs, run 44505673142; 511,836 bytes still ran).
-        THE CI JOB IS UNPROVEN ON THE RUNNER until its first run there: it is
-        the first job to compile C on the smithy pool (unicorn via cmake and
-        bindgen), with cmake, ninja and libclang from pip wheels and bindgen
-        pointed at gcc's include directory, none of which has run on that
-        image yet.
+        THE CI JOB'S FIRST RUN (run 44587233237, runner
+        pulseengine-ci-01-11) built unicorn and kiln on the pool, so the
+        cmake/bindgen setup works there, and was CANCELLED at its 45-minute
+        timeout: one sweep leg took 28 minutes. Measured cause, in an aarch64
+        Ubuntu VM: kiln's `Module::from_kiln_module` ran once per CASE (~12 ms
+        there, against microseconds for decode, instantiation and execution;
+        the runner spent ~470 ms per case), and unicorn was a Debug C build.
+        The fix caches the converted module per worker thread (every call
+        still gets a fresh engine and instance, so no state crosses calls),
+        runs kiln on one long-lived worker per calling thread, and builds
+        unicorn, unicorn-engine and synth-oracle at opt-level 3 in the dev
+        profile. The whole exec suite went from 123 s to 4.3 s on a Mac and
+        runs in 14-20 s in a 4-CPU Linux VM. synth was not the cost (one
+        compile per target per test, ~12 ms each) and stays a debug build.
+        The sweep and the 8-thread stress test hold one lock, so they never
+        overlap. The job's timeout is 25 minutes, derived from these
+        measurements. Its first passing run on the pool is still to come.
 
         LICENCE, a maintainer decision (2026-11-18): unicorn-engine is
         GPL-2.0, accepted here as "GPL-2.0 in an unpublished test-only harness; never linked into the synth binary or any published crate". Recorded in deny.toml; the

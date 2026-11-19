@@ -39,7 +39,17 @@ jobs:
     #
     # NOT a required context, so it can be added and renamed freely.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
-    timeout-minutes: 45
+    # MEASURED, not guessed. The first run on the pool (run 44587233237,
+    # runner pulseengine-ci-01-11) built in about 4 minutes (synth 1m06s,
+    # clippy 1m12s, the test build 1m41s) and then spent 28 minutes on ONE
+    # sweep leg: kiln re-converted the module for every case
+    # (Module::from_kiln_module, ~12 ms in an aarch64 Linux VM, ~470 ms per
+    # case on the runner) and unicorn was a Debug C build. With the converted
+    # module cached and unicorn built optimized, the whole test takes 4.3 s on
+    # an M-series Mac and 14-20 s in a 4-CPU Linux VM. Allowance: ~5 min of
+    # builds plus the test at 20x the VM time (~7 min) is ~12 min; 25 is
+    # about 2x that.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -64,8 +74,8 @@ jobs:
       # libclang come from pip wheels and LIBCLANG_PATH points bindgen at the
       # wheel's copy. The libclang wheel carries NO headers, and unicorn.h
       # includes the compiler's <stdarg.h>/<stdbool.h>, so bindgen is pointed
-      # at gcc's own include directory (REVIEW_11 F6). UNPROVEN ON THE POOL
-      # until this job's first run there.
+      # at gcc's own include directory (REVIEW_11 F6). PROVEN on the pool by
+      # its first run (run 44587233237): unicorn and kiln built.
       - name: Install unicorn's build tools (cmake, ninja, libclang)
         run: |
           set -euo pipefail

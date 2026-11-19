@@ -222,6 +222,32 @@ fn scan_imports(wasm: &[u8], imports: &Imports) -> Result<ImportScan, RefError> 
     Ok(ImportScan { imported_funcs })
 }
 
+thread_local! {
+    /// The kiln worker's cache of CONVERTED modules, keyed by their bytes.
+    /// `Module::from_kiln_module` is the expensive step (measured ~12 ms per
+    /// call in a Linux VM, against microseconds for decode, instantiation and
+    /// execution), and a `Module` is immutable: every call still gets a fresh
+    /// engine and a fresh `ModuleInstance`, so no state crosses calls.
+    static MODULES: std::cell::RefCell<std::collections::HashMap<Vec<u8>, Arc<Module>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn converted_module(wasm: &[u8]) -> kiln_error::Result<Arc<Module>> {
+    if let Some(m) = MODULES.with(|c| c.borrow().get(wasm).cloned()) {
+        return Ok(m);
+    }
+    let km = decode_module(wasm)?;
+    let m = Arc::new(*Module::from_kiln_module(&km)?);
+    MODULES.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 64 {
+            c.clear();
+        }
+        c.insert(wasm.to_vec(), Arc::clone(&m));
+    });
+    Ok(m)
+}
+
 /// Load and instantiate. The start function, if any, runs under `fuel`, so a
 /// looping start function ends as a refusal instead of hanging.
 fn load(
@@ -230,8 +256,7 @@ fn load(
     fuel: u64,
 ) -> Result<(Arc<Module>, usize), RefError> {
     let e = |stage: &str, err: kiln_error::Error| RefError::Instantiate(format!("{stage}: {err}"));
-    let km = decode_module(wasm).map_err(|x| e("decode", x))?;
-    let module = Arc::new(*Module::from_kiln_module(&km).map_err(|x| e("convert", x))?);
+    let module = converted_module(wasm).map_err(|x| e("decode/convert", x))?;
     let id = engine.peek_next_instance_id();
     let inst =
         Arc::new(ModuleInstance::new(Arc::clone(&module), id).map_err(|x| e("instance", x))?);
@@ -288,6 +313,78 @@ fn classify(err: &kiln_error::Error) -> RefOutcome {
     }
 }
 
+/// One reference call, executed on a fresh engine and instance.
+fn execute_once(
+    wasm: &[u8],
+    export: &str,
+    args: Vec<Value>,
+    fuel: u64,
+    imports: Imports,
+    imported_funcs: u32,
+) -> Result<RefRun, RefError> {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut engine = StacklessEngine::new();
+    engine.set_host_handler(Box::new(Handler {
+        imports,
+        log: Arc::clone(&log),
+    }));
+    let (module, inst) = load(&mut engine, wasm, fuel)?;
+    let ex = module
+        .get_export(export)
+        .filter(|x| x.kind == ExportKind::Function)
+        .ok_or_else(|| RefError::NoExport(export.to_string()))?;
+    if ex.index < imported_funcs {
+        // kiln's direct-execute path for an import swallows host errors and
+        // substitutes zeros.
+        return Err(RefError::Unsupported(format!(
+            "export `{export}` re-exports an import"
+        )));
+    }
+    engine.reset_call_depth();
+    engine.set_fuel(fuel);
+    let r = engine.execute(inst, ex.index as usize, args);
+    let left = engine.remaining_fuel().unwrap_or(0);
+    let outcome = match r {
+        Ok(vals) => match vals.iter().map(from_kiln).collect() {
+            Ok(v) => RefOutcome::Values(v),
+            Err(m) => RefOutcome::EngineFault(m),
+        },
+        Err(err) => classify(&err),
+    };
+    let calls = log.lock().expect("host log poisoned").clone();
+    Ok(RefRun {
+        outcome,
+        calls,
+        fuel_used: fuel - left.min(fuel),
+    })
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+thread_local! {
+    /// This thread's kiln worker: a long-lived large-stack thread that runs
+    /// every reference call made from here, each on a FRESH engine and
+    /// instance. Spawning a new thread per call was the cost that dominated
+    /// on Linux: measured in an aarch64 Ubuntu VM (debug build), one call was
+    /// ~14-20 ms although decode, conversion, instantiation and execution
+    /// together took ~2 ms on a long-lived thread (kiln's per-thread
+    /// initialization is paid on each new thread); the CI runner, x86_64,
+    /// spent ~470 ms per case. The worker exits when this thread does.
+    static WORKER: std::sync::mpsc::Sender<Job> = {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("kiln-reference".into())
+            .stack_size(KILN_STACK)
+            .spawn(move || {
+                for job in rx {
+                    job();
+                }
+            })
+            .expect("spawn the kiln worker");
+        tx
+    };
+}
+
 /// Run `export(args)` on kiln with `fuel` instructions of budget.
 pub fn run(
     wasm: &[u8],
@@ -300,51 +397,23 @@ pub fn run(
     let scan = scan_imports(wasm, imports)?;
     let wasm = wasm.to_vec();
     let export = export.to_string();
-    let args: Vec<Value> = args.iter().copied().map(to_kiln).collect();
+    let args: Vec<WasmValue> = args.to_vec();
     let imports = imports.clone();
-    std::thread::Builder::new()
-        .name("kiln-reference".into())
-        .stack_size(KILN_STACK)
-        .spawn(move || {
-            let log = Arc::new(Mutex::new(Vec::new()));
-            let mut engine = StacklessEngine::new();
-            engine.set_host_handler(Box::new(Handler {
-                imports,
-                log: Arc::clone(&log),
-            }));
-            let (module, inst) = load(&mut engine, &wasm, fuel)?;
-            let ex = module
-                .get_export(&export)
-                .filter(|x| x.kind == ExportKind::Function)
-                .ok_or_else(|| RefError::NoExport(export.clone()))?;
-            if ex.index < scan.imported_funcs {
-                // kiln's direct-execute path for an import swallows host
-                // errors and substitutes zeros.
-                return Err(RefError::Unsupported(format!(
-                    "export `{export}` re-exports an import"
-                )));
-            }
-            engine.reset_call_depth();
-            engine.set_fuel(fuel);
-            let r = engine.execute(inst, ex.index as usize, args);
-            let left = engine.remaining_fuel().unwrap_or(0);
-            let outcome = match r {
-                Ok(vals) => match vals.iter().map(from_kiln).collect() {
-                    Ok(v) => RefOutcome::Values(v),
-                    Err(m) => RefOutcome::EngineFault(m),
-                },
-                Err(err) => classify(&err),
-            };
-            let calls = log.lock().expect("host log poisoned").clone();
-            Ok(RefRun {
-                outcome,
-                calls,
-                fuel_used: fuel - left.min(fuel),
-            })
-        })
-        .map_err(|e| RefError::Instantiate(format!("spawn: {e}")))?
-        .join()
-        .map_err(|_| RefError::Instantiate("kiln panicked".into()))?
+    let (tx, rx) = std::sync::mpsc::channel();
+    let job: Job = Box::new(move || {
+        // A panic inside kiln is this call's failure, not the worker's end.
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let args = args.into_iter().map(to_kiln).collect();
+            execute_once(&wasm, &export, args, fuel, imports, scan.imported_funcs)
+        }))
+        .unwrap_or_else(|_| Err(RefError::Instantiate("kiln panicked".into())));
+        let _ = tx.send(r);
+    });
+    WORKER
+        .with(|w| w.send(job))
+        .map_err(|_| RefError::Instantiate("kiln worker is gone".into()))?;
+    rx.recv()
+        .map_err(|_| RefError::Instantiate("kiln worker dropped the call".into()))?
 }
 
 #[cfg(test)]

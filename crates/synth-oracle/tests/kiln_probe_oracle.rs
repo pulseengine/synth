@@ -28,6 +28,13 @@ use synth_oracle::{Case, CaseError, run_case};
 
 const FUEL: u64 = 1_000_000;
 
+/// The sweep and the 8-thread stress test never run at the same time, so the
+/// stress cannot starve the sweep on a small runner.
+fn heavy() -> std::sync::MutexGuard<'static, ()> {
+    static HEAVY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    HEAVY.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Every probe is call-free (no relocations), memory-free, float-free, takes
 /// only i32 params and returns at most one value. i64 PARAMS are left out
 /// because synth's RV32 backend declines exports that read one (#952 skip), so
@@ -221,6 +228,7 @@ fn sweep(wasm_ref: &[u8], obj: &CompiledObject, cpu: Cpu) -> Vec<Case> {
 
 #[test]
 fn probes_agree_with_kiln_on_m3_and_rv32() {
+    let _heavy = heavy();
     let w = wasm();
     let mut total = 0;
     let mut traps = 0;
@@ -931,6 +939,7 @@ fn guard_zeroed_body_is_not_a_trap() {
 
 #[test]
 fn stress_concurrent_runs_never_stop_spuriously() {
+    let _heavy = heavy();
     // REVIEW_11 F2: with a wall-clock timeout, 8 threads x 4000 runs gave 52
     // spurious Budget stops. With the instruction count alone: 0.
     let obj = compile_leg(&LEGS[0]);
