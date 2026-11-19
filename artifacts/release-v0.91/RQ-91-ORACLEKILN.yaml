@@ -73,6 +73,9 @@ artifacts:
         budget, and the no-dependents pin catches the table and `package =`
         forms.
 
+        The job lives in .github/workflows/oracle-kiln.yml, not ci.yml: ci.yml
+        is at its size ceiling (a 514,837-byte ci.yml was rejected as a workflow
+        file issue with 0 jobs, run 44505673142; 511,836 bytes still ran).
         THE CI JOB IS UNPROVEN ON THE RUNNER until its first run there: it is
         the first job to compile C on the smithy pool (unicorn via cmake and
         bindgen), with cmake, ninja and libclang from pip wheels and bindgen
