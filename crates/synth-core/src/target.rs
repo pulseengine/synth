@@ -46,6 +46,13 @@ pub enum RISCVVariant {
     /// RV32IMAC (32-bit with multiply, atomic, compressed)
     RV32IMAC,
 
+    /// RV32IM (32-bit with multiply, no atomics, no compressed) — RQ-91-RV32ISA
+    RV32IM,
+
+    /// RV32IMC (32-bit with multiply and compressed, NO atomics; the
+    /// ESP32-C3) — RQ-91-RV32ISA (#1744)
+    RV32IMC,
+
     /// RV32GC (32-bit general-purpose with compressed)
     RV32GC,
 
@@ -137,6 +144,8 @@ impl TargetArch {
                 RISCVVariant::RV32I | RISCVVariant::RV32IMAC | RISCVVariant::RV32GC => {
                     "riscv32imac-unknown-none-elf"
                 }
+                RISCVVariant::RV32IM => "riscv32im-unknown-none-elf",
+                RISCVVariant::RV32IMC => "riscv32imc-unknown-none-elf",
                 RISCVVariant::RV64I | RISCVVariant::RV64IMAC | RISCVVariant::RV64GC => {
                     "riscv64gc-unknown-none-elf"
                 }
@@ -157,6 +166,7 @@ impl TargetArch {
             TargetArch::RISCV(variant) => match variant {
                 RISCVVariant::RV32I => "generic-rv32",
                 RISCVVariant::RV32IMAC | RISCVVariant::RV32GC => "generic-rv32",
+                RISCVVariant::RV32IM | RISCVVariant::RV32IMC => "generic-rv32",
                 RISCVVariant::RV64I => "generic-rv64",
                 RISCVVariant::RV64IMAC | RISCVVariant::RV64GC => "generic-rv64",
             },

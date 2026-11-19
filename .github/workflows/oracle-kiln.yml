@@ -249,4 +249,6 @@ jobs:
           # RQ-91-RV32ISA: 4 profiles with M x 14 probes + rv32i x 7 base
           # probes, x 100 vectors; rv32i refuses the 7 M probes.
           grep -qE '(^|\.\.\. )ORACLE rv32-isa: 6300 cases agree across 5 profiles, 7 M functions refused$' "$log"
-          grep -qE '^test result: ok\. 5 passed; 0 failed' "$log"
+          # 4 run; the corpus leg needs gale's (unvendored) drivers and is
+          # #[ignore]d, so it is reported, never counted as a pass (review 12 F3).
+          grep -qE '^test result: ok\. 4 passed; 0 failed; 1 ignored' "$log"

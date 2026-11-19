@@ -332,16 +332,20 @@ fn potency_rv32imac_object_fails_the_rv32i_gate() {
     assert!(r.is_err(), "the rv32i gate passed an rv32imac object");
 }
 
-/// The acceptance corpus (gale's drivers), when `SYNTH_RV32ISA_CORPUS` names a
-/// directory of `.wasm` files: for each profile, an accepted object decodes
-/// inside it. Reports per-profile accepted/refused counts. Not set: prints
-/// that, and asserts nothing (the corpus is not vendored).
+/// The acceptance corpus (gale's drivers, NOT vendored): with
+/// `SYNTH_RV32ISA_CORPUS` naming a directory of `.wasm` files, every accepted
+/// object decodes inside each profile; per-profile verdicts are printed.
+///
+/// IGNORED by default, so it is never counted as a pass about no work (cold
+/// review 12, F3): CI reports it as `1 ignored`. Run it with
+/// `SYNTH_RV32ISA_CORPUS=<dir> cargo test -p synth-oracle --features exec
+/// --test rv32_isa_profile_oracle -- --ignored`. Asked to run without the
+/// variable, it FAILS rather than pass vacuously.
 #[test]
+#[ignore = "needs SYNTH_RV32ISA_CORPUS (gale's RV32 drivers are not vendored)"]
 fn corpus_decodes_within_each_profile() {
-    let Some(dir) = std::env::var_os("SYNTH_RV32ISA_CORPUS") else {
-        println!("rv32-isa corpus: SYNTH_RV32ISA_CORPUS not set, leg not run");
-        return;
-    };
+    let dir = std::env::var_os("SYNTH_RV32ISA_CORPUS")
+        .expect("SYNTH_RV32ISA_CORPUS is not set: this leg has no corpus to judge");
     let mut files: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))

@@ -1127,21 +1127,14 @@ fn riscv_runtime_command(
     use synth_backend_riscv::{
         LinkerScriptConfig, RiscVLinkerScriptGenerator, RiscVStartupGenerator, StartupConfig,
     };
-    use synth_core::{HardwareCapabilities, RISCVVariant, TargetArch};
+    use synth_core::{HardwareCapabilities, TargetArch};
 
-    // Hardware caps from the target name.
-    let variant = match target.as_str() {
-        "rv32i" => RISCVVariant::RV32I,
-        "rv32imac" | "rv32imc" => RISCVVariant::RV32IMAC,
-        "rv32gc" => RISCVVariant::RV32GC,
-        "rv64i" => RISCVVariant::RV64I,
-        "rv64imac" => RISCVVariant::RV64IMAC,
-        "rv64gc" => RISCVVariant::RV64GC,
-        _ => anyhow::bail!(
-            "unknown RISC-V target: {}. Supported: rv32i, rv32imac, rv32gc, rv64i, rv64imac, rv64gc",
-            target
-        ),
-    };
+    // Hardware caps from the target name. RQ-91-RV32ISA (#1744, review 12
+    // F2): an RV32 name resolves through the SAME parser `compile` uses
+    // (`TargetSpec::from_triple`), so `rv32im`, `esp32c3` and `riscv32` are
+    // accepted here too, and `-march` is the profile's own ISA string —
+    // `rv32imc` for the ESP32-C3, never `rv32imac` (it has no A extension).
+    let (variant, march) = riscv_runtime_profile(&target)?;
 
     let parse_addr = |s: &str| -> Result<u64> {
         let s = s.trim_start_matches("0x").trim_start_matches("0X");
@@ -1190,11 +1183,6 @@ fn riscv_runtime_command(
     println!("Wrote {}", startup_path.display());
     println!("Wrote {}", linker_path.display());
     println!();
-    let march = if matches!(target.as_str(), "rv32imac" | "rv32imc") {
-        "rv32imac"
-    } else {
-        target.as_str()
-    };
     println!("Link your synth-compiled .o with:");
     println!(
         "  riscv64-unknown-elf-gcc -nostartfiles -nostdlib -mabi=ilp32 -march={} \\",
@@ -1207,6 +1195,40 @@ fn riscv_runtime_command(
     );
 
     Ok(())
+}
+
+/// RQ-91-RV32ISA (#1744): the startup variant and the `-march` string for a
+/// `riscv-runtime --target`. RV32 names go through `TargetSpec::from_triple`
+/// (the `compile` parser); the RV64 names keep their own arm.
+#[cfg(feature = "riscv")]
+fn riscv_runtime_profile(target: &str) -> Result<(synth_core::RISCVVariant, String)> {
+    use synth_core::RISCVVariant;
+    use synth_core::target::{IsaVariant, TargetSpec};
+    match target {
+        "rv64i" => return Ok((RISCVVariant::RV64I, target.to_string())),
+        "rv64imac" => return Ok((RISCVVariant::RV64IMAC, target.to_string())),
+        "rv64gc" => return Ok((RISCVVariant::RV64GC, target.to_string())),
+        _ => {}
+    }
+    let unknown = || {
+        anyhow::anyhow!(
+            "unknown RISC-V target: {target}. Supported: rv32i, rv32im, rv32imc, esp32c3, \
+             rv32imac, riscv32, rv32gc (and their riscv32* spellings), rv64i, rv64imac, rv64gc"
+        )
+    };
+    let spec = TargetSpec::from_triple(target).map_err(|_| unknown())?;
+    let IsaVariant::RiscV32 { extensions } = &spec.isa else {
+        return Err(unknown());
+    };
+    let variant = match extensions.as_str() {
+        "i" => RISCVVariant::RV32I,
+        "im" => RISCVVariant::RV32IM,
+        "imc" => RISCVVariant::RV32IMC,
+        "imac" => RISCVVariant::RV32IMAC,
+        "gc" => RISCVVariant::RV32GC,
+        _ => return Err(unknown()),
+    };
+    Ok((variant, format!("rv32{extensions}")))
 }
 
 #[cfg(not(feature = "riscv"))]
