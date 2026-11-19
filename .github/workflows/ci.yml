@@ -6503,7 +6503,11 @@ jobs:
           # RQ-91-MVDROP: TOTAL 130 -> 127. call.wast/arm's 3 were multi-result
           # call under-counts, not dead code; they now refuse by name
           # (`MULTI-RESULT call`). Paired control: e8716535's binary prints 130.
-          grep -qE '^#1229 CHECKS=12/12 \(file,backend\) cells; TOTAL false-rejects=127$' /tmp/1229.txt
+          # RQ-91-RV32DEADARM (#1739): TOTAL 127 -> 71. The riscv cells br 31,
+          # br_table 4, loop 1 and unreachable 20 all reach 0: the RV32
+          # selector ends the reachable region after br/br_table/unreachable.
+          # Paired control: main 81964ad0's binary prints 127.
+          grep -qE '^#1229 CHECKS=12/12 \(file,backend\) cells; TOTAL false-rejects=71$' /tmp/1229.txt
           grep -q '^RESULT: PASS' /tmp/1229.txt
       # RQ-73-FALCONFIXTURE (#1318): 6 of the 7 declines in the reporter's
       # opt.wasm are ONE shape — a value-carrying branch at float type — and
