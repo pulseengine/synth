@@ -5115,8 +5115,8 @@ jobs:
           # attributed 244358 -> 244372 (functions and homes unchanged); paired
           # control: main 5f6aef20's binary over this tree prints 244358.
           # The branch adds no .wat fixture; first measured on e918c711 as
-          # 244183 -> 244197 (+14). Per
-          # (module, leg), from disassembly diffs: int_literals.wast +1 on
+          # 244183 -> 244197 (+14). Per (module, leg), from disassembly
+          # diffs: int_literals.wast +1 on
           # m4-reloc and m4f-reloc (`i64.inc_smin`, `return (i64.add ..)`:
           # the sum's hi word now reaches R1; on main R1 still held the
           # operand's hi, 0x80000000, which is also the sum's — right only by
@@ -5140,15 +5140,17 @@ jobs:
           # audits; the ARM selector is untouched by the lane. Measured in CI run
           # 44499733119 on the branch binary; paired control: main 265235dc's
           # binary over this tree prints the same 7819 / 9395 / 244880. `hits: 0`.
-          grep -Eq '^functions audited: 7819$' haa1189.txt
+          # EXPORTALIAS (#1746): 7819 -> 7815 functions; homes and (below)
+          # attributed unchanged. CODE: the .wast merge owns every export name
+          # (exports.wast, both reloc legs). Measured on the tree rebased
+          # onto 16700da6; control: main 6641efec's binary (16700da6 adds no
+          # compiler source) over this tree prints 7819/9395/244880. `hits: 0`.
+          grep -Eq '^functions audited: 7815$' haa1189.txt
           grep -Eq '^homes watched: 9395$' haa1189.txt
-          # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
-          # the #1321 comment above as "217081 attributed instructions ...
-          # UNCHANGED" and went STALE at RQ-70-NPA — that note added a fixture
-          # (+4 functions, +6 homes), which necessarily added instructions, so
-          # 217081 could not still hold. Nothing caught it because no grep ever
-          # read it: exactly the "a ratchet fixes the number and cannot fix the
-          # prose" shape this project keeps paying for. Derived here: 217291.
+          # RQ-71-STACKDEPTH: this figure is ASSERTED, not narrated. The #1321
+          # comment above said "217081 attributed instructions ... UNCHANGED"
+          # and went STALE at RQ-70-NPA, whose fixture (+4 functions, +6 homes)
+          # added instructions; no grep read it. Derived here: 217291.
           # RQ-89-INTALIAS (#1566): 235457 -> 235493 (+36 = +9 on each of the
           # 4 legs). ATTRIBUTED: the new if/block/loop-entry home snapshot
           # copies an entry still naming a promoted local's home (r4) into a
@@ -5156,28 +5158,26 @@ jobs:
           # `break-inner` +4 and loop.wast `break-inner` +5 per leg, nothing
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
-          # I64TEE (#1713): 244372 -> 244424, attributed above.
-          # A64BELOW (#1740): 244424 -> 244880, attributed above (new fixture).
+          # I64TEE (#1713): 244372 -> 244424; A64BELOW (#1740): -> 244880;
+          # EXPORTALIAS (#1746): unchanged (all above).
           grep -Eq '^attributed instructions: 244880 ' haa1189.txt
-          # POTENCY: the detector still fires, on this binary, through the
-          # same decline / needle / parse path — per (fixture, leg) EXACTLY
-          # 58/7/58/7 (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8),
-          # 0/0/11/11 (VFP homes; soft-float m4 has none) planted writes
-          # reported, 0 declines without the plant. 192 in total.
+          # POTENCY: the detector still fires, on this binary, through the same
+          # decline / needle / parse path: per (fixture, leg) EXACTLY 58/7/58/7
+          # (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8), 0/0/11/11 (VFP
+          # homes; soft-float m4 has none) planted writes, 0 without: 192.
           grep -Eq '^POTENCY: PASS \(192 planted writes reported, 0 without the plant, over 3 fixtures x 4 legs\)$' haa1189.txt
-          # #1226 CLOSED by RQ-65-MVPCORE (#1232), pin flipped here in the same
-          # release. Re-derived on the merged tree: every leg is now
-          # (merged-wast, single-wast, same-text-wat) = (0, 8, 8) — the
-          # single-module `.wast` path threads declared widths so `wast == wat`,
-          # and the multi-module merge REFUSES an i64-param module so
-          # `merged == 0`. The assertion is now EQUALITY plus that refusal, so a
-          # narrower `wast` OR the merge silently accepting again goes red.
+          # #1226 CLOSED by RQ-65-MVPCORE (#1232), pin flipped in the same
+          # release. Every leg is (merged-wast, single-wast, same-text-wat) =
+          # (0, 8, 8): the single-module `.wast` path threads declared widths so
+          # `wast == wat`, and the multi-module merge REFUSES an i64-param module
+          # (`merged == 0`). The assertion is EQUALITY plus that refusal, so a
+          # narrower `wast` OR the merge accepting again goes red.
           grep -Eq '^WIDTH-1226: closed \(\.wast homes == \.wat homes, merge refuses, same module text on 4 legs\)$' haa1189.txt
-          # 0 hits, 0 known-open: the 12 first-full-corpus hits were walk
-          # false positives (epilogue pop = the return; VFP caller-save round
-          # trip) fixed in home_alias.rs; the 16 #1226 hits were a symptom of
-          # the mis-homing that the #1222 declared-width gate removed by
-          # changing the emission on that shape (pinned above, not here).
+          # 0 hits, 0 known-open: the 12 first-full-corpus hits were walk false
+          # positives (epilogue pop = the return; VFP caller-save round trip)
+          # fixed in home_alias.rs; the 16 #1226 hits were a symptom of the
+          # mis-homing that the #1222 declared-width gate removed by changing
+          # that shape's emission (pinned above, not here).
           grep -Eq '^hits: 0 \(known-open: 0 \[none\], unexplained: 0\)$' haa1189.txt
           grep -q '^RESULT: PASS' haa1189.txt
       - name: Differential evidence ledger (#910)
