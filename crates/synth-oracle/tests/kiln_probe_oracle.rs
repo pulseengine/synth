@@ -585,6 +585,7 @@ fn hand_object(machine: Machine, text: Vec<u8>, relocs: Vec<u64>) -> CompiledObj
         text_relocs: relocs,
         relocs: Vec::new(),
         relocatable: true,
+        e_flags: 0,
     }
 }
 

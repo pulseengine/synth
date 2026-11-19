@@ -13,12 +13,18 @@
 //!
 //! The encoder always emits 32-bit instructions in this skeleton. The 16-bit
 //! C-extension encoding will be a peephole pass in a follow-up.
+//!
+//! The declared profile is ENFORCED ([`isa`], RQ-91-RV32ISA #1744): a function
+//! whose selection needs an extension the target lacks (M under `rv32i`) is
+//! refused, and `e_flags` carry RVC iff the profile has C. No A instruction is
+//! emitted on any profile (wasm atomics are declined before selection).
 
 pub mod alloc_validator;
 pub mod backend;
 pub mod elf_builder;
 pub mod encoder;
 pub mod globals;
+pub mod isa;
 pub mod linker_script;
 pub mod pmp;
 pub mod register;
@@ -29,6 +35,7 @@ pub mod startup;
 pub use backend::RiscVBackend;
 pub use elf_builder::{ElfMode, RiscVCallReloc, RiscVElfBuilder, RiscVElfFunction, RiscVRelocKind};
 pub use encoder::{RiscVEncoder, RiscVEncodingError};
+pub use isa::{Extension, Rv32Profile};
 pub use linker_script::{LinkerScriptConfig, RiscVLinkerScriptGenerator};
 pub use pmp::{PMPAllocator, PMPEntry, PMPError, PMPMode, PMPPermissions};
 pub use register::{Reg, RegClass};

@@ -297,7 +297,9 @@ impl Backend for RiscVBackend {
             )));
         }
 
-        let builder = RiscVElfBuilder::new_relocatable();
+        // RQ-91-RV32ISA (#1744): the header's RVC bit follows the profile.
+        let builder =
+            RiscVElfBuilder::new_relocatable().with_profile(target_profile(&config.target)?);
         // RQ-63-RVGLOBAL: the planned globals image ships as `.data` +
         // `__synth_globals`; empty ⇒ byte-identical to `build_with_data`.
         let elf = builder
@@ -482,6 +484,25 @@ fn compile_function_with_opts(
         crate::alloc_validator::RaFinalVerdict::Consistent => {}
     }
 
+    // RQ-91-RV32ISA (#1744): every emitted instruction must lie inside the
+    // declared profile. Checked on the EMITTED stream, so a lowering that
+    // reaches an M op indirectly (`i64.popcnt`'s byte-sum multiply,
+    // `i64.mul`'s limb product) cannot slip past a per-wasm-op list. A
+    // profile without M refuses the function; RV32IMAC accepts every op
+    // the selector has, so its output is unchanged.
+    let profile = target_profile(&config.target)?;
+    if let Some((ext, op)) = profile.first_violation(&selection.ops) {
+        return Err(BackendError::CompilationFailed(format!(
+            "RV32 target `{}` has no `{}` extension, but function '{name}' lowers \
+             to {op:?}, which needs it. Refusing rather than emitting an \
+             instruction the core cannot execute (#1744). Compile for a profile \
+             that includes `{}` (e.g. rv32im, rv32imc/esp32c3, rv32imac).",
+            profile.name(),
+            ext.letter(),
+            ext.letter(),
+        )));
+    }
+
     // Encode the function via the ELF builder's per-function pipeline so
     // we benefit from label resolution. We keep the raw bytes plus the
     // external-call relocations (#871) — that's what `CompiledFunction`
@@ -534,6 +555,11 @@ fn compile_function_with_opts(
         // The CLI reports this as an explicit decline, never as 0 bytes.
         stack_frame: None,
     })
+}
+
+/// RQ-91-RV32ISA (#1744): the target's declared extension set.
+fn target_profile(target: &TargetSpec) -> Result<crate::isa::Rv32Profile, BackendError> {
+    crate::isa::Rv32Profile::from_target(target).map_err(BackendError::UnsupportedConfig)
 }
 
 fn ensure_supported_target(target: &TargetSpec) -> Result<(), BackendError> {
@@ -720,6 +746,41 @@ mod tests {
             u32::from_le_bytes([last[0], last[1], last[2], last[3]]),
             0x00008067
         );
+    }
+
+    /// RQ-91-RV32ISA (#1744): a profile without M refuses an M lowering;
+    /// with M the same function compiles, and RV32IMAC's bytes are the ones
+    /// rv32im produces (the profile changes refusal and e_flags, never code).
+    #[test]
+    fn profile_without_m_refuses_mul_1744() {
+        let b = RiscVBackend::new();
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Mul,
+            WasmOp::End,
+        ];
+        let cfg = |t: &str| CompileConfig {
+            target: TargetSpec::from_triple(t).unwrap(),
+            ..Default::default()
+        };
+        let err = b.compile_function("f", &ops, &cfg("rv32i")).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("has no `m` extension") && msg.contains("#1744"),
+            "{msg}"
+        );
+        let im = b.compile_function("f", &ops, &cfg("rv32im")).unwrap();
+        let imac = b.compile_function("f", &ops, &cfg("rv32imac")).unwrap();
+        assert_eq!(im.code, imac.code);
+        // The base-ISA control compiles under rv32i.
+        let add = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        assert!(b.compile_function("f", &add, &cfg("rv32i")).is_ok());
     }
 
     #[test]

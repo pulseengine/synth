@@ -29,6 +29,7 @@ pub mod compare;
 pub mod cycles;
 pub mod probes;
 pub mod record;
+pub mod rv32_isa;
 pub mod synth;
 pub mod value;
 

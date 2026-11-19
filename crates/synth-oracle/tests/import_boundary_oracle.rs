@@ -657,6 +657,7 @@ fn hand(funcs: &[(&str, &[u16])], relocs: Vec<TextReloc>) -> CompiledObject {
         text_relocs: relocs.iter().map(|r| r.offset).collect(),
         relocs,
         relocatable: true,
+        e_flags: 0,
     }
 }
 

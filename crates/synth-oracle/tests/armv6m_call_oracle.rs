@@ -696,6 +696,7 @@ fn hand(funcs: &[(&str, &[u16])]) -> CompiledObject {
         text_relocs: Vec::new(),
         relocs: Vec::new(),
         relocatable: true,
+        e_flags: 0,
     }
 }
 
