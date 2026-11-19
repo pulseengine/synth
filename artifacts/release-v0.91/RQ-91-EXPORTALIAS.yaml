@@ -98,9 +98,11 @@ artifacts:
         last and alone, one spelled like an import's label, `func_99` in a
         two-function module, and component punctuation; and self-contained
         `--cortex-m` and cortex-r5 images compile the four refused shapes.
-        RED on 4d80d9d6 sources, measured on the first seven tests: 6 of 7
-        failed, every module path and all 12 `-n` legs. GREEN on the branch:
-        9 of 9. Potency, fourteen planted source mutants, each rebuilt, run
+        RED on 4d80d9d6 sources: 8 of 9 failed, every module path and all 12
+        `-n` legs; the self-contained test passes there, since it pins
+        main's behaviour. The call-binding test reds on main only because
+        the alias names it looks callees up by are missing; its own potency
+        is the uncounted-alias mutant below. GREEN on the branch: 9 of 9. Potency, fourteen planted source mutants, each rebuilt, run
         and restored, each red: the ARM alias loop, the RV32 alias push, the
         AArch64 multi extend, the AArch64 single-function label, disabling
         the refusal, dropping the placed-function bound, primary-only `-n`,
