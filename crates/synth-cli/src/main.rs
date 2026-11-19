@@ -1351,9 +1351,83 @@ fn print_hardware_info(caps: &HardwareCapabilities) {
     println!("  RAM: {} KB", caps.ram_size / 1024);
 }
 
+/// #1746: refuse an export name of `f` that no object can define as itself.
+/// Since #1746 EVERY export name of a function becomes a GLOBAL symbol (before,
+/// only the last-declared one did and the rest vanished without a word), so a
+/// name the symbol table cannot carry must fail the compile instead of
+/// shipping a symbol that is not the export:
+/// - an EMPTY name — an `st_name` of the empty string is no name a linker can
+///   resolve;
+/// - a name containing NUL — the string table is NUL-terminated, so the
+///   symbol would be a TRUNCATED, different name;
+/// - `func_<K>` / `synth_func_<K>` where `K` is ANOTHER DEFINED function's
+///   index (`K >= num_imports`, `K != f.index`) — the in-object call labels
+///   the selectors relocate against (ARM/A32/AArch64 `func_K`, RV32
+///   `synth_func_K`). An export spelled like one bound internal calls to the
+///   wrong function, measured on the v0.91 base for PRIMARY names already:
+///   ARM bound a call to function 0 to an export `func_0` of function 1, and
+///   AArch64 bound a call to function 1 to an export `func_1` of function 0
+///   (which one wins is the builder's map order). An IMPORT index's label is
+///   not refused: RQ-91-NAMECOLL (#1698) rewrites import calls to the field
+///   name first, and its oracle executes an export named `func_0` beside
+///   import 0. `label_floor` is that `num_imports`; `None` skips the check
+///   (the single-function writers place one function and no call);
+/// - a `__synth_` name — synth's own reserved symbols (`__synth_globals`,
+///   `__synth_wasm_data`, `__synth_mem_base_N`, ...).
+fn refuse_unemittable_export_names(f: &FunctionOps, label_floor: Option<u32>) -> Result<()> {
+    let names = f.export_name.iter().chain(&f.export_aliases);
+    for name in names {
+        let why = if name.is_empty() {
+            Some(
+                "it is empty, and an empty symbol name is no name a linker can resolve".to_string(),
+            )
+        } else if name.contains('\0') {
+            Some(
+                "it contains a NUL byte, and the symbol string table is \
+                 NUL-terminated, so the symbol would be a truncated, different name"
+                    .to_string(),
+            )
+        } else if let Some(k) = name
+            .strip_prefix("synth_func_")
+            .or_else(|| name.strip_prefix("func_"))
+            .and_then(|rest| rest.parse::<u32>().ok().filter(|k| k.to_string() == rest))
+            .filter(|k| *k != f.index && label_floor.is_some_and(|floor| *k >= floor))
+        {
+            Some(format!(
+                "it is spelled like synth's in-object call label for function {k}, \
+                 so a call to function {k} could bind to this export instead"
+            ))
+        } else if name.starts_with("__synth_") {
+            Some("the `__synth_` prefix is reserved for synth's own symbols".to_string())
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            anyhow::bail!(
+                "export {:?} of function {} cannot be emitted as a symbol: {why}. \
+                 Every export name of a function is defined as a symbol (#1746); \
+                 rename the export",
+                name,
+                f.index
+            );
+        }
+    }
+    Ok(())
+}
+
+/// #1746: `name` is one of `f`'s export names — the primary or an alias.
+fn exports_as(f: &FunctionOps, name: &str) -> bool {
+    f.export_name.as_deref() == Some(name) || f.export_aliases.iter().any(|a| a == name)
+}
+
 /// Compiled function for ELF building (name + code bytes + relocations)
 struct ElfFunction {
     name: String,
+    /// #1746: the function's OTHER export names (`FunctionOps::export_aliases`).
+    /// Every relocatable writer defines each one as a GLOBAL `STT_FUNC` at the
+    /// function's address with its size, beside `name`. Empty for a function
+    /// exported at most once, which leaves the object byte-identical.
+    export_aliases: Vec<String>,
     /// #394 Tier-1.x: the developer-facing name from the wasm `name` custom
     /// section (present for internal functions too, unlike the export name).
     /// Consumed ONLY by the `--debug-line` `DW_TAG_subprogram` emit — symbol
@@ -2192,6 +2266,13 @@ fn compile_command(
     // #642: call_indirect guard inputs (compile-time table size + closed-world
     // type verdicts). Default = decline every call_indirect (demo path).
     let mut call_indirect_guards = synth_core::CallIndirectGuards::default();
+    // #1746: the selected function's OTHER export names — the relocatable
+    // single-function writers (RV32, AArch64) define each one beside
+    // `func_name`. Empty for the demo path and for a once-exported function.
+    let mut func_aliases: Vec<String> = Vec::new();
+    // #1746: the selected function's wasm index (the AArch64 single-function
+    // object's in-object `func_N` label). `None` on the demo path.
+    let mut func_wasm_index: Option<u32> = None;
     let (wasm_ops, func_name): (Vec<WasmOp>, String) = match (&input, &demo) {
         (Some(path), _) => {
             info!("Compiling WASM file: {}", path.display());
@@ -2329,9 +2410,12 @@ fn compile_command(
             }
 
             let func = if let Some(ref name) = func_name_arg {
+                // #1746: ANY export name selects its function — before, only
+                // the last-declared name of an aliased index was found, so
+                // `-n <other export name>` refused an exported function.
                 functions
                     .into_iter()
-                    .find(|f| f.export_name.as_deref() == Some(name.as_str()))
+                    .find(|f| exports_as(f, name))
                     .context(format!("Function '{}' not found", name))?
             } else {
                 functions
@@ -2340,6 +2424,7 @@ fn compile_command(
                     .context(format!("Function index {} not found", func_index))?
             };
 
+            refuse_unemittable_export_names(&func, None)?; // #1746
             let name = func
                 .export_name
                 .clone()
@@ -2403,6 +2488,8 @@ fn compile_command(
                 );
             }
 
+            func_aliases = func.export_aliases.clone();
+            func_wasm_index = Some(func.index);
             (func.ops, name)
         }
         (None, Some(demo_name)) => {
@@ -2593,7 +2680,13 @@ fn compile_command(
         // container differs. Discriminate on backend name, not target family:
         // `cortex_a53()` is `ArchFamily::ArmCortexA` (isa AArch64), so a family
         // check would misroute it into the ARM builder.
-        build_aarch64_elf(&code, &func_name, object_format)?
+        build_aarch64_elf(
+            &code,
+            func_wasm_index,
+            &func_name,
+            &func_aliases,
+            object_format,
+        )?
     } else if matches!(target_spec.family, synth_core::target::ArchFamily::RiscV) {
         // #871: the single-function RISC-V wrapper carries no relocation
         // plumbing — a function whose code contains external-call
@@ -2610,7 +2703,7 @@ fn compile_command(
                 compiled.relocations.len()
             );
         }
-        build_riscv_elf(&code, &func_name)?
+        build_riscv_elf(&code, &func_name, &func_aliases)?
     } else if cortex_m {
         // #1640: see `refuse_a32_cortex_m_image`.
         refuse_a32_cortex_m_image(target_spec)?;
@@ -4683,7 +4776,8 @@ fn compile_all_exports(
 
                     let pos = decoded.len();
                     for func in &module.functions {
-                        if let Some(name) = &func.export_name {
+                        // #1746: every export name, aliases included.
+                        for name in func.export_name.iter().chain(&func.export_aliases) {
                             export_owner.insert(name.clone(), (pos, func.index));
                         }
                     }
@@ -4787,11 +4881,16 @@ fn compile_all_exports(
                 if !reachable.contains(&func.index) {
                     continue;
                 }
-                let owns_export = func
-                    .export_name
-                    .as_deref()
-                    .is_some_and(|n| export_owner.get(n) == Some(&(pos, func.index)));
-                if !owns_export {
+                let owns = |n: &str| export_owner.get(n) == Some(&(pos, func.index));
+                // #1746: an alias a later module re-exported is superseded
+                // exactly like a primary name.
+                func.export_aliases.retain(|a| owns(a));
+                let owns_export = func.export_name.as_deref().is_some_and(owns);
+                if !owns_export && !func.export_aliases.is_empty() {
+                    // The primary was superseded but an alias survives: the
+                    // last surviving alias becomes the primary.
+                    func.export_name = func.export_aliases.pop();
+                } else if !owns_export {
                     // A superseded export (a later module re-exported the
                     // name) that is still reachable from THIS module's
                     // surviving exports: keep the BODY as a file-local
@@ -5102,7 +5201,7 @@ fn compile_all_exports(
                 SingleRoot::Name(name) => module
                     .functions
                     .iter()
-                    .find(|f| f.export_name.as_deref() == Some(name.as_str()))
+                    .find(|f| exports_as(f, name))
                     .with_context(|| format!("Function '{}' not found", name))?,
                 SingleRoot::Index(idx) => module
                     .functions
@@ -5348,6 +5447,10 @@ fn compile_all_exports(
 
     if all_exports.is_empty() {
         anyhow::bail!("No exported functions found in module");
+    }
+    // #1746: every export name becomes a symbol; refuse one that cannot.
+    for (f, origin) in all_exports.iter().zip(all_origins.iter()) {
+        refuse_unemittable_export_names(f, Some(origin.num_imports))?;
     }
 
     info!("Found {} exported functions:", all_exports.len());
@@ -6237,6 +6340,14 @@ fn compile_all_exports(
         compiled_origins.push(origin);
         compiled_funcs.push(ElfFunction {
             name: name.clone(),
+            // #1746: every other export name of this index; `name` is the
+            // primary only when the function is exported (an internal callee
+            // has neither).
+            export_aliases: if func.export_name.is_some() {
+                func.export_aliases.clone()
+            } else {
+                Vec::new()
+            },
             // #394 Tier-1.x: thread the `name`-section name through for the
             // DWARF subprogram DIE (internal functions get their REAL name).
             debug_name: func.debug_name.clone(),
@@ -6369,10 +6480,24 @@ fn compile_all_exports(
     // module whose ONLY export was skipped keeps that existing message
     // ("nothing to emit") rather than being relabeled here.
     if !allow_skipped_exports {
-        let skipped_exports: Vec<&str> = skipped_funcs
+        // #1746: a skipped export takes ALL its export names with it — name
+        // every one, so a consumer linking by an alias sees it refused here.
+        let skipped_exports: Vec<String> = skipped_funcs
             .iter()
             .filter(|(_, _, is_export, _, _)| *is_export)
-            .map(|(n, _, _, _, _)| n.as_str())
+            .map(|(n, _, _, idx, module)| {
+                let aliases = all_exports
+                    .iter()
+                    .zip(all_origins.iter())
+                    .find(|(f, o)| f.index == *idx && o.module == *module)
+                    .map(|(f, _)| f.export_aliases.as_slice())
+                    .unwrap_or_default();
+                if aliases.is_empty() {
+                    n.clone()
+                } else {
+                    format!("{n} (also exported as {})", aliases.join(", "))
+                }
+            })
             .collect();
         if !skipped_exports.is_empty() {
             let total_exports = all_exports
@@ -8720,6 +8845,24 @@ fn build_relocatable_elf(
             sym_count += 1;
             sym_indices.insert(internal_label, sym_count);
         }
+
+        // #1746: every OTHER export name of this index — GLOBAL, same address
+        // and size. Before this a module exporting one function under several
+        // names (wit-bindgen's `wdg_refresh` + `gust:hal/wdg@0.1.0#refresh`)
+        // shipped only the last-declared name; a consumer linking by another
+        // got an undefined symbol. Appended after `func_N`, so a module with
+        // no aliased export is byte-identical.
+        for alias in &func.export_aliases {
+            let alias_sym = Symbol::new(alias)
+                .with_value(func_offsets[i])
+                .with_size(func.code.len() as u32)
+                .with_binding(SymbolBinding::Global)
+                .with_type(SymbolType::Func)
+                .with_section(4);
+            elf_builder.add_symbol(alias_sym);
+            sym_count += 1;
+            sym_indices.insert(alias.clone(), sym_count);
+        }
     }
 
     // Map the BL label of a call to a wasm import (`func_{import_index}`) to
@@ -10579,7 +10722,7 @@ fn verify_command(
 /// RV32 object file (EM_RISCV, RVC e_flags) rather than the generic ARM
 /// ELF that `build_simple_elf` emits.
 #[cfg(feature = "riscv")]
-fn build_riscv_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
+fn build_riscv_elf(code: &[u8], func_name: &str, aliases: &[String]) -> Result<Vec<u8>> {
     use synth_backend_riscv::{Reg, RiscVElfBuilder, RiscVElfFunction, RiscVOp};
 
     // The RISC-V ELF builder operates on `Vec<RiscVOp>` to support label
@@ -10603,6 +10746,7 @@ fn build_riscv_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
         .collect();
     let f = RiscVElfFunction {
         name: func_name.to_string(),
+        aliases: aliases.to_vec(), // #1746
         ops: placeholder_ops,
     };
 
@@ -10622,7 +10766,7 @@ fn build_riscv_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
 }
 
 #[cfg(not(feature = "riscv"))]
-fn build_riscv_elf(_code: &[u8], _func_name: &str) -> Result<Vec<u8>> {
+fn build_riscv_elf(_code: &[u8], _func_name: &str, _aliases: &[String]) -> Result<Vec<u8>> {
     anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
 }
 
@@ -10741,6 +10885,8 @@ fn build_multi_func_riscv_elf(
             .collect();
         placeholder_funcs.push(RiscVElfFunction {
             name: func.name.clone(),
+            // #1746: every other export name of this index.
+            aliases: func.export_aliases.clone(),
             ops: placeholder_ops,
         });
     }
@@ -10818,15 +10964,29 @@ fn build_multi_func_riscv_elf(
 /// (EM_ARM/ELF32) container. Mirrors `build_riscv_elf` — the per-backend ELF path.
 fn build_aarch64_elf(
     code: &[u8],
+    wasm_index: Option<u32>,
     func_name: &str,
+    aliases: &[String],
     object_format: ObjectFormatArg,
 ) -> Result<Vec<u8>> {
     use synth_backend_aarch64::elf::{DataBlob, ElfFunction as A64ElfFunction};
-    let funcs = [A64ElfFunction::code(
-        vec![func_name.to_string()],
-        code.to_vec(),
-        Vec::new(),
-    )];
+    // #1746: `symbols[0]` is the in-object label the plan binds LOCAL (#1180);
+    // every name after it is GLOBAL. This wrapper used to pass the export name
+    // ALONE, so it landed in the LOCAL slot and the object exported nothing
+    // (`nm` showed `t add`) — the module path's shape, `func_N` then the export
+    // names, is used instead. A non-exported selection (`--func-index` of an
+    // internal function, or the demo) keeps its one name LOCAL as before.
+    let label = wasm_index.map(|i| format!("func_{i}"));
+    let mut symbols = Vec::new();
+    match label {
+        Some(l) if l != func_name => {
+            symbols.push(l);
+            symbols.push(func_name.to_string());
+        }
+        _ => symbols.push(func_name.to_string()),
+    }
+    symbols.extend(aliases.iter().cloned());
+    let funcs = [A64ElfFunction::code(symbols, code.to_vec(), Vec::new())];
     Ok(build_aarch64_object(
         &funcs,
         &DataBlob::default(),
@@ -10889,6 +11049,9 @@ fn build_multi_func_aarch64_elf(
             if f.name != func_sym {
                 symbols.push(f.name.clone());
             }
+            // #1746: the function's other export names, GLOBAL like the
+            // primary (every `symbols[k]`, k > 0), same offset and size.
+            symbols.extend(f.export_aliases.iter().cloned());
             // #851: forward the call relocations so `bl func_N` sites resolve
             // via `.rela.text` (these were dropped pre-#851).
             A64ElfFunction::code(symbols, f.code.clone(), f.relocations.clone())
@@ -11838,6 +12001,7 @@ mod tests {
         FunctionOps {
             index,
             export_name: export.map(String::from),
+            export_aliases: Vec::new(),
             debug_name: None,
             ops,
             op_offsets: Vec::new(),
@@ -12143,6 +12307,7 @@ mod tests {
         let code = vec![0u8; 8]; // MOVW + MOVT placeholders
         let func = ElfFunction {
             name: "decide".to_string(),
+            export_aliases: Vec::new(),
             debug_name: None,
             wasm_index: 0,
             code,
@@ -12264,6 +12429,7 @@ mod tests {
         code[4..8].copy_from_slice(&0u32.to_le_bytes()); // __synth_globals + 0
         let func = ElfFunction {
             name: "decide".to_string(),
+            export_aliases: Vec::new(),
             debug_name: None,
             wasm_index: 0,
             code,
@@ -12372,6 +12538,7 @@ mod tests {
         code[0..4].copy_from_slice(&C.to_le_bytes());
         let func = ElfFunction {
             name: "stack_push_decide".to_string(),
+            export_aliases: Vec::new(),
             debug_name: None,
             wasm_index: 0,
             code,
@@ -12900,6 +13067,7 @@ mod tests {
     fn a32_func(name: &str, idx: u32, code: Vec<u8>, relocs: &[(u32, &str)]) -> ElfFunction {
         ElfFunction {
             name: name.to_string(),
+            export_aliases: Vec::new(),
             debug_name: None,
             wasm_index: idx,
             code,

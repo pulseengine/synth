@@ -1101,6 +1101,8 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     let mut func_index = 0u32;
     let mut num_imported_funcs = 0u32;
     let mut export_names: HashMap<u32, String> = HashMap::new();
+    // #1746: EVERY export name of each function index, declaration order.
+    let mut export_names_all: HashMap<u32, Vec<String>> = HashMap::new();
     // #195: per-type AAPCS arg count (indexed by type index) and per-function
     // arg count (indexed by full function index: imports first, then locals).
     let mut type_arg_counts: Vec<u32> = Vec::new();
@@ -1731,6 +1733,10 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     let export = export.context("Failed to parse export")?;
                     if export.kind == ExternalKind::Func {
                         export_names.insert(export.index, export.name.to_string());
+                        export_names_all
+                            .entry(export.index)
+                            .or_default()
+                            .push(export.name.to_string());
                     }
                 }
             }
@@ -1761,10 +1767,13 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 }
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
+                let export_aliases =
+                    export_aliases_of(&export_names_all, actual_index, export_name.as_deref());
 
                 functions.push(FunctionOps {
                     index: actual_index,
                     export_name,
+                    export_aliases,
                     debug_name: None, // filled from the `name` section after the loop
                     ops,
                     op_offsets,
@@ -1904,6 +1913,8 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
     let mut func_index = 0u32;
     let mut num_imported_funcs = 0u32;
     let mut export_names: HashMap<u32, String> = HashMap::new();
+    // #1746: EVERY export name of each function index, declaration order.
+    let mut export_names_all: HashMap<u32, Vec<String>> = HashMap::new();
     let mut name_section_names: HashMap<u32, String> = HashMap::new();
     // #509: (param_count, result_count) per type index, for FuncType blocktypes.
     let mut type_block_arity: Vec<(u8, u8)> = Vec::new();
@@ -2010,6 +2021,10 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                     let export = export.context("Failed to parse export")?;
                     if export.kind == ExternalKind::Func {
                         export_names.insert(export.index, export.name.to_string());
+                        export_names_all
+                            .entry(export.index)
+                            .or_default()
+                            .push(export.name.to_string());
                     }
                 }
             }
@@ -2037,10 +2052,13 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                 }
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
+                let export_aliases =
+                    export_aliases_of(&export_names_all, actual_index, export_name.as_deref());
 
                 functions.push(FunctionOps {
                     index: actual_index,
                     export_name,
+                    export_aliases,
                     debug_name: None, // filled from the `name` section after the loop
                     ops,
                     op_offsets,
@@ -2066,13 +2084,40 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
     Ok(functions)
 }
 
+/// #1746: the export names of function `index` other than `primary`, in
+/// declaration order.
+fn export_aliases_of(
+    all: &HashMap<u32, Vec<String>>,
+    index: u32,
+    primary: Option<&str>,
+) -> Vec<String> {
+    all.get(&index)
+        .map(|names| {
+            names
+                .iter()
+                .filter(|n| Some(n.as_str()) != primary)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Decoded function with its WasmOp sequence
 #[derive(Debug, Clone)]
 pub struct FunctionOps {
     /// Function index in the module (includes imported functions)
     pub index: u32,
-    /// Export name if this function is exported
+    /// Export name if this function is exported. When one index is exported
+    /// under several names this is the LAST one declared (the pre-#1746
+    /// choice, kept so every symbol, diagnostic and sidecar that names the
+    /// function is unchanged); the others are in `export_aliases`.
     pub export_name: Option<String>,
+    /// #1746: every OTHER export name of this function index, in declaration
+    /// order (never contains `export_name`). Before #1746 the decoder kept one
+    /// name per index and the relocatable writers defined only that one, so a
+    /// consumer linking by any other export name got an undefined symbol with
+    /// no diagnostic. Empty for a function exported at most once.
+    pub export_aliases: Vec<String>,
     /// #394 Tier-1.x: the function's developer-facing name from the wasm `name`
     /// custom section (function-names subsection), e.g.
     /// `core::panicking::panic_fmt::h6651313c3e2c6c2f` — present for INTERNAL
