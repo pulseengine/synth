@@ -58,3 +58,6 @@ synth-core = { path = "../synth-core" }
 synth-backend = { path = "../synth-backend" }
 synth-backend-riscv = { path = "../synth-backend-riscv" }
 synth-backend-aarch64 = { path = "../synth-backend-aarch64" }
+# The wrong-code census (tests/wrong_code_census.rs) also reads two library-API
+# defects directly through these: #1677 (synth-backend mpu.rs) and #1745
+# (AArch64 compile_module).

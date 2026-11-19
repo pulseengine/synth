@@ -322,3 +322,6 @@ jobs:
           grep -qE '(^|\.\.\. )ORACLE rv32-reach-1724-review: 171 cases agree over 19 functions, 177 host calls matched$' "$log"
           # Its result line is the second "4 passed; 0 failed; 0 ignored"
           # pinned above (float_local_1763 is the first).
+          # RQ-91-WRONGCODECENSUS (Refs #1741): the wrong-code census measured
+          # every Exec/Structural row and each held its recorded status.
+          grep -qx 'WRONG-CODE CENSUS: 26 rows measured, 6 LIVE-WRONG' "$log"

@@ -1,0 +1,93 @@
+artifacts:
+  - id: RQ-91-WRONGCODECENSUS
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "A re-runnable census of the open wrong-code issues, each row with an executed or read-off status"
+    description: >
+        BET A, STEP 1 of the v0.92 plan ("wrong code, with a number"): the
+        week-one census. Homed in v0.91 because the release that carries the
+        local lane stack is undecided; it can be re-homed.
+
+        WHAT WAS COUNTED. All 86 issues open on 2026-11-20 were read in full,
+        not by title, and each was put in exactly one class: wrong-code (exit
+        0 and the output is wrong: a value, a call binding, a spurious trap,
+        or an instruction the declared target cannot execute), loud decline
+        or missing feature, machinery/docs/tooling, or unclear (no defined
+        right answer: #1207 is an invalid module, #1450 a return convention
+        no contract states). 32 are wrong-code.
+
+        WHAT WAS MEASURED. Each wrong-code issue's own repro was run on main
+        3dc31524 plus the unmerged oracle-kiln and x86objplan stack. The
+        result is LIVE-WRONG, FIXED, NOW-DECLINES or CANNOT-REPRO. The census
+        is the Rust test crates/synth-oracle/tests/wrong_code_census.rs.
+        Twenty-six rows are measured in the test: 17 run the issue's repro on
+        kiln and on unicorn (exec), and 9 read the property the issue names
+        from the emitted object or library output (structural; these cover an
+        import call, a link-time binding, AArch64, an ISA extension, and two
+        library APIs). Six rows need linear memory and a link step, which the
+        Rust harness does not provide yet, so they cite the CI-wired
+        scripts/repro oracle that already pins the shape exactly; those
+        oracles were run on the census commit and were not re-written. Every
+        measured row asserts its status exactly, both ways. The markdown table
+        in docs/status/WRONG_CODE_CENSUS.md is generated from the test's rows
+        and checked byte-for-byte without the engines, in the workspace Test
+        job.
+
+        RESULT: LIVE-WRONG 6 (#1696, #1699, #1744, #1745, #1747, #1752),
+        FIXED 20, NOW-DECLINES 6, CANNOT-REPRO 0. LIVE-WRONG on cortex-m4 with
+        default flags: 2 (#1696, the optimized path keeps no value across an
+        import call; #1699, the meld dispatch fallback passes no wasm
+        arguments). The plan's kill threshold (more than a quarter of the
+        rows no-oracle or not-reproduced) is not reached: 0 of 32.
+
+        CLOSURE CANDIDATES. The FIXED and NOW-DECLINES rows are fixed on main
+        and still open, because closure is release-based. Nothing was closed
+        and nothing was posted.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact:
+        `SYNTH=./target/debug/synth cargo test -p synth-oracle --features exec
+        --test wrong_code_census -- --nocapture`. A failing test, or a summary
+        line other than `WRONG-CODE CENSUS: 26 rows measured, 6 LIVE-WRONG`,
+        refutes it.
+    tags:
+      - oracle
+      - verification
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1741"
+      verification-track: execution
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 every open wrong-code issue has a census row with an
+        executed, read-off or cited-oracle status on a named commit, produced
+        by one command and re-run at the tag; the markdown table is generated
+        from the rows and checked.
+      landed: "v0.91 WRONGCODECENSUS - #1741 - DELIVERED: crates/synth-oracle/tests/wrong_code_census.rs (32 rows, 26 measured in the test) and the generated table docs/status/WRONG_CODE_CENSUS.md, run by the oracle-kiln job."
+      verified-by: >
+        DELIVERED, execution-verified on the census commit. Exec rows: every
+        call agrees with kiln on all 17 exec rows, every one FIXED (#1205 351 calls, #1711 117,
+        #1712 117, #1716 234, #1721 234, #1691 98 over the issue's own
+        fixture, and others). Structural rows: #1696, #1699, #1744, #1745,
+        #1747 and #1752 read LIVE; #1191 and #1698 read refused; #1677 reads
+        the CMSIS SIZE values. Cited oracles, all passing on the census
+        commit: npa_const_addr_matrix_1568 (162 cells, 0 wrong),
+        npa_model_differential (62 compared; #1604, #1661, #1672 and #1684
+        refused by name), imported_global_slots_rq91 (40 checks, 0
+        failures). PAIRED CONTROL: the same test with SYNTH pointed at a
+        v0.90.0 build (`git archive v0.90.0`) reds on exactly 15 rows, each
+        measured LIVE-WRONG where the census records FIXED or NOW-DECLINES:
+        #1191, #1241, #1691, #1698, #1710 to #1717, #1720, #1721 and #1739.
+        Not paired: #1205, #1210, #1214 and #1226 were fixed before v0.90.0,
+        so that build agrees on them too; their scripts/repro pin oracles
+        (selector_parity_197, home_alias_audit_corpus_1189) carry the
+        historical red. #1677 and #1745 read the library code built with the
+        test, not the binary. The six LIVE structural rows are not shown to
+        flip on a fix, because no fix exists on main; a changed byte sequence
+        reds the row for re-measurement. WHY outlives: #1741 is the support-level push; the census
+        is the population Bet A's count is measured against, and it raises
+        no backend's level.
