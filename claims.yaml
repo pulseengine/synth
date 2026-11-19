@@ -227,6 +227,18 @@ status_fields:
     kind: count
     pattern: '"status": "declined"'
     glob: ['artifacts/aarch64-op-surface.json']
+  # RQ-91-X86SKEL (#1741): the x86-64 op surface, derived from the REAL x86-64
+  # selector over the same probes (`x86_op_surface_artifact_is_fresh_1741`,
+  # freshness-gated in the Test job). Op-level only; the module-level
+  # refusals are tests/decline_skeleton.rs in the x86-64 crate.
+  x86_ops_probed:
+    kind: count
+    pattern: '"op": '
+    glob: ['artifacts/x86_64-op-surface.json']
+  x86_ops_lowered:
+    kind: count
+    pattern: '"status": "lowered"'
+    glob: ['artifacts/x86_64-op-surface.json']
   # The op-level decline LIST itself, substituted into the feature matrix.
   # This is what stops the aarch64 decline enumeration being hand-typed prose
   # that went stale twice in v0.57.
@@ -320,6 +332,18 @@ status_fields:
     pattern: '\n'
     glob: ['crates/synth-backend-aarch64/src/selector.rs',
            'crates/synth-backend-aarch64/src/selector/**/*.rs']
+    before: "#[cfg(test)]\nmod tests"
+    before_missing: whole-file
+  # RQ-91-X86SKEL (#1741, maintainer decision 2026-11-18): the x86-64
+  # selector, measured the same way. It is pinned `direction: track` while the
+  # backend is being built (L3), and flipped to `down` in the lane that
+  # promotes it to L2; the `up` floor on `x86_ops_lowered` below is its pair,
+  # so its lines cannot grow without the derived surface growing too.
+  x86_selector_lines_code:
+    kind: count
+    pattern: '\n'
+    glob: ['crates/synth-backend-x86_64/src/selector.rs',
+           'crates/synth-backend-x86_64/src/selector/**/*.rs']
     before: "#[cfg(test)]\nmod tests"
     before_missing: whole-file
   # The "generate, don't mirror" inventory, counted in FILES (`unit: files`)
@@ -507,10 +531,12 @@ status_fields:
       - arm-a32-cortex-r5
       - riscv32-rv32imac
       - aarch64-a64
+      - x86_64-sysv
     require:
       - crates/synth-backend
       - crates/synth-backend-riscv
       - crates/synth-backend-aarch64
+      - crates/synth-backend-x86_64
 
 # =============================================================================
 # RQ-58-MIRRORS (#242) — THE MIRROR INVENTORY, ranked by rot-risk.
@@ -676,8 +702,9 @@ feature_matrix_facts:
       why: ABI, ELF relocation and assembler-operator names — ISA identifiers
     - pattern: '\bcortex-[a-z0-9]+\b|\brv32[a-z]*\b|\besp32c3\b|\bRV32IMAC\b|\bM3\b|\bM4\b|\bM7\b|\bM4F\b'
       why: target/profile names (cortex-m4f, rv32imac, esp32c3) — hardware names
-    - pattern: '\bAArch64\b|\bA64\b|\bA32\b|\bThumb-2\b|\bx28\b|\bR9\b|\bR11\b|\bIP0\b'
+    - pattern: '\bAArch64\b|\bA64\b|\bA32\b|\bThumb-2\b|\bx28\b|\bR9\b|\bR11\b|\bIP0\b|\bx86[-_]64\b|\bELF64\b'
       why: architecture and architectural-register names — ISA identifiers
+        (x86-64 / x86_64 and the ELF64 container added by RQ-91-X86SKEL)
     - pattern: '0x[0-9A-Fa-f]+'
       why: hex literals name an encoding (the 0xFC prefix), not a measurement
     - pattern: '\bmemory (?:0\b|k>0\b|k\b)|grow\((?:0|n>0)\)|(?<![\w])[−-]1\b|÷0|\[0\]\[brk|exits? 0\b|\b1:1\b'
@@ -939,9 +966,13 @@ support_levels:
     - id: cortex-r5-image
       row: "Cortex-R5 self-contained image (`--target cortex-r5`)"
       level: L3
-    # L3: a maintainer-relayed request; no code, no crate, no issue.
+    # L3: bootstrap under VCR-X86-001 (approved 2026-11-18). The crate exists
+    # (lane X1, RQ-91-X86SKEL, #1741) and has oracles in CI; no level is
+    # claimed until the L2 evidence passes this checker. Evidence is
+    # deliberately NOT named here: the checker skips L3 rows, so a name listed
+    # at L3 would look held and be unchecked.
     - id: x86-64
-      row: "x86-64"
+      row: "x86-64 (`-b x86_64`)"
       level: L3
     # L2 since RQ-92-WDGTHIN (#1741, #1301): relocatable objects only. The
     # ARMv6-M lowering covers the i32 core, structured control flow
@@ -1128,7 +1159,7 @@ claims:
     evidence:
       - kind: count-eq
         pattern: 'PeepholeOptimizer::new|PeepholeOptimizer::default|PeepholeOptimizer \{'
-        glob: ['crates/synth-cli/src/**/*.rs', 'crates/synth-backend/src/**/*.rs', 'crates/synth-backend-riscv/src/**/*.rs', 'crates/synth-backend-aarch64/src/**/*.rs', 'crates/synth-synthesis/src/optimizer_bridge.rs', 'crates/synth-synthesis/src/instruction_selector.rs', 'crates/synth-synthesis/src/instruction_selector/*.rs', 'crates/synth-opt/src/**/*.rs']
+        glob: ['crates/synth-cli/src/**/*.rs', 'crates/synth-backend/src/**/*.rs', 'crates/synth-backend-riscv/src/**/*.rs', 'crates/synth-backend-aarch64/src/**/*.rs', 'crates/synth-backend-x86_64/src/**/*.rs', 'crates/synth-synthesis/src/optimizer_bridge.rs', 'crates/synth-synthesis/src/instruction_selector.rs', 'crates/synth-synthesis/src/instruction_selector/*.rs', 'crates/synth-opt/src/**/*.rs']
         expect: 0
 
   - id: SYNTH-SPECTRE-POLICY-SYMBOLS-1288
@@ -1172,7 +1203,8 @@ claims:
         pattern: 'let mut first_access'
         glob: ['crates/synth-backend/src/**/*.rs',
                'crates/synth-backend-riscv/src/**/*.rs',
-               'crates/synth-backend-aarch64/src/**/*.rs']
+               'crates/synth-backend-aarch64/src/**/*.rs',
+               'crates/synth-backend-x86_64/src/**/*.rs']
         max: 0
       - kind: verbatim                       # the unsoundness stays NAMED
         text: "UNSOUND, deliberately kept and deliberately named"
@@ -1588,7 +1620,7 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ARCH-BACKENDS
     doc: ARCHITECTURE.md
-    text: "four backends"
+    text: "five backends"
     evidence:
       - kind: file-exists
         path: crates/synth-backend
@@ -1596,8 +1628,12 @@ claims:
         path: crates/synth-backend-riscv
       - kind: file-exists
         path: crates/synth-backend-aarch64
+      - kind: file-exists                    # RQ-91-X86SKEL (#1741)
+        path: crates/synth-backend-x86_64
       - kind: verbatim
         text: "| AArch64 (host-native) | `synth-backend-aarch64` | A64 |"
+      - kind: verbatim
+        text: "| x86-64 (host-native, skeleton) | `synth-backend-x86_64` | x86-64 baseline |"
 
   # The register-allocation description was WRONG for months ("R0-R12 for
   # temporaries" — R12 is encoder scratch, R9/R10/R11 are reserved bases; the
@@ -3940,6 +3976,21 @@ claims:
               aarch64_dead_below_1740_differential.py (main 37 failures over 456
               emulations, fix 456/456) and per-edge unit tests red on each part.
               No hand-written arm was replaced, so none could be deleted.
+      # RQ-91-X86SKEL (#1741), maintainer decision 2026-11-18: the x86-64
+      # selector is pinned `track` until L2 (every movement is still a
+      # visible diff here, with no direction asserted), then a `down` pin.
+      # Created at 250 (lane X1: local.get of a parameter, i32.add, return).
+      - kind: ratchet
+        name: x86_selector_lines_code
+        direction: track
+        value: 250
+      # Its pair: the derived x86-64 surface is a FLOOR, so the selector
+      # cannot grow while the lowered set stands still or shrinks.
+      - kind: ratchet
+        name: x86_ops_lowered
+        direction: up
+        value: 3
+        baseline: 3
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -4019,7 +4070,7 @@ claims:
   # "can this check still fail" audit applied to the check being added.
   - id: SYNTH-SUBTRACTION-PINS-DECLARED
     doc: CLAUDE.md
-    text: "Twelve `kind: ratchet` pins in"
+    text: "Fourteen `kind: ratchet` pins in"
     evidence:
       # RQ-65-MUTANTS (v0.65): 7 -> 8 — the eighth is `mutants_untested`, a
       # ceiling over the mutation-survey ledger (SYNTH-MUTATION-SURVEY-RQ65).
@@ -4030,10 +4081,13 @@ claims:
       # CLAUDE.md says "Ten".
       # RQ-91-LEVELGATE (v0.91): 10 -> 12 — `rv32_selector_lines_code` and
       # `aarch64_selector_lines_code`, two more ceilings. 8 + 1 + 3.
+      # RQ-91-X86SKEL (v0.91, #1741): 12 -> 14 — `x86_selector_lines_code`
+      # (tracked until L2, maintainer decision 2026-11-18) and its floor
+      # `x86_ops_lowered`. 8 + 2 + 4.
       - kind: count-eq
         pattern: '^      - kind: ratchet$'
         glob: ['claims.yaml']
-        expect: 12
+        expect: 14
       # THE DIRECTION BREAKDOWN, pinned — and this one was earned. While
       # building this lane the `direction: track` change to the two whole-file
       # pins was silently reverted by an unrelated `git checkout -- claims.yaml`
@@ -4055,11 +4109,11 @@ claims:
       - kind: count-eq
         pattern: '^        direction: up$'
         glob: ['claims.yaml']
-        expect: 1
+        expect: 2
       - kind: count-eq
         pattern: '^        direction: track$'
         glob: ['claims.yaml']
-        expect: 3
+        expect: 4
       - kind: verbatim                       # the prose those directions match
         text: "the whole-file counts are pinned `direction: track`"
       - kind: count-eq                       # the CI step that prints them
@@ -4639,9 +4693,13 @@ claims:
       - kind: count-eq                       # population: a NEW workspace member
         pattern: '^    "crates/'             # must be classified linked / feature-
         glob: ['Cargo.toml']                 # gated / unlinked before this moves
-        expect: 20                           # 19 -> 20: synth-oracle (RQ-91-ORACLEKILN,
+        expect: 21                           # 19 -> 20: synth-oracle (RQ-91-ORACLEKILN,
                                              # #1741), classified UNLINKED test
-                                             # infrastructure by the two pins below
+                                             # infrastructure by the two pins below.
+                                             # 20 -> 21: synth-backend-x86_64
+                                             # (RQ-91-X86SKEL, #1741), LINKED:
+                                             # an always-on synth-cli dependency,
+                                             # published (scripts/publish.rs)
       # synth-oracle is the execution-oracle harness (kiln + unicorn). It must
       # never be linked into the binary or published: no crate depends on it,
       # and it is publish = false. THESE TWO PINS ARE WHY unicorn-engine's
@@ -6426,9 +6484,31 @@ claims:
   # the checker), and the checker that re-derives each criterion from the
   # tree must exist and run, self-test included, in the Claim Check job.
   # The `support_levels:` section above is that checker's ledger.
+  # RQ-91-X86SKEL (#1741): the decision that moved VCR-X86-001 to approved,
+  # and the three things lane X1 must not lose silently: the crate, the
+  # `.note.GNU-stack` the x86-64 object carries (GNU ld would otherwise mark
+  # the stack executable), and the oracle's PINNED baseline CPU model (the
+  # unpinned default runs above-baseline instructions, REVIEW_2 X2).
+  - id: SYNTH-X86-SKELETON-RQ91
+    doc: artifacts/verified-codegen-roadmap.yaml
+    text: "DECISION, 2026-11-18: the maintainer put x86-64 in scope"
+    evidence:
+      - kind: file-exists
+        path: crates/synth-backend-x86_64/src/selector.rs
+      - kind: count-eq
+        pattern: '^    gnu_stack_note: true,$'
+        glob: ['crates/synth-backend-x86_64/src/backend.rs']
+        expect: 1
+      - kind: count-eq
+        pattern: 'Cpu::X86_64Baseline => X86CpuModel::QEMU64 as i32,'
+        glob: ['crates/synth-oracle/src/emulate.rs']
+        expect: 1
+      - kind: verbatim
+        text: "RECORDED 2026-09-06, SUPERSEDED BY THE DECISION ABOVE:"
+
   - id: SYNTH-SUPPORT-LEVELS-RQ91
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "| x86-64 | L3 experimental |"
+    text: "| x86-64 (`-b x86_64`) | L3 experimental |"
     evidence:
       - kind: verbatim
         text: "| Cortex-M Thumb-2 (`--cortex-m`, `--target cortex-m*`) | L1 verified (ladder criterion not met) |"

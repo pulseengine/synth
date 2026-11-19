@@ -1,0 +1,129 @@
+# x86-64 backend oracles that need tools the required Test job does not have
+# (RQ-91-X86SKEL, Refs #1741; VCR-X86-001).
+#
+# Its own workflow file, not a ci.yml job: ci.yml sits at GitHub's ~512 KB
+# limit (see oracle-kiln.yml for the measured failure).
+#
+# What runs where:
+# - E2/E3 (iced-x86 decode of every emitted instruction, ISA-level gate) and
+#   the decline tests run in the required Test job under `cargo test
+#   --workspace`; they need no tool.
+# - The execution oracle against kiln (unicorn x86-64, CPU model pinned to
+#   QEMU64) runs in oracle-kiln.yml with the other synth-oracle tests.
+# - THIS job: E1, byte equality of every encoder form with `llvm-mc
+#   -show-encoding`, with SYNTH_REQUIRE_LLVM_MC=1 so a missing llvm-mc is a
+#   failure here, never a skip; and a NATIVE leg, because a hosted
+#   ubuntu-24.04 runner is an x86-64 machine: the probe object is linked with
+#   GNU ld under --fatal-warnings and run. GNU ld treats an object without
+#   `.note.GNU-stack` as needing an executable stack and warns; lld does not
+#   (REVIEW_2 X6), so this link is where that note is checked. A control with
+#   the note stripped must FAIL the same link.
+#
+# Hosted ubuntu-24.04, not the self-hosted pool: nothing shows llvm-mc on the
+# pool (REVIEW_2 X8), and the native leg needs an x86-64 host.
+
+name: Oracle (x86-64)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  x86_64-oracle:
+    name: x86-64 encoder vs llvm-mc, native link and run (RQ-91-X86SKEL)
+    # NOT a required context, so it can be added and renamed freely.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-x86_64-oracle-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-x86_64-oracle-
+      - name: Install llvm (llvm-mc) and binutils
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y llvm binutils gcc
+          test "$(uname -m)" = x86_64
+          mc=$(command -v llvm-mc || ls /usr/lib/llvm-*/bin/llvm-mc | sort -V | tail -n 1)
+          test -x "$mc"
+          # The version is printed, not assumed: the encodings were measured
+          # against LLVM 22.1.8 and ubuntu-24.04 ships an older LLVM.
+          "$mc" --version
+          echo "LLVM_MC=$mc" >> "$GITHUB_ENV"
+          ld --version | head -n 1
+      - name: E1 — every encoder form byte-equal to llvm-mc
+        env:
+          SYNTH_REQUIRE_LLVM_MC: "1"
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/e1.log"
+          cargo test -p synth-backend-x86_64 --test encoding_llvm_mc -- --nocapture 2>&1 | tee "$log"
+          grep -q '^E1: 513 forms byte-equal to ' "$log"
+          grep -qE '^test result: ok\. 2 passed; 0 failed' "$log"
+      - name: Native leg — GNU ld --fatal-warnings, run on this x86-64 host
+        run: |
+          set -euo pipefail
+          cargo build -p synth-cli
+          d="$RUNNER_TEMP/native"
+          mkdir -p "$d"
+          cat > "$d/probes.wat" <<'EOF'
+          (module
+            (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add)
+            (func (export "add3") (param i32 i32 i32) (result i32)
+              local.get 0 local.get 1 i32.add local.get 2 i32.add)
+            (func (export "id") (param i32) (result i32) local.get 0))
+          EOF
+          cat > "$d/harness.c" <<'EOF'
+          #include <stdint.h>
+          #include <stdio.h>
+          uint32_t add(uint32_t, uint32_t);
+          uint32_t add3(uint32_t, uint32_t, uint32_t);
+          uint32_t id(uint32_t);
+          int main(void) {
+            const uint32_t v[] = {0u, 1u, 2u, 0x7FFFFFFFu, 0x80000000u, 0xFFFFFFFFu, 0xDEADBEEFu};
+            const int n = sizeof v / sizeof v[0];
+            int cases = 0, bad = 0;
+            for (int i = 0; i < n; i++) {
+              cases++; bad += id(v[i]) != v[i];
+              for (int j = 0; j < n; j++) {
+                cases++; bad += add(v[i], v[j]) != (uint32_t)(v[i] + v[j]);
+                cases++; bad += add3(v[i], v[j], v[(i + j) % n]) != (uint32_t)(v[i] + v[j] + v[(i + j) % n]);
+              }
+            }
+            printf("x86_64-native: %d cases, %d bad\n", cases, bad);
+            return bad != 0;
+          }
+          EOF
+          ./target/debug/synth compile "$d/probes.wat" -b x86_64 --relocatable -o "$d/probes.o"
+          readelf -S "$d/probes.o" | grep -q '\.note\.GNU-stack'
+          gcc -O0 -c "$d/harness.c" -o "$d/harness.o"
+          gcc -Wl,--fatal-warnings -o "$d/run" "$d/harness.o" "$d/probes.o"
+          "$d/run" | tee "$d/run.log"
+          grep -qx 'x86_64-native: 105 cases, 0 bad' "$d/run.log"
+          # The linked program's stack is NOT executable (GNU_STACK is RW).
+          readelf -lW "$d/run" | grep GNU_STACK | tee "$d/stack.txt"
+          grep -q 'RW ' "$d/stack.txt"
+          # CONTROL: the same object with the note stripped gives an
+          # EXECUTABLE stack (RWE), or this leg cannot see the note at all.
+          objcopy --remove-section .note.GNU-stack "$d/probes.o" "$d/nonote.o"
+          gcc -o "$d/run2" "$d/harness.o" "$d/nonote.o" 2>&1 | tee "$d/link2.txt"
+          readelf -lW "$d/run2" | grep GNU_STACK | tee "$d/stack2.txt"
+          grep -q 'RWE' "$d/stack2.txt"

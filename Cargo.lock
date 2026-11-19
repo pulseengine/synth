@@ -612,6 +612,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iced-x86"
+version = "1.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c23ad4d19dca41180e835ef6fbd2c1ee655777eca086ad80dd517e0513322879"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "id-arena"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1499,6 +1508,7 @@ dependencies = [
  "anyhow",
  "proptest",
  "synth-backend-aarch64",
+ "synth-backend-x86_64",
  "synth-core",
  "synth-synthesis",
  "thiserror",
@@ -1512,6 +1522,18 @@ dependencies = [
  "anyhow",
  "synth-core",
  "thiserror",
+]
+
+[[package]]
+name = "synth-backend-x86_64"
+version = "0.90.0"
+dependencies = [
+ "iced-x86",
+ "object",
+ "synth-core",
+ "thiserror",
+ "wasmparser 0.263.0",
+ "wat",
 ]
 
 [[package]]
@@ -1535,6 +1557,7 @@ dependencies = [
  "synth-backend-awsm",
  "synth-backend-riscv",
  "synth-backend-wasker",
+ "synth-backend-x86_64",
  "synth-core",
  "synth-frontend",
  "synth-synthesis",

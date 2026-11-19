@@ -21,7 +21,7 @@ and anything numeric lives in the machine-derived
 ## Overview
 
 Synth is an ahead-of-time compiler from WebAssembly to bare-metal native code.
-It carries **four backends**:
+It carries **five backends**:
 
 | Backend | Crate | ISA | Primary targets |
 |---------|-------|-----|-----------------|
@@ -29,6 +29,7 @@ It carries **four backends**:
 | ARM Cortex-R | `synth-backend` | A32 | cortex-r5 |
 | RISC-V | `synth-backend-riscv` | RV32IMAC | qemu_riscv32, ESP32-C3 |
 | AArch64 (host-native) | `synth-backend-aarch64` | A64 | cortex-a53 (host-linkable ET_REL) |
+| x86-64 (host-native, skeleton) | `synth-backend-x86_64` | x86-64 baseline | x86_64 (SysV ELF64 ET_REL; lane X1: leaf i32 `local.get`/`i32.add`/`return`, all else refused) |
 
 **Key properties:**
 
@@ -232,6 +233,10 @@ let elf = ElfBuilder::new_arm32();
 - `synth-backend-aarch64` — A64 encoder (clang-cross-verified), EM_AARCH64
   ELF64 emitter; straight-line integer + scalar-float subset (see the
   [Feature Matrix](docs/status/FEATURE_MATRIX.md))
+- `synth-backend-x86_64` — x86-64 SysV backend, lane X1 skeleton
+  (RQ-91-X86SKEL): an encoder checked against `llvm-mc` and iced-x86, a
+  selector for leaf i32 `local.get`/`i32.add`/`return`, and the shared
+  ELF64 writer (`synth_core::object_plan`) with `.note.GNU-stack`
 - `synth-backend-awsm`, `synth-backend-wasker` — external-toolchain
   integration stubs
 

@@ -47,6 +47,9 @@ const CRATES_TO_PUBLISH: &[&str] = &[
     // to resolve `synth-backend-aarch64` against the index. The restored
     // `./publish verify` step (#146) is what surfaced this omission.
     "synth-backend-aarch64",
+    // Host-native x86-64 backend, lane X1 skeleton (RQ-91-X86SKEL, #1741).
+    // Always-on dependency of synth-cli, so published for the same reason.
+    "synth-backend-x86_64",
     "synth-backend-awsm",
     "synth-backend-wasker",
     "synth-backend-riscv",

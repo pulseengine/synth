@@ -4714,8 +4714,31 @@ artifacts:
   # ---------------------------------------------------------------------------
   - id: VCR-X86-001
     type: sw-req
-    title: "x86_64 backend — wanted, and DEFERRED with the cost written down rather than left ambiguous"
+    title: "x86_64 backend — in scope since 2026-11-18; the four costs written down in September are its constraints"
     description: >
+      DECISION, 2026-11-18: the maintainer put x86-64 in scope for the
+      architecture push. This overrides the deferral recorded below on
+      2026-09-06. None of the three conditions under "WHAT WOULD CHANGE THIS"
+      has occurred; the decision is the maintainer's, taken with the costs
+      known. The four costs stand, word for word, as the constraints the
+      design must answer, and each has a named answer: cost 4 by an encoding
+      differential against `llvm-mc` and an iced-x86 decode of every emitted
+      instruction; cost 1 by a unicorn-versus-kiln execution oracle from the
+      first lane and by porting the AArch64 designs for the known blockers;
+      costs 2 and 3 by making NO proof claim — x86-64 is capped at support
+      level L2, and no vendor-authoritative x86 semantics exists in Rocq
+      (surveyed 2026-11-18). The same day the maintainer decided the x86
+      selector's line count is pinned `track` until L2 and then `down`, paired
+      with an `up` floor on the derived lowered-op surface; that the linear
+      memory base is a LINKER-PLACED symbol addressed RIP-relative, one
+      instance per object; and that REVIEW_2's corrections apply (unicorn CPU
+      model pinned, `ud2` checked at RIP, per-instruction addends,
+      `.note.GNU-stack`, CI on a hosted ubuntu-24.04 job). The plan is
+      `X86_PLAN.md` in the v0.91 preparation notes; the lanes are RQ artifacts
+      in their release directories (lane X1a RQ-91-X86OBJPLAN, lane X1b
+      RQ-91-X86SKEL).
+
+      RECORDED 2026-09-06, SUPERSEDED BY THE DECISION ABOVE:
       A maintainer asked whether to add x86 so synth's output covers the major
       targets and can ship as normal libraries for Linux and macOS. The answer
       is NOT YET, and the reasoning is recorded here because "we should
@@ -4770,7 +4793,7 @@ artifacts:
       x86-only — none of the current consumers is. Until then this stays
       `proposed`, and the honest near-term answer to "cover the major
       targets" is RQ-63-MACHO plus the existing arm64 Linux path.
-    status: proposed
+    status: approved
     links:
       - type: derives-from
         target: VCR-001

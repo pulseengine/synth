@@ -22,3 +22,6 @@ proptest.workspace = true
 # VCR-SEL-005 (#851): the cross-backend op-parity oracle probes the AArch64
 # selector as the THIRD backend (tests/cross_backend_op_parity.rs only).
 synth-backend-aarch64 = { path = "../synth-backend-aarch64", version = "0.91.0" }
+# RQ-91-X86SKEL (#1741): the same probes derive the x86-64 op surface
+# (artifacts/x86_64-op-surface.json) from the real x86-64 selector.
+synth-backend-x86_64 = { path = "../synth-backend-x86_64", version = "0.91.0" }

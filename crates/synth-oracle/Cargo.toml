@@ -44,8 +44,10 @@ kiln-decoder = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d994
 kiln-foundation = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d9945f191c272d0be73c3d046b2aebdee", features = ["std"], optional = true }
 kiln-error = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d9945f191c272d0be73c3d046b2aebdee", features = ["std"], optional = true }
 # Only the architectures synth targets in this harness: ARM (Thumb-2 / A32),
-# RISC-V and AArch64 (#1745). `arch_all` would build seven more QEMU targets.
-unicorn-engine = { version = "2.1.5", default-features = false, features = ["arch_arm", "arch_riscv", "arch_aarch64"], optional = true }
+# Only the architectures synth targets in this harness: ARM (Thumb-2 / A32),
+# RISC-V, AArch64 (#1745) and (RQ-91-X86SKEL, #1741) x86-64. `arch_all` would
+# build six more QEMU targets.
+unicorn-engine = { version = "2.1.5", default-features = false, features = ["arch_arm", "arch_riscv", "arch_aarch64", "arch_x86"], optional = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }

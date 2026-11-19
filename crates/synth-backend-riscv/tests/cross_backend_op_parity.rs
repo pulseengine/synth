@@ -2510,3 +2510,151 @@ fn a64_op_surface_artifact_is_fresh_242() {
          commit both."
     );
 }
+
+// ---------------------------------------------------------------------------
+// RQ-91-X86SKEL (#1741): the x86-64 op surface, derived the same way.
+//
+// Every WasmOp representative, through the SAME probe construction as the
+// aarch64 surface (`a64_probe_for`: one well-formed i32 probe per op label),
+// is run through the REAL x86-64 selector. An op is "lowered" when the
+// selector accepts the probe (with one result, or with none); otherwise it is
+// "declined" and the selector's own message is the reason. The committed
+// `artifacts/x86_64-op-surface.json` must equal this derivation, and
+// `x86_ops_lowered` (claims.yaml) counts its "lowered" rows — the `up` floor
+// on the x86-64 surface, so the selector's line count (pinned `track`) cannot
+// grow without the surface growing beside it.
+//
+// SCOPE, as for aarch64: OP-LEVEL ONLY. The x86-64 backend also refuses at
+// MODULE level (any non-i32 signature, imports, memory, tables, globals, ...);
+// those refusals are `crates/synth-backend-x86_64/tests/decline_skeleton.rs`.
+// ---------------------------------------------------------------------------
+
+/// The x86-64 form of an aarch64 probe. Lane X1 lowers no `i32.const`, so an
+/// operand the probe builds with `i32.const` is supplied as a fresh i32
+/// PARAMETER instead (`local.get N`) — except in the `i32.const` probe itself,
+/// where the const IS the op under test and must stay. The function's final
+/// `end` is appended (the aarch64 probes leave it implicit).
+fn x86_probe(op: &WasmOp, num_params: u32, ops: &[WasmOp]) -> (u32, Vec<WasmOp>) {
+    let mut n = num_params;
+    let mut out: Vec<WasmOp> = ops
+        .iter()
+        .map(|o| match o {
+            I32Const(_) if !matches!(op, I32Const(_)) => {
+                n += 1;
+                LocalGet(n - 1)
+            }
+            other => other.clone(),
+        })
+        .collect();
+    out.push(End);
+    (n, out)
+}
+
+fn x86_outcome(ops: &[WasmOp], num_params: u32) -> Result<(), String> {
+    let one = synth_backend_x86_64::select(ops, num_params, 1);
+    if one.is_ok() || synth_backend_x86_64::select(ops, num_params, 0).is_ok() {
+        return Ok(());
+    }
+    Err(one.unwrap_err().to_string())
+}
+
+fn derive_x86_op_surface() -> (String, Vec<String>) {
+    let mut rows: Vec<(String, Option<String>)> = Vec::new();
+    let mut unprobed: Vec<String> = Vec::new();
+    for op in all_wasm_op_representatives() {
+        let Some((label, num_params, ops)) = a64_probe_for(&op) else {
+            unprobed.push(format!("{op:?}"));
+            continue;
+        };
+        let (n, ops) = x86_probe(&op, num_params, &ops);
+        rows.push((label.to_string(), x86_outcome(&ops, n).err()));
+    }
+    rows.sort();
+    rows.dedup();
+    unprobed.sort();
+    let mut s = String::new();
+    s.push_str("{\n");
+    s.push_str(
+        "  \"_generated_by\": \"cargo test -p synth-backend-riscv --test \
+         cross_backend_op_parity x86_op_surface_artifact_is_fresh_1741\",\n",
+    );
+    s.push_str(
+        "  \"_source\": \"REAL probe outcomes of synth_backend_x86_64::select \
+         over the aarch64 surface's probes — never a hand list\",\n",
+    );
+    s.push_str(
+        "  \"_scope\": \"OP-LEVEL ONLY. Module-level refusals (non-i32 \
+         signatures, imports, memory, tables, globals, data, start) are \
+         crates/synth-backend-x86_64/tests/decline_skeleton.rs\",\n",
+    );
+    s.push_str("  \"ops\": [\n");
+    for (i, (label, reason)) in rows.iter().enumerate() {
+        let comma = if i + 1 == rows.len() { "" } else { "," };
+        match reason {
+            None => s.push_str(&format!(
+                "    {{ \"op\": \"{}\", \"status\": \"lowered\" }}{comma}\n",
+                json_escape(label)
+            )),
+            Some(r) => s.push_str(&format!(
+                "    {{ \"op\": \"{}\", \"status\": \"declined\", \"reason\": \"{}\" }}{comma}\n",
+                json_escape(label),
+                json_escape(r)
+            )),
+        }
+    }
+    s.push_str("  ]\n}\n");
+    (s, unprobed)
+}
+
+/// The committed `artifacts/x86_64-op-surface.json` must EQUAL what running
+/// the real x86-64 selector produces right now.
+///
+/// Regenerate with `SYNTH_EMIT_X86_SURFACE=1 cargo test -p synth-backend-riscv
+/// --test cross_backend_op_parity x86_op_surface_artifact_is_fresh_1741`.
+#[test]
+fn x86_op_surface_artifact_is_fresh_1741() {
+    let (want, unprobed) = derive_x86_op_surface();
+    assert!(
+        unprobed.is_empty(),
+        "{} WasmOp representative(s) got NO probe:\n  {}",
+        unprobed.len(),
+        unprobed.join("\n  ")
+    );
+    let probed = want.matches("\"op\": ").count();
+    assert!(
+        probed >= 190,
+        "x86 op-surface probed too few ops ({probed})"
+    );
+    assert!(want.contains("\"status\": \"declined\""));
+    assert!(want.contains("\"status\": \"lowered\""));
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/x86_64-op-surface.json");
+    if std::env::var_os("SYNTH_EMIT_X86_SURFACE").is_some() {
+        std::fs::write(&path, &want).expect("write x86_64-op-surface.json");
+        return;
+    }
+    let got = std::fs::read_to_string(&path).unwrap_or_default();
+    if got == want {
+        return;
+    }
+    let committed: Vec<&str> = got.lines().collect();
+    let derived: Vec<&str> = want.lines().collect();
+    let mut diff = String::new();
+    for line in &derived {
+        if !committed.contains(line) {
+            diff.push_str(&format!("  DERIVED-NOW : {}\n", line.trim()));
+        }
+    }
+    for line in &committed {
+        if !derived.contains(line) {
+            diff.push_str(&format!("  COMMITTED   : {}\n", line.trim()));
+        }
+    }
+    panic!(
+        "artifacts/x86_64-op-surface.json is STALE or hand-edited.\n{diff}\n\
+         Regenerate with:\n  SYNTH_EMIT_X86_SURFACE=1 cargo test -p \
+         synth-backend-riscv --test cross_backend_op_parity \
+         x86_op_surface_artifact_is_fresh_1741\nthen `python3 \
+         scripts/claim_check.py claims.yaml --emit-status` and commit both."
+    );
+}

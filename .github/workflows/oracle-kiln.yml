@@ -119,6 +119,9 @@ jobs:
           # rebased tree); 3 tests/target_record.rs (the binary end to end,
           # refusals, the boot contract); 1 the target-record binary's own
           # unit test.
+          # RQ-91-X86SKEL (Refs #1741): the x86-64 skeleton against kiln
+          # (tests/x86_64_kiln_oracle.rs, unicorn pinned to QEMU64), exact.
+          grep -qx 'ORACLE x86_64-kiln: 877 cases agree' "$log"
           grep -qE '^test result: ok\. 15 passed; 0 failed' "$log"
           # RQ-91-RV32ISA: +3, the `rv32_isa` decoder unit tests. RV32REACH
           # (Refs #1254): +1, the `value` memory-image unit test.
