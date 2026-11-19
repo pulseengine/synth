@@ -1,0 +1,112 @@
+artifacts:
+  - id: RQ-91-M0ORACLE
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "The ARMv6-M oracle executes on unicorn's Cortex-M0 model and tells a wasm trap from an illegal instruction"
+    description: >
+        ORACLE LANE M0-0 of the v0.91 ARMv6-M plan, tightened by its second
+        review. No compiler change. armv6m_1301_differential.py, the wired
+        execution oracle for the cortex-m0 / cortex-m0plus profile, ran its
+        execution leg on a unicorn `Uc` with NO CPU model set (it reads back
+        17), so a v7-M instruction executed there as on any v7 core. Legality
+        rested on the static byte leg alone. The oracle also compared "unicorn
+        stopped early, for any reason" with "wasmtime raised, for any reason"
+        and counted equal as agreement.
+
+        THE GAP, measured on main 265235dc with unicorn 2.1.4 before any
+        edit. Plain `UC_MODE_THUMB` with `ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M0)`
+        set before the first `mem_map` reads back 7 and faults MOVW,
+        SDIV/UDIV, `and.w`, `ldr.w`, `push.w`, UMULL, MLS, CLZ and RBIT. With
+        `UC_MODE_MCLASS` the readback is 11 and all ten execute. Setting the
+        model after `mem_map` returns UC_ERR_ARG. IT and CBZ/CBNZ execute
+        under model 7 in both modes. A UDF and an illegal instruction both
+        raise UC_ERR_INSN_INVALID with PC at the faulting instruction. unicorn
+        2.1.4 has no Cortex-M0+ model constant. The oracle's install step in
+        `repro-sweep-selector-oracle` installed unicorn unpinned.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact:
+        `SYNTH=./target/debug/synth python3 scripts/oracle_run.py
+        scripts/repro/armv6m_1301_differential.py`. A PASS whose leg D does not
+        print "ILLEGAL on 12/12 vectors" refutes it.
+
+        CITATION: #1301 is where the profile was analysed; #1741 is the
+        architecture support push this lane belongs to. Neither number is a
+        scope statement.
+    tags:
+      - feature-loop
+      - oracle
+      - armv6-m
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1301"
+      verification-track: execution
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 the ARMv6-M oracle executes every accepted function
+        on unicorn's Cortex-M0 model with the readback asserted and the
+        unicorn version pinned; a fault counts as a wasm trap only at a 16-bit
+        UDF; a cortex-m3 `and.w` faults as ILLEGAL under the oracle's own
+        construction on every run; and the 112 per-op probes are pinned at the
+        accepted set, exact both ways. Each new leg is shown red under a
+        mutation and green restored.
+      landed: "v0.91 M0ORACLE - #1301 - DELIVERED: armv6m_1301_differential.py runs on unicorn's Cortex-M0 model (UC_MODE_THUMB, model set before mem_map, readback asserted, unicorn 2.1.4 asserted and pinned in CI), classifies every fault by the halfword at the faulting PC, proves on every run that a cortex-m3 and.w faults as ILLEGAL there, plants IT and CBZ for the byte leg, pins the 112 embedded per-op probes at exactly 8 accepted names on both ARMv6-M targets, binds legs C and E to the model they read back, and holds the value comparison to wrong-reference controls and a counted floor."
+      verified-by: >
+        DELIVERED, execution-verified. No compiler change. On a synth built
+        from 265235dc: the base oracle PASSES with 624 emulations; the branch
+        oracle PASSES with 783 emulations, 780 wasmtime calls, 618 compiles and
+        666 value comparisons (746 / 744 / 618 before the review-3 controls).
+        Its legs: A and B are unchanged in what they pin, and B now also
+        detects a planted IT and a planted CBZ, the two classes the M0 model
+        executes. C runs the 3 fixture and 49 corpus functions on model 7.
+        Under the new classifier 5 vectors of join_alias_1189.wat:lres, where
+        wasmtime runs out of fuel and unicorn hits its instruction budget, had
+        passed as "both trapped"; they are now counted as unchecked under a
+        ceiling of 5. D: synthetic `udf #0` classifies as a trap, synthetic
+        `and.w` as ILLEGAL; synth's cortex-m3 `i32_and` is ILLEGAL on 12 of 12
+        vectors on model 7, and the same bytes equal wasmtime on model 8. E:
+        112 probes embedded in the script, accepted 8 / 8 / 110 on cortex-m0 /
+        cortex-m0plus / cortex-m3; the 8 names are pinned exactly and each one
+        executes against wasmtime, i64_ident and void_fn included. MUTANTS,
+        each RED, then GREEN with the file restored: no model set gives readback
+        17 and aborts; no model set and no readback check reds leg D ("NO
+        FAULT"), which is the base oracle's construction; UC_MODE_MCLASS
+        aborts at readback 11, and without the readback check reds leg D;
+        treating every invalid instruction as a trap reds leg D; feeding the
+        fixture's cortex-m3 object to leg C reds with ILLEGAL at `bits`; one
+        name dropped from or added to the probe pin reds leg E; a byte leg blind
+        to IT and CBZ reds both plants; a pinned version of 2.1.3 aborts; a
+        budget ceiling of 4 reds. M0+ RUNS ON THE M0 MODEL: unicorn has none,
+        the ISA is the same, and legs A and E assert the cortex-m0plus .text is
+        byte-identical to the cortex-m0 .text.
+        REVIEW 3 (pre-push, FIX FIRST): seven mutants survived the first
+        commit, among them legs C and E running on the M3 model with every
+        line still green. Fixed. `execute()` takes the model and the leg as
+        REQUIRED arguments and records the model the live Uc reads back; the
+        run reds unless legs C, E and V ran on model 7 only. Leg V holds real
+        cortex-m0 bytes against a wrong reference (i32.sub for i32.add: 10 of
+        12 vectors disagree, add+1: 12 of 12, an i64 reference with its high
+        word dropped: 11 of 12), each count computed independently and
+        required exactly. Value comparisons are counted (666, floor 666, also
+        grepped by the CI step), and every vector of legs C and E must land in
+        exactly one bucket (C: 624 = 582 compared + 25 trap + 12 void + 5
+        budget; E: 96 = 84 + 12 void). The comparison rule is one function,
+        `verdict()`, checked by leg D on all 18 (wasmtime outcome, unicorn
+        outcome) pairs, and the classifier gains a 16-bit undefined halfword
+        (0xB800) that must be ILLEGAL. Re-run on the fixed code, 19 of 20
+        mutants RED: routing C/E to M3 (binding), the execute model ignored
+        for C/E (binding), no value compare (comparator + all three V
+        controls), a trap accepting illegal/fault/hang (comparator), a budget
+        accepting anything (comparator), an uncounted budget pass (partition
+        C 624 vs 619), any 16-bit halfword as a trap (classifier, 0xB800),
+        an i64 low word only (V), plus the eleven of the first round. The
+        twentieth, removing the version check, stays GREEN by construction on
+        a 2.1.4 host; the check's teeth are shown by pinning 2.1.3 (abort).
+        The Cortex-M0/M0+ FEATURE_MATRIX row said "refuse-only ... no object
+        is written"; it now states the measured partial acceptance, and its
+        8-of-112 figure is pinned to the oracle's exact probe set
+        (SYNTH-MATRIX-ARMV6M-PROBES).

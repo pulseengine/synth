@@ -6591,8 +6591,13 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      - name: Install emulation deps
-        run: pip install wasmtime unicorn pyelftools capstone || pip install --break-system-packages wasmtime unicorn pyelftools capstone
+      - name: Install emulation deps (unicorn PINNED)
+        # v0.91 M0ORACLE (#1301): the ARMv6-M oracle in this job runs on
+        # unicorn's Cortex-M0 CPU model, and whether that model refuses v7-M
+        # encodings is a property of the unicorn RELEASE (measured on 2.1.4,
+        # also PyPI's latest when pinned, so no oracle here changed engine).
+        # The script asserts this version and aborts on any other.
+        run: pip install wasmtime unicorn==2.1.4 pyelftools capstone || pip install --break-system-packages wasmtime unicorn==2.1.4 pyelftools capstone
       - name: Install wabt (wat2wasm — required by the newly-wired oracles)
         # #890: these oracles were never CI-run, so their host deps were never
         # discovered. wat2wasm is absent on the runner and several fixtures
@@ -6700,8 +6705,19 @@ jobs:
       - name: ARMv6-M cortex-m0/m0plus profile — byte check, loud declines, execution (#1301)
         # Level 3. The llvm-objdump thumbv6m cross-check of the same predicate is
         # scripts/repro/armv6m_llvm_crosscheck_1301.py (manual: this image has no
-        # LLVM objdump); here the frozen LLVM-derived table gates it.
-        run: python scripts/oracle_run.py scripts/repro/armv6m_1301_differential.py
+        # LLVM objdump); here the frozen LLVM-derived table gates it. Execution
+        # runs on unicorn's Cortex-M0 model (read back and asserted), which
+        # faults v7-M encodings but EXECUTES IT and CBZ/CBNZ, so the byte check
+        # stays the guard for those. Leg D proves the model refuses a real
+        # cortex-m3 `and.w` every run; leg E pins the 112 per-op probes; leg V
+        # holds wrong references that must disagree. The emulation floor counts
+        # emulator entries, so the VALUE comparisons are asserted here too (the
+        # script holds them to its own measured floor; this is non-vacuity).
+        run: |
+          set -euo pipefail
+          python scripts/oracle_run.py scripts/repro/armv6m_1301_differential.py | tee /tmp/armv6m1301.log
+          grep -Eq '^#1301 M0ORACLE VALUE-COMPARISONS=[1-9][0-9]{2,} ' /tmp/armv6m1301.log
+          grep -q '^ORACLE: PASS' /tmp/armv6m1301.log
       - name: i64.div_s(INT64_MIN,-1) overflow-trap differential (#633)
         run: python scripts/oracle_run.py scripts/repro/i64_divs_overflow_633_differential.py
       - name: i64 global.get/set pair differential (#643, both selectors)
