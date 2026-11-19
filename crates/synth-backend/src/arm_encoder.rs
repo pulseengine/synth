@@ -14,6 +14,10 @@ pub struct ArmEncoder {
     /// FPU capability for VFP instruction encoding
     #[allow(dead_code)]
     fpu: Option<FPUPrecision>,
+    /// RQ-91-M0I32 (#1301): ARMv6-M mode. Set only by [`Self::new_armv6m`];
+    /// every other constructor leaves it false, so no other target's bytes
+    /// can move. See [`Self::encode_armv6m_narrow`].
+    armv6m: bool,
 }
 
 impl ArmEncoder {
@@ -22,6 +26,7 @@ impl ArmEncoder {
         Self {
             thumb_mode: false,
             fpu: None,
+            armv6m: false,
         }
     }
 
@@ -30,6 +35,7 @@ impl ArmEncoder {
         Self {
             thumb_mode: true,
             fpu: None,
+            armv6m: false,
         }
     }
 
@@ -38,15 +44,142 @@ impl ArmEncoder {
         Self {
             thumb_mode: true,
             fpu,
+            armv6m: false,
+        }
+    }
+
+    /// RQ-91-M0I32 (#1301): the ARMv6-M (Cortex-M0/M0+) encoder. Thumb, no
+    /// FPU, and the 16-bit forms of [`Self::encode_armv6m_narrow`] in place
+    /// of the Thumb-2 wide forms the default encoder picks for the same ops.
+    pub fn new_armv6m() -> Self {
+        Self {
+            thumb_mode: true,
+            fpu: None,
+            armv6m: true,
         }
     }
 
     /// Encode a single ARM instruction to bytes
     pub fn encode(&self, op: &ArmOp) -> Result<Vec<u8>> {
+        if self.armv6m
+            && let Some(bytes) = self.encode_armv6m_narrow(op)
+        {
+            return Ok(bytes);
+        }
         if self.thumb_mode {
             self.encode_thumb(op)
         } else {
             self.encode_arm(op)
+        }
+    }
+
+    /// RQ-91-M0I32 (#1301): the ARMv6-M encodings of ops whose default
+    /// Thumb-2 encoding is a 32-bit form. `None` falls through to the Thumb
+    /// encoder, whose output `armv6m::check_bytes` then accepts or refuses.
+    ///
+    /// Flags: the 16-bit `ADDS/SUBS rdn,#imm8` and `<shift>S rdn, rm` forms
+    /// SET flags, unlike the Thumb-2 forms of the same flag-preserving ops.
+    /// That is the existing contract of `Add`/`Sub` in this encoder (it
+    /// already emits 16-bit `ADDS rd,rn,#imm3` for them), and the NZCV
+    /// verifier holds every such write to "dead afterwards" (rule R1).
+    fn encode_armv6m_narrow(&self, op: &ArmOp) -> Option<Vec<u8>> {
+        let hw = |h: u16| Some(h.to_le_bytes().to_vec());
+        let low = |r: &Reg| reg_to_bits(r) < 8;
+        let cond_bits = |c: &synth_synthesis::Condition| -> u16 {
+            use synth_synthesis::Condition::*;
+            match c {
+                EQ => 0x0,
+                NE => 0x1,
+                HS => 0x2,
+                LO => 0x3,
+                HI => 0x8,
+                LS => 0x9,
+                GE => 0xA,
+                LT => 0xB,
+                GT => 0xC,
+                LE => 0xD,
+            }
+        };
+        match op {
+            // LDR/STR rt, [SP, #imm8*4] (T2).
+            ArmOp::Ldr { rd, addr } | ArmOp::Str { rd, addr }
+                if addr.base == Reg::SP
+                    && addr.offset_reg.is_none()
+                    && low(rd)
+                    && (0..=1020).contains(&addr.offset)
+                    && addr.offset % 4 == 0 =>
+            {
+                let base: u16 = if matches!(op, ArmOp::Ldr { .. }) {
+                    0x9800
+                } else {
+                    0x9000
+                };
+                hw(base | ((reg_to_bits(rd) as u16) << 8) | (addr.offset / 4) as u16)
+            }
+            // ADD/SUB SP, SP, #imm7*4.
+            ArmOp::Add {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(k),
+            }
+            | ArmOp::Sub {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(k),
+            } if (0..=508).contains(k) && k % 4 == 0 => {
+                let base: u16 = if matches!(op, ArmOp::Add { .. }) {
+                    0xB000
+                } else {
+                    0xB080
+                };
+                hw(base | (k / 4) as u16)
+            }
+            // ADDS/SUBS rdn, #imm8 (T2), for the immediates above imm3.
+            ArmOp::Add {
+                rd,
+                rn,
+                op2: Operand2::Imm(k),
+            }
+            | ArmOp::Sub {
+                rd,
+                rn,
+                op2: Operand2::Imm(k),
+            } if rd == rn && low(rd) && (8..=0xFF).contains(k) => {
+                let base: u16 = if matches!(op, ArmOp::Add { .. }) {
+                    0x3000
+                } else {
+                    0x3800
+                };
+                hw(base | ((reg_to_bits(rd) as u16) << 8) | *k as u16)
+            }
+            // LSLS/LSRS/ASRS/RORS rdn, rm (register).
+            ArmOp::LslReg { rd, rn, rm }
+            | ArmOp::LsrReg { rd, rn, rm }
+            | ArmOp::AsrReg { rd, rn, rm }
+            | ArmOp::RorReg { rd, rn, rm }
+                if rd == rn && low(rd) && low(rm) =>
+            {
+                let opc: u16 = match op {
+                    ArmOp::LslReg { .. } => 0x2,
+                    ArmOp::LsrReg { .. } => 0x3,
+                    ArmOp::AsrReg { .. } => 0x4,
+                    _ => 0x7,
+                };
+                hw(0x4000 | (opc << 6) | ((reg_to_bits(rm) as u16) << 3) | reg_to_bits(rd) as u16)
+            }
+            // A conditional branch beyond the 16-bit B<cond> reach (-256..+254
+            // bytes): `b<!c> +0` over a 16-bit `B` (+-2 KB). Four bytes, the
+            // size of the B<cond>.W it replaces, so the branch fixed point
+            // sizes it identically. The `B` sits 2 bytes later, hence `- 1`.
+            ArmOp::BCondOffset { cond, offset }
+                if !(-128..=127).contains(offset) && (-1024..=1022).contains(&(*offset - 1)) =>
+            {
+                let inv = cond_bits(&cond.invert());
+                let mut b = (0xD000 | (inv << 8)).to_le_bytes().to_vec();
+                b.extend_from_slice(&(0xE000 | ((*offset - 1) as u16 & 0x7FF)).to_le_bytes());
+                Some(b)
+            }
+            _ => None,
         }
     }
 

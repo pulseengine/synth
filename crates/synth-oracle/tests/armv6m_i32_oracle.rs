@@ -1,0 +1,823 @@
+//! RQ-91-M0I32 (Refs #1301, #1741): the ARMv6-M (Cortex-M0/M0+) i32 lowering,
+//! judged on unicorn's Cortex-M0 model against kiln.
+//!
+//! An embedded per-op probe set (i32 constants of every materialization
+//! shape, arithmetic with register and immediate operands, bitwise, shifts and
+//! rotates, all eleven compares, select) and control-flow shapes (if/else,
+//! block + br_if, loop, br_table, early return, unreachable, frame locals) is
+//! compiled by synth for `cortex-m0` and `cortex-m0plus` (`--relocatable`).
+//!
+//! 1. ACCEPTANCE, EXACT both ways: the exports that compile are exactly
+//!    [`ACCEPTED`]; a second module of shapes this lane does not lower
+//!    (division, bit counts, i64 arithmetic, calls, memory, globals, stack-passed
+//!    parameters) declines
+//!    exactly [`DECLINED`], each with the ARMv6-M diagnostic. RED on the stack
+//!    base, where only a handful of these compiled.
+//! 2. ARMv6-M, DECODED: every halfword of every accepted function is in the
+//!    frozen LLVM-derived ARMv6-M table (`tests/fixtures/armv6m_legal16_1301.json`),
+//!    no 32-bit encoding but BL / DMB / DSB / ISB, no 16-bit LDR (literal), and
+//!    no write to R8-R12. This is the leg that sees IT and CBZ/CBNZ, which the
+//!    unicorn M0 model EXECUTES (port of leg B of
+//!    `scripts/repro/armv6m_1301_differential.py`). The cortex-m0plus `.text` is
+//!    byte-identical to the cortex-m0 `.text`.
+//! 3. EXECUTION: every accepted probe x vector runs on kiln and on unicorn's
+//!    Cortex-M0 model (`Cpu::CortexM0`, model id read back by the harness), and
+//!    is required to AGREE. The vectors include the signed and carry edges of every
+//!    compare. The harness also checks R4-R11 preserved (R7, the lowering
+//!    scratch, and R8 included) and SP balanced on every run.
+//!
+//! Potency: planted IT, CBZ, MOVW and `mov r8, r0` each red the decode leg; a
+//! cortex-m3 `and.w` faults as ILLEGAL on the M0 model; a planted wrong
+//! reference (`le_s` for `lt_s`) disagrees exactly on the equal vectors.
+//!
+//! Needs `--features exec`. `SYNTH` may name a prebuilt binary.
+
+#![cfg(feature = "exec")]
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+use synth_oracle::compare::{EmuOutcome, RefOutcome, Verdict};
+use synth_oracle::emulate::{self, Cpu, EmuConfig};
+use synth_oracle::reference::Imports;
+use synth_oracle::synth::{CompiledObject, compile};
+use synth_oracle::value::{ValType, WasmValue, export_signature};
+use synth_oracle::{Case, run_case};
+
+const FUEL: u64 = 1_000_000;
+
+/// Accept candidates: call-free, memory-free, float-free, at most four
+/// argument words, at most one result. Loops are bounded by masking.
+const PROBES_WAT: &str = r#"
+(module
+  ;; --- constants: one per materialization shape ---
+  (func (export "c_0") (result i32) i32.const 0)
+  (func (export "c_42") (result i32) i32.const 42)
+  (func (export "c_255") (result i32) i32.const 255)
+  (func (export "c_256") (result i32) i32.const 256)
+  (func (export "c_ffff") (result i32) i32.const 0xffff)
+  (func (export "c_10000") (result i32) i32.const 0x10000)
+  (func (export "c_big") (result i32) i32.const 0x12345678)
+  (func (export "c_neg1") (result i32) i32.const -1)
+  (func (export "c_neg256") (result i32) i32.const -256)
+  (func (export "c_min") (result i32) i32.const 0x80000000)
+  (func (export "c_max") (result i32) i32.const 0x7fffffff)
+  (func (export "c_dead") (result i32) i32.const 0xdeadbeef)
+  (func (export "c_c0007fff") (result i32) i32.const 0xc0007fff)
+  ;; --- add / sub with immediates on both sides of every encoding limit ---
+  (func (export "add_1") (param i32) (result i32) local.get 0 i32.const 1 i32.add)
+  (func (export "add_7") (param i32) (result i32) local.get 0 i32.const 7 i32.add)
+  (func (export "add_8") (param i32) (result i32) local.get 0 i32.const 8 i32.add)
+  (func (export "add_200") (param i32) (result i32) local.get 0 i32.const 200 i32.add)
+  (func (export "add_255") (param i32) (result i32) local.get 0 i32.const 255 i32.add)
+  (func (export "add_256") (param i32) (result i32) local.get 0 i32.const 256 i32.add)
+  (func (export "add_1000") (param i32) (result i32) local.get 0 i32.const 1000 i32.add)
+  (func (export "add_neg1") (param i32) (result i32) local.get 0 i32.const -1 i32.add)
+  (func (export "add_neg300") (param i32) (result i32) local.get 0 i32.const -300 i32.add)
+  (func (export "add_big") (param i32) (result i32) local.get 0 i32.const 0x12345678 i32.add)
+  (func (export "sub_5") (param i32) (result i32) local.get 0 i32.const 5 i32.sub)
+  (func (export "sub_300") (param i32) (result i32) local.get 0 i32.const 300 i32.sub)
+  (func (export "rsub_300") (param i32) (result i32) i32.const 300 local.get 0 i32.sub)
+  ;; --- register binops ---
+  (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add)
+  (func (export "sub") (param i32 i32) (result i32) local.get 0 local.get 1 i32.sub)
+  (func (export "sub_rev") (param i32 i32) (result i32) local.get 1 local.get 0 i32.sub)
+  (func (export "mul") (param i32 i32) (result i32) local.get 0 local.get 1 i32.mul)
+  (func (export "mul_10") (param i32) (result i32) local.get 0 i32.const 10 i32.mul)
+  (func (export "and") (param i32 i32) (result i32) local.get 0 local.get 1 i32.and)
+  (func (export "or") (param i32 i32) (result i32) local.get 0 local.get 1 i32.or)
+  (func (export "xor") (param i32 i32) (result i32) local.get 0 local.get 1 i32.xor)
+  (func (export "and_ff") (param i32) (result i32) local.get 0 i32.const 0xff i32.and)
+  (func (export "and_ffff") (param i32) (result i32) local.get 0 i32.const 0xffff i32.and)
+  (func (export "and_7fff") (param i32) (result i32) local.get 0 i32.const 0x7fff i32.and)
+  (func (export "or_c0000000") (param i32) (result i32) local.get 0 i32.const 0xc0000000 i32.or)
+  (func (export "xor_neg1") (param i32) (result i32) local.get 0 i32.const -1 i32.xor)
+  (func (export "and_or_xor") (param i32 i32) (result i32)
+    local.get 0 local.get 1 i32.and local.get 0 local.get 1 i32.or i32.xor)
+  ;; --- shifts and rotates, by register and by immediate ---
+  (func (export "shl") (param i32 i32) (result i32) local.get 0 local.get 1 i32.shl)
+  (func (export "shr_s") (param i32 i32) (result i32) local.get 0 local.get 1 i32.shr_s)
+  (func (export "shr_u") (param i32 i32) (result i32) local.get 0 local.get 1 i32.shr_u)
+  (func (export "rotl") (param i32 i32) (result i32) local.get 0 local.get 1 i32.rotl)
+  (func (export "rotr") (param i32 i32) (result i32) local.get 0 local.get 1 i32.rotr)
+  (func (export "shl_1") (param i32) (result i32) local.get 0 i32.const 1 i32.shl)
+  (func (export "shl_31") (param i32) (result i32) local.get 0 i32.const 31 i32.shl)
+  (func (export "shl_32") (param i32) (result i32) local.get 0 i32.const 32 i32.shl)
+  (func (export "shr_u_1") (param i32) (result i32) local.get 0 i32.const 1 i32.shr_u)
+  (func (export "shr_u_31") (param i32) (result i32) local.get 0 i32.const 31 i32.shr_u)
+  (func (export "shr_s_1") (param i32) (result i32) local.get 0 i32.const 1 i32.shr_s)
+  (func (export "shr_s_31") (param i32) (result i32) local.get 0 i32.const 31 i32.shr_s)
+  (func (export "rotl_3") (param i32) (result i32) local.get 0 i32.const 3 i32.rotl)
+  (func (export "rotr_7") (param i32) (result i32) local.get 0 i32.const 7 i32.rotr)
+  ;; --- unary ---
+  (func (export "ext8") (param i32) (result i32) local.get 0 i32.extend8_s)
+  (func (export "ext16") (param i32) (result i32) local.get 0 i32.extend16_s)
+  (func (export "eqz") (param i32) (result i32) local.get 0 i32.eqz)
+  ;; --- compares, register and immediate ---
+  (func (export "eq") (param i32 i32) (result i32) local.get 0 local.get 1 i32.eq)
+  (func (export "ne") (param i32 i32) (result i32) local.get 0 local.get 1 i32.ne)
+  (func (export "lt_s") (param i32 i32) (result i32) local.get 0 local.get 1 i32.lt_s)
+  (func (export "lt_u") (param i32 i32) (result i32) local.get 0 local.get 1 i32.lt_u)
+  (func (export "gt_s") (param i32 i32) (result i32) local.get 0 local.get 1 i32.gt_s)
+  (func (export "gt_u") (param i32 i32) (result i32) local.get 0 local.get 1 i32.gt_u)
+  (func (export "le_s") (param i32 i32) (result i32) local.get 0 local.get 1 i32.le_s)
+  (func (export "le_u") (param i32 i32) (result i32) local.get 0 local.get 1 i32.le_u)
+  (func (export "ge_s") (param i32 i32) (result i32) local.get 0 local.get 1 i32.ge_s)
+  (func (export "ge_u") (param i32 i32) (result i32) local.get 0 local.get 1 i32.ge_u)
+  (func (export "lt_s_neg5") (param i32) (result i32) local.get 0 i32.const -5 i32.lt_s)
+  (func (export "gt_u_1000") (param i32) (result i32) local.get 0 i32.const 1000 i32.gt_u)
+  (func (export "eq_big") (param i32) (result i32) local.get 0 i32.const 0x12345678 i32.eq)
+  (func (export "eq_neg1") (param i32) (result i32) local.get 0 i32.const -1 i32.eq)
+  ;; --- select ---
+  (func (export "select3") (param i32 i32 i32) (result i32)
+    local.get 0 local.get 1 local.get 2 select)
+  (func (export "select_max") (param i32 i32) (result i32)
+    local.get 0 local.get 1 local.get 0 local.get 1 i32.gt_s select)
+  (func (export "select_const") (param i32) (result i32)
+    i32.const 10 i32.const 20 local.get 0 select)
+  ;; --- control flow ---
+  (func (export "if_else") (param i32 i32) (result i32)
+    local.get 0 if (result i32) local.get 1 i32.const 3 i32.mul
+    else local.get 1 i32.const 5 i32.sub end)
+  (func (export "if_void") (param i32) (result i32) (local i32)
+    local.get 0 if i32.const 5 local.set 1 end local.get 1)
+  (func (export "nested_if") (param i32 i32) (result i32)
+    local.get 0 if (result i32)
+      local.get 1 if (result i32) i32.const 1 else i32.const 2 end
+    else
+      local.get 1 i32.const 7 i32.lt_u if (result i32) i32.const 3 else i32.const 4 end
+    end)
+  (func (export "block_br_if") (param i32) (result i32)
+    block (result i32) i32.const 7 local.get 0 br_if 0 drop i32.const 9 end)
+  (func (export "loop_count") (param i32) (result i32) (local i32)
+    local.get 0 i32.const 31 i32.and local.set 0
+    block loop
+      local.get 0 i32.eqz br_if 1
+      local.get 1 local.get 0 i32.add local.set 1
+      local.get 0 i32.const 1 i32.sub local.set 0
+      br 0
+    end end
+    local.get 1)
+  (func (export "loop_sum") (param i32 i32) (result i32) (local i32)
+    local.get 0 i32.const 15 i32.and local.set 0
+    block loop
+      local.get 0 i32.eqz br_if 1
+      local.get 2 local.get 0 i32.add local.get 1 i32.xor local.set 2
+      local.get 0 i32.const 1 i32.sub local.set 0
+      br 0
+    end end
+    local.get 2)
+  (func (export "br_table") (param i32 i32) (result i32)
+    block block block block
+      local.get 0 br_table 0 1 2 3
+    end local.get 1 i32.const 100 i32.add return
+    end local.get 1 i32.const 200 i32.add return
+    end local.get 1 i32.const 300 i32.add return
+    end local.get 1 i32.const 0x10000 i32.sub)
+  (func (export "br_table_shift") (param i32 i32) (result i32) (local i32)
+    i32.const -1 local.set 2
+    block block
+      local.get 1 i32.const 30 i32.shr_u
+      br_table 0 1 0 1
+    end
+    local.get 1 i32.const 32767 i32.and i32.const 1073741824 i32.or local.set 2
+    end
+    local.get 2)
+  (func (export "early_return") (param i32) (result i32)
+    local.get 0 if i32.const 1 return end i32.const 0)
+  (func (export "trap_if") (param i32 i32) (result i32)
+    local.get 0 local.get 1 i32.eq if unreachable end local.get 0 local.get 1 i32.sub)
+  (func (export "nop_drop") (param i32) (result i32) nop i32.const 1 drop local.get 0)
+  (func (export "local_tee") (param i32) (result i32) (local i32)
+    local.get 0 local.tee 1 local.get 1 i32.add)
+  (func (export "many_locals") (param i32) (result i32) (local i32 i32 i32 i32 i32 i32 i32 i32)
+    local.get 0 i32.const 1 i32.add local.set 1
+    local.get 1 i32.const 2 i32.add local.set 2
+    local.get 2 i32.const 3 i32.add local.set 3
+    local.get 3 i32.const 4 i32.add local.set 4
+    local.get 4 i32.const 5 i32.add local.set 5
+    local.get 5 i32.const 6 i32.add local.set 6
+    local.get 6 i32.const 7 i32.add local.set 7
+    local.get 7 i32.const 8 i32.add local.set 8
+    local.get 1 local.get 2 i32.add local.get 3 local.get 4 i32.add i32.add
+    local.get 5 local.get 6 i32.add local.get 7 local.get 8 i32.add i32.add i32.add)
+  (func (export "sum4") (param i32 i32 i32 i32) (result i32)
+    local.get 0 local.get 1 i32.add local.get 2 i32.sub local.get 3 i32.xor)
+  (func (export "void_fn") (param i32))
+  ;; --- gale wdg-thin's two call-free exports, verbatim bodies ---
+  (func (export "wdg_lock") (param i32) (result i32)
+    local.get 0 i32.const 32767 i32.and i32.const -2147483648 i32.or
+    i32.const -1
+    local.get 0 i32.const -1073741824 i32.and i32.const 1073741824 i32.eq
+    select)
+  (func (export "wdg_is_running") (param i32) (result i32)
+    local.get 0 i32.const -1073741825 i32.gt_u)
+  ;; --- i64 shapes that lower entirely to the i32 rules ---
+  (func (export "i64_ident") (param i64) (result i64) local.get 0)
+  (func (export "i64_and") (param i64 i64) (result i64) local.get 0 local.get 1 i64.and)
+  (func (export "i64_or") (param i64 i64) (result i64) local.get 0 local.get 1 i64.or)
+  (func (export "i64_xor") (param i64 i64) (result i64) local.get 0 local.get 1 i64.xor)
+  (func (export "i64_extend_u") (param i32) (result i64) local.get 0 i64.extend_i32_u)
+)
+"#;
+
+/// Shapes this lane leaves to later lanes. Compiled only for the decline pin.
+const DECLINE_WAT: &str = r#"
+(module
+  (import "env" "ext" (func $ext (param i32) (result i32)))
+  (memory 1)
+  (global $g (mut i32) (i32.const 3))
+  (func $inc (param i32) (result i32) local.get 0 i32.const 1 i32.add)
+  (func (export "d_div_u") (param i32 i32) (result i32) local.get 0 local.get 1 i32.div_u)
+  (func (export "d_rem_s") (param i32 i32) (result i32) local.get 0 local.get 1 i32.rem_s)
+  (func (export "d_clz") (param i32) (result i32) local.get 0 i32.clz)
+  (func (export "d_ctz") (param i32) (result i32) local.get 0 i32.ctz)
+  (func (export "d_popcnt") (param i32) (result i32) local.get 0 i32.popcnt)
+  (func (export "d_i64_add") (param i64 i64) (result i64) local.get 0 local.get 1 i64.add)
+  (func (export "d_i64_lt_s") (param i64 i64) (result i32) local.get 0 local.get 1 i64.lt_s)
+  (func (export "d_call") (param i32) (result i32) local.get 0 call $inc)
+  (func (export "d_call_import") (param i32) (result i32) local.get 0 call $ext)
+  (func (export "d_load") (param i32) (result i32) local.get 0 i32.load)
+  (func (export "d_store") (param i32 i32) local.get 0 local.get 1 i32.store)
+  (func (export "d_global_get") (result i32) global.get $g)
+  (func (export "d_memory_size") (result i32) memory.size)
+  (func (export "d_params5") (param i32 i32 i32 i32 i32) (result i32)
+    local.get 0 local.get 4 i32.add)
+)
+"#;
+
+/// The exports of [`PROBES_WAT`] that compile for cortex-m0 / cortex-m0plus.
+/// EXACT both ways: a probe moving in either direction reds.
+const ACCEPTED: &[&str] = &[
+    "c_0",
+    "c_42",
+    "c_255",
+    "c_256",
+    "c_ffff",
+    "c_10000",
+    "c_big",
+    "c_neg1",
+    "c_neg256",
+    "c_min",
+    "c_max",
+    "c_dead",
+    "c_c0007fff",
+    "add_1",
+    "add_7",
+    "add_8",
+    "add_200",
+    "add_255",
+    "add_256",
+    "add_1000",
+    "add_neg1",
+    "add_neg300",
+    "add_big",
+    "sub_5",
+    "sub_300",
+    "rsub_300",
+    "add",
+    "sub",
+    "sub_rev",
+    "mul",
+    "mul_10",
+    "and",
+    "or",
+    "xor",
+    "and_ff",
+    "and_ffff",
+    "and_7fff",
+    "or_c0000000",
+    "xor_neg1",
+    "and_or_xor",
+    "shl",
+    "shr_s",
+    "shr_u",
+    "rotl",
+    "rotr",
+    "shl_1",
+    "shl_31",
+    "shl_32",
+    "shr_u_1",
+    "shr_u_31",
+    "shr_s_1",
+    "shr_s_31",
+    "rotl_3",
+    "rotr_7",
+    "ext8",
+    "ext16",
+    "eqz",
+    "eq",
+    "ne",
+    "lt_s",
+    "lt_u",
+    "gt_s",
+    "gt_u",
+    "le_s",
+    "le_u",
+    "ge_s",
+    "ge_u",
+    "lt_s_neg5",
+    "gt_u_1000",
+    "eq_big",
+    "eq_neg1",
+    "select3",
+    "select_max",
+    "select_const",
+    "if_else",
+    "if_void",
+    "nested_if",
+    "block_br_if",
+    "loop_count",
+    "loop_sum",
+    "br_table",
+    "br_table_shift",
+    "early_return",
+    "trap_if",
+    "nop_drop",
+    "local_tee",
+    "many_locals",
+    "sum4",
+    "void_fn",
+    "wdg_lock",
+    "wdg_is_running",
+    "i64_ident",
+    "i64_and",
+    "i64_or",
+    "i64_xor",
+    "i64_extend_u",
+];
+
+/// The exports of [`DECLINE_WAT`] that must decline with the ARMv6-M
+/// diagnostic. EXACT both ways.
+const DECLINED: &[&str] = &[
+    "d_div_u",
+    "d_rem_s",
+    "d_clz",
+    "d_ctz",
+    "d_popcnt",
+    "d_i64_add",
+    "d_i64_lt_s",
+    "d_call",
+    "d_call_import",
+    "d_load",
+    "d_store",
+    "d_global_get",
+    "d_memory_size",
+    "d_params5",
+];
+
+/// Integer vectors: the kiln oracle's twelve plus the signed and carry edges
+/// of the compares (INT_MIN+1, INT_MAX-1, -2, 255, 256, 0x3F, 0x21, 2^30, 3 * 2^30).
+const VECTORS: &[u32] = &[
+    0,
+    1,
+    2,
+    7,
+    31,
+    32,
+    0x7F,
+    0x8000,
+    0x7FFF_FFFF,
+    0x8000_0000,
+    0xFFFF_FFFF,
+    0xDEAD_BEEF,
+    0x8000_0001,
+    0x7FFF_FFFE,
+    0xFFFF_FFFE,
+    0xFF,
+    0x100,
+    0x3F,
+    0x21,
+    0x4000_0000,
+    0xC000_0000,
+];
+
+const TARGETS: &[&str] = &["cortex-m0", "cortex-m0plus"];
+
+fn scratch() -> PathBuf {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("synth-oracle-m0i32-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn compile_wat(wat_src: &str, flags: &[&str], tag: &str) -> (Option<CompiledObject>, String) {
+    let dir = scratch();
+    let input = dir.join(format!("{tag}.wasm"));
+    std::fs::write(&input, wat::parse_str(wat_src).expect("WAT parses")).unwrap();
+    let out = dir.join(format!("{tag}.o"));
+    let run = compile(&input, flags, &out).expect("synth runs");
+    (run.object, run.stderr)
+}
+
+fn v6m_flags(target: &str) -> Vec<&str> {
+    vec![
+        "--target",
+        target,
+        "--relocatable",
+        "--all-exports",
+        "--allow-skipped-exports",
+    ]
+}
+
+fn compile_probes(target: &str) -> CompiledObject {
+    let (obj, stderr) = compile_wat(PROBES_WAT, &v6m_flags(target), &format!("probes-{target}"));
+    obj.unwrap_or_else(|| panic!("{target}: no object: {stderr}"))
+}
+
+fn exports(wat_src: &str) -> Vec<String> {
+    let w = wat::parse_str(wat_src).unwrap();
+    let mut v = Vec::new();
+    for p in wasmparser::Parser::new(0).parse_all(&w) {
+        if let Ok(wasmparser::Payload::ExportSection(s)) = p {
+            for e in s {
+                let e = e.unwrap();
+                if e.kind == wasmparser::ExternalKind::Func {
+                    v.push(e.name.to_string());
+                }
+            }
+        }
+    }
+    v
+}
+
+// ------------------------------------------------------------ decode leg --
+
+/// The frozen LLVM-derived 16-bit ARMv6-M table, read from the fixture
+/// (`{"legal_count": N, "legal_ranges": [[lo, hi], ...], ...}`).
+fn legal16_table() -> Vec<(u16, u16)> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/armv6m_legal16_1301.json"
+    );
+    let text = std::fs::read_to_string(path).expect("fixture");
+    let key = "\"legal_ranges\":";
+    let start = text.find(key).expect("legal_ranges") + key.len();
+    let end = start + text[start..].find("]]").expect("end of legal_ranges");
+    let ints: Vec<u32> = text[start..end]
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse().unwrap())
+        .collect();
+    assert!(
+        !ints.is_empty() && ints.len().is_multiple_of(2),
+        "legal_ranges shape"
+    );
+    let t: Vec<(u16, u16)> = ints.chunks(2).map(|c| (c[0] as u16, c[1] as u16)).collect();
+    // The fixture's own count, re-derived: a truncated read reds here.
+    let count: usize = t
+        .iter()
+        .map(|&(lo, hi)| (lo..=hi).filter(|&h| !is_prefix(h)).count())
+        .sum();
+    let key = "\"legal_count\":";
+    let c0 = text.find(key).expect("legal_count") + key.len();
+    let c1 = c0 + text[c0..].find(',').expect("legal_count end");
+    assert_eq!(count, text[c0..c1].trim().parse::<usize>().unwrap());
+    t
+}
+
+fn is_prefix(h: u16) -> bool {
+    matches!(h >> 11, 0b11101..=0b11111)
+}
+
+/// Every reason `bytes` is not ARMv6-M under synth's contract, as
+/// `+offset: hex: why`.
+fn v6m_violations(bytes: &[u8], table: &[(u16, u16)]) -> Vec<String> {
+    let mut bad = Vec::new();
+    let hw = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        let h = hw(i);
+        if is_prefix(h) {
+            if i + 3 >= bytes.len() {
+                bad.push(format!("+{i:x}: {h:04x}: truncated 32-bit"));
+                break;
+            }
+            let h2 = hw(i + 2);
+            let bl = h >> 11 == 0b11110 && h2 & 0xD000 == 0xD000;
+            let barrier = h == 0xF3BF && matches!(h2, 0x8F4F | 0x8F5F | 0x8F6F);
+            if !(bl || barrier) {
+                bad.push(format!("+{i:x}: {h:04x} {h2:04x}: 32-bit, not BL/barrier"));
+            }
+            i += 4;
+            continue;
+        }
+        if !table.iter().any(|&(lo, hi)| (lo..=hi).contains(&h)) {
+            bad.push(format!("+{i:x}: {h:04x}: not in the ARMv6-M table"));
+        } else if h & 0xF800 == 0x4800 {
+            bad.push(format!("+{i:x}: {h:04x}: 16-bit LDR (literal)"));
+        } else if h & 0xFC00 == 0x4400 && matches!((h >> 8) & 3, 0 | 2) {
+            let rd = ((h >> 4) & 0x8) | (h & 7);
+            if (8..=12).contains(&rd) {
+                bad.push(format!("+{i:x}: {h:04x}: writes R{rd}"));
+            }
+        }
+        i += 2;
+    }
+    if !bytes.len().is_multiple_of(2) {
+        bad.push("odd length".into());
+    }
+    bad
+}
+
+// ---------------------------------------------------------------- gates --
+
+#[test]
+fn accepted_and_declined_sets_are_pinned() {
+    let all = exports(PROBES_WAT);
+    for target in TARGETS {
+        let obj = compile_probes(target);
+        let got: BTreeSet<&str> = all
+            .iter()
+            .filter(|e| obj.func(e).is_some())
+            .map(|s| s.as_str())
+            .collect();
+        let want: BTreeSet<&str> = ACCEPTED.iter().copied().collect();
+        assert_eq!(
+            got,
+            want,
+            "{target}: accepted set moved (gained {:?}, lost {:?})",
+            got.difference(&want).collect::<Vec<_>>(),
+            want.difference(&got).collect::<Vec<_>>()
+        );
+        let (dobj, stderr) = compile_wat(
+            DECLINE_WAT,
+            &v6m_flags(target),
+            &format!("declines-{target}"),
+        );
+        let dall = exports(DECLINE_WAT);
+        let declined: BTreeSet<&str> = dall
+            .iter()
+            .filter(|e| dobj.as_ref().is_none_or(|o| o.func(e).is_none()))
+            .map(|s| s.as_str())
+            .collect();
+        let want: BTreeSet<&str> = DECLINED.iter().copied().collect();
+        assert_eq!(declined, want, "{target}: declined set moved");
+        for d in &declined {
+            let line = stderr
+                .lines()
+                .find(|l| l.contains(&format!("skipping function '{d}'")))
+                .unwrap_or_else(|| panic!("{target}: no skip diagnostic for {d}:\n{stderr}"));
+            assert!(
+                line.contains("ARMv6-M"),
+                "{target}: {d} declined without the ARMv6-M diagnostic: {line}"
+            );
+        }
+    }
+    eprintln!(
+        "ORACLE armv6m-i32: {} of {} probes accepted, {} of {} decline probes declined, on {} targets",
+        ACCEPTED.len(),
+        all.len(),
+        DECLINED.len(),
+        exports(DECLINE_WAT).len(),
+        TARGETS.len()
+    );
+}
+
+#[test]
+fn accepted_code_decodes_as_armv6m() {
+    let table = legal16_table();
+    let m0 = compile_probes("cortex-m0");
+    let m0p = compile_probes("cortex-m0plus");
+    assert_eq!(
+        m0.text, m0p.text,
+        "cortex-m0plus .text differs from cortex-m0"
+    );
+    let mut halfwords = 0usize;
+    for p in ACCEPTED {
+        let f = m0.func(p).unwrap_or_else(|| panic!("{p} missing"));
+        assert!(f.thumb, "{p}: no Thumb bit");
+        let b = m0.function_bytes(p).unwrap();
+        assert!(!b.is_empty(), "{p}: empty");
+        let bad = v6m_violations(b, &table);
+        assert!(bad.is_empty(), "{p}: not ARMv6-M: {bad:?}");
+        halfwords += b.len() / 2;
+    }
+    // The whole .text too, so code between symbols is covered.
+    let bad = v6m_violations(&m0.text, &table);
+    assert!(bad.is_empty(), ".text: {bad:?}");
+    eprintln!(
+        "decode: {halfwords} halfwords in {} functions, all ARMv6-M",
+        ACCEPTED.len()
+    );
+}
+
+fn vectors_for(arity: usize) -> Vec<Vec<WasmValue>> {
+    let v = |x: u32| WasmValue::I32(x);
+    match arity {
+        0 => vec![vec![]],
+        1 => VECTORS.iter().map(|&a| vec![v(a)]).collect(),
+        2 => VECTORS
+            .iter()
+            .flat_map(|&a| VECTORS.iter().map(move |&b| vec![v(a), v(b)]))
+            .collect(),
+        3 => {
+            let s = [0u32, 1, 0x8000_0000, 0xFFFF_FFFF, 7, 0xDEAD_BEEF];
+            let mut out = Vec::new();
+            for &a in &s {
+                for &b in &s {
+                    for &c in &s {
+                        out.push(vec![v(a), v(b), v(c)]);
+                    }
+                }
+            }
+            out
+        }
+        4 => {
+            let s = [0u32, 1, 0x8000_0000, 0xFFFF_FFFF, 0xDEAD_BEEF];
+            let mut out = Vec::new();
+            for &a in &s {
+                for &b in &s {
+                    for &c in &s {
+                        for &d in &s {
+                            out.push(vec![v(a), v(b), v(c), v(d)]);
+                        }
+                    }
+                }
+            }
+            out
+        }
+        n => panic!("no vectors for arity {n}"),
+    }
+}
+
+/// i64 params take the i32 vectors pairwise (low, high).
+fn args_for(params: &[ValType]) -> Vec<Vec<WasmValue>> {
+    if params.iter().all(|t| *t == ValType::I32) {
+        return vectors_for(params.len());
+    }
+    let wide: Vec<u64> = VECTORS
+        .iter()
+        .step_by(2)
+        .flat_map(|&lo| {
+            VECTORS
+                .iter()
+                .step_by(3)
+                .map(move |&hi| (u64::from(hi) << 32) | u64::from(lo))
+        })
+        .collect();
+    match params {
+        [ValType::I64] => wide.iter().map(|&x| vec![WasmValue::I64(x)]).collect(),
+        [ValType::I64, ValType::I64] => wide
+            .iter()
+            .step_by(4)
+            .flat_map(|&a| {
+                wide.iter()
+                    .step_by(5)
+                    .map(move |&b| vec![WasmValue::I64(a), WasmValue::I64(b)])
+            })
+            .collect(),
+        other => panic!("no vectors for {other:?}"),
+    }
+}
+
+/// Every probe x vector, in probe order. The probes are spread over a few
+/// threads (each case builds its own engines; the harness is concurrency-safe,
+/// see the kiln oracle's stress test), and the cases are returned in order.
+fn sweep(wasm: &[u8], obj: &CompiledObject, probes: &[&str]) -> Vec<Case> {
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let chunk = probes.len().div_ceil(threads).max(1);
+    std::thread::scope(|sc| {
+        let handles: Vec<_> = probes
+            .chunks(chunk)
+            .map(|ps| {
+                sc.spawn(move || {
+                    let cfg = EmuConfig::new(Cpu::CortexM0);
+                    let mut cases = Vec::new();
+                    for p in ps {
+                        let sig = export_signature(wasm, p).unwrap();
+                        for args in args_for(&sig.params) {
+                            let c = run_case(wasm, obj, p, &args, FUEL, &Imports::new(), &cfg)
+                                .unwrap_or_else(|e| panic!("{p}{args:?}: harness error {e:?}"));
+                            cases.push(c);
+                        }
+                    }
+                    cases
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("sweep thread"))
+            .collect()
+    })
+}
+
+#[test]
+fn accepted_probes_agree_with_kiln_on_the_m0_model() {
+    let w = wat::parse_str(PROBES_WAT).unwrap();
+    let obj = compile_probes("cortex-m0");
+    for p in ACCEPTED {
+        assert_eq!(obj.relocs_in(p), 0, "{p} carries relocations");
+    }
+    let cases = sweep(&w, &obj, ACCEPTED);
+    let bad: Vec<&Case> = cases.iter().filter(|c| !c.verdict.is_agree()).collect();
+    for c in bad.iter().take(30) {
+        eprintln!(
+            "{}{:?}: {:?} (ref {:?}, emu {:?})",
+            c.export, c.args, c.verdict, c.reference, c.emulator
+        );
+    }
+    assert!(
+        bad.is_empty(),
+        "{} of {} cases disagree",
+        bad.len(),
+        cases.len()
+    );
+    let traps = cases
+        .iter()
+        .filter(|c| {
+            matches!(c.reference, RefOutcome::Trap { .. })
+                && matches!(c.emulator, EmuOutcome::Trap { .. })
+        })
+        .count();
+    let values = cases
+        .iter()
+        .filter(|c| matches!(c.emulator, EmuOutcome::Values(ref v) if !v.is_empty()))
+        .count();
+    eprintln!(
+        "ORACLE armv6m-i32: {} cases agree on the Cortex-M0 model, {values} value \
+         comparisons, {traps} trap/trap",
+        cases.len()
+    );
+    // EXACT literals: a shrunk probe set or vector list reds here.
+    assert_eq!(cases.len(), 16108, "case count moved");
+    assert_eq!(values, 16066, "value-comparison count moved");
+    assert_eq!(traps, 21, "trap/trap count moved");
+}
+
+// --------------------------------------------------------------- potency --
+
+#[test]
+fn potency_decode_leg_sees_it_cbz_movw_and_r8() {
+    let table = legal16_table();
+    let obj = compile_probes("cortex-m0");
+    let base = obj.function_bytes("lt_s").expect("lt_s").to_vec();
+    assert!(v6m_violations(&base, &table).is_empty());
+    for (what, plant) in [
+        ("IT eq", vec![0x08u8, 0xBF]),
+        ("CBZ r0", vec![0x00, 0xB1]),
+        ("MOVW r0,#42", vec![0x40, 0xF2, 0x2A, 0x00]),
+        ("mov r8, r0", vec![0x80, 0x46]),
+        ("mov r12, r0", vec![0x84, 0x46]),
+        ("ldr r0, [pc]", vec![0x00, 0x48]),
+    ] {
+        let mut b = base.clone();
+        b[2..2 + plant.len()].copy_from_slice(&plant);
+        let bad = v6m_violations(&b, &table);
+        assert!(!bad.is_empty(), "planted {what} was not seen");
+        eprintln!("planted {what}: {bad:?}");
+    }
+}
+
+#[test]
+fn potency_v7m_code_faults_on_the_m0_model() {
+    // The same `and` probe compiled for cortex-m3 is `and.w`: illegal on the
+    // M0 model (this is what makes the execution leg an ARMv6-M check), and
+    // correct on the M3 model (control).
+    let w = wat::parse_str(PROBES_WAT).unwrap();
+    let (obj, e) = compile_wat(
+        PROBES_WAT,
+        &["--target", "cortex-m3", "--relocatable", "--all-exports"],
+        "probes-m3",
+    );
+    let obj = obj.unwrap_or_else(|| panic!("cortex-m3: {e}"));
+    let sig = export_signature(&w, "and").unwrap();
+    let args = [WasmValue::I32(0xF0F0), WasmValue::I32(0xFF00)];
+    let m0 = emulate::run(&obj, "and", &sig, &args, &EmuConfig::new(Cpu::CortexM0)).unwrap();
+    assert!(
+        matches!(m0.outcome, EmuOutcome::Illegal { .. }),
+        "v7-M and.w on the M0 model: {:?}",
+        m0.outcome
+    );
+    let m3 = emulate::run(&obj, "and", &sig, &args, &EmuConfig::new(Cpu::CortexM3)).unwrap();
+    assert_eq!(m3.outcome, EmuOutcome::Values(vec![WasmValue::I32(0xF000)]));
+}
+
+#[test]
+fn potency_planted_wrong_reference_reds() {
+    // kiln runs `lt_s` as `le_s`: they differ exactly when a == b.
+    let planted = PROBES_WAT.replacen(
+        "local.get 0 local.get 1 i32.lt_s)",
+        "local.get 0 local.get 1 i32.le_s)",
+        1,
+    );
+    assert_ne!(planted, PROBES_WAT);
+    let w = wat::parse_str(&planted).unwrap();
+    let obj = compile_probes("cortex-m0");
+    let cfg = EmuConfig::new(Cpu::CortexM0);
+    let disagree = vectors_for(2)
+        .iter()
+        .filter(|a| {
+            matches!(
+                run_case(&w, &obj, "lt_s", a, FUEL, &Imports::new(), &cfg)
+                    .unwrap()
+                    .verdict,
+                Verdict::Disagree(_)
+            )
+        })
+        .count();
+    assert_eq!(disagree, VECTORS.len(), "planted le_s-for-lt_s");
+}

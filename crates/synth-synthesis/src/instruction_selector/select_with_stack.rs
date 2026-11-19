@@ -511,6 +511,7 @@ impl InstructionSelector {
         spill.vfp_spill_on_exhaustion = self.vfp_spill_on_exhaustion;
         spill.vfp_frame_home_locals = self.vfp_frame_home_locals;
         spill.area_reserved = layout.spill_area_reserved;
+        spill.excluded = self.excluded_alloc_regs;
         // Next available register for temporaries (start after params)
         let mut next_temp = num_params.min(4) as u8;
 

@@ -1,0 +1,150 @@
+artifacts:
+  - id: RQ-91-M0I32
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "ARMv6-M (Cortex-M0/M0+) lowers i32 arithmetic, constants, compares, select and structured control flow to 16-bit ARMv6-M code"
+    description: >
+        The first real ARMv6-M lowering (lane M0-1 of the v0.91 M0 plan).
+        Refs #1301 (the ARMv6-M target) and #1741 (the Rust oracle harness).
+        Before it, cortex-m0 / cortex-m0plus had NO lowering: the ARMv7-M
+        selector and encoder ran and the ARMv6-M byte check refused every
+        function containing a non-v6-M instruction, so a constant, a compare,
+        a three-register AND or a push of R8 refused the whole function.
+
+        THE REGISTER CONTRACT (accepted by the owner via gale notice
+        20261118T091556-9870f8): on ARMv6-M synth allocates R0-R6 only, uses
+        R7 as its lowering scratch (callee-saved, pushed when used), writes no
+        R12 and allocates no R8; R9-R11 keep their ARMv7-M roles and are not
+        touched in this lane. Implemented as: an `excluded` register list on
+        the direct selector's temp and pair allocators (R7, R8 on v6-M,
+        empty elsewhere); the range re-allocator handed the R0-R6 pool; local
+        promotion and the spill re-homing pass off on v6-M (both pick from
+        R4-R8); and, in the lowering, a whole-function rename of any value a
+        later pass still placed in R7/R8 to a register the function never
+        names, then R12 -> R7.
+
+        THE LOWERING (`crates/synth-backend/src/armv6m_lower.rs`, a rule table
+        on the final allocated ArmOp stream, run only for ARMv6-M, between
+        `finish_allocated_stream` and branch resolution). Constants become a
+        MOVS / LSLS / ADDS #imm8 / MVNS sequence (at most 7 instructions; no
+        literal pool, the 16-bit pool load stays refused). SetCond (an IT
+        block) becomes the branch diamond `b<c> L1; movs rd,#0; b L2; L1:
+        movs rd,#1; L2:` (REVIEW_2 M2: both straight-line rewrites destroy
+        the compare's flags). SelectMove becomes `b<!c> L; mov rd, rm; L:`.
+        Three-register data processing becomes `mov rd, rn; <op>S rd, rm`
+        with the explicit flag-setting variants (`Ands`, `Orrs`, `Eors`,
+        `Muls`, `Lsls`, `Lsrs`, `Asrs`, `Movs`, `Mvns`). Immediates beyond
+        the 16-bit forms go through rd or the R7 scratch (refused if R7 is
+        live there). The prologue / epilogue save exactly the callee-saved
+        registers the body names, padded so the push keeps its size in any
+        function that addresses SP. Every op outside the table is refused,
+        naming it: `ARMv6-M lowering, RQ-91-M0I32 (#1301): no ARMv6-M rule
+        for ...`. The v6-M encoder mode (`ArmEncoder::new_armv6m`) adds the
+        16-bit `ldr/str rt,[sp,#imm8*4]`, `add/sub sp,#imm7*4`, `adds/subs
+        rdn,#imm8`, `<shift>S rdn, rm` forms and turns an out-of-range
+        conditional branch into `b<!c> +0; b.n target` (the same 4 bytes as
+        the wide form it replaces). br_table needs no rule of its own: the
+        direct selector already emits it as a compare-and-branch chain.
+
+        WHAT STAYS DECLINED, LOUDLY: linear memory and globals (R9-R11),
+        calls (BL), i64 arithmetic (I64* ops, Adds/Subs carry chains),
+        division and remainder, clz/ctz/popcnt, floats, stack-passed
+        parameters (no execution oracle sets them up yet). Five i64 shapes
+        that lower ENTIRELY to the i32 rules (i64 and/or/xor, extend_i32_u,
+        identity) compile, and are executed against kiln and wasmtime like
+        every other accepted probe.
+
+        FAIL-CLOSED BEHIND IT. `armv6m::check_bytes` still checks every
+        encoded instruction, and now also refuses any 16-bit MOV/ADD that
+        writes R8-R12 (`ReservedWrite`). The NZCV verifier runs on every
+        ARMv6-M function; the explicit flag-setting variants declare no flag
+        result, so every flag they write must be dead.
+
+        STATED LIMITS. `Add`/`Sub` keep the flag-PRESERVING model and are
+        encoded as the flag-setting 16-bit ADDS/SUBS, as the ARMv7-M encoder
+        already does for imm3 and register forms; the NZCV verifier holds
+        those writes to "dead" (R1). No Rocq model of the v6-M rules. No
+        WCET (the profile still declines `unsupported-core`). Prologues may
+        save a pad register (R2/R3) to keep a push's size.
+    tags:
+      - feature-loop
+      - target
+      - armv6-m
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1301"
+      verification-track: execution
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 cortex-m0 and cortex-m0plus compile i32
+        arithmetic, constants, compares, select and block / loop / if / br /
+        br_if / br_table / return to ARMv6-M code under the accepted register
+        contract (pool R0-R6, scratch R7, no R12 write, no R8), every
+        accepted probe agreeing with kiln on unicorn's Cortex-M0 model and
+        decoding as ARMv6-M, red on the stack base, with every non-v6-M
+        target byte-identical.
+      landed: "v0.91 M0I32 - #1301 - DELIVERED AS NARROWED (i32 core and structured control flow only; memory, calls, i64 arithmetic, division, bit counts, floats and stack-passed parameters stay loud declines): 96 of the 96 i32 probes of crates/synth-oracle/tests/armv6m_i32_oracle.rs and 51 of the 112 probes of armv6m_1301_differential.py compile for cortex-m0 and cortex-m0plus; gale's wdg-thin compiles 5 of the 5 call-free functions synth compiles from it (stack base: 1). #1301 stays open."
+      verified-by: >
+        DELIVERED AS NARROWED, execution-verified. RED ON THE STACK BASE,
+        GREEN ON THE BRANCH. The new Rust oracle
+        crates/synth-oracle/tests/armv6m_i32_oracle.rs (run by the
+        `oracle-kiln` job, `--features exec`) compiles 96 embedded i32
+        probes (constants of every materialization shape, add/sub around
+        every immediate-encoding limit, register binops, shifts and rotates
+        by register and immediate, all eleven compares and immediate
+        compares, select, if/else, nested if, block+br_if, two loops,
+        two br_tables incl. gale's wdg_unlock shape, early return,
+        unreachable, frame locals, gale's wdg_lock / wdg_is_running bodies)
+        and 14 decline probes for cortex-m0 and cortex-m0plus. Branch: the
+        accepted set is exactly the 96 and the declined set exactly the 14,
+        each with the ARMv6-M diagnostic; 16108 probe x vector cases run on
+        kiln and on unicorn's Cortex-M0 model (model id read back by the
+        harness; R4-R11 checked preserved, SP balanced) and ALL AGREE: 16066
+        value comparisons, 21 trap/trap. Every accepted function decodes as
+        ARMv6-M against the frozen LLVM table (756 halfwords; no 32-bit but
+        BL, no LDR literal, no write to R8-R12), and the cortex-m0plus .text
+        equals the cortex-m0 .text. Stack base f7a77f2e's binary: 5 of 6
+        tests RED (11 of 96 accepted). POTENCY, each a test: planted IT,
+        CBZ, MOVW, `mov r8,r0`, `mov r12,r0` and a 16-bit LDR literal are
+        each seen by the decode leg; a cortex-m3 `and.w` is ILLEGAL on the
+        M0 model and correct on the M3 model; kiln running le_s for the
+        compiled lt_s disagrees on exactly the 21 equal vectors.
+
+        THE PYTHON ORACLE scripts/repro/armv6m_1301_differential.py, pins
+        moved as DATA only, with the paired control. Leg E (112 probes):
+        8 -> 51 accepted on both targets, all 51 executed on the M0 model
+        against wasmtime. Fixture: 3 -> 7 accepted (big, bits, mul, lt join
+        inc, sub3, ext8); divu, callinc and ld decline in the lowering's
+        rule table. Corpus leg C: 94 objects, 417 functions executed, no
+        disagreement; 106 vectors are budget (wasmtime out of fuel on
+        argument-counted loops the lowering now accepts), ceiling 5 -> 106.
+        VALUE-COMPARISONS 666 -> 5520; `# ci-checks: emulations` 783 ->
+        5763. PAIRED CONTROL: the same edited script on the stack base
+        binary FAILS (rc 1: accepted 3 / 8, 666 comparisons, 783
+        emulations — exactly the old pins); on the branch it PASSES.
+
+        BYTE IDENTITY, stack base f7a77f2e vs branch (md5-distinct
+        binaries): 277 md5-distinct tracked .wat/.wasm x 16 non-ARMv6-M
+        configurations (cortex-m3/m4/m4f/m7/m7dp/m55 relocatable, m4f
+        --cortex-m, m3 --no-optimize image and relocatable, m4f
+        --safety-bounds software, cortex-r5, m7 and m4f
+        --native-pointer-abi, default A32, rv32imac, aarch64), 4432 compiles:
+        0 return-code and 0 output-byte differences; 1 stderr difference,
+        the panic thread id of a pre-existing aarch64 panic on
+        if_arm_dead_value_1691.wat (identical message on both).
+
+        GALE wdg-thin (gust_wdg_thin.loom.wasm, sha256 7f427194...d770d):
+        of the 13 functions synth compiles from it, 5 are call-free (wdg_lock,
+        wdg_is_running, __rust_alloc, __rust_realloc, the no-alloc shim) and
+        all 5 compile for cortex-m0 (stack base: 1, the empty shim). The 8
+        others each contain a BL (import or internal call) and decline in the
+        rule table, as this lane intends. The module defines 15 functions;
+        the 2 synth compiles on no target are neither exported nor called
+        (one, the empty __link_custom_section_describing_imports, is a
+        table element; the module has no call_indirect). Counted over the
+        whole module, 6 functions are call-free and 5 compile.
