@@ -1,0 +1,316 @@
+# v0.92 DRAFT scope — recorded before v0.91 is cut.
+#
+# WHY THIS IS A TOPIC FILE AND NOT artifacts/release-v0.92/. While ANCHOR_TAG is
+# v0.90.0 the release being cut is v0.91, and two gates refuse any v0.92 record
+# that they can see as one:
+#
+#   * status_evidence_check's CENSUS reads the version from the PATH of every
+#     artifacts/release-v*/ file. A release-v0.92/ directory makes the cut read
+#     as v0.92 against an expected v0.91, and it fails (RQ-73-GATETRUTH, #1319).
+#   * recurring_na_filing_check reads the `release:` FIELD of every artifact
+#     under artifacts/, topic files included. A `release: v0.92` anywhere makes
+#     the tree's max release v0.92 against anchor+1 = v0.91, and it refuses.
+#
+# So these records carry NO `release:` field and live outside release-v*/. The
+# file NAME carries the version, which dates every record in it for the
+# unscoped-artifact S-rules, exactly as sys-verification-v0.60.yaml does. No
+# record here is in any release's close set and none authorises closing an issue.
+#
+# WHEN v0.91 SHIPS, the v0.92 planning PR moves each record that survives into
+# artifacts/release-v0.92/<ID>.yaml, adds `release: v0.92`, the `issue-scope`
+# and `done-when` fields R12 requires, runs each refuting command and records
+# its output, moves the anchor to v0.91.0, and deletes this file.
+#
+# The plan these records come from is docs/planning/v0.92-plan.md. Every record
+# names the North Star objective it serves in its description (O1 to O5, as
+# defined in pulseengine.eu's data/north-star.toml); there is no `serves:` field
+# yet. Every record is `status: draft`. Nothing here claims delivery.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  - id: RQ-92-WRONGCODE
+    type: system-req
+    status: draft
+    title: "Open wrong-code reports are measured live or not, and the live count falls"
+    description: >
+        SERVES: O1 (Runs on target), the `execution_match` number. A wrong
+        value on a covered target makes that number false.
+
+        Step 1, first week: a generated census of every open issue that
+        reports wrong output with exit 0. One row per issue: backend and
+        flags, repro input, oracle command, and the result on a named main
+        commit, one of live, fixed-unreleased, not-reproduced or no-oracle.
+        A title scan of the open list on 2026-11-20 gives about 29
+        candidates; that scan is not the census, and how many are live is
+        unknown. Where a pin table already pins the wrong value, a passing
+        pin run is the evidence the defect is live; no second harness is
+        written for it.
+
+        SYNTH CAN CLOSE ALONE: the census is one command's output with one
+        executed oracle result per row, re-run at the tag; the live count
+        at the tag is at most half the census count, and zero on Thumb-2
+        cortex-m4 with default flags; every fix carries an oracle red on
+        its base commit and green on the fix, both runs recorded; issues
+        found during the release join the census and count.
+
+        KILL: more than a quarter of the rows end no-oracle or
+        not-reproduced, or the live count at the tag is higher than at the
+        census, new finds included. If the second fires, the release notes
+        lead with it.
+
+        CROSS-REPO ASK (not agreed): gale and jess confirm, per issue they
+        reported, whether the reproduced shape is the one they hit.
+    tags:
+      - north-star-o1
+      - wrong-code
+      - draft-v0.92
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-track: execution
+
+  - id: RQ-92-TARGETRECORD
+    type: system-req
+    status: draft
+    title: "A per-target, per-version record makes synth's half of O1 derivable"
+    description: >
+        SERVES: O1 (Runs on target). synth's half of the indicator: reach,
+        execution match on the shipped ELF and WCET bound, three numbers,
+        never summed, plus a hardware-run field the guard needs.
+
+        A small Rust assembler reads the JSON the existing required oracles
+        already emit and writes target-record.json for cortex-m4 and
+        cortex-m7dp: `reach` over a named corpus (the vendored spec suite
+        plus the repository's own fixtures, stated beside the number as
+        chosen by the project, not by a consumer); `execution_match` on the
+        self-contained image as executed, matching, wrong and pinned counts;
+        `wcet` where a sound model exists, otherwise ABSENT, never a decline
+        string rendered as a number; `hardware_run` as a run reference bound
+        to an image digest, or none, which renders as fail. No new execution
+        suite, no consumer corpus, no translation-validation share.
+
+        SYNTH CAN CLOSE ALONE: one command produces the record from a clean
+        checkout and it is listed in the release's signed checksum manifest;
+        an executed-vector floor per target, never lowered to go green, and
+        a row with zero executed fails even with zero wrong; three negative
+        controls in CI (an empty or unfetchable corpus fails, a planted
+        wrong instruction makes the wrong count non-zero, removing a
+        hardware reference turns the row to fail). The record is produced at
+        the tag and regenerated on main for each monthly layer.
+
+        KILL: the record cannot be regenerated on the tag from a clean
+        checkout, or a row passes with nothing executed. Wrong if the
+        assembler duplicates oracle logic instead of reading oracle output.
+
+        CROSS-REPO OUTCOME, not part of acceptance: pulseengine.eu consumes
+        the record.
+    tags:
+      - north-star-o1
+      - evidence
+      - draft-v0.92
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: must
+      verification-track: execution
+
+  - id: RQ-92-M4EXEC
+    type: system-req
+    status: draft
+    title: "The cortex-m4 spec-execution leg runs on a Cortex-M4 CPU model and executes more"
+    description: >
+        SERVES: O1 (Runs on target). cortex-m4 is the only L1 target and the
+        only row with a WCET number.
+
+        The required spec-execution oracle
+        (scripts/repro/spec_exec_1636_differential.py) sets the emulator's
+        CPU model to the permissive "max" core on both legs, so an
+        instruction a Cortex-M4 cannot execute is not caught there. Read on
+        main 3dc31524: executed floor cortex-m4 11634, cortex-m7dp 24087,
+        of 57588 directives; the known-failing table holds 27 entries per
+        leg, all under the memory.grow envelope label.
+
+        WORK: run the cortex-m4 leg on a Cortex-M4 model, read back and
+        asserted; raise the executed count by fixing declines that keep
+        whole spec files from executing, from the leg's own per-file
+        accounting; work each pinned memory.grow entry to pass or to stay
+        pinned with its reason.
+
+        SYNTH CAN CLOSE ALONE: the leg passes on the Cortex-M4 model in the
+        required check and a planted Thumb-2 instruction outside the M4's
+        set fails it; the executed floor ends strictly above 11634, by an
+        amount set only after the model switch, because the switch may move
+        the count either way; wrong count zero; pinned count does not rise.
+
+        KILL: the floor at the tag is at or below 11634 on the M4 model with
+        no published finding that directives had passed only on the
+        permissive core. Such a finding resets the floor and pays for the
+        item.
+
+        CROSS-REPO ASK (not agreed): gale, whether its Cortex-M4 silicon
+        fixture can become a per-version row.
+    tags:
+      - north-star-o1
+      - spec-exec
+      - draft-v0.92
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1636"
+      verification-track: execution
+
+  - id: RQ-92-RT1176DIGEST
+    type: system-req
+    status: draft
+    title: "A silicon run on the RT1176 is bound to the tagged compiler by image digest"
+    description: >
+        SERVES: O1 (Runs on target), the `hardware_run` and
+        `execution_match` fields of the cortex-m7dp row.
+
+        Stated plainly: jess's existing result is a draft manual record on
+        synth 0.89.0, one completed run per image loaded to RAM over SWD,
+        with resets of unknown cause reported. It is none of the three rungs
+        O1 names for jess and not a flash-booted image. It moves synth's
+        half once.
+
+        SYNTH'S THREE ITEMS: a CI job that builds the estimator image from
+        pinned inputs and produces a word capture in jess's capture format,
+        judged by jess's judge; a byte-identical image across two hosts of
+        different operating system and architecture; a release candidate
+        with a published digest, under the rule that the image built by the
+        tagged 0.92.0 compiler has the same sha256 as the image that ran on
+        silicon. If a later change moves that digest, the run no longer
+        counts for 0.92.0 and the row reads fail. Code generation for this
+        image is therefore frozen from candidate to tag; other lanes may
+        land in that window only under byte identity on every
+        non-ARMv6-M target.
+
+        SYNTH CAN CLOSE ALONE: the capture job is green on the candidate,
+        the judge exits 0 and a perturbed-input control yields a different
+        fold; the image digest is equal across the two hosts and between
+        candidate and tag; the record's cortex-m7dp row carries the digest.
+
+        CROSS-REPO OUTCOME, not part of acceptance: jess runs that digest
+        on the RT1176, 5 of 5 consecutive loads complete and the judge
+        passes. There is no written-explanation alternative; if it does not
+        happen the row reads fail and the release notes say so.
+
+        KILL: not bit-exact on silicon; digests differ across hosts and
+        cannot be made equal; or the candidate-to-tag digest moves and no
+        re-run happens.
+    tags:
+      - north-star-o1
+      - hardware
+      - draft-v0.92
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: should
+      verification-track: manual
+
+  - id: RQ-92-WDGTHIN
+    type: system-req
+    status: draft
+    title: "gale's wdg-thin compiles whole for cortex-m0plus and matches the reference on the M0 model"
+    description: >
+        SERVES: O1 (Runs on target), a new cortex-m0plus target row.
+
+        INDICATOR, one unit: reach over the functions of gale's `wdg-thin`
+        (31, gale's count), from the count measured on main at the start of
+        the lane (not measured for this plan) to all of them.
+        execution_match is code-level, with calls resolved by the oracle's
+        own link step, and labelled code-level: under RQ-92-TARGETRECORD it
+        does not satisfy ELF-level execution match. wcet absent.
+
+        LANES: all direct calls, internal and import; the ARMv6-M register
+        pool, scratch and frames; 16-bit literal pools only if wdg-thin
+        needs them; br_table. NOT in this release: i64, linear memory and
+        globals, wohl's door engine, the M0 cycle table.
+
+        SYNTH CAN CLOSE ALONE: `synth compile gust_wdg_thin.loom.wasm
+        --target cortex-m0plus --relocatable --all-exports` exits 0 with no
+        export skipped and every byte of .text decodes as ARMv6-M; on the
+        emulator's Cortex-M0 model, read back, the MMIO write sequence of
+        each scripted scenario (enumerated from the module's exports)
+        equals the reference engine's; every non-ARMv6-M configuration
+        compiles to identical bytes before and after each lane, with the
+        potency control; the embedder check rejects a boot shim that sets
+        the memory-base register with the ARMv7-M encoding.
+
+        CROSS-REPO OUTCOME, not part of acceptance: gale records its
+        two-boot watchdog row on the NUCLEO-G031K8 with an image built by
+        synth 0.92.0.
+
+        KILL: wdg-thin cannot be lowered whole within ARMv6-M's branch and
+        literal reach without declining a function, or a byte moves on
+        another target without an oracle proving the new bytes correct.
+
+        OPEN CONFLICT, the owner's call: wohl's draft next-release plan
+        expects a synth-built ARMv6-M door image with a hard-date kill.
+        Leaving the door engine to v0.93 may fire it.
+    tags:
+      - north-star-o1
+      - armv6m
+      - gale
+      - draft-v0.92
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1301"
+      verification-track: execution
+
+  - id: RQ-92-AXIOMAUDIT
+    type: system-req
+    status: draft
+    title: "CONDITIONAL: a kernel axiom audit in the required proof check, decided by a one-day probe"
+    description: >
+        SERVES: O3 (Every verified claim is backed). The indicator names a
+        required proof check with a kernel axiom audit and a trust-escape
+        ledger; the guard says ledger entries may only shrink, with no
+        growth waiver.
+
+        PROBE THAT DECIDES, one day, before any commitment: run `Print
+        Assumptions` over every theorem in the proof suite and take the set
+        of distinct axioms reached; check that the output is identical
+        across two toolchain patch versions, and that no lane planned for
+        v0.92 or v0.93 adds a Rocq axiom or parameter.
+
+        IF BOTH HOLD: ship the audit in the required proof check against a
+        committed list, with a planted-axiom control, and delete the
+        text-pattern axiom pins it replaces. The other assumption classes
+        (rule side conditions, atomic model steps, validator preconditions)
+        are named in the ledger as UNCOUNTED. The first list is its own
+        baseline, so an undercount on day one is the known weakness.
+
+        IF EITHER FAILS: deferred. A planned rv32 instruction-set model would
+        likely add parameters, and under this guard that growth has no
+        legal path.
+
+        This item adds no proof and fixes no defect. O3 stays unmeasured
+        until pulseengine.eu has an indicator script.
+    tags:
+      - north-star-o3
+      - proofs
+      - conditional
+      - draft-v0.92
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: process
+      priority: could
+      verification-track: manual
