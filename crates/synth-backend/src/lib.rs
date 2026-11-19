@@ -30,6 +30,8 @@ pub mod arm_backend;
 pub mod arm_encoder;
 /// RQ-91-ARMV6M (#1301): the ARMv6-M instruction check over encoded bytes.
 pub mod armv6m;
+/// RQ-91-M0FLAGS (#1301): NZCV liveness over encoded Thumb bytes.
+pub mod nzcv;
 
 #[cfg(feature = "arm-cortex-m")]
 pub mod arm_startup;

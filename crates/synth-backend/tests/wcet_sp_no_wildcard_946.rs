@@ -41,7 +41,10 @@
 // SP by 64 bytes. The two copies of this constant are pinned EQUAL to
 // each other by claims.yaml (`SYNTH-A32-TRIPWIRE-UNIVERSE`), which is why
 // bumping one without the other is caught rather than silently divergent.
-const ARM_OP_VARIANT_COUNT: usize = 224;
+// RQ-91-M0FLAGS (#1301): 224 -> 233. The nine explicit flag-setting forms
+// (Movs, Mvns, Ands, Orrs, Eors, Lsls, Lsrs, Asrs, Muls). SP effect: each
+// defines only `rd`, so it moves SP iff `rd == SP`, exactly as its twin.
+const ARM_OP_VARIANT_COUNT: usize = 233;
 
 const RULES_SRC: &str = include_str!("../../synth-synthesis/src/rules.rs");
 const WCET_LOOPS_SRC: &str = include_str!("../src/wcet_loops.rs");

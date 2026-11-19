@@ -36,7 +36,10 @@ const NOP_WORD: [u8; 4] = [0x00, 0x00, 0xA0, 0xE1];
 // SP by 64 bytes. The two copies of this constant are pinned EQUAL to
 // each other by claims.yaml (`SYNTH-A32-TRIPWIRE-UNIVERSE`), which is why
 // bumping one without the other is caught rather than silently divergent.
-const ARM_OP_VARIANT_COUNT: usize = 224;
+// RQ-91-M0FLAGS (#1301): 224 -> 233. The nine explicit flag-setting forms
+// (Movs, Mvns, Ands, Orrs, Eors, Lsls, Lsrs, Asrs, Muls) — A32: the twin's
+// word with S set; SP effect: `rd == SP`, as for their twins.
+const ARM_OP_VARIANT_COUNT: usize = 233;
 
 /// How the A32 encoder must treat each op.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -116,7 +119,18 @@ fn classify(op: &ArmOp) -> Expect {
         | ArmOp::Blx { .. }
         | ArmOp::Push { .. }
         | ArmOp::Pop { .. }
-        | ArmOp::Udf { .. } => Real,
+        | ArmOp::Udf { .. }
+        // RQ-91-M0FLAGS (#1301): the flag-setting forms — their twin's A32
+        // word with the S bit set.
+        | ArmOp::Movs { .. }
+        | ArmOp::Mvns { .. }
+        | ArmOp::Ands { .. }
+        | ArmOp::Orrs { .. }
+        | ArmOp::Eors { .. }
+        | ArmOp::Lsls { .. }
+        | ArmOp::Lsrs { .. }
+        | ArmOp::Asrs { .. }
+        | ArmOp::Muls { .. } => Real,
 
         // #615: formerly "NOP for now" — now real A32 expansions.
         ArmOp::Popcnt { .. }
@@ -349,6 +363,50 @@ fn representatives() -> Vec<ArmOp> {
             rd: Reg::R1,
             rn: Reg::R2,
             op2: Operand2::Reg(Reg::R3),
+        },
+        // RQ-91-M0FLAGS (#1301)
+        Movs {
+            rd: Reg::R1,
+            op2: Operand2::Imm(5),
+        },
+        Mvns {
+            rd: Reg::R1,
+            op2: Operand2::Reg(Reg::R2),
+        },
+        Ands {
+            rd: Reg::R1,
+            rn: Reg::R2,
+            op2: Operand2::Reg(Reg::R3),
+        },
+        Orrs {
+            rd: Reg::R1,
+            rn: Reg::R2,
+            op2: Operand2::Reg(Reg::R3),
+        },
+        Eors {
+            rd: Reg::R1,
+            rn: Reg::R2,
+            op2: Operand2::Reg(Reg::R3),
+        },
+        Lsls {
+            rd: Reg::R1,
+            rn: Reg::R2,
+            shift: 3,
+        },
+        Lsrs {
+            rd: Reg::R1,
+            rn: Reg::R2,
+            shift: 3,
+        },
+        Asrs {
+            rd: Reg::R1,
+            rn: Reg::R2,
+            shift: 3,
+        },
+        Muls {
+            rd: Reg::R1,
+            rn: Reg::R2,
+            rm: Reg::R1,
         },
         Mul {
             rd: Reg::R1,

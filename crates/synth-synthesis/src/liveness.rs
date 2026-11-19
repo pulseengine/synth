@@ -12701,6 +12701,20 @@ mod tests {
             | Udf { .. }
             | Nop => true,
 
+            // RQ-91-M0FLAGS (#1301): the flag-setting forms. No selector
+            // emits them yet, and `reg_effect` returns `None` for them (the
+            // sound "unknown, bail" answer). The ARMv6-M lowering that first
+            // emits one must model it here and in `reg_effect`.
+            Movs { .. }
+            | Mvns { .. }
+            | Ands { .. }
+            | Orrs { .. }
+            | Eors { .. }
+            | Lsls { .. }
+            | Lsrs { .. }
+            | Asrs { .. }
+            | Muls { .. } => false,
+
             // Not modeled by the allocator's def/use layer: control flow and
             // address pseudo-ops with no renamable GP-register fields, the
             // i64-pair family (lowered before allocation), and all FP/SIMD.

@@ -1107,6 +1107,15 @@ pub(crate) fn may_move_sp(op: &ArmOp) -> bool {
         | Sbc { rd, .. }
         | Mov { rd, .. }
         | Mvn { rd, .. }
+        | Movs { rd, .. }
+        | Mvns { rd, .. }
+        | Ands { rd, .. }
+        | Orrs { rd, .. }
+        | Eors { rd, .. }
+        | Lsls { rd, .. }
+        | Lsrs { rd, .. }
+        | Asrs { rd, .. }
+        | Muls { rd, .. }
         | Movw { rd, .. }
         | Movt { rd, .. }
         | MovwSym { rd, .. }

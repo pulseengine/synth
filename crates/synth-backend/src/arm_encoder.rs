@@ -5,7 +5,7 @@
 use synth_core::Result;
 use synth_core::target::FPUPrecision;
 use synth_synthesis::contracts::encoding as encoding_contracts;
-use synth_synthesis::{ArmOp, MemAddr, MveSize, Operand2, QReg, Reg, VfpReg};
+use synth_synthesis::{ArmOp, MemAddr, MveSize, Operand2, QReg, Reg, ShiftType, VfpReg};
 
 /// ARM instruction encoding
 pub struct ArmEncoder {
@@ -1622,6 +1622,41 @@ impl ArmEncoder {
 
                 // MVN encoding: opcode=1111
                 0xE1E00000 | (i_flag << 25) | (rd_bits << 12) | op2_bits
+            }
+
+            // RQ-91-M0FLAGS (#1301): MULS, encoded directly in llvm-mc's
+            // operand order (`muls rd, rn, rm`: Rn in [3:0], Rm in [11:8]);
+            // PC is UNPREDICTABLE in every operand.
+            ArmOp::Muls { rd, rn, rm } => {
+                if [rd, rn, rm].iter().any(|r| **r == Reg::PC) {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "{op:?}: PC is UNPREDICTABLE in A32 MULS (RQ-91-M0FLAGS, #1301)"
+                    )));
+                }
+                0xE0100090 | (reg_to_bits(rd) << 16) | (reg_to_bits(rm) << 8) | reg_to_bits(rn)
+            }
+
+            // RQ-91-M0FLAGS (#1301): the other flag-setting forms. Each is its
+            // flag-preserving twin's A32 word with the S bit (bit 20) set —
+            // the same bit in every data-processing encoding. The twin is
+            // encoded by THIS encoder, so the operand handling (rotated
+            // immediates, shift fields) is not duplicated here.
+            ArmOp::Movs { .. }
+            | ArmOp::Mvns { .. }
+            | ArmOp::Ands { .. }
+            | ArmOp::Orrs { .. }
+            | ArmOp::Eors { .. }
+            | ArmOp::Lsls { .. }
+            | ArmOp::Lsrs { .. }
+            | ArmOp::Asrs { .. } => {
+                let twin = flag_preserving_twin(op)?;
+                let word = self.encode_arm(&twin)?;
+                let word: [u8; 4] = word.as_slice().try_into().map_err(|_| {
+                    synth_core::Error::synthesis(format!(
+                        "{op:?}: the A32 twin {twin:?} is not a single word — no S-bit form"
+                    ))
+                })?;
+                u32::from_le_bytes(word) | (1 << 20)
             }
 
             // MOVW - Move Wide (ARM32)
@@ -7085,6 +7120,22 @@ impl ArmEncoder {
             // NOTE FOR ANYONE ADDING AN OP BELOW THIS POINT: the catch-all that
             // follows returns a NOP, so an op that reaches it is encoded as
             // nothing at all. These two arms exist ABOVE it deliberately.
+            // RQ-91-M0FLAGS (#1301): the flag-setting forms. The 16-bit
+            // encodings are the ARMv6-M ones; outside an IT block they set
+            // flags, which is what these variants MEAN. Wide fallbacks are the
+            // Thumb-2 S=1 forms (not ARMv6-M — the v6-M byte check refuses
+            // them). Never emitted inside an IT block by construction: inside
+            // one the 16-bit forms would NOT set flags.
+            ArmOp::Movs { .. }
+            | ArmOp::Mvns { .. }
+            | ArmOp::Ands { .. }
+            | ArmOp::Orrs { .. }
+            | ArmOp::Eors { .. }
+            | ArmOp::Lsls { .. }
+            | ArmOp::Lsrs { .. }
+            | ArmOp::Asrs { .. }
+            | ArmOp::Muls { .. } => self.encode_thumb_flag_setting(op),
+
             ArmOp::VPushCalleeSavedVfp => Ok(vec![0x2d, 0xed, 0x10, 0x8b]),
             ArmOp::VPopCalleeSavedVfp => Ok(vec![0xbd, 0xec, 0x10, 0x8b]),
 
@@ -7103,6 +7154,174 @@ impl ArmEncoder {
                  refusing to emit a silent NOP (#1272; #615 closed this class on A32 \
                  only, and Thumb-2 is the default target)"
             ))),
+        }
+    }
+
+    /// RQ-91-M0FLAGS (#1301): encode one of the explicit flag-setting
+    /// variants. 16-bit (ARMv6-M) form when the registers and immediate fit,
+    /// else the Thumb-2 wide S=1 form, else a typed refusal. Every form here
+    /// SETS the flags its variant names; none is a flag-preserving encoding.
+    fn encode_thumb_flag_setting(&self, op: &ArmOp) -> Result<Vec<u8>> {
+        let hw = |h: u16| Ok(h.to_le_bytes().to_vec());
+        let wide = |h1: u32, h2: u32| {
+            let mut b = (h1 as u16).to_le_bytes().to_vec();
+            b.extend_from_slice(&(h2 as u16).to_le_bytes());
+            Ok(b)
+        };
+        let refuse = |why: &str| {
+            Err(synth_core::Error::synthesis(format!(
+                "{op:?} has no Thumb encoding: {why} (RQ-91-M0FLAGS, #1301)"
+            )))
+        };
+        let low = |r: &Reg| reg_to_bits(r) < 8;
+        // SP is UNPREDICTABLE in every Thumb-2 S=1 wide form, and no 16-bit
+        // form reaches it: refuse it up front, typed (llvm-mc refuses too).
+        let mut regs: Vec<&Reg> = Vec::new();
+        match op {
+            ArmOp::Movs { rd, op2 } | ArmOp::Mvns { rd, op2 } => {
+                regs.push(rd);
+                if let Operand2::Reg(rm) = op2 {
+                    regs.push(rm);
+                }
+            }
+            ArmOp::Ands { rd, rn, op2 }
+            | ArmOp::Orrs { rd, rn, op2 }
+            | ArmOp::Eors { rd, rn, op2 } => {
+                regs.extend([rd, rn]);
+                if let Operand2::Reg(rm) = op2 {
+                    regs.push(rm);
+                }
+            }
+            ArmOp::Lsls { rd, rn, .. }
+            | ArmOp::Lsrs { rd, rn, .. }
+            | ArmOp::Asrs { rd, rn, .. } => regs.extend([rd, rn]),
+            ArmOp::Muls { rd, rn, rm } => regs.extend([rd, rn, rm]),
+            _ => {}
+        }
+        if regs.iter().any(|r| **r == Reg::SP) {
+            return refuse("SP is UNPREDICTABLE in the flag-setting Thumb forms");
+        }
+        match op {
+            ArmOp::Movs { rd, op2 } | ArmOp::Mvns { rd, op2 } => {
+                let mvn = matches!(op, ArmOp::Mvns { .. });
+                let d = reg_to_bits(rd);
+                reg_bits_checked(d)?;
+                match op2 {
+                    Operand2::Reg(rm) => {
+                        let m = reg_to_bits(rm);
+                        reg_bits_checked(m)?;
+                        if low(rd) && low(rm) {
+                            // MOVS rd, rm = LSLS rd, rm, #0 (0000 0 00000 Rm Rd);
+                            // MVNS rd, rm (0100 0011 11 Rm Rd).
+                            let base: u16 = if mvn { 0x43C0 } else { 0x0000 };
+                            hw(base | ((m as u16) << 3) | d as u16)
+                        } else {
+                            // MOVS.W / MVNS.W rd, rm: EA5F / EA7F | 0 000 Rd 00 00 Rm
+                            wide(if mvn { 0xEA7F } else { 0xEA5F }, (d << 8) | m)
+                        }
+                    }
+                    Operand2::Imm(imm) => {
+                        let v = *imm as u32;
+                        if !mvn && v <= 0xFF && low(rd) {
+                            // MOVS rd, #imm8: 0010 0 Rd imm8
+                            return hw(0x2000 | ((d as u16) << 8) | v as u16);
+                        }
+                        let Some(f) = try_thumb_expand_imm(v) else {
+                            return refuse("immediate is not a Thumb-2 modified immediate");
+                        };
+                        // MOVS.W / MVNS.W (T2 S=1): 11110 i 0 0010/0011 1 1111 | 0 imm3 Rd imm8
+                        let h1 = if mvn { 0xF07F } else { 0xF05F } | (((f >> 11) & 1) << 10);
+                        wide(h1, (((f >> 8) & 7) << 12) | (d << 8) | (f & 0xFF))
+                    }
+                    _ => refuse("operand form not encoded (Reg and Imm are)"),
+                }
+            }
+            ArmOp::Ands { rd, rn, op2 }
+            | ArmOp::Orrs { rd, rn, op2 }
+            | ArmOp::Eors { rd, rn, op2 } => {
+                // (16-bit opc, wide shifted-register hw1 base, wide imm hw1 base)
+                let (opc16, wreg, wimm): (u16, u32, u32) = match op {
+                    ArmOp::Ands { .. } => (0x0, 0xEA10, 0xF010),
+                    ArmOp::Orrs { .. } => (0xC, 0xEA50, 0xF050),
+                    _ => (0x1, 0xEA90, 0xF090),
+                };
+                let (d, n) = (reg_to_bits(rd), reg_to_bits(rn));
+                reg_bits_checked(d)?;
+                reg_bits_checked(n)?;
+                match op2 {
+                    Operand2::Reg(rm) => {
+                        let m = reg_to_bits(rm);
+                        reg_bits_checked(m)?;
+                        // 16-bit `<op>S rdn, rm` (0100 00 opc Rm Rdn): rd must be
+                        // one of the sources; all three ops are commutative.
+                        let other = if rd == rn {
+                            Some(m)
+                        } else if rd == rm {
+                            Some(n)
+                        } else {
+                            None
+                        };
+                        match other {
+                            Some(o) if d < 8 && o < 8 => {
+                                hw(0x4000 | (opc16 << 6) | ((o as u16) << 3) | d as u16)
+                            }
+                            _ => wide(wreg | n, (d << 8) | m),
+                        }
+                    }
+                    Operand2::Imm(imm) => {
+                        let Some(f) = try_thumb_expand_imm(*imm as u32) else {
+                            return refuse("immediate is not a Thumb-2 modified immediate");
+                        };
+                        wide(
+                            wimm | (((f >> 11) & 1) << 10) | n,
+                            (((f >> 8) & 7) << 12) | (d << 8) | (f & 0xFF),
+                        )
+                    }
+                    _ => refuse("operand form not encoded (Reg and Imm are)"),
+                }
+            }
+            ArmOp::Lsls { rd, rn, shift }
+            | ArmOp::Lsrs { rd, rn, shift }
+            | ArmOp::Asrs { rd, rn, shift } => {
+                let (ty, ok): (u32, bool) = match op {
+                    ArmOp::Lsls { .. } => (0, *shift <= 31),
+                    ArmOp::Lsrs { .. } => (1, (1..=32).contains(shift)),
+                    _ => (2, (1..=32).contains(shift)),
+                };
+                if !ok {
+                    return refuse("shift amount out of range (LSLS 0..=31, LSRS/ASRS 1..=32)");
+                }
+                let (d, m) = (reg_to_bits(rd), reg_to_bits(rn));
+                reg_bits_checked(d)?;
+                reg_bits_checked(m)?;
+                let imm5 = *shift & 0x1F; // 32 encodes as 0 for LSR/ASR
+                if d < 8 && m < 8 {
+                    // 000 op imm5 Rm Rd
+                    hw(((ty << 11) | (imm5 << 6) | (m << 3) | d) as u16)
+                } else {
+                    // MOVS.W rd, rm, <shift> #imm: EA5F | 0 imm3 Rd imm2 type Rm
+                    wide(
+                        0xEA5F,
+                        ((imm5 >> 2) << 12) | (d << 8) | ((imm5 & 3) << 6) | (ty << 4) | m,
+                    )
+                }
+            }
+            ArmOp::Muls { rd, rn, rm } => {
+                // Only `MULS rdm, rn, rdm` (0100 0011 01 Rn Rdm) exists in Thumb;
+                // Thumb-2's MUL.W never sets flags.
+                let other = if rd == rm {
+                    rn
+                } else if rd == rn {
+                    rm
+                } else {
+                    return refuse("MULS needs rd == rn or rd == rm");
+                };
+                if !(low(rd) && low(other)) {
+                    return refuse("MULS is 16-bit only, low registers");
+                }
+                hw(0x4340 | ((reg_to_bits(other) as u16) << 3) | reg_to_bits(rd) as u16)
+            }
+            _ => refuse("not a flag-setting variant"),
         }
     }
 
@@ -8487,6 +8706,61 @@ impl ArmEncoder {
     }
 }
 
+/// RQ-91-M0FLAGS (#1301): the flag-PRESERVING twin of a flag-setting
+/// variant, for the A32 encoder (which sets the S bit on the twin's word).
+/// Refuses the shift amounts the twin would encode as a different shift.
+fn flag_preserving_twin(op: &ArmOp) -> Result<ArmOp> {
+    let bad = |why: &str| {
+        Err(synth_core::Error::synthesis(format!(
+            "{op:?}: {why} (RQ-91-M0FLAGS, #1301)"
+        )))
+    };
+    Ok(match op {
+        ArmOp::Movs { rd, op2 } => ArmOp::Mov {
+            rd: *rd,
+            op2: op2.clone(),
+        },
+        ArmOp::Mvns { rd, op2 } => ArmOp::Mvn {
+            rd: *rd,
+            op2: op2.clone(),
+        },
+        ArmOp::Ands { rd, rn, op2 } => ArmOp::And {
+            rd: *rd,
+            rn: *rn,
+            op2: op2.clone(),
+        },
+        ArmOp::Orrs { rd, rn, op2 } => ArmOp::Orr {
+            rd: *rd,
+            rn: *rn,
+            op2: op2.clone(),
+        },
+        ArmOp::Eors { rd, rn, op2 } => ArmOp::Eor {
+            rd: *rd,
+            rn: *rn,
+            op2: op2.clone(),
+        },
+        ArmOp::Lsls { rd, rn, shift } if *shift <= 31 => ArmOp::Lsl {
+            rd: *rd,
+            rn: *rn,
+            shift: *shift,
+        },
+        ArmOp::Lsrs { rd, rn, shift } if (1..=32).contains(shift) => ArmOp::Lsr {
+            rd: *rd,
+            rn: *rn,
+            shift: *shift,
+        },
+        ArmOp::Asrs { rd, rn, shift } if (1..=32).contains(shift) => ArmOp::Asr {
+            rd: *rd,
+            rn: *rn,
+            shift: *shift,
+        },
+        ArmOp::Lsls { .. } | ArmOp::Lsrs { .. } | ArmOp::Asrs { .. } => {
+            return bad("shift amount out of range (LSLS 0..=31, LSRS/ASRS 1..=32)");
+        }
+        _ => return bad("not a flag-setting variant"),
+    })
+}
+
 /// Convert register to bit encoding (0-15)
 /// Reverse of the ARMv7-M `ThumbExpandImm`: given a 32-bit immediate, return the
 /// 12-bit `i:imm3:imm8` field if it is a representable modified immediate, else
@@ -8879,12 +9153,18 @@ fn encode_operand2(op2: &Operand2) -> Result<(u32, u32)> {
             Ok((reg_bits, 0)) // I=0 for register
         }
 
-        Operand2::RegShift {
-            rm,
-            shift: _,
-            amount,
-        } => {
-            // Simplified encoding with shift
+        Operand2::RegShift { rm, shift, amount } => {
+            // RQ-91-M0FLAGS (#1301, review 7 F6): the shift TYPE was ignored,
+            // so LSR/ASR/ROR were encoded as LSL — a silent wrong instruction.
+            // Measured on main 265235dc: no selector path constructs a
+            // non-LSL `RegShift` (the only shipped construction is the
+            // pattern DB's LSL rule), so refusing them moves no byte.
+            if *shift != ShiftType::LSL {
+                return Err(synth_core::Error::synthesis(format!(
+                    "encode_operand2: A32 shifted-register operand with {shift:?} is not \
+                     encoded here (only LSL is) — refusing rather than encoding it as LSL"
+                )));
+            }
             let rm_bits = reg_to_bits(rm);
             let shift_bits = (*amount & 0x1F) << 7;
             Ok((shift_bits | rm_bits, 0))

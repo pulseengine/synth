@@ -1,0 +1,251 @@
+# RQ-91-M0FLAGS (#1301) NZCV verifier probe set, cold review 10: 228 + 9 llvm-mc-assembled
+# Thumb streams with expected verdicts. Contracts: P=Preserves S=Scratch W=Writes(NZCV)
+# W0=Writes(0) (the flag-setting variants) Wc=Writes(N|Z). Format: name|hex|segments|EXPECTED
+# Expectations changed from the review's draft .exp (22), each by the rule it follows:
+#  - REJECT, unknown BY DESIGN (review 10 N4: valid but never emitted, refused as unknown):
+#    smlabb, sadd8, umaal, pld, ldrex, strex, cpsid, wls, dls, tt, mrc p1 -> r5 (coprocessor 1),
+#    clrm {r0,r1} (LDM with Rn = PC).
+#  - REJECT, R2: the two 'vmrs; island; it mi' streams put VMRS in a Preserves op, so its
+#    flags may not leave the op (the cases10b variant with VMRS as Writes is ACCEPT).
+#  - ACCEPT, nothing clobbers: vselgt.f64 only READS N,Z,V between cmp and beq; and the seven
+#    nokill[...] producers (vmrs APSR_nzcv, msr apsr/xpsr_nzcvq, cmp.w, teq.w, rsbs, negs.w) sit
+#    in a Writes(NZCV) op and fully rewrite Z, so the earlier movs's Z is dead.
+# The last 9 cases (cases10b) carry the lane's expectations: islands between a producer and its
+# reader ACCEPT; vselgt after a movs clobber, mrc to APSR_nzcv, clrm {apsr} and asrl REJECT.
+island[b.n] between cmp and beq (no false reject)|00bf884202e00000efbeadde00d000bf7047|0:2:P,2:2:W,4:2:P,12:2:P,14:2:P,16:2:P|ACCEPT
+island[b.n] movs; island; beq|8842012502e00000efbeadde00d000bf7047|0:2:W,2:2:P,4:2:P,12:2:P,14:2:P,16:2:P|REJECT
+island[b.n] cmp; island; movs; beq|00bf884202e00000efbeadde012500d000bf7047|0:2:P,2:2:W,4:2:P,12:2:P,14:2:P,16:2:P,18:2:P|REJECT
+island[b.n] adds; island; adc (carry link over an island)|00bf801802e00000efbeadde41eb03017047|0:2:P,2:2:W,4:2:P,12:4:P,16:2:P|ACCEPT
+island[b.n] adds; lsls; island; adc|80186d0002e00000efbeadde41eb03017047|0:2:W,2:2:P,4:2:P,12:4:P,16:2:P|REJECT
+island[b.n] dead movs before island then return|00bf012502e00000efbeadde7047|0:2:P,2:2:P,4:2:P,12:2:P|ACCEPT
+island[b.n] island inside a loop, reader at head|00bf884202e00000efbeadde01d00122f8e77047|0:2:P,2:2:W,4:2:P,12:2:P,14:2:P,16:2:P,18:2:P|REJECT
+island[b.n] vmrs; island; it mi; movmi (island splits a compare from its IT)|00bff1ee10fa02e00000efbeadde48bf01207047|0:2:P,2:4:P,6:2:P,14:4:P,18:2:P|REJECT
+island[b.w] between cmp and beq (no false reject)|00bf884200f004b8efbeadde08bf884200d000bf7047|0:2:P,2:2:W,4:4:P,16:2:P,18:2:P,20:2:P|ACCEPT
+island[b.w] movs; island; beq|8842012500f004b8efbeadde08bf884200d000bf7047|0:2:W,2:2:P,4:4:P,16:2:P,18:2:P,20:2:P|REJECT
+island[b.w] cmp; island; movs; beq|00bf884200f004b8efbeadde08bf8842012500d000bf7047|0:2:P,2:2:W,4:4:P,16:2:P,18:2:P,20:2:P,22:2:P|REJECT
+island[b.w] adds; island; adc (carry link over an island)|00bf801800f004b8efbeadde08bf884241eb03017047|0:2:P,2:2:W,4:4:P,16:4:P,20:2:P|ACCEPT
+island[b.w] adds; lsls; island; adc|80186d0000f004b8efbeadde08bf884241eb03017047|0:2:W,2:2:P,4:4:P,16:4:P,20:2:P|REJECT
+island[b.w] dead movs before island then return|00bf012500f004b8efbeadde08bf88427047|0:2:P,2:2:P,4:4:P,16:2:P|ACCEPT
+island[b.w] island inside a loop, reader at head|00bf884200f004b8efbeadde08bf884201d00122f6e77047|0:2:P,2:2:W,4:4:P,16:2:P,18:2:P,20:2:P,22:2:P|REJECT
+island[b.w] vmrs; island; it mi; movmi (island splits a compare from its IT)|00bff1ee10fa00f004b8efbeadde08bf884248bf01207047|0:2:P,2:4:P,6:4:P,18:4:P,22:2:P|REJECT
+island: IT then island branch as its member, movs after pool|884208bf01e0efbeadde012000d000bf7047|0:2:W,2:2:P,4:2:P,10:2:P,12:2:P,14:2:P,16:2:P|REJECT
+island: branch INTO the pool|00bf8842012500e00000704770477047|0:2:P,2:2:W,4:2:P,6:2:P,14:2:P|REJECT
+island: pool word that decodes as CMP is not a kill|00bf8842012502d08842884288427047|0:2:P,2:2:W,4:2:P,6:2:P,14:2:P|REJECT
+W0: cmp; movs(W0); bne; movs(W0)|8842002000d101207047|0:2:W,2:2:W0,4:2:P,6:2:W0,8:2:P|REJECT
+W0: movs(W0) dead flags|0020884200d101207047|0:2:W0,2:2:W,4:2:P,6:2:W0,8:2:P|ACCEPT
+W0: member of IT does not set flags|884208bf012000d000bf7047|0:2:W,2:4:W0,6:2:P,8:2:P,10:2:P|ACCEPT
+W0: adds; movs.w #1 (C untouched); adc|80185ff0010841eb03017047|0:2:W,2:4:W0,6:4:P,10:2:P|ACCEPT
+W0: adds; muls (C untouched); adc|8018754341eb03017047|0:2:W,2:2:W0,4:4:P,8:2:P|ACCEPT
+W0: adds; ands (C untouched); adc|8018354041eb03017047|0:2:W,2:2:W0,4:4:P,8:2:P|ACCEPT
+W0: adds; lsls r5,r6 (reg; may write C); adc|8018b54041eb03017047|0:2:W,2:2:W0,4:4:P,8:2:P|REJECT
+W0: adds; movs r5,r6 (lsls #0: C untouched); adc|8018350041eb03017047|0:2:W,2:2:W0,4:4:P,8:2:P|ACCEPT
+W0: adds; ands.w rotated imm; adc|801819f47f4841eb03017047|0:2:W,2:4:W0,6:4:P,10:2:P|REJECT
+W0: adds; orrs.w lsl #3; adc|801859eaca0841eb03017047|0:2:W,2:4:W0,6:4:P,10:2:P|REJECT
+W0: cmp; cmp(W0) ; beq - a compare in an op that declares nothing|8842b54200d000bf7047|0:2:W,2:2:W0,4:2:P,6:2:P,8:2:P|REJECT
+W0: cmp; tst(W0); bcs - TST leaves C (16-bit)|8842354200d200bf7047|0:2:W,2:2:W0,4:2:P,6:2:P,8:2:P|ACCEPT
+W0: cmp; tst(W0); bmi|8842354200d400bf7047|0:2:W,2:2:W0,4:2:P,6:2:P,8:2:P|REJECT
+Wc (declares N,Z): lsls writes C live|80186d0041eb03017047|0:2:W,2:2:Wc,4:4:P,8:2:P|REJECT
+Wc (declares N,Z): movs fine across carry|8018012541eb03017047|0:2:W,2:2:Wc,4:4:P,8:2:P|ACCEPT
+W: unknown inside a declared-NZCV op|884200b77047|0:4:W,4:2:P|REJECT
+W: bl; cmp in one Writes op, then beq|00f003f8884200d000bf7047|0:6:W,6:2:P,8:2:P,10:2:P|ACCEPT
+W: cmp; bl in one Writes op, then beq|884200f002f800d000bf7047|0:6:W,6:2:P,8:2:P,10:2:P|REJECT
+W: IT-conditional call inside a Writes op|884208bf00f002f800d000bf7047|0:2:W,2:6:W,8:2:P,10:2:P,12:2:P|REJECT
+W: svc inside Writes op|884203df00d000bf7047|0:4:W,4:2:P,6:2:P,8:2:P|REJECT
+W: blx r3 inside Writes op|8842984700d000bf7047|0:4:W,4:2:P,6:2:P,8:2:P|REJECT
+W0: two shifts in one op, flags dead|88426d006d007047|0:2:W,2:4:W0,6:2:P|ACCEPT
+W0: in-op flag use (lsls; adc inside op) but C from outside is live|8018c0466d00c04641eb03017047|0:2:W,2:2:P,4:4:W0,8:4:P,12:2:P|REJECT
+grp[mrc p1 -> APSR_nzcv (EE10 F110) writes flags] cmp; X(P); beq|884210ee10f100d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[mrc2 p1 -> APSR_nzcv] cmp; X(P); beq|884210fe10f100d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[mrc p1 -> r5 (no flags)] cmp; X(P); beq|884210ee105100d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[vmrs APSR_nzcv, fpscr (P seg => R2)] cmp; X(P); beq|8842f1ee10fa00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[clrm {apsr} (v8.1-M) clears flags] cmp; X(P); beq|88429fe8018000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[clrm {r0,r1} no flags] cmp; X(P); beq|88429fe8030000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[csinc (v8.1-M) reads flags] cmp; X(P); beq|884251ea029000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[cset] cmp; X(P); beq|88425fea1f9000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[ssat (Q only)] cmp; X(P); beq|884206f3070500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[qadd (Q only)] cmp; X(P); beq|884287fa86f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[smlabb (Q only; unknown => conservative)] cmp; X(P); beq|884216fb078500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[sadd8 (GE only)] cmp; X(P); beq|884286fa07f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[sel (reads GE only)] cmp; X(P); beq|8842a6fa87f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[umaal] cmp; X(P); beq|8842e7fb685600d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[pld] cmp; X(P); beq|884295f800f000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[ldrex] cmp; X(P); beq|884256e8005f00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[strex] cmp; X(P); beq|884247e8006500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[ldrd] cmp; X(P); beq|8842d7e9005600d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[strd wb] cmp; X(P); beq|8842e7e9025600d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[ldrsb.w] cmp; X(P); beq|884296f9045000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[adr.w] cmp; X(P); beq|88420ff2060500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[bfc] cmp; X(P); beq|88426ff3430500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[pkhbt] cmp; X(P); beq|8842c6ea070500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[nop.w] cmp; X(P); beq|8842aff3008000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[cpsid] cmp; X(P); beq|884272b600d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+grp[rev] cmp; X(P); beq|884235ba00d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+grp[revsh] cmp; X(P); beq|8842f5ba00d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+grp[sxtb] cmp; X(P); beq|884275b200d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+grp[mrs basepri] cmp; X(P); beq|8842eff3118500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[msr apsr_g (GE only)] cmp; X(P); beq|884285f3008400d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[msr apsr_nzcvq (P => R2)] cmp; X(P); beq|884285f3008800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[msr xpsr_nzcvq] cmp; X(P); beq|884285f3038800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[vmrs r5,fpscr] cmp; X(P); beq|8842f1ee105a00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[vmsr] cmp; X(P); beq|8842e1ee105a00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[vsqrt] cmp; X(P); beq|8842b1eee00a00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[vcvt] cmp; X(P); beq|8842bdeee00a00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[vpush] cmp; X(P); beq|88422ded028b00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[vselgt.f64 reads N,Z,V] cmp; X(P); beq|884231fe020b00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[vselvs.f32 reads V only (Z live)] cmp; X(P); beq|884210fe810a00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[vmaxnm (FE8x: not VSEL)] cmp; X(P); beq|884280fe810a00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[stm] cmp; X(P); beq|8842c0c500d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+grp[ldm.w] cmp; X(P); beq|884295e8c00000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[push.w] cmp; X(P); beq|88422de9f04f00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[adds pc-less wide add sp] cmp; X(P); beq|88420df5807d00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[sub sp] cmp; X(P); beq|884284b000d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+grp[cmp.w r8, r9, lsl #2 (P => R2)] cmp; X(P); beq|8842b8eb890f00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[teq.w imm (P => R2)] cmp; X(P); beq|884298f0010f00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[rsbs] cmp; X(P); beq|8842754200d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+grp[negs wide] cmp; X(P); beq|8842d9f1000800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[sdiv] cmp; X(P); beq|884296fbf7f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[smull] cmp; X(P); beq|884287fb085600d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[umlal] cmp; X(P); beq|8842e7fb085600d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[wls (v8.1 LOB)] cmp; X(P); beq|884245f003c000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[dls] cmp; X(P); beq|884245f001e000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[tt] cmp; X(P); beq|884246e800f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+grp[bkpt-mid] cmp; X(P); beq|884210bf00d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+grp[uxtab] cmp; X(P); beq|884256fa87f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[rbit] cmp; X(P); beq|884296faa6f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[lsl.w by reg] cmp; X(P); beq|884206fa07f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[ror #imm] cmp; X(P); beq|88424feaf60500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[rrx reads C (Z live only)] cmp; X(P); beq|88424fea360500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+grp[adc.w reads C (Z live only)] cmp; X(P); beq|884246eb070500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+nokill[mrc p1 -> APSR_nzcv (EE10 F110) writes flags] cmp; movs; X(W); beq|8842012510ee10f100d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[mrc2 p1 -> APSR_nzcv] cmp; movs; X(W); beq|8842012510fe10f100d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[mrc p1 -> r5 (no flags)] cmp; movs; X(W); beq|8842012510ee105100d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[vmrs APSR_nzcv, fpscr (P seg => R2)] cmp; movs; X(W); beq|88420125f1ee10fa00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|ACCEPT
+nokill[clrm {apsr} (v8.1-M) clears flags] cmp; movs; X(W); beq|884201259fe8018000d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[clrm {r0,r1} no flags] cmp; movs; X(W); beq|884201259fe8030000d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[csinc (v8.1-M) reads flags] cmp; movs; X(W); beq|8842012551ea029000d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[cset] cmp; movs; X(W); beq|884201255fea1f9000d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[ssat (Q only)] cmp; movs; X(W); beq|8842012506f3070500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[qadd (Q only)] cmp; movs; X(W); beq|8842012587fa86f500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[smlabb (Q only; unknown => conservative)] cmp; movs; X(W); beq|8842012516fb078500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[sadd8 (GE only)] cmp; movs; X(W); beq|8842012586fa07f500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[sel (reads GE only)] cmp; movs; X(W); beq|88420125a6fa87f500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[umaal] cmp; movs; X(W); beq|88420125e7fb685600d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[pld] cmp; movs; X(W); beq|8842012595f800f000d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[ldrex] cmp; movs; X(W); beq|8842012556e8005f00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[strex] cmp; movs; X(W); beq|8842012547e8006500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[ldrd] cmp; movs; X(W); beq|88420125d7e9005600d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[strd wb] cmp; movs; X(W); beq|88420125e7e9025600d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[ldrsb.w] cmp; movs; X(W); beq|8842012596f9045000d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[adr.w] cmp; movs; X(W); beq|884201250ff2040500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[bfc] cmp; movs; X(W); beq|884201256ff3430500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[pkhbt] cmp; movs; X(W); beq|88420125c6ea070500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[nop.w] cmp; movs; X(W); beq|88420125aff3008000d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[cpsid] cmp; movs; X(W); beq|8842012572b600d000bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+nokill[rev] cmp; movs; X(W); beq|8842012535ba00d000bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+nokill[revsh] cmp; movs; X(W); beq|88420125f5ba00d000bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+nokill[sxtb] cmp; movs; X(W); beq|8842012575b200d000bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+nokill[mrs basepri] cmp; movs; X(W); beq|88420125eff3118500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[msr apsr_g (GE only)] cmp; movs; X(W); beq|8842012585f3008400d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[msr apsr_nzcvq (P => R2)] cmp; movs; X(W); beq|8842012585f3008800d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|ACCEPT
+nokill[msr xpsr_nzcvq] cmp; movs; X(W); beq|8842012585f3038800d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|ACCEPT
+nokill[vmrs r5,fpscr] cmp; movs; X(W); beq|88420125f1ee105a00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[vmsr] cmp; movs; X(W); beq|88420125e1ee105a00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[vsqrt] cmp; movs; X(W); beq|88420125b1eee00a00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[vcvt] cmp; movs; X(W); beq|88420125bdeee00a00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[vpush] cmp; movs; X(W); beq|884201252ded028b00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[vselgt.f64 reads N,Z,V] cmp; movs; X(W); beq|8842012531fe020b00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[vselvs.f32 reads V only (Z live)] cmp; movs; X(W); beq|8842012510fe810a00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[vmaxnm (FE8x: not VSEL)] cmp; movs; X(W); beq|8842012580fe810a00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[stm] cmp; movs; X(W); beq|88420125c0c500d000bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+nokill[ldm.w] cmp; movs; X(W); beq|8842012595e8c00000d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[push.w] cmp; movs; X(W); beq|884201252de9f04f00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[adds pc-less wide add sp] cmp; movs; X(W); beq|884201250df5807d00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[sub sp] cmp; movs; X(W); beq|8842012584b000d000bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+nokill[cmp.w r8, r9, lsl #2 (P => R2)] cmp; movs; X(W); beq|88420125b8eb890f00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|ACCEPT
+nokill[teq.w imm (P => R2)] cmp; movs; X(W); beq|8842012598f0010f00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|ACCEPT
+nokill[rsbs] cmp; movs; X(W); beq|88420125754200d000bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|ACCEPT
+nokill[negs wide] cmp; movs; X(W); beq|88420125d9f1000800d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|ACCEPT
+nokill[sdiv] cmp; movs; X(W); beq|8842012596fbf7f500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[smull] cmp; movs; X(W); beq|8842012587fb085600d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[umlal] cmp; movs; X(W); beq|88420125e7fb085600d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[wls (v8.1 LOB)] cmp; movs; X(W); beq|8842012545f003c000d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[dls] cmp; movs; X(W); beq|8842012545f001e000d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[tt] cmp; movs; X(W); beq|8842012546e800f500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[bkpt-mid] cmp; movs; X(W); beq|8842012510bf00d000bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+nokill[uxtab] cmp; movs; X(W); beq|8842012556fa87f500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[rbit] cmp; movs; X(W); beq|8842012596faa6f500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[lsl.w by reg] cmp; movs; X(W); beq|8842012506fa07f500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[ror #imm] cmp; movs; X(W); beq|884201254feaf60500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[rrx reads C (Z live only)] cmp; movs; X(W); beq|884201254fea360500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+nokill[adc.w reads C (Z live only)] cmp; movs; X(W); beq|8842012546eb070500d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+must[lsls r5,r6 (shift by reg, amount may be 0: C unchanged)] C survives X: earlier clobber must be seen|8842ed19b54000d200bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+must[lsrs r5,r6] C survives X: earlier clobber must be seen|8842ed19f54000d200bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+must[rors r5,r6] C survives X: earlier clobber must be seen|8842ed19f54100d200bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+must[lsls.w r8,r9,r10] C survives X: earlier clobber must be seen|8842ed1919fa0af800d200bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+must[ands.w r8,r9,r10 (C unchanged)] C survives X: earlier clobber must be seen|8842ed1919ea0a0800d200bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+must[ands.w #0x55 (C unchanged)] C survives X: earlier clobber must be seen|8842ed1919f0550800d200bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+must[movs r5,#1 (C,V unchanged)] C survives X: earlier clobber must be seen|8842ed19012500d200bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+must[muls (C unchanged)] C survives X: earlier clobber must be seen|8842ed19754300d200bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+must[tst r5,r6 (C unchanged)] C survives X: earlier clobber must be seen|8842ed19354200d200bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+must[tst.w r8,#1 (C unchanged)] C survives X: earlier clobber must be seen|8842ed1918f0010f00d200bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+must[movs r5,r6 (C unchanged)] C survives X: earlier clobber must be seen|8842ed19350000d200bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+must[ands (V unchanged)] V survives X: earlier clobber must be seen|8842ed19354000d600bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+must[lsls #3 (V unchanged)] V survives X: earlier clobber must be seen|8842ed19f50000d600bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+must[tst (V unchanged)] V survives X: earlier clobber must be seen|8842ed19354200d600bf7047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|REJECT
+must[ands.w rot imm (V unchanged)] V survives X: earlier clobber must be seen|8842ed1919f47f4800d600bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+must[asrs.w (V unchanged)] V survives X: earlier clobber must be seen|8842ed195feae90800d600bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+it-cf[ite cs; bxcs lr / movcc] movs before, Z read after|8842012534bf0122704700d000bf7047|0:2:W,2:2:P,4:6:P,10:2:P,12:2:P,14:2:P|REJECT
+it-cf[itt eq; moveq; bxeq lr] movs before, Z read after|8842012504bf0122704700d000bf7047|0:2:W,2:2:P,4:6:P,10:2:P,12:2:P,14:2:P|REJECT
+it-cf[it ne; popne {r4,pc}] movs before, Z read after|8842012518bf10bd00d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-cf[it eq; ldmeq sp!,{r4-r9,pc}] movs before, Z read after|8842012508bfbde8f08300d000bf7047|0:2:W,2:2:P,4:6:P,10:2:P,12:2:P,14:2:P|REJECT
+it-cf[it eq; ldreq pc,[sp],#4] movs before, Z read after|8842012508bf5df804fb00d000bf7047|0:2:W,2:2:P,4:6:P,10:2:P,12:2:P,14:2:P|REJECT
+it-cf[it eq; moveq pc,lr] movs before, Z read after|8842012508bff74600d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-cf[it eq; bkpt (always executes)] movs before, Z read after|8842012508bf01be00d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-cf[it eq; udfeq] movs before, Z read after|8842012508bf00de00d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-cf[it eq; beq.n in IT] movs before, Z read after|8842012508bf01e000d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-cf[it eq; beq.w in IT] movs before, Z read after|8842012508bf00f002b800d000bf7047|0:2:W,2:2:P,4:6:P,10:2:P,12:2:P,14:2:P|REJECT
+it-cf[it eq; bxeq r3] movs before, Z read after|8842012508bf184700d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-cf[it eq; tbbeq] movs before, Z read after|8842012508bfdfe800f000d000bf7047|0:2:W,2:2:P,4:6:P,10:2:P,12:2:P,14:2:P|REJECT
+it-cf[it al; bx lr (AL member: conservative)] movs before, Z read after|88420125e8bf704700d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-cf ok: cmp; it eq; bxeq lr; beq (no clobber)|884208bf704700d100bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+it-cf: clobber AFTER a conditional return, read later|884228bf7047012500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P,12:2:P|REJECT
+it-cf: conditional return then dead clobber|884228bf704701257047|0:2:W,2:4:P,6:2:P,8:2:P|ACCEPT
+it: chained compare cmp; it eq; cmpeq; bne (W op)|884208bf9a4200d100bf7047|0:2:W,2:4:W,6:2:P,8:2:P,10:2:P|ACCEPT
+it: movs between cmp and it eq; cmpeq|8842012508bf9a4200d100bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+it: adcs member reads C as well as the condition|88426d0068bf59417047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+into-IT: wide beq.w lands on member|884200f0028024bf012201237047|0:2:W,2:4:P,6:6:P,12:2:P|REJECT
+into-IT: back edge lands on member|884224bf0122012304b1fce77047|0:2:W,2:6:P,8:2:P,10:2:P,12:2:P|REJECT
+onto-IT: branch to the IT instruction itself is fine|884200e000bf24bf012201237047|0:2:W,2:2:P,4:2:P,6:6:P,12:2:P|ACCEPT
+after-IT: branch to first instruction after the block; it sets flags|884201e028bf0122012300d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P,14:2:P|REJECT
+call[bl 9f] kills: movs; call; cmp; beq ok|012500f003f8884200d000bf7047|0:2:P,2:4:P,6:2:W,8:2:P,10:2:P,12:2:P|ACCEPT
+call[bl 9f] in loop, reader at head via back edge|884202d000f001f8fbe77047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P|REJECT
+call[bl 9f] IT-conditional, flags read after|884208bf00f002f800d100bf7047|0:2:W,2:6:P,8:2:P,10:2:P,12:2:P|REJECT
+call[bl 9f] in Scratch op with flags from before read after|8842c04600f003f8c04600d000bf7047|0:2:W,2:8:S,10:2:P,12:2:P,14:2:P|REJECT
+call[blx r3] kills: movs; call; cmp; beq ok|01259847884200d000bf7047|0:2:P,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|ACCEPT
+call[blx r3] C live across (adds; call; adc)|8018984741eb03017047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+call[blx r3] in loop, reader at head via back edge|884201d09847fce77047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+call[blx r3] IT-conditional, flags read after|884208bf984700d100bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+call[blx r3] IT-conditional, flags dead after|884208bf98477047|0:2:W,2:4:P,6:2:P|ACCEPT
+call[blx r3] in Scratch op with flags from before read after|8842c0469847c04600d000bf7047|0:2:W,2:6:S,8:2:P,10:2:P,12:2:P|REJECT
+call[svc #1] kills: movs; call; cmp; beq ok|012501df884200d000bf7047|0:2:P,2:2:P,4:2:W,6:2:P,8:2:P,10:2:P|ACCEPT
+call[svc #1] C live across (adds; call; adc)|801801df41eb03017047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+call[svc #1] in loop, reader at head via back edge|884201d001dffce77047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+call[svc #1] IT-conditional, flags read after|884208bf01df00d100bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+call[svc #1] IT-conditional, flags dead after|884208bf01df7047|0:2:W,2:4:P,6:2:P|ACCEPT
+call[svc #1] in Scratch op with flags from before read after|8842c04601dfc04600d000bf7047|0:2:W,2:6:S,8:2:P,10:2:P,12:2:P|REJECT
+call: cmp; bl inside a Preserves op that re-compares before exit|884204d000f003f89a4200d100bf7047|0:2:W,2:2:P,4:4:P,8:2:W,10:2:P,12:2:P,14:2:P|ACCEPT
+tail jump out of the function after a clobber|8842012501f0febf|0:2:W,2:2:P,4:4:P|REJECT
+ldr pc is an indirect jump, not a fall-through|0125d0f800f07047|0:2:P,2:4:P,6:2:P|REJECT
+ldm r0,{..pc} is an indirect jump, not a return|012590e81080|0:2:P,2:4:P|REJECT
+pop.w {..pc} is a return|0125bde8f083|0:2:P,2:4:P|ACCEPT
+truncated instruction then more code|012500f07047|0:2:P,2:2:P,4:2:P|REJECT
+bfc-like undefined plain-binary op (f2f0 0000?)|012510f200007047|0:2:P,2:4:P,6:2:P|REJECT
+island between vmrs(W) and its IT|00bff1ee10fa02e00000efbeadde48bf01207047|0:2:P,2:4:W,6:2:P,14:4:P,18:2:P|ACCEPT
+island between cmp(W) and ite/SetCond|00bf884202e00000efbeadde0cbf012000207047|0:2:P,2:2:W,4:2:P,12:6:P,18:2:P|ACCEPT
+island between adds(W) and sbc|00bf801a02e00000efbeadde61eb03017047|0:2:P,2:2:W,4:2:P,12:4:P,16:2:P|ACCEPT
+island after cmp inside one Preserves op (cmp; island; beq all one op is impossible) - cmp P seg, island, beq|00bf884202e00000efbeadde00d000bf7047|0:2:P,2:2:P,4:2:P,12:2:P,14:2:P,16:2:P|REJECT
+vselgt after movs clobber (N,Z,V read)|8842012531fe020b7047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+vselvs after movs clobber (V only: movs leaves V)|8842012510fe810a7047|0:2:W,2:2:P,4:4:P,8:2:P|ACCEPT
+mrc APSR_nzcv between cmp and beq|884210ee10f100d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+clrm {apsr} between cmp and beq|88429fe8018000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+asrl (MVE long shift, no flags) must not kill: cmp; movs; asrl; beq|8842012550eaef0100d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT

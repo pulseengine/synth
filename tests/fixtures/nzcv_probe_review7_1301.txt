@@ -1,0 +1,447 @@
+# RQ-91-M0FLAGS (#1301) NZCV verifier probe set: 443 Thumb streams assembled by llvm-mc
+# (thumbv7em-none-eabi, +vfp4,+fp-armv8d16) for cold review 7, with the expected verdict.
+# Format: name|code hex|start:len:C segments (P=Preserves S=Scratch W=Writes(NZCV))|EXPECTED
+# Expectation change vs the review's draft: wfi (bf30) is a recognised hint -> ACCEPT.
+tbl[movs r5,#1]->Z|8842012500d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[movs r5,#1]->C|8842012500d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[movs r5,#1]->N|8842012500d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[movs r5,#1]->V|8842012500d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[movs r5,r6]->Z|8842350000d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[movs r5,r6]->C|8842350000d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[movs r5,r6]->N|8842350000d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[movs r5,r6]->V|8842350000d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[mvns r5,r6]->Z|8842f54300d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[mvns r5,r6]->C|8842f54300d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[mvns r5,r6]->N|8842f54300d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[mvns r5,r6]->V|8842f54300d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[ands r5,r6]->Z|8842354000d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[ands r5,r6]->C|8842354000d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[ands r5,r6]->N|8842354000d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[ands r5,r6]->V|8842354000d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[eors r5,r6]->Z|8842754000d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[eors r5,r6]->C|8842754000d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[eors r5,r6]->N|8842754000d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[eors r5,r6]->V|8842754000d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[orrs r5,r6]->Z|8842354300d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[orrs r5,r6]->C|8842354300d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[orrs r5,r6]->N|8842354300d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[orrs r5,r6]->V|8842354300d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[bics r5,r6]->Z|8842b54300d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[bics r5,r6]->C|8842b54300d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[bics r5,r6]->N|8842b54300d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[bics r5,r6]->V|8842b54300d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[muls r5,r6,r5]->Z|8842754300d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[muls r5,r6,r5]->C|8842754300d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[muls r5,r6,r5]->N|8842754300d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[muls r5,r6,r5]->V|8842754300d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[lsls r5,r6,#3]->Z|8842f50000d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsls r5,r6,#3]->C|8842f50000d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsls r5,r6,#3]->N|8842f50000d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsls r5,r6,#3]->V|8842f50000d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[lsrs r5,r6,#3]->Z|8842f50800d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsrs r5,r6,#3]->C|8842f50800d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsrs r5,r6,#3]->N|8842f50800d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsrs r5,r6,#3]->V|8842f50800d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[asrs r5,r6,#3]->Z|8842f51000d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[asrs r5,r6,#3]->C|8842f51000d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[asrs r5,r6,#3]->N|8842f51000d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[asrs r5,r6,#3]->V|8842f51000d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[lsls r5,r6]->Z|8842b54000d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsls r5,r6]->C|8842b54000d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsls r5,r6]->N|8842b54000d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsls r5,r6]->V|8842b54000d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[lsrs r5,r6]->Z|8842f54000d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsrs r5,r6]->C|8842f54000d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsrs r5,r6]->N|8842f54000d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[lsrs r5,r6]->V|8842f54000d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[asrs r5,r6]->Z|8842354100d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[asrs r5,r6]->C|8842354100d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[asrs r5,r6]->N|8842354100d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[asrs r5,r6]->V|8842354100d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[rors r5,r6]->Z|8842f54100d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[rors r5,r6]->C|8842f54100d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[rors r5,r6]->N|8842f54100d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[rors r5,r6]->V|8842f54100d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[adds r5,r6,r7]->Z|8842f51900d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds r5,r6,r7]->C|8842f51900d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds r5,r6,r7]->N|8842f51900d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds r5,r6,r7]->V|8842f51900d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[subs r5,r6,r7]->Z|8842f51b00d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[subs r5,r6,r7]->C|8842f51b00d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[subs r5,r6,r7]->N|8842f51b00d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[subs r5,r6,r7]->V|8842f51b00d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds r5,r6,#1]->Z|8842751c00d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds r5,r6,#1]->C|8842751c00d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds r5,r6,#1]->N|8842751c00d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds r5,r6,#1]->V|8842751c00d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[subs r5,#200]->Z|8842c83d00d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[subs r5,#200]->C|8842c83d00d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[subs r5,#200]->N|8842c83d00d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[subs r5,#200]->V|8842c83d00d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds r5,#200]->Z|8842c83500d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds r5,#200]->C|8842c83500d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds r5,#200]->N|8842c83500d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds r5,#200]->V|8842c83500d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adcs r5,r6]->Z|8842754100d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adcs r5,r6]->C|8842754100d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adcs r5,r6]->N|8842754100d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adcs r5,r6]->V|8842754100d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[sbcs r5,r6]->Z|8842b54100d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[sbcs r5,r6]->C|8842b54100d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[sbcs r5,r6]->N|8842b54100d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[sbcs r5,r6]->V|8842b54100d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[rsbs r5,r6,#0]->Z|8842754200d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[rsbs r5,r6,#0]->C|8842754200d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[rsbs r5,r6,#0]->N|8842754200d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[rsbs r5,r6,#0]->V|8842754200d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+tbl[adds.w r8,r9,#256]->Z|884219f5807800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[adds.w r8,r9,#256]->C|884219f5807800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[adds.w r8,r9,#256]->N|884219f5807800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[adds.w r8,r9,#256]->V|884219f5807800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[subs.w r8,r9,r10]->Z|8842b9eb0a0800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[subs.w r8,r9,r10]->C|8842b9eb0a0800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[subs.w r8,r9,r10]->N|8842b9eb0a0800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[subs.w r8,r9,r10]->V|8842b9eb0a0800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rsbs.w r8,r9,#4]->Z|8842d9f1040800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rsbs.w r8,r9,#4]->C|8842d9f1040800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rsbs.w r8,r9,#4]->N|8842d9f1040800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rsbs.w r8,r9,#4]->V|8842d9f1040800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[adcs.w r8,r9,r10]->Z|884259eb0a0800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[adcs.w r8,r9,r10]->C|884259eb0a0800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[adcs.w r8,r9,r10]->N|884259eb0a0800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[adcs.w r8,r9,r10]->V|884259eb0a0800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[ands.w r8,r9,r10]->Z|884219ea0a0800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[ands.w r8,r9,r10]->C|884219ea0a0800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[ands.w r8,r9,r10]->N|884219ea0a0800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[ands.w r8,r9,r10]->V|884219ea0a0800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[ands.w r8,r9,#0xff00]->Z|884219f47f4800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[ands.w r8,r9,#0xff00]->C|884219f47f4800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[ands.w r8,r9,#0xff00]->N|884219f47f4800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[ands.w r8,r9,#0xff00]->V|884219f47f4800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[ands.w r8,r9,#0x55]->Z|884219f0550800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[ands.w r8,r9,#0x55]->C|884219f0550800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[ands.w r8,r9,#0x55]->N|884219f0550800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[ands.w r8,r9,#0x55]->V|884219f0550800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[orrs.w r8,r9,r10, lsl #3]->Z|884259eaca0800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[orrs.w r8,r9,r10, lsl #3]->C|884259eaca0800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[orrs.w r8,r9,r10, lsl #3]->N|884259eaca0800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[orrs.w r8,r9,r10, lsl #3]->V|884259eaca0800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[eors.w r8,r9,#0x80000000]->Z|884299f0004800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[eors.w r8,r9,#0x80000000]->C|884299f0004800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[eors.w r8,r9,#0x80000000]->N|884299f0004800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[eors.w r8,r9,#0x80000000]->V|884299f0004800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[bics.w r8,r9,r10]->Z|884239ea0a0800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[bics.w r8,r9,r10]->C|884239ea0a0800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[bics.w r8,r9,r10]->N|884239ea0a0800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[bics.w r8,r9,r10]->V|884239ea0a0800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[orns r8,r9,r10]->Z|884279ea0a0800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[orns r8,r9,r10]->C|884279ea0a0800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[orns r8,r9,r10]->N|884279ea0a0800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[orns r8,r9,r10]->V|884279ea0a0800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mvns.w r8,r9]->Z|88427fea090800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[mvns.w r8,r9]->C|88427fea090800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mvns.w r8,r9]->N|88427fea090800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[mvns.w r8,r9]->V|88427fea090800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movs.w r8,#1]->Z|88425ff0010800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[movs.w r8,#1]->C|88425ff0010800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movs.w r8,#1]->N|88425ff0010800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[movs.w r8,#1]->V|88425ff0010800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movs.w r8,#0x1000]->Z|88425ff4805800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[movs.w r8,#0x1000]->C|88425ff4805800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[movs.w r8,#0x1000]->N|88425ff4805800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[movs.w r8,#0x1000]->V|88425ff4805800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movs.w r8,r9]->Z|88425fea090800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[movs.w r8,r9]->C|88425fea090800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movs.w r8,r9]->N|88425fea090800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[movs.w r8,r9]->V|88425fea090800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[lsls.w r8,r9,#3]->Z|88425feac90800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[lsls.w r8,r9,#3]->C|88425feac90800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[lsls.w r8,r9,#3]->N|88425feac90800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[lsls.w r8,r9,#3]->V|88425feac90800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[lsrs.w r8,r9,r10]->Z|884239fa0af800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[lsrs.w r8,r9,r10]->C|884239fa0af800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[lsrs.w r8,r9,r10]->N|884239fa0af800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[lsrs.w r8,r9,r10]->V|884239fa0af800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[asrs.w r8,r9,#31]->Z|88425feae97800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[asrs.w r8,r9,#31]->C|88425feae97800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[asrs.w r8,r9,#31]->N|88425feae97800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[asrs.w r8,r9,#31]->V|88425feae97800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[rors.w r8,r9,#3]->Z|88425feaf90800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rors.w r8,r9,#3]->C|88425feaf90800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rors.w r8,r9,#3]->N|88425feaf90800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rors.w r8,r9,#3]->V|88425feaf90800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[rrxs r8,r9]->Z|88425fea390800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rrxs r8,r9]->C|88425fea390800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rrxs r8,r9]->N|88425fea390800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rrxs r8,r9]->V|88425fea390800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[rors.w r8,r9,r10]->Z|884279fa0af800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rors.w r8,r9,r10]->C|884279fa0af800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rors.w r8,r9,r10]->N|884279fa0af800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+tbl[rors.w r8,r9,r10]->V|884279fa0af800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mov r8,r9]->Z|8842c84600d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[mov r8,r9]->C|8842c84600d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[mov r8,r9]->N|8842c84600d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[mov r8,r9]->V|8842c84600d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[add r8,r9]->Z|8842c84400d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[add r8,r9]->C|8842c84400d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[add r8,r9]->N|8842c84400d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[add r8,r9]->V|8842c84400d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[mov.w r8,#1]->Z|88424ff0010800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mov.w r8,#1]->C|88424ff0010800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mov.w r8,#1]->N|88424ff0010800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mov.w r8,#1]->V|88424ff0010800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[add.w r8,r9,r10]->Z|884209eb0a0800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[add.w r8,r9,r10]->C|884209eb0a0800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[add.w r8,r9,r10]->N|884209eb0a0800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[add.w r8,r9,r10]->V|884209eb0a0800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[and.w r5,r6,r7]->Z|884206ea070500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[and.w r5,r6,r7]->C|884206ea070500d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[and.w r5,r6,r7]->N|884206ea070500d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[and.w r5,r6,r7]->V|884206ea070500d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mul r5,r6,r7]->Z|884206fb07f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mul r5,r6,r7]->C|884206fb07f500d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mul r5,r6,r7]->N|884206fb07f500d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mul r5,r6,r7]->V|884206fb07f500d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movw r5,#1234]->Z|884240f2d24500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movw r5,#1234]->C|884240f2d24500d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movw r5,#1234]->N|884240f2d24500d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movw r5,#1234]->V|884240f2d24500d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movt r5,#1]->Z|8842c0f2010500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movt r5,#1]->C|8842c0f2010500d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movt r5,#1]->N|8842c0f2010500d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[movt r5,#1]->V|8842c0f2010500d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[lsl.w r5,r6,#3]->Z|88424feac60500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[lsl.w r5,r6,#3]->C|88424feac60500d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[lsl.w r5,r6,#3]->N|88424feac60500d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[lsl.w r5,r6,#3]->V|88424feac60500d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[ldr r5,[r6,#4]]->Z|8842756800d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[ldr r5,[r6,#4]]->C|8842756800d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[ldr r5,[r6,#4]]->N|8842756800d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[ldr r5,[r6,#4]]->V|8842756800d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[str.w r5,[r11,r6]]->Z|88424bf8065000d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[str.w r5,[r11,r6]]->C|88424bf8065000d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[str.w r5,[r11,r6]]->N|88424bf8065000d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[str.w r5,[r11,r6]]->V|88424bf8065000d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[udiv r5,r6,r7]->Z|8842b6fbf7f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[udiv r5,r6,r7]->C|8842b6fbf7f500d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[udiv r5,r6,r7]->N|8842b6fbf7f500d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[udiv r5,r6,r7]->V|8842b6fbf7f500d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[umull r5,r6,r7,r8]->Z|8842a7fb085600d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[umull r5,r6,r7,r8]->C|8842a7fb085600d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[umull r5,r6,r7,r8]->N|8842a7fb085600d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[umull r5,r6,r7,r8]->V|8842a7fb085600d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[clz r5,r6]->Z|8842b6fa86f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[clz r5,r6]->C|8842b6fa86f500d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[clz r5,r6]->N|8842b6fa86f500d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[clz r5,r6]->V|8842b6fa86f500d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[rbit r5,r6]->Z|884296faa6f500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[rbit r5,r6]->C|884296faa6f500d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[rbit r5,r6]->N|884296faa6f500d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[rbit r5,r6]->V|884296faa6f500d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[uxtb r5,r6]->Z|8842f5b200d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[uxtb r5,r6]->C|8842f5b200d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[uxtb r5,r6]->N|8842f5b200d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[uxtb r5,r6]->V|8842f5b200d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[sxth.w r8,r9]->Z|88420ffa89f800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[sxth.w r8,r9]->C|88420ffa89f800d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[sxth.w r8,r9]->N|88420ffa89f800d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[sxth.w r8,r9]->V|88420ffa89f800d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[push {r4,r5}]->Z|884230b400d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[push {r4,r5}]->C|884230b400d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[push {r4,r5}]->N|884230b400d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[push {r4,r5}]->V|884230b400d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[addw r5,r6,#4000]->Z|884206f6a07500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[addw r5,r6,#4000]->C|884206f6a07500d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[addw r5,r6,#4000]->N|884206f6a07500d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[addw r5,r6,#4000]->V|884206f6a07500d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[sub sp,#8]->Z|884282b000d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[sub sp,#8]->C|884282b000d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[sub sp,#8]->N|884282b000d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[sub sp,#8]->V|884282b000d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[mls r5,r6,r7,r8]->Z|884206fb178500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mls r5,r6,r7,r8]->C|884206fb178500d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mls r5,r6,r7,r8]->N|884206fb178500d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[mls r5,r6,r7,r8]->V|884206fb178500d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[ubfx r5,r6,#1,#3]->Z|8842c6f3420500d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[ubfx r5,r6,#1,#3]->C|8842c6f3420500d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[ubfx r5,r6,#1,#3]->N|8842c6f3420500d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[ubfx r5,r6,#1,#3]->V|8842c6f3420500d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vadd.f32 s0,s1,s2]->Z|884230ee810a00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vadd.f32 s0,s1,s2]->C|884230ee810a00d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vadd.f32 s0,s1,s2]->N|884230ee810a00d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vadd.f32 s0,s1,s2]->V|884230ee810a00d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vmov r5,s0]->Z|884210ee105a00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vmov r5,s0]->C|884210ee105a00d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vmov r5,s0]->N|884210ee105a00d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vmov r5,s0]->V|884210ee105a00d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vcmp.f32 s0,s1]->Z|8842b4ee600a00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vcmp.f32 s0,s1]->C|8842b4ee600a00d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vcmp.f32 s0,s1]->N|8842b4ee600a00d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vcmp.f32 s0,s1]->V|8842b4ee600a00d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[nop]->Z|884200bf00d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[nop]->C|884200bf00d200bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[nop]->N|884200bf00d400bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[nop]->V|884200bf00d600bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+tbl[vldr s0,[r5]]->Z|884295ed000a00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vldr s0,[r5]]->C|884295ed000a00d200bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vldr s0,[r5]]->N|884295ed000a00d400bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+tbl[vldr s0,[r5]]->V|884295ed000a00d600bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+producer-in-P[cmp r5,r6]->Z|8842b54200d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+producer-in-P[cmp r5,#3]->Z|8842032d00d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+producer-in-P[cmp r8,r9]->Z|8842c84500d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+producer-in-P[cmp.w r8,#256]->Z|8842b8f5807f00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+producer-in-P[cmn r5,r6]->Z|8842f54200d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+producer-in-P[cmn.w r8,r9]->Z|884218eb090f00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+producer-in-P[tst r5,r6]->Z|8842354200d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+producer-in-P[tst.w r8,#1]->Z|884218f0010f00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+producer-in-P[teq r8,r9]->Z|884298ea090f00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+producer-in-P[vmrs APSR_nzcv, fpscr]->Z|8842f1ee10fa00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+producer-in-P[msr apsr_nzcvq, r5]->Z|884285f3008800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+carry[lsls;adcs r1,r3]|80186d0059417047|0:2:W,2:2:P,4:2:P,6:2:P|REJECT
+carry[adds;adcs r1,r3]|8018ad1959417047|0:2:W,2:2:P,4:2:P,6:2:P|REJECT
+carry-ok[movs;adcs r1,r3]|8018002559417047|0:2:W,2:2:P,4:2:W,6:2:P|ACCEPT
+carry-ok[mov.w;adcs r1,r3]|80184ff0000559417047|0:2:W,2:4:P,6:2:W,8:2:P|ACCEPT
+carry[lsls;adc.w r1,r1,r3]|80186d0041eb03017047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry[adds;adc.w r1,r1,r3]|8018ad1941eb03017047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry-ok[movs;adc.w r1,r1,r3]|8018002541eb03017047|0:2:W,2:2:P,4:4:W,8:2:P|ACCEPT
+carry-ok[mov.w;adc.w r1,r1,r3]|80184ff0000541eb03017047|0:2:W,2:4:P,6:4:W,10:2:P|ACCEPT
+carry[lsls;sbcs r1,r3]|80186d0099417047|0:2:W,2:2:P,4:2:P,6:2:P|REJECT
+carry[adds;sbcs r1,r3]|8018ad1999417047|0:2:W,2:2:P,4:2:P,6:2:P|REJECT
+carry-ok[movs;sbcs r1,r3]|8018002599417047|0:2:W,2:2:P,4:2:W,6:2:P|ACCEPT
+carry-ok[mov.w;sbcs r1,r3]|80184ff0000599417047|0:2:W,2:4:P,6:2:W,8:2:P|ACCEPT
+carry[lsls;sbc.w r1,r1,r3]|80186d0061eb03017047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry[adds;sbc.w r1,r1,r3]|8018ad1961eb03017047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry-ok[movs;sbc.w r1,r1,r3]|8018002561eb03017047|0:2:W,2:2:P,4:4:W,8:2:P|ACCEPT
+carry-ok[mov.w;sbc.w r1,r1,r3]|80184ff0000561eb03017047|0:2:W,2:4:P,6:4:W,10:2:P|ACCEPT
+carry[lsls;rrx r1,r3]|80186d004fea33017047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry[adds;rrx r1,r3]|8018ad194fea33017047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry-ok[movs;rrx r1,r3]|801800254fea33017047|0:2:W,2:2:P,4:4:W,8:2:P|ACCEPT
+carry-ok[mov.w;rrx r1,r3]|80184ff000054fea33017047|0:2:W,2:4:P,6:4:W,10:2:P|ACCEPT
+carry[lsls;adc r8,r9,#1]|80186d0049f101087047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry[adds;adc r8,r9,#1]|8018ad1949f101087047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry-ok[movs;adc r8,r9,#1]|8018002549f101087047|0:2:W,2:2:P,4:4:W,8:2:P|ACCEPT
+carry-ok[mov.w;adc r8,r9,#1]|80184ff0000549f101087047|0:2:W,2:4:P,6:4:W,10:2:P|ACCEPT
+carry[lsls;sbcs.w r8,r9,r10]|80186d0079eb0a087047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry[adds;sbcs.w r8,r9,r10]|8018ad1979eb0a087047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry-ok[movs;sbcs.w r8,r9,r10]|8018002579eb0a087047|0:2:W,2:2:P,4:4:W,8:2:P|ACCEPT
+carry-ok[mov.w;sbcs.w r8,r9,r10]|80184ff0000579eb0a087047|0:2:W,2:4:P,6:4:W,10:2:P|ACCEPT
+carry[lsls;rrxs r1,r3]|80186d005fea33017047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry[adds;rrxs r1,r3]|8018ad195fea33017047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+carry-ok[movs;rrxs r1,r3]|801800255fea33017047|0:2:W,2:2:P,4:4:W,8:2:P|ACCEPT
+carry-ok[mov.w;rrxs r1,r3]|80184ff000055fea33017047|0:2:W,2:4:P,6:4:W,10:2:P|ACCEPT
+it-through[it cs] Z live across block|8842012528bf012200d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-cond-read[it cs]|88426d0028bf01227047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+it-ok[it cs] members do not set flags|884228bf012200d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+it-ok2[it cs] clobber after block dead|884228bf012201257047|0:2:W,2:4:P,6:2:P,8:2:P|ACCEPT
+it-member-reads[it cs] N,Z clobber then block on C only|8842012528bf01227047|0:2:W,2:2:P,4:4:P,8:2:P|ACCEPT
+it-through[itt cs] Z live across block|8842012524bf0122012300d000bf7047|0:2:W,2:2:P,4:6:P,10:2:P,12:2:P,14:2:P|REJECT
+it-cond-read[itt cs]|88426d0024bf012201237047|0:2:W,2:2:P,4:6:P,10:2:P|REJECT
+it-ok[itt cs] members do not set flags|884224bf0122012300d000bf7047|0:2:W,2:6:P,8:2:P,10:2:P,12:2:P|ACCEPT
+it-ok2[itt cs] clobber after block dead|884224bf0122012301257047|0:2:W,2:6:P,8:2:P,10:2:P|ACCEPT
+it-member-reads[itt cs] N,Z clobber then block on C only|8842012524bf012201237047|0:2:W,2:2:P,4:6:P,10:2:P|ACCEPT
+it-through[ite cs] Z live across block|884201252cbf0122002200d000bf7047|0:2:W,2:2:P,4:6:P,10:2:P,12:2:P,14:2:P|REJECT
+it-cond-read[ite cs]|88426d002cbf012200227047|0:2:W,2:2:P,4:6:P,10:2:P|REJECT
+it-ok[ite cs] members do not set flags|88422cbf0122002200d000bf7047|0:2:W,2:6:P,8:2:P,10:2:P,12:2:P|ACCEPT
+it-ok2[ite cs] clobber after block dead|88422cbf0122002201257047|0:2:W,2:6:P,8:2:P,10:2:P|ACCEPT
+it-member-reads[ite cs] N,Z clobber then block on C only|884201252cbf012200227047|0:2:W,2:2:P,4:6:P,10:2:P|ACCEPT
+it-through[ittt cs] Z live across block|8842012522bf01220122012200d000bf7047|0:2:W,2:2:P,4:8:P,12:2:P,14:2:P,16:2:P|REJECT
+it-cond-read[ittt cs]|88426d0022bf0122012201227047|0:2:W,2:2:P,4:8:P,12:2:P|REJECT
+it-ok[ittt cs] members do not set flags|884222bf01220122012200d000bf7047|0:2:W,2:8:P,10:2:P,12:2:P,14:2:P|ACCEPT
+it-ok2[ittt cs] clobber after block dead|884222bf01220122012201257047|0:2:W,2:8:P,10:2:P,12:2:P|ACCEPT
+it-member-reads[ittt cs] N,Z clobber then block on C only|8842012522bf0122012201227047|0:2:W,2:2:P,4:8:P,12:2:P|ACCEPT
+it-through[itete cs] Z live across block|884201252bbf012200220123002300d000bf7047|0:2:W,2:2:P,4:10:P,14:2:P,16:2:P,18:2:P|REJECT
+it-cond-read[itete cs]|88426d002bbf01220022012300237047|0:2:W,2:2:P,4:10:P,14:2:P|REJECT
+it-ok[itete cs] members do not set flags|88422bbf012200220123002300d000bf7047|0:2:W,2:10:P,12:2:P,14:2:P,16:2:P|ACCEPT
+it-ok2[itete cs] clobber after block dead|88422bbf012200220123002301257047|0:2:W,2:10:P,12:2:P,14:2:P|ACCEPT
+it-member-reads[itete cs] N,Z clobber then block on C only|884201252bbf01220022012300237047|0:2:W,2:2:P,4:10:P,14:2:P|ACCEPT
+it-through[itttt cs] Z live across block|8842012521bf1a441a441a441a4400d000bf7047|0:2:W,2:2:P,4:10:P,14:2:P,16:2:P,18:2:P|REJECT
+it-cond-read[itttt cs]|88426d0021bf1a441a441a441a447047|0:2:W,2:2:P,4:10:P,14:2:P|REJECT
+it-ok[itttt cs] members do not set flags|884221bf1a441a441a441a4400d000bf7047|0:2:W,2:10:P,12:2:P,14:2:P,16:2:P|ACCEPT
+it-ok2[itttt cs] clobber after block dead|884221bf1a441a441a441a4401257047|0:2:W,2:10:P,12:2:P,14:2:P|ACCEPT
+it-member-reads[itttt cs] N,Z clobber then block on C only|8842012521bf1a441a441a441a447047|0:2:W,2:2:P,4:10:P,14:2:P|ACCEPT
+it-write: wide S member clobbers Z read after|884228bf15f5807500d000bf7047|0:2:W,2:6:P,8:2:P,10:2:P,12:2:P|REJECT
+it-write: cmp member (cond) is not a kill|8842012528bf9a4200d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+it-write: ite; cmpeq; movne - 2nd member reads flags written by 1st|88420cbf9a42002400d000bf7047|0:2:W,2:6:W,8:2:P,10:2:P,12:2:P|ACCEPT
+it-write: P-op cmp member, flags live after|884228bf9a4200d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+it-write: tst member in P op|884228bf1a4200d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+it-write: itt; lslscs.w ; movcs  then bmi|884224bf5fea4908012100d400bf7047|0:2:W,2:8:P,10:2:P,12:2:P,14:2:P|REJECT
+it-condret: bxcs lr then Z read|8842012528bf704700d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-condret: popcs {r4,pc} then Z read|8842012528bf10bd00d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-condret: pop.w cs {r4-r9,pc} then Z read|8842012528bfbde8f08300d000bf7047|0:2:W,2:2:P,4:6:P,10:2:P,12:2:P,14:2:P|REJECT
+it-condret: movcs pc, lr then Z read|8842012528bff74600d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-condjump: bcs-in-IT then Z read|8842012528bf01e000d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+it-condjump: b.w in IT then Z read|8842012528bf00f002b800d000bf7047|0:2:W,2:2:P,4:6:P,10:2:P,12:2:P,14:2:P|REJECT
+it-condcall: blcs then Z read|884228bf00f002f800d000bf7047|0:2:W,2:6:P,8:2:P,10:2:P,12:2:P|REJECT
+cbz: no read, no write; flags flow to target|8842012500b1704700d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P,10:2:P,12:2:P|REJECT
+cbnz: flags flow to fallthrough|8842012508b900d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P,10:2:P|REJECT
+cbz-ok: cmp; cbz; beq|88420ab100d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+cbz-ok: movs; cbz (cbz reads no flag)|8842012505b100bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|ACCEPT
+into-IT: b lands on 2nd member (executes as MOVS)|884201e024bf0122012300d000bf7047|0:2:W,2:2:P,4:6:P,10:2:P,12:2:P,14:2:P|REJECT
+into-IT: beq lands on sole member (ADDS)|884200d028bfd21800d400bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+into-IT: cbz lands on member|884204b128bf520000d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+loop: clobber at bottom, reader at top via back edge|8842c84401d00122fbe77047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P,10:2:P|REJECT
+loop: 2-level, reader in outer header|884204d2c84404b1fce75200f9e77047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P,10:2:P,12:2:P,14:2:P|REJECT
+loop: back edge via b.w|8842c84602d40122fff7fbbf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:4:P,12:2:P|REJECT
+loop-ok: producer re-established each iter|401e01220028fbd17047|0:2:W,2:2:P,4:2:W,6:2:P,8:2:P|ACCEPT
+loop: subs; movs; bne (clobber between producer and back-branch)|401e0122fcd17047|0:2:W,2:2:P,4:2:P,6:2:P|REJECT
+loop-ok: subs; mov.w; bne|401e4ff00102fbd17047|0:2:W,2:4:P,6:2:P,8:2:P|ACCEPT
+call[bl 9f] live across|884200f002f800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|REJECT
+call[bl 9f] live across, in Scratch seg|884200f002f800d000bf7047|0:2:W,2:4:S,6:2:P,8:2:P,10:2:P|REJECT
+call[bl 9f] live across, in Writes seg|884200f002f800d000bf7047|0:2:W,2:4:W,6:2:P,8:2:P,10:2:P|REJECT
+call-ok[bl 9f] then fresh cmp|00f003f8884200d000bf7047|0:4:P,4:2:W,6:2:P,8:2:P,10:2:P|ACCEPT
+call[blx r3] live across|8842984700d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+call[blx r3] live across, in Scratch seg|8842984700d000bf7047|0:2:W,2:2:S,4:2:P,6:2:P,8:2:P|REJECT
+call[blx r3] live across, in Writes seg|8842984700d000bf7047|0:2:W,2:2:W,4:2:P,6:2:P,8:2:P|REJECT
+call-ok[blx r3] then fresh cmp|9847884200d000bf7047|0:2:P,2:2:W,4:2:P,6:2:P,8:2:P|ACCEPT
+call[svc #1] live across|884201df00d000bf7047|0:2:W,2:2:P,4:2:P,6:2:P,8:2:P|REJECT
+call[svc #1] live across, in Scratch seg|884201df00d000bf7047|0:2:W,2:2:S,4:2:P,6:2:P,8:2:P|REJECT
+call[svc #1] live across, in Writes seg|884201df00d000bf7047|0:2:W,2:2:W,4:2:P,6:2:P,8:2:P|REJECT
+call-ok[svc #1] then fresh cmp|01df884200d000bf7047|0:2:P,2:2:W,4:2:P,6:2:P,8:2:P|ACCEPT
+call as kill hides earlier clobber? movs;bl;beq|8842012500f002f800d000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P,12:2:P|REJECT
+vmrs-ok: movs before vmrs|b4ee600a0020f1ee10fa48bf01207047|0:4:P,4:2:P,6:4:W,10:4:P,14:2:P|ACCEPT
+vmrs: movs after vmrs (#709)|b4ee600af1ee10fa002048bf01207047|0:4:P,4:4:W,8:2:P,10:4:P,14:2:P|REJECT
+vmrs r5, fpscr is NOT a flag write/kill|88420122f1ee105a00d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+vmrs r5,fpscr ok between cmp and beq|8842f1ee105a00d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+msr apsr_nzcvq kill ok|012280f3008800d000bf7047|0:2:P,2:4:W,6:2:P,8:2:P,10:2:P|ACCEPT
+msr basepri is NOT a kill|8842012280f3118800d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+msr primask is NOT a kill|8842012280f3108800d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+msr msp is NOT a kill|8842012280f3088800d000bf7047|0:2:W,2:2:P,4:4:W,8:2:P,10:2:P,12:2:P|REJECT
+msr basepri ok between cmp and beq (P)|884280f3118800d000bf7047|0:2:W,2:4:P,6:2:P,8:2:P,10:2:P|ACCEPT
+mrs r0,apsr reads flags|88420122eff300807047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+vsel reads flags (FPv5)|8842012200fe810a7047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+beq.w reader|8842012200f0018000bf7047|0:2:W,2:2:P,4:4:P,8:2:P,10:2:P|REJECT
+ret-ok[bx lr]|884201227047|0:2:W,2:2:P,4:2:P|ACCEPT
+ret-ok[pop {r4,pc}]|8842012210bd|0:2:W,2:2:P,4:2:P|ACCEPT
+ret-ok[pop.w {r4-r9,pc}]|88420122bde8f083|0:2:W,2:2:P,4:4:P|ACCEPT
+ret-ok[mov pc, lr]|88420122f746|0:2:W,2:2:P,4:2:P|ACCEPT
+ret-ok[ldmia.w sp!, {r4,pc}]|88420122bde81080|0:2:W,2:2:P,4:4:P|ACCEPT
+ret-ok[udf #0]|8842012200de|0:2:W,2:2:P,4:2:P|ACCEPT
+ret-ok[bkpt #0]|8842012200be|0:2:W,2:2:P,4:2:P|ACCEPT
+indirect[bx r3]|884201221847|0:2:W,2:2:P,4:2:P|REJECT
+indirect[mov pc, r3]|884201229f46|0:2:W,2:2:P,4:2:P|REJECT
+indirect[tbb [pc, r0]]|88420122dfe800f0|0:2:W,2:2:P,4:4:P|REJECT
+indirect[tbh [pc, r0, lsl #1]]|88420122dfe810f0|0:2:W,2:2:P,4:4:P|REJECT
+indirect[ldr pc, [sp], #4]|884201225df804fb|0:2:W,2:2:P,4:4:P|REJECT
+indirect[ldr.w pc, [r0]]|88420122d0f800f0|0:2:W,2:2:P,4:4:P|REJECT
+indirect[add pc, r3]|884201229f44|0:2:W,2:2:P,4:2:P|REJECT
+fall off the end|8842012200bf|0:2:W,2:2:P,4:2:P|REJECT
+branch out of function|8842012200f0febf|0:2:W,2:2:P,4:4:P|REJECT
+unknown[udf.w]|88420122f0f700a07047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[dp-shifted op=5 undefined]|88420122a0ea00007047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[dp-imm op=5 undefined]|88420122a0f000007047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[v8.1 csel eq (ea51 8002)]|8842012251ea02807047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[undefined 16-bit b7xx]|8842012200b77047|0:2:W,2:2:P,4:2:P,6:2:P|REJECT
+unknown[undefined 16-bit ba80]|8842012280ba7047|0:2:W,2:2:P,4:2:P,6:2:P|REJECT
+unknown[copro undefined ec00]|8842012200ec00007047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[f7ff ffff? (bl)]|8842012200f800f87047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[e800 undefined]|8842012200e800007047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[fa undefined]|8842012200faf0f07047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[fb undefined]|88420122f0fbf0f07047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[f3 misc: f3a0 (undefined msr-like)]|88420122d0f300807047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[cps]|8842012272b67047|0:2:W,2:2:P,4:2:P,6:2:P|REJECT
+unknown[wfi]|8842012230bf7047|0:2:W,2:2:P,4:2:P,6:2:P|ACCEPT
+unknown[SG-like e97f e97f]|884201227fe97fe97047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[tt (e840 f000)]|8842012240e800f07047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[v8.1 le/dls f04e e001]|884201224ef001e07047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[bf (v8.1) f0c0 e001]|88420122c0f001e07047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
+unknown[F78F 8000 smc]|88420122f0f700807047|0:2:W,2:2:P,4:4:P,8:2:P|REJECT
