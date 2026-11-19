@@ -206,11 +206,13 @@ ever-growing pile of locally-correct patches.**
 > fall; the rule count is a FLOOR that must rise. Adding a hand-written lowering
 > without deleting one must turn the gate red.
 >
-> **The ratchet, and how to move it.** Ten `kind: ratchet` pins in
+> **The ratchet, and how to move it.** Twelve `kind: ratchet` pins in
 > `claims.yaml` (seven from RQ-58-METRIC, plus v0.65's `mutants_untested` —
 > the mutation survey's surviving-mutant ceiling over
 > `docs/status/mutation_survey.json`, RQ-65-MUTANTS — plus v0.66's
-> `known_open_pins` / `known_open_pinned_cases`, the pin debt, below;
+> `known_open_pins` / `known_open_pinned_cases`, the pin debt, below, plus
+> v0.91's `rv32_selector_lines_code` / `aarch64_selector_lines_code`, the
+> RV32 and AArch64 selector ceilings, RQ-91-LEVELGATE;
 > engine + escape hatch documented in `scripts/claim_check.py`,
 > unit-tested in `scripts/test_claim_check.py`, printed every CI run by
 > `claim_check.py claims.yaml --metric`). Each carries a `value:` that must

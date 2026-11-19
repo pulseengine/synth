@@ -300,6 +300,28 @@ status_fields:
            'crates/synth-synthesis/src/instruction_selector/**/*.rs']
     before: "#[cfg(test)]\nmod tests"
     before_missing: whole-file
+  # RQ-91-LEVELGATE (maintainer decision): the same subtraction metric for the
+  # RV32 and AArch64 instruction selectors, so the L1 promotions RQ-91-
+  # SUPPORTLEVELS plans for those backends cannot be bought with an unmeasured
+  # pile of hand-written lowering arms. Same engine, same marker, same FAMILY
+  # glob shape as `selector_lines_code` (root file + a `selector/` sibling
+  # directory, `before_missing: whole-file`), so a relocation inside the family
+  # is +-0 and only DELETION registers. Today each is one file with one test
+  # module; the region is everything before it.
+  rv32_selector_lines_code:
+    kind: count
+    pattern: '\n'
+    glob: ['crates/synth-backend-riscv/src/selector.rs',
+           'crates/synth-backend-riscv/src/selector/**/*.rs']
+    before: "#[cfg(test)]\nmod tests"
+    before_missing: whole-file
+  aarch64_selector_lines_code:
+    kind: count
+    pattern: '\n'
+    glob: ['crates/synth-backend-aarch64/src/selector.rs',
+           'crates/synth-backend-aarch64/src/selector/**/*.rs']
+    before: "#[cfg(test)]\nmod tests"
+    before_missing: whole-file
   # The "generate, don't mirror" inventory, counted in FILES (`unit: files`)
   # because that is the population the plan states and the unit a mirror is
   # retired in. STATIC TEXTUAL CLASSIFICATION, labelled as the heuristic it is
@@ -3659,6 +3681,20 @@ claims:
         # `narrow_param_set_writes_the_aapcs_home_1714`'s MOV filter (test
         # region; the directed code-region count is unchanged).
         value: 93
+      # RQ-91-LEVELGATE (maintainer decision): the RV32 and AArch64 selectors
+      # get the ceiling the ARM selector has had since RQ-58-METRIC, measured
+      # over the non-test region by the same derivation. Baseline = the value at
+      # pin creation (main 265235dc); growth needs a waiver bound to its value.
+      - kind: ratchet
+        name: rv32_selector_lines_code
+        direction: down
+        value: 6242
+        baseline: 6242
+      - kind: ratchet
+        name: aarch64_selector_lines_code
+        direction: down
+        value: 3067
+        baseline: 3067
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -3738,7 +3774,7 @@ claims:
   # "can this check still fail" audit applied to the check being added.
   - id: SYNTH-SUBTRACTION-PINS-DECLARED
     doc: CLAUDE.md
-    text: "Ten `kind: ratchet` pins in"
+    text: "Twelve `kind: ratchet` pins in"
     evidence:
       # RQ-65-MUTANTS (v0.65): 7 -> 8 — the eighth is `mutants_untested`, a
       # ceiling over the mutation-survey ledger (SYNTH-MUTATION-SURVEY-RQ65).
@@ -3747,10 +3783,12 @@ claims:
       # complement `known_open_pinned_cases` (tracked); see
       # SYNTH-KNOWN-OPEN-PINS-RQ66. 6 ceilings + 1 floor + 3 tracked, and
       # CLAUDE.md says "Ten".
+      # RQ-91-LEVELGATE (v0.91): 10 -> 12 — `rv32_selector_lines_code` and
+      # `aarch64_selector_lines_code`, two more ceilings. 8 + 1 + 3.
       - kind: count-eq
         pattern: '^      - kind: ratchet$'
         glob: ['claims.yaml']
-        expect: 10
+        expect: 12
       # THE DIRECTION BREAKDOWN, pinned — and this one was earned. While
       # building this lane the `direction: track` change to the two whole-file
       # pins was silently reverted by an unrelated `git checkout -- claims.yaml`
@@ -3768,7 +3806,7 @@ claims:
       - kind: count-eq
         pattern: '^        direction: down$'
         glob: ['claims.yaml']
-        expect: 6
+        expect: 8
       - kind: count-eq
         pattern: '^        direction: up$'
         glob: ['claims.yaml']
