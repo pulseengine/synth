@@ -224,6 +224,7 @@ impl Backend for RiscVBackend {
             let compiled = compile_function_with_opts(&name, &func.ops, cfg, opts)?;
             elf_funcs.push(RiscVElfFunction {
                 name: compiled.name.clone(),
+                aliases: Vec::new(),
                 ops: compile_to_riscv_ops(&func.ops, cfg, opts, &compiled)?,
             });
             functions.push(compiled);
@@ -480,6 +481,7 @@ fn compile_function_with_opts(
     // carries.
     let elf_func = RiscVElfFunction {
         name: name.to_string(),
+        aliases: Vec::new(),
         ops: selection.ops,
     };
     let (bytes, call_relocs) = encode_function_bytes(&elf_func)?;

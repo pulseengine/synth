@@ -65,6 +65,11 @@ pub enum ElfBuildError {
 #[derive(Debug, Clone)]
 pub struct RiscVElfFunction {
     pub name: String,
+    /// #1746: further names for the SAME function — each is defined as its own
+    /// GLOBAL `STT_FUNC` symbol at the function's offset with its size, right
+    /// after `name` (a wasm function exported under several names). Empty
+    /// leaves the object byte-identical to the pre-#1746 layout.
+    pub aliases: Vec<String>,
     pub ops: Vec<RiscVOp>,
 }
 
@@ -256,7 +261,12 @@ impl RiscVElfBuilder {
         functions: &[RiscVElfFunction],
         globals_image: &[u8],
     ) -> Vec<String> {
-        let mut names: Vec<String> = functions.iter().map(|f| f.name.clone()).collect();
+        // #1746: an alias is a defined symbol like the primary name.
+        let mut names: Vec<String> = functions
+            .iter()
+            .flat_map(|f| std::iter::once(&f.name).chain(&f.aliases))
+            .cloned()
+            .collect();
         if !globals_image.is_empty() {
             names.push(crate::globals::GLOBALS_SYMBOL.to_string());
         }
@@ -287,6 +297,10 @@ impl RiscVElfBuilder {
             let function_size = bytes.len() as u32;
             text.extend_from_slice(&bytes);
             symbols.push((f.name.clone(), function_offset, function_size));
+            // #1746: each alias shares the function's offset and size.
+            for alias in &f.aliases {
+                symbols.push((alias.clone(), function_offset, function_size));
+            }
             call_relocs.extend(fn_relocs.into_iter().map(|r| RiscVCallReloc {
                 offset: function_offset + r.offset,
                 symbol: r.symbol,
@@ -952,6 +966,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "add".into(),
+            aliases: Vec::new(),
             ops: vec![
                 RiscVOp::Add {
                     rd: Reg::A0,
@@ -1014,6 +1029,7 @@ mod tests {
         ];
         let f = RiscVElfFunction {
             name: "f".into(),
+            aliases: Vec::new(),
             ops: ops.clone(),
         };
         let (assembled, _relocs) = builder.assemble_function(&encoder, &f).unwrap();
@@ -1029,6 +1045,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "loop".into(),
+            aliases: Vec::new(),
             ops: vec![
                 RiscVOp::Label { name: "top".into() },
                 nop_op(),
@@ -1051,6 +1068,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "empty".into(),
+            aliases: Vec::new(),
             ops: vec![],
         };
         assert!(matches!(
@@ -1064,6 +1082,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "broken".into(),
+            aliases: Vec::new(),
             ops: vec![RiscVOp::Jal {
                 rd: Reg::ZERO,
                 label: "missing".into(),
@@ -1085,6 +1104,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "f".into(),
+            aliases: Vec::new(),
             ops: vec![
                 RiscVOp::Label { name: "L".into() },
                 nop_op(),
@@ -1112,6 +1132,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let mk = |name: &str| RiscVElfFunction {
             name: name.into(),
+            aliases: Vec::new(),
             ops: vec![
                 RiscVOp::Label { name: "L".into() },
                 nop_op(),
@@ -1133,6 +1154,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "f".into(),
+            aliases: Vec::new(),
             ops: vec![
                 nop_op(),
                 RiscVOp::Jalr {
@@ -1156,6 +1178,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "f".into(),
+            aliases: Vec::new(),
             ops: vec![
                 nop_op(),
                 RiscVOp::Jalr {
@@ -1227,6 +1250,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "caller".into(),
+            aliases: Vec::new(),
             ops: vec![
                 nop_op(),
                 RiscVOp::Call {
@@ -1263,6 +1287,7 @@ mod tests {
     fn defined_symbol_names_are_the_placed_symbols_1698() {
         let f = |n: &str| RiscVElfFunction {
             name: n.into(),
+            aliases: Vec::new(),
             ops: vec![nop_op()],
         };
         let funcs = [f("get"), f("func_3")];
@@ -1285,6 +1310,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let callee = RiscVElfFunction {
             name: "callee".into(),
+            aliases: Vec::new(),
             ops: vec![
                 nop_op(),
                 RiscVOp::Jalr {
@@ -1296,6 +1322,7 @@ mod tests {
         };
         let caller = RiscVElfFunction {
             name: "caller".into(),
+            aliases: Vec::new(),
             ops: vec![
                 RiscVOp::Call {
                     label: "mmio_read32".into(),
@@ -1367,6 +1394,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "f".into(),
+            aliases: Vec::new(),
             ops: vec![
                 nop_op(),
                 RiscVOp::Jalr {
@@ -1393,6 +1421,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "get".into(),
+            aliases: Vec::new(),
             ops: vec![
                 RiscVOp::La {
                     rd: Reg::T0,
@@ -1506,6 +1535,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "f".into(),
+            aliases: Vec::new(),
             ops: vec![
                 nop_op(),
                 RiscVOp::Jalr {
@@ -1537,6 +1567,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_relocatable();
         let f = RiscVElfFunction {
             name: "get".into(),
+            aliases: Vec::new(),
             ops: vec![
                 RiscVOp::La {
                     rd: Reg::T0,
@@ -1561,6 +1592,7 @@ mod tests {
         let builder = RiscVElfBuilder::new_executable(0x80000000, 0x80000000);
         let f = RiscVElfFunction {
             name: "main".into(),
+            aliases: Vec::new(),
             ops: vec![
                 nop_op(),
                 RiscVOp::Jalr {
