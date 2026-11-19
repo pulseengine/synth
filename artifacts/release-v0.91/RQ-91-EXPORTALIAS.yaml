@@ -1,0 +1,116 @@
+artifacts:
+  - id: RQ-91-EXPORTALIAS
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "Every export name of a function is a defined GLOBAL symbol in a relocatable object, or the compile refuses"
+    description: >
+        SILENT LINK DEFECT, filed by gale as #1746 (Refs #1741, the epic). A
+        wasm module may export one function index under several names, and
+        wit-bindgen does so for every component-model export (`wdg_refresh`
+        and `gust:hal/wdg@0.1.0#refresh`). The decoder kept one name per
+        index (a HashMap insert, so the LAST declared), and every relocatable
+        writer defined that one name and dropped the others, rc 0, with no
+        diagnostic. A consumer linking by a dropped name got an undefined
+        symbol at link time. #952 did not fire because the function itself
+        was emitted.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact. A
+        refutation is a legitimate outcome, reported with numbers: compile a
+        module that exports function 0 as `add`,
+        `gust:hal/wdg@0.1.0#refresh` and `add_alias` with `synth compile
+        m.wat --all-exports --relocatable -o m.o` and each of `-b arm -t
+        cortex-m4`, `-b arm -t cortex-r5`, `-b riscv`, `-b aarch64` and `-b
+        aarch64 --object-format macho`, and read each object's symbol table.
+        All three names defined GLOBAL at one address refutes it.
+
+        MEASURED 2026-11-19 on main 4d80d9d6, synth 0.90.0 debug build: LIVE
+        on all five, and on the ARM optimized path (an import call, no
+        `--relocatable`, ET_REL). Each object defined only `add_alias`. On
+        gale's wdg-thin (sha256 7f427194...d770d) with `-b riscv`,
+        `#refresh`, `#lock`, `#start` and `#is-running` were absent, as the
+        issue says. `-n add` refused with "Function 'add' not found" on every
+        backend, although `add` is exported. Two related defects were found
+        while measuring. The AArch64 single-function wrapper put the export
+        name in the LOCAL label slot (#1180's `symbols[0]`), so `-b aarch64
+        -n NAME` objects exported nothing (`nm`: `t add_alias`). And an
+        export spelled like another defined function's call label bound
+        calls to the wrong function, for PRIMARY names already: on ARM a call
+        to function 0 relocated against an export `func_0` of function 1
+        (R_ARM_THM_CALL value 0x9), and on AArch64 a call to function 1
+        against an export `func_1` of function 0 (R_AARCH64_CALL26 value 0).
+        Which one wins depends on the builder's map order. Empty and
+        NUL-containing names shipped as an empty symbol and a truncated one.
+
+        CITATION: #1746 is where the matter was filed; the analysis is in
+        this record and its PR.
+    tags:
+      - feature-loop
+      - bug
+      - linkability
+      - gale
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1746"
+      verification-track: manual
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 on ARM ELF32 (direct and optimized selector),
+        RV32, AArch64 ELF and Mach-O, every export name of every function in
+        a relocatable object is one defined GLOBAL function symbol, and the
+        names of one index share address, section and (ELF) size. A name the
+        symbol table cannot carry is refused with a reason. `.text` is
+        unchanged, and only the symbol table of a module with an aliased
+        export grows. Red before and green after, with a planted mutant per
+        leg.
+      landed: "v0.91 EXPORTALIAS - #1746 - DELIVERED: a linkability fix. The refuting command was RUN FIRST on main 4d80d9d6 and the defect was LIVE on all five writers and the ARM optimized path. FunctionOps.export_aliases (synth-core) carries every other export name in declaration order; export_name is unchanged. build_relocatable_elf (ARM, both selectors), RiscVElfFunction.aliases (RV32, also in defined_symbol_names, so the #1698 import check sees them) and the AArch64 ElfFunction symbol list (ELF and Mach-O share the plan) define each alias GLOBAL STT_FUNC at the function's address and size, appended after the existing symbols. --func-name matches any export name. The AArch64 single-function object now uses the module path's shape (func_N LOCAL, then the export names GLOBAL). #952 names a skipped export's aliases. refuse_unemittable_export_names refuses an empty name, a name with NUL, a `__synth_` name, and `func_K`/`synth_func_K` for another DEFINED function K. An import's label stays accepted: #1698 rewrites import calls first and its oracle executes that shape. The .wast multi-module merge keys export ownership on every name, so an alias superseded by a later module is dropped like a primary name. Self-contained ARM images (--cortex-m, A32) are unchanged; they are not relocatable objects."
+      verified-by: >
+        DELIVERED. New Rust oracle
+        crates/synth-cli/tests/export_alias_symbols_1746.rs (runs in the
+        workspace test job). It reads the symbol table with the `object`
+        crate, never disassembly text. The expected names come from the
+        input module's export section, parsed with wasmparser. Seven tests:
+        every export name is one GLOBAL function symbol on the five module
+        paths, and aliases share address, section and ELF size; a paired
+        control (each index exported once) has byte-identical `.text`, and
+        its symbol table equals the aliased one minus the alias names; the
+        same on the ARM optimized path (ET_REL forced by an import); an
+        internal call still relocates against function 0's address;
+        `--func-name` by each of three names on RV32, AArch64 ELF and
+        Mach-O and the ARM reroute (#1565); the #952 refusal names the
+        aliases; four unemittable names, each as alias and as primary, are
+        refused on six paths with no object written; and the negative
+        controls (an export named after its own label, after an import's
+        label, and component punctuation) are accepted. RED on 4d80d9d6
+        sources: 6 of 7 failed, every module path and all 12 `-n` legs
+        failing; the internal-call check passes on both trees by design.
+        GREEN on the branch: 7 of 7. Potency, nine planted source mutants,
+        each rebuilt, run and restored, each red: the ARM alias loop (ARM
+        legs), the RV32 alias push (RV32 legs), the AArch64 multi extend (ELF
+        and Mach-O), the AArch64 single-function label (6 `-n` legs),
+        disabling the refusal, dropping the import-label floor, primary-only
+        `-n`, unnamed #952 aliases, and an empty decoder alias list (6
+        tests). ACCEPTANCE: gale wdg-thin with `-b riscv --all-exports
+        --relocatable` defines all four previously missing names, at their
+        twins' addresses and sizes; with `-b arm -t cortex-m4 --relocatable
+        --embedder-data-init` its defined GLOBALs go from 10 to 14. AArch64
+        still refuses it for its data segment (#851). BYTES, main 4d80d9d6
+        against the branch, `--all-exports --allow-skipped-exports` on
+        {cortex-m4 --relocatable, cortex-m4 --cortex-m, cortex-r5
+        --relocatable, RV32, AArch64 ELF, AArch64 Mach-O}: 596 md5-distinct
+        inputs (the repo's tracked .wat/.wasm/.wast, the 284 spec-testsuite
+        .wast files, wdg-thin, and loom's 6 gale_measure modules), 3,576
+        invocations. 1,610 byte-identical, 1,944 with no object on either
+        binary, 0 newly refused, 0 newly accepted, 22 differ. 16 of the 22
+        gained symbols only, with every other section and every relocation
+        target unchanged and every added symbol GLOBAL FUNC: wdg-thin on
+        RV32 (+4), and 5 distinct gale_measure modules on RV32, AArch64 ELF
+        and Mach-O (+1 each, `gale_sem_count_take`). The other 6 are the
+        spec suite's exports.wast on every config, through the multi-module
+        .wast merge: keying ownership on every name moved `a` and `b` to the
+        LAST module that exports them, as the merge rule states for primary
+        names, so its `.text` changes. That path is fixture-only (#1225).
