@@ -375,40 +375,114 @@ fn arm_optimized_path_defines_every_export_name() {
     );
 }
 
+/// Two aliased functions and a caller that calls function 1, then function 0.
+/// Function 0's aliases are appended to the symbol table BEFORE function 1's
+/// symbols, so an alias that is added without being counted shifts every
+/// later symbol index — and the call to function 1 would relocate against
+/// whatever symbol now sits at the old index.
+const CALLS: &str = r#"(module
+  (func $add (param i32 i32) (result i32) local.get 0 local.get 1 i32.add)
+  (func $sub (param i32 i32) (result i32) local.get 0 local.get 1 i32.sub)
+  (func $both (param i32) (result i32)
+    local.get 0 local.get 0 call $sub local.get 0 call $add)
+  (export "add" (func $add))
+  (export "gust:hal/wdg@0.1.0#refresh" (func $add))
+  (export "add_alias" (func $add))
+  (export "sub" (func $sub))
+  (export "sub_alias" (func $sub))
+  (export "both" (func $both)))"#;
+
 #[test]
-fn internal_call_still_binds_to_the_aliased_function() {
-    // `twice` calls function 0. Adding alias symbols appends symtab entries,
-    // so the call relocation must still name a symbol AT function 0's address.
+fn internal_calls_still_bind_to_their_callees() {
+    // Each call relocation, in code order, must resolve to a symbol AT its
+    // callee's address: function 1 first, then function 0. Red under a
+    // mutant that adds an ARM alias symbol without counting it (the call to
+    // function 1 then binds to an alias of function 0).
+    let mut failed = Vec::new();
     for p in MODULE_PATHS {
-        let dir = work(&format!("{}-reloc", p.tag));
-        let obj = compile(&dir, "aliased", ALIASED, p.args);
-        let file = object::File::parse(&*obj).unwrap();
-        // Function 0 by the name main also kept, so this non-regression
-        // check reads the same on both trees.
-        let add = &defined_symbols(&obj, p.macho)["add_alias"][0];
-        let text = file
-            .sections()
-            .find(|s| matches!(s.name(), Ok(".text") | Ok("__text")))
-            .unwrap();
-        let mut targets = Vec::new();
-        for (_, r) in text.relocations() {
-            if let object::RelocationTarget::Symbol(si) = r.target() {
-                let s = file.symbol_by_index(si).unwrap();
-                targets.push((s.name().unwrap().to_string(), s.address()));
+        let ok = std::panic::catch_unwind(|| {
+            let dir = work(&format!("{}-calls", p.tag));
+            let obj = compile(&dir, "calls", CALLS, p.args);
+            let file = object::File::parse(&*obj).unwrap();
+            let syms = defined_symbols(&obj, p.macho);
+            let at = |n: &str| syms[n].iter().find(|d| d.global).unwrap().address;
+            let want = vec![at("sub"), at("add")];
+            assert_ne!(want[0], want[1]);
+            let text = file
+                .sections()
+                .find(|s| matches!(s.name(), Ok(".text") | Ok("__text")))
+                .unwrap();
+            let mut relocs: Vec<(u64, String, u64)> = Vec::new();
+            for (off, r) in text.relocations() {
+                if let object::RelocationTarget::Symbol(si) = r.target() {
+                    let s = file.symbol_by_index(si).unwrap();
+                    relocs.push((off, s.name().unwrap().to_string(), s.address()));
+                }
             }
+            relocs.sort();
+            let got: Vec<u64> = relocs.iter().map(|r| r.2).collect();
+            assert_eq!(
+                got, want,
+                "[{}] the calls relocate against {relocs:?}, not function 1 then function 0",
+                p.tag
+            );
+        })
+        .is_ok();
+        if !ok {
+            failed.push(p.tag);
         }
-        assert!(
-            !targets.is_empty(),
-            "[{}] the call must carry a relocation",
+    }
+    assert!(failed.is_empty(), "#1746 call binding fails on: {failed:?}");
+}
+
+/// The multi-module `.wast` merge: a later module's export supersedes an
+/// earlier module's on EVERY name, not only on each function's last-declared
+/// one. Module 1 exports `x` and `y`; module 3 re-exports `y`, so module 1's
+/// body keeps `x`. Module 2 exports `a` and `z`; module 4 re-exports `a` as a
+/// NON-last name, so `a` is module 4's body (with `w`) and module 2 keeps `z`.
+const MERGE_WAST: &str = r#"
+(module (func (result i32) i32.const 1) (export "x" (func 0)) (export "y" (func 0)))
+(module (func (result i32) i32.const 2) (export "a" (func 0)) (export "z" (func 0)))
+(module (func (result i32) i32.const 3) (export "y" (func 0)))
+(module (func (result i32) i32.const 4) (export "a" (func 0)) (export "w" (func 0)))
+"#;
+
+#[test]
+fn wast_merge_supersedes_every_export_name() {
+    let merge_paths = [&MODULE_PATHS[0], &MODULE_PATHS[2], &MODULE_PATHS[3]];
+    for p in merge_paths {
+        let dir = work(&format!("{}-merge", p.tag));
+        let src = dir.join("m.wast");
+        std::fs::write(&src, MERGE_WAST).unwrap();
+        let out = dir.join("m.o");
+        let mut cmd = Command::new(synth());
+        cmd.arg("compile")
+            .arg(&src)
+            .args(p.args)
+            .arg("-o")
+            .arg(&out);
+        let obj = artifact_guard::compile_artifact_or_panic(&mut cmd, &out, "merge");
+        let syms = defined_symbols(&obj, p.macho);
+        let at = |n: &str| -> u64 {
+            let g: Vec<&Def> = syms
+                .get(n)
+                .unwrap_or_else(|| panic!("[{}] `{n}` is not defined: {syms:?}", p.tag))
+                .iter()
+                .filter(|d| d.global)
+                .collect();
+            assert_eq!(g.len(), 1, "[{}] `{n}`: one GLOBAL, got {g:?}", p.tag);
+            g[0].address
+        };
+        let (x, y, z, a, w) = (at("x"), at("y"), at("z"), at("a"), at("w"));
+        assert_eq!(a, w, "[{}] `a` must be module 4's body, with `w`", p.tag);
+        assert_ne!(a, z, "[{}] `a` must not stay on module 2's body", p.tag);
+        assert_ne!(
+            x, y,
+            "[{}] `y` must be module 3's body, not module 1's",
             p.tag
         );
-        for (name, addr) in &targets {
-            assert_eq!(
-                *addr, add.address,
-                "[{}] the call relocates against {name:?} at {addr:#x}, not function 0 at {:#x}",
-                p.tag, add.address
-            );
-        }
+        let bodies: BTreeSet<u64> = [x, y, z, a].into_iter().collect();
+        assert_eq!(bodies.len(), 4, "[{}] four distinct bodies", p.tag);
     }
 }
 
@@ -557,29 +631,103 @@ fn unemittable_export_names_are_refused_on_every_path() {
 
 #[test]
 fn own_label_import_label_and_component_names_are_accepted() {
-    // Negative controls for the refusal: an export spelled like its OWN
-    // index's label; one spelled like an IMPORT's label (RQ-91-NAMECOLL,
-    // #1698, rewrites import calls to the field name, and its oracle executes
-    // this shape); and the component-model punctuation. All are emittable.
-    let own = r#"(module (func $a (result i32) i32.const 1)
-  (export "func_0" (func $a)) (export "gust:hal/wdg@0.1.0#start" (func $a)) (export "a" (func $a)))"#;
-    let import = r#"(module (import "env" "get" (func $imp (result i32)))
+    // Negative controls for the refusal, every one emitted with each export
+    // name GLOBAL: an export spelled like its OWN index's label, declared
+    // first, LAST (the primary name — before the fix it came out LOCAL on ARM
+    // and AArch64, exit 0) and ALONE; one spelled like an IMPORT's label
+    // (RQ-91-NAMECOLL, #1698, rewrites import calls to the field name, and
+    // its oracle executes this shape); one naming NO function (`func_99` in a
+    // two-function module, accepted on main); and component punctuation.
+    let cases: &[(&str, &str)] = &[
+        (
+            "own-first",
+            r#"(module (func $a (result i32) i32.const 1)
+  (export "func_0" (func $a)) (export "gust:hal/wdg@0.1.0#start" (func $a)) (export "a" (func $a)))"#,
+        ),
+        (
+            "own-last",
+            r#"(module (func $a (result i32) i32.const 1)
+  (export "a" (func $a)) (export "gust:hal/wdg@0.1.0#start" (func $a)) (export "func_0" (func $a)))"#,
+        ),
+        (
+            "own-only",
+            r#"(module (func $a (result i32) i32.const 1) (export "func_0" (func $a)))"#,
+        ),
+        (
+            "import",
+            r#"(module (import "env" "get" (func $imp (result i32)))
   (func $a (result i32) i32.const 7)
   (func $u (result i32) call $imp)
-  (export "func_0" (func $a)) (export "a" (func $a)) (export "use_import" (func $u)))"#;
-    for (name, wat) in [("own", own), ("import", import)] {
+  (export "func_0" (func $a)) (export "a" (func $a)) (export "use_import" (func $u)))"#,
+        ),
+        (
+            "no-such-function",
+            r#"(module (func $a (result i32) i32.const 1) (func $b (result i32) i32.const 2)
+  (export "a" (func $a)) (export "func_99" (func $b)) (export "b" (func $b)))"#,
+        ),
+    ];
+    let mut failed = Vec::new();
+    for (name, wat) in cases {
         let exports = exports_by_index(wat);
         for p in MODULE_PATHS {
-            let dir = work(&format!("ok-{name}-{}", p.tag));
-            let obj = compile(&dir, "ok", wat, p.args);
-            let n = assert_every_export_defined(
-                p.tag,
-                &defined_symbols(&obj, p.macho),
-                &exports,
-                p.macho,
-                None,
+            let ok = std::panic::catch_unwind(|| {
+                let dir = work(&format!("ok-{name}-{}", p.tag));
+                let obj = compile(&dir, "ok", wat, p.args);
+                assert_every_export_defined(
+                    &format!("{name} {}", p.tag),
+                    &defined_symbols(&obj, p.macho),
+                    &exports,
+                    p.macho,
+                    None,
+                );
+            })
+            .is_ok();
+            if !ok {
+                failed.push(format!("{name} {}", p.tag));
+            }
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "#1746 accepted names fail on: {failed:?}"
+    );
+}
+
+#[test]
+fn self_contained_images_are_not_refused() {
+    // The refusal is a RELOCATABLE-object rule: self-contained images carry
+    // no alias symbols and compile these modules as before #1746 (measured
+    // byte-identical to main 4d80d9d6 on all four shapes).
+    let shapes = [
+        r#"(export "" (func $a))"#,
+        r#"(export "__synth_thing" (func $a))"#,
+        r#"(export "func_1" (func $a))"#,
+        r#"(export "func_99" (func $b))"#,
+    ];
+    for (k, extra) in shapes.iter().enumerate() {
+        let wat = format!(
+            "(module (func $a (result i32) i32.const 1) (func $b (result i32) i32.const 2) \
+             (export \"a\" (func $a)) (export \"b\" (func $b)) {extra})"
+        );
+        for args in [
+            &[
+                "-b",
+                "arm",
+                "-t",
+                "cortex-m4",
+                "--cortex-m",
+                "--all-exports",
+            ][..],
+            &["-b", "arm", "-t", "cortex-r5", "--all-exports"][..],
+        ] {
+            let dir = work(&format!("sc-{k}-{}", args[3]));
+            let obj = compile(&dir, "sc", &wat, args);
+            let file = object::File::parse(&*obj).unwrap();
+            assert_eq!(
+                file.kind(),
+                object::ObjectKind::Executable,
+                "[{extra} {args:?}] a self-contained image"
             );
-            assert!(n >= 1, "[{name} {}] an alias was checked", p.tag);
         }
     }
 }

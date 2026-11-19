@@ -1351,31 +1351,35 @@ fn print_hardware_info(caps: &HardwareCapabilities) {
     println!("  RAM: {} KB", caps.ram_size / 1024);
 }
 
-/// #1746: refuse an export name of `f` that no object can define as itself.
-/// Since #1746 EVERY export name of a function becomes a GLOBAL symbol (before,
-/// only the last-declared one did and the rest vanished without a word), so a
-/// name the symbol table cannot carry must fail the compile instead of
-/// shipping a symbol that is not the export:
+/// #1746: refuse an export name that a RELOCATABLE object cannot define as
+/// itself. Since #1746 every export name of a function becomes a GLOBAL symbol
+/// of an ET_REL object (before, only the last-declared one did and the rest
+/// vanished without a word), so a name the symbol table cannot carry fails
+/// the compile instead of shipping a symbol that is not the export:
 /// - an EMPTY name — an `st_name` of the empty string is no name a linker can
 ///   resolve;
 /// - a name containing NUL — the string table is NUL-terminated, so the
 ///   symbol would be a TRUNCATED, different name;
-/// - `func_<K>` / `synth_func_<K>` where `K` is ANOTHER DEFINED function's
-///   index (`K >= num_imports`, `K != f.index`) — the in-object call labels
-///   the selectors relocate against (ARM/A32/AArch64 `func_K`, RV32
-///   `synth_func_K`). An export spelled like one bound internal calls to the
-///   wrong function, measured on the v0.91 base for PRIMARY names already:
-///   ARM bound a call to function 0 to an export `func_0` of function 1, and
-///   AArch64 bound a call to function 1 to an export `func_1` of function 0
-///   (which one wins is the builder's map order). An IMPORT index's label is
-///   not refused: RQ-91-NAMECOLL (#1698) rewrites import calls to the field
-///   name first, and its oracle executes an export named `func_0` beside
-///   import 0. `label_floor` is that `num_imports`; `None` skips the check
-///   (the single-function writers place one function and no call);
+/// - `func_<K>` / `synth_func_<K>` where `K` is ANOTHER function this object
+///   places (`placed`, which excludes imports and indices the module does not
+///   have) — the in-object call labels the selectors relocate against
+///   (ARM/A32/AArch64 `func_K`, RV32 `synth_func_K`). Measured on the v0.91
+///   base for PRIMARY names, filed as #1752: ARM bound a call to function 0 to
+///   an export `func_0` of function 1, and AArch64 bound a call to function 1
+///   to an export `func_1` of function 0. An IMPORT index's label is not
+///   refused (RQ-91-NAMECOLL, #1698, rewrites import calls to the field name
+///   first), nor a `func_K` naming no function. `placed` is `None` on the
+///   single-function writers, which place one function and no call;
 /// - a `__synth_` name — synth's own reserved symbols (`__synth_globals`,
 ///   `__synth_wasm_data`, `__synth_mem_base_N`, ...).
-fn refuse_unemittable_export_names(f: &FunctionOps, label_floor: Option<u32>) -> Result<()> {
-    let names = f.export_name.iter().chain(&f.export_aliases);
+///
+/// Self-contained images (`--cortex-m`, A32) do not call this: they carry no
+/// alias symbols and are byte-identical to the pre-#1746 output.
+fn refuse_unemittable_export_names<'a>(
+    index: u32,
+    names: impl IntoIterator<Item = &'a String>,
+    placed: Option<&std::collections::HashSet<u32>>,
+) -> Result<()> {
     for name in names {
         let why = if name.is_empty() {
             Some(
@@ -1391,11 +1395,11 @@ fn refuse_unemittable_export_names(f: &FunctionOps, label_floor: Option<u32>) ->
             .strip_prefix("synth_func_")
             .or_else(|| name.strip_prefix("func_"))
             .and_then(|rest| rest.parse::<u32>().ok().filter(|k| k.to_string() == rest))
-            .filter(|k| *k != f.index && label_floor.is_some_and(|floor| *k >= floor))
+            .filter(|k| *k != index && placed.is_some_and(|p| p.contains(k)))
         {
             Some(format!(
                 "it is spelled like synth's in-object call label for function {k}, \
-                 so a call to function {k} could bind to this export instead"
+                 so a call to function {k} could bind to this export instead (#1752)"
             ))
         } else if name.starts_with("__synth_") {
             Some("the `__synth_` prefix is reserved for synth's own symbols".to_string())
@@ -1405,10 +1409,10 @@ fn refuse_unemittable_export_names(f: &FunctionOps, label_floor: Option<u32>) ->
         if let Some(why) = why {
             anyhow::bail!(
                 "export {:?} of function {} cannot be emitted as a symbol: {why}. \
-                 Every export name of a function is defined as a symbol (#1746); \
-                 rename the export",
+                 Every export name of a function is defined as a symbol of a \
+                 relocatable object (#1746); rename the export",
                 name,
-                f.index
+                index
             );
         }
     }
@@ -1428,6 +1432,10 @@ struct ElfFunction {
     /// function's address with its size, beside `name`. Empty for a function
     /// exported at most once, which leaves the object byte-identical.
     export_aliases: Vec<String>,
+    /// #1746: the function is EXPORTED (its `name` is an export name). Kept
+    /// apart from `name != func_N`, which misreads an export spelled like its
+    /// own label as internal and bound it LOCAL.
+    exported: bool,
     /// #394 Tier-1.x: the developer-facing name from the wasm `name` custom
     /// section (present for internal functions too, unlike the export name).
     /// Consumed ONLY by the `--debug-line` `DW_TAG_subprogram` emit — symbol
@@ -2273,6 +2281,10 @@ fn compile_command(
     // #1746: the selected function's wasm index (the AArch64 single-function
     // object's in-object `func_N` label). `None` on the demo path.
     let mut func_wasm_index: Option<u32> = None;
+    // #1746: whether the selection is exported (an export may be spelled like
+    // its own `func_N` label), and the verdict on its names.
+    let mut func_exported = false;
+    let mut func_name_refusal: Result<()> = Ok(());
     let (wasm_ops, func_name): (Vec<WasmOp>, String) = match (&input, &demo) {
         (Some(path), _) => {
             info!("Compiling WASM file: {}", path.display());
@@ -2424,7 +2436,12 @@ fn compile_command(
                     .context(format!("Function index {} not found", func_index))?
             };
 
-            refuse_unemittable_export_names(&func, None)?; // #1746
+            // #1746: checked by the relocatable single-function writers only.
+            func_name_refusal = refuse_unemittable_export_names(
+                func.index,
+                func.export_name.iter().chain(&func.export_aliases),
+                None,
+            );
             let name = func
                 .export_name
                 .clone()
@@ -2490,6 +2507,7 @@ fn compile_command(
 
             func_aliases = func.export_aliases.clone();
             func_wasm_index = Some(func.index);
+            func_exported = func.export_name.is_some();
             (func.ops, name)
         }
         (None, Some(demo_name)) => {
@@ -2680,9 +2698,10 @@ fn compile_command(
         // container differs. Discriminate on backend name, not target family:
         // `cortex_a53()` is `ArchFamily::ArmCortexA` (isa AArch64), so a family
         // check would misroute it into the ARM builder.
+        func_name_refusal?; // #1746
         build_aarch64_elf(
             &code,
-            func_wasm_index,
+            func_wasm_index.filter(|_| func_exported),
             &func_name,
             &func_aliases,
             object_format,
@@ -2703,6 +2722,7 @@ fn compile_command(
                 compiled.relocations.len()
             );
         }
+        func_name_refusal?; // #1746
         build_riscv_elf(&code, &func_name, &func_aliases)?
     } else if cortex_m {
         // #1640: see `refuse_a32_cortex_m_image`.
@@ -5448,10 +5468,19 @@ fn compile_all_exports(
     if all_exports.is_empty() {
         anyhow::bail!("No exported functions found in module");
     }
-    // #1746: every export name becomes a symbol; refuse one that cannot.
-    for (f, origin) in all_exports.iter().zip(all_origins.iter()) {
-        refuse_unemittable_export_names(f, Some(origin.num_imports))?;
-    }
+    // #1746: every export name becomes a symbol of a relocatable object; a
+    // name that cannot be one is refused — by the relocatable writers only
+    // (below), since self-contained images are unchanged.
+    let export_name_refusal: Result<()> = {
+        let placed: std::collections::HashSet<u32> = all_exports.iter().map(|f| f.index).collect();
+        all_exports.iter().try_for_each(|f| {
+            refuse_unemittable_export_names(
+                f.index,
+                f.export_name.iter().chain(&f.export_aliases),
+                Some(&placed),
+            )
+        })
+    };
 
     info!("Found {} exported functions:", all_exports.len());
     for f in &all_exports {
@@ -6348,6 +6377,7 @@ fn compile_all_exports(
             } else {
                 Vec::new()
             },
+            exported: func.export_name.is_some(),
             // #394 Tier-1.x: thread the `name`-section name through for the
             // DWARF subprogram DIE (internal functions get their REAL name).
             debug_name: func.debug_name.clone(),
@@ -6887,6 +6917,7 @@ fn compile_all_exports(
         if let Some(reason) = &default_memory_nonconst_data {
             anyhow::bail!("aarch64: {reason} — refusing to ship the region uninitialized (#851)");
         }
+        export_name_refusal?; // #1746
         // #546: the AArch64 backend emits its own EM_AARCH64 ELF64 (ET_REL)
         // object. This must precede the `has_external_relocations || relocatable`
         // arm so `-b aarch64 --relocatable` isn't stolen into the ARM builder.
@@ -6954,6 +6985,7 @@ fn compile_all_exports(
                 rv_mem_size
             );
         }
+        export_name_refusal?; // #1746
         let rv_wasm_data = synth_core::static_data_addr::pack_segment_records(&rv_segments);
         let rv_served = synth_core::static_data_addr::served_image_from_records(&rv_wasm_data)
             .ok_or_else(|| {
@@ -7024,6 +7056,7 @@ fn compile_all_exports(
                  embedder populates the segments at instantiation"
             );
         }
+        export_name_refusal?; // #1746
         let total_relocs: usize = compiled_funcs.iter().map(|f| f.relocations.len()).sum();
         if has_relocations {
             info!(
@@ -8813,7 +8846,10 @@ fn build_relocatable_elf(
     // cross-object resolution.
     for (i, func) in funcs.iter().enumerate() {
         let internal_label = format!("func_{}", func.wasm_index);
-        let is_exported = func.name != internal_label;
+        // #1746: the export flag, not `name != func_N` — an export spelled
+        // like its own label is exported (one GLOBAL symbol, which is also the
+        // label in-object calls relocate against).
+        let is_exported = func.exported;
         let export_sym = Symbol::new(&func.name)
             .with_value(func_offsets[i])
             .with_size(func.code.len() as u32)
@@ -8829,7 +8865,7 @@ fn build_relocatable_elf(
         sym_indices.insert(func.name.clone(), sym_count);
 
         // `func_{wasm_index}` alias (skip if the export name already is that).
-        if is_exported {
+        if is_exported && func.name != internal_label {
             let internal_sym = Symbol::new(&internal_label)
                 .with_value(func_offsets[i])
                 .with_size(func.code.len() as u32)
@@ -10964,17 +11000,16 @@ fn build_aarch64_elf(
     // every name after it is GLOBAL. This wrapper used to pass the export name
     // ALONE, so it landed in the LOCAL slot and the object exported nothing
     // (`nm` showed `t add`) — the module path's shape, `func_N` then the export
-    // names, is used instead. A non-exported selection (`--func-index` of an
-    // internal function, or the demo) keeps its one name LOCAL as before.
-    let label = wasm_index.map(|i| format!("func_{i}"));
+    // names, is used instead. `wasm_index` is `Some` only for an EXPORTED
+    // selection, whose name goes GLOBAL even when it is spelled like its own
+    // label (`func_N` LOCAL and `func_N` GLOBAL, as on the module path). A
+    // non-exported selection (`--func-index` of an internal function, or the
+    // demo) keeps its one name LOCAL as before.
     let mut symbols = Vec::new();
-    match label {
-        Some(l) if l != func_name => {
-            symbols.push(l);
-            symbols.push(func_name.to_string());
-        }
-        _ => symbols.push(func_name.to_string()),
+    if let Some(i) = wasm_index {
+        symbols.push(format!("func_{i}"));
     }
+    symbols.push(func_name.to_string());
     symbols.extend(aliases.iter().cloned());
     let funcs = [A64ElfFunction::code(symbols, code.to_vec(), Vec::new())];
     Ok(build_aarch64_object(
@@ -11036,7 +11071,9 @@ fn build_multi_func_aarch64_elf(
             // that follows is GLOBAL; see `ElfFunction::symbols`.
             let func_sym = format!("func_{}", f.wasm_index);
             let mut symbols = vec![func_sym.clone()];
-            if f.name != func_sym {
+            // #1746: an export spelled like its own label still gets its
+            // GLOBAL (beside the LOCAL label, which relocations resolve to).
+            if f.exported || f.name != func_sym {
                 symbols.push(f.name.clone());
             }
             // #1746: the function's other export names, GLOBAL like the
@@ -12298,6 +12335,7 @@ mod tests {
         let func = ElfFunction {
             name: "decide".to_string(),
             export_aliases: Vec::new(),
+            exported: true,
             debug_name: None,
             wasm_index: 0,
             code,
@@ -12418,6 +12456,7 @@ mod tests {
         let func = ElfFunction {
             name: "decide".to_string(),
             export_aliases: Vec::new(),
+            exported: true,
             debug_name: None,
             wasm_index: 0,
             code,
@@ -12525,6 +12564,7 @@ mod tests {
         let func = ElfFunction {
             name: "stack_push_decide".to_string(),
             export_aliases: Vec::new(),
+            exported: true,
             debug_name: None,
             wasm_index: 0,
             code,
@@ -13053,6 +13093,7 @@ mod tests {
         ElfFunction {
             name: name.to_string(),
             export_aliases: Vec::new(),
+            exported: true,
             debug_name: None,
             wasm_index: idx,
             code,

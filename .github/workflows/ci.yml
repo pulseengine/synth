@@ -5126,7 +5126,9 @@ jobs:
           # +52: exactly aarch64_locals_851, brif_local_zeroinit_990,
           # i64_width_vstack_946 and local_tee.wast, one function each on
           # m4-self and m4f-self. `hits: 0`.
-          grep -Eq '^functions audited: 7781$' haa1189.txt
+          # EXPORTALIAS (#1746): 7781->7777, code not corpus: exports.wast
+          # 4->2 on m4/m4f-reloc (.wast merge owns every name). main: 7781.
+          grep -Eq '^functions audited: 7777$' haa1189.txt
           grep -Eq '^homes watched: 9359$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is now ASSERTED, not narrated. It sat in
           # the #1321 comment above as "217081 attributed instructions ...
