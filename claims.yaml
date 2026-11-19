@@ -3701,8 +3701,22 @@ claims:
       - kind: ratchet
         name: rv32_selector_lines_code
         direction: down
-        value: 6242
+        value: 6547
         baseline: 6242
+        waivers:
+          - to: 6547
+            reason: >-
+              RV32DEADARM (Refs #1739): 6242 -> 6547 (+305). The RV32 selector
+              had no per-block arity, treated only `return` as ending the
+              reachable region, and reconciled branch edges with sequential
+              moves. Four silent wrong-value defects followed, all live on main
+              and pinned red by rv32_dead_arm_value_1739_differential.py (main
+              137 failures over 395 emulations, fix 602/602). The growth is the
+              arity trim, dead-code mode for unreachable/br/br_table, and the
+              single parallel-move helper `move_top_into` that replaces the
+              per-site moves. Every one of the eleven parts reds the oracle when
+              reverted alone. No hand-written arm was replaced, so none could be
+              deleted.
       - kind: ratchet
         name: aarch64_selector_lines_code
         direction: down

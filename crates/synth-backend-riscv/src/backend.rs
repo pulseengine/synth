@@ -6,7 +6,7 @@
 //! Track B2/B3/B4 deliverable.
 
 use crate::elf_builder::{RiscVElfBuilder, RiscVElfFunction};
-use crate::selector::{RvBoundsMode, RvGlobalsCtx, SelectorOptions, select_with_module};
+use crate::selector::{RvBoundsMode, RvGlobalsCtx, SelectorOptions, select_with_block_arity};
 use synth_core::backend::{
     Backend, BackendCapabilities, BackendError, CompilationResult, CompileConfig, CompiledFunction,
     SafetyBounds,
@@ -422,7 +422,7 @@ fn compile_function_with_opts(
     // locals get 8-byte frame slots and i64 call results the a0:a1 pair.
     // RQ-63-RVGLOBAL: and the module-level globals context (fail-safe —
     // declines unless the driver placed the region).
-    let selection = select_with_module(
+    let selection = select_with_block_arity(
         ops,
         num_params,
         opts,
@@ -432,6 +432,8 @@ fn compile_function_with_opts(
         &config.func_result_counts,
         &globals_ctx(config),
         &config.current_func_params_i64,
+        // #1739: a branch carries its target's declared arity.
+        &config.current_func_block_arity,
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
 
@@ -604,7 +606,7 @@ fn compile_to_riscv_ops(
     // (#539/#242), or the two selections would disagree.
     let ops = synth_core::rewrite_memory_grow_zero(ops);
     let ops = ops.as_slice();
-    let selection = select_with_module(
+    let selection = select_with_block_arity(
         ops,
         num_params,
         opts,
@@ -614,6 +616,8 @@ fn compile_to_riscv_ops(
         &config.func_result_counts,
         &globals_ctx(config),
         &config.current_func_params_i64,
+        // #1739: a branch carries its target's declared arity.
+        &config.current_func_block_arity,
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
     Ok(selection.ops)

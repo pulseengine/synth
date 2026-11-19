@@ -68,13 +68,17 @@ MEASURED (re-derive with `--synth <path>`; every count here is exact-pinned):
 
   file             arm   riscv
   ---------------- ----  -----
-  br.wast            12     31
-  br_table.wast       4      4
+  br.wast            12      0
+  br_table.wast       4      0
   call.wast           0      0
-  loop.wast           1      1
+  loop.wast           1      0
   return.wast        29      0
-  unreachable.wast   25     20
-  TOTAL              71     56
+  unreachable.wast   25      0
+  TOTAL              71      0
+
+(RQ-91-RV32DEADARM, #1739: the riscv column was 31/4/0/1/0/20 = 56. The RV32
+selector now ends the reachable region at br/br_table/unreachable, so the
+dead tails that underflowed are skipped, and the class is gone on RV32.)
 
 (RQ-91-MVDROP: call.wast/arm 3 -> 0, the three were multi-result-call
 under-counts, not dead code, and now refuse by name — see the KNOWN entry.
@@ -123,12 +127,23 @@ KNOWN: dict[tuple[str, str], int] = {
     ("loop.wast", "arm"): 1,
     ("return.wast", "arm"): 29,
     ("unreachable.wast", "arm"): 25,
-    ("br.wast", "riscv"): 31,
-    ("br_table.wast", "riscv"): 4,
+    # RQ-91-RV32DEADARM (#1739): br 31 -> 0, br_table 4 -> 0, loop 1 -> 0,
+    # unreachable 20 -> 0. A FIX, not a reclassification: the RV32 selector
+    # now ends the reachable region after br/br_table/unreachable (as it did
+    # after return, #882), so the dead tails that underflowed its simulated
+    # stack are skipped. Paired control, run: main 81964ad0's binary measures
+    # 31/4/1/20, the branch 0/0/0/0 (TOTAL 127 -> 71). The newly compiling
+    # functions were EXECUTED: every i32-arg, i32/i64-result
+    # assert_return/assert_trap of these four files on RV32 under unicorn,
+    # 64 directives on main (3 wrong) vs 166 on the branch (2 wrong, both
+    # also wrong on main: loop.wast's memory.grow, -1 on RV32's fixed memory
+    # by design, and a load of a data segment the run did not initialise).
+    ("br.wast", "riscv"): 0,
+    ("br_table.wast", "riscv"): 0,
     ("call.wast", "riscv"): 0,
-    ("loop.wast", "riscv"): 1,
+    ("loop.wast", "riscv"): 0,
     ("return.wast", "riscv"): 0,
-    ("unreachable.wast", "riscv"): 20,
+    ("unreachable.wast", "riscv"): 0,
 }
 assert set(KNOWN) == {(f, b) for f in FILES for b in BACKENDS}
 
