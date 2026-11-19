@@ -3720,8 +3720,21 @@ claims:
       - kind: ratchet
         name: aarch64_selector_lines_code
         direction: down
-        value: 3067
+        value: 3131
         baseline: 3067
+        waivers:
+          - to: 3131
+            reason: >-
+              A64BELOW (Refs #1740, #1747): 3067 -> 3131 (+64). The AArch64
+              selector lowered dead code after a branch or trap. It panicked
+              (debug) or declined (release) on dead pops below a frame's entry
+              height, and it marked every `end` reachable, which returned float
+              block results through x0 on main (#1747, silent wrong code). The
+              growth is the dead-region skip with its blocktype-ordinal and
+              dead-frame-depth bookkeeping, plus the live-edge rule at `end`.
+              aarch64_dead_below_1740_differential.py (main 37 failures over 456
+              emulations, fix 456/456) and per-edge unit tests red on each part.
+              No hand-written arm was replaced, so none could be deleted.
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
