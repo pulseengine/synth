@@ -4,6 +4,15 @@
 common --enable_bzlmod
 common --enable_platform_specific_config
 
+# NOT SET: --lockfile_mode=error. Measured 2026-11-20 on Bazel 7.4.1:
+# `bazel mod deps --lockfile_mode=error` exits 2 against the committed
+# MODULE.bazel.lock. The rules_rust crate extension records the sha256 of
+# Cargo.lock, Cargo.toml, MODULE.bazel and every crates/*/Cargo.toml, and the
+# committed lock was last regenerated at #1029, so every build since has
+# re-evaluated it in the default `update` mode. Setting `error` would require
+# regenerating MODULE.bazel.lock in every commit that touches any of those
+# files, dependabot's cargo bumps and each release's version bump included.
+
 # Build settings
 build --incompatible_strict_action_env
 build --verbose_failures

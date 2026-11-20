@@ -1,0 +1,75 @@
+# Lockfiles: every committed Cargo.lock is current with its manifests, and
+# every one is audited for advisories.
+#
+# `fuzz/` is its own cargo workspace and its Cargo.lock was gitignored, so its
+# dependencies were re-resolved on every run and a dependency release could
+# break the fuzz job with no commit here. The advisory audit in ci.yml and
+# release.yml covers the root workspace only. Both jobs below discover the
+# committed locks with `git ls-files`, so a new nested workspace is covered
+# without an edit to this file, and a workspace root with NO committed lock is
+# refused.
+#
+# The freshness job is also the substitute for `--locked` on ci.yml's cargo
+# commands: ci.yml sits at GitHub's workflow-size ceiling and cannot take the
+# flag on every invocation. A lock proven current cannot be re-resolved by a
+# later cargo command on the same commit.
+#
+# Each job runs a planted control on every run and fails if the control
+# passes: a stale lock must be refused, and a lock pinning a crate with a
+# known RustSec advisory must be refused. See scripts/lockfile_check.py.
+#
+# This lives outside ci.yml because ci.yml cannot grow.
+#
+# NOT in the required-check set, for the reason Spec Suite records: a new
+# required context that fails to run deadlocks every merge. Adding it is the
+# owner's call.
+name: Lockfiles
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+# CI load (org hosted queue, 2026-11-08): a new push to a PR cancels that
+# PR's superseded run of this workflow. Pushes to main are keyed by commit sha,
+# so a main run is never cancelled or replaced: every main commit stays verified.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  freshness:
+    name: Lockfile freshness
+    # Self-hosted `light` pool: only `cargo metadata`, nothing is compiled.
+    # Fail-closed fork guard: only a same-repo PR or a non-PR event reaches
+    # self-hosted.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Every committed Cargo.lock is current, and a stale one is refused
+        run: python3 scripts/lockfile_check.py freshness
+
+  advisories:
+    name: Advisory audit, every lock
+    # The pool ci.yml's advisory job uses: cargo-deny is compiled here when it
+    # is not already installed. Same fail-closed fork guard as above.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: lockfiles-advisories
+      # The same install line as ci.yml's advisory job.
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny || cargo deny --version
+      - name: Every committed Cargo.lock is audited, and a known advisory is refused
+        run: python3 scripts/lockfile_check.py audit
