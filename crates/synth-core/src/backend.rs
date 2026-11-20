@@ -573,6 +573,115 @@ impl CompileConfig {
             (s, _) => s,
         }
     }
+
+    /// The config for compiling `func` of `module`: this config with every
+    /// PER-FUNCTION field set for that function (#1745).
+    ///
+    /// `compile_function` carries no function index, so the function's own
+    /// index, the declared param count, the i64/f32/f64 param masks, the
+    /// float-return flags, the blocktype arity and the declared local widths
+    /// travel in the `current_func_*` fields. The CLI's compile loops fill them per
+    /// function; every `Backend::compile_module` goes through here, so a
+    /// library caller with a default config compiles each function against
+    /// its own signature too. The MODULE wins over whatever the caller's
+    /// config holds, because a config table for another module (or none) is
+    /// how a zero-initialised local came to be read from an argument
+    /// register, an i64 param from the wrong register pair, and a
+    /// value-carrying block as void.
+    ///
+    /// A module that carries no entry for the function (a hand-built
+    /// `DecodedModule` with empty signature tables) keeps the caller's
+    /// indexed table entry and then the caller's `current_func_*` value, the
+    /// behaviour before #1745.
+    ///
+    /// The per-function fields the module does NOT describe are never passed
+    /// through from the caller, because each is keyed to ONE function and
+    /// `compile_module` would hand the same value to every function:
+    /// - `current_func_facts` is this function's slice of the caller's
+    ///   module-level `wsc_facts` (they carry a function index), as the CLI
+    ///   derives it;
+    /// - the op-index lists (`fact_div_zero_elide`, `fact_div_ovf_elide`,
+    ///   `fact_mem_bounds_elide`, `proven_safe_mem_elide`,
+    ///   `current_func_npa_raw_consts`, `current_func_npa_reloc_consts`) are
+    ///   EMPTIED. The CLI computes them per function from analyses this
+    ///   function does not run. Empty means no trap guard is elided and no
+    ///   constant is treated as a native pointer, so a caller's list for one
+    ///   function can no longer drop a guard in another.
+    pub fn for_function(
+        &self,
+        module: &DecodedModule,
+        func: &crate::wasm_decoder::FunctionOps,
+    ) -> CompileConfig {
+        let i = func.index as usize;
+        fn mask(module: &[Vec<bool>], caller: &[Vec<bool>], cur: &[bool], i: usize) -> Vec<bool> {
+            match module.get(i).or_else(|| caller.get(i)) {
+                Some(m) => m.clone(),
+                None => cur.to_vec(),
+            }
+        }
+        fn flag(module: &[bool], caller: &[bool], cur: bool, i: usize) -> bool {
+            module
+                .get(i)
+                .or_else(|| caller.get(i))
+                .copied()
+                .unwrap_or(cur)
+        }
+        CompileConfig {
+            current_func_param_count: module
+                .func_arg_counts
+                .get(i)
+                .or_else(|| self.func_arg_counts.get(i))
+                .copied()
+                .or(self.current_func_param_count),
+            current_func_params_i64: mask(
+                &module.func_params_i64,
+                &self.func_params_i64,
+                &self.current_func_params_i64,
+                i,
+            ),
+            current_func_params_f32: mask(
+                &module.func_params_f32,
+                &self.func_params_f32,
+                &self.current_func_params_f32,
+                i,
+            ),
+            current_func_params_f64: mask(
+                &module.func_params_f64,
+                &self.func_params_f64,
+                &self.current_func_params_f64,
+                i,
+            ),
+            current_func_ret_f32: flag(
+                &module.func_ret_f32,
+                &self.func_ret_f32,
+                self.current_func_ret_f32,
+                i,
+            ),
+            current_func_ret_f64: flag(
+                &module.func_ret_f64,
+                &self.func_ret_f64,
+                self.current_func_ret_f64,
+                i,
+            ),
+            current_func_block_arity: func.block_arity.clone(),
+            current_func_declared_i64_locals: func.declared_i64_locals.clone(),
+            current_func_declared_float_locals: func.declared_float_locals.clone(),
+            current_func_index: Some(func.index),
+            current_func_facts: self
+                .wsc_facts
+                .iter()
+                .filter(|f| f.func_index == func.index)
+                .cloned()
+                .collect(),
+            fact_div_zero_elide: Vec::new(),
+            fact_div_ovf_elide: Vec::new(),
+            fact_mem_bounds_elide: Vec::new(),
+            proven_safe_mem_elide: Vec::new(),
+            current_func_npa_raw_consts: Vec::new(),
+            current_func_npa_reloc_consts: Vec::new(),
+            ..self.clone()
+        }
+    }
 }
 
 impl Default for CompileConfig {
@@ -1098,6 +1207,133 @@ impl Default for BackendRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1745: `for_function` takes every per-function fact from the module,
+    /// over whatever the caller's config holds; a module with no entry for
+    /// the function keeps the caller's.
+    #[test]
+    fn for_function_takes_the_modules_facts_1745() {
+        let wasm = wat::parse_str(
+            r#"(module
+                 (func (export "a") (param i32 i64) (result f32) (local i64 f64)
+                   (block (result f32) (f32.const 1)))
+                 (func (export "b") (param f32 f64) (result f64) local.get 1))"#,
+        )
+        .unwrap();
+        let module = crate::wasm_decoder::decode_wasm_module(&wasm).unwrap();
+        // A caller config that is wrong for both functions in every field.
+        let stale = CompileConfig {
+            func_arg_counts: vec![9, 9],
+            func_params_i64: vec![vec![true; 9]; 2],
+            func_params_f32: vec![vec![true; 9]; 2],
+            func_params_f64: vec![vec![true; 9]; 2],
+            func_ret_f32: vec![false, true],
+            func_ret_f64: vec![true, false],
+            current_func_param_count: Some(7),
+            current_func_params_i64: vec![true; 7],
+            current_func_block_arity: vec![(3, 3)],
+            current_func_declared_i64_locals: vec![false; 5],
+            current_func_declared_float_locals: vec![9; 5],
+            ..CompileConfig::default()
+        };
+        for base in [CompileConfig::default(), stale.clone()] {
+            let a = base.for_function(&module, &module.functions[0]);
+            assert_eq!(a.current_func_param_count, Some(2));
+            assert_eq!(a.current_func_params_i64, vec![false, true]);
+            assert_eq!(a.current_func_params_f32, vec![false, false]);
+            assert_eq!(a.current_func_params_f64, vec![false, false]);
+            assert!(a.current_func_ret_f32 && !a.current_func_ret_f64);
+            assert_eq!(a.current_func_block_arity, vec![(0, 1)]);
+            assert_eq!(a.current_func_declared_i64_locals, vec![true, false]);
+            assert_eq!(
+                a.current_func_declared_float_locals,
+                module.functions[0].declared_float_locals
+            );
+            assert!(a.current_func_declared_float_locals.iter().any(|&w| w != 0));
+            let b = base.for_function(&module, &module.functions[1]);
+            assert_eq!(b.current_func_param_count, Some(2));
+            assert_eq!(b.current_func_params_f32, vec![true, false]);
+            assert_eq!(b.current_func_params_f64, vec![false, true]);
+            assert!(!b.current_func_ret_f32 && b.current_func_ret_f64);
+            assert!(b.current_func_block_arity.is_empty());
+        }
+        // No entry in the module (signature tables emptied, as in a
+        // hand-built module): the caller's indexed entry, then its
+        // `current_func_*` value.
+        let mut bare = module.clone();
+        bare.func_arg_counts.clear();
+        bare.func_params_i64.clear();
+        bare.func_ret_f64.clear();
+        let c = stale.for_function(&bare, &bare.functions[0]);
+        assert_eq!(c.current_func_param_count, Some(9));
+        assert_eq!(c.current_func_params_i64, vec![true; 9]);
+        assert!(c.current_func_ret_f64);
+        let only_current = CompileConfig {
+            current_func_param_count: Some(7),
+            current_func_params_i64: vec![true; 7],
+            ..CompileConfig::default()
+        };
+        let d = only_current.for_function(&bare, &bare.functions[0]);
+        assert_eq!(d.current_func_param_count, Some(7));
+        assert_eq!(d.current_func_params_i64, vec![true; 7]);
+    }
+
+    /// #1745: the per-function fields the module does not describe are set
+    /// for THIS function or emptied, never handed on from the caller.
+    #[test]
+    fn for_function_does_not_pass_on_another_functions_lists_1745() {
+        use crate::wsc_facts::{FactKind, WscFact};
+        let wasm = wat::parse_str(
+            r#"(module
+                 (func (export "a") (param i32 i32) (result i32)
+                   local.get 0 local.get 1 i32.div_u)
+                 (func (export "b") (param i32 i32) (result i32)
+                   local.get 0 local.get 1 i32.rem_u))"#,
+        )
+        .unwrap();
+        let module = crate::wasm_decoder::decode_wasm_module(&wasm).unwrap();
+        let fact = |func_index, value_id| WscFact {
+            func_index,
+            value_id,
+            kind: FactKind::DivisorNonZero,
+        };
+        // A config built for function 0, as the CLI's loop would leave it.
+        let for_a = CompileConfig {
+            current_func_index: Some(0),
+            wsc_facts: vec![fact(0, 1), fact(1, 1), fact(1, 0)],
+            current_func_facts: vec![fact(0, 1)],
+            fact_div_zero_elide: vec![2],
+            fact_div_ovf_elide: vec![2],
+            fact_mem_bounds_elide: vec![1],
+            proven_safe_mem_elide: vec![1],
+            current_func_npa_raw_consts: vec![0],
+            current_func_npa_reloc_consts: vec![0],
+            ..CompileConfig::default()
+        };
+        for (k, func) in module.functions.iter().enumerate() {
+            let c = for_a.for_function(&module, func);
+            assert_eq!(c.current_func_index, Some(k as u32));
+            assert!(c.fact_div_zero_elide.is_empty());
+            assert!(c.fact_div_ovf_elide.is_empty());
+            assert!(c.fact_mem_bounds_elide.is_empty());
+            assert!(c.proven_safe_mem_elide.is_empty());
+            assert!(c.current_func_npa_raw_consts.is_empty());
+            assert!(c.current_func_npa_reloc_consts.is_empty());
+            // The module-level facts stay; the slice is this function's.
+            assert_eq!(c.wsc_facts, for_a.wsc_facts);
+            assert!(
+                c.current_func_facts
+                    .iter()
+                    .all(|f| f.func_index == k as u32)
+            );
+        }
+        let b = for_a.for_function(&module, &module.functions[1]);
+        assert_eq!(b.current_func_facts, vec![fact(1, 1), fact(1, 0)]);
+        // No caller index and no facts: still this function's index.
+        let d = CompileConfig::default().for_function(&module, &module.functions[1]);
+        assert_eq!(d.current_func_index, Some(1));
+        assert!(d.current_func_facts.is_empty());
+    }
 
     #[test]
     fn test_registry_empty() {

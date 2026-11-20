@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-use object::read::elf::{ElfFile32, FileHeader, Sym};
+use object::read::elf::{ElfFile, FileHeader, Sym};
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SectionIndex, SymbolKind};
 
 /// The machine an object was emitted for, from `e_machine`.
@@ -16,6 +16,8 @@ use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SectionIndex, S
 pub enum Machine {
     Arm,
     RiscV32,
+    /// AArch64 (A64), an ELF64 object.
+    AArch64,
 }
 
 /// A function symbol, located within `.text`.
@@ -45,20 +47,47 @@ pub struct CompiledObject {
 }
 
 impl CompiledObject {
-    /// Parse an ELF32 object or executable emitted by synth.
+    /// Parse an ELF object or executable emitted by synth: ELF32 for ARM and
+    /// RV32, ELF64 for AArch64.
     pub fn parse(path: &Path) -> Result<Self, String> {
         let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         Self::parse_bytes(path, &data)
     }
 
     pub fn parse_bytes(path: &Path, data: &[u8]) -> Result<Self, String> {
-        let file = ElfFile32::<object::Endianness>::parse(data)
-            .map_err(|e| format!("{}: not an ELF32 file: {e}", path.display()))?;
+        match object::FileKind::parse(data) {
+            Ok(object::FileKind::Elf32) => {
+                Self::parse_elf::<object::elf::FileHeader32<object::Endianness>>(path, data, false)
+            }
+            Ok(object::FileKind::Elf64) => {
+                Self::parse_elf::<object::elf::FileHeader64<object::Endianness>>(path, data, true)
+            }
+            other => Err(format!("{}: not an ELF file: {other:?}", path.display())),
+        }
+    }
+
+    /// `elf64` is the file's class. A machine is accepted only in the class
+    /// synth emits it in (ARM and RV32 in ELF32, AArch64 in ELF64): an
+    /// RV64 object, say, carries `EM_RISCV` too and must not be read as RV32.
+    fn parse_elf<Elf: FileHeader<Endian = object::Endianness>>(
+        path: &Path,
+        data: &[u8],
+        elf64: bool,
+    ) -> Result<Self, String> {
+        let file = ElfFile::<Elf>::parse(data)
+            .map_err(|e| format!("{}: not an ELF file: {e}", path.display()))?;
         let endian = file.endian();
-        let machine = match file.elf_header().e_machine(endian) {
-            object::elf::EM_ARM => Machine::Arm,
-            object::elf::EM_RISCV => Machine::RiscV32,
-            m => return Err(format!("{}: unsupported e_machine {m}", path.display())),
+        let machine = match (file.elf_header().e_machine(endian), elf64) {
+            (object::elf::EM_ARM, false) => Machine::Arm,
+            (object::elf::EM_RISCV, false) => Machine::RiscV32,
+            (object::elf::EM_AARCH64, true) => Machine::AArch64,
+            (m, _) => {
+                return Err(format!(
+                    "{}: unsupported e_machine {m} in an ELF{} file",
+                    path.display(),
+                    if elf64 { 64 } else { 32 }
+                ));
+            }
         };
         let text_sec = file
             .section_by_name(".text")
@@ -79,7 +108,7 @@ impl CompiledObject {
                 continue;
             }
             // The RAW st_value, so the Thumb bit is ours to interpret.
-            let raw = u64::from(sym.elf_symbol().st_value(endian));
+            let raw: u64 = sym.elf_symbol().st_value(endian).into();
             let thumb = machine == Machine::Arm && raw & 1 == 1;
             let addr = if machine == Machine::Arm {
                 raw & !1
@@ -88,7 +117,7 @@ impl CompiledObject {
             };
             let fs = FuncSym {
                 offset: addr - text_addr,
-                size: u64::from(sym.elf_symbol().st_size(endian)),
+                size: sym.elf_symbol().st_size(endian).into(),
                 thumb,
                 global: sym.is_global(),
             };

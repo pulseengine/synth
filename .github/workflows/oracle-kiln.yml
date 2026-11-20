@@ -119,3 +119,13 @@ jobs:
           # routing witness and the frozen pre-fix bytes that must stay red.
           grep -qx 'ORACLE select-1754: 880 cases agree across 5 legs' "$log"
           grep -qE '^test result: ok\. 3 passed; 0 failed' "$log"
+          # #1745: the LIBRARY entry point, `Backend::compile_module`, on all
+          # three backends (no `synth` binary is involved), the paired
+          # `compile_function` control, and the AArch64 runner's guards.
+          grep -qx 'ORACLE 1745 a64 compile_module: 54 of 54 cases agree' "$log"
+          grep -qx 'ORACLE 1745 a64 compile_function (control): 54 of 54 cases agree' "$log"
+          grep -qx 'ORACLE 1745 a64 stale caller config: 27 of 27 cases agree' "$log"
+          grep -qx 'ORACLE 1745 arm compile_module: 135 of 135 cases agree' "$log"
+          grep -qx 'ORACLE 1745 arm vfp compile_module: 15 of 15 cases agree' "$log"
+          grep -qx 'ORACLE 1745 rv32 compile_module: 30 of 30 cases agree, 4 refused' "$log"
+          grep -qE '^test result: ok\. 13 passed; 0 failed' "$log"

@@ -43,9 +43,16 @@ kiln-runtime = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d994
 kiln-decoder = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d9945f191c272d0be73c3d046b2aebdee", features = ["std"], optional = true }
 kiln-foundation = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d9945f191c272d0be73c3d046b2aebdee", features = ["std"], optional = true }
 kiln-error = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d9945f191c272d0be73c3d046b2aebdee", features = ["std"], optional = true }
-# Only the two architectures synth targets in this harness: ARM (Thumb-2 /
-# A32) and RISC-V. `arch_all` would build eight more QEMU targets.
-unicorn-engine = { version = "2.1.5", default-features = false, features = ["arch_arm", "arch_riscv"], optional = true }
+# Only the architectures synth targets in this harness: ARM (Thumb-2 / A32),
+# RISC-V and AArch64 (#1745). `arch_all` would build seven more QEMU targets.
+unicorn-engine = { version = "2.1.5", default-features = false, features = ["arch_arm", "arch_riscv", "arch_aarch64"], optional = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
+# The LIBRARY entry points (`Backend::compile_module`), which no `synth`
+# invocation reaches (#1745). Dev-dependencies only: the harness depends on
+# the compiler, never the reverse.
+synth-core = { path = "../synth-core" }
+synth-backend = { path = "../synth-backend" }
+synth-backend-riscv = { path = "../synth-backend-riscv" }
+synth-backend-aarch64 = { path = "../synth-backend-aarch64" }

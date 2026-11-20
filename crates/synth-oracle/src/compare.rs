@@ -79,7 +79,8 @@ pub enum EmuOutcome {
     /// Returned to the caller with the ABI intact; the values are read from
     /// the result registers.
     Values(Vec<WasmValue>),
-    /// Stopped on a trap instruction: UDF on ARM, ebreak/unimp on RV32.
+    /// Stopped on a trap instruction: UDF on ARM, ebreak/unimp on RV32, brk
+    /// on AArch64.
     Trap { pc: u64, insn: String },
     /// Any other fault (unmapped access, an undefined encoding that is not a
     /// trap idiom, a clobbered callee-saved register, an unbalanced stack).

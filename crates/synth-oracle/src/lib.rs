@@ -13,7 +13,8 @@
 //!
 //! WHAT IS COMPARED: return values and trap-versus-return, nothing else.
 //! Memory effects are not compared, so `run_case` refuses a module with a
-//! linear memory; the emulator refuses float signatures, calls and
+//! linear memory; the emulator refuses float signatures (on every core but
+//! AArch64, where the AAPCS64 V-register convention is set up), calls and
 //! multi-value results (see `emulate`).
 
 pub mod compare;

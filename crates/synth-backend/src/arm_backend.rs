@@ -149,82 +149,17 @@ impl Backend for ArmBackend {
         let mut functions = Vec::new();
         for func in &exports {
             let name = func.export_name.clone().unwrap();
-            // #359: copy THIS function's declared param widths into the config so
-            // `compile_function` (which carries no function index) can refuse a
-            // 64-bit param on the AAPCS stack-argument path. Cheap clone only when
-            // a signature table is present and this function has a width entry —
-            // otherwise reuse the shared config (every existing module unchanged).
-            // #509: same per-function pattern for the blocktype-arity side-table
-            // (value-carrying-branch lowering).
-            let params = config
-                .func_params_i64
-                .get(func.index as usize)
-                .filter(|p| !p.is_empty());
-            // #457: THIS function's DECLARED param count (imports-first full
-            // index), so the backend can cap the access-pattern inference that
-            // mistook a read-before-write local for a param. `None` when the
-            // driver supplied no arg-count table (hand-built modules).
-            let declared_params = config.func_arg_counts.get(func.index as usize).copied();
-            // GI-FPU-002 (#619/#369): THIS function's declared f32-param mask.
-            let params_f32 = config
-                .func_params_f32
-                .get(func.index as usize)
-                .filter(|p| !p.is_empty());
-            // GI-FPU-002 phase 2 (#369): THIS function's declared f64-param
-            // mask (hard-float targets decline f64 params loudly).
-            let params_f64 = config
-                .func_params_f64
-                .get(func.index as usize)
-                .filter(|p| !p.is_empty());
-            // GI-FPU-002 phase 2 (#719/#369): THIS function's declared f32/f64
-            // return flag, so the epilogue soundness guard fires on every driver
-            // path (not only the CLI loops).
-            let ret_f32 = config
-                .func_ret_f32
-                .get(func.index as usize)
-                .copied()
-                .unwrap_or(false);
-            let ret_f64 = config
-                .func_ret_f64
-                .get(func.index as usize)
-                .copied()
-                .unwrap_or(false);
-            // #1214: THIS function's declared-i64-local side-table. Guarded by
-            // `.any(i64)`, not `!is_empty()` — every function with ANY declared
-            // local (i32 included) has a non-empty vector, and that would
-            // widen this memoization guard to nearly every function for no
-            // reason; only a function that actually declares an i64 local
-            // needs the extra clone.
-            let declared_i64_locals = &func.declared_i64_locals;
-            // #1594: same guard shape — only a function declaring a float
-            // local needs the clone (the entry zero-init of its VFP home).
-            let declared_float_locals = &func.declared_float_locals;
-            let func_config = if params.is_some()
-                || params_f32.is_some()
-                || params_f64.is_some()
-                || !func.block_arity.is_empty()
-                || declared_params.is_some()
-                || ret_f32
-                || ret_f64
-                || declared_i64_locals.iter().any(|&b| b)
-                || declared_float_locals.iter().any(|&w| w != 0)
-            {
-                Some(CompileConfig {
-                    current_func_params_i64: params.cloned().unwrap_or_default(),
-                    current_func_params_f32: params_f32.cloned().unwrap_or_default(),
-                    current_func_params_f64: params_f64.cloned().unwrap_or_default(),
-                    current_func_ret_f32: ret_f32,
-                    current_func_ret_f64: ret_f64,
-                    current_func_block_arity: func.block_arity.clone(),
-                    current_func_declared_i64_locals: declared_i64_locals.clone(),
-                    current_func_declared_float_locals: declared_float_locals.clone(),
-                    current_func_param_count: declared_params,
-                    ..config.clone()
-                })
-            } else {
-                None
-            };
-            let cfg = func_config.as_ref().unwrap_or(config);
+            // THIS function's facts, from the MODULE (#1745): declared param
+            // count (#457), i64/f32/f64 param masks (#359, GI-FPU-002
+            // #619/#369), f32/f64 return flags (#719), blocktype arity (#509)
+            // and declared i64/float locals (#1214, #1594). `compile_function`
+            // carries no function index, so they travel in the config. They
+            // were read from the CALLER's config tables, which a library
+            // caller leaves empty: a zero-initialised local was then read
+            // from an argument register and an i64 param from the wrong
+            // register pair, with `Ok` returned.
+            let func_config = config.for_function(module, func);
+            let cfg = &func_config;
             let compiled = self.compile_function(&name, &func.ops, cfg)?;
             functions.push(compiled);
         }
