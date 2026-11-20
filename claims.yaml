@@ -1374,7 +1374,7 @@ claims:
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # function-level pin (file buckets miss in-file float moves)
-        pattern: 'SKIPPED_FUNCTION_PINS = \{"arm_m4f": 1491, "arm_m7dp": 1398\}'
+        pattern: 'SKIPPED_FUNCTION_PINS = \{"arm_m4f": 1493, "arm_m7dp": 1400\}'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-min                      # the job runs the census (all legs by default)

@@ -201,6 +201,20 @@ impl Backend for RiscVBackend {
         let mut elf_funcs = Vec::new();
         for func in &exports {
             let name = func.export_name.clone().unwrap();
+            // #1450: an exported multi-result function has no return
+            // convention to be compiled against — refuse the module.
+            if let Some(reason) = synth_core::multi_result_function_decline(
+                module
+                    .func_result_counts
+                    .get(func.index as usize)
+                    .copied()
+                    .unwrap_or(0),
+                "exported",
+            ) {
+                return Err(BackendError::CompilationFailed(format!(
+                    "function '{name}': {reason}"
+                )));
+            }
             // THIS function's facts, from the MODULE (#1745): the declared
             // param count (#457) caps the access-pattern param inference, so
             // a read-before-write local gets a zero-inited frame slot instead

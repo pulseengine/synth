@@ -2390,6 +2390,8 @@ fn compile_command(
             .unwrap_or(0);
             let module_func_params_i64 = module.func_params_i64;
             let module_func_arg_counts = module.func_arg_counts;
+            // #1450: the selected function's own result count.
+            let module_func_result_counts = module.func_result_counts.clone();
             func_params_f32_all = module.func_params_f32.clone();
             func_params_f64_all = module.func_params_f64.clone();
             // GI-FPU-002 phase 2 (#719/#369): per-function/per-type f32/f64
@@ -2493,6 +2495,25 @@ fn compile_command(
             // honestly here, the single-function analogue of the `--all-exports`
             // loud-skip (#369). Backend-agnostic: this guards the ARM/RISC-V
             // direct paths too, not just `-b aarch64`.
+            // #1450: the function this compile was asked for is the object's
+            // entry point whether or not the module exports it (`--func-index`
+            // can name an unexported one), so a multi-result signature is
+            // refused here by its own name.
+            if let Some(reason) = synth_core::multi_result_function_decline(
+                module_func_result_counts
+                    .get(func.index as usize)
+                    .copied()
+                    .unwrap_or(0),
+                "selected as this compile's entry point",
+            ) {
+                anyhow::bail!(
+                    "function '{}': {} — the '{}' backend refuses it rather than \
+                     emit an object that returns one of its results",
+                    name,
+                    reason,
+                    backend.name()
+                );
+            }
             if let Some(reason) = &func.unsupported {
                 anyhow::bail!(
                     "function '{}' contains an unsupported operator ({}) the '{}' \
@@ -6080,15 +6101,32 @@ fn compile_all_exports(
         // link error naming it rather than a silently-wrong result. (#180/#185
         // "unsupported op must Err, never silently continue".)
         if let Some(reason) = &func.unsupported {
-            eprintln!(
-                "warning: skipping function '{name}': contains an unsupported \
-                 operator ({reason}) the {} backend cannot lower — emitting no \
-                 code for it rather than a silent miscompile (GI-FPU-001, #369)",
-                backend.name()
-            );
+            // #1450: a multi-result ENTRY POINT is flagged through the same
+            // field but is a signature refusal, not a dropped operator, so it
+            // is reported in its own words.
+            let multi_result = reason.contains("MULTI-RESULT function");
+            if multi_result {
+                eprintln!(
+                    "warning: skipping function '{name}': {reason} — the {} \
+                     backend emits no code for it rather than an object that \
+                     returns one of its results",
+                    backend.name()
+                );
+            } else {
+                eprintln!(
+                    "warning: skipping function '{name}': contains an unsupported \
+                     operator ({reason}) the {} backend cannot lower — emitting no \
+                     code for it rather than a silent miscompile (GI-FPU-001, #369)",
+                    backend.name()
+                );
+            }
             skipped_funcs.push((
                 name.clone(),
-                format!("unsupported operator: {reason}"),
+                if multi_result {
+                    reason.clone()
+                } else {
+                    format!("unsupported operator: {reason}")
+                },
                 func.export_name.is_some(),
                 func.index,
                 origin.module,

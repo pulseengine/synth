@@ -94,7 +94,7 @@ jobs:
         run: cargo build -p synth-cli
       - name: Clippy (synth-oracle with the engines)
         run: cargo clippy -p synth-oracle --features exec --all-targets -- -D warnings
-      - name: kiln probe oracle (cortex-m3 + rv32imac, with potency legs)
+      - name: kiln probe oracle (cortex-m3 + rv32imac, with potency legs) + #1450 control
         run: |
           set -euo pipefail
           log="$RUNNER_TEMP/oracle-kiln.log"
@@ -129,3 +129,8 @@ jobs:
           grep -qx 'ORACLE 1745 arm vfp compile_module: 15 of 15 cases agree' "$log"
           grep -qx 'ORACLE 1745 rv32 compile_module: 30 of 30 cases agree, 4 refused' "$log"
           grep -qE '^test result: ok\. 13 passed; 0 failed' "$log"
+          # #1450: the multi-result refusal's EXECUTED control. The single-
+          # result twins of the refused export agree with kiln on cortex-m4
+          # and rv32imac, and the refusal itself is seen on both.
+          grep -qx 'ORACLE multi-result-1450: 56 single-result control cases agree across 2 legs' "$log"
+          grep -qE '^test result: ok\. 3 passed; 0 failed' "$log"

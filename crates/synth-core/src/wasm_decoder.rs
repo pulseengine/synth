@@ -1830,6 +1830,30 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
 
     apply_name_section(&mut functions, &name_section_names);
 
+    // #1450: a function with more than one result that is an ENTRY POINT —
+    // exported, or address-taken through an element segment — is flagged for
+    // the loud-skip every compile path already honours. Done after the loop
+    // so it never depends on the element or export section's position. A
+    // multi-result function that is neither stays unflagged: an in-module
+    // call to it is refused at the call site, and uncalled it is not emitted.
+    for f in &mut functions {
+        if f.unsupported.is_some() {
+            continue;
+        }
+        let results = func_type_indices
+            .get(f.index as usize)
+            .and_then(|&ti| type_block_arity.get(ti as usize))
+            .map_or(0, |&(_p, r)| u32::from(r));
+        let how = if f.export_name.is_some() {
+            "exported"
+        } else if elem_func_indices.contains(&f.index) {
+            "in a table (address-taken)"
+        } else {
+            continue;
+        };
+        f.unsupported = crate::wasm_op::multi_result_function_decline(results, how);
+    }
+
     Ok(DecodedModule {
         functions,
         memories,

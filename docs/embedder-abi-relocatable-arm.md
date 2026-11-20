@@ -296,6 +296,17 @@ whatever the region holds), not a trap.
   `R_ARM_THM_CALL` is the expected shape. Read the symbol table by section
   TYPE (`SHT_SYMTAB`), not name: the ARM builder emits its symtab with an
   empty section name.
+- **Multi-result functions are not part of this ABI (#1450).** No return
+  convention is defined for a function with more than one result, so synth
+  refuses to emit one as an entry point: an exported multi-result function,
+  or one that sits in a funcref table of a module that dispatches through
+  it, is skipped with a `MULTI-RESULT function` diagnostic and the compile
+  exits non-zero (the #952 rule; `--allow-skipped-exports` ships the object
+  WITHOUT that symbol). Before this refusal the object returned only the
+  function's LAST result in R0 (S0 for a float), exit 0. The same refusal
+  applies on RV32 and AArch64. A multi-result function that is neither
+  exported nor reachable through a table is not emitted, and a call to one
+  from inside the module is refused at the call site.
 
 ### The `@`-in-export-names hazard — UNSOLVED, work around it
 

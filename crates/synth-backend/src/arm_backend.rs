@@ -149,6 +149,20 @@ impl Backend for ArmBackend {
         let mut functions = Vec::new();
         for func in &exports {
             let name = func.export_name.clone().unwrap();
+            // #1450: an exported multi-result function has no return
+            // convention to be compiled against — refuse the module.
+            if let Some(reason) = synth_core::multi_result_function_decline(
+                module
+                    .func_result_counts
+                    .get(func.index as usize)
+                    .copied()
+                    .unwrap_or(0),
+                "exported",
+            ) {
+                return Err(BackendError::CompilationFailed(format!(
+                    "function '{name}': {reason}"
+                )));
+            }
             // THIS function's facts, from the MODULE (#1745): declared param
             // count (#457), i64/f32/f64 param masks (#359, GI-FPU-002
             // #619/#369), f32/f64 return flags (#719), blocktype arity (#509)

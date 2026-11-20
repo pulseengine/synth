@@ -851,6 +851,36 @@ pub fn multi_result_call_decline_msg(backend: &str, what: &str, index: u32, coun
     )
 }
 
+/// #1450 — why a function whose OWN type has more than one result is refused
+/// when it is an entry point: `how` says which kind ("exported", "in a table
+/// (address-taken)", "the function this compile was asked for").
+///
+/// No backend defines a multi-value return convention. Each return sequence
+/// implements the one-result convention and was applied unchanged to an
+/// n-result function, so result n-1 landed in the return register and results
+/// 0..n-2 stayed wherever the allocator left them — exit 0, measured on main
+/// 6641efec for `(param i32) (result i32 i32)` = (x*3, x*5), x = 7:
+/// cortex-m4 `r0 = 35`; RV32 `mv a0, t3` (x*5, the first result left in t2);
+/// AArch64 `mov x0, x10` (x*5, the first result discarded); cortex-m7dp
+/// `(result f32 f32)` `s0` = the second result. An in-module CALL of such a
+/// function is refused separately ([`find_multi_result_call`], RV32 #871,
+/// aarch64 #851), so the only consumer left was one OUTSIDE the module — an
+/// embedder calling the export, or reaching the function through the table —
+/// which has no contract to read the other results by.
+///
+/// `None` for 0 or 1 results. The needle is "MULTI-RESULT function".
+pub fn multi_result_function_decline(result_count: u32, how: &str) -> Option<String> {
+    (result_count > 1).then(|| {
+        format!(
+            "signature returns {result_count} results and the function is {how} — a \
+             MULTI-RESULT function is not lowered as an entry point: no backend \
+             defines a multi-value return convention, and the one-result return \
+             sequence would hand a caller outside the module only the LAST \
+             result (#1450)"
+        )
+    })
+}
+
 #[cfg(test)]
 mod multi_result_call_tests {
     use super::*;
@@ -875,6 +905,17 @@ mod multi_result_call_tests {
             Some(("call_indirect of type", 3, 3))
         );
         assert_eq!(find_multi_result_call(&ci, &[], &[1, 1, 1, 1]), None);
+    }
+
+    #[test]
+    fn multi_result_function_decline_fires_only_above_one_result_1450() {
+        assert_eq!(multi_result_function_decline(0, "exported"), None);
+        assert_eq!(multi_result_function_decline(1, "exported"), None);
+        let m = multi_result_function_decline(2, "exported").expect("2 results");
+        assert!(m.contains("MULTI-RESULT function"), "{m}");
+        assert!(m.contains("#1450"), "{m}");
+        assert!(m.contains("returns 2 results"), "{m}");
+        assert!(m.contains("is exported"), "{m}");
     }
 }
 
