@@ -2100,9 +2100,26 @@ claims:
         # v0.91 BRDIV (#1712): 21309 -> 21311, waived below.
         # PARAMI64 (#1714): 21311 -> 21352, waived below (chained after BRDIV's).
         # I64TEE (#1713): 21352 -> 21427, waived below (chained after PARAMI64's).
-        value: 21427
+        # SELECTALIAS (#1754): 21427 -> 21436, waived below.
+        value: 21436
         baseline: 17897
         waivers:
+          - to: 21436
+            reason: >-
+              SELECTALIAS (Refs #1754): 21427 -> 21436 (+9, re-derived after
+              cargo fmt). One more condition on the i32 `select` in-place
+              dispatch in select_with_stack.rs: the in-place form is refused
+              when val2's register is still on the operand stack
+              (`stack_live_regs`, read after the three pops). `local.get`
+              pushes a local's home register, so `p0 + select(p2, p0, p1)`
+              overwrote r0 under the add's first operand and returned 14 for
+              f(5,1,7), not 12. +3 lines are the condition (rustfmt breaks the
+              one-line expression into four), +6 its comment. No new lowering
+              arm and no wildcard arm: the fresh-destination form it falls
+              back to is the existing Rocq-proved `rule_i32_select`. Gated by
+              execution: crates/synth-oracle/tests/select_home_alias_1754.rs
+              (RED on main 6641efec: 128 of 880 cases wrong, all on the four
+              direct-selector legs; GREEN: 0 of 880).
           - to: 21427
             reason: >-
               I64TEE (Refs #1713, #1241): 21352 -> 21427 (+75, re-derived after
@@ -3571,7 +3588,10 @@ claims:
         # I64TEE (#1713): 32320 -> 32447: +75 code (waived on
         # selector_lines_code) and +52 test module (three `_1713` width-set
         # unit tests). No waiver.
-        value: 32447
+        # SELECTALIAS (#1754): 32447 -> 32498: +9 code (waived on
+        # selector_lines_code) and +42 test module (the `_1754` stacked-alias
+        # unit test). No waiver.
+        value: 32498
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

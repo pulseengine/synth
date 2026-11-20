@@ -6881,8 +6881,17 @@ impl InstructionSelector {
                     //   - live param  → #193 param-clobber class
                     //   - val2==cond  → cmp consumed cond, but a later read can't
                     //   - val2==val1  → degenerate; fresh dst keeps it simple
+                    //   - val2 still on the operand stack → #1754: `local.get`
+                    //     pushes a local's HOME register, so a second copy of
+                    //     val2's register can sit below the select's operands
+                    //     with no later `local.get` (`live_params` is blind to
+                    //     it); `p0 + select(p2, p0, p1)` returned `p2 + p2`.
+                    //     Read AFTER the three pops: only other aliases remain.
                     // Falls back to the fresh-dst two-move form otherwise.
-                    let in_place = !live_params.contains(&val2) && val2 != cond_reg && val2 != val1;
+                    let in_place = !live_params.contains(&val2)
+                        && val2 != cond_reg
+                        && val2 != val1
+                        && !stack_live_regs(&stack).contains(&val2);
                     let dst = if in_place {
                         val2
                     } else {

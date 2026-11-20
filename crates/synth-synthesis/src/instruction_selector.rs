@@ -15027,6 +15027,48 @@ mod tests {
     }
 
     #[test]
+    fn test_select_not_in_place_over_a_stacked_alias_1754() {
+        // #1754: `p0 + select(p2, p0, p1)`. `local.get 0` pushes R0 twice; the
+        // select's val2 is R0 and no later `local.get 0` exists, so the
+        // in-place form used R0 as its destination while the add's first
+        // operand was still R0 on the stack (f(5,1,7) = 14, not 12). The
+        // select must take a fresh destination: both conditional moves, and
+        // neither writes R0.
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0), // the add's first operand: R0, stays stacked
+            WasmOp::LocalGet(2), // val1
+            WasmOp::LocalGet(0), // val2: R0 again
+            WasmOp::LocalGet(1), // cond
+            WasmOp::Select,
+            WasmOp::I32Add,
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 3).unwrap();
+        let moves: Vec<(Reg, Condition)> = instrs
+            .iter()
+            .filter_map(|i| {
+                if let ArmOp::SelectMove { rd, cond, .. } = &i.op {
+                    Some((*rd, *cond))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(moves.len(), 2, "fresh-destination select: {moves:?}");
+        assert!(
+            moves.iter().all(|(rd, _)| *rd != Reg::R0),
+            "select wrote R0 while R0 was still on the operand stack: {moves:?}"
+        );
+        let add_reads_r0 = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Add { rn: Reg::R0, .. } | ArmOp::Adds { rn: Reg::R0, .. }
+            )
+        });
+        assert!(add_reads_r0, "the add reads param 0 from R0: {instrs:?}");
+    }
+
+    #[test]
     fn test_select_with_global_values() {
         // Combine global.get with select: select between two globals based on condition
         let mut selector = fresh_selector();

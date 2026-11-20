@@ -113,3 +113,9 @@ jobs:
           grep -qE '^test result: ok\. 20 passed; 0 failed' "$log"
           grep -qE '^test result: ok\. 3 passed; 0 failed' "$log"
           grep -qE '^test result: ok\. 1 passed; 0 failed' "$log"
+          # Refs #1754 (tests/select_home_alias_1754.rs): select must not
+          # overwrite a register still on the operand stack. Four
+          # direct-selector legs and the optimized-path control, plus the
+          # routing witness and the frozen pre-fix bytes that must stay red.
+          grep -qx 'ORACLE select-1754: 880 cases agree across 5 legs' "$log"
+          grep -qE '^test result: ok\. 3 passed; 0 failed' "$log"
