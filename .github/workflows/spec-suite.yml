@@ -24,10 +24,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
-# CI load (org hosted queue, 2026-11-08): a new push to a PR cancels that
-# PR's superseded run of this workflow. Pushes to main are keyed by commit sha,
-# so a main run is never cancelled or replaced: every main commit stays verified.
+# A new push to a PR cancels that PR's superseded run. Push and merge_group
+# runs are keyed by sha, so they are never cancelled or replaced.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
