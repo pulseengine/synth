@@ -38,10 +38,11 @@ the binary is provided out of band).
 
 ## Supported platforms
 
-Mirrors the release build matrix (no Windows build):
+Mirrors the release build matrix (no Windows build, and no Intel macOS build
+since 2026-11-20; `npm install` on an Intel Mac fails with an
+unsupported-platform error):
 
 - `darwin-arm64` — `aarch64-apple-darwin`
-- `darwin-x64` — `x86_64-apple-darwin`
 - `linux-arm64` — `aarch64-unknown-linux-gnu`
 - `linux-x64` — `x86_64-unknown-linux-gnu`
 

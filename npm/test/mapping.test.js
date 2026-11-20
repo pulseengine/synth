@@ -18,11 +18,15 @@ const {
   expectedHashFor,
 } = require("../index.js");
 
-test("platform x arch -> Rust target triple (the four shipped targets)", () => {
+test("platform x arch -> Rust target triple (the three shipped targets)", () => {
   assert.equal(getRustTarget("darwin", "arm64"), "aarch64-apple-darwin");
-  assert.equal(getRustTarget("darwin", "x64"), "x86_64-apple-darwin");
   assert.equal(getRustTarget("linux", "arm64"), "aarch64-unknown-linux-gnu");
   assert.equal(getRustTarget("linux", "x64"), "x86_64-unknown-linux-gnu");
+});
+
+test("Intel macOS (darwin/x64) is refused with a clear unsupported-platform error", () => {
+  assert.throws(() => getRustTarget("darwin", "x64"), /Unsupported platform: Intel macOS/);
+  assert.throws(() => getTarballName("0.91.0", "darwin", "x64"), /Unsupported platform: Intel macOS/);
 });
 
 test("darwin/arm64 maps to the exact v0.38.0 tarball name", () => {

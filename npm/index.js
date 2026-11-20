@@ -9,10 +9,9 @@
 // platform -> Rust-target-triple mapping shared by install.js and run.js and
 // is the single source of truth for asset names.
 //
-// Supported targets mirror .github/workflows/release.yml exactly — four
-// tarballs, no Windows build:
+// Supported targets mirror .github/workflows/release.yml exactly — three
+// tarballs, no Windows build and no Intel macOS build (dropped 2026-11-20):
 //   - aarch64-apple-darwin      (macOS arm64)
-//   - x86_64-apple-darwin       (macOS x64)
 //   - aarch64-unknown-linux-gnu (Linux arm64)
 //   - x86_64-unknown-linux-gnu  (Linux x64)
 
@@ -61,6 +60,15 @@ function getRustTarget(platform = os.platform(), arch = os.arch()) {
         `Unsupported architecture: ${arch}. synth ships x86_64 (x64) and ` +
           "aarch64 (arm64) binaries only.",
       );
+  }
+
+  if (platform === "darwin" && arch === "x64") {
+    throw new Error(
+      "Unsupported platform: Intel macOS (darwin/x64). synth no longer " +
+        "ships x86_64-apple-darwin binaries (dropped 2026-11-20). Build from " +
+        "source with `cargo install --git https://github.com/pulseengine/synth " +
+        "synth-cli`. Apple Silicon Macs use the aarch64-apple-darwin build.",
+    );
   }
 
   return `${archTriple}-${osTriple}`;
