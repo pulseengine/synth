@@ -1291,7 +1291,7 @@ claims:
   # boundary is still stated.
   - id: SYNTH-SPEC-FAMILY-MVP-CORE
     doc: docs/status/SPEC_FAMILY_CENSUS.md
-    text: "| **MVP core** | 80 | **13** / 19 | **9** / 22 | **18** / 19 |"
+    text: "| **MVP core** | 80 | **13** / 19 | **9** / 22 | **19** / 18 |"
     evidence:
       - kind: count-eq                       # the family split is EMITTED, not just documented
         pattern: 'def report_by_family\('
@@ -1306,7 +1306,7 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-README
     doc: README.md
-    text: "full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0"
+    text: "full-module compile 16 ARM / 9 RV32 / 22 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0"
     evidence:
       - kind: count-eq                       # arm pins in the census script
         pattern: 'ok=16, partial=27'
@@ -1317,7 +1317,7 @@ claims:
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # aarch64 pins
-        pattern: 'ok=21, partial=20'
+        pattern: 'ok=22, partial=19'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # doc-cited ok+partial figures
@@ -1384,7 +1384,7 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-MATRIX
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 21 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0; ARM with an FPU (#1609 — the ARM leg above is `--cortex-m` = cortex-m3, which declines every f32/f64 function): full-module compile 19 cortex-m4f / 26 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
+    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 22 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0; ARM with an FPU (#1609 — the ARM leg above is `--cortex-m` = cortex-m3, which declines every f32/f64 function): full-module compile 19 cortex-m4f / 26 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
     evidence:
       - kind: count-eq                       # same script pins as the README leg
         pattern: 'ok=16, partial=27'
@@ -1395,7 +1395,7 @@ claims:
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: 'ok=21, partial=20'
+        pattern: 'ok=22, partial=19'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
@@ -3720,8 +3720,21 @@ claims:
       - kind: ratchet
         name: aarch64_selector_lines_code
         direction: down
-        value: 3067
+        value: 3131
         baseline: 3067
+        waivers:
+          - to: 3131
+            reason: >-
+              A64BELOW (Refs #1740, #1747): 3067 -> 3131 (+64). The AArch64
+              selector lowered dead code after a branch or trap. It panicked
+              (debug) or declined (release) on dead pops below a frame's entry
+              height, and it marked every `end` reachable, which returned float
+              block results through x0 on main (#1747, silent wrong code). The
+              growth is the dead-region skip with its blocktype-ordinal and
+              dead-frame-depth bookkeeping, plus the live-edge rule at `end`.
+              aarch64_dead_below_1740_differential.py (main 37 failures over 456
+              emulations, fix 456/456) and per-edge unit tests red on each part.
+              No hand-written arm was replaced, so none could be deleted.
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly

@@ -653,6 +653,11 @@ pub fn select_typed_cf_calls(
         /// END, awaiting fix-up when the frame closes (Block/If only; a Loop's
         /// branches are backward and resolved eagerly).
         pending: Vec<usize>,
+        /// #1740 — the `else` skip branch of an if whose THEN arm ended dead.
+        /// It is emitted (and patched) like any forward branch, but it never
+        /// executes, so it is NOT an edge into the join: kept apart from
+        /// `pending`, whose non-emptiness says the join is reached.
+        dead_skip: Option<usize>,
         /// Value-stack height on entry — a void frame must restore it at `End`.
         stack_entry: usize,
         /// How many values a `br`/`br_if`/`br_table` to THIS frame's LABEL
@@ -683,6 +688,20 @@ pub fn select_typed_cf_calls(
     // fall-through height assert when unreachable (it only holds on a reachable
     // fall-through). `br_if` is conditional, so its fall-through stays reachable.
     let mut reachable = true;
+    // #1740 — dead code is SKIPPED, not lowered. WASM validates unreachable
+    // code against a POLYMORPHIC stack, so it may pop values that are not
+    // there, or pop below its frame's entry height (`br 1 ; drop ; drop`).
+    // Lowering it against the straight-line model popped the live values
+    // BENEATH the frame out of the model (the code after the join then read
+    // nothing: `binop underflow`, and a debug-build panic at the join), or
+    // underflowed outright. Nothing can reach that code at runtime: a frame
+    // opened in it is entered only by falling into it, and a branch to such a
+    // frame's label sits inside it — so it is dead in its entirety, and so is
+    // the fall-through past its `end`. `dead_depth` counts the frames opened
+    // in dead code; `else`/`end` at depth 0 close the LIVE frame the transfer
+    // sat in and are lowered as before (that join is reached by the frame's
+    // other edges, and the model is truncated to the frame's entry height).
+    let mut dead_depth: usize = 0;
 
     // VCR-A64-CF-001 (#851/#509) — RESERVED reconciliation registers.
     //
@@ -1562,6 +1581,24 @@ pub fn select_typed_cf_calls(
     };
 
     for op in ops {
+        if !reachable {
+            match op {
+                WasmOp::Block | WasmOp::Loop | WasmOp::If => {
+                    // Keep the `block_arity` side-table aligned: it is keyed by
+                    // the ordinal of EVERY block/loop/if, dead ones included.
+                    ctrl_ord += 1;
+                    dead_depth += 1;
+                    continue;
+                }
+                WasmOp::Else if dead_depth > 0 => continue,
+                WasmOp::End if dead_depth > 0 => {
+                    dead_depth -= 1;
+                    continue;
+                }
+                WasmOp::Else | WasmOp::End => {}
+                _ => continue,
+            }
+        }
         match op {
             WasmOp::LocalGet(i) => {
                 if slot_resident(*i) {
@@ -1679,6 +1716,7 @@ pub fn select_typed_cf_calls(
                 ctrl.push(Frame {
                     kind: Kind::Block,
                     pending: Vec::new(),
+                    dead_skip: None,
                     stack_entry: stack.len(),
                     label_arity,
                     result_arity,
@@ -1884,6 +1922,7 @@ pub fn select_typed_cf_calls(
                 ctrl.push(Frame {
                     kind: Kind::Loop { entry: words.len() },
                     pending: Vec::new(),
+                    dead_skip: None,
                     stack_entry: stack.len(),
                     label_arity,
                     result_arity,
@@ -1915,6 +1954,7 @@ pub fn select_typed_cf_calls(
                         else_fixup: Some(else_pos),
                     },
                     pending: Vec::new(),
+                    dead_skip: None,
                     stack_entry: stack.len(),
                     label_arity,
                     result_arity,
@@ -1968,12 +2008,19 @@ pub fn select_typed_cf_calls(
                     "void then-arm must restore stack height"
                 );
                 stack.truncate(frame.stack_entry);
+                let then_live = reachable;
                 // The else-arm is a `cbz` target — always reachable.
                 reachable = true;
                 // Skip the else-arm when the then-arm falls through.
                 let skip_pos = words.len();
                 words.push(enc::b_uncond(0)); // placeholder; patched at end
-                frame.pending.push(skip_pos);
+                if then_live {
+                    frame.pending.push(skip_pos);
+                } else {
+                    // #1740: a dead then-arm never reaches this `b`; it is no
+                    // edge into the join (see `End`'s reachability rule).
+                    frame.dead_skip = Some(skip_pos);
+                }
                 // The if's cbz now lands at the else-arm entry (current pos).
                 let here = words.len();
                 patch_branch(&mut words, else_fixup, here)?;
@@ -2224,6 +2271,22 @@ pub fn select_typed_cf_calls(
                     // branches were backward and already resolved. Patch each
                     // placeholder via the kind-preserving `patch_branch`.
                     let here = words.len();
+                    // #1740 — the join is reached iff a LIVE edge enters it: the
+                    // fall-through, a forward branch (every branch in `pending`
+                    // was lowered while reachable, because dead code is
+                    // skipped), or an else-less if's `cbz`. A loop's `end` has
+                    // only its fall-through (its branches go to the header).
+                    let join_live = reachable
+                        || !frame.pending.is_empty()
+                        || matches!(
+                            frame.kind,
+                            Kind::If {
+                                else_fixup: Some(_)
+                            }
+                        );
+                    if let Some(pos) = frame.dead_skip {
+                        patch_branch(&mut words, pos, here)?;
+                    }
                     // An `if` with NO `else`: its `cbz` still needs to skip the
                     // then-arm to here (the fall-through past the then-arm).
                     if let Kind::If {
@@ -2261,14 +2324,15 @@ pub fn select_typed_cf_calls(
                             File::Fp => Val::fp(slot.fp),
                         });
                     }
-                    // After closing a frame the position is reachable again: a
-                    // forward branch could target this fall-through, and a loop's
-                    // continuation follows. (A dead nested block would want the
-                    // precise `fell_through || had_pending` rule; that only
-                    // affects a debug assert, never emitted bytes — noted as a
-                    // residual, the wasmtime differential is the correctness
-                    // oracle here.)
-                    reachable = true;
+                    // #1740 — after the frame closes, the position is reachable
+                    // iff the join is. When no live edge enters it (every path
+                    // through the frame ended in br-outward / return /
+                    // unreachable), the code after `end` is dead and is skipped
+                    // like any other dead code; its frame value is never read.
+                    // (Before #1740 this was `true` unconditionally, so a
+                    // float frame entered by no edge left a GP placeholder
+                    // that the dead float op after `end` then refused.)
+                    reachable = join_live;
                 } else {
                     epilogue(&mut words, stack.last().copied(), frame_size, is_non_leaf);
                 }
@@ -4951,6 +5015,63 @@ mod tests {
         assert_eq!(w.len(), 4);
     }
 
+    /// #1740 — the code after a frame's `end` is lowered iff a LIVE edge
+    /// enters the join. One test per edge kind; each would silently DROP the
+    /// live `i32.const 7` (and return garbage) if its edge stopped counting.
+    /// `TAIL` is that live code lowered on its own, with the same param count.
+    fn join_tail() -> Vec<u32> {
+        select_typed_cf(&[WasmOp::I32Const(7), WasmOp::End], 1, &[], &[], &[]).unwrap()
+    }
+
+    #[test]
+    fn join_live_by_fall_through_1740() {
+        // block ; end ; i32.const 7 ; end — the join's ONLY edge is the
+        // fall-through. A void empty block emits nothing, so the function is
+        // exactly the tail.
+        let ops = vec![WasmOp::Block, WasmOp::End, WasmOp::I32Const(7), WasmOp::End];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        assert_eq!(
+            w,
+            join_tail(),
+            "fall-through edge: the tail must be lowered"
+        );
+    }
+
+    #[test]
+    fn join_live_by_forward_branch_1740() {
+        // block ; br 0 ; end ; i32.const 7 ; end — the join's ONLY edge is
+        // the `br` (the fall-through after it is dead).
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::Br(0),
+            WasmOp::End,
+            WasmOp::I32Const(7),
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        let mut want = vec![enc::b_uncond(1)];
+        want.extend(join_tail());
+        assert_eq!(w, want, "forward-branch edge: the tail must be lowered");
+    }
+
+    #[test]
+    fn join_live_by_else_less_if_cbz_1740() {
+        // local.get 0 ; if ; unreachable ; end ; i32.const 7 ; end — the
+        // then-arm traps, so the join's ONLY edge is the if's `cbz` (x == 0).
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::If,
+            WasmOp::Unreachable,
+            WasmOp::End,
+            WasmOp::I32Const(7),
+            WasmOp::End,
+        ];
+        let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
+        let mut want = vec![enc::cbz(0, 2), enc::brk(0)];
+        want.extend(join_tail());
+        assert_eq!(w, want, "else-less if cbz edge: the tail must be lowered");
+    }
+
     #[test]
     fn void_block_with_unconditional_br() {
         // block ; br 0 ; unreachable ; end ; local.get0 ; end
@@ -4964,11 +5085,12 @@ mod tests {
             WasmOp::End,
         ];
         let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0)]).unwrap();
-        // [0] b +2 ; [1] brk ; [2] ret  (local.get 0 is w0 → no mov)
-        assert_eq!(w[0], enc::b_uncond(2), "br must jump to the block end (+2)");
-        assert_eq!(w[1], enc::brk(0));
-        assert_eq!(w[2], enc::ret());
-        assert_eq!(w.len(), 3);
+        // [0] b +1 ; [1] ret  (local.get 0 is w0 → no mov). The `unreachable`
+        // after `br 0` is DEAD and is skipped, not lowered (#1740), so the
+        // branch lands on the very next word, the block end.
+        assert_eq!(w[0], enc::b_uncond(1), "br must jump to the block end (+1)");
+        assert_eq!(w[1], enc::ret());
+        assert_eq!(w.len(), 2);
     }
 
     #[test]
@@ -4996,17 +5118,18 @@ mod tests {
             WasmOp::End,
         ];
         let w = select_typed_cf(&ops, 1, &[], &[], &[(0, 0), (0, 0)]).unwrap();
-        // [0] cbnz w0, ? ; [1] brk (inner) ; [2] brk (after inner end) ; [3] ret
-        // Outer end is at word index 3. cbnz at 0 → offset +3.
+        // [0] cbnz w0, ? ; [1] brk (inner) ; [2] ret
+        // No live edge enters the INNER end (its body ends in `unreachable`
+        // and nothing branches to it), so the `unreachable` after it is dead
+        // and skipped (#1740). Outer end is at word index 2. cbnz at 0 → +2.
         assert_eq!(
             w[0],
-            enc::cbnz(0, 3),
-            "br_if 1 must reach the OUTER end (+3)"
+            enc::cbnz(0, 2),
+            "br_if 1 must reach the OUTER end (+2)"
         );
         assert_eq!(w[1], enc::brk(0));
-        assert_eq!(w[2], enc::brk(0));
-        assert_eq!(w[3], enc::ret());
-        assert_eq!(w.len(), 4);
+        assert_eq!(w[2], enc::ret());
+        assert_eq!(w.len(), 3);
     }
 
     // ---- VCR-A64-CF-001 — value-carrying frames + br_table -----------------

@@ -261,7 +261,19 @@ PINS = {
     "riscv": dict(ok=9, partial=30, all_declined=94, module_decline=105,
                   no_module=9, no_exports=9, parse_fail=1, panic=0,
                   other_error=0),
-    "aarch64": dict(ok=21, partial=20, all_declined=78, module_decline=119,
+    # RQ-91-A64BELOW (#1740): aarch64 ok 21 -> 22, partial 20 -> 19 — EXACTLY
+    # one file moves, return.wast partial -> ok (MVP core 18 -> 19). Its 10
+    # previously skipped exports (type-i32/i64/f32/f64, as-br_if-cond,
+    # as-br_table-value(-index), as-load-address, as-compare-left/right) carry
+    # dead code after `return` that popped below its frame's entry height or
+    # mis-typed the polymorphic stack; the selector now skips dead code. A
+    # file bucket hides moves inside files that stay `partial`: measured per
+    # function (--allow-skipped-exports), 56 exports newly compile over the
+    # suite and 116 functions change bytes in 10 files, and the CLI's skipped
+    # count below moves 1313 -> 1264; the suite's directives on those
+    # functions were executed, 0 wrong (RQ-91-A64BELOW records the numbers).
+    # The aarch64 skipped count is NOT pinned (FPU legs only).
+    "aarch64": dict(ok=22, partial=19, all_declined=78, module_decline=119,
                     no_module=9, no_exports=9, parse_fail=1, panic=0,
                     other_error=0),
     # RQ-89-CENSUSFLOAT (#1609): measured on 7e170d62. Against `arm`, EXACTLY
@@ -497,7 +509,7 @@ FAMILY_OK_PINS = {
                 "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                 "memory64": 0, "bulk memory": 0, "reference types": 0,
                 "multi-value": 0},
-    "aarch64": {"MVP core": 18, "multi-memory": 1, "SIMD": 0, "GC": 0,
+    "aarch64": {"MVP core": 19, "multi-memory": 1, "SIMD": 0, "GC": 0,
                 "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                 "memory64": 2, "bulk memory": 0, "reference types": 0,
                 "multi-value": 0},
