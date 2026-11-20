@@ -129,7 +129,7 @@ jobs:
           grep -qx 'ORACLE 1745 a64 stale caller config: 27 of 27 cases agree' "$log"
           grep -qx 'ORACLE 1745 arm compile_module: 135 of 135 cases agree' "$log"
           grep -qx 'ORACLE 1745 arm vfp compile_module: 15 of 15 cases agree' "$log"
-          grep -qx 'ORACLE 1745 rv32 compile_module: 30 of 30 cases agree, 4 refused' "$log"
+          grep -qx 'ORACLE 1745 rv32 compile_module: 39 of 39 cases agree, 2 refused' "$log"
           grep -qE '^test result: ok\. 13 passed; 0 failed' "$log"
           # #1450: the multi-result refusal's EXECUTED control. The single-
           # result twins of the refused export agree with kiln on cortex-m4
@@ -149,13 +149,24 @@ jobs:
           grep -qx 'ORACLE import-boundary structural: 12 default-flags objects are byte-identical to --relocatable' "$log"
           grep -qE '^test result: ok\. 13 passed; 0 failed' "$log"
           # v0.92 batch 1: two test binaries report 13 (compile_module_1745,
-          # import_boundary_oracle) and four report 3 (select_home_alias_1754,
-          # multi_result_export_1450_oracle, target_record, kiln_no_shared_state),
-          # and one matching line satisfies `grep -q`. Pin how many result lines
+          # import_boundary_oracle) and five report 3 (select_home_alias_1754,
+          # multi_result_export_1450_oracle, target_record, kiln_no_shared_state,
+          # zero_init_wide_local_1762), and one matching line satisfies `grep -q`. Pin how many result lines
           # carry each count.
           test "$(grep -cE '^test result: ok\. 13 passed; 0 failed' "$log")" = 2
-          test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 4
+          test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 5
           # No kiln state crosses reference runs (memory, globals, tables).
           grep -qx 'test memory_does_not_cross_calls ... ok' "$log"
           grep -qx 'test globals_do_not_cross_calls ... ok' "$log"
           grep -qx 'test tables_do_not_cross_calls ... ok' "$log"
+          # v0.92 batch 2, Refs #1762 (tests/zero_init_wide_local_1762.rs): a
+          # never-written i64 local is 64 bits wide on RV32 by its
+          # declaration. 15 shapes x 4 vectors on rv32imac and on four ARM
+          # twin legs; the f64 twin is pinned byte-identical to the executed
+          # i64 one; the frozen pre-fix bytes must stay judged wrong. Its
+          # result line is one of the five "3 passed" above. The same fix turned
+          # three rows of the #1745 RV32 leg from refused or skipped into
+          # executed (30 of 30 with 4 refused became 39 of 39 with 2).
+          grep -qx 'ORACLE zero-init-1762: 300 cases agree across 5 legs' "$log"
+          grep -qx 'ORACLE zero-init-1762 \[rv32imac\]: 0 of 60 wrong; wrong values: \[\]; refused: \[\]' "$log"
+          grep -qx 'ORACLE zero-init-1762 rv32 float twins: 2 of 2 byte-identical to the integer twin' "$log"

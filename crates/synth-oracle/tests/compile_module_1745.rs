@@ -391,8 +391,8 @@ fn a64_module_facts_win_over_the_callers_config_1745() {
 /// Bodies over the facts `ArmBackend` and `RiscVBackend::compile_module`
 /// take per function: the declared param count, the i64-param mask and the
 /// blocktype arity. Integer signatures only. The declared i64 locals are
-/// covered by the two `declared_i64_local*` rows, on ARM (RV32 has no such
-/// channel); `zero_init_i64_local` passes on width inference alone. The
+/// covered by `zero_init_i64_local` and the two `declared_i64_local*` rows,
+/// on ARM and (since #1762) on RV32. The
 /// float facts are in `arm_vfp_compile_module_twin_1745`.
 fn twin_rows() -> Vec<Row> {
     let hi = 0x1111_2222_3333_4444u64;
@@ -599,30 +599,19 @@ fn rv32_compile_module_twin_1745() {
                 "i64_add_params",
                 "unsupported wasm op for RV32 skeleton: LocalGet(0)",
             ),
-            // The RV32 selector has no declared-i64-local channel, so a
-            // never-written i64 local reads as an i32. Where an i64 operator
-            // consumes it the selector refuses, on the CLI too (same
-            // message, main 6641efec).
-            (
-                "declared_i64_local_eqz",
-                "stack type mismatch at op I64Eqz: expected i64, found i32",
-            ),
-            (
-                "declared_i64_locals_or",
-                "stack type mismatch at op I64Or: expected i64, found i32",
-            ),
         ],
-        // NOT a `compile_module` difference, so not judged here: where no
-        // operator consumes it, the same gap is silent. `synth compile -b
-        // riscv` emits the same code for this body (a0 loaded from the
-        // zeroed slot, a1 never written), measured on main 6641efec.
-        &["zero_init_i64_local"],
+        // Nothing is left out. Until #1762 the three declared-i64-local rows
+        // were: two refusals ("stack type mismatch ... expected i64, found
+        // i32") and one skipped row that was silently wrong on the CLI too
+        // (a0 loaded from the zeroed slot, a1 never written). The selector
+        // now reads the declared widths, and all three run and agree.
+        &[],
         |m, c| RiscVBackend::new().compile_module(m, c),
     );
     eprintln!("ORACLE 1745 rv32 compile_module: {agree} of {total} cases agree, {refused} refused");
     assert!(bad.is_empty(), "RV32 twin:\n{}", bad.join("\n"));
-    // 15 rows, less 1 skipped and 4 refused, x 3 vectors.
-    assert_eq!((agree, total, refused), (30, 30, 4), "case count moved");
+    // 15 rows, less 2 refused, x 3 vectors.
+    assert_eq!((agree, total, refused), (39, 39, 2), "case count moved");
 }
 
 /// The facts only ARM's hard-float targets read. Integer PARAMETERS only

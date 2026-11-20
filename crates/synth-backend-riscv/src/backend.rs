@@ -6,7 +6,7 @@
 //! Track B2/B3/B4 deliverable.
 
 use crate::elf_builder::{RiscVElfBuilder, RiscVElfFunction};
-use crate::selector::{RvBoundsMode, RvGlobalsCtx, SelectorOptions, select_with_block_arity};
+use crate::selector::{RvBoundsMode, RvGlobalsCtx, SelectorOptions, select_with_declared_locals};
 use synth_core::backend::{
     Backend, BackendCapabilities, BackendError, CompilationResult, CompileConfig, CompiledFunction,
     SafetyBounds,
@@ -428,7 +428,7 @@ fn compile_function_with_opts(
     // locals get 8-byte frame slots and i64 call results the a0:a1 pair.
     // RQ-63-RVGLOBAL: and the module-level globals context (fail-safe —
     // declines unless the driver placed the region).
-    let selection = select_with_block_arity(
+    let selection = select_with_declared_locals(
         ops,
         num_params,
         opts,
@@ -440,6 +440,8 @@ fn compile_function_with_opts(
         &config.current_func_params_i64,
         // #1739: a branch carries its target's declared arity.
         &config.current_func_block_arity,
+        // #1762: a never-written i64/f64 local is wide by declaration only.
+        &declared_wide_locals(config),
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
 
@@ -614,7 +616,7 @@ fn compile_to_riscv_ops(
     // (#539/#242), or the two selections would disagree.
     let ops = synth_core::rewrite_memory_grow_zero(ops);
     let ops = ops.as_slice();
-    let selection = select_with_block_arity(
+    let selection = select_with_declared_locals(
         ops,
         num_params,
         opts,
@@ -626,9 +628,23 @@ fn compile_to_riscv_ops(
         &config.current_func_params_i64,
         // #1739: a branch carries its target's declared arity.
         &config.current_func_block_arity,
+        // #1762: a never-written i64/f64 local is wide by declaration only.
+        &declared_wide_locals(config),
     )
     .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
     Ok(selection.ops)
+}
+
+/// #1762: which non-param locals of the current function are DECLARED with
+/// an 8-byte type (i64 or f64), by declaration order. Both tables come from
+/// the decoder (`FunctionOps::declared_i64_locals` / `declared_float_locals`,
+/// where 8 marks an f64) and are empty for a hand-built op stream.
+fn declared_wide_locals(config: &CompileConfig) -> Vec<bool> {
+    let i64s = &config.current_func_declared_i64_locals;
+    let floats = &config.current_func_declared_float_locals;
+    (0..i64s.len().max(floats.len()))
+        .map(|k| i64s.get(k).copied().unwrap_or(false) || floats.get(k).copied().unwrap_or(0) == 8)
+        .collect()
 }
 
 /// RQ-63-RVGLOBAL (#242): the selector's module-level globals context, from
