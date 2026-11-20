@@ -273,7 +273,18 @@ PINS = {
     # count below moves 1313 -> 1264; the suite's directives on those
     # functions were executed, 0 wrong (RQ-91-A64BELOW records the numbers).
     # The aarch64 skipped count is NOT pinned (FPU legs only).
-    "aarch64": dict(ok=22, partial=19, all_declined=78, module_decline=119,
+    # v0.92 batch 2 (#1763): aarch64 ok 22 -> 24, partial 19 -> 17 — EXACTLY
+    # two files move, local_get.wast and memory_redundancy.wast partial -> ok
+    # (MVP core 19 -> 21). A float local is now read and written in the FP
+    # register file, so the 7 exports that set or tee a float local, or feed
+    # one to a float operator, compile: local_get `read` and `type-mixed`,
+    # local_set and local_tee `type-local-f32` / `type-local-f64`,
+    # memory_redundancy `test_dead_store`. Diffed file by file against the
+    # pre-fix binary: nothing else moves, on any leg, and the CLI's skipped
+    # count goes 1266 -> 1259. They were the suite's whole remaining
+    # "expected GP operand, got FP" / "expected FP operand, got GP" class
+    # (#1231): 7 skips before, 0 after.
+    "aarch64": dict(ok=24, partial=17, all_declined=78, module_decline=119,
                     no_module=9, no_exports=9, parse_fail=1, panic=0,
                     other_error=0),
     # RQ-89-CENSUSFLOAT (#1609): measured on 7e170d62. Against `arm`, EXACTLY
@@ -523,7 +534,7 @@ FAMILY_OK_PINS = {
                 "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                 "memory64": 0, "bulk memory": 0, "reference types": 0,
                 "multi-value": 0},
-    "aarch64": {"MVP core": 19, "multi-memory": 1, "SIMD": 0, "GC": 0,
+    "aarch64": {"MVP core": 21, "multi-memory": 1, "SIMD": 0, "GC": 0,
                 "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                 "memory64": 2, "bulk memory": 0, "reference types": 0,
                 "multi-value": 0},

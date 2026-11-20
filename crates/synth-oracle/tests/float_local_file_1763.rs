@@ -582,6 +582,103 @@ fn a64_refuses_a_float_local_as_a_call_argument() {
     eprintln!("ORACLE float-local-1763 a64 call argument: refused (argument 0 is a float)");
 }
 
+/// The spec suite's own exports that the fix makes compile on AArch64, as
+/// far as this harness can run them (no linear memory): `local_get.wast`
+/// `read` and `type-mixed`, and `type-local-f32` / `type-local-f64` of
+/// `local_set.wast` and `local_tee.wast`, copied verbatim. Before the fix
+/// every one was skipped ("expected GP operand, got FP" or the reverse, the
+/// #1231 class), so they are code the compiler had never emitted. The
+/// arguments are the suite's own; kiln is the reference, as elsewhere.
+const SPEC_EXPORTS: &str = r#"(module
+  (func (export "type-mixed") (param i64 f32 f64 i32 i32)
+    (local f32 i64 i64 f64)
+    (drop (i64.eqz (local.get 0)))
+    (drop (f32.neg (local.get 1)))
+    (drop (f64.neg (local.get 2)))
+    (drop (i32.eqz (local.get 3)))
+    (drop (i32.eqz (local.get 4)))
+    (drop (f32.neg (local.get 5)))
+    (drop (i64.eqz (local.get 6)))
+    (drop (i64.eqz (local.get 7)))
+    (drop (f64.neg (local.get 8))))
+  (func (export "read") (param i64 f32 f64 i32 i32) (result f64)
+    (local f32 i64 i64 f64)
+    (local.set 5 (f32.const 5.5))
+    (local.set 6 (i64.const 6))
+    (local.set 8 (f64.const 8))
+    (f64.add
+      (f64.convert_i64_u (local.get 0))
+      (f64.add
+        (f64.promote_f32 (local.get 1))
+        (f64.add
+          (local.get 2)
+          (f64.add
+            (f64.convert_i32_u (local.get 3))
+            (f64.add
+              (f64.convert_i32_s (local.get 4))
+              (f64.add
+                (f64.promote_f32 (local.get 5))
+                (f64.add
+                  (f64.convert_i64_u (local.get 6))
+                  (f64.add
+                    (f64.convert_i64_u (local.get 7))
+                    (local.get 8))))))))))
+  (func (export "set-f32") (local f32) (local.set 0 (f32.const 0)))
+  (func (export "set-f64") (local f64) (local.set 0 (f64.const 0)))
+  (func (export "tee-f32") (result f32) (local f32) (local.tee 0 (f32.const 0)))
+  (func (export "tee-f64") (result f64) (local f64) (local.tee 0 (f64.const 0))))"#;
+
+#[test]
+fn a64_spec_exports_that_newly_compile_agree_with_kiln() {
+    let wasm = wat::parse_str(SPEC_EXPORTS).unwrap();
+    let names = [
+        "type-mixed",
+        "read",
+        "set-f32",
+        "set-f64",
+        "tee-f32",
+        "tee-f64",
+    ];
+    let obj = build(&wasm, A64, &names).unwrap_or_else(|e| panic!("refused: {e}"));
+    let cfg = EmuConfig::new(Cpu::CortexA53);
+    let d = |v: f64| WasmValue::F64(v.to_bits());
+    let f = |v: f32| WasmValue::F32(v.to_bits());
+    let mixed = |a: f32| {
+        vec![
+            WasmValue::I64(1),
+            f(a),
+            d(3.3),
+            WasmValue::I32(4),
+            WasmValue::I32(5),
+        ]
+    };
+    let cases: [(&str, Vec<WasmValue>); 6] = [
+        ("type-mixed", mixed(2.2)),
+        ("read", mixed(2.0)),
+        ("set-f32", vec![]),
+        ("set-f64", vec![]),
+        ("tee-f32", vec![]),
+        ("tee-f64", vec![]),
+    ];
+    let mut agree = 0;
+    for (name, args) in &cases {
+        let c = run_case(&wasm, &obj, name, args, FUEL, &Imports::new(), &cfg)
+            .unwrap_or_else(|e| panic!("{name}: harness error {e:?}"));
+        assert!(
+            c.verdict.is_agree(),
+            "{name}: kiln {:?}, machine code {:?}",
+            c.reference,
+            c.emulator
+        );
+        if *name == "read" {
+            // The suite's literal: `(assert_return (invoke "read" ...) (f64.const 34.8))`.
+            assert_eq!(c.emulator, EmuOutcome::Values(vec![d(34.8)]));
+        }
+        agree += 1;
+    }
+    eprintln!("ORACLE float-local-1763 a64 spec exports: {agree} of 6 cases agree");
+}
+
 /// The words main 6641efec emitted for the issue function on `-b aarch64`.
 /// Frozen, so this stays red-capable after the fix.
 const PRE_FIX_ISSUE_FN: &[u32] = &[
