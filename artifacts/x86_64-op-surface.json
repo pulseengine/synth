@@ -1,7 +1,7 @@
 {
   "_generated_by": "cargo test -p synth-backend-riscv --test cross_backend_op_parity x86_op_surface_artifact_is_fresh_1741",
   "_source": "REAL probe outcomes of synth_backend_x86_64::select over the aarch64 surface's probes — never a hand list",
-  "_scope": "OP-LEVEL ONLY. Module-level refusals (non-i32 signatures, imports, memory, tables, globals, data, start) are crates/synth-backend-x86_64/tests/decline_skeleton.rs",
+  "_scope": "OP-LEVEL ONLY. Module-level refusals (signatures that are not i32/i64, imports, memory, tables, globals, data, start) are crates/synth-backend-x86_64/tests/decline_skeleton.rs",
   "ops": [
     { "op": "block", "status": "declined", "reason": "x86_64: unsupported wasm op Block (lanes X1-X2 lower straight-line i32/i64 integer code only: const, local.get of a parameter, add/sub/mul/and/or/xor, shifts and rotates, compares, extensions, select, drop, return)" },
     { "op": "br", "status": "declined", "reason": "x86_64: unsupported wasm op Block (lanes X1-X2 lower straight-line i32/i64 integer code only: const, local.get of a parameter, add/sub/mul/and/or/xor, shifts and rotates, compares, extensions, select, drop, return)" },

@@ -16,7 +16,8 @@
 //! or both in temporaries, the same register twice, four-parameter functions
 //! (where `rcx`, the shift-count register, holds a live parameter that is
 //! read back afterwards), and — for i32 ops — operands that are wrapped i64
-//! parameters, whose upper halves are nonzero garbage an i32 op must not read.
+//! parameters and wrapped i64 TEMPORARIES, whose upper halves are nonzero
+//! garbage an i32 op must not read and `i64.extend_i32_u` must clear.
 //!
 //! VECTORS: the both-parameters shape runs EXHAUSTIVELY over the edge values
 //! (every pair; the edge set holds the shift counts 0, 1, 31, 32, 33, 63, 64,
@@ -235,6 +236,17 @@ fn temp(t: T, i: u32) -> String {
     format!("local.get {i} {0}.const 0 {0}.add", t.s())
 }
 
+/// An i32 that is a wrapped i64 TEMPORARY: i64 parameter `i` computed into a
+/// temporary (`x + 0` at 64 bits) and then wrapped. `i32.wrap_i64` emits
+/// nothing, so the temporary keeps the i64's upper half — the one operand
+/// shape in which an i32 value sits in a TEMPORARY with nonzero bits 63:32.
+/// (A wrapped PARAMETER is always copied before it is written, and a
+/// temporary built by an i32 op has a zero upper half, so neither reaches the
+/// in-place paths.)
+fn wrapped_temp(i: u32) -> String {
+    format!("local.get {i} i64.const 0 i64.add i32.wrap_i64")
+}
+
 /// `xor` the result with parameter 3 — the one that arrives in `rcx` — so a
 /// shift that failed to preserve it shows.
 fn rcx_tail(t: T, r: T) -> String {
@@ -339,6 +351,14 @@ fn binary(op: &str, t: T, r: T) -> Group {
             body: format!("{} i32.wrap_i64 {} i32.wrap_i64 {o}", get(0), get(1)),
             vectors: slice(T::I64, 2, &format!("{op}/ww")),
         });
+        // The same, with both operands wrapped i64 TEMPORARIES.
+        probes.push(Probe {
+            name: "wt".to_string(),
+            params: vec![T::I64; 2],
+            result: r,
+            body: format!("{} {} {o}", wrapped_temp(0), wrapped_temp(1)),
+            vectors: slice(T::I64, 2, &format!("{op}/wt")),
+        });
     }
     Group {
         op: op.to_string(),
@@ -407,6 +427,16 @@ fn unary(op: &str, t: T, r: T) -> Group {
             params: vec![T::I64],
             result: r,
             body: format!("{} i32.wrap_i64 {op}", get(0)),
+            vectors: vectors.clone(),
+        });
+        // The operand is a wrapped i64 TEMPORARY: the op runs in place on a
+        // register whose upper half is the i64's. `i64.extend_i32_u` must
+        // still re-zero it (`movl %eax, %eax`).
+        probes.push(Probe {
+            name: "wt".into(),
+            params: vec![T::I64],
+            result: r,
+            body: format!("{} {op}", wrapped_temp(0)),
             vectors,
         });
     }
@@ -465,8 +495,38 @@ fn select(t: T) -> Group {
         params: vec![t, t, T::I64],
         result: t,
         body: format!("{} {} {} i32.wrap_i64 select", get(0), get(1), get(2)),
+        vectors: vectors.clone(),
+    });
+    // The condition is a wrapped i64 TEMPORARY.
+    probes.push(Probe {
+        name: "wtc".into(),
+        params: vec![t, t, T::I64],
+        result: t,
+        body: format!("{} {} {} select", get(0), get(1), wrapped_temp(2)),
         vectors,
     });
+    if t == T::I32 {
+        // The selected VALUES are wrapped i64 temporaries, and the result is
+        // widened unsigned so their upper halves would show.
+        let mut vectors = Vec::new();
+        for row in slice(T::I64, 2, "select.i32/wtv") {
+            for &c in CONDS {
+                vectors.push(vec![row[0], row[1], c]);
+            }
+        }
+        probes.push(Probe {
+            name: "wtv".into(),
+            params: vec![T::I64, T::I64, T::I32],
+            result: T::I64,
+            body: format!(
+                "{} {} {} select i64.extend_i32_u",
+                wrapped_temp(0),
+                wrapped_temp(1),
+                get(2)
+            ),
+            vectors,
+        });
+    }
     Group {
         op: format!("select.{}", t.s()),
         probes,
@@ -714,7 +774,7 @@ fn i32_arithmetic_agrees_with_kiln() {
     let groups = arith_groups(T::I32);
     assert_eq!(groups.len(), 11);
     let n = sweep("i32 arithmetic", &groups);
-    assert_eq!(n, 9944, "case count moved");
+    assert_eq!(n, 10362, "case count moved");
     eprintln!("ORACLE x86_64-alu i32 arithmetic: {n} cases agree over 11 ops");
 }
 
@@ -723,7 +783,7 @@ fn i32_compares_agree_with_kiln() {
     let groups = compare_groups(T::I32);
     assert_eq!(groups.len(), 10);
     let n = sweep("i32 compares", &groups);
-    assert_eq!(n, 9040, "case count moved");
+    assert_eq!(n, 9420, "case count moved");
     eprintln!("ORACLE x86_64-alu i32 compares: {n} cases agree over 10 ops");
 }
 
@@ -750,7 +810,7 @@ fn conversions_select_consts_and_drop_agree_with_kiln() {
     let groups = other_groups();
     assert_eq!(groups.len(), 15);
     let n = sweep("conversions, select, consts, drop", &groups);
-    assert_eq!(n, 6417, "case count moved");
+    assert_eq!(n, 7411, "case count moved");
     eprintln!("ORACLE x86_64-alu conversions/select/consts/drop: {n} cases agree over 15 groups");
 }
 
@@ -877,4 +937,28 @@ fn potency_a_64_bit_move_of_an_i32_argument_reds() {
     // Every vector reds: the poison's upper half is never zero.
     assert_eq!(disagreements(&g, "p", &g.wat(), &bad), p.vectors.len());
     assert_eq!(disagreements(&g, "p", &g.wat(), &obj), 0);
+}
+
+/// The re-zeroing of `i64.extend_i32_u` ELIDED when the value is already in
+/// its register — the "drop a redundant `mov r, r`" peephole. The image is
+/// mutated by overwriting the `movl %eax, %eax` of the wrapped-temporary probe
+/// with a 2-byte nop. Every vector whose i64 has a nonzero upper half must
+/// red; on wrapped PARAMETERS and on i32-built temporaries the same peephole
+/// is invisible, which is why the `wt` shape exists (cold review F1).
+#[test]
+fn potency_an_elided_rezeroing_of_a_wrapped_temporary_reds() {
+    let g = unary("i64.extend_i32_u", T::I32, T::I64);
+    let (_, obj) = compile_x86(&g.wat()).expect("extend_i32_u compiles");
+    let f = obj.func("wt").unwrap().clone();
+    let body = &obj.text[f.offset as usize..(f.offset + f.size) as usize];
+    // `movl %eax, %eax` = 89 C0, immediately before the final `retq`.
+    let at = body.len() - 3;
+    assert_eq!(body[at..], [0x89, 0xC0, 0xC3], "the lowering of `wt` moved");
+    let mut bad = obj.clone();
+    bad.text[f.offset as usize + at..f.offset as usize + at + 2].copy_from_slice(&[0x66, 0x90]);
+    let p = g.probes.iter().find(|p| p.name == "wt").unwrap();
+    let expect = p.vectors.iter().filter(|v| v[0] >> 32 != 0).count();
+    assert!(expect >= 40, "too few vectors with a nonzero upper half");
+    assert_eq!(disagreements(&g, "wt", &g.wat(), &bad), expect);
+    assert_eq!(disagreements(&g, "wt", &g.wat(), &obj), 0);
 }

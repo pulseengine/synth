@@ -106,7 +106,7 @@ const CASES: &[(&str, &str, &str)] = &[
         "LocalTee",
     ),
     (
-        "a value stack deeper than the temporaries",
+        "four temporaries in use at once",
         r#"(module (func (export "f") (result i32)
              i32.const 1 i32.const 2 i32.const 3 i32.const 4
              i32.add i32.add i32.add))"#,

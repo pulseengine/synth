@@ -36,8 +36,10 @@
 //! - no value is kept in EFLAGS across a wasm op: a compare materialises 0/1
 //!   (`cmp; setCC; movzbl`) and `select` tests its condition itself.
 //!
-//! A value stack deeper than the three temporaries declines loudly
-//! ([`SelectError::OutOfTemporaries`]); it is never spilled in this lane.
+//! NEEDING A FOURTH TEMPORARY declines loudly
+//! ([`SelectError::OutOfTemporaries`]); nothing is spilled in this lane. The
+//! limit is temporaries in use at once, not stack depth: a parameter on the
+//! stack takes none, and the `rcx` save around a shift takes one.
 
 use synth_core::WasmOp;
 
@@ -90,8 +92,8 @@ pub enum SelectError {
     /// More than one result.
     #[error("x86_64: {0} results; multi-value results are not lowered")]
     MultiValue(u32),
-    /// The value stack outgrew the temporaries.
-    #[error("x86_64: the value stack needs more than {} temporaries; spilling is not lowered", TEMP_REGS.len())]
+    /// A fourth temporary was needed.
+    #[error("x86_64: the function needs more than {} temporaries at once (computed values on the stack, plus one to save rcx around a shift when rcx holds parameter 3); spilling is not lowered", TEMP_REGS.len())]
     OutOfTemporaries,
     /// An op follows `return` before the function's final `end` (dead code
     /// is not lowered in this lane).

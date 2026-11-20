@@ -46,6 +46,6 @@
   "wasmcert_bridge_qed": 104,
   "x86_ops_lowered": 59,
   "x86_ops_probed": 198,
-  "x86_selector_lines_code": 494,
+  "x86_selector_lines_code": 496,
   "x86_selector_wildcard_arms_code": 0
 }

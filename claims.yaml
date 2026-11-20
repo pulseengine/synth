@@ -3996,13 +3996,14 @@ claims:
       # selector is pinned `track` until L2 (every movement is still a
       # visible diff here, with no direction asserted), then a `down` pin.
       # Created at 250 (lane X1: local.get of a parameter, i32.add, return).
-      # 494 since lane X2 (RQ-91-X86ALU): the straight-line integer core. The
+      # 496 since lane X2 (RQ-91-X86ALU; 494 as first committed, plus two
+      # doc-comment lines for cold review F7): the straight-line integer core. The
       # per-op choice of instruction is NOT in this file: it is the 52-row
       # table in rules.rs; the selector holds one routine per lowering shape.
       - kind: ratchet
         name: x86_selector_lines_code
         direction: track
-        value: 494
+        value: 496
       # Beside it, independently: the derived x86-64 surface is a FLOOR, so
       # the lowered set cannot shrink. It does NOT bound the selector's lines
       # (a line can be added while this stays 3; REVIEW_13 F1 measured it).

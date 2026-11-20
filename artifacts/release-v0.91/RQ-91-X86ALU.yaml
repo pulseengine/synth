@@ -27,7 +27,11 @@ artifacts:
 
         THE CONTRACT THE SELECTOR KEEPS. Parameters stay in `rdi, rsi, rdx,
         rcx, r8, r9` and are read-only; temporaries are `rax, r10, r11`; a
-        value stack deeper than three temporaries is REFUSED, never spilled.
+        function that needs a FOURTH temporary at once is REFUSED, never
+        spilled. The limit counts temporaries in use, not stack depth: a
+        parameter on the stack takes none (six parameters deep compiles), and
+        the `rcx` save around a shift takes one (a stack of depth three whose
+        shift must save `rcx` is refused).
         Every i32 op uses the 32-bit operand size, and bits 63:32 of an i32
         value are unspecified wherever it lives: `i32.wrap_i64` therefore
         emits nothing, and `i64.extend_i32_u` re-zeroes with a 32-bit `mov`.
@@ -59,6 +63,23 @@ artifacts:
         S1, which the plan says must not be written as a copy of AArch64's),
         calls X6. None of those is in this lane.
 
+        PLAN ITEMS OF LANE X2 NOT DELIVERED, and why (cold review F5).
+        (1) `scripts/repro/x86_64_alu_differential.py` and
+        `x86_64_decline_matrix.py`, the plan's wasmtime scripts: not written.
+        The lane rules in force allow no new Python oracle; the execution
+        oracle is Rust, against kiln (the X1 choice), and the decline matrix
+        is tests/decline_skeleton.rs plus the CLI test. Nothing compares
+        x86-64 output with wasmtime. (2) The `x86_ops_declined` measure: not
+        added. No document substitutes it and it equals `x86_ops_probed`
+        minus `x86_ops_lowered` (198 - 59 = 139), so it would be an unread
+        second copy; that is a choice of this lane, not a plan change anyone
+        approved. (3) The parity leg's red-first control "for an unledgered
+        one-sided gap": not built. The x86 leg of cross_backend_op_parity.rs
+        is a surface DERIVATION with a freshness test; it compares x86-64
+        with no other backend and has no gap ledger, so there is nothing yet
+        for such a control to guard. A later lane that wants x86-64 inside the
+        parity comparison has to add both.
+
         THE EXECUTION ORACLE'S x86-64 RUNNER is now its own function
         (crates/synth-oracle/src/emulate/x86_64.rs), after the AArch64 runner
         of #1745, and is stricter than the X1 path it replaces: besides the
@@ -73,10 +94,12 @@ artifacts:
         REFUTING COMMAND, to be RUN BEFORE building on this artifact: with a
         synth built from this branch, `SYNTH=<that binary> cargo test -p
         synth-oracle --features exec --test x86_64_alu_kiln_oracle --
-        --nocapture` must print the five `ORACLE x86_64-alu` lines (9944,
-        9040, 9526, 8660 and 6379 cases) and pass 9 tests; with SYNTH naming
+        --nocapture` must print the five `ORACLE x86_64-alu` lines (10362,
+        9420, 9526, 8660 and 7411 cases) and pass 10 tests; with SYNTH naming
         a binary built from the stack base 4dd56c1d the same command must
-        fail all 9, every op group reported as not compiling. `cargo test -p
+        fail all 10, every op group reported as not compiling. (As first
+        committed, a95fdf5d, this paragraph quoted 6379 for the last line
+        where that tree printed 6417: cold review F2.) `cargo test -p
         synth-backend-x86_64 -- --nocapture` must print `E1: 11969 forms
         byte-equal to` (when llvm-mc is present) and `E2: 11969 forms decode`.
 
@@ -109,16 +132,25 @@ artifacts:
       landed: "v0.91 X86ALU - #1741 - DELIVERED: rules.rs (52 rows), the selector's shape routines, eight instruction forms in inst.rs/encoder.rs, i64 signatures in backend.rs; the x86-64 runner in synth-oracle (emulate/x86_64.rs) and tests/x86_64_alu_kiln_oracle.rs; op surface 3 -> 59 of 198. #1741 stays open (outlives)."
       verified-by: >
         DELIVERED, execution-verified under emulation. RED/GREEN: with SYNTH
-        naming a binary built from the stack base 4dd56c1d, all 9 tests of
+        naming a binary built from the stack base 4dd56c1d, all 10 tests of
         x86_64_alu_kiln_oracle.rs fail and 57 of 57 op groups are reported
         as not compiling (`unsupported wasm op`, or a refused i64 signature);
-        on this branch all 9 pass. EXECUTION: 43,587 cases, all AGREE with
+        on this branch all 10 pass. EXECUTION: 45,379 cases, all AGREE with
         kiln under unicorn QEMU64 and all return values on both sides: i32
-        arithmetic 9944 over 11 ops, i32 compares 9040 over 10, i64
-        arithmetic 9526 over 11, i64 compares 8660 over 10, and 6417 over
+        arithmetic 10362 over 11 ops, i32 compares 9420 over 10, i64
+        arithmetic 9526 over 11, i64 compares 8660 over 10, and 7411 over
         15 groups of conversions, select, constants and drop. Each binary op
-        runs in ten operand shapes (eleven for i32, the eleventh on wrapped
-        i64 parameters): the both-parameters shape over every pair of 22 edge
+        runs in ten operand shapes (twelve for i32: also on wrapped i64
+        parameters and on wrapped i64 TEMPORARIES). COLD REVIEW F1: as first
+        committed (a95fdf5d, 43,587 cases) the oracle stayed 9 of 9 green on
+        the reviewer's mutant B, `i64.extend_i32_u` skipping its re-zeroing
+        `mov` when the value is already in its register, because no probe put
+        an i32 with a nonzero upper half in a TEMPORARY. The `wt`, `wtc` and
+        `wtv` shapes do; mutant B rebuilt into synth is now red (47 of 7411
+        cases, all in `i64.extend_i32_u wt`, the 47 vectors whose upper half
+        is nonzero) and a committed potency test nops the `movl %eax, %eax`
+        in the image and requires exactly those vectors to disagree. Shapes:
+        the both-parameters shape over every pair of 22 edge
         values plus 40 seeded random pairs, the others over 22 fixed edge
         pairs plus 16 seeded random ones. POTENCY, committed tests: kiln
         running lt_u for the compiled lt_s, and the image's `setl` rewritten

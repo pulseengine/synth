@@ -2531,7 +2531,7 @@ fn a64_op_surface_artifact_is_fresh_242() {
 // `nop` too, so the two agree.
 //
 // SCOPE, as for aarch64: OP-LEVEL ONLY. The x86-64 backend also refuses at
-// MODULE level (any non-i32 signature, imports, memory, tables, globals, ...);
+// MODULE level (any signature that is not i32/i64, imports, memory, tables, globals, ...);
 // those refusals are `crates/synth-backend-x86_64/tests/decline_skeleton.rs`.
 // ---------------------------------------------------------------------------
 
@@ -2587,8 +2587,8 @@ fn derive_x86_op_surface() -> (String, Vec<String>) {
          over the aarch64 surface's probes — never a hand list\",\n",
     );
     s.push_str(
-        "  \"_scope\": \"OP-LEVEL ONLY. Module-level refusals (non-i32 \
-         signatures, imports, memory, tables, globals, data, start) are \
+        "  \"_scope\": \"OP-LEVEL ONLY. Module-level refusals (signatures \
+         that are not i32/i64, imports, memory, tables, globals, data, start) are \
          crates/synth-backend-x86_64/tests/decline_skeleton.rs\",\n",
     );
     s.push_str("  \"ops\": [\n");
