@@ -3796,9 +3796,24 @@ claims:
       - kind: ratchet
         name: aarch64_selector_lines_code
         direction: down
-        value: 3131
+        value: 3223
         baseline: 3067
         waivers:
+          - to: 3223
+            reason: >-
+              v0.92 batch 2 (Refs #1763): 3131 -> 3223 (+92). The AArch64
+              selector read every non-param local into a GP temp, so a float
+              local's value-stack entry was GP-file: a function returning a
+              never-written f32/f64 local wrote x0 and never v0 (silent wrong
+              code, exit 0; f(2.5) returned 2.5 for wasm's 0), a float local
+              reached a `call` as an integer argument, and every other use of a
+              float local was a refusal. The growth is one more entry point,
+              `select_with_declared_locals`, taking the decoder's declared
+              float locals, and an FP-file arm in each of `local.get`,
+              `local.set` and `local.tee` with its width-exact slot load/store.
+              float_local_file_1763.rs is red on the base (87 of the 94 A64
+              cases: 30 wrong values, 57 refused) and 202 of 202 on the fix.
+              No hand-written arm was replaced, so none could be deleted.
           - to: 3131
             reason: >-
               A64BELOW (Refs #1740, #1747): 3067 -> 3131 (+64). The AArch64
