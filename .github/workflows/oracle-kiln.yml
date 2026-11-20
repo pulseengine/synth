@@ -38,7 +38,7 @@ jobs:
     # overrun that must never count as a trap.
     #
     # NOT a required context, so it can be added and renamed freely.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     # MEASURED, not guessed. The first run on the pool (run 44587233237,
     # runner pulseengine-ci-01-11) built in about 4 minutes (synth 1m06s,
     # clippy 1m12s, the test build 1m41s) and then spent 28 minutes on ONE
