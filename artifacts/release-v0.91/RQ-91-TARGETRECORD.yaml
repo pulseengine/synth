@@ -55,8 +55,8 @@ artifacts:
         whose control did not turn red cannot pass.
 
         SCHEMA. crates/synth-oracle/schema/north-star-input.schema.json is a
-        byte-identical copy of pulseengine.eu origin/main 21bf3cd (git blob
-        344292f5), sha256 pinned by a unit test. `record::validate`
+        byte-identical copy of pulseengine.eu origin/main 87fc5b0 (git blob
+        b2f12f79, pulseengine.eu#394), sha256 pinned by a unit test. `record::validate`
         interprets THAT FILE keyword by keyword (type, const, enum, pattern,
         format date-time, required, properties, additionalProperties, items)
         and errors on any keyword it does not implement, so a schema change
@@ -69,7 +69,7 @@ artifacts:
         cortex-m4/execution_match, cortex-m7dp/execution_match and
         cortex-m4/wcet to pass, pins the 16 facts by exact grep, and uploads
         the file as the `north-star-input.O1` artifact. oracle-kiln.yml's
-        exact test-count greps moved with the new tests (lib 8 -> 14, plus
+        exact test-count greps moved with the new tests (lib 8 -> 15, plus
         the 1 end-to-end test).
 
         RELEASE ATTACHMENT, DESCRIBED ONLY. release.yml is an owner-gated
@@ -82,9 +82,14 @@ artifacts:
         release-assets/ \;`, so the file is present when "Generate SHA256
         checksums" runs, its digest enters SHA256SUMS.txt, and the existing
         keyless cosign signature and build-provenance attestation cover it.
-        The consumer schema's comment names the asset `north-star-input.json`;
-        this lane writes `north-star-input.O1.json` as briefed, and the name
-        must be agreed on the seam issue before release.yml is wired.
+        ASSET NAME, settled on pulseengine.eu#393 and merged in
+        pulseengine.eu#394: one asset per objective,
+        `north-star-input.<objective>.json`, whose name must agree with the
+        record's `objective` field. synth publishes `north-star-input.O1.json`;
+        `record::check_file_name` refuses any other output name, before the
+        run and again against the written record's `objective`.
+        CONSUMER: pulseengine.eu#396, `tools/north-star-measure`, which reads
+        the latest release's file per product.
         `wsc verify-chain` is NOT used as a gate anywhere (sigil#395: it
         passes a one-bit-flipped component).
 
@@ -136,8 +141,9 @@ artifacts:
         pass=false. rv32imc: reach 9 of 257, execution_match ran=false, wcet
         ran=true pass=false. Every hardware_run ran=false. The reach figures
         for cortex-m4, cortex-m7dp and rv32imc equal the compile census's
-        `arm`, `arm_m7dp` and `riscv` `ok` pins (16, 26, 9). Tests: six unit
-        tests in record.rs (schema-valid record; zero vectors never a pass
+        `arm`, `arm_m7dp` and `riscv` `ok` pins (16, 26, 9). Tests: seven unit
+        tests in record.rs (schema-valid record; the output file name must
+        match the objective; zero vectors never a pass
         and never omitted; each fail rule fails its fact; the validator
         rejects eleven schema violations and an unimplemented keyword; the
         vendored schema's sha256; RFC 3339), and tests/target_record.rs runs

@@ -3,7 +3,7 @@
 //!
 //! The SHAPE is not ours. `schema/north-star-input.schema.json` is a
 //! byte-identical copy of pulseengine.eu's `data/north-star/input.schema.json`
-//! (origin/main 21bf3cd, git blob 344292f5, sha256 pinned in the tests), and
+//! (origin/main 87fc5b0, git blob b2f12f79, sha256 pinned in the tests), and
 //! [`validate`] checks a record against THAT FILE, keyword by keyword, rather
 //! than against a hand-written list of fields. A keyword the validator does not
 //! implement is an error, so a schema change cannot be silently ignored.
@@ -387,6 +387,24 @@ pub fn hardware_fact(target: &str, evidence: &str) -> Fact {
     )
 }
 
+/// The objective this record feeds.
+pub const OBJECTIVE: &str = "O1";
+
+/// The consumer's asset-name rule (pulseengine.eu#394): the file is
+/// `north-star-input.<objective>.json`, named after the record's own
+/// `objective` field, and this check is what enforces it. `path`'s file name is checked; a mismatch, or a
+/// name of any other shape, is refused.
+pub fn check_file_name(path: &std::path::Path, objective: &str) -> Result<(), String> {
+    let want = format!("north-star-input.{objective}.json");
+    match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) if n == want => Ok(()),
+        Some(n) => Err(format!(
+            "output file name {n:?} does not match the record's objective {objective:?}: the consumer requires {want:?} (pulseengine.eu#394)"
+        )),
+        None => Err(format!("output path {} has no file name", path.display())),
+    }
+}
+
 /// The whole input file.
 pub struct Record {
     pub version: String,
@@ -400,7 +418,7 @@ impl Record {
     pub fn to_json(&self) -> Value {
         json!({
             "schema_version": 1,
-            "objective": "O1",
+            "objective": OBJECTIVE,
             "repo": "pulseengine/synth",
             "version": self.version,
             "generated_at": self.generated_at,
@@ -584,11 +602,12 @@ mod tests {
         use sha2::{Digest, Sha256};
         let h = Sha256::digest(SCHEMA.as_bytes());
         let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
-        // pulseengine.eu origin/main 21bf3cd, data/north-star/input.schema.json
-        // (git blob 344292f5cc40ee5cd83520eac82ba2d1c6199522).
+        // pulseengine.eu origin/main 87fc5b0 (pulseengine.eu#394),
+        // data/north-star/input.schema.json
+        // (git blob b2f12f794d15fb10fc804bc3ccdc4866a3d036ba).
         assert_eq!(
             hex,
-            "9ab5814405ad7f77218c837fd5404b1f057a37b360d5aef6d1b9e2c90b63591c"
+            "b97c33abfb45f6be9303b9b5bed67993f062acf2d431386a4f337bbcd9c363fb"
         );
     }
 
@@ -776,6 +795,25 @@ mod tests {
         // An unimplemented keyword in the schema is an error, not a pass.
         let schema = json!({"type": "object", "minProperties": 1});
         assert!(validate(&json!({"a": 1}), &schema).is_err());
+    }
+
+    #[test]
+    fn file_name_must_match_the_objective() {
+        use std::path::Path;
+        assert!(check_file_name(Path::new("out/north-star-input.O1.json"), "O1").is_ok());
+        for bad in [
+            "north-star-input.json",
+            "north-star-input.O5.json",
+            "north-star-input.o1.json",
+            "target-record.json",
+            "north-star-input.O1.json.tmp",
+        ] {
+            assert!(check_file_name(Path::new(bad), "O1").is_err(), "{bad}");
+        }
+        assert!(check_file_name(Path::new("/"), "O1").is_err());
+        // The record's own objective field is the one named.
+        let r = record(vec![]);
+        assert_eq!(r["objective"], OBJECTIVE);
     }
 
     #[test]

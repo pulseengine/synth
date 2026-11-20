@@ -463,6 +463,9 @@ fn main() {
 
 fn run() -> Result<i32, String> {
     let a = parse_args()?;
+    // Refuse a mismatched name BEFORE the run, and again below against the
+    // record's own objective field before anything is written.
+    record::check_file_name(&a.out, record::OBJECTIVE)?;
     std::fs::create_dir_all(&a.work).map_err(|e| e.to_string())?;
     let synth_bin = synth_binary()?;
     let synth_version = Command::new(&synth_bin)
@@ -695,6 +698,7 @@ fn run() -> Result<i32, String> {
             e.join("\n  ")
         )
     })?;
+    record::check_file_name(&a.out, rec["objective"].as_str().unwrap_or(""))?;
     let text = serde_json::to_string_pretty(&rec).map_err(|e| e.to_string())? + "\n";
     std::fs::write(&a.out, text).map_err(|e| format!("{}: {e}", a.out.display()))?;
 

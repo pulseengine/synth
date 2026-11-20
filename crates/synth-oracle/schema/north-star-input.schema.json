@@ -1,5 +1,5 @@
 {
-  "$comment": "North Star indicator input, schema_version 1. A repository that feeds an objective publishes this as the release asset `north-star-input.json`, listed in the release's cosign-signed SHA256SUMS. pulseengine.eu's monthly north-star workflow reads the latest release of each product named in data/north-star.toml. A missing, unsigned or invalid file is not counted (never zero-filled); a fact with ran=false counts as failed. A change to this shape is a new schema_version, announced on the seam issue first.",
+  "$comment": "North Star indicator input, schema_version 1. A repository that feeds an objective publishes one file per objective as the release asset `north-star-input.<objective>.json` (e.g. `north-star-input.O5.json`; the file name and the `objective` field must agree), listed in the release's cosign-signed SHA256SUMS. pulseengine.eu's monthly north-star workflow reads the latest release of each product named in data/north-star.toml. A missing, unsigned or invalid file is not counted (never zero-filled); a fact with ran=false counts as failed. A change to this shape is a new schema_version, announced on the seam issue first.",
   "type": "object",
   "required": ["schema_version", "objective", "repo", "version", "generated_at", "generator", "facts", "not_measured"],
   "additionalProperties": false,
