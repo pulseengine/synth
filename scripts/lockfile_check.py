@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lockfile gates: every committed Cargo.lock is current, and every one is audited.
+"""Lockfile gates: every committed Cargo.lock is current and audited, and MODULE.bazel.lock is current.
 
 WHY IT EXISTS. `fuzz/` is its own cargo workspace, and until this change its
 `Cargo.lock` was gitignored. Its dependencies were re-resolved on every CI run,
@@ -7,7 +7,7 @@ so a dependency release could break the fuzz job with no commit in this repo
 (that is what broke spar's required fuzz job). The advisory audit ran in the
 root workspace only, so a lock outside it was never audited.
 
-TWO MODES, each a real check followed by a planted control:
+THREE MODES, each a real check followed by a planted control:
 
   freshness  `cargo metadata --locked` in the directory of every committed
              Cargo.lock. It fails when a lock is out of date with its
@@ -15,12 +15,18 @@ TWO MODES, each a real check followed by a planted control:
              committed lock, which is the shape of the fuzz/ gap.
   audit      `cargo deny check advisories` for every committed Cargo.lock,
              with the repository's own deny.toml.
+  bazel      `bazel mod deps --lockfile_mode=error`. It fails when
+             MODULE.bazel.lock is out of date with the inputs its module
+             extensions recorded. The rules_rust crate extension records the
+             sha256 of Cargo.lock, Cargo.toml, MODULE.bazel and every
+             crates/*/Cargo.toml, so a change to any of them needs
+             `bazel mod deps --lockfile_mode=update` in the same PR.
 
 THE POPULATION IS DISCOVERED with `git ls-files`, never listed here, and an
 empty discovery is an error: a check over no lockfiles would pass about nothing.
 
-THE PLANTED CONTROLS run on every invocation and the script fails if either
-one passes:
+THE PLANTED CONTROLS run on every invocation and the script fails if the
+mode's control passes:
 
   freshness  a temp crate gets a dependency added to Cargo.toml with its lock
              left alone; `cargo metadata --locked` must fail there, having
@@ -28,8 +34,11 @@ one passes:
   audit      a temp workspace's lock pins smallvec 1.6.0 (RUSTSEC-2021-0003,
              buffer overflow in `insert_many`, fixed in 1.6.1); `cargo deny
              check advisories` must fail there and must name that advisory.
-
-NOT COVERED: MODULE.bazel.lock. See the note in .bazelrc.
+  bazel      the sha256 MODULE.bazel.lock records for Cargo.lock is changed
+             by one hex digit, which is what the lock looks like after
+             Cargo.lock moves without a regeneration; the same command must
+             fail and must say the lock is out of date. The lock's bytes are
+             restored afterwards and the restore is checked.
 """
 import argparse
 import os
@@ -250,12 +259,71 @@ def cmd_audit():
     return ok
 
 
+BAZEL_LOCK = ROOT / "MODULE.bazel.lock"
+BAZEL_CHECK = ["bazel", "mod", "deps", "--lockfile_mode=error"]
+BAZEL_REGENERATE = "bazel mod deps --lockfile_mode=update"
+BAZEL_STALE_TEXT = "MODULE.bazel.lock is no longer up-to-date"
+# The crate extension's recorded hash of the root Cargo.lock.
+BAZEL_RECORDED_CARGO_LOCK = re.compile(rb'("@@//Cargo\.lock": ")([0-9a-f]{64})(")')
+
+
+def bazel_errors(out):
+    return "\n".join(l for l in out.splitlines() if l.startswith("ERROR")) or out[-2000:]
+
+
+def bazel_control():
+    """True when Bazel refuses a lock whose recorded Cargo.lock hash is wrong."""
+    original = BAZEL_LOCK.read_bytes()
+    found = BAZEL_RECORDED_CARGO_LOCK.findall(original)
+    if len(found) != 1:
+        print(f"FAIL(control scaffold): expected one recorded hash of //Cargo.lock "
+              f"in MODULE.bazel.lock, found {len(found)}")
+        return False
+    digest = found[0][1]
+    flipped = (b"1" if digest[:1] == b"0" else b"0") + digest[1:]
+    try:
+        BAZEL_LOCK.write_bytes(
+            BAZEL_RECORDED_CARGO_LOCK.sub(lambda m: m[1] + flipped + m[3], original)
+        )
+        rc, out = run(BAZEL_CHECK, ROOT)
+    finally:
+        BAZEL_LOCK.write_bytes(original)
+    if BAZEL_LOCK.read_bytes() != original:
+        print("FAIL(control): MODULE.bazel.lock was not restored")
+        return False
+    if rc == 0:
+        print("FAIL(control): Bazel ACCEPTED a lock recording the wrong hash for")
+        print("Cargo.lock, so the Bazel lock check cannot fail.")
+        return False
+    if BAZEL_STALE_TEXT not in out:
+        print(f"FAIL(control): it failed, but not about a stale lock:\n{bazel_errors(out)}")
+        return False
+    print(f"control OK: the planted stale MODULE.bazel.lock is refused (rc {rc})")
+    return True
+
+
+def cmd_bazel():
+    if not BAZEL_LOCK.is_file():
+        sys.exit("FAIL: MODULE.bazel.lock is missing")
+    rc, out = run(BAZEL_CHECK, ROOT)
+    ok = rc == 0
+    if ok:
+        print("  fresh   MODULE.bazel.lock")
+    else:
+        print(f"  STALE   MODULE.bazel.lock (rc {rc})\n{bazel_errors(out)}")
+        print("::error file=MODULE.bazel.lock::MODULE.bazel.lock is out of date. "
+              f"Run `{BAZEL_REGENERATE}` and commit MODULE.bazel.lock in this PR. "
+              "Any change to Cargo.lock, Cargo.toml, MODULE.bazel or a "
+              "crates/*/Cargo.toml needs it, a dependabot cargo bump included.")
+    return bazel_control() and ok
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("mode", choices=["freshness", "audit"])
+    ap.add_argument("mode", choices=["freshness", "audit", "bazel"])
     args = ap.parse_args()
     os.environ.setdefault("CARGO_TERM_COLOR", "never")
-    ok = cmd_freshness() if args.mode == "freshness" else cmd_audit()
+    ok = {"freshness": cmd_freshness, "audit": cmd_audit, "bazel": cmd_bazel}[args.mode]()
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
