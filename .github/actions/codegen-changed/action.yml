@@ -4,9 +4,11 @@
 #
 # WHY. The replay was the largest single rust-cpu job (187 min over 13 runs in
 # the 2026-11-19/20 window, about 14 min a run). Its inputs are the compiler
-# source, the scripts/repro oracles and their drivers, ci.yml (the recorded
-# killer steps are read from it) and the ledger. A change that touches none of
-# them replays the exact survey the base commit already ran.
+# source, the scripts/repro oracles and their drivers, the ledger (which holds
+# the recorded suite the replay executes), and whatever `cargo test
+# --workspace` reads: one pinned control is killed at that layer, so the replay
+# runs the whole workspace suite. A change that touches none of them replays
+# the exact survey the base commit already ran.
 #
 # FAIL-OPEN, BY CONSTRUCTION. The list names what is SAFE TO SKIP, not what
 # must run, so an unlisted or new path runs the survey. It also runs when
@@ -19,9 +21,16 @@
 #   - git fails, or the diff is empty.
 #
 # SKIP-SAFE: docs/** except the ledger docs/status/mutation_survey.json;
-# artifacts/**; claims.yaml; and *.md outside crates/. Nothing under crates/,
-# scripts/, tests/, fuzz/, .github/, coq/, nor Cargo.toml / Cargo.lock, is
-# ever skip-safe.
+# the rivet YAML under artifacts/ (artifacts/**/*.yaml|yml); claims.yaml; and
+# *.md outside crates/ and artifacts/. Nothing under crates/, scripts/,
+# tests/, fuzz/, .github/, coq/, nor Cargo.toml / Cargo.lock, is ever
+# skip-safe.
+#
+# artifacts/ IS NOT SKIP-SAFE AS A WHOLE. artifacts/aarch64-op-surface.json is
+# read by a workspace test (cross_backend_op_parity.rs,
+# a64_op_surface_artifact_is_fresh_242), which the replay runs; a change to it
+# alone can red the replay. So only the YAML is listed, and every other file
+# there (the .json and .md ones included) runs the replay.
 #
 # A skipped replay still REPORTS the job's check, green, having said so in the
 # log and the step summary. It is not evidence about the mutants: the evidence
@@ -70,8 +79,10 @@ runs:
           case "$f" in
             docs/status/mutation_survey.json) decide true "the ledger changed" ;;
             crates/*) decide true "'$f' changed" ;;
-            docs/*|artifacts/*|claims.yaml|*.md) ;;
+            artifacts/*.yaml|artifacts/*.yml) ;;
+            artifacts/*) decide true "'$f' changed (only the YAML under artifacts/ is skip-safe)" ;;
+            docs/*|claims.yaml|*.md) ;;
             *) decide true "'$f' changed" ;;
           esac
         done <<< "$files"
-        decide false "all $n changed path(s) are skip-safe (docs, artifacts, claims.yaml, *.md outside crates/)"
+        decide false "all $n changed path(s) are skip-safe (docs, artifacts YAML, claims.yaml, *.md outside crates/ and artifacts/)"

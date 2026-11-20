@@ -5036,8 +5036,8 @@ jobs:
         with:
           fetch-depth: 2 # codegen-changed diffs HEAD^1
       # Fail-open path filter: the heavy steps are skipped only when every
-      # changed path is skip-safe (docs, artifacts, claims.yaml, *.md outside
-      # crates/). Push to main always runs. .github/actions/codegen-changed.
+      # changed path is skip-safe (docs, artifacts YAML, claims.yaml, other
+      # *.md outside crates/). Push to main always runs. .github/actions/codegen-changed.
       - id: cg
         uses: ./.github/actions/codegen-changed
       - uses: dtolnay/rust-toolchain@stable

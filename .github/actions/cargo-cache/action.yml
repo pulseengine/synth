@@ -10,7 +10,18 @@
 #   - sets CARGO_INCREMENTAL=0, so target/*/incremental is never written and
 #     therefore never cached,
 #   - keys the cache on the job id, so it holds what THIS job builds and is
-#     never the 1.1 GB cache a differently-configured job saved.
+#     never the 1.1 GB cache a differently-configured job saved. The key
+#     prefix is `<os>-slimcargo-`, deliberately NOT a prefix-match for the
+#     shared cache's `<os>-cargo-` restore key, so the jobs still on the shared
+#     cache can never restore a slim one either.
+#
+# SAVED ONLY ON A PUSH TO MAIN. The repository's cache was already over
+# GitHub's 10 GB budget when this landed (10.7 GB, 31 caches, measured
+# 2026-11-20), and a cache saved from a pull_request or merge_group ref is
+# scoped to that ref: every PR would add its own copies of every new key and
+# evict main's warm ones. So pull_request and merge_group runs RESTORE (main's
+# caches are readable from every ref) and never save. Until a push to main has
+# saved a key, jobs using it build cold.
 #
 # SCOPE. Used per job, deliberately. It is NOT used by Clippy or Test (their
 # environments are untouched), nor by the build-synth job (its binary is built
@@ -26,13 +37,26 @@ runs:
       run: |
         echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
-    - name: Cache Cargo dependencies (slim, per job)
+    # Restore everywhere; SAVE only on a push to main (see the header).
+    - name: Cache Cargo dependencies (slim, per job) — restore and save (push to main)
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
           target/
-        key: ${{ runner.os }}-cargo-slim-${{ github.job }}-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-slimcargo-${{ github.job }}-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-cargo-slim-${{ github.job }}-
+          ${{ runner.os }}-slimcargo-${{ github.job }}-
+    - name: Cache Cargo dependencies (slim, per job) — restore only
+      if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target/
+        key: ${{ runner.os }}-slimcargo-${{ github.job }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-slimcargo-${{ github.job }}-

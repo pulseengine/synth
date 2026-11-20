@@ -9,8 +9,12 @@
 # WHAT IS BUILT is exactly what those jobs built: `cargo build -p synth-cli`,
 # the dev profile, default features (`riscv` is in synth-cli's default set, so
 # the two jobs that spelled `--features riscv` built the same binary). No
-# profile override, no env change: this job's cache has its own key so it is
-# never the one a slimmed job (./.github/actions/cargo-cache) saved.
+# profile override, no env change: this job's cache has its own key
+# (`<os>-synthbin-`, not a prefix-match for the shared `<os>-cargo-` restore
+# key) so it is never the one a slimmed job (./.github/actions/cargo-cache)
+# saved. Like the slim caches it is SAVED ONLY ON A PUSH TO MAIN and restored
+# everywhere else: a cache saved from a PR ref is scoped to that ref, and the
+# repository's cache was already over its 10 GB budget.
 #
 # THE FINGERPRINT is what makes a shared binary safe to trust: the commit, the
 # Cargo.lock digest, the profile and features, the toolchain, and the binary's
@@ -23,16 +27,29 @@ runs:
   using: composite
   steps:
     - uses: dtolnay/rust-toolchain@stable
-    - name: Cache Cargo dependencies (this job's own key)
+    # Restore everywhere; SAVE only on a push to main (see the header).
+    - name: Cache Cargo dependencies (this job's own key) — restore and save (push to main)
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
           target/
-        key: ${{ runner.os }}-cargo-synthbin-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-synthbin-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-cargo-synthbin-
+          ${{ runner.os }}-synthbin-
+    - name: Cache Cargo dependencies (this job's own key) — restore only
+      if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target/
+        key: ${{ runner.os }}-synthbin-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-synthbin-
     - name: Build synth
       shell: bash
       run: cargo build -p synth-cli
