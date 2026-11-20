@@ -182,7 +182,8 @@ fn compile_i64_div() {
 /// M3 Static Linking PoC: compile a WAT module with an import and verify
 /// that the output is a relocatable ELF with:
 ///   - ET_REL file type
-///   - __meld_dispatch_import as an undefined symbol
+///   - the import as an undefined symbol under its bare field name (`log`),
+///     and NO `__meld_dispatch_import` (#1699: that fallback is gone)
 ///   - .rel.text section with R_ARM_CALL relocations
 ///   - .meld_import_table metadata section
 ///   - call_log function symbol
@@ -234,14 +235,20 @@ fn compile_import_call_produces_relocatable_elf() {
     // ARM architecture (e_machine = 0x28 at offset 18)
     assert_eq!(data[18], 0x28, "Expected ARM architecture");
 
-    // Check that __meld_dispatch_import is in the string table
+    // #1699: the import is called directly; no dispatch symbol anywhere.
     let meld_sym = b"__meld_dispatch_import";
     let has_meld_sym = data
         .windows(meld_sym.len())
         .any(|w| w == meld_sym.as_slice());
     assert!(
-        has_meld_sym,
-        "__meld_dispatch_import symbol not found in ELF"
+        !has_meld_sym,
+        "__meld_dispatch_import must not appear in the object"
+    );
+    // The import's own symbol: `log`, NUL-delimited in the string table (so
+    // this is not the tail of `call_log`).
+    assert!(
+        data.windows(5).any(|w| w == b"\0log\0"),
+        "undefined symbol `log` not found in ELF"
     );
 
     // Check that call_log function name is in the string table

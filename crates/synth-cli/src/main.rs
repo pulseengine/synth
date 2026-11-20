@@ -2748,6 +2748,22 @@ fn compile_command(
     } else if cortex_m {
         // #1640: see `refuse_a32_cortex_m_image`.
         refuse_a32_cortex_m_image(target_spec)?;
+        // The Thumb twin of #1645, found with #1696: this image holds ONLY
+        // the selected function and `build_cortex_m_elf` patches nothing, so
+        // a call to an import or to another function shipped as a `bl` to
+        // its own address, exit 0. Refuse; the module path links or patches
+        // every call.
+        if !compiled.relocations.is_empty() {
+            anyhow::bail!(
+                "function '{}' carries {} relocation(s) (calls to imports or to other \
+                 functions), but the single-function self-contained Cortex-M image \
+                 contains only this function — the call sites would ship as `bl` to \
+                 themselves. Compile the whole module (drop --func-index/--func-name, \
+                 or pass --all-exports), or use --relocatable (#1645, #1696).",
+                func_name,
+                compiled.relocations.len()
+            );
+        }
         // #758: the single-function self-contained builder ships no data
         // segments (only the multi-function `--all-exports` path does). Rather
         // than emit an image whose initialized regions silently read zero,
@@ -4524,6 +4540,51 @@ fn refuse_shared_memory(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Re
     Ok(())
 }
 
+/// #1696 / #1755 / #1699 / #1758: a module that CALLS an imported function is
+/// host-linked, with or without `--relocatable`.
+///
+/// On ARM a call to a function import cannot be resolved inside a
+/// self-contained image: it is an undefined symbol only a host linker binds,
+/// so such a module has always been emitted as an `ET_REL` object. But
+/// `--relocatable` was the only thing that set [`CompileConfig::relocatable`],
+/// and the output kind was decided AFTER code generation, so on default flags
+/// the object's functions were compiled for the self-contained image:
+/// optimized-path functions addressed linear memory at the absolute
+/// `0x2000_0100` while direct-selector functions in the same object used R11
+/// (#1758), the optimized path called imports with no argument marshalling and
+/// no caller-saved preservation (#1755, #1696), and the direct selector called
+/// them through `__meld_dispatch_import` with only the import index (#1699).
+/// All wrong values at exit 0.
+///
+/// So the decision is made HERE, from the decoded module and before any code
+/// is generated: a call to a function import means the compile is the
+/// `--relocatable` compile, whole. One selector, one linear-memory model
+/// (R11/R10), one import ABI (a direct AAPCS `bl <field>`), and every
+/// `--relocatable` refusal.
+///
+/// The key is a CALL, not the import's declaration: a module whose function
+/// imports are never called references no external symbol, was a complete
+/// self-contained image before and still is. `functions` is every defined
+/// function of the module, so a call in a function the compile later drops
+/// as unreachable still counts — the over-approximation errs towards the
+/// host-linked object, never towards a mixed one; the `#1758 tripwire` after
+/// code generation refuses anything this predicate could miss.
+///
+/// ARM only. RV32 and AArch64 emit `ET_REL` for every module, and their
+/// selectors do not read `relocatable` for memory addressing or import calls.
+fn function_imports_force_host_link(
+    backend_name: &str,
+    functions: &[FunctionOps],
+    num_imported_funcs: u32,
+) -> bool {
+    backend_name == "arm"
+        && functions.iter().any(|f| {
+            f.ops
+                .iter()
+                .any(|op| matches!(op, WasmOp::Call(idx) if *idx < num_imported_funcs))
+        })
+}
+
 /// Compile all exported functions (plus their reachable internal callees, #235)
 /// into a multi-function ELF.
 #[allow(clippy::too_many_arguments)]
@@ -4600,6 +4661,13 @@ fn compile_all_exports(
     let path = input.context("--all-exports requires an input file")?;
 
     info!("Compiling all exports from: {}", path.display());
+
+    // What the user typed. `relocatable` is re-derived below, once the module
+    // is decoded (`function_imports_force_host_link`); the few decisions that
+    // are about the FLAG keep reading this.
+    let relocatable_flag = relocatable;
+    // Set while decoding: some module calls a function import.
+    let mut import_call_host_link = false;
 
     // VCR-DEC-003 (#396): accumulate the branch-transformation map across
     // functions as they compile, then serialize the sidecar at the end.
@@ -4773,6 +4841,15 @@ fn compile_all_exports(
             }
             match decode_wasm_module(&wasm_bytes) {
                 Ok(module) => {
+                    // A module that calls a function import is checked as
+                    // the host-linked module it will be compiled as.
+                    let host_link = function_imports_force_host_link(
+                        backend.name(),
+                        &module.functions,
+                        module.num_imported_funcs,
+                    );
+                    import_call_host_link |= host_link;
+                    let relocatable = relocatable || host_link;
                     // RQ-59-STARTFN (#1046): a WAST-embedded module carrying
                     // a (start ...) declaration is dropped the same way —
                     // refuse the whole compile rather than silently merge
@@ -5050,6 +5127,14 @@ fn compile_all_exports(
         };
 
         let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
+        // From here on this module is compiled as what it will be emitted as
+        // (the #418 arena bind above has already removed a bound import).
+        import_call_host_link = function_imports_force_host_link(
+            backend.name(),
+            &module.functions,
+            module.num_imported_funcs,
+        );
+        let relocatable = relocatable || import_call_host_link;
         // RQ-66-BOTHWRONG (#1209): unconditional, independent of the
         // start-function decision below — memory64 is refused on every
         // compile mode this path serves.
@@ -5097,7 +5182,11 @@ fn compile_all_exports(
         let start_is_defined = module
             .start_function
             .is_some_and(|idx| idx >= module.num_imported_funcs);
-        if cortex_m && !relocatable && backend.name() == "arm" && start_is_defined {
+        // Keyed on the FLAG: a start function in a module that calls a function
+        // import is still accepted here and refused after compilation, with
+        // the message that names the cause (imports made this a relocatable
+        // object, which runs no startup).
+        if cortex_m && !relocatable_flag && backend.name() == "arm" && start_is_defined {
             accepted_start_function = module.start_function;
             info!(
                 "  (start ...) function index {} accepted: the self-contained image's \
@@ -5357,6 +5446,23 @@ fn compile_all_exports(
         )
     };
 
+    // #1696 / #1755 / #1699 / #1758: a call to a function import makes this
+    // the `--relocatable` compile, whole — decided here, before `CompileConfig`
+    // is built, so every function is generated for the object that is
+    // emitted. Loud on stderr: the user asked for an image and gets an object.
+    let relocatable = relocatable || import_call_host_link;
+    if relocatable && !relocatable_flag {
+        warn!(
+            "module calls imported function(s) ({} imported): a self-contained image cannot \
+             resolve them, so this compile produces a relocatable object (ET_REL), exactly as \
+             --relocatable does — each import is a direct AAPCS `bl <import field name>` for \
+             your linker, and the embedder sets R11 (linear-memory base), R10 (its size in \
+             bytes) and R9 (globals table) before any export runs \
+             (docs/embedder-abi-relocatable-arm.md; #1696)",
+            max_num_imported_funcs
+        );
+    }
+
     // Log memory information
     if !all_memories.is_empty() {
         info!("Memories ({} total):", all_memories.len());
@@ -5476,7 +5582,7 @@ fn compile_all_exports(
     // Log import information
     if max_num_imported_funcs > 0 {
         info!(
-            "Module imports {} functions (Meld dispatch enabled):",
+            "Module imports {} functions (host-linked: direct `bl <field>` calls):",
             max_num_imported_funcs
         );
         for imp in &all_imports {
@@ -5776,6 +5882,9 @@ fn compile_all_exports(
         // #197: --relocatable forces the direct selector + direct func_N import
         // ABI so host-linked objects get fp-relative memory access and
         // caller-saved preservation (the optimized path is wrong for ET_REL).
+        // #1696/#1758: also set by a call to a function import
+        // (`function_imports_force_host_link`), so no ET_REL object is ever
+        // built from functions compiled for the self-contained image.
         relocatable,
         // #237: native-pointer ABI — wasm statics (initialized + zero-init/BSS)
         // become __synth_wasm_data-relative across the whole linear memory.
@@ -6812,6 +6921,27 @@ fn compile_all_exports(
         .iter()
         .flat_map(|f| &f.relocations)
         .any(|r| !internal_labels.contains(r.symbol.as_str()));
+    // #1758 tripwire: on ARM an external relocation turns the output into an
+    // ET_REL object, and an ET_REL object is only sound when its functions
+    // were generated for one (R11-relative memory, the direct import ABI).
+    // `function_imports_force_host_link` guarantees that for import calls; if
+    // any OTHER external symbol ever appears on a compile that was not
+    // configured relocatable, refuse instead of shipping the mixed object.
+    if backend.name() == "arm"
+        && !relocatable
+        && let Some(r) = compiled_funcs
+            .iter()
+            .flat_map(|f| &f.relocations)
+            .find(|r| !internal_labels.contains(r.symbol.as_str()))
+    {
+        anyhow::bail!(
+            "internal: a function compiled for the self-contained image references the \
+             external symbol `{}`, which only a host linker can resolve — the object \
+             would mix the self-contained memory model with a host-linked one (#1758). \
+             Refusing; compile with --relocatable.",
+            r.symbol
+        );
+    }
 
     // Build multi-function ELF
     // When there are EXTERNAL relocations, produce a relocatable object (.o)
@@ -7101,8 +7231,10 @@ fn compile_all_exports(
                 "Producing relocatable object (ET_REL): {} import call relocations",
                 total_relocs
             );
-        } else {
+        } else if relocatable_flag {
             info!("Producing relocatable object (ET_REL): forced by --relocatable");
+        } else {
+            info!("Producing relocatable object (ET_REL): the module calls imported functions");
         }
         build_relocatable_elf(
             &compiled_funcs,
@@ -7325,7 +7457,10 @@ fn compile_all_exports(
         } else {
             println!("  ELF type: relocatable object (ET_REL)");
             println!(
-                "\n  Link with: arm-none-eabi-ld -o firmware.elf {} kiln_bridge.o",
+                "\n  Link with: arm-none-eabi-ld -o firmware.elf {} <objects defining the \
+                 imports and your startup>\n  (each wasm import is an undefined symbol named by \
+                 its bare field name; the embedder sets R11/R10/R9 before any export runs — \
+                 docs/embedder-abi-relocatable-arm.md)",
                 output.display()
             );
         }

@@ -94,7 +94,7 @@ jobs:
         run: cargo build -p synth-cli
       - name: Clippy (synth-oracle with the engines)
         run: cargo clippy -p synth-oracle --features exec --all-targets -- -D warnings
-      - name: kiln probe oracle (cortex-m3 + rv32imac, with potency legs) + #1450 control
+      - name: kiln oracles (probe sweep; import call boundary; potency legs) + #1450 control
         run: |
           set -euo pipefail
           log="$RUNNER_TEMP/oracle-kiln.log"
@@ -134,3 +134,15 @@ jobs:
           # and rv32imac, and the refusal itself is seen on both.
           grep -qx 'ORACLE multi-result-1450: 56 single-result control cases agree across 2 legs' "$log"
           grep -qE '^test result: ok\. 3 passed; 0 failed' "$log"
+          # The import call boundary (Refs #1696, #1755, #1699, #1758):
+          # DEFAULT-flags objects of import-carrying modules for cortex-m4,
+          # cortex-m3 and cortex-m7dp, linked against clobbering host stubs
+          # and executed against kiln. EXACT counts, so a leg or a step that
+          # silently drops reds here as well as in the test.
+          grep -qx 'ORACLE import-boundary #1696: 60 steps agree across 3 legs, 60 host calls matched' "$log"
+          grep -qx 'ORACLE import-boundary #1755: 63 steps agree across 3 legs, 78 host calls matched' "$log"
+          grep -qx 'ORACLE import-boundary #1699: 33 steps agree across 3 legs, 33 host calls matched' "$log"
+          grep -qx 'ORACLE import-boundary #1758: 60 steps agree across 3 legs x 2 embedders, 6 host calls matched' "$log"
+          grep -qx 'ORACLE import-boundary control: 186 steps agree across 3 --relocatable legs, 174 host calls matched' "$log"
+          grep -qx 'ORACLE import-boundary structural: 12 default-flags objects are byte-identical to --relocatable' "$log"
+          grep -qE '^test result: ok\. 13 passed; 0 failed' "$log"

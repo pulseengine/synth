@@ -511,6 +511,10 @@ fn frozen_pre_fix_bytes_are_judged_wrong() {
             },
         )]),
         text_relocs: Vec::new(),
+        // Frozen bytes with no relocation: nothing for the hosted emulator
+        // to link, and a self-contained image by construction.
+        relocs: Vec::new(),
+        relocatable: false,
     };
     let cfg = EmuConfig::new(Cpu::CortexM4);
     let i = WasmValue::I32;

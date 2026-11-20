@@ -184,6 +184,12 @@ fn object_of(machine: Machine, code: &[u8], relocs: Vec<u64>) -> CompiledObject 
         .into_iter()
         .collect(),
         text_relocs: relocs,
+        // Library bytes, not an ELF: there is no symbol table to resolve a
+        // relocation against and no `e_type`. The plain runner refuses a
+        // function on `text_relocs` alone; only the hosted emulator reads
+        // these two, and this test does not use it.
+        relocs: Vec::new(),
+        relocatable: false,
     }
 }
 

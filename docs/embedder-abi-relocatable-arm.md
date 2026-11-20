@@ -22,6 +22,23 @@ geometry is otherwise out of scope here, but the rules that decide which
 memory-0 values are wasm statics are an embedder contract and are stated in
 [`--native-pointer-abi`: memory-0 address provenance](#--native-pointer-abi-memory-0-address-provenance-rq-91-npamodel-v091).
 
+**A call to a function import selects this contract without the flag.** A
+module that calls an imported function cannot be a self-contained image:
+nothing in the image defines the import. So `synth compile` compiles every
+such module on the ARM backend exactly as `--relocatable` does — the object
+is byte-identical to the `--relocatable` one — whether or not the flag is
+given, and with `--cortex-m` too. It says so at WARN level (`module calls
+imported function(s) ... produces a relocatable object`). A module whose
+function imports are declared but never called references no external symbol
+and is still compiled as the self-contained image. Everything in this document then applies: the register
+contract, the initialization obligations and their refusals, the
+`call_indirect` table layout. Before v0.92 the output was already an `ET_REL`
+object, but its functions were compiled for the self-contained image and gave
+wrong values (#1696, #1755, #1699, #1758). The single-function path
+(`--func-name`/`--func-index` without `--relocatable`) builds an image holding
+one function, so it refuses a function that calls an import or another
+function.
+
 ## The register contract
 
 | Register | Meaning | Who sets the register | Who chooses the value | Category |
@@ -284,7 +301,14 @@ whatever the region holds), not a trap.
 - **Symbols:** every function is exported twice at the same address
   (`func_N` and, for exports, the wasm export name); imported functions
   become direct `func_N` BLs rewritten to the wasm field name, resolved by
-  the linker (`arm_backend.rs:517-520`, #197). A called import's field name
+  the linker (`arm_backend.rs:517-520`, #197). That is the ONLY way an
+  import is called: a direct AAPCS `bl <bare field name>` — arguments in
+  R0-R3 then the stack, result in R0 (R0:R1 for an i64) — which may
+  clobber R0-R3, R12 and the flags and must preserve R9/R10/R11. There is
+  no dispatcher: no synth output references `__meld_dispatch_import`
+  (#1699). A provider whose functions are not named like the fields (for
+  example kiln-builtins' `__p3_task_return` for the field `[task-return]0`)
+  exports an alias per field. A called import's field name
   must therefore be a symbol of its own: if it equals a name the object
   defines (an export, a `func_N` label, a `__synth_*` symbol), equals an
   external the object references for another purpose (an `__aeabi_*`

@@ -59,9 +59,6 @@ pub enum Cpu {
     CortexM3,
     /// ARMv7E-M, Thumb-2. Float signatures are refused (see the module doc).
     CortexM4,
-    /// ARMv7E-M, Thumb-2 (unicorn's Cortex-M7 model). Used by the target
-    /// record's `cortex-m7dp` row; float signatures are refused as on M4.
-    CortexM7,
     /// Cortex-M4 for synth's `cortex-m4f` target: CPACR CP10/CP11 and
     /// FPEXC.EN are written and d0-d15 poisoned. A float RESULT is read from
     /// s0/d0; a float PARAMETER is still refused. (unicorn 2.1.5 runs VFP
@@ -71,6 +68,11 @@ pub enum Cpu {
     /// Cortex-M7 with its double-precision FPU enabled, likewise, for
     /// `cortex-m7dp`.
     CortexM7F,
+    /// ARMv7E-M, Thumb-2 (synth's `cortex-m7dp`) with the VFP left as reset
+    /// leaves it: float signatures are refused, as on `CortexM4`. The import
+    /// boundary oracle's leg and the target record's `cortex-m7dp` row;
+    /// `CortexM7F` is the float-result one.
+    CortexM7,
     /// RV32IMAC: unicorn's SiFive E31, which is exactly RV32IMAC (+U), so an
     /// F/D instruction is undefined here as it is on the target.
     Rv32Imac,
@@ -87,11 +89,9 @@ impl Cpu {
             Cpu::CortexM0
             | Cpu::CortexM3
             | Cpu::CortexM4
-            | Cpu::CortexM7
             | Cpu::CortexM4F
-            | Cpu::CortexM7F => {
-                Machine::Arm
-            }
+            | Cpu::CortexM7
+            | Cpu::CortexM7F => Machine::Arm,
         }
     }
 
@@ -116,7 +116,7 @@ impl Cpu {
 /// Where the image lives. Fixed, so a run is reproducible.
 pub const TEXT_BASE: u64 = 0x0001_0000;
 pub const STACK_TOP: u64 = 0x0030_0000;
-const STACK_SIZE: u64 = 0x0002_0000;
+pub(crate) const STACK_SIZE: u64 = 0x0002_0000;
 pub const RETURN_ADDR: u64 = 0x0040_0000;
 pub(crate) const POISON: u32 = 0xFEED_FACE;
 /// AArch64: what an unused argument register holds, and (its high half) the
@@ -172,9 +172,19 @@ pub enum EmuError {
     },
     /// Argument or result shape the calling-convention setup does not carry.
     Abi(String),
+    /// HOSTED: the object references a symbol that is neither defined in it
+    /// nor one of the module's function imports (by bare field name), so no
+    /// embedder contract says what a call to it does.
+    UnresolvedSymbol(String),
+    /// HOSTED: a relocation the harness does not resolve (anything other
+    /// than `R_ARM_THM_CALL`), or one it could not apply.
+    Reloc(String),
+    /// HOSTED: the module needs instantiation state the harness does not
+    /// materialize (data segments, globals, tables, a start function).
+    Uninstantiated(&'static str),
 }
 
-fn uc<T>(r: Result<T, uc_error>, what: &str) -> Result<T, EmuError> {
+pub(crate) fn uc<T>(r: Result<T, uc_error>, what: &str) -> Result<T, EmuError> {
     r.map_err(|e| EmuError::Unicorn(format!("{what}: {e:?}")))
 }
 
@@ -232,7 +242,7 @@ pub(crate) enum Fault {
 /// every exception it delivers there (unicorn-engine-sys 2.1.5,
 /// qemu/accel/tcg/cpu-exec.c, the TARGET_RISCV block), whatever the
 /// instruction's length.
-fn fault_pc(machine: Machine, fault: Fault) -> u64 {
+pub(crate) fn fault_pc(machine: Machine, fault: Fault) -> u64 {
     match (machine, fault) {
         (Machine::RiscV32, Fault::Hook { reported_pc, .. }) => reported_pc.wrapping_sub(4),
         (Machine::Arm, Fault::Hook { reported_pc, .. }) => reported_pc & !1,

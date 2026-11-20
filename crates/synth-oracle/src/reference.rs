@@ -71,7 +71,7 @@ impl Imports {
         self.func(module, field, move |_| Ok(results.clone()))
     }
 
-    fn get(&self, module: &str, field: &str) -> Option<&HostFn> {
+    pub(crate) fn get(&self, module: &str, field: &str) -> Option<&HostFn> {
         self.funcs
             .iter()
             .find(|(m, f, _)| m == module && f == field)
@@ -313,15 +313,18 @@ fn classify(err: &kiln_error::Error) -> RefOutcome {
     }
 }
 
-/// One reference call, executed on a fresh engine and instance.
-fn execute_once(
+/// A sequence of reference calls on ONE fresh engine and instance, so memory
+/// written by one call is read by the next. The sequence ends at the first
+/// call that does not return values: after a trap the instance is not a state
+/// the next call should be judged on. The returned runs are the calls that
+/// executed, in order (possibly fewer than `steps`).
+fn execute_seq(
     wasm: &[u8],
-    export: &str,
-    args: Vec<Value>,
+    steps: Vec<(String, Vec<Value>)>,
     fuel: u64,
     imports: Imports,
     imported_funcs: u32,
-) -> Result<RefRun, RefError> {
+) -> Result<Vec<RefRun>, RefError> {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mut engine = StacklessEngine::new();
     engine.set_host_handler(Box::new(Handler {
@@ -329,34 +332,43 @@ fn execute_once(
         log: Arc::clone(&log),
     }));
     let (module, inst) = load(&mut engine, wasm, fuel)?;
-    let ex = module
-        .get_export(export)
-        .filter(|x| x.kind == ExportKind::Function)
-        .ok_or_else(|| RefError::NoExport(export.to_string()))?;
-    if ex.index < imported_funcs {
-        // kiln's direct-execute path for an import swallows host errors and
-        // substitutes zeros.
-        return Err(RefError::Unsupported(format!(
-            "export `{export}` re-exports an import"
-        )));
+    let mut runs = Vec::new();
+    for (export, args) in steps {
+        let ex = module
+            .get_export(&export)
+            .filter(|x| x.kind == ExportKind::Function)
+            .ok_or_else(|| RefError::NoExport(export.to_string()))?;
+        if ex.index < imported_funcs {
+            // kiln's direct-execute path for an import swallows host errors and
+            // substitutes zeros.
+            return Err(RefError::Unsupported(format!(
+                "export `{export}` re-exports an import"
+            )));
+        }
+        let logged = log.lock().expect("host log poisoned").len();
+        engine.reset_call_depth();
+        engine.set_fuel(fuel);
+        let r = engine.execute(inst, ex.index as usize, args);
+        let left = engine.remaining_fuel().unwrap_or(0);
+        let outcome = match r {
+            Ok(vals) => match vals.iter().map(from_kiln).collect() {
+                Ok(v) => RefOutcome::Values(v),
+                Err(m) => RefOutcome::EngineFault(m),
+            },
+            Err(err) => classify(&err),
+        };
+        let calls = log.lock().expect("host log poisoned")[logged..].to_vec();
+        let done = !matches!(outcome, RefOutcome::Values(_));
+        runs.push(RefRun {
+            outcome,
+            calls,
+            fuel_used: fuel - left.min(fuel),
+        });
+        if done {
+            break;
+        }
     }
-    engine.reset_call_depth();
-    engine.set_fuel(fuel);
-    let r = engine.execute(inst, ex.index as usize, args);
-    let left = engine.remaining_fuel().unwrap_or(0);
-    let outcome = match r {
-        Ok(vals) => match vals.iter().map(from_kiln).collect() {
-            Ok(v) => RefOutcome::Values(v),
-            Err(m) => RefOutcome::EngineFault(m),
-        },
-        Err(err) => classify(&err),
-    };
-    let calls = log.lock().expect("host log poisoned").clone();
-    Ok(RefRun {
-        outcome,
-        calls,
-        fuel_used: fuel - left.min(fuel),
-    })
+    Ok(runs)
 }
 
 type Job = Box<dyn FnOnce() + Send>;
@@ -393,18 +405,37 @@ pub fn run(
     fuel: u64,
     imports: &Imports,
 ) -> Result<RefRun, RefError> {
+    let mut runs = run_sequence(wasm, &[(export, args)], fuel, imports)?;
+    runs.pop()
+        .ok_or_else(|| RefError::Instantiate("kiln ran no call".into()))
+}
+
+/// Run `steps` in order on ONE instance (each call gets `fuel`), so state one
+/// call leaves in linear memory is what the next one reads. Ends at the first
+/// call that does not return values; see `execute_seq`.
+pub fn run_sequence(
+    wasm: &[u8],
+    steps: &[(&str, &[WasmValue])],
+    fuel: u64,
+    imports: &Imports,
+) -> Result<Vec<RefRun>, RefError> {
     wasmparser::validate(wasm).map_err(|e| RefError::Invalid(e.to_string()))?;
     let scan = scan_imports(wasm, imports)?;
     let wasm = wasm.to_vec();
-    let export = export.to_string();
-    let args: Vec<WasmValue> = args.to_vec();
+    let steps: Vec<(String, Vec<WasmValue>)> = steps
+        .iter()
+        .map(|(e, a)| (e.to_string(), a.to_vec()))
+        .collect();
     let imports = imports.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     let job: Job = Box::new(move || {
         // A panic inside kiln is this call's failure, not the worker's end.
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let args = args.into_iter().map(to_kiln).collect();
-            execute_once(&wasm, &export, args, fuel, imports, scan.imported_funcs)
+            let steps = steps
+                .into_iter()
+                .map(|(e, a)| (e, a.into_iter().map(to_kiln).collect()))
+                .collect();
+            execute_seq(&wasm, steps, fuel, imports, scan.imported_funcs)
         }))
         .unwrap_or_else(|_| Err(RefError::Instantiate("kiln panicked".into())));
         let _ = tx.send(r);

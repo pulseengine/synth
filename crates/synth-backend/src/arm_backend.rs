@@ -1804,10 +1804,6 @@ fn compile_wasm_to_arm(
         };
 
         let mut bridge = OptimizerBridge::with_config(opt_config);
-        // #188: tell the bridge how many imports there are so it declines only
-        // LOCAL calls (and leaves import calls on the optimized path, keeping
-        // the #173 field-name relocation rewrite intact).
-        bridge.set_num_imports(config.num_imports);
         // #543 Phase 2: thread the integrator-marked volatile DMA-window ranges
         // (`--volatile-segment <base>:<len>`) to the bridge's address-caching
         // levers — base-CSE (#468) excludes any access inside a marked range
@@ -4564,27 +4560,33 @@ mod tests {
         assert_eq!(registry.available().len(), 1);
     }
 
+    /// #1696 / #1755 / #1699: a compile that is NOT host-linked
+    /// (`relocatable: false`) cannot call an import, on either path. The
+    /// optimized path declines every call (it has no call model) and falls
+    /// back to the direct selector, which declines an import call instead of
+    /// emitting the Meld dispatch stub (index in R0, no arguments). So the
+    /// backend returns an error — never code.
     #[test]
-    fn test_compile_import_call_produces_relocations() {
+    fn test_compile_import_call_without_relocatable_declines_1699() {
         let backend = ArmBackend::new();
-        // Simulate a WASM module where func index 0 is an import.
-        // Call(0) should generate MOV R0, #0; BL __meld_dispatch_import
-        let ops = vec![WasmOp::Call(0)];
-        let config = CompileConfig {
-            num_imports: 1,
-            no_optimize: true, // Direct instruction selection to preserve Call semantics
-            ..CompileConfig::default()
-        };
-
-        let result = backend.compile_function("caller", &ops, &config);
-        assert!(result.is_ok());
-
-        let func = result.unwrap();
-        assert!(!func.code.is_empty());
-        assert_eq!(func.relocations.len(), 1);
-        assert_eq!(func.relocations[0].symbol, "__meld_dispatch_import");
-        // The BL is the second instruction (after MOV R0, #0), so offset should be > 0
-        assert!(func.relocations[0].offset > 0);
+        // Func index 0 is an import taking one i32; the caller passes its param.
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::Call(0), WasmOp::LocalGet(0)];
+        for no_optimize in [true, false] {
+            let config = CompileConfig {
+                num_imports: 1,
+                func_arg_counts: vec![1, 1],
+                func_result_counts: vec![0, 1],
+                no_optimize,
+                ..CompileConfig::default()
+            };
+            let err = backend
+                .compile_function("caller", &ops, &config)
+                .expect_err("an import call must not compile for the self-contained image");
+            assert!(
+                err.to_string().contains("#1699"),
+                "no_optimize={no_optimize}: {err}"
+            );
+        }
     }
 
     /// Regression test for #197: in `relocatable` mode, an import call must

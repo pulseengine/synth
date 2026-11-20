@@ -148,8 +148,14 @@ pub struct CompileConfig {
     /// memory base (0x20000100) and does not preserve caller-saved registers
     /// across calls, both wrong for a host-linked object where the linmem base
     /// is supplied via `fp` at runtime and callees follow AAPCS. Imports are
-    /// also emitted as direct `func_N` BLs (resolved to the wasm field name)
-    /// instead of `__meld_dispatch_import`. (#197 — follow-up to #188/#171.)
+    /// emitted as direct `func_N` BLs (resolved to the wasm field name).
+    /// (#197 — follow-up to #188/#171.)
+    ///
+    /// It is the ONLY configuration in which the ARM backend calls an import
+    /// (#1699: with it off, an import call is a loud decline — the Meld
+    /// dispatch fallback is gone). The CLI therefore sets it for every module
+    /// that calls a function import, not only under `--relocatable` (#1696,
+    /// #1758).
     pub relocatable: bool,
 
     /// #275: the SELF-CONTAINED Thumb-2 `--cortex-m` image path lowers

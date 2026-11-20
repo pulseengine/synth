@@ -2101,9 +2101,29 @@ claims:
         # PARAMI64 (#1714): 21311 -> 21352, waived below (chained after BRDIV's).
         # I64TEE (#1713): 21352 -> 21427, waived below (chained after PARAMI64's).
         # SELECTALIAS (#1754): 21427 -> 21436, waived below.
-        value: 21436
+        # IMPORTABI (#1696, #1755, #1699, #1758): 21427 -> 21394 (-33), a FALL.
+        # The Meld dispatch import lowering is deleted from both selectors
+        # (`MOV R0, #index; BL __meld_dispatch_import`, its float-signature
+        # decline, its arg-count and frame-sizing special cases): it passed
+        # the import index and none of the wasm arguments. An import call is
+        # now one lowering, the direct AAPCS `BL func_N`, and a loud decline
+        # on a compile that is not host-linked. Gated by execution:
+        # crates/synth-oracle/tests/import_boundary_oracle.rs (RED on
+        # 6641efec on cortex-m4, cortex-m3 and cortex-m7dp; GREEN here).
+        value: 21394
         baseline: 17897
         waivers:
+          - to: 21394
+            reason: >-
+              IMPORTABI (Refs #1696, #1755, #1699, #1758): 21427 -> 21394 (-33).
+              Not growth: the ceiling FELL, and a value above the baseline still
+              needs a waiver bound to it. The Meld dispatch import lowering was
+              deleted from select_with_stack and select_default (the `MOV R0,
+              #index; BL __meld_dispatch_import` emission, its float-signature
+              decline, and its arg-count and frame-sizing special cases); what
+              replaces it is one loud decline per selector for an import call on
+              a compile that is not host-linked. No wildcard arm added. Gated by
+              execution: crates/synth-oracle/tests/import_boundary_oracle.rs.
           - to: 21436
             reason: >-
               SELECTALIAS (Refs #1754): 21427 -> 21436 (+9, re-derived after
@@ -3591,7 +3611,11 @@ claims:
         # SELECTALIAS (#1754): 32447 -> 32498: +9 code (waived on
         # selector_lines_code) and +42 test module (the `_1754` stacked-alias
         # unit test). No waiver.
-        value: 32498
+        # IMPORTABI (#1699): 32447 -> 32426: -33 code (the deleted Meld
+        # dispatch lowering, see selector_lines_code) +12 test module (the
+        # reworked `test_control_flow_call_import`, which now asserts the
+        # decline and the direct call instead of the dispatch stub).
+        value: 32426
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

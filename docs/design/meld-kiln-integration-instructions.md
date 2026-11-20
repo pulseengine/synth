@@ -16,7 +16,7 @@ We've verified that the **OSxCAR anti-pinch window controller** (3 WASM componen
 
 - `synth compile <file.wasm> -o output.elf --cortex-m --all-exports` — AOT compiles core WASM to ARM Cortex-M ELF
 - `synth compile ... --link --builtins <kiln_builtins.o>` — Compiles AND links into firmware.elf
-- Relocatable ELF output with `__meld_dispatch_import` undefined symbol + `.meld_import_table` section
+- Relocatable ELF output: every wasm function import is an undefined symbol named by its **bare field name**, called directly per AAPCS (`bl <field>`, `R_ARM_THM_CALL`), plus a `.meld_import_table` section. A module that calls a function import is compiled this way with or without `--relocatable` (see [Import call boundary](#import-call-boundary-direct-bl-field-no-dispatcher)). There is no `__meld_dispatch_import`.
 - Linker script generation with Meld integration sections
 - 197+ WASM opcodes, 227/257 spec files compile, 851 tests
 
@@ -62,7 +62,7 @@ Add `--emit-import-map imports.json` flag that produces:
 }
 ```
 
-This tells synth (and kiln-builtins) exactly which import index maps to which WASI function or P3 async built-in, enabling the dispatcher to route calls correctly.
+This tells kiln-builtins which import is which WASI function or P3 async built-in. Synth does not use it for calls: it never passes an import index, it calls the symbol named by the import's field (see [Import call boundary](#import-call-boundary-direct-bl-field-no-dispatcher)).
 
 ### Step 4: Test with Synth
 
@@ -106,19 +106,18 @@ std = ["kiln-foundation/std"]
 
 ### Step 2: Implement Core Functions
 
-The minimum viable set (3 functions):
+The minimum viable set: one function **per wasm import**, under the import's
+field name, plus the two below.
 
 ```rust
 #![no_std]
 
-/// Called by synth-compiled code: MOV R0, #import_index; BL __meld_dispatch_import
-/// Routes to the appropriate WASI/host function based on the import index.
-#[unsafe(no_mangle)]
-pub extern "C" fn __meld_dispatch_import(import_index: u32) -> u32 {
-    // Read import table from .meld_import_table section (linker-provided symbols)
-    // Match module/name to handler
-    // Call handler with args from linear memory
-    // Return result
+/// One per import. Synth-compiled code calls it directly, per AAPCS: the wasm
+/// arguments arrive in R0-R3 (then the stack), the result returns in R0
+/// (R0:R1 for an i64). The SYMBOL is the import's bare wasm field name, so a
+/// field that is not a Rust identifier needs `export_name`.
+#[unsafe(export_name = "get-stderr")]
+pub extern "C" fn wasi_cli_get_stderr() -> u32 {
     0 // stub for Phase 1
 }
 
@@ -156,6 +155,37 @@ For the anti-pinch demo, the minimum WASI needed is:
 
 Source material exists in `kiln-wasi/src/dispatcher.rs` — extract the dispatch logic into no_std-compatible form.
 
+## Import call boundary: direct `bl <field>`, no dispatcher
+
+This is the contract synth implements (Refs #1696, #1755, #1699, #1758).
+Earlier versions of this document described a dispatcher,
+`__meld_dispatch_import(import_index)`. Synth's lowering for it passed the
+import index in R0 and **none** of the wasm arguments, so it was removed; no
+synth output references that symbol.
+
+- **Symbol.** Each called wasm function import is an undefined symbol whose
+  name is the import's **bare field name**, byte for byte (`poll-task`,
+  `mpu-write`, `[task-return]0`). The module name is not part of it. Two
+  imports that share a field name across modules are refused at compile time,
+  as is a field name that collides with a symbol the object defines
+  (RQ-91-NAMECOLL, #1698).
+- **Call.** A direct AAPCS call: `bl <field>` with an `R_ARM_THM_CALL`
+  relocation (`R_ARM_CALL` on A32). Arguments in R0-R3 then the stack, result
+  in R0 (R0:R1 for i64). The callee may clobber R0-R3, R12 and the flags, as
+  AAPCS allows; synth preserves what it needs across the call.
+- **Registers the embedder owns.** R11 = linear-memory base, R10 = its size in
+  bytes, R9 = globals-table base. The embedder sets all three before any
+  export runs, and every function it provides must preserve them
+  (`docs/embedder-abi-relocatable-arm.md`).
+- **When.** Whenever a function of the module calls a function import.
+  `--relocatable` is not needed to get this object, and `--cortex-m` does not
+  produce a self-contained image for such a module: it produces this object
+  and says so. An import that is declared but never called changes nothing.
+- **kiln-builtins' P3 built-ins.** Functions named `__p3_task_return` and the
+  like do not match field names such as `[task-return]0`. A provider needs an
+  alias per imported field: `#[unsafe(export_name = "[task-return]0")]` (or a
+  linker `--defsym`).
+
 ## P3 Async Built-in Imports
 
 Meld-fused P3 async components produce core module imports for the Component
@@ -186,9 +216,12 @@ Meld suffixes import names with `$N` for multi-instance components:
 - `[context-get-0]$2` — context get for component 2
 - `[waitable-set-new]$5` — waitable-set-new for component 5
 
-Kiln should **strip the `$N` suffix** when dispatching to determine the
-built-in operation, and use the suffix value to select the correct component's
-memory and context state.
+Each suffixed name is its **own link symbol** (`[context-get-0]$2` and
+`[context-get-0]$5` are two undefined symbols in the object), because synth
+calls an import by its bare field name. Kiln provides one exported function
+per suffixed field; each strips the `$N` suffix to determine the built-in
+operation and uses the suffix value to select the correct component's memory
+and context state.
 
 ### Naming Convention Note
 
@@ -288,7 +321,7 @@ renode --execute "machine LoadPlatformDescription @synth_cortex_m.repl; \
 5. `cabi_realloc` is either exported by the fused module or provided externally
 
 ### From Kiln-builtins:
-1. `__meld_dispatch_import(u32) -> u32` — C ABI, AAPCS calling convention
+1. One `extern "C"` function per wasm import, exported under the import's bare field name, AAPCS calling convention (see [Import call boundary](#import-call-boundary-direct-bl-field-no-dispatcher))
 2. `__meld_get_memory_base() -> *mut u8` — returns `__wasm_memory_start` linker symbol
 3. `cabi_realloc(u32, u32, u32, u32) -> u32` — bump allocator in linear memory
 4. Compiled as `libkiln_builtins.a` for `thumbv7em-none-eabi`
@@ -300,8 +333,8 @@ renode --execute "machine LoadPlatformDescription @synth_cortex_m.repl; \
 - All exported WASM functions as global symbols (with Thumb bit set)
 
 ### Linker Symbols Synth Expects (undefined):
-- `__meld_dispatch_import` — provided by kiln-builtins.a
-- `__meld_get_memory_base` — provided by kiln-builtins.a
+- one per called wasm import, named by its bare field name — provided by the embedder / kiln-builtins.a
+- `__meld_get_memory_base` — provided by kiln-builtins.a (referenced by the `--link` linker script, not by compiled code)
 
 ---
 
@@ -310,7 +343,7 @@ renode --execute "machine LoadPlatformDescription @synth_cortex_m.repl; \
 1. **Kiln: Create kiln-builtins stub** (even returning 0 for all imports — enables linking)
 2. **Meld: Test fusing OSxCAR components** (verify single-memory output works)
 3. **Kiln: Implement cabi_realloc** (bump allocator — enables canonical ABI)
-4. **Meld: Add --emit-import-map** (enables intelligent dispatch)
+4. **Meld: Add --emit-import-map** (tells the provider which import is which)
 5. **Kiln: WASI embedded dispatcher** (clocks, stdout — enables output verification)
 6. **All: End-to-end Renode test** (the goal)
 
