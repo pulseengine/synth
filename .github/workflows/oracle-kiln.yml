@@ -105,12 +105,14 @@ jobs:
           grep -qx 'ORACLE kiln-probe: 6048 cases agree across 2 legs, 72 trap/trap' "$log"
           grep -qx 'stress: 32000 concurrent runs of add(2,3), 0 not Values(5)' "$log"
           # Exact per binary (RQ-91-TARGETRECORD): 15 kiln_probe_oracle.rs;
-          # 20 the lib's unit tests (8 before the target record added the
-          # record and cycles modules); 3 tests/target_record.rs (the binary
-          # end to end, refusals, the boot contract); 1 the target-record
-          # binary's own unit test.
+          # 24 the lib's unit tests (8 at the base; +12 the target record's
+          # record and cycles modules; +4 v0.92 batch 1's hosted/synth/value
+          # units — 20 on main, 12 on the batch branch, 24 measured on the
+          # rebased tree); 3 tests/target_record.rs (the binary end to end,
+          # refusals, the boot contract); 1 the target-record binary's own
+          # unit test.
           grep -qE '^test result: ok\. 15 passed; 0 failed' "$log"
-          grep -qE '^test result: ok\. 20 passed; 0 failed' "$log"
+          grep -qE '^test result: ok\. 24 passed; 0 failed' "$log"
           grep -qE '^test result: ok\. 3 passed; 0 failed' "$log"
           grep -qE '^test result: ok\. 1 passed; 0 failed' "$log"
           # Refs #1754 (tests/select_home_alias_1754.rs): select must not
@@ -146,3 +148,9 @@ jobs:
           grep -qx 'ORACLE import-boundary control: 186 steps agree across 3 --relocatable legs, 174 host calls matched' "$log"
           grep -qx 'ORACLE import-boundary structural: 12 default-flags objects are byte-identical to --relocatable' "$log"
           grep -qE '^test result: ok\. 13 passed; 0 failed' "$log"
+          # v0.92 batch 1: two test binaries report 13 (compile_module_1745,
+          # import_boundary_oracle) and three report 3 (select_home_alias_1754,
+          # multi_result_export_1450_oracle, target_record), and one matching
+          # line satisfies `grep -q`. Pin how many result lines carry each count.
+          test "$(grep -cE '^test result: ok\. 13 passed; 0 failed' "$log")" = 2
+          test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 3

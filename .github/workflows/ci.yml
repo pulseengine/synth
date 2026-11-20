@@ -5134,19 +5134,19 @@ jobs:
           # +52: exactly aarch64_locals_851, brif_local_zeroinit_990,
           # i64_width_vstack_946 and local_tee.wast, one function each on
           # m4-self and m4f-self. `hits: 0`.
-          # A64BELOW (#1740): 7781 -> 7819 functions, 9359 -> 9395 homes and
-          # (below) 244424 -> 244880 attributed. CORPUS, not code: the lane adds
-          # scripts/repro/aarch64_dead_below_1740.wat, which this ARM sweep also
-          # audits; the ARM selector is untouched by the lane. Measured in CI run
-          # 44499733119 on the branch binary; paired control: main 265235dc's
-          # binary over this tree prints the same 7819 / 9395 / 244880. `hits: 0`.
-          # EXPORTALIAS (#1746): 7819 -> 7815 functions; homes and (below)
-          # attributed unchanged. CODE: the .wast merge owns every export name
-          # (exports.wast, both reloc legs). Measured on the tree rebased
-          # onto 16700da6; control: main 6641efec's binary (16700da6 adds no
-          # compiler source) over this tree prints 7819/9395/244880. `hits: 0`.
-          grep -Eq '^functions audited: 7815$' haa1189.txt
-          grep -Eq '^homes watched: 9395$' haa1189.txt
+          # A64BELOW (#1740): 7781 -> 7819, 9359 -> 9395, (below) 244424 -> 244880.
+          # CORPUS: its aarch64_dead_below_1740.wat is audited here; CI run
+          # 44499733119; main 265235dc's binary printed the same. `hits: 0`.
+          # v0.92 BATCH1 (EXPORTALIAS #1746, #1450, IMPORTABI #1696 on one tree):
+          # 7819 -> 7889, 9395 -> 9435, (below) 244880 -> 244722. CODE, no fixture.
+          # MEASURED on the batch tree with its binary, not summed. EXPORTALIAS:
+          # the .wast merge owns every export name (alone: 7815, rest unchanged).
+          # #1450 refuses if.wast `multi` and `add64_u_with_carry` (alone: 7811 /
+          # 9379 / 244424). IMPORTABI compiles an import-calling module whole on
+          # the direct selector, the audited path. Control: main 6641efec's binary
+          # over this tree prints 7819 / 9395 / 244880. `hits: 0`.
+          grep -Eq '^functions audited: 7889$' haa1189.txt
+          grep -Eq '^homes watched: 9435$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is ASSERTED, not narrated. The #1321
           # comment above said "217081 attributed instructions ... UNCHANGED"
           # and went STALE at RQ-70-NPA, whose fixture (+4 functions, +6 homes)
@@ -5159,8 +5159,8 @@ jobs:
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
           # I64TEE (#1713): 244372 -> 244424; A64BELOW (#1740): -> 244880;
-          # EXPORTALIAS (#1746): unchanged (all above).
-          grep -Eq '^attributed instructions: 244880 ' haa1189.txt
+          # BATCH1: -> 244722 (all above).
+          grep -Eq '^attributed instructions: 244722 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the same
           # decline / needle / parse path: per (fixture, leg) EXACTLY 58/7/58/7
           # (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8), 0/0/11/11 (VFP

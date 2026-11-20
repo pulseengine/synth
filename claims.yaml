@@ -2110,9 +2110,24 @@ claims:
         # on a compile that is not host-linked. Gated by execution:
         # crates/synth-oracle/tests/import_boundary_oracle.rs (RED on
         # 6641efec on cortex-m4, cortex-m3 and cortex-m7dp; GREEN here).
-        value: 21394
+        # v0.92 BATCH1 (SELECTALIAS + IMPORTABI on one tree): 21427 -> 21403,
+        # derived on the batch tree; neither lane's own `to:` holds there.
+        value: 21403
         baseline: 17897
         waivers:
+          - to: 21403
+            reason: >-
+              v0.92 wrong-code batch 1 (Refs #1754, #1696, #1755, #1699, #1758):
+              21427 -> 21403 (-24), DERIVED on the tree that carries both lanes,
+              not summed from them. SELECTALIAS and IMPORTABI each moved this
+              pin from 21427 on its own branch (to 21436 and to 21394, the two
+              waivers that follow, kept as each lane's record); on one tree the
+              derivation gives 21403, which equals neither, so the value needs
+              its own waiver. The ceiling FELL against main; a value above the
+              baseline still needs a waiver bound to it. No lowering arm and no
+              wildcard arm is added by either lane. Gated by execution on the
+              batch tree: crates/synth-oracle/tests/select_home_alias_1754.rs
+              and crates/synth-oracle/tests/import_boundary_oracle.rs.
           - to: 21394
             reason: >-
               IMPORTABI (Refs #1696, #1755, #1699, #1758): 21427 -> 21394 (-33).
@@ -3615,7 +3630,9 @@ claims:
         # dispatch lowering, see selector_lines_code) +12 test module (the
         # reworked `test_control_flow_call_import`, which now asserts the
         # decline and the direct call instead of the dispatch stub).
-        value: 32426
+        # v0.92 BATCH1 (both lanes on one tree): 32447 -> 32477, derived on the
+        # batch tree. No waiver (tracked, no direction).
+        value: 32477
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

@@ -34,9 +34,9 @@ pub mod value;
 #[cfg(feature = "exec")]
 pub mod emulate;
 #[cfg(feature = "exec")]
-pub mod image;
-#[cfg(feature = "exec")]
 pub mod hosted;
+#[cfg(feature = "exec")]
+pub mod image;
 #[cfg(feature = "exec")]
 pub mod reference;
 
