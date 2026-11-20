@@ -1,0 +1,46 @@
+# The npm package's unit tests (npm/test.js, npm/test/*.test.js), run by
+# `npm test`. Before this workflow nothing ran them, and npm/test.js failed on
+# main for releases without anyone seeing it. The tests pin the platform ->
+# release-asset mapping against release.yml's own target list, including the
+# Intel macOS refusal (no x86_64-apple-darwin build since 2026-11-20).
+#
+# Its own file, not a ci.yml job: ci.yml sits at GitHub's workflow size limit.
+# NOT in the required-check set: a new required context that fails to run
+# deadlocks every merge.
+name: npm package tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+
+# A new push to a PR cancels that PR's superseded run. Push and merge_group
+# runs are keyed by sha, so they are never cancelled or replaced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  npm-test:
+    name: npm package tests — platform mapping and checksum lookup
+    # Self-hosted `light` pool: node only, no cargo. Fail-closed fork guard:
+    # only a same-repo PR or a non-PR event reaches self-hosted.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "20"
+      - name: npm test
+        working-directory: npm
+        env:
+          # The optional download smoke test fetches a real release asset;
+          # the unit tests do not need the network.
+          SYNTH_NPM_SKIP_NETWORK: "1"
+        run: npm test

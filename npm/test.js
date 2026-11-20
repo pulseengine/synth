@@ -18,13 +18,24 @@ const { execFileSync } = require("child_process");
 
 const {
   getRustTarget,
-  getArchiveName,
-  getDownloadUrl,
+  getTarballName: getArchiveName,
+  getTarballUrl: getDownloadUrl,
   getChecksumsUrl,
-  expectedChecksum,
+  expectedHashFor,
   getBinaryName,
-  SUPPORTED_TARGETS,
 } = require("./index.js");
+
+// The checksum lookup's argument order is (tarball, manifest).
+const expectedChecksum = (sums, archive) => expectedHashFor(archive, sums);
+
+// The release targets, read from release.yml's build-binaries matrix rather
+// than typed here, so the npm mapping is checked against what is shipped.
+const SUPPORTED_TARGETS = fs
+  .readFileSync(path.join(__dirname, "..", ".github", "workflows", "release.yml"), "utf8")
+  .split("\n")
+  .map((l) => l.match(/^\s*- target: (\S+)\s*$/))
+  .filter(Boolean)
+  .map((m) => m[1]);
 
 let passed = 0;
 let failed = 0;
@@ -46,8 +57,8 @@ console.log("platform / arch -> rust target");
 test("darwin/arm64 -> aarch64-apple-darwin", () => {
   assert.strictEqual(getRustTarget("darwin", "arm64"), "aarch64-apple-darwin");
 });
-test("darwin/x64 -> x86_64-apple-darwin", () => {
-  assert.strictEqual(getRustTarget("darwin", "x64"), "x86_64-apple-darwin");
+test("darwin/x64 (Intel macOS) errors cleanly (no Intel macOS build)", () => {
+  assert.throws(() => getRustTarget("darwin", "x64"), /Unsupported platform: Intel macOS/);
 });
 test("linux/arm64 -> aarch64-unknown-linux-gnu", () => {
   assert.strictEqual(getRustTarget("linux", "arm64"), "aarch64-unknown-linux-gnu");
@@ -55,10 +66,13 @@ test("linux/arm64 -> aarch64-unknown-linux-gnu", () => {
 test("linux/x64 -> x86_64-unknown-linux-gnu", () => {
   assert.strictEqual(getRustTarget("linux", "x64"), "x86_64-unknown-linux-gnu");
 });
+test("release.yml's target list was read (non-empty, no Intel macOS)", () => {
+  assert.ok(SUPPORTED_TARGETS.length >= 3, `targets read: ${SUPPORTED_TARGETS}`);
+  assert.ok(!SUPPORTED_TARGETS.includes("x86_64-apple-darwin"), "release.yml still builds Intel macOS");
+});
 test("every mapped target is one the release workflow builds", () => {
   for (const [plat, arch] of [
     ["darwin", "arm64"],
-    ["darwin", "x64"],
     ["linux", "arm64"],
     ["linux", "x64"],
   ]) {
@@ -129,7 +143,7 @@ test("resolves the linux x64 entry", () => {
 test("missing archive throws", () => {
   assert.throws(
     () => expectedChecksum(SAMPLE_SUMS, "synth-v9.9.9-aarch64-apple-darwin.tar.gz"),
-    /No checksum entry/,
+    /no entry for/,
   );
 });
 test("end-to-end: derived archive name resolves in the manifest", () => {

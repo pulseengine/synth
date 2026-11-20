@@ -32,8 +32,8 @@ an existing tag).
    - `aarch64-unknown-linux-gnu` (via `cross`)
    - `x86_64-unknown-linux-musl` — **the portable payload**, statically
      linked (RQ-71-MUSL, #1349; see *Linux portability* below)
-   - `x86_64-apple-darwin`
-   - `aarch64-apple-darwin`
+   - `aarch64-apple-darwin` (no `x86_64-apple-darwin` since 2026-11-20:
+     the org stopped Intel macOS builds)
 
    Each target is stripped, packaged as `synth-<version>-<target>.tar.gz`
    (with `README.md` + `LICENSE`), and uploaded as a workflow artifact.
