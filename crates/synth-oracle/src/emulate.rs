@@ -49,13 +49,16 @@ pub enum Cpu {
     CortexM3,
     /// ARMv7E-M, Thumb-2. Float signatures are refused (see the module doc).
     CortexM4,
+    /// ARMv7E-M, Thumb-2 (unicorn's Cortex-M7 model). Used by the target
+    /// record's `cortex-m7dp` row; float signatures are refused as on M4.
+    CortexM7,
     /// RV32IMAC: unicorn's SiFive E31, which is exactly RV32IMAC (+U), so an
     /// F/D instruction is undefined here as it is on the target.
     Rv32Imac,
 }
 
 impl Cpu {
-    fn machine(self) -> Machine {
+    pub(crate) fn machine(self) -> Machine {
         match self {
             Cpu::Rv32Imac => Machine::RiscV32,
             _ => Machine::Arm,
@@ -68,6 +71,7 @@ impl Cpu {
             Cpu::CortexM0 => ArmCpuModel::CORTEX_M0 as i32,
             Cpu::CortexM3 => ArmCpuModel::CORTEX_M3 as i32,
             Cpu::CortexM4 => ArmCpuModel::CORTEX_M4 as i32,
+            Cpu::CortexM7 => ArmCpuModel::CORTEX_M7 as i32,
             Cpu::Rv32Imac => Riscv32CpuModel::SIFIVE_E31 as i32,
         }
     }
@@ -78,7 +82,7 @@ pub const TEXT_BASE: u64 = 0x0001_0000;
 pub const STACK_TOP: u64 = 0x0030_0000;
 const STACK_SIZE: u64 = 0x0002_0000;
 pub const RETURN_ADDR: u64 = 0x0040_0000;
-const POISON: u32 = 0xFEED_FACE;
+pub(crate) const POISON: u32 = 0xFEED_FACE;
 
 /// Per-run configuration.
 #[derive(Clone, Debug)]
@@ -143,7 +147,7 @@ pub struct EmuRun {
 }
 
 /// The register words of an AAPCS call (i64 in an even pair).
-fn aapcs_words(params: &[ValType], args: &[WasmValue]) -> Result<Vec<u32>, EmuError> {
+pub(crate) fn aapcs_words(params: &[ValType], args: &[WasmValue]) -> Result<Vec<u32>, EmuError> {
     let mut w: Vec<u32> = Vec::new();
     for (t, v) in params.iter().zip(args) {
         if t.words() == 2 && w.len() % 2 == 1 {
@@ -174,7 +178,7 @@ fn ilp32_words(args: &[WasmValue]) -> Result<Vec<u32>, EmuError> {
 
 /// How a run stopped, other than by returning or running out of budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Fault {
+pub(crate) enum Fault {
     /// The interrupt hook fired. `reported_pc` is what `pc_read` gave inside
     /// the hook.
     Hook { reported_pc: u64, intno: u32 },
@@ -232,7 +236,7 @@ fn trap_insn(machine: Machine, fault: Fault, bytes: &[u8]) -> Option<&'static st
 
 /// Judge a fault: a trap only per [`trap_insn`] AND with the PC inside the
 /// function (`func` is its absolute address range).
-fn judge(machine: Machine, fault: Fault, bytes: &[u8], func: &Range<u64>) -> EmuOutcome {
+pub(crate) fn judge(machine: Machine, fault: Fault, bytes: &[u8], func: &Range<u64>) -> EmuOutcome {
     let pc = fault_pc(machine, fault);
     match trap_insn(machine, fault, bytes) {
         Some(insn) if func.contains(&pc) => EmuOutcome::Trap {

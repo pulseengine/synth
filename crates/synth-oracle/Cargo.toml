@@ -20,9 +20,21 @@ publish = false
 default = []
 exec = ["dep:kiln-runtime", "dep:kiln-decoder", "dep:kiln-foundation", "dep:kiln-error", "dep:unicorn-engine"]
 
+[[bin]]
+# RQ-91-TARGETRECORD (Refs #1741): writes north-star-input.O1.json. Needs the
+# engines, so it is built only with `--features exec`.
+name = "target-record"
+required-features = ["exec"]
+
 [dependencies]
 object = { workspace = true }
 wasmparser = { workspace = true }
+# The target record (src/record.rs): JSON out, and the consumer schema's
+# `pattern` keywords checked with a real regex engine.
+serde_json = { workspace = true }
+regex = "1"
+# The probe set is WAT text; the target-record binary assembles it.
+wat = { workspace = true }
 # kiln, PulseEngine's wasm interpreter, is the REFERENCE engine. Not on
 # crates.io: a git dependency pinned by REV to the commit tag v0.7.3 names
 # (annotated tag object 853c5d84 -> commit fa16dc8d). A rev pin cannot move
@@ -36,4 +48,4 @@ kiln-error = { git = "https://github.com/pulseengine/kiln", rev = "fa16dc8d9945f
 unicorn-engine = { version = "2.1.5", default-features = false, features = ["arch_arm", "arch_riscv"], optional = true }
 
 [dev-dependencies]
-wat = { workspace = true }
+sha2 = { workspace = true }

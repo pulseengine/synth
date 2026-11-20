@@ -1,0 +1,36 @@
+{
+  "$comment": "North Star indicator input, schema_version 1. A repository that feeds an objective publishes this as the release asset `north-star-input.json`, listed in the release's cosign-signed SHA256SUMS. pulseengine.eu's monthly north-star workflow reads the latest release of each product named in data/north-star.toml. A missing, unsigned or invalid file is not counted (never zero-filled); a fact with ran=false counts as failed. A change to this shape is a new schema_version, announced on the seam issue first.",
+  "type": "object",
+  "required": ["schema_version", "objective", "repo", "version", "generated_at", "generator", "facts", "not_measured"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "objective": {"enum": ["O1", "O2", "O3", "O4", "O5"]},
+    "repo": {"type": "string", "pattern": "^pulseengine/[A-Za-z0-9._-]+$"},
+    "version": {"type": "string", "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "generator": {
+      "type": "object",
+      "required": ["tool", "version"],
+      "additionalProperties": false,
+      "properties": {"tool": {"type": "string"}, "version": {"type": "string"}}
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "ran", "pass"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "description": "stable id, e.g. a ladder rung (O1: '<target>/<rung>'), a gate name (O5) or a proof check (O3)"},
+          "ran": {"type": "boolean", "description": "false = not run this release; counts as a fail"},
+          "pass": {"type": "boolean"},
+          "control_failed_as_expected": {"type": "boolean", "description": "the planted negative control for this fact turned it red"},
+          "detail": {"type": "object", "description": "objective-specific fields (O1: target, rung, oracle; O3: proof_check_required, axiom_audit, ledger; O5: signed, kiln_runs, wasmtime_equal, equivalence_in_ci, gap_switch)"},
+          "evidence": {"type": "string", "description": "URL of the run or artifact that shows it"}
+        }
+      }
+    },
+    "not_measured": {"type": "array", "items": {"type": "string"}, "description": "what this input is blind to, stated by the producer"}
+  }
+}

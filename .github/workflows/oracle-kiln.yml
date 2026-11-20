@@ -105,4 +105,8 @@ jobs:
           grep -qx 'ORACLE kiln-probe: 6048 cases agree across 2 legs, 72 trap/trap' "$log"
           grep -qx 'stress: 32000 concurrent runs of add(2,3), 0 not Values(5)' "$log"
           grep -qE '^test result: ok\. 15 passed; 0 failed' "$log"
-          grep -qE '^test result: ok\. 8 passed; 0 failed' "$log"
+          # 14 = the lib's unit tests (8 before RQ-91-TARGETRECORD added the
+          # record module's 6); the 1 is tests/target_record.rs, the
+          # target-record binary end to end.
+          grep -qE '^test result: ok\. 14 passed; 0 failed' "$log"
+          grep -qE '^test result: ok\. 1 passed; 0 failed' "$log"

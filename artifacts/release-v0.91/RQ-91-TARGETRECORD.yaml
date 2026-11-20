@@ -1,0 +1,153 @@
+artifacts:
+  - id: RQ-91-TARGETRECORD
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "The target record: synth's half of North Star O1 as one schema-valid north-star-input.O1.json, every number executed in the run"
+    description: >
+        Bet B of the v0.92 plan, thin. pulseengine.eu publishes the North Star
+        and consumes one input file per product per release (seam
+        pulseengine.eu#393; schema `data/north-star/input.schema.json`,
+        schema_version 1). This lane makes synth's half of objective O1
+        derivable by one command instead of typed.
+
+        WHAT IS BUILT. `target-record`, a Rust binary in crates/synth-oracle
+        (feature `exec`), writes `north-star-input.O1.json`. Per target, four
+        facts with ids `<target>/<field>`, NEVER summed:
+        `reach`, `execution_match`, `wcet` and `hardware_run`. Every fact
+        carries `ran`, `pass`, `control_failed_as_expected`, `evidence` and a
+        `detail` with `target`, `field`, `value`, `executed_vectors` and
+        `oracle`. A fact is never omitted: a field with nothing behind it is
+        `ran: false, pass: false` with its reason. Targets: cortex-m4 and
+        cortex-m7dp (linked targets), cortex-m0plus and rv32imc (no linked
+        image, so their execution_match is ran=false).
+
+        - reach: every top-level .wast of the spec testsuite submodule at its
+          pinned gitlink (257 files), compiled with `--all-exports`; a file
+          counts when synth exits 0 with every export compiled (the compile
+          census's `ok` bucket). The record states beside the number that this
+          corpus was chosen by the project and is not a consumer's.
+        - execution_match: the embedded probe set (moved from
+          tests/kiln_probe_oracle.rs into `synth_oracle::probes`, so the
+          oracle and the record run ONE list) compiled to the SELF-CONTAINED
+          image. The new `synth_oracle::image` maps the ELF's PT_LOAD segments
+          at their linked addresses, boots the image through its own
+          Reset_Handler up to its `blx r0`, and calls each export at its linked
+          address on the TARGET's unicorn model (Cortex-M4, id 9; Cortex-M7,
+          id 10), set before mapping and read back. Every probe x vector pair
+          is judged against kiln by the existing verdict matrix. Floor: 3024
+          executed vectors per linked target. Zero executed is ran=false.
+        - wcet: the `--emit-wcet` sidecar of the same compile. Each bound is
+          cross-checked against the instructions one executed call of its
+          function took (a bound below that is unsound; necessary, not
+          sufficient). A bound with no executed call behind it fails the fact.
+          With no bounded function the value is null and the decline reasons
+          sit beside it: a decline is never rendered as a number.
+        - hardware_run: always ran=false. synth runs no silicon; the rungs
+          jess and gale run are filled in by pulseengine.eu.
+
+        NEGATIVE CONTROLS, inside every run, each able to fail its fact: an
+        empty corpus directory must give reach ran=false; kiln running
+        i32.sub for the compiled i32.add must give exactly 120 of 144
+        disagreements, and an undefined encoding planted at `add`'s entry in
+        a fresh boot of the image must be ILLEGAL (execution); `add` replaced
+        by a 1-cycle bound must fail the execution cross-check (wcet). A fact
+        whose control did not turn red cannot pass.
+
+        SCHEMA. crates/synth-oracle/schema/north-star-input.schema.json is a
+        byte-identical copy of pulseengine.eu origin/main 21bf3cd (git blob
+        344292f5), sha256 pinned by a unit test. `record::validate`
+        interprets THAT FILE keyword by keyword (type, const, enum, pattern,
+        format date-time, required, properties, additionalProperties, items)
+        and errors on any keyword it does not implement, so a schema change
+        cannot pass silently. The binary validates before writing and never
+        writes an invalid record.
+
+        CI. .github/workflows/target-record.yml (its own file; ci.yml is at its
+        size ceiling) generates the record on push, pull request, a monthly
+        schedule (one per North Star layer) and dispatch, requires
+        cortex-m4/execution_match, cortex-m7dp/execution_match and
+        cortex-m4/wcet to pass, pins the 16 facts by exact grep, and uploads
+        the file as the `north-star-input.O1` artifact. oracle-kiln.yml's
+        exact test-count greps moved with the new tests (lib 8 -> 14, plus
+        the 1 end-to-end test).
+
+        RELEASE ATTACHMENT, DESCRIBED ONLY. release.yml is an owner-gated
+        pipeline and is not edited here. The wiring it would need: (1) a job
+        `target-record` on the tag ref, steps as in target-record.yml with
+        `--version "${VERSION#v}"`, uploading `north-star-input.O1.json` with
+        actions/upload-artifact; (2) `needs: [build-binaries, target-record]`
+        on the release job; (3) in "Flatten release assets", one line,
+        `find artifacts -type f -name 'north-star-input.O1.json' -exec cp {}
+        release-assets/ \;`, so the file is present when "Generate SHA256
+        checksums" runs, its digest enters SHA256SUMS.txt, and the existing
+        keyless cosign signature and build-provenance attestation cover it.
+        The consumer schema's comment names the asset `north-star-input.json`;
+        this lane writes `north-star-input.O1.json` as briefed, and the name
+        must be agreed on the seam issue before release.yml is wired.
+        `wsc verify-chain` is NOT used as a gate anywhere (sigil#395: it
+        passes a one-bit-flipped component).
+
+        WHAT THE PLAN ASKED FOR AND THIS DOES DIFFERENTLY. The plan's Bet B
+        describes an assembler that reads the JSON other oracles emit. The
+        required spec-suite-execution oracle emits no JSON and runs the
+        permissive "max" core, so the record executes its own leg on the
+        target model instead; its execution_match covers the probe set, not
+        the spec suite's directives, and says so in not_measured.
+
+        CITATION: #1741 is the support-level issue this record reports on. It
+        stays open.
+    tags:
+      - feature-loop
+      - oracle
+      - verification
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      issue: "#1741"
+      verification-track: execution
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 one command writes a north-star-input.O1.json that
+        validates against pulseengine.eu's schema, with reach,
+        execution_match, wcet and hardware_run facts for cortex-m4 and
+        cortex-m7dp, each number executed in the run and each executed fact
+        guarded by an in-run negative control; zero executed vectors reads
+        ran=false; the file is generated in CI and uploaded as an artifact,
+        and release.yml attaching it to the signed SHA256SUMS is an owner
+        decision recorded here.
+      landed: "v0.91 TARGETRECORD - #1741 - DELIVERED: crates/synth-oracle target-record binary, synth_oracle::{image, record, probes}, the vendored consumer schema, tests/target_record.rs, .github/workflows/target-record.yml. release.yml NOT edited (owner-gated). #1741 stays open (outlives)."
+      verified-by: >
+        DELIVERED, execution-verified locally on stack v092-stack2 (7537385,
+        synth 0.90.0), M-series Mac, one command, 32 s wall. cortex-m4:
+        reach 16 of 257 (pass, floor 16), execution_match 3024 executed,
+        3024 matched, 0 wrong, 0 inconclusive, 36 trap/trap all recognised
+        as `udf`, model id 9 read back (pass, controls red: 120 of 120
+        planted-reference disagreements and an ILLEGAL planted encoding), wcet
+        20 of 22 functions bounded, 2 `loop` declines, max bound 353 cycles,
+        no bound below its executed count (pass, control red). cortex-m7dp:
+        reach 26 of 257 (pass, floor 26), execution_match 3024 / 3024 / 0 on
+        model id 10 (pass, controls red), wcet ran=true pass=false, 22 of 22
+        `unsupported-core`, value null. cortex-m0plus: reach 2 of 257,
+        execution_match ran=false (no self-contained image), wcet ran=true
+        pass=false. rv32imc: reach 9 of 257, execution_match ran=false, wcet
+        ran=true pass=false. Every hardware_run ran=false. The reach figures
+        for cortex-m4, cortex-m7dp and rv32imc equal the compile census's
+        `arm`, `arm_m7dp` and `riscv` `ok` pins (16, 26, 9). Tests: six unit
+        tests in record.rs (schema-valid record; zero vectors never a pass
+        and never omitted; each fail rule fails its fact; the validator
+        rejects eleven schema violations and an unimplemented keyword; the
+        vendored schema's sha256; RFC 3339), and tests/target_record.rs runs
+        the binary on cortex-m4 and cortex-m0plus with an EMPTY corpus and
+        asserts the written file validates, all eight facts are present,
+        both reach facts read ran=false with a null value, cortex-m0plus
+        execution_match reads ran=false with 0 executed vectors, and
+        cortex-m4 execution_match passes at >= 3024 on model id 9. NOT YET
+        SHOWN: a run of target-record.yml on the pool, and the record
+        regenerated at a tag.
+        WHY outlives: #1741 raises every planned backend through the support
+        levels; this lane makes the O1 reading of two targets derivable and
+        raises no level.
