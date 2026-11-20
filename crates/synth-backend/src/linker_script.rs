@@ -128,8 +128,11 @@ impl LinkerScriptGenerator {
 
         // Meld runtime external symbols
         if self.meld_integration {
+            // No `EXTERN(__meld_dispatch_import)`: no synth object references
+            // that symbol (an import is a direct `bl <field>`, #1699), and
+            // forcing it undefined pulled a stale dispatcher out of an
+            // archive and left a dangling `U` in the firmware.
             script.push_str("/* Meld runtime symbols (provided by meld static library) */\n");
-            script.push_str("EXTERN(__meld_dispatch_import)\n");
             script.push_str("EXTERN(__meld_get_memory_base)\n\n");
         }
 
@@ -424,8 +427,10 @@ mod tests {
         let script = generator.generate().expect("Failed to generate");
 
         // External symbols
-        assert!(script.contains("EXTERN(__meld_dispatch_import)"));
         assert!(script.contains("EXTERN(__meld_get_memory_base)"));
+        // #1699: the import dispatcher is gone from every synth output,
+        // this script included.
+        assert!(!script.contains("__meld_dispatch_import"));
 
         // Import table section
         assert!(script.contains(".meld_import_table"));

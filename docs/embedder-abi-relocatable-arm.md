@@ -28,9 +28,11 @@ nothing in the image defines the import. So `synth compile` compiles every
 such module on the ARM backend exactly as `--relocatable` does — the object
 is byte-identical to the `--relocatable` one — whether or not the flag is
 given, and with `--cortex-m` too. It says so at WARN level (`module calls
-imported function(s) ... produces a relocatable object`). A module whose
-function imports are declared but never called references no external symbol
-and is still compiled as the self-contained image. Everything in this document then applies: the register
+imported function(s) ... produces a relocatable object`). The call must be
+one the compile retains: a module whose function imports are declared but
+never called, or called only from a function that no export, table entry or
+start function reaches (the compile drops such a function), references no
+external symbol and is still compiled as the self-contained image. Everything in this document then applies: the register
 contract, the initialization obligations and their refusals, the
 `call_indirect` table layout. Before v0.92 the output was already an `ET_REL`
 object, but its functions were compiled for the self-contained image and gave

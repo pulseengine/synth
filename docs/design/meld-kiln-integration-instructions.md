@@ -180,7 +180,8 @@ synth output references that symbol.
 - **When.** Whenever a function of the module calls a function import.
   `--relocatable` is not needed to get this object, and `--cortex-m` does not
   produce a self-contained image for such a module: it produces this object
-  and says so. An import that is declared but never called changes nothing.
+  and says so. An import that is declared but never called, or called only
+  from a function the compile drops as unreachable, changes nothing.
 - **kiln-builtins' P3 built-ins.** Functions named `__p3_task_return` and the
   like do not match field names such as `[task-return]0`. A provider needs an
   alias per imported field: `#[unsafe(export_name = "[task-return]0")]` (or a

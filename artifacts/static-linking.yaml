@@ -61,9 +61,9 @@ artifacts:
       .meld_import_strings (FLASH, read-only), .data (RAM, AT> FLASH
       for LMA copy), .bss (RAM, NOLOAD), .wasm_linear_memory (RAM,
       aligned to MPU region size), .stack (RAM), and .heap (RAM).
-      EXTERN declarations for __meld_dispatch_import and
-      __meld_get_memory_base shall be emitted when Meld integration
-      is enabled.
+      An EXTERN declaration for __meld_get_memory_base shall be
+      emitted when Meld integration is enabled. (No EXTERN for
+      __meld_dispatch_import: no synth object references it, #1699.)
     status: implemented
     tags: [static-linking, linker-script, meld-sections, memory-layout]
     links:
@@ -302,7 +302,8 @@ artifacts:
       synth-backend LinkerScriptGenerator shall support a with_meld_sections()
       builder method that adds .meld_import_table and .meld_import_strings
       sections to the generated linker script. When enabled, the generator
-      emits EXTERN(__meld_dispatch_import), EXTERN(__meld_get_memory_base),
+      emits EXTERN(__meld_get_memory_base) (and no longer
+      EXTERN(__meld_dispatch_import), #1699),
       and section definitions with KEEP() to prevent dead-stripping of
       import metadata. The method is composable with existing
       with_meld_integration() and board-specific constructors

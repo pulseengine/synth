@@ -4562,13 +4562,16 @@ fn refuse_shared_memory(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Re
 /// (R11/R10), one import ABI (a direct AAPCS `bl <field>`), and every
 /// `--relocatable` refusal.
 ///
-/// The key is a CALL, not the import's declaration: a module whose function
-/// imports are never called references no external symbol, was a complete
-/// self-contained image before and still is. `functions` is every defined
-/// function of the module, so a call in a function the compile later drops
-/// as unreachable still counts — the over-approximation errs towards the
-/// host-linked object, never towards a mixed one; the `#1758 tripwire` after
-/// code generation refuses anything this predicate could miss.
+/// The key is a call the compile RETAINS, not the import's declaration and
+/// not a call anywhere in the module. `roots` are the functions the compile
+/// starts from (the exports, an accepted start function, or the one requested
+/// root), and the walk is the #235 closure the compile itself uses
+/// (`reachable_from_roots`): a function nothing reaches is dropped, so an
+/// import call inside it emits no symbol. Such a module, like one whose
+/// imports are never called at all, references nothing external; it was a
+/// complete self-contained image before and still is. The two callers
+/// re-check this answer against the closure they compile from, and the
+/// `#1758 tripwire` after code generation refuses anything it could miss.
 ///
 /// ARM only. RV32 and AArch64 emit `ET_REL` for every module, and their
 /// selectors do not read `relocatable` for memory addressing or import calls.
@@ -4576,9 +4579,26 @@ fn function_imports_force_host_link(
     backend_name: &str,
     functions: &[FunctionOps],
     num_imported_funcs: u32,
+    elem_func_indices: &[u32],
+    roots: &std::collections::BTreeSet<u32>,
 ) -> bool {
-    backend_name == "arm"
-        && functions.iter().any(|f| {
+    if backend_name != "arm" || num_imported_funcs == 0 {
+        return false;
+    }
+    let retained = reachable_from_roots(functions, num_imported_funcs, elem_func_indices, roots);
+    retained_functions_call_an_import(functions, num_imported_funcs, &retained)
+}
+
+/// Whether a function in `retained` calls a function import.
+fn retained_functions_call_an_import(
+    functions: &[FunctionOps],
+    num_imported_funcs: u32,
+    retained: &std::collections::BTreeSet<u32>,
+) -> bool {
+    functions
+        .iter()
+        .filter(|f| retained.contains(&f.index))
+        .any(|f| {
             f.ops
                 .iter()
                 .any(|op| matches!(op, WasmOp::Call(idx) if *idx < num_imported_funcs))
@@ -4842,11 +4862,24 @@ fn compile_all_exports(
             match decode_wasm_module(&wasm_bytes) {
                 Ok(module) => {
                     // A module that calls a function import is checked as
-                    // the host-linked module it will be compiled as.
+                    // the host-linked module it will be compiled as. The
+                    // roots here are ALL of this module's exports: which of
+                    // them survive the last-module-wins override is known
+                    // only once every module is decoded (pass 2), and the
+                    // survivors are a subset, so this can only err towards
+                    // the host-linked object. Pass 2 checks that.
+                    let own_exports: std::collections::BTreeSet<u32> = module
+                        .functions
+                        .iter()
+                        .filter(|f| f.export_name.is_some())
+                        .map(|f| f.index)
+                        .collect();
                     let host_link = function_imports_force_host_link(
                         backend.name(),
                         &module.functions,
                         module.num_imported_funcs,
+                        &module.elem_func_indices,
+                        &own_exports,
                     );
                     import_call_host_link |= host_link;
                     let relocatable = relocatable || host_link;
@@ -4974,6 +5007,19 @@ fn compile_all_exports(
             if std::env::var_os("EXPORTS_ONLY_275").is_some() {
                 reachable = roots.clone();
             }
+            // The host-link decision (pass 1) was taken over a superset of
+            // these functions; it must cover every import call retained here.
+            anyhow::ensure!(
+                import_call_host_link
+                    || backend.name() != "arm"
+                    || !retained_functions_call_an_import(
+                        &module.functions,
+                        module.num_imported_funcs,
+                        &reachable
+                    ),
+                "internal: module {idx} retains a call to a function import, but the compile \
+                 was not marked host-linked (#1758)"
+            );
             // #1225: what the merge cannot represent, refused over the
             // functions it would actually retain.
             refuse_wast_merge_unrepresentable(idx, &module, &reachable)?;
@@ -5129,10 +5175,42 @@ fn compile_all_exports(
         let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
         // From here on this module is compiled as what it will be emitted as
         // (the #418 arena bind above has already removed a bound import).
+        // The roots are the ones the #235 closure below starts from: the one
+        // requested root, else the exports plus a defined start function (a
+        // start function that is not accepted refuses the compile anyway).
+        // That closure re-checks the answer.
+        let host_link_roots: std::collections::BTreeSet<u32> = match &single_root {
+            Some(SingleRoot::Name(name)) => module
+                .functions
+                .iter()
+                .filter(|f| f.export_name.as_deref() == Some(name.as_str()))
+                .map(|f| f.index)
+                .take(1)
+                .collect(),
+            Some(SingleRoot::Index(idx)) => module
+                .functions
+                .iter()
+                .filter(|f| f.index == *idx)
+                .map(|f| f.index)
+                .collect(),
+            None => module
+                .functions
+                .iter()
+                .filter(|f| f.export_name.is_some())
+                .map(|f| f.index)
+                .chain(
+                    module
+                        .start_function
+                        .filter(|idx| *idx >= module.num_imported_funcs),
+                )
+                .collect(),
+        };
         import_call_host_link = function_imports_force_host_link(
             backend.name(),
             &module.functions,
             module.num_imported_funcs,
+            &module.elem_func_indices,
+            &host_link_roots,
         );
         let relocatable = relocatable || import_call_host_link;
         // RQ-66-BOTHWRONG (#1209): unconditional, independent of the
@@ -5373,6 +5451,19 @@ fn compile_all_exports(
         } else {
             reachable_from_exports(&module.functions, num_imports, &elem_func_indices)
         };
+        // The host-link decision above was taken from this same closure,
+        // before it existed; the two must agree on what is retained.
+        anyhow::ensure!(
+            backend.name() != "arm"
+                || import_call_host_link
+                    == retained_functions_call_an_import(
+                        &module.functions,
+                        num_imports,
+                        &reachable
+                    ),
+            "internal: the host-link decision ({import_call_host_link}) disagrees with the \
+             functions this compile retains (#1758)"
+        );
         // #275 non-vacuity probe (feature `exports_only_275_probe`, NEVER in a
         // default/release build): `EXPORTS_ONLY_275=1` reverts to the pre-#235
         // exports-only behavior (drop every non-exported reachable callee) so the
@@ -6184,6 +6275,16 @@ fn compile_all_exports(
                 fc.func_result_counts = t.func_result_counts.clone();
                 fc.type_arg_counts = t.type_arg_counts.clone();
                 fc.type_result_counts = t.type_result_counts.clone();
+                // The import COUNT is per module too. The merged config
+                // carries the largest count of any module, so a local call
+                // `call N` in a module with fewer imports read as a call to
+                // import N. The ARM selector declines an import call on a
+                // compile that is not host-linked (#1699), so a correct
+                // local call in an import-free module was refused because
+                // ANOTHER module in the file declares an import. (On a
+                // host-linked compile both readings lower to the same
+                // `BL func_N`, so this changes no emitted byte.)
+                fc.num_imports = origin.num_imports;
             }
             // #457: THIS function's DECLARED param count, so the backends can
             // cap the access-pattern param inference that mistook a
@@ -6945,9 +7046,9 @@ fn compile_all_exports(
 
     // Build multi-function ELF
     // When there are EXTERNAL relocations, produce a relocatable object (.o)
-    // instead of an executable. This lets the output be linked with the Kiln
-    // bridge crate (which provides __meld_dispatch_import and
-    // __meld_get_memory_base). The --relocatable flag forces ET_REL output
+    // instead of an executable. This lets the output be linked with the
+    // embedder's objects (which define each imported function under its
+    // bare wasm field name). The --relocatable flag forces ET_REL output
     // even when the wasm has no imports, for linking into a host build system
     // (e.g. Zephyr).
     //
@@ -7900,9 +8001,9 @@ fn refuse_a32_cortex_m_image(target: &TargetSpec) -> Result<()> {
 
 /// Build a relocatable ELF object (.o) with undefined symbols and relocations.
 ///
-/// Produced when the WASM module has imports — the resulting .o needs to be linked
-/// with the Kiln bridge (which provides `__meld_dispatch_import` etc.) to create
-/// a final firmware binary.
+/// Produced when the WASM module calls imports — the resulting .o needs to be linked
+/// with the embedder's objects (which define each imported function under its bare
+/// wasm field name) to create a final firmware binary.
 /// #237: native-pointer-ABI layout for the wasm data region — used-extent
 /// sizing (gale: 64 KiB-page granularity is RAM-prohibitive on the MCUs this
 /// targets) plus materialized global slots appended after the used extent.
