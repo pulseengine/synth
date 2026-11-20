@@ -1,5 +1,6 @@
 # The target record: synth's half of North Star O1 (RQ-91-TARGETRECORD,
-# Refs #1741; consumer seam pulseengine.eu#393).
+# Refs #1741; consumer seam pulseengine.eu#393, asset name pulseengine.eu#394,
+# consumer pulseengine.eu#396 tools/north-star-measure).
 #
 # Its own workflow file, not a ci.yml job: ci.yml sits at GitHub's ~512 KB
 # workflow-file limit (a 514,837-byte ci.yml was rejected with 0 jobs, run
@@ -9,11 +10,15 @@
 # `north-star-input.O1.json`, validated against pulseengine.eu's
 # `data/north-star/input.schema.json` (vendored byte-identically in
 # crates/synth-oracle/schema/, sha256 pinned by a unit test), and this job
-# uploads it as a workflow artifact. Every number in it is executed in this
-# run: reach over the pinned spec testsuite, execution_match of the probe set
-# on the linked self-contained image under the target's unicorn CPU model
-# against kiln, and the --emit-wcet sidecar cross-checked against executed
-# instruction counts. hardware_run is always ran=false: synth runs no silicon.
+# uploads it as a workflow artifact. Targets cortex-m4 and cortex-m7dp. Every
+# number in it is executed in this run: reach over the pinned spec testsuite
+# (pass = a regression gate against a floor, said so in the fact), the probe
+# set's execution_match on the linked self-contained image (boot contract
+# asserted) under the target's unicorn CPU model against kiln, and the
+# --emit-wcet sidecar cross-checked against executed calls priced in Cortex-M4
+# cycles, with a bounded-function floor. hardware_run is always ran=false:
+# synth runs no silicon. Each synth compile is killed after 120 s (a hang is
+# counted and fails reach), so one hung file cannot hold the job.
 #
 # RELEASE ATTACHMENT IS NOT WIRED HERE, deliberately: release.yml is an
 # owner-gated pipeline. How it would be wired is recorded in
@@ -23,9 +28,15 @@
 # cosign signs it). `wsc verify-chain` is NOT used as a gate anywhere
 # (sigil#395: it passes a one-bit-flipped component).
 #
-# The schedule regenerates the record on main for each monthly North Star
-# layer; a layer with no new release carries the last tag's version with a
-# new generated_at.
+# VERSION: on a release tag the record carries the tag's version (0.90.0);
+# on any other commit it carries the git description as build metadata
+# (0.90.0+53-g1a2b914186c5), never the last tag's version alone, so a main or
+# scheduled run is never read as the release. Hence fetch-depth: 0 (the
+# description needs the tags and the history to them).
+#
+# TRIGGERS: main, release tags, the monthly North Star layer, and dispatch.
+# Not every pull request: the self-hosted pool is contended, and the binary's
+# end-to-end test already runs on every PR inside oracle-kiln.yml.
 #
 # NOT a required context, so it can be added and renamed freely.
 
@@ -34,15 +45,14 @@ name: Target record (O1)
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+    tags: ["v*"]
   schedule:
     - cron: "17 5 1 * *"
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -50,8 +60,8 @@ env:
 jobs:
   target-record:
     name: Target record — north-star-input.O1.json (RQ-91-TARGETRECORD)
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
-    # Builds as oracle-kiln does (~5 min), then 4 x 257 corpus compiles and
+    runs-on: [self-hosted, linux, x64, rust-cpu]
+    # Builds as oracle-kiln does (~5 min), then 2 x 257 corpus compiles and
     # 2 x 3024 executed vectors plus the controls. Measured locally on an
     # M-series Mac: see the artifact's verified-by. 40 min is a generous
     # ceiling for the pool, not a measurement of it.
@@ -60,8 +70,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Load-bearing: reach's corpus is the spec testsuite submodule.
-          # An empty checkout makes reach ran=false, never a passing row.
+          # An empty checkout makes reach ran=false, never a passing row,
+          # and a corpus that is not a checkout at the gitlink fails reach.
           submodules: recursive
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -105,14 +117,18 @@ jobs:
             --require-pass cortex-m7dp/execution_match \
             --require-pass cortex-m4/wcet \
             2>&1 | tee "$RUNNER_TEMP/target-record.log"
-          # NON-VACUITY, exact: every target's four facts are present, the
-          # record validated, and the zero-vector rule held where nothing ran.
-          test "$(grep -c '^FACT ' "$RUNNER_TEMP/target-record.log")" = 16
-          grep -qx 'RECORD north-star-input.O1.json schema-valid, 16 facts' "$RUNNER_TEMP/target-record.log"
-          grep -qx 'FACT cortex-m4/execution_match: ran=true pass=true control_red=true' "$RUNNER_TEMP/target-record.log"
-          grep -qx 'FACT cortex-m7dp/execution_match: ran=true pass=true control_red=true' "$RUNNER_TEMP/target-record.log"
-          grep -qx 'FACT cortex-m4/hardware_run: ran=false pass=false control_red=false' "$RUNNER_TEMP/target-record.log"
-          grep -qx 'FACT cortex-m0plus/execution_match: ran=false pass=false control_red=false' "$RUNNER_TEMP/target-record.log"
+          # NON-VACUITY, exact: both targets' four facts are present and the
+          # record validated and was complete; every hardware_run is
+          # ran=false; the M7 wcet row reads ran=true pass=false.
+          log="$RUNNER_TEMP/target-record.log"
+          test "$(grep -c '^FACT ' "$log")" = 8
+          grep -qE '^RECORD north-star-input\.O1\.json schema-valid, complete, 8 facts, version [0-9]+\.[0-9]+\.[0-9]+' "$log"
+          grep -qx 'FACT cortex-m4/execution_match: ran=true pass=true control_red=true' "$log"
+          grep -qx 'FACT cortex-m7dp/execution_match: ran=true pass=true control_red=true' "$log"
+          grep -qx 'FACT cortex-m4/wcet: ran=true pass=true control_red=true' "$log"
+          grep -qx 'FACT cortex-m7dp/wcet: ran=true pass=false control_red=true' "$log"
+          grep -qx 'FACT cortex-m4/hardware_run: ran=false pass=false control_red=false' "$log"
+          grep -qx 'FACT cortex-m7dp/hardware_run: ran=false pass=false control_red=false' "$log"
       - name: Upload the record
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

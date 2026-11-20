@@ -22,7 +22,7 @@
 //! multi-value results. Memory effects are not compared; callers refuse
 //! modules with a linear memory.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::Rc;
@@ -60,8 +60,28 @@ fn page_up(a: u64) -> u64 {
 #[derive(Clone, Debug)]
 pub struct ImageRun {
     pub outcome: EmuOutcome,
-    /// Instructions executed by this call (unicorn code hook).
+    /// Instructions executed by this call, INCLUDING the `IT` and
+    /// condition-failed instructions unicorn's code hook does not report.
     pub instructions: u64,
+    /// The call's cost in Cortex-M4 worst-case cycles ([`crate::cycles`]),
+    /// or why it could not be priced.
+    pub cycles: Result<u64, String>,
+}
+
+/// Trace entries kept per call; a longer call is not priced.
+const TRACE_CAP: usize = 100_000;
+
+/// What the shipped startup must have established at its `blx r0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BootContract {
+    /// R11: the linear-memory base, `__linear_memory_base`'s value.
+    pub r11_linear_memory_base: u32,
+    /// R10: the linear-memory size, `__linear_memory_base`'s size.
+    pub r10_linear_memory_size: u32,
+    /// SP: the vector table's initial SP.
+    pub sp: u32,
+    /// R0, the `blx r0` target: a function symbol (Thumb bit set).
+    pub entry: (String, u32),
 }
 
 /// A self-contained image, booted.
@@ -73,12 +93,15 @@ pub struct BootedImage {
     sp0: u64,
     /// R9, R10, R11 after the shipped startup ran.
     pub boot_r9_r11: [u32; 3],
+    /// The boot contract, each register ASSERTED against the ELF.
+    pub contract: BootContract,
+    text: (u64, Vec<u8>),
     /// What `ctl_get_cpu_model` returned (asserted equal to the request).
     pub cpu_model_readback: i32,
     ram: (u64, Vec<u8>),
     trapped: Rc<Cell<bool>>,
     intr: Rc<Cell<Option<(u64, u32)>>>,
-    count: Rc<Cell<u64>>,
+    trace: Rc<RefCell<Vec<(u64, u32)>>>,
 }
 
 impl BootedImage {
@@ -261,6 +284,60 @@ impl BootedImage {
             r(RegisterARM::R10, &emu),
             r(RegisterARM::R11, &emu),
         ];
+        // The boot is LOAD-BEARING: what the startup established is checked
+        // against the ELF, not just recorded (REVIEW_17 finding 4). A startup
+        // that skips or corrupts the memory contract, or would jump to
+        // anything but a function, is refused here.
+        let mem = file
+            .symbols()
+            .find(|s| s.name() == Ok("__linear_memory_base"))
+            .ok_or_else(|| {
+                bad("no __linear_memory_base symbol: the boot contract cannot be checked".into())
+            })?;
+        let want_r11 = mem.elf_symbol().st_value(endian);
+        let want_r10 = mem.elf_symbol().st_size(endian);
+        let r0 = r(RegisterARM::R0, &emu);
+        let sp = r(RegisterARM::SP, &emu);
+        let mut broken = Vec::new();
+        if boot_r9_r11[2] != want_r11 {
+            broken.push(format!(
+                "R11 = {:#x}, __linear_memory_base = {want_r11:#x}",
+                boot_r9_r11[2]
+            ));
+        }
+        if boot_r9_r11[1] != want_r10 {
+            broken.push(format!(
+                "R10 = {:#x}, linear memory size = {want_r10:#x}",
+                boot_r9_r11[1]
+            ));
+        }
+        if u64::from(sp) != sp0 {
+            broken.push(format!("SP = {sp:#x}, vector table SP = {sp0:#x}"));
+        }
+        let entry = funcs
+            .iter()
+            .find(|(n, (a, _))| {
+                *a == u64::from(r0 & !1)
+                    && !matches!(
+                        n.as_str(),
+                        "Reset_Handler" | "Default_Handler" | "Trap_Handler"
+                    )
+            })
+            .map(|(n, _)| n.clone());
+        match &entry {
+            Some(_) if r0 & 1 == 1 => {}
+            Some(_) => broken.push(format!("entry R0 = {r0:#x} has no Thumb bit")),
+            None => broken.push(format!("entry R0 = {r0:#x} is not a function symbol")),
+        }
+        if !broken.is_empty() {
+            return Err(bad(format!("boot contract broken: {}", broken.join("; "))));
+        }
+        let contract = BootContract {
+            r11_linear_memory_base: want_r11,
+            r10_linear_memory_size: want_r10,
+            sp,
+            entry: (entry.unwrap_or_default(), r0),
+        };
 
         // Hooks: Trap_Handler reached = trap; any interrupt = recorded; every
         // instruction counted.
@@ -284,11 +361,16 @@ impl BootedImage {
             }),
             "intr hook",
         )?;
-        let count = Rc::new(Cell::new(0u64));
-        let c2 = Rc::clone(&count);
+        let trace: Rc<RefCell<Vec<(u64, u32)>>> = Rc::new(RefCell::new(Vec::new()));
+        let t2 = Rc::clone(&trace);
         uc(
-            emu.add_code_hook(1, 0, move |_, _, _| c2.set(c2.get() + 1)),
-            "count hook",
+            emu.add_code_hook(1, 0, move |_, addr, size| {
+                let mut t = t2.borrow_mut();
+                if t.len() <= TRACE_CAP {
+                    t.push((addr, size));
+                }
+            }),
+            "trace hook",
         )?;
 
         let mut ram = vec![0u8; (ram_hi - ram_lo) as usize];
@@ -300,11 +382,13 @@ impl BootedImage {
             funcs,
             sp0,
             boot_r9_r11,
+            contract,
+            text: (text_va, text.clone()),
             cpu_model_readback: readback,
             ram: (ram_lo, ram),
             trapped,
             intr,
-            count,
+            trace,
         })
     }
 
@@ -384,11 +468,11 @@ impl BootedImage {
         uc(emu.reg_write(RegisterARM::LR as i32, RETURN_ADDR | 1), "LR")?;
         self.trapped.set(false);
         self.intr.set(None);
-        self.count.set(0);
+        self.trace.borrow_mut().clear();
 
         let r = emu.emu_start(entry | 1, RETURN_ADDR, 0, budget);
         let pc_now = uc(emu.reg_read(RegisterARM::PC as i32), "PC")? & !1;
-        let instructions = self.count.get();
+        let trace = std::mem::take(&mut *self.trace.borrow_mut());
         let func_range = entry..entry + size;
 
         let outcome = if self.trapped.get() {
@@ -446,9 +530,25 @@ impl BootedImage {
                 )
             }
         };
+        let trapped = matches!(
+            outcome,
+            EmuOutcome::Trap { .. } | EmuOutcome::Illegal { .. }
+        );
+        let (tva, text) = (&self.text.0, &self.text.1);
+        let fetch = |a: u64| -> Option<u16> {
+            let o = a.checked_sub(*tva)? as usize;
+            Some(u16::from_le_bytes([*text.get(o)?, *text.get(o + 1)?]))
+        };
+        let priced = if trace.len() > TRACE_CAP {
+            Err(format!("more than {TRACE_CAP} instructions; not priced"))
+        } else {
+            crate::cycles::price(&trace, pc_now, trapped, &fetch)
+        };
+        let instructions = priced.as_ref().map_or(trace.len() as u64, |p| p.1);
         Ok(ImageRun {
             outcome,
             instructions,
+            cycles: priced.map(|p| p.0),
         })
     }
 }
