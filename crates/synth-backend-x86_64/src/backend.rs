@@ -9,7 +9,7 @@
 //! 64-bit host reference — a truncation, the silent-miscompile class. So this
 //! backend reads the EXACT signature of every function from the module itself
 //! (wasmparser) and lowers a function only when every parameter and result is
-//! `i32`. The [`Backend`] trait's `compile_module`/`compile_function` take no
+//! `i32` or `i64`. The [`Backend`] trait's `compile_module`/`compile_function` take no
 //! bytes, so they refuse and say why; the CLI calls [`compile_wasm`].
 //!
 //! MEMORY BASE — THE HOOK, NOT YET USED (maintainer decision, 2026-11-18).
@@ -37,18 +37,18 @@ use wasmparser::{Encoding, ExternalKind, Parser, Payload, ValType};
 
 use crate::encoder;
 use crate::inst::Inst;
-use crate::selector;
+use crate::selector::{self, Ty};
 
 /// `EM_X86_64`.
 pub const EM_X86_64: u16 = 62;
 
-/// NO wildcard that returns a type: this lane emits no relocation, so every
-/// kind panics here rather than ship an unrelocated placeholder. Lane X6 adds
+/// NO wildcard that returns a type: the backend emits no relocation yet, so
+/// every kind panics here rather than ship an unrelocated placeholder. Lane X6 adds
 /// `R_X86_64_PLT32`/`PC32` as explicit arms.
 fn x86_64_reloc_type(kind: RelocKind) -> u32 {
     panic!(
-        "x86_64 ELF builder cannot emit relocation kind {kind:?}: lane X1 \
-         emits no relocations (RQ-91-X86SKEL, #1741)"
+        "x86_64 ELF builder cannot emit relocation kind {kind:?}: the \
+         x86_64 backend emits no relocations yet (#1741)"
     )
 }
 
@@ -107,8 +107,8 @@ fn read_shape(wasm: &[u8]) -> Result<ModuleShape, BackendError> {
     };
     let refuse = |what: &str| {
         Err(fail(format!(
-            "x86_64: the module has {what}, which lane X1 does not lower \
-             (RQ-91-X86SKEL, #1741: leaf i32 functions only) — refusing"
+            "x86_64: the module has {what}, which the x86_64 backend does not \
+             lower yet (#1741: straight-line i32/i64 leaf functions only) — refusing"
         )))
     };
     for payload in Parser::new(0).parse_all(wasm) {
@@ -210,14 +210,18 @@ pub fn compile_wasm(wasm: &[u8]) -> Result<X86Object, BackendError> {
                 "x86_64: function '{name}' has a non-function type"
             )));
         };
-        if let Some(t) = params.iter().chain(results).find(|t| **t != ValType::I32) {
-            return Err(fail(format!(
-                "x86_64: function '{name}' has a {t} parameter or result; lane X1 \
-                 lowers i32 signatures only (i64 is lane X2, floats and references \
-                 are later) — refusing"
-            )));
-        }
-        let insts = selector::select(&func.ops, params.len() as u32, results.len() as u32)
+        let int = |t: &ValType| match t {
+            ValType::I32 => Ok(Ty::I32),
+            ValType::I64 => Ok(Ty::I64),
+            other => Err(fail(format!(
+                "x86_64: function '{name}' has a {other} parameter or result; \
+                 the x86_64 backend lowers i32 and i64 signatures only (floats \
+                 and references are later lanes) — refusing"
+            ))),
+        };
+        let params: Vec<Ty> = params.iter().map(int).collect::<Result<_, _>>()?;
+        let results: Vec<Ty> = results.iter().map(int).collect::<Result<_, _>>()?;
+        let insts = selector::select(&func.ops, &params, &results)
             .map_err(|e| fail(format!("function '{name}': {e}")))?;
         let (code, lens) = encoder::encode_all(&insts);
         let mut symbols = vec![sym.clone()];

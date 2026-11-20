@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
           log="$RUNNER_TEMP/e1.log"
           cargo test -p synth-backend-x86_64 --test encoding_llvm_mc -- --nocapture 2>&1 | tee "$log"
-          grep -q '^E1: 513 forms byte-equal to ' "$log"
+          grep -q '^E1: 11969 forms byte-equal to ' "$log"
           grep -qE '^test result: ok\. 2 passed; 0 failed' "$log"
       - name: Native leg — GNU ld --fatal-warnings, run on this x86-64 host
         run: |
@@ -89,7 +89,20 @@ jobs:
             (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add)
             (func (export "add3") (param i32 i32 i32) (result i32)
               local.get 0 local.get 1 i32.add local.get 2 i32.add)
-            (func (export "id") (param i32) (result i32) local.get 0))
+            (func (export "id") (param i32) (result i32) local.get 0)
+            ;; RQ-91-X86ALU: the integer core on real silicon.
+            (func (export "sub") (param i32 i32) (result i32) local.get 0 local.get 1 i32.sub)
+            (func (export "mul64") (param i64 i64) (result i64) local.get 0 local.get 1 i64.mul)
+            (func (export "shl") (param i32 i32) (result i32) local.get 0 local.get 1 i32.shl)
+            (func (export "shr_s64") (param i64 i64) (result i64) local.get 0 local.get 1 i64.shr_s)
+            (func (export "lt_s") (param i32 i32) (result i32) local.get 0 local.get 1 i32.lt_s)
+            (func (export "lt_u64") (param i64 i64) (result i32) local.get 0 local.get 1 i64.lt_u)
+            (func (export "sel64") (param i64 i64 i32) (result i64)
+              local.get 0 local.get 1 local.get 2 select)
+            ;; Four parameters: rcx holds the fourth across the shift.
+            (func (export "shl4") (param i32 i32 i32 i32) (result i32)
+              local.get 0 local.get 1 i32.shl local.get 3 i32.xor)
+            (func (export "ext_s") (param i32) (result i64) local.get 0 i64.extend_i32_s))
           EOF
           cat > "$d/harness.c" <<'EOF'
           #include <stdint.h>
@@ -97,15 +110,36 @@ jobs:
           uint32_t add(uint32_t, uint32_t);
           uint32_t add3(uint32_t, uint32_t, uint32_t);
           uint32_t id(uint32_t);
+          uint32_t sub(uint32_t, uint32_t);
+          uint64_t mul64(uint64_t, uint64_t);
+          uint32_t shl(uint32_t, uint32_t);
+          uint64_t shr_s64(uint64_t, uint64_t);
+          uint32_t lt_s(uint32_t, uint32_t);
+          uint32_t lt_u64(uint64_t, uint64_t);
+          uint64_t sel64(uint64_t, uint64_t, uint32_t);
+          uint32_t shl4(uint32_t, uint32_t, uint32_t, uint32_t);
+          uint64_t ext_s(uint32_t);
           int main(void) {
             const uint32_t v[] = {0u, 1u, 2u, 0x7FFFFFFFu, 0x80000000u, 0xFFFFFFFFu, 0xDEADBEEFu};
+            const uint64_t w[] = {0u, 1u, 63u, 0x7FFFFFFFFFFFFFFFull, 0x8000000000000000ull,
+                                  0xFFFFFFFFFFFFFFFFull, 0xDEADBEEF00000041ull};
             const int n = sizeof v / sizeof v[0];
             int cases = 0, bad = 0;
             for (int i = 0; i < n; i++) {
               cases++; bad += id(v[i]) != v[i];
+              cases++; bad += ext_s(v[i]) != (uint64_t)(int64_t)(int32_t)v[i];
               for (int j = 0; j < n; j++) {
+                uint32_t k = v[(i + j) % n];
                 cases++; bad += add(v[i], v[j]) != (uint32_t)(v[i] + v[j]);
-                cases++; bad += add3(v[i], v[j], v[(i + j) % n]) != (uint32_t)(v[i] + v[j] + v[(i + j) % n]);
+                cases++; bad += add3(v[i], v[j], k) != (uint32_t)(v[i] + v[j] + k);
+                cases++; bad += sub(v[i], v[j]) != (uint32_t)(v[i] - v[j]);
+                cases++; bad += mul64(w[i], w[j]) != w[i] * w[j];
+                cases++; bad += shl(v[i], v[j]) != (uint32_t)(v[i] << (v[j] & 31));
+                cases++; bad += shr_s64(w[i], w[j]) != (uint64_t)((int64_t)w[i] >> (w[j] & 63));
+                cases++; bad += lt_s(v[i], v[j]) != (uint32_t)((int32_t)v[i] < (int32_t)v[j]);
+                cases++; bad += lt_u64(w[i], w[j]) != (uint32_t)(w[i] < w[j]);
+                cases++; bad += sel64(w[i], w[j], k) != (k ? w[i] : w[j]);
+                cases++; bad += shl4(v[i], v[j], 0x5A5A5A5Au, k) != (uint32_t)((v[i] << (v[j] & 31)) ^ k);
               }
             }
             printf("x86_64-native: %d cases, %d bad\n", cases, bad);
@@ -117,7 +151,7 @@ jobs:
           gcc -O0 -c "$d/harness.c" -o "$d/harness.o"
           gcc -Wl,--fatal-warnings -o "$d/run" "$d/harness.o" "$d/probes.o"
           "$d/run" | tee "$d/run.log"
-          grep -qx 'x86_64-native: 105 cases, 0 bad' "$d/run.log"
+          grep -qx 'x86_64-native: 504 cases, 0 bad' "$d/run.log"
           # The linked program's stack is NOT executable (GNU_STACK is RW).
           readelf -lW "$d/run" | grep GNU_STACK | tee "$d/stack.txt"
           grep -q 'RW ' "$d/stack.txt"

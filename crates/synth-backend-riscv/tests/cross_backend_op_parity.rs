@@ -2517,8 +2517,9 @@ fn a64_op_surface_artifact_is_fresh_242() {
 // Every WasmOp representative, through the SAME probe construction as the
 // aarch64 surface (`a64_probe_for`: one well-formed i32 probe per op label),
 // is run through the REAL x86-64 selector. An op is "lowered" when the
-// selector accepts the probe (with one result, or with none); otherwise it is
-// "declined" and the selector's own message is the reason. The committed
+// selector accepts the probe (with one i32 or i64 result, or with none);
+// otherwise it is "declined" and the selector's own message is the reason.
+// The committed
 // `artifacts/x86_64-op-surface.json` must equal this derivation, and
 // `x86_ops_lowered` (claims.yaml) counts its "lowered" rows — an `up` floor,
 // so the lowered set cannot shrink. It is independent of the selector's line
@@ -2526,38 +2527,36 @@ fn a64_op_surface_artifact_is_fresh_242() {
 // this count stands still; each movement is only made visible.
 //
 // THE SELECTOR, NOT THE SHIPPED PATH: this probes `select()`. The shared
-// decoder drops `nop` before selection, so `nop` is "declined" here and yet a
-// module containing it compiles (as nothing) through `compile_wasm`.
+// decoder drops `nop` before selection; since lane X2 the selector accepts
+// `nop` too, so the two agree.
 //
 // SCOPE, as for aarch64: OP-LEVEL ONLY. The x86-64 backend also refuses at
 // MODULE level (any non-i32 signature, imports, memory, tables, globals, ...);
 // those refusals are `crates/synth-backend-x86_64/tests/decline_skeleton.rs`.
 // ---------------------------------------------------------------------------
 
-/// The x86-64 form of an aarch64 probe. Lane X1 lowers no `i32.const`, so an
-/// operand the probe builds with `i32.const` is supplied as a fresh i32
-/// PARAMETER instead (`local.get N`) — except in the `i32.const` probe itself,
-/// where the const IS the op under test and must stay. The function's final
-/// `end` is appended (the aarch64 probes leave it implicit).
-fn x86_probe(op: &WasmOp, num_params: u32, ops: &[WasmOp]) -> (u32, Vec<WasmOp>) {
-    let mut n = num_params;
-    let mut out: Vec<WasmOp> = ops
-        .iter()
-        .map(|o| match o {
-            I32Const(_) if !matches!(op, I32Const(_)) => {
-                n += 1;
-                LocalGet(n - 1)
-            }
-            other => other.clone(),
-        })
-        .collect();
+/// The x86-64 form of an aarch64 probe: the same ops, with the function's
+/// final `end` appended (the aarch64 probes leave it implicit). Until lane X2
+/// (RQ-91-X86ALU) an `i32.const` operand had to be replaced by a parameter;
+/// the selector now lowers constants, so the probe runs as written.
+fn x86_probe(ops: &[WasmOp]) -> Vec<WasmOp> {
+    let mut out = ops.to_vec();
     out.push(End);
-    (n, out)
+    out
 }
 
+/// Lowered when the selector accepts the probe with the probe's `num_params`
+/// i32 parameters and an i32 result, an i64 result, or none (the probe table
+/// records no result type; the selector type-checks the final stack, so at
+/// most one of the three is accepted).
 fn x86_outcome(ops: &[WasmOp], num_params: u32) -> Result<(), String> {
-    let one = synth_backend_x86_64::select(ops, num_params, 1);
-    if one.is_ok() || synth_backend_x86_64::select(ops, num_params, 0).is_ok() {
+    use synth_backend_x86_64::Ty;
+    let params = vec![Ty::I32; num_params as usize];
+    let one = synth_backend_x86_64::select(ops, &params, &[Ty::I32]);
+    if one.is_ok()
+        || synth_backend_x86_64::select(ops, &params, &[Ty::I64]).is_ok()
+        || synth_backend_x86_64::select(ops, &params, &[]).is_ok()
+    {
         return Ok(());
     }
     Err(one.unwrap_err().to_string())
@@ -2571,8 +2570,8 @@ fn derive_x86_op_surface() -> (String, Vec<String>) {
             unprobed.push(format!("{op:?}"));
             continue;
         };
-        let (n, ops) = x86_probe(&op, num_params, &ops);
-        rows.push((label.to_string(), x86_outcome(&ops, n).err()));
+        let ops = x86_probe(&ops);
+        rows.push((label.to_string(), x86_outcome(&ops, num_params).err()));
     }
     rows.sort();
     rows.dedup();

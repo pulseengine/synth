@@ -1,15 +1,17 @@
 //! E1: every instruction FORM the x86-64 encoder can produce, byte-equal to
-//! `llvm-mc --triple=x86_64 -show-encoding`. RQ-91-X86SKEL (#1741).
+//! `llvm-mc --triple=x86_64 -show-encoding`. RQ-91-X86SKEL, RQ-91-X86ALU
+//! (#1741).
 //!
-//! The test enumerates the whole operand space of every form the selector can
-//! emit (`movl r32, r32` and `addl r32, r32` over all 16×16 register pairs,
-//! and `retq`: 513 encodings), prints each with the backend's AT&T printer,
-//! feeds the text to `llvm-mc` in one batch, and requires the encoding LLVM
-//! reports to equal the encoder's bytes, form by form. The expected bytes come
-//! from LLVM's tables, never from a byte string written here.
+//! The test enumerates the whole operand space of every form (`forms/mod.rs`:
+//! all 16 x 16 register pairs at both operand sizes, every condition, boundary
+//! immediates — 11,969 encodings), prints each with the backend's AT&T
+//! printer, feeds the text to `llvm-mc` in one batch, and requires the
+//! encoding LLVM reports to equal the encoder's bytes, form by form. The
+//! expected bytes come from LLVM's tables, never from a byte string written
+//! here.
 //!
-//! The form count is a FLOOR (REVIEW_2 X4): an enumeration that silently
-//! shrank would let E1 pass over fewer forms, so fewer than 513 is a failure.
+//! The form count is EXACT (REVIEW_2 X4): an enumeration that silently shrank
+//! would let E1 pass over fewer forms.
 //!
 //! WHERE llvm-mc COMES FROM: `$LLVM_MC`, else Homebrew's
 //! `/opt/homebrew/opt/llvm/bin/llvm-mc`, else `llvm-mc` on `PATH`. When none
@@ -22,21 +24,10 @@ use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 use synth_backend_x86_64::encoder::encode;
-use synth_backend_x86_64::inst::{Inst, Reg};
+use synth_backend_x86_64::inst::Inst;
 
-const FORM_FLOOR: usize = 513;
-
-fn forms() -> Vec<Inst> {
-    let mut v = Vec::new();
-    for &d in &Reg::ALL {
-        for &s in &Reg::ALL {
-            v.push(Inst::MovRR32 { dst: d, src: s });
-            v.push(Inst::AddRR32 { dst: d, src: s });
-        }
-    }
-    v.push(Inst::Ret);
-    v
-}
+mod forms;
+use forms::{FORM_COUNT, all_forms};
 
 fn llvm_mc() -> Option<String> {
     let mut candidates = Vec::new();
@@ -114,12 +105,8 @@ fn every_encoder_form_is_byte_equal_to_llvm_mc_e1() {
     let Some(mc) = mc_or_skip("every_encoder_form_is_byte_equal_to_llvm_mc_e1") else {
         return;
     };
-    let forms = forms();
-    assert!(
-        forms.len() >= FORM_FLOOR,
-        "E1 enumerates {} forms, below the floor {FORM_FLOOR}",
-        forms.len()
-    );
+    let forms = all_forms();
+    assert_eq!(forms.len(), FORM_COUNT, "the E1 form count moved");
     let text: Vec<String> = forms.iter().map(Inst::att).collect();
     let got = assemble(&mc, &text);
     assert_eq!(got.len(), forms.len(), "llvm-mc gave one encoding per line");
@@ -141,30 +128,32 @@ fn every_encoder_form_is_byte_equal_to_llvm_mc_e1() {
 }
 
 /// Potency: the same comparison over bytes with REX.B dropped must disagree on
-/// EVERY form whose destination is r8–r15, and on no other.
+/// EVERY form whose encoding sets REX.B (the r/m or opcode register is
+/// r8-r15), and on no other.
 #[test]
 fn a_dropped_rex_b_disagrees_with_llvm_mc() {
     let Some(mc) = mc_or_skip("a_dropped_rex_b_disagrees_with_llvm_mc") else {
         return;
     };
-    let forms = forms();
+    let forms = all_forms();
     let text: Vec<String> = forms.iter().map(Inst::att).collect();
     let got = assemble(&mc, &text);
     let mut mutated = 0;
     let mut caught = 0;
     for (f, want) in forms.iter().zip(&got) {
         let mut b = encode(f);
-        let high_dst =
-            matches!(f, Inst::MovRR32 { dst, .. } | Inst::AddRR32 { dst, .. } if dst.num() >= 8);
-        if high_dst {
+        let has_rex_b = b[0] & 0xF1 == 0x41;
+        if has_rex_b {
             b[0] &= !1;
             mutated += 1;
         }
         if &b != want {
             caught += 1;
-            assert!(high_dst, "{f}: an unmutated form disagrees");
+            assert!(has_rex_b, "{f}: an unmutated form disagrees");
         }
     }
-    assert_eq!(mutated, 2 * 8 * 16);
+    // Alu 2048 + Imul 256 + ShiftCl 80 + SetCc 80 + Cmov 2560 + Movx 768 +
+    // the three immediate moves 64 each.
+    assert_eq!(mutated, 5984);
     assert_eq!(caught, mutated);
 }

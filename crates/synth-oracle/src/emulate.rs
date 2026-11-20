@@ -15,16 +15,10 @@
 //!   `udf` T1; RV32 32-bit `ebreak`; x86-64 `ud2`, `0F 0B`), and the PC lies
 //!   inside the function. Any other fault is ILLEGAL.
 //!
-//! x86-64 (RQ-91-X86SKEL, #1741): unicorn's CPU model is PINNED to QEMU64, the
-//! x86-64 baseline, and read back. unicorn's default x86 model accepts
-//! instructions above the baseline (`popcnt`, BMI, `roundss`) and runs
-//! `F3 0F BD` as `lzcnt` where a baseline CPU runs it as `bsr` — a different
-//! value and no fault — so an unpinned oracle could pass an above-baseline
-//! instruction (REVIEW_2 X2). The call follows SysV AMD64: integer arguments
-//! in `rdi, rsi, rdx, rcx, r8, r9` with the UPPER HALF of every i32 argument
-//! register poisoned (the ABI leaves it undefined), every other caller-saved
-//! register poisoned, the return address pushed on a stack that is 16-byte
-//! aligned at the call, and `rbx, rbp, r12–r15` and `rsp` checked preserved.
+//! x86-64 (RQ-91-X86SKEL, RQ-91-X86ALU, #1741) has its own runner,
+//! [`x86_64::run`]: SysV AMD64, the CPU model pinned to QEMU64, every
+//! register outside the call and the whole stack poisoned, and `ud2` as the
+//! trap.
 //! - Running out of the instruction budget is its own outcome, never a trap.
 //!
 //! WHAT IS REFUSED, with a typed error, rather than run and judged wrongly:
@@ -65,13 +59,15 @@ use std::rc::Rc;
 
 use unicorn_engine::{
     Arch, Arm64CpuModel, ArmCpuModel, Mode, Prot, RegisterARM, RegisterARM64, RegisterRISCV,
-    RegisterX86, Riscv32CpuModel, Unicorn, X86CpuModel, uc_error,
+    Riscv32CpuModel, Unicorn, X86CpuModel, uc_error,
 };
 
 use crate::compare::EmuOutcome;
 use crate::reference::{HostCall, HostFn};
 use crate::synth::{CompiledObject, Machine};
 use crate::value::{Signature, ValType, WasmValue};
+
+mod x86_64;
 
 /// The emulated core.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,9 +181,6 @@ impl std::fmt::Debug for EmuEnv {
             .finish()
     }
 }
-/// x86-64: the poison in an unused or caller-saved 64-bit register, and in
-/// the UPPER half of every i32 argument register.
-const X86_POISON64: u64 = 0xFEED_FACE_DEAD_BEEF;
 
 /// Per-run configuration.
 #[derive(Clone, Debug)]
@@ -300,37 +293,6 @@ fn ilp32_words(args: &[WasmValue]) -> Result<Vec<u32>, EmuError> {
     Ok(w)
 }
 
-/// The SysV AMD64 integer argument registers, in order.
-const SYSV_ARGS: [RegisterX86; 6] = [
-    RegisterX86::RDI,
-    RegisterX86::RSI,
-    RegisterX86::RDX,
-    RegisterX86::RCX,
-    RegisterX86::R8,
-    RegisterX86::R9,
-];
-
-/// The register values of a SysV AMD64 call: an i32 argument occupies the low
-/// half and the upper half is POISONED (the ABI does not define it, so code
-/// that reads it is wrong); an i64 fills the register.
-fn sysv_regs(params: &[ValType], args: &[WasmValue]) -> Result<Vec<u64>, EmuError> {
-    if args.len() > SYSV_ARGS.len() {
-        return Err(EmuError::Abi(format!(
-            "SysV: {} integer arguments do not fit rdi..r9 (stack arguments are not set up)",
-            args.len()
-        )));
-    }
-    params
-        .iter()
-        .zip(args)
-        .map(|(t, v)| match (t, v) {
-            (ValType::I32, WasmValue::I32(x)) => Ok((X86_POISON64 & !0xFFFF_FFFF) | u64::from(*x)),
-            (ValType::I64, WasmValue::I64(x)) => Ok(*x),
-            _ => Err(EmuError::Abi(format!("SysV: {t:?} argument {v:?}"))),
-        })
-        .collect()
-}
-
 /// How a run stopped, other than by returning or running out of budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Fault {
@@ -371,7 +333,6 @@ pub(crate) fn fault_pc(machine: Machine, fault: Fault) -> u64 {
 ///   the RV32 selector emits; the encoder has no compressed forms). It is a
 ///   unicorn "stop interrupt" (riscv_stop_interrupt): no hook,
 ///   UC_ERR_INSN_INVALID, PC at the instruction.
-///
 /// - x86-64: `ud2` (`0F 0B`), the only trap the x86-64 backend may emit. It
 ///   stops unicorn with UC_ERR_INSN_INVALID, RIP at the instruction, and no
 ///   hook. Other undecodable bytes (`06`, `0F 0F FF`) stop the SAME way
@@ -484,18 +445,7 @@ fn callee_saved(machine: Machine) -> Vec<(i32, String)> {
             .chain([(RegisterARM64::X29 as i32, "x29".to_string())])
             .chain((8..16).map(|n| (RegisterARM64::D0 as i32 + n, format!("d{n}"))))
             .collect(),
-        // rsp is checked separately (balanced, not seeded).
-        Machine::X86_64 => [
-            (RegisterX86::RBX, "rbx"),
-            (RegisterX86::RBP, "rbp"),
-            (RegisterX86::R12, "r12"),
-            (RegisterX86::R13, "r13"),
-            (RegisterX86::R14, "r14"),
-            (RegisterX86::R15, "r15"),
-        ]
-        .into_iter()
-        .map(|(r, n)| (r as i32, n.to_string()))
-        .collect(),
+        Machine::X86_64 => unreachable!("x86-64 has its own runner"),
     }
 }
 
@@ -678,13 +628,6 @@ fn run_a64(
     })
 }
 
-/// x86-64 caller-saved registers that carry no argument in this call: each
-/// is POISONED at entry so code that reads one before writing it computes
-/// with garbage. `rax` is among them (it is the result register, written by a
-/// correct callee).
-const X86_CALLER_SAVED_SCRATCH: [RegisterX86; 3] =
-    [RegisterX86::RAX, RegisterX86::R10, RegisterX86::R11];
-
 /// Run `func` from `obj` with `args` under `cfg`.
 /// The `.text` image with every relocation resolved: a call to a defined
 /// function to that function, a call to an undefined symbol to the stub of
@@ -838,11 +781,7 @@ fn run_inner(
         Machine::Arm => aapcs_words(&sig.params, args)?,
         Machine::RiscV32 => ilp32_words(args)?,
         Machine::AArch64 => return run_a64(obj, &sym, sig, args, cfg),
-        Machine::X86_64 => Vec::new(),
-    };
-    let x86_args = match machine {
-        Machine::X86_64 => sysv_regs(&sig.params, args)?,
-        Machine::Arm | Machine::RiscV32 | Machine::AArch64 => Vec::new(),
+        Machine::X86_64 => return x86_64::run(obj, &sym, sig, args, cfg),
     };
 
     let (arch, mode) = match machine {
@@ -853,7 +792,7 @@ fn run_inner(
         Machine::Arm => (Arch::ARM, Mode::THUMB),
         Machine::RiscV32 => (Arch::RISCV, Mode::RISCV32),
         Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
-        Machine::X86_64 => (Arch::X86, Mode::MODE_64),
+        Machine::X86_64 => unreachable!("dispatched to x86_64::run above"),
     };
     let mut emu = uc(Unicorn::new(arch, mode), "Unicorn::new")?;
     // BEFORE any mapping: the CPU is materialized on first use, after which a
@@ -904,7 +843,7 @@ fn run_inner(
         Machine::Arm => (0..4).map(|i| RegisterARM::R0 as i32 + i).collect(),
         Machine::RiscV32 => (10..18).map(|n| RegisterRISCV::X0 as i32 + n).collect(),
         Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
-        Machine::X86_64 => SYSV_ARGS.iter().map(|r| *r as i32).collect(),
+        Machine::X86_64 => unreachable!("dispatched to x86_64::run above"),
     };
 
     // The environment: linear memory and host stubs.
@@ -992,16 +931,10 @@ fn run_inner(
         }
     }
     for (i, r) in arg_regs.iter().enumerate() {
-        let v = match machine {
-            Machine::X86_64 => *x86_args.get(i).unwrap_or(&X86_POISON64),
-            Machine::Arm | Machine::RiscV32 | Machine::AArch64 => u64::from(*words.get(i).unwrap_or(&POISON)),
-        };
-        uc(emu.reg_write(*r, v), "write arg")?;
-    }
-    if machine == Machine::X86_64 {
-        for r in X86_CALLER_SAVED_SCRATCH {
-            uc(emu.reg_write(r as i32, X86_POISON64), "poison caller-saved")?;
-        }
+        uc(
+            emu.reg_write(*r, u64::from(*words.get(i).unwrap_or(&POISON))),
+            "write arg",
+        )?;
     }
     if cfg.cpu.vfp() {
         // CPACR CP10/CP11 full access, then FPEXC.EN (off at reset on
@@ -1025,12 +958,8 @@ fn run_inner(
     let mut seeds = Vec::new();
     let s11 = RegisterRISCV::X0 as i32 + 27;
     for (k, (r, name)) in callee_saved(machine).into_iter().enumerate() {
-        // x86-64 seeds all 64 bits, so a 32-bit write (which zeroes the upper
-        // half) to a callee-saved register is caught too.
         let v = if mem_len > 0 && machine == Machine::RiscV32 && r == s11 {
             MEM_BASE
-        } else if machine == Machine::X86_64 {
-            0xC0DE_5AFE_0000_0000 | k as u64
         } else {
             0xC0DE_0000 | k as u64
         };
@@ -1041,22 +970,11 @@ fn run_inner(
         Machine::Arm => (RegisterARM::SP as i32, RegisterARM::PC as i32),
         Machine::RiscV32 => (RegisterRISCV::SP as i32, RegisterRISCV::PC as i32),
         Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
-        Machine::X86_64 => (RegisterX86::RSP as i32, RegisterX86::RIP as i32),
+        Machine::X86_64 => unreachable!("dispatched to x86_64::run above"),
     };
     uc(emu.reg_write(sp_reg, STACK_TOP), "write SP")?;
     let entry = TEXT_BASE + sym.offset;
     let begin = match machine {
-        // SysV: `call` pushed the return address, so at entry rsp + 8 is
-        // 16-byte aligned (STACK_TOP is) and [rsp] is the sentinel. A
-        // balanced `ret` leaves rsp == STACK_TOP.
-        Machine::X86_64 => {
-            uc(
-                emu.mem_write(STACK_TOP - 8, &RETURN_ADDR.to_le_bytes()),
-                "push return address",
-            )?;
-            uc(emu.reg_write(sp_reg, STACK_TOP - 8), "write RSP")?;
-            entry
-        }
         Machine::Arm => {
             uc(
                 emu.reg_write(RegisterARM::LR as i32, RETURN_ADDR | 1),
@@ -1072,16 +990,12 @@ fn run_inner(
             entry
         }
         Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
+        Machine::X86_64 => unreachable!("dispatched to x86_64::run above"),
     };
 
     // timeout 0: no wall-clock thread (see the module doc).
     let r = emu.emu_start(begin, RETURN_ADDR, 0, cfg.budget);
-    let pc_raw = uc(emu.reg_read(pc_reg), "read PC")?;
-    // ARM's bit 0 is the Thumb bit; x86-64 instructions are byte-aligned.
-    let pc_now = match machine {
-        Machine::X86_64 => pc_raw,
-        Machine::Arm | Machine::RiscV32 | Machine::AArch64 => pc_raw & !1,
-    };
+    let pc_now = uc(emu.reg_read(pc_reg), "read PC")? & !1;
 
     if let Some(pc) = host_trap.get() {
         let memory = read_memory(&emu, mem_len)?;
@@ -1114,16 +1028,12 @@ fn run_inner(
         EmuOutcome::Budget
     } else {
         let mut viol = Vec::new();
-        let width = match machine {
-            Machine::X86_64 => u64::MAX,
-            Machine::Arm | Machine::RiscV32 | Machine::AArch64 => 0xFFFF_FFFF,
-        };
         for (r, name, v) in &seeds {
-            if uc(emu.reg_read(*r), "read callee-saved")? & width != *v {
+            if uc(emu.reg_read(*r), "read callee-saved")? & 0xFFFF_FFFF != *v {
                 viol.push(format!("{name} clobbered"));
             }
         }
-        if uc(emu.reg_read(sp_reg), "read SP")? & width != STACK_TOP {
+        if uc(emu.reg_read(sp_reg), "read SP")? & 0xFFFF_FFFF != STACK_TOP {
             viol.push("SP imbalance".into());
         }
         if !viol.is_empty() {
@@ -1133,19 +1043,11 @@ fn run_inner(
             }
         } else {
             let mut out_words = Vec::new();
-            if machine == Machine::X86_64 {
-                // SysV: the result is in rax; an i32 is its LOW half (the
-                // upper half is not part of the value).
-                let rax = uc(emu.reg_read(RegisterX86::RAX as i32), "read rax")?;
-                out_words.push(rax as u32);
-                out_words.push((rax >> 32) as u32);
-            } else {
-                for r in arg_regs
-                    .iter()
-                    .take(sig.results.iter().map(|t| t.words()).sum())
-                {
-                    out_words.push(uc(emu.reg_read(*r), "read result")? as u32);
-                }
+            for r in arg_regs
+                .iter()
+                .take(sig.results.iter().map(|t| t.words()).sum())
+            {
+                out_words.push(uc(emu.reg_read(*r), "read result")? as u32);
             }
             // A float result on a VFP core is in d0 (s0 is its low half);
             // every other core was refused a float signature above.
@@ -1336,20 +1238,6 @@ mod tests {
             ),
             EmuOutcome::Illegal { .. }
         ));
-    }
-
-    /// SysV argument registers: an i32's upper half is the poison, an i64 is
-    /// the whole register, and a seventh argument is refused.
-    #[test]
-    fn sysv_poisons_the_upper_half_of_i32_args() {
-        let r = sysv_regs(
-            &[ValType::I32, ValType::I64],
-            &[WasmValue::I32(7), WasmValue::I64(0x1111_2222_3333_4444)],
-        )
-        .unwrap();
-        assert_eq!(r, vec![0xFEED_FACE_0000_0007, 0x1111_2222_3333_4444]);
-        assert!(sysv_regs(&[ValType::I32; 7], &[WasmValue::I32(0); 7]).is_err());
-        assert!(sysv_regs(&[ValType::F32], &[WasmValue::F32(0)]).is_err());
     }
 
     #[test]

@@ -78,9 +78,9 @@ fn every_refusal_names_its_cause_and_writes_nothing() {
     let cases: &[(&str, &[&str], &str)] = &[
         (
             r#"(module (func (export "f") (param i32 i32) (result i32)
-                 local.get 0 local.get 1 i32.sub))"#,
+                 local.get 0 local.get 1 i32.div_s))"#,
             &[],
-            "I32Sub",
+            "I32DivS",
         ),
         (
             r#"(module (memory 1) (func (export "f") (param i32) (result i32)
@@ -89,9 +89,9 @@ fn every_refusal_names_its_cause_and_writes_nothing() {
             "linear memory",
         ),
         (
-            r#"(module (func (export "f") (param i64) (result i64) local.get 0))"#,
+            r#"(module (func (export "f") (param f64) (result f64) local.get 0))"#,
             &[],
-            "i64",
+            "f64",
         ),
         (ADD, &["--emit-wcet"], "--emit-wcet"),
         (
@@ -145,4 +145,32 @@ fn the_backend_is_listed() {
         s.lines().any(|l| l.trim_start().starts_with("x86_64 ")),
         "{s}"
     );
+}
+
+/// RQ-91-X86ALU: the straight-line integer core compiles through the binary,
+/// i64 signatures included; a divide is still refused and writes nothing.
+#[test]
+fn the_integer_core_compiles_and_division_is_refused() {
+    let (ok, stderr, out) = run(
+        r#"(module (func (export "f") (param i64 i64 i32) (result i64)
+             local.get 0 local.get 1 i64.sub
+             local.get 0 local.get 1 i64.shl
+             local.get 2 select
+             i64.const 0x1122334455667788 i64.xor))"#,
+        &["-b", "x86_64", "--relocatable"],
+    );
+    assert!(ok, "{stderr}");
+    assert_eq!(&std::fs::read(&out).unwrap()[..5], b"\x7fELF\x02");
+    for op in ["div_s", "div_u", "rem_s", "rem_u"] {
+        let (ok, stderr, out) = run(
+            &format!(
+                r#"(module (func (export "f") (param i64 i64) (result i64)
+                     local.get 0 local.get 1 i64.{op}))"#
+            ),
+            &["-b", "x86_64", "--relocatable"],
+        );
+        assert!(!ok, "i64.{op}: exit 0");
+        assert!(stderr.contains("unsupported wasm op I64"), "{stderr}");
+        assert!(untouched(&out), "i64.{op}: an object was written");
+    }
 }

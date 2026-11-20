@@ -39,9 +39,9 @@ pub(crate) fn compile(
 ) -> Result<()> {
     if !set_flags.is_empty() {
         anyhow::bail!(
-            "-b x86_64 does not support {} (RQ-91-X86SKEL, #1741: the x86-64 \
-             backend is a skeleton that lowers leaf i32 functions into an ELF64 \
-             ET_REL; it accepts only the input, -o, --relocatable, --all-exports, \
+            "-b x86_64 does not support {} (#1741: the x86-64 backend lowers \
+             straight-line integer leaf functions into an ELF64 ET_REL and \
+             nothing else yet; it accepts only the input, -o, --relocatable, --all-exports, \
              --target x86_64 and --safety-bounds software|none) — refusing",
             set_flags.join(", ")
         );

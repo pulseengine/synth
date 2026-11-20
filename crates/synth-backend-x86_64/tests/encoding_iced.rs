@@ -27,12 +27,51 @@ use iced_x86::{CpuidFeature, Decoder, DecoderOptions, Formatter, GasFormatter, I
 use object::{Object as _, ObjectSection as _};
 use synth_backend_x86_64::compile_wasm;
 use synth_backend_x86_64::encoder::encode;
-use synth_backend_x86_64::inst::{Inst, Reg};
+use synth_backend_x86_64::inst::{AluOp, Inst, Reg, Size};
+
+mod forms;
+use forms::{FORM_COUNT, all_forms};
 
 /// The probe set: every op the skeleton lowers, every parameter register,
 /// every temporary, a void function, an early `return`, non-exported helpers
 /// and a function exported under two names.
 const PROBES: &[&str] = &[
+    // Lane X2: every form the selector emits, through the real entry point.
+    r#"(module
+         (func (export "arith") (param i32 i32) (result i32)
+           local.get 0 local.get 1 i32.sub
+           local.get 0 local.get 1 i32.mul i32.and
+           local.get 1 i32.or local.get 0 i32.xor)
+         (func (export "arith64") (param i64 i64) (result i64)
+           local.get 0 local.get 1 i64.sub
+           local.get 0 local.get 1 i64.mul i64.and
+           local.get 1 i64.or local.get 0 i64.xor)
+         (func (export "shifts") (param i32 i32) (result i32)
+           local.get 0 local.get 1 i32.shl local.get 1 i32.shr_s
+           local.get 1 i32.shr_u local.get 1 i32.rotl local.get 1 i32.rotr)
+         (func (export "shifts64") (param i64 i64 i64 i64) (result i64)
+           local.get 0 local.get 1 i64.shl local.get 3 i64.shr_s
+           local.get 1 i64.shr_u local.get 3 i64.rotl local.get 1 i64.rotr)
+         (func (export "cmps") (param i32 i32) (result i32)
+           local.get 0 local.get 1 i32.lt_s
+           local.get 0 local.get 1 i32.ge_u i32.add
+           local.get 0 i32.eqz i32.add)
+         (func (export "cmps64") (param i64 i64) (result i32)
+           local.get 0 local.get 1 i64.gt_u
+           local.get 0 local.get 1 i64.le_s i32.add
+           local.get 1 i64.eqz i32.add)
+         (func (export "sel") (param i32 i32 i32) (result i32)
+           local.get 0 local.get 1 local.get 2 select)
+         (func (export "sel64") (param i64 i64 i32) (result i64)
+           local.get 0 local.get 1 local.get 2 select)
+         (func (export "ext") (param i32 i64) (result i64)
+           local.get 0 i32.extend8_s i32.extend16_s i64.extend_i32_s
+           local.get 1 i64.extend8_s i64.extend16_s i64.extend32_s i64.add
+           local.get 1 i32.wrap_i64 i64.extend_i32_u i64.add)
+         (func (export "consts") (result i64)
+           i32.const -1 drop
+           i64.const 7 i64.const -7 i64.add
+           i64.const 0x1122334455667788 i64.add))"#,
     r#"(module (func (export "add") (param i32 i32) (result i32)
          local.get 0 local.get 1 i32.add))"#,
     r#"(module (func (export "id") (param i32) (result i32) local.get 0))"#,
@@ -80,7 +119,22 @@ fn formatter() -> GasFormatter {
     let mut f = GasFormatter::new();
     f.options_mut().set_gas_show_mnemonic_size_suffix(true);
     f.options_mut().set_space_after_operand_separator(true);
+    // Immediates as the backend's printer writes them: lowercase hex, always.
+    f.options_mut().set_uppercase_hex(false);
+    f.options_mut().set_small_hex_numbers_in_decimal(false);
     f
+}
+
+/// The text iced's GAS formatter prints for `want`. It is the backend's own
+/// AT&T text ([`Inst::att`], what `llvm-mc` reads) with ONE spelling
+/// difference, stated here rather than normalised away: asked for size
+/// suffixes, iced also suffixes `setCC` with `b` (`setbb %al`), which LLVM's
+/// assembler spells without (`setb %al`).
+fn iced_text(want: &Inst) -> String {
+    match want {
+        Inst::SetCc { cond, dst } => format!("set{}b %{}", cond.suffix(), dst.name8()),
+        other => other.att(),
+    }
 }
 
 /// Decode `bytes` fully. Err names the first problem.
@@ -141,7 +195,7 @@ fn check(text: &[u8], insts: &[Inst], lens: &[usize]) -> Result<usize, String> {
                 ins.len()
             ));
         }
-        if *text != want.att() {
+        if *text != iced_text(want) {
             return Err(format!("#{k}: decoded `{text}` != requested `{want}`"));
         }
         let above = above_baseline(ins);
@@ -164,31 +218,31 @@ fn every_emitted_instruction_decodes_to_what_was_requested_e2_e3() {
         checked += check(&text, &insts, &lens).unwrap_or_else(|e| panic!("{src}: {e}"));
     }
     // Non-vacuity: the probe set exercises a real number of instructions.
-    assert!(checked >= 30, "only {checked} instructions decoded");
+    assert!(checked >= 110, "only {checked} instructions decoded");
 }
 
 /// Every FORM the encoder can produce (the E1 population), decoded by iced.
 #[test]
 fn every_encoder_form_decodes_to_its_text_e2() {
-    let mut forms = vec![Inst::Ret];
-    for &d in &Reg::ALL {
-        for &s in &Reg::ALL {
-            forms.push(Inst::MovRR32 { dst: d, src: s });
-            forms.push(Inst::AddRR32 { dst: d, src: s });
-        }
-    }
-    assert_eq!(forms.len(), 513);
+    let forms = all_forms();
+    assert_eq!(forms.len(), FORM_COUNT);
     for f in &forms {
         let b = encode(f);
         check(&b, &[*f], &[b.len()]).unwrap_or_else(|e| panic!("{f}: {e}"));
     }
+    eprintln!(
+        "E2: {} forms decode to their text under iced-x86",
+        forms.len()
+    );
 }
 
 /// Potency: a dropped REX.B makes `addl %esi, %r9d` decode as `addl %esi,
 /// %ecx`, and the check refuses it.
 #[test]
 fn a_dropped_rex_b_is_refused() {
-    let want = Inst::AddRR32 {
+    let want = Inst::Alu {
+        op: AluOp::Add,
+        size: Size::L,
         dst: Reg::R9,
         src: Reg::Rsi,
     };
@@ -226,7 +280,9 @@ fn above_baseline_instructions_are_refused_e3() {
 /// Potency: a truncated instruction (leftover bytes) is refused.
 #[test]
 fn a_truncated_instruction_is_refused() {
-    let b = encode(&Inst::AddRR32 {
+    let b = encode(&Inst::Alu {
+        op: AluOp::Add,
+        size: Size::L,
         dst: Reg::R12,
         src: Reg::R13,
     });

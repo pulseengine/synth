@@ -43,6 +43,8 @@ artifacts:
         That is correct code, but the op-surface artifact probes `select()`
         and lists `nop` as declined; the artifact describes the selector, not
         the shipped path, and decline_skeleton.rs pins that `nop` compiles.
+        (Since lane X2, RQ-91-X86ALU, the selector accepts `nop` itself and
+        the artifact lists it as lowered; this paragraph describes lane X1.)
 
         AN EXPORT NAMED LIKE ITS OWN LABEL (REVIEW_13 F3): an export called
         exactly `func_N` on function N was deduplicated against that
@@ -97,7 +99,8 @@ artifacts:
         `llvm-objdump -d add.o` must show `movl %edi, %eax; addl %esi, %eax;
         retq` in an elf64-x86-64 object with a .note.GNU-stack section; then
         `SYNTH=<that binary> cargo test -p synth-oracle --features exec --test
-        x86_64_kiln_oracle` (all 9 pass, 877 cases agree) and `cargo test -p
+        x86_64_kiln_oracle` (all pass, 877 cases agree; 9 tests in this lane,
+        10 since RQ-91-X86ALU added one) and `cargo test -p
         synth-backend-x86_64` (E1 runs if llvm-mc is present). On the stack
         base the same compile exits 1 with "Unknown backend 'x86_64'".
 

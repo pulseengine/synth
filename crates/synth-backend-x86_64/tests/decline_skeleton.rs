@@ -1,5 +1,5 @@
-//! Every shape lane X1 does not lower is an `Err` that NAMES its cause, and no
-//! object is produced. RQ-91-X86SKEL (#1741). The CLI half (non-zero exit, no
+//! Every shape lanes X1-X2 do not lower is an `Err` that NAMES its cause, and
+//! no object is produced. RQ-91-X86SKEL, RQ-91-X86ALU (#1741). The CLI half (non-zero exit, no
 //! file written) is `crates/synth-cli/tests/x86_64_skeleton_1741.rs`.
 
 use synth_backend_x86_64::compile_wasm;
@@ -7,23 +7,110 @@ use synth_backend_x86_64::compile_wasm;
 fn err(src: &str) -> String {
     let wasm = wat::parse_str(src).unwrap_or_else(|e| panic!("{src}: {e}"));
     match compile_wasm(&wasm) {
-        Ok(_) => panic!("lowered, but lane X1 must decline:\n{src}"),
+        Ok(_) => panic!("lowered, but the x86_64 backend must decline:\n{src}"),
         Err(e) => e.to_string(),
     }
 }
 
 /// `(case, module, a substring the refusal must contain)`.
 const CASES: &[(&str, &str, &str)] = &[
+    // Division and remainder: x86 `div`/`idiv` FAULT (#DE) on a zero divisor
+    // and on INT_MIN / -1, where wasm traps on the first and `rem_s` returns
+    // 0. Declined by name until the guards exist (lane X4), never lowered as
+    // a bare `idiv`.
     (
-        "i32.sub",
+        "i32.div_s",
         r#"(module (func (export "f") (param i32 i32) (result i32)
-             local.get 0 local.get 1 i32.sub))"#,
-        "I32Sub",
+             local.get 0 local.get 1 i32.div_s))"#,
+        "I32DivS",
     ),
     (
-        "i32.const",
-        r#"(module (func (export "f") (result i32) i32.const 7))"#,
-        "I32Const",
+        "i32.div_u",
+        r#"(module (func (export "f") (param i32 i32) (result i32)
+             local.get 0 local.get 1 i32.div_u))"#,
+        "I32DivU",
+    ),
+    (
+        "i32.rem_s",
+        r#"(module (func (export "f") (param i32 i32) (result i32)
+             local.get 0 local.get 1 i32.rem_s))"#,
+        "I32RemS",
+    ),
+    (
+        "i32.rem_u",
+        r#"(module (func (export "f") (param i32 i32) (result i32)
+             local.get 0 local.get 1 i32.rem_u))"#,
+        "I32RemU",
+    ),
+    (
+        "i64.div_s",
+        r#"(module (func (export "f") (param i64 i64) (result i64)
+             local.get 0 local.get 1 i64.div_s))"#,
+        "I64DivS",
+    ),
+    (
+        "i64.div_u",
+        r#"(module (func (export "f") (param i64 i64) (result i64)
+             local.get 0 local.get 1 i64.div_u))"#,
+        "I64DivU",
+    ),
+    (
+        "i64.rem_s",
+        r#"(module (func (export "f") (param i64 i64) (result i64)
+             local.get 0 local.get 1 i64.rem_s))"#,
+        "I64RemS",
+    ),
+    (
+        "i64.rem_u",
+        r#"(module (func (export "f") (param i64 i64) (result i64)
+             local.get 0 local.get 1 i64.rem_u))"#,
+        "I64RemU",
+    ),
+    // The bit counts: `lzcnt`/`tzcnt`/`popcnt` are above the baseline ISA.
+    (
+        "i32.clz",
+        r#"(module (func (export "f") (param i32) (result i32) local.get 0 i32.clz))"#,
+        "I32Clz",
+    ),
+    (
+        "i32.ctz",
+        r#"(module (func (export "f") (param i32) (result i32) local.get 0 i32.ctz))"#,
+        "I32Ctz",
+    ),
+    (
+        "i64.popcnt",
+        r#"(module (func (export "f") (param i64) (result i64) local.get 0 i64.popcnt))"#,
+        "I64Popcnt",
+    ),
+    (
+        "unreachable",
+        r#"(module (func (export "f") (result i32) unreachable))"#,
+        "Unreachable",
+    ),
+    (
+        "loop",
+        r#"(module (func (export "f") (param i32) (result i32)
+             loop (result i32) local.get 0 end))"#,
+        "Loop",
+    ),
+    (
+        "if",
+        r#"(module (func (export "f") (param i32) (result i32)
+             local.get 0 if (result i32) i32.const 1 else i32.const 2 end))"#,
+        "If",
+    ),
+    (
+        "local.tee",
+        r#"(module (func (export "f") (param i32) (result i32)
+             local.get 0 local.tee 0))"#,
+        "LocalTee",
+    ),
+    (
+        "a value stack deeper than the temporaries",
+        r#"(module (func (export "f") (result i32)
+             i32.const 1 i32.const 2 i32.const 3 i32.const 4
+             i32.add i32.add i32.add))"#,
+        "more than 3 temporaries",
     ),
     (
         "f32.add",
@@ -63,9 +150,14 @@ const CASES: &[(&str, &str, &str)] = &[
         "non-parameter local",
     ),
     (
-        "i64 param",
-        r#"(module (func (export "f") (param i64) (result i64) local.get 0))"#,
-        "i64",
+        "f64 param",
+        r#"(module (func (export "f") (param f64) (result f64) local.get 0))"#,
+        "f64",
+    ),
+    (
+        "v128 param",
+        r#"(module (func (export "f") (param v128) (result i32) i32.const 0))"#,
+        "v128",
     ),
     (
         "externref identity",
@@ -123,9 +215,9 @@ const CASES: &[(&str, &str, &str)] = &[
     (
         "unsupported helper",
         r#"(module
-             (func (param i32) (result i32) local.get 0 i32.eqz)
+             (func (param i32) (result i32) local.get 0 i32.popcnt)
              (func (export "f") (param i32) (result i32) local.get 0))"#,
-        "I32Eqz",
+        "I32Popcnt",
     ),
 ];
 

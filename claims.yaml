@@ -350,10 +350,11 @@ status_fields:
     before: "#[cfg(test)]\nmod tests"
     before_missing: whole-file
   # The plan's third X1 pin (X86_PLAN 2.4), added after REVIEW_13 F5: `_ =>`
-  # arms in the same region. Live value 1 (the both-parameters case of the
-  # i32.add operand match), not the plan's 0. The catch-all over WasmOp is
-  # `other => Err(Unsupported(..))`, which declines BY NAME and which this
-  # pattern deliberately does not count.
+  # arms in the same region. Created at 1 (the both-parameters case of lane
+  # X1's i32.add operand match); the plan's 0 since lane X2 (RQ-91-X86ALU).
+  # The catch-all over WasmOp is `other => match rule_for(other)`, whose
+  # `None` arm declines BY NAME and which this pattern deliberately does not
+  # count.
   x86_selector_wildcard_arms_code:
     kind: count
     pattern: '^[ \t]*_ =>'
@@ -982,7 +983,7 @@ support_levels:
       row: "Cortex-R5 self-contained image (`--target cortex-r5`)"
       level: L3
     # L3: bootstrap under VCR-X86-001 (approved 2026-11-18). The crate exists
-    # (lane X1, RQ-91-X86SKEL, #1741) and has oracles in CI; no level is
+    # (lanes X1-X2, RQ-91-X86SKEL and RQ-91-X86ALU, #1741) and has oracles in CI; no level is
     # claimed until the L2 evidence passes this checker. Evidence is
     # deliberately NOT named here: the checker skips L3 rows, so a name listed
     # at L3 would look held and be unchecked.
@@ -3995,25 +3996,31 @@ claims:
       # selector is pinned `track` until L2 (every movement is still a
       # visible diff here, with no direction asserted), then a `down` pin.
       # Created at 250 (lane X1: local.get of a parameter, i32.add, return).
+      # 494 since lane X2 (RQ-91-X86ALU): the straight-line integer core. The
+      # per-op choice of instruction is NOT in this file: it is the 52-row
+      # table in rules.rs; the selector holds one routine per lowering shape.
       - kind: ratchet
         name: x86_selector_lines_code
         direction: track
-        value: 250
+        value: 494
       # Beside it, independently: the derived x86-64 surface is a FLOOR, so
       # the lowered set cannot shrink. It does NOT bound the selector's lines
       # (a line can be added while this stays 3; REVIEW_13 F1 measured it).
+      # 3 -> 59 with lane X2 (RQ-91-X86ALU): the 52 rule-table ops, both
+      # consts, select, drop and nop join local.get(param), i32.add, return.
       - kind: ratchet
         name: x86_ops_lowered
         direction: up
-        value: 3
-        baseline: 3
+        value: 59
+        baseline: 59
       # The plan's third X1 pin (REVIEW_13 F5): the x86-64 selector's `_ =>`
-      # arms are a ceiling from creation, at the live value 1.
+      # arms are a ceiling from creation, at the live value 1. 0 since lane X2
+      # (RQ-91-X86ALU): every operand-location match is spelled out.
       - kind: ratchet
         name: x86_selector_wildcard_arms_code
         direction: down
-        value: 1
-        baseline: 1
+        value: 0
+        baseline: 0
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly

@@ -477,3 +477,56 @@ fn potency_scratch_unused_args_and_upper_seed_are_poisoned() {
         o => panic!("upper-half-only rbx clobber not caught: {o:?}"),
     }
 }
+
+/// RQ-91-X86ALU: what the dedicated runner adds. The stack and the arithmetic
+/// flags are POISONED at entry, and the caller's frame and the direction flag
+/// are checked on return. Each body would pass on a runner without the rule.
+#[test]
+fn potency_stack_flags_caller_frame_and_direction_flag() {
+    let s0 = sig(&[], &[ValType::I32]);
+    // `movl -8(%rsp), %eax`: an uninitialised slot BELOW rsp (where a frame
+    // would put a local). wasm locals are zero; unicorn's fresh pages are
+    // too, so without the poison this reads the "right" 0.
+    match run_hand(&[0x8B, 0x44, 0x24, 0xF8, 0xC3], &s0, &[]) {
+        EmuOutcome::Values(v) => assert_ne!(v, vec![WasmValue::I32(0)], "stack not poisoned"),
+        o => panic!("{o:?}"),
+    }
+    // `setb %al; movzbl %al, %eax` with no compare before it: CF is poisoned
+    // SET, so it reads 1; on unicorn's reset flags it would read 0.
+    assert_eq!(
+        run_hand(&[0x0F, 0x92, 0xC0, 0x0F, 0xB6, 0xC0, 0xC3], &s0, &[]),
+        EmuOutcome::Values(vec![WasmValue::I32(1)])
+    );
+    // `sete` likewise (ZF poisoned set).
+    assert_eq!(
+        run_hand(&[0x0F, 0x94, 0xC0, 0x0F, 0xB6, 0xC0, 0xC3], &s0, &[]),
+        EmuOutcome::Values(vec![WasmValue::I32(1)])
+    );
+    let s1 = sig(&[ValType::I32], &[ValType::I32]);
+    let a = [WasmValue::I32(5)];
+    // `movl %edi, 8(%rsp)` writes the CALLER's frame.
+    let mut t = vec![0x89, 0x7C, 0x24, 0x08];
+    t.extend_from_slice(MOV_EAX_EDI_RET);
+    match run_hand(&t, &s1, &a) {
+        EmuOutcome::Illegal { reason, .. } => {
+            assert!(reason.contains("caller frame written"), "{reason}")
+        }
+        o => panic!("caller-frame write not caught: {o:?}"),
+    }
+    // The same store BELOW the return address is the callee's own business.
+    let mut t = vec![0x89, 0x7C, 0x24, 0xF8];
+    t.extend_from_slice(MOV_EAX_EDI_RET);
+    assert_eq!(
+        run_hand(&t, &s1, &a),
+        EmuOutcome::Values(vec![WasmValue::I32(5)])
+    );
+    // `std` leaves the direction flag set on return.
+    let mut t = vec![0xFD];
+    t.extend_from_slice(MOV_EAX_EDI_RET);
+    match run_hand(&t, &s1, &a) {
+        EmuOutcome::Illegal { reason, .. } => {
+            assert!(reason.contains("direction flag set"), "{reason}")
+        }
+        o => panic!("DF not caught: {o:?}"),
+    }
+}
