@@ -196,16 +196,31 @@ pub fn legal_32(hw1: u16, hw2: u16) -> bool {
     bl || barrier
 }
 
+/// The special registers (`SYSm`) ARMv6-M defines for MRS / MSR: APSR,
+/// IAPSR, EAPSR, XPSR (0-3), IPSR, EPSR, IEPSR, MSP, PSP (5-9), PRIMASK
+/// (16) and CONTROL (20). These eleven are exactly the `SYSm` values LLVM's
+/// `thumbv6m-none-eabi` decoder prints BY NAME, measured over all 256 for
+/// both instructions (cold review of v092-m0-l2, F1). Every other value is
+/// UNPREDICTABLE on ARMv6-M. LLVM refuses 30 of them outright, among them
+/// ARMv7-M's BASEPRI (17), BASEPRI_MAX (18) and FAULTMASK (19) and ARMv8-M's
+/// stack limits and `_NS` aliases, and prints the rest as a bare number; this
+/// check refuses all of them, which is the stricter reading.
+pub fn arch_legal_sysm(sysm: u16) -> bool {
+    matches!(sysm, 0..=3 | 5..=9 | 16 | 20)
+}
+
 /// RQ-92-WDGTHIN (#1741): whether the 32-bit encoding `hw1 hw2` is an ARMv6-M
 /// instruction AT ALL — the architecture's whole 32-bit set, not the subset
-/// synth emits ([`legal_32`]): BL, MSR, MRS, DMB / DSB / ISB (any option
-/// value) and UDF.W (ARMv6-M ARM, A5.3). This is the question for code synth
-/// did not generate (`synth verify-embedder`'s ARMv6-M leg): a boot shim may
-/// use MSR, synth's own functions may not.
+/// synth emits ([`legal_32`]): BL, MSR and MRS of an ARMv6-M special register
+/// ([`arch_legal_sysm`]), DMB / DSB / ISB (any option value) and UDF.W
+/// (ARMv6-M ARM, A5.3). This is the question for code synth did not generate
+/// (`synth verify-embedder`'s ARMv6-M leg): a boot shim may use MSR, synth's
+/// own functions may not.
 pub fn arch_legal_32(hw1: u16, hw2: u16) -> bool {
     let bl = hw1 >> 11 == 0b11110 && hw2 & 0xD000 == 0xD000;
-    let msr = hw1 & 0xFFF0 == 0xF380 && hw2 & 0xFF00 == 0x8800;
-    let mrs = hw1 == 0xF3EF && hw2 & 0xF000 == 0x8000;
+    let sysm = arch_legal_sysm(hw2 & 0xFF);
+    let msr = hw1 & 0xFFF0 == 0xF380 && hw2 & 0xFF00 == 0x8800 && sysm;
+    let mrs = hw1 == 0xF3EF && hw2 & 0xF000 == 0x8000 && sysm;
     let barrier = hw1 == 0xF3BF && matches!(hw2 & 0xFFF0, 0x8F40 | 0x8F50 | 0x8F60);
     let udf_w = hw1 & 0xFFF0 == 0xF7F0 && hw2 & 0xF000 == 0xA000;
     bl || msr || mrs || barrier || udf_w
@@ -344,7 +359,8 @@ mod tests {
     /// RQ-92-WDGTHIN (#1741): the architectural 32-bit set. Every accepted
     /// encoding below is one LLVM's `thumbv6m-none-eabi` decoder names as
     /// written (measured with `objdump -d --triple=thumbv6m-none-eabi`; all
-    /// but UDF.W are also what `arm-none-eabi-as -march=armv6-m` assembles);
+    /// but UDF.W are also what `arm-none-eabi-as -march=armv6-m` assembles;
+    /// for MRS / MSR that holds for the ARMv6-M special registers only);
     /// every refused one is a v7-M encoding, as `arm-none-eabi-as
     /// -march=armv7-m` assembles it, that a boot shim written for
     /// Cortex-M3/M4 carries.
@@ -376,11 +392,30 @@ mod tests {
             ("b.w", 0xF000, 0xB800),
             ("clrex", 0xF3BF, 0x8F2F),
             ("sdiv r0, r0, r1", 0xFB90, 0xF0F1),
+            // ARMv7-M special registers (F1): what a Cortex-M3 shim that
+            // masks interrupts through BASEPRI carries.
+            ("msr basepri, r0", 0xF380, 0x8811),
+            ("msr basepri_max, r0", 0xF380, 0x8812),
+            ("msr faultmask, r0", 0xF380, 0x8813),
+            ("mrs r0, basepri", 0xF3EF, 0x8011),
+            ("mrs r0, faultmask", 0xF3EF, 0x8013),
+            // ARMv8-M stack limits.
+            ("msr msplim, r0", 0xF380, 0x880A),
+            ("mrs r0, psplim", 0xF3EF, 0x800B),
+            ("nop.w", 0xF3AF, 0x8000),
+            ("ldrex r0, [r1]", 0xE851, 0x0F00),
         ] {
             assert!(!arch_legal_32(hw1, hw2), "{what} accepted");
             let v = arch_violations(&le(&[hw1, hw2]));
             assert_eq!(v.len(), 1, "{what}: {v:?}");
             assert_eq!(v[0].0, 0);
+        }
+        // The SYSm set, exhaustively: 11 of 256 values, for MRS and MSR alike.
+        let ok: Vec<u16> = (0..256).filter(|&m| arch_legal_sysm(m)).collect();
+        assert_eq!(ok, [0, 1, 2, 3, 5, 6, 7, 8, 9, 16, 20]);
+        for m in 0..256u16 {
+            assert_eq!(arch_legal_32(0xF380, 0x8800 | m), arch_legal_sysm(m));
+            assert_eq!(arch_legal_32(0xF3EF, 0x8000 | m), arch_legal_sysm(m));
         }
         // What synth's own contract refuses but the architecture has: the
         // 16-bit literal load and a write to R11 pass HERE and fail there.

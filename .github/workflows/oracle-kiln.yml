@@ -216,6 +216,9 @@ jobs:
           grep -qx 'ORACLE armv6m-call structural: 4 default-flags objects are byte-identical to --relocatable' "$log"
           grep -qx 'ORACLE armv6m-call decode: 594 halfwords, all ARMv6-M, 54 BL' "$log"
           grep -qx 'ORACLE armv6m-call: 484 steps agree on the Cortex-M0 model across 2 targets, 638 host calls matched' "$log"
-          # tests/armv6m_call_oracle.rs is the only test binary that reports 7
+          # Cold review F4: calls between functions of the object are held to
+          # AAPCS by the harness (R4-R11 compared, R2/R3/R12 clobbered on return).
+          grep -qx 'ORACLE armv6m-call internal: 3 of 4 callees that lose R4 are caught by the internal-call check, 1 equivalent, 53 internal returns checked' "$log"
+          # tests/armv6m_call_oracle.rs is the only test binary that reports 9
           # passed (measured on the tree restacked onto v0.92 batch 2).
-          test "$(grep -cE '^test result: ok\. 7 passed; 0 failed' "$log")" = 1
+          test "$(grep -cE '^test result: ok\. 9 passed; 0 failed' "$log")" = 1

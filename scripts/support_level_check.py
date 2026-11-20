@@ -369,13 +369,51 @@ def rust_target_literals(text):
     return out
 
 
-def rust_oracle_tags(text):
+# What makes a Rust block or item DEAD for `rust_differential`: it is behind
+# `#[ignore]` (cargo does not run the test), behind a `#[cfg(..)]` attribute
+# (it may not be compiled; the file-level `#![cfg(feature = "exec")]` is an
+# inner attribute and is not matched), or the body of `if false` / `if cfg!(..)`.
+_DEAD_HEADER = re.compile(
+    r"#\s*\[\s*(?:ignore|cfg|cfg_attr)\b|\bif\s+false\s*$|\bif\s+!?\s*cfg\s*!\s*\([^{]*$")
+
+
+def rust_dead_at(code, pos):
+    """Whether offset `pos` of the lexed Rust `code` (comments and literals
+    blanked, see `_rust_lex`) sits in a block that does not run: any enclosing
+    `{` whose HEADER — the text between the previous `;`, `{` or `}` at that
+    nesting and the brace, which holds an item's attributes — matches
+    `_DEAD_HEADER`. A lexical walk, not a parser."""
+    depth, k = 0, pos - 1
+    while k >= 0:
+        ch = code[k]
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            if depth:
+                depth -= 1
+            else:
+                h, paren = k - 1, 0
+                while h >= 0 and not (code[h] in ";{}" and paren == 0):
+                    if code[h] in ")]":
+                        paren += 1
+                    elif code[h] in "([":
+                        paren -= 1
+                    h -= 1
+                if _DEAD_HEADER.search(code[h + 1:k]):
+                    return True
+        k -= 1
+    return False
+
+
+def rust_oracle_tags(text, live_only=False):
     """The `ORACLE <tag>:` result lines a Rust oracle prints: the tag of every
-    string literal that begins `ORACLE <tag>:`."""
+    string literal that begins `ORACLE <tag>:`. With `live_only`, only the
+    literals outside dead blocks (`rust_dead_at`)."""
+    lits, code = _rust_lex(text)
     tags = set()
-    for s in rust_string_literals(text):
+    for s, a, _b in lits:
         m = re.match(r"ORACLE ([^:{}\n]+):", s)
-        if m:
+        if m and not (live_only and rust_dead_at(code, a)):
             tags.add(m.group(1))
     return tags
 
@@ -395,7 +433,21 @@ def rust_differential(root, d, spec, steps):
       greps, exactly (`grep -qx`), an `ORACLE <tag>:` line whose tag this file
       prints and no other oracle file does. A step that runs the crate but
       pins no result line of this file would stay green with the file's
-      tests deleted, so it does not count."""
+      tests deleted, so it does not count.
+    * NOT HOLLOW IN THE TWO WAYS THAT CAN BE READ LEXICALLY (cold review of
+      v092-m0-l2, F2): at least one `run_case` / `run_hosted` call, and the
+      pinned `ORACLE` line, sit outside dead blocks (`rust_dead_at`: an
+      `#[ignore]`d test, a `#[cfg]`-gated item, the body of `if false` or
+      `if cfg!(..)`).
+
+    RESIDUAL, a REVIEW-TIME obligation and not a caught one: this reads text,
+    not control flow or data flow. It does not show that the comparison is
+    REACHED (a helper nobody calls, an early `return`, `if 1 == 2`), that its
+    verdict is ASSERTED, or that the count in the pinned line comes from the
+    comparison rather than a literal. The wasmtime path is weaker still (the
+    word `wasmtime` plus wiring). What holds those is the oracle's own red
+    evidence, recorded with the lane that adds it: red on the base binary, a
+    planted wrong reference that must disagree, exact counts."""
     if not d.startswith(RUST_ORACLE_DIR):
         return (f"is a Rust file outside {RUST_ORACLE_DIR} — only an oracle of the "
                 f"synth-oracle harness can be cited as a differential")
@@ -403,9 +455,14 @@ def rust_differential(root, d, spec, steps):
     _lits, code = _rust_lex(text)
     if not re.search(r'^#!\[cfg\(feature\s*=\s*"exec"\)\]', text, re.M):
         return 'is not gated on `#![cfg(feature = "exec")]`, so it runs no engine'
-    if not re.search(r"\b(?:run_case|run_hosted)\s*\(", code):
+    runs = [m.start() for m in re.finditer(r"\b(?:run_case|run_hosted)\s*\(", code)]
+    if not runs:
         return ("is not a kiln-vs-unicorn execution differential (its code calls "
                 "neither `run_case` nor `run_hosted`)")
+    if all(rust_dead_at(code, p) for p in runs):
+        return ("is a HOLLOW differential: every `run_case` / `run_hosted` call sits "
+                "in a block that does not run (an `#[ignore]`d or `#[cfg]`-gated "
+                "item, or the body of `if false` / `if cfg!(..)`)")
     if not any(re.search(spec["invocation"], s) for s in rust_target_literals(text)):
         return (f"never compiles for this backend (no compile-target literal "
                 f"matches /{spec['invocation']}/)")
@@ -421,9 +478,13 @@ def rust_differential(root, d, spec, steps):
     for p in sorted((root / RUST_ORACLE_DIR).glob("*.rs")):
         if p.name != pathlib.Path(d).name:
             others |= rust_oracle_tags(p.read_text(errors="ignore"))
-    own = rust_oracle_tags(text) - others
-    if not own:
+    if not rust_oracle_tags(text) - others:
         return "prints no `ORACLE <tag>:` result line of its own to pin"
+    own = rust_oracle_tags(text, live_only=True) - others
+    if not own:
+        return ("is a HOLLOW differential: it prints its `ORACLE <tag>:` result "
+                "line only from a block that does not run (an `#[ignore]`d or "
+                "`#[cfg]`-gated item, or the body of `if false` / `if cfg!(..)`)")
     for s in steps:
         if not RUST_ORACLE_RUN.search(s):
             continue
@@ -1010,6 +1071,32 @@ def self_test():
          lambda t: _edit(t, M0, "let c = run_case(&obj, Cpu::CortexM0);",
                          "let c = emu(&obj, Cpu::CortexM0); // run_case(&obj)"),
          "is not a kiln-vs-unicorn execution differential")
+    # Cold review F2: the reviewer's two hollow variants, and their kin.
+    RUN = "    let c = run_case(&obj, Cpu::CortexM0);\n"
+    PRINT = '    eprintln!("ORACLE m0-diff: {} cases agree", c);\n'
+    case("HOLLOW (review variant 1): the comparison is inside `if false`",
+         lambda t: _edit(t, M0, RUN, "    let c = 7;\n    if false {\n    " + RUN + "    }\n"),
+         "HOLLOW differential: every `run_case`")
+    case("HOLLOW (review variant 2): the comparison is in an #[ignore]d test, "
+         "the line printed by a trivial one",
+         lambda t: _edit(t, M0, "#[test]\nfn agree() {\n" + '    let obj = compile_probes("cortex-m0");\n' + RUN + PRINT + "}\n",
+                         '#[test]\n#[ignore = "slow"]\nfn agree() {\n'
+                         '    let obj = compile_probes("cortex-m0");\n' + RUN + "}\n"
+                         "#[test]\nfn line() {\n    let c = 7;\n" + PRINT + "}\n"),
+         "HOLLOW differential: every `run_case`")
+    case("HOLLOW: the comparison is in a #[cfg]-gated test",
+         lambda t: _edit(t, M0, "#[test]\nfn agree()", '#[cfg(feature = "never")]\n#[test]\nfn agree()'),
+         "HOLLOW differential: every `run_case`")
+    case("HOLLOW: the comparison is inside `if cfg!(..)`",
+         lambda t: _edit(t, M0, RUN, "    let c = 7;\n    if cfg!(feature = \"never\") {\n    " + RUN + "    }\n"),
+         "HOLLOW differential: every `run_case`")
+    case("HOLLOW: the comparison runs, the pinned line is printed only by an #[ignore]d test",
+         lambda t: _edit(t, M0, PRINT + "}\n",
+                         "    let _ = c;\n}\n#[test]\n#[ignore]\nfn line() {\n    let c = 7;\n" + PRINT + "}\n"),
+         "it prints its `ORACLE <tag>:` result line only from a block that does not run")
+    case("not hollow: `if false` around something ELSE, the comparison in its `else`",
+         lambda t: _edit(t, M0, RUN, "    let c = if false { 7 } else {\n    " + RUN.replace("let c = ", "").replace(";\n", "\n") + "    };\n"),
+         None)
     case("Rust oracle: not gated on the exec feature",
          lambda t: _edit(t, M0, '#![cfg(feature = "exec")]\n', ""),
          "is not gated on")

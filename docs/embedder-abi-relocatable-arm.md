@@ -966,7 +966,10 @@ verify-embedder REFUSED: boot.o — 4 instruction(s) that are not ARMv6-M ...
 - **What is ARMv6-M here.** 16-bit instructions: the set LLVM's
   `thumbv6m-none-eabi` decoder accepts, frozen in
   `tests/fixtures/armv6m_legal16_1301.json` (so IT and CBZ/CBNZ are refused).
-  32-bit instructions: `bl`, `msr`, `mrs`, `dmb`, `dsb`, `isb`, `udf.w`. This
+  32-bit instructions: `bl`, `dmb`, `dsb`, `isb`, `udf.w`, and `msr` / `mrs`
+  of a special register ARMv6-M has (APSR and its views, IPSR, EPSR, MSP,
+  PSP, PRIMASK, CONTROL). `msr basepri` and `mrs faultmask` are ARMv7-M and
+  are refused, as are the ARMv8-M stack-limit registers. This
   is the architecture, not synth's own stricter contract: a boot shim may load
   a literal and write R11, synth's functions may not.
 - **Code and data.** Separated by the ELF's mapping symbols (`$t`, `$d`,

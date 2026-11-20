@@ -25,9 +25,13 @@
 //!    per `R_ARM_THM_CALL` relocation. No write to R8-R12.
 //! 3. EXECUTION: the object is linked the way an embedder links it
 //!    (`synth_oracle::hosted`: a host stub per import symbol, AAPCS arguments,
-//!    every caller-saved register clobbered on return; R4-R11 and SP checked
-//!    after every call) and every step is required to agree with kiln — the same result
-//!    AND the same host calls with the same arguments in the same order.
+//!    every caller-saved register clobbered when a host call returns; R4-R11
+//!    and SP checked when the export returns) and every step is required to
+//!    agree with kiln — the same result AND the same host calls with the same
+//!    arguments in the same order. Calls BETWEEN functions of the object are
+//!    held to AAPCS as well: R4-R11 are compared across every internal call,
+//!    and R2, R3 and R12 are clobbered when it returns
+//!    (`internal_callee_that_loses_r4_is_caught`).
 //!
 //! WHAT "ON THE CORTEX-M0 MODEL" PROVES, MEASURED HERE. unicorn's Cortex-M0
 //! model raises an illegal-instruction fault on a 32-bit Thumb-2 encoding
@@ -729,6 +733,194 @@ fn m0_model_executes_cbz_and_it() {
                 "{what}: the Cortex-M0 model did not execute it for f({arg})"
             );
         }
+    }
+}
+
+/// Internal callees that save R4, from the cold review's probe module: a
+/// caller that keeps nothing in R4 across the call hides a callee that loses
+/// it, unless internal calls are checked themselves.
+const INTERNAL_WAT: &str = r#"
+(module
+  (import "env" "rd" (func $rd (param i32) (result i32)))
+  (func $f (param i32) (result i32) local.get 0 i32.const 3 i32.mul)
+  (func $g (param i32 i32) (result i32) local.get 0 call $f local.get 1 call $f i32.add)
+  (func $rec (param i32) (result i32)
+    local.get 0 i32.const 15 i32.and local.tee 0 i32.eqz if (result i32) i32.const 1
+    else local.get 0 local.get 0 i32.const 1 i32.sub call $rec i32.add end)
+  (func $fib (param i32) (result i32)
+    local.get 0 i32.const 2 i32.lt_u if (result i32) local.get 0
+    else local.get 0 i32.const 1 i32.sub call $fib local.get 0 i32.const 2 i32.sub call $fib i32.add end)
+  (func $heavy (param i32 i32) (result i32) (local i32 i32 i32 i32)
+    local.get 0 local.get 1 i32.xor local.set 2
+    local.get 0 local.get 1 i32.add local.set 3
+    local.get 2 local.get 3 i32.mul local.set 4
+    local.get 4 local.get 0 i32.sub local.set 5
+    local.get 2 local.get 3 i32.add local.get 4 i32.add local.get 5 i32.xor)
+  (func (export "nested") (param i32 i32) (result i32) local.get 0 local.get 1 call $g call $rd)
+  (func (export "rec") (param i32) (result i32) local.get 0 call $rec)
+  (func (export "fib") (param i32) (result i32) local.get 0 i32.const 15 i32.and call $fib)
+  (func (export "across_heavy") (param i32 i32 i32) (result i32) (local i32 i32)
+    local.get 0 local.get 1 i32.add local.set 3
+    local.get 1 local.get 2 i32.sub local.set 4
+    local.get 0 local.get 2 call $heavy
+    local.get 3 i32.xor local.get 4 i32.add local.get 0 i32.add local.get 1 i32.mul local.get 2 i32.sub)
+)
+"#;
+
+/// Cold review F4. Dropping R4 from the push and pop of ONE internal function
+/// is caught, by the internal-call check itself, for each of the three whose
+/// body WRITES R4 ($g, $rec, $fib): the caller's epilogue restores R4, so the
+/// export-level check and the returned value miss it. The unmutated object
+/// agrees, and its internal calls are counted, so the check is known to have
+/// run.
+///
+/// The fourth, $heavy, is pinned as what it is in the code synth emits: an
+/// EQUIVALENT mutant. R4 is in its push only as padding (`push {r2, r3, r4,
+/// r5, r6, lr}`, keeping the selector's frame size) and no instruction of its
+/// body writes R4, so with or without the save R4 comes back unchanged and
+/// every step still agrees with kiln. No register check can red it. The sets
+/// are exact both ways: if $heavy starts using R4, this test reds and the
+/// mutant moves to the caught set.
+#[test]
+fn internal_callee_that_loses_r4_is_caught() {
+    let (wasm, obj) = compile_default(INTERNAL_WAT, "cortex-m0");
+    let cfg = HostConfig::new(Cpu::CortexM0, LINMEM);
+    let steps: Vec<Step> = vec![
+        ("nested", vec![i(3), i(80)]),
+        ("rec", vec![i(6)]),
+        ("fib", vec![i(7)]),
+        ("across_heavy", vec![i(3), i(80), i(157)]),
+        ("across_heavy", vec![i(0xDEAD_BEEF), i(1), i(2)]),
+    ];
+    // CONTROL: every step agrees, and internal calls returned and were checked.
+    let mut image = Hosted::link(&obj, &wasm, &imports(), &cfg).unwrap();
+    for (e, a) in &steps {
+        let run = image.call(e, a).unwrap();
+        assert!(
+            matches!(run.outcome, EmuOutcome::Values(_)),
+            "{e}{a:?}: {:?}",
+            run.outcome
+        );
+    }
+    let checked = image.internal_returns();
+    let mut red = Vec::new();
+    run_steps("internal", &wasm, &obj, &steps, Cpu::CortexM0, &mut red);
+    assert!(red.is_empty(), "{red:?}");
+
+    // Internal functions only: an export also carries a local `func_N` alias
+    // at the same offset.
+    let exported: BTreeSet<u64> = exports(INTERNAL_WAT)
+        .iter()
+        .map(|e| obj.func(e).expect("export compiled").offset)
+        .collect();
+    let mut mutants = Vec::new();
+    for (name, f) in obj
+        .funcs
+        .iter()
+        .filter(|(_, f)| !exported.contains(&f.offset))
+    {
+        let mut m = obj.clone();
+        let (lo, hi) = (f.offset as usize, (f.offset + f.size) as usize);
+        let mut changed = false;
+        for k in (lo..hi.saturating_sub(1)).step_by(2) {
+            let h = u16::from_le_bytes([m.text[k], m.text[k + 1]]);
+            // push {.., r4, .., lr} / pop {.., r4, .., pc}
+            if matches!(h & 0xFF00, 0xB500 | 0xBD00) && h & 0x10 != 0 {
+                m.text[k..k + 2].copy_from_slice(&(h & !0x10).to_le_bytes());
+                changed = true;
+            }
+        }
+        if !changed {
+            continue;
+        }
+        let mut by_internal_check = 0;
+        let mut caught = 0;
+        for (e, a) in &steps {
+            let step: [(&str, &[WasmValue]); 1] = [(e, &a[..])];
+            let c = run_hosted(&wasm, &m, &step, FUEL, &imports(), &cfg)
+                .unwrap()
+                .remove(0);
+            if !c.verdict.is_agree() {
+                caught += 1;
+            }
+            if matches!(&c.emulator, EmuOutcome::Illegal { reason, .. }
+                if reason.contains(&format!("internal call to `{name}` returned with R4 clobbered")))
+            {
+                by_internal_check += 1;
+            }
+        }
+        mutants.push((name.clone(), by_internal_check, caught));
+    }
+    let caught: Vec<&str> = mutants
+        .iter()
+        .filter(|(_, by_check, _)| *by_check > 0)
+        .map(|(n, _, _)| n.as_str())
+        .collect();
+    let equivalent: Vec<&str> = mutants
+        .iter()
+        .filter(|(_, _, any)| *any == 0)
+        .map(|(n, _, _)| n.as_str())
+        .collect();
+    eprintln!(
+        "ORACLE armv6m-call internal: {} of {} callees that lose R4 are caught by the internal-call check, {} equivalent, {checked} internal returns checked",
+        caught.len(),
+        mutants.len(),
+        equivalent.len()
+    );
+    // func_1 is $f (no R4 in its push); func_2..func_4 are $g, $rec, $fib;
+    // func_5 is $heavy.
+    assert_eq!(caught, ["func_2", "func_3", "func_4"], "{mutants:?}");
+    assert_eq!(equivalent, ["func_5"], "{mutants:?}");
+    assert_eq!(checked, 53, "internal returns on the unmutated object");
+}
+
+/// The other half of F4, on hand-written ARMv6-M code: a value kept in R2
+/// across a call to a leaf that does not touch R2 reads back the clobber, not
+/// the value, and a leaf that writes R5 without saving it is named.
+#[test]
+fn internal_call_clobbers_r2_and_checks_callee_saved() {
+    use synth_oracle::hosted::CLOBBER;
+    use synth_oracle::synth::TextReloc;
+    let wasm =
+        wat::parse_str("(module (func (export \"f\") (param i32) (result i32) local.get 0))")
+            .unwrap();
+    let cfg = HostConfig::new(Cpu::CortexM0, LINMEM);
+    // f: push {r4, lr}; mov r2, r0; bl leaf; mov r0, r2; pop {r4, pc}
+    let f: &[u16] = &[0xB510, 0x4602, 0xF7FF, 0xFFFE, 0x4610, 0xBD10];
+    for (what, leaf, want) in [
+        // leaf: bx lr
+        (
+            "R2 across a call",
+            &[0x4770u16, 0x46C0][..],
+            Ok(CLOBBER | 2),
+        ),
+        // leaf: movs r5, #9; bx lr
+        (
+            "a callee that loses R5",
+            &[0x2509, 0x4770][..],
+            Err("internal call to `leaf` returned with R5 clobbered"),
+        ),
+    ] {
+        let mut obj = hand(&[("f", f), ("leaf", leaf)]);
+        let target = obj.funcs["leaf"].offset;
+        obj.relocs = vec![TextReloc {
+            offset: 4,
+            r_type: R_ARM_THM_CALL,
+            symbol: "leaf".into(),
+            target: Some(target),
+        }];
+        obj.text_relocs = vec![4];
+        let mut image = Hosted::link(&obj, &wasm, &Imports::new(), &cfg).unwrap();
+        let run = image.call("f", &[i(41)]).unwrap();
+        match want {
+            Ok(v) => assert_eq!(run.outcome, EmuOutcome::Values(vec![i(v)]), "{what}"),
+            Err(reason) => assert!(
+                matches!(&run.outcome, EmuOutcome::Illegal { reason: r, .. } if r.contains(reason)),
+                "{what}: {:?}",
+                run.outcome
+            ),
+        }
+        assert_eq!(image.internal_returns(), 1, "{what}");
     }
 }
 

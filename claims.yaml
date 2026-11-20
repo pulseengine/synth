@@ -877,6 +877,15 @@ repo_metadata:
 # raising a level string here is never a promotion on its own. Only the L1
 # `ladder` criterion may be declared open, and only while the checker can see
 # its cause; the open entry reds once the cause is gone.
+#
+# REVIEW-TIME OBLIGATION, not caught by the checker (cold review of
+# v092-m0-l2, F2): a Rust oracle cited as a differential is read as TEXT. The
+# checker refuses one whose comparison or pinned result line sits in an
+# `#[ignore]`d or `#[cfg]`-gated item or under `if false` / `if cfg!`, but it
+# cannot show that the comparison is reached, that its verdict is asserted, or
+# that the pinned count comes from it. A new differential is therefore
+# reviewed for its own red evidence (red on the base binary, a planted wrong
+# reference, exact counts), the same as a wasmtime one.
 # -----------------------------------------------------------------------------
 support_levels:
   backends:

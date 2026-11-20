@@ -231,6 +231,59 @@ fn a_v7_encoded_boot_shim_is_refused_for_cortex_m0_and_m0plus() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// Cold review F1: MSR / MRS are ARMv6-M only with an ARMv6-M special
+/// register. A Cortex-M3 shim that masks interrupts through BASEPRI is
+/// refused. The bytes are the reviewer's object (`msr basepri, r0; mrs r0,
+/// faultmask; cpsid f; nop.w; ldrex r0, [r1]; bx lr`, assembled with
+/// `arm-none-eabi-as -march=armv7-m`); `cpsid f` is a 16-bit ARMv6-M
+/// encoding and passes.
+#[test]
+fn msr_and_mrs_of_an_armv7m_special_register_are_refused() {
+    let d = dir("sysm");
+    let boot = ("boot", 0u32, Kind::ThumbFunc);
+    let t = ("$t", 0u32, Kind::Mapping);
+    let v7: &[u16] = &[
+        0xF380, 0x8811, 0xF3EF, 0x8013, 0xB671, 0xF3AF, 0x8000, 0xE851, 0x0F00, 0x4770,
+    ];
+    let p = write(&d, "v7m16.o", &elf(v7, &[t, boot]));
+    for flags in [
+        &["--target", "cortex-m0"][..],
+        &["--target", "cortex-m0plus", "--allow-writer", "boot"][..],
+    ] {
+        let r = verify(&p, flags);
+        assert!(
+            !r.ok && !r.stdout.contains(LEG_OK),
+            "{flags:?}: {}",
+            r.stdout
+        );
+        for needle in [
+            "4 instruction(s) that are not ARMv6-M",
+            "<boot> .text+0x0: `f380 8811` — wide branch or system (B.W/Bcc.W/MRS/MSR)",
+            "<boot> .text+0x4: `f3ef 8013` — wide branch or system (B.W/Bcc.W/MRS/MSR)",
+            "<boot> .text+0xa: `f3af 8000`",
+            "<boot> .text+0xe: `e851 0f00`",
+        ] {
+            assert!(
+                r.stderr.contains(needle),
+                "{flags:?}: no `{needle}` in {}",
+                r.stderr
+            );
+        }
+    }
+    // CONTROL: the same two instructions with ARMv6-M special registers
+    // (`msr primask, r0; mrs r0, control; cpsid f; bx lr`) pass.
+    let v6: &[u16] = &[0xF380, 0x8810, 0xF3EF, 0x8014, 0xB671, 0x4770];
+    let p = write(&d, "v6sysm.o", &elf(v6, &[t, boot]));
+    let r = verify(&p, &["--target", "cortex-m0", "--allow-writer", "boot"]);
+    assert!(
+        r.stdout.contains(LEG_OK) && !r.stderr.contains(LEG_RED),
+        "{} {}",
+        r.stdout,
+        r.stderr
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// The leg runs only when asked for or when the ELF says ARMv6-M — and a
 /// misspelled target is an error, never a silently skipped check.
 #[test]
