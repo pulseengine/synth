@@ -4382,7 +4382,27 @@ claims:
       - kind: count-eq                       # population: a NEW workspace member
         pattern: '^    "crates/'             # must be classified linked / feature-
         glob: ['Cargo.toml']                 # gated / unlinked before this moves
-        expect: 19
+        expect: 20                           # 19 -> 20: synth-oracle (RQ-91-ORACLEKILN,
+                                             # #1741), classified UNLINKED test
+                                             # infrastructure by the two pins below
+      # synth-oracle is the execution-oracle harness (kiln + unicorn). It must
+      # never be linked into the binary or published: no crate depends on it,
+      # and it is publish = false. THESE TWO PINS ARE WHY unicorn-engine's
+      # GPL-2.0 is accepted (maintainer decision, 2026-11-18, recorded in
+      # deny.toml): "GPL-2.0 in an unpublished test-only harness; never linked into the synth binary or any published crate".
+      # Moving either pin removes the ground for that acceptance.
+      # Every spelling of a dependency on it (REVIEW_11 F9): the inline key, the
+      # `[dependencies.synth-oracle]` table form (any target/dev/build section),
+      # and a rename via `package = "synth-oracle"`, over every member, the
+      # root manifest's workspace table and the fuzz crate.
+      - kind: count-eq
+        pattern: '^synth-oracle(\.workspace)?\s*=|^\[(?:[^\]]*\.)?(?:dev-|build-)?dependencies\.synth-oracle\]|package\s*=\s*"synth-oracle"'
+        glob: ['crates/*/Cargo.toml', 'Cargo.toml', 'fuzz/Cargo.toml']
+        expect: 0
+      - kind: count-eq
+        pattern: '^publish = false$'
+        glob: ['crates/synth-oracle/Cargo.toml']
+        expect: 1
 
   # #1281 (RQ-68-ORACLEABI): the number below is a COUNT OF DECLARATIONS
   # (`^pub open spec fn `), and the verifier that would check them is run by no

@@ -80,6 +80,15 @@ version = 2
 # crate, and the fix then is a real licence policy, not a wider `allow`.
 allow = []
 confidence-threshold = 0.8
+#
+# RECORDED LICENCE DECISION (maintainer, 2026-11-18; RQ-91-ORACLEKILN, #1741):
+# unicorn-engine / unicorn-engine-sys are GPL-2.0, ACCEPTED in crates/synth-oracle
+# only: "GPL-2.0 in an unpublished test-only harness; never linked into the synth binary or any published crate".
+# Written as a comment, not an `exceptions` entry, because licences are not
+# checked here (see above); if `check licenses` is ever wired, this becomes an
+# exception scoped to unicorn-engine with that reason. The two facts it rests
+# on are pinned in claims.yaml (SYNTH-UNLINKED-LIBRARIES-1277): no crate depends
+# on synth-oracle, and it is publish = false.
 
 [bans]
 multiple-versions = "allow"

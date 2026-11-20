@@ -89,6 +89,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "bindgen"
+version = "0.71.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+dependencies = [
+ "bitflags",
+ "cexpr",
+ "clang-sys",
+ "itertools",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex",
+ "syn 2.0.110",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -184,6 +204,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cexpr"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
+dependencies = [
+ "nom",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -234,6 +263,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "clang-sys"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "157a8ba7b480713b56f4c09fd13fc3e0a22a5dfab8097ba61cbc5feef950788a"
+dependencies = [
+ "glob",
+ "libc",
+ "libloading",
+]
+
+[[package]]
 name = "clap"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -274,6 +314,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -290,6 +339,12 @@ name = "core_detect"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
+
+[[package]]
+name = "countme"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7704b5fdd17b18ae31c4c1da5a2e0305a2bf17b5249300a9ee9ed7b72114c636"
 
 [[package]]
 name = "cpufeatures"
@@ -502,10 +557,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1033caf0b349c518623b5396bfb2cf0bddf44f0306d543a250e5743297aafd10"
 dependencies = [
  "fnv",
- "hashbrown",
+ "hashbrown 0.17.1",
  "indexmap",
  "stable_deref_trait",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "half"
@@ -517,6 +578,12 @@ dependencies = [
  "crunchy",
  "zerocopy",
 ]
+
+[[package]]
+name = "hashbrown"
+version = "0.15.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 
 [[package]]
 name = "hashbrown"
@@ -557,7 +624,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
- "hashbrown",
+ "hashbrown 0.17.1",
  "serde",
  "serde_core",
 ]
@@ -594,6 +661,124 @@ dependencies = [
 ]
 
 [[package]]
+name = "kiln-decoder"
+version = "0.7.3"
+source = "git+https://github.com/pulseengine/kiln?rev=fa16dc8d9945f191c272d0be73c3d046b2aebdee#fa16dc8d9945f191c272d0be73c3d046b2aebdee"
+dependencies = [
+ "kiln-error",
+ "kiln-format",
+ "kiln-foundation",
+ "rivet-yaml",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "kiln-error"
+version = "0.7.3"
+source = "git+https://github.com/pulseengine/kiln?rev=fa16dc8d9945f191c272d0be73c3d046b2aebdee#fa16dc8d9945f191c272d0be73c3d046b2aebdee"
+
+[[package]]
+name = "kiln-format"
+version = "0.7.3"
+source = "git+https://github.com/pulseengine/kiln?rev=fa16dc8d9945f191c272d0be73c3d046b2aebdee#fa16dc8d9945f191c272d0be73c3d046b2aebdee"
+dependencies = [
+ "kiln-error",
+ "kiln-foundation",
+]
+
+[[package]]
+name = "kiln-foundation"
+version = "0.7.3"
+source = "git+https://github.com/pulseengine/kiln?rev=fa16dc8d9945f191c272d0be73c3d046b2aebdee#fa16dc8d9945f191c272d0be73c3d046b2aebdee"
+dependencies = [
+ "kiln-error",
+ "kiln-platform",
+ "kiln-sync",
+ "tracing",
+ "tracing-core",
+]
+
+[[package]]
+name = "kiln-host"
+version = "0.7.3"
+source = "git+https://github.com/pulseengine/kiln?rev=fa16dc8d9945f191c272d0be73c3d046b2aebdee#fa16dc8d9945f191c272d0be73c3d046b2aebdee"
+dependencies = [
+ "kiln-error",
+ "kiln-foundation",
+ "kiln-intercept",
+ "kiln-sync",
+ "log",
+]
+
+[[package]]
+name = "kiln-instructions"
+version = "0.7.3"
+source = "git+https://github.com/pulseengine/kiln?rev=fa16dc8d9945f191c272d0be73c3d046b2aebdee#fa16dc8d9945f191c272d0be73c3d046b2aebdee"
+dependencies = [
+ "kiln-error",
+ "kiln-foundation",
+ "kiln-math",
+ "kiln-sync",
+ "log",
+]
+
+[[package]]
+name = "kiln-intercept"
+version = "0.7.3"
+source = "git+https://github.com/pulseengine/kiln?rev=fa16dc8d9945f191c272d0be73c3d046b2aebdee#fa16dc8d9945f191c272d0be73c3d046b2aebdee"
+dependencies = [
+ "kiln-error",
+ "kiln-foundation",
+ "kiln-sync",
+ "log",
+]
+
+[[package]]
+name = "kiln-math"
+version = "0.7.3"
+source = "git+https://github.com/pulseengine/kiln?rev=fa16dc8d9945f191c272d0be73c3d046b2aebdee#fa16dc8d9945f191c272d0be73c3d046b2aebdee"
+dependencies = [
+ "kiln-error",
+ "kiln-platform",
+ "libm",
+]
+
+[[package]]
+name = "kiln-platform"
+version = "0.7.3"
+source = "git+https://github.com/pulseengine/kiln?rev=fa16dc8d9945f191c272d0be73c3d046b2aebdee#fa16dc8d9945f191c272d0be73c3d046b2aebdee"
+dependencies = [
+ "kiln-error",
+ "kiln-sync",
+]
+
+[[package]]
+name = "kiln-runtime"
+version = "0.7.3"
+source = "git+https://github.com/pulseengine/kiln?rev=fa16dc8d9945f191c272d0be73c3d046b2aebdee#fa16dc8d9945f191c272d0be73c3d046b2aebdee"
+dependencies = [
+ "kiln-decoder",
+ "kiln-error",
+ "kiln-format",
+ "kiln-foundation",
+ "kiln-host",
+ "kiln-instructions",
+ "kiln-intercept",
+ "kiln-platform",
+ "kiln-sync",
+]
+
+[[package]]
+name = "kiln-sync"
+version = "0.7.3"
+source = "git+https://github.com/pulseengine/kiln?rev=fa16dc8d9945f191c272d0be73c3d046b2aebdee#fa16dc8d9945f191c272d0be73c3d046b2aebdee"
+dependencies = [
+ "kiln-error",
+ "parking_lot",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -612,10 +797,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
 
 [[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
+
+[[package]]
+name = "lock_api"
+version = "0.4.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
+dependencies = [
+ "scopeguard",
+]
 
 [[package]]
 name = "log"
@@ -628,6 +838,22 @@ name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
+
+[[package]]
+name = "minimal-lexical"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "nom"
+version = "7.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
+dependencies = [
+ "memchr",
+ "minimal-lexical",
+]
 
 [[package]]
 name = "nu-ansi-term"
@@ -710,6 +936,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "parking_lot"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
+dependencies = [
+ "lock_api",
+ "parking_lot_core",
+]
+
+[[package]]
+name = "parking_lot_core"
+version = "0.9.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "redox_syscall",
+ "smallvec",
+ "windows-link",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -747,6 +996,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
+]
+
+[[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.110",
 ]
 
 [[package]]
@@ -860,6 +1119,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_syscall"
+version = "0.5.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
 name = "regex"
 version = "1.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -887,6 +1155,35 @@ name = "regex-syntax"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
+
+[[package]]
+name = "rivet-yaml"
+version = "0.41.0"
+source = "git+https://github.com/pulseengine/rivet?tag=v0.41.0#c15754a3c09e224d502dea3ba31f3435d1ae48d5"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "rowan",
+ "ryu",
+ "serde",
+]
+
+[[package]]
+name = "rowan"
+version = "0.16.2"
+source = "git+https://github.com/pulseengine/rowan.git?branch=fix%2Fmiri-soundness-v3#9e7abd1161634377d278cde0c504c101ac003941"
+dependencies = [
+ "countme",
+ "hashbrown 0.15.5",
+ "rustc-hash",
+ "text-size",
+]
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "rustix"
@@ -920,6 +1217,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -927,6 +1230,12 @@ checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
 ]
+
+[[package]]
+name = "scopeguard"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scry-sai-bits"
@@ -1290,6 +1599,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "synth-oracle"
+version = "0.90.0"
+dependencies = [
+ "kiln-decoder",
+ "kiln-error",
+ "kiln-foundation",
+ "kiln-runtime",
+ "object",
+ "unicorn-engine",
+ "wasmparser 0.263.0",
+ "wat",
+]
+
+[[package]]
 name = "synth-qemu"
 version = "0.90.0"
 
@@ -1358,6 +1681,12 @@ dependencies = [
  "rustix",
  "windows-sys",
 ]
+
+[[package]]
+name = "text-size"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f18aa187839b2bdb1ad2fa35ead8c4c2976b64e4363c386d45ac0f7ee85c9233"
 
 [[package]]
 name = "thiserror"
@@ -1510,6 +1839,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
+name = "unicorn-engine"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c16b5d5186d9400cd3bf9f892ed826cb724f69b906bbe66811527df73eaf7a33"
+dependencies = [
+ "bindgen",
+ "cc",
+ "cmake",
+ "pkg-config",
+ "unicorn-engine-sys",
+]
+
+[[package]]
+name = "unicorn-engine-sys"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "685282714d35a6fbfed0ae14d81bb11c91838bc7a165cac778321679a7bb91d8"
+dependencies = [
+ "bindgen",
+ "cc",
+ "cmake",
+ "heck",
+ "pkg-config",
+]
+
+[[package]]
 name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1638,7 +1993,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f5fa0a054ae153606df820eb0a84213e28cda41bbe04ba2628e71b6ba100fcb"
 dependencies = [
  "bitflags",
- "hashbrown",
+ "hashbrown 0.17.1",
  "indexmap",
  "semver",
  "serde",
@@ -1763,7 +2118,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "874d6ce9db4261cb66980ab14f3da066b24292497b6f46f988c0d1b9b27913f3"
 dependencies = [
  "anyhow",
- "hashbrown",
+ "hashbrown 0.17.1",
  "id-arena",
  "indexmap",
  "log",
