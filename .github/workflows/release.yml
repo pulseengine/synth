@@ -49,13 +49,13 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             archive: tar.gz
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             archive: tar.gz
             cross: true
-          # RQ-71-MUSL (#1349). The gnu assets above are built on ubuntu-latest
+          # RQ-71-MUSL (#1349). The gnu assets above are built on ubuntu-24.04
           # and carry a GLIBC_2.39 floor — MEASURED on the published v0.70.0
           # x86_64 asset: `ELF 64-bit LSB pie executable, dynamically linked,
           # interpreter /lib64/ld-linux-x86-64.so.2`, max GLIBC_ symbol
@@ -74,7 +74,7 @@ jobs:
           # here (no build.rs, no build-dependencies anywhere in the
           # workspace), which is why this needs no cross container.
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             archive: tar.gz
             musl: true
           # RQ-72-ARM64MUSL (#1349), the SECOND triple the issue names by name.
@@ -238,7 +238,7 @@ jobs:
   create-release:
     name: Create GitHub Release
     needs: [build-binaries]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       # Keyless signing + provenance need an OIDC token; release-asset
       # upload needs contents: write; build provenance attestation

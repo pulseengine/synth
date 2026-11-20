@@ -33,7 +33,10 @@ concurrency:
 jobs:
   workflow-strict:
     name: workflow files parse strictly — no duplicate keys, no empty steps (1552)
-    runs-on: ubuntu-latest
+    # Self-hosted `light` pool (owner decision 2026-11-18): python3 + PyYAML
+    # only, and the PyYAML step already carries the PEP 668 fallback. Fail-closed
+    # fork guard: only a same-repo PR or a non-PR event reaches self-hosted.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

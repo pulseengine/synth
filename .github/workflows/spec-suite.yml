@@ -40,7 +40,7 @@ env:
 jobs:
   spec-compile-census:
     name: spec-suite compile census (#1095)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -158,7 +158,7 @@ jobs:
   # ci_pool_tripwire.py / runner_redundancy_check.py fail on each of those.
   spec-suite-execution:
     name: spec-suite execution (#1636)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

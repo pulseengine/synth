@@ -72,7 +72,7 @@ permissions:
 jobs:
   auto-merge:
     if: github.actor == 'dependabot[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # pull_request_target: this checks out the BASE ref (github.sha on the
       # base branch), NEVER the PR head — the classifier script that runs
