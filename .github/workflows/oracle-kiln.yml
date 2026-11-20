@@ -358,4 +358,4 @@ jobs:
           # RQ-91-WRONGCODECENSUS (Refs #1741): the wrong-code census measured
           # every exec, arm64 and structural row and each held its recorded
           # status; the six cited rows are checked offline by the same test.
-          grep -qx 'WRONG-CODE CENSUS: 29 rows measured: 9 LIVE-WRONG, 18 FIXED, 2 NOW-DECLINES; 6 rows cited' "$log"
+          grep -qx 'WRONG-CODE CENSUS: 29 rows measured: 8 LIVE-WRONG, 19 FIXED, 2 NOW-DECLINES; 6 rows cited' "$log"

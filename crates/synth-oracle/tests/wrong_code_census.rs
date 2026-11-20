@@ -103,8 +103,7 @@ struct Row {
 }
 
 /// When and on what the census was measured.
-const MEASURED_ON: &str =
-    "2026-11-20, main 3dc31524 (+ the unmerged oracle-kiln and x86objplan stack)";
+const MEASURED_ON: &str = "2026-11-20, main 16700da6";
 
 const CENSUS: &[Row] = &[
     Row {
@@ -439,10 +438,10 @@ const CENSUS: &[Row] = &[
         issue: 1747,
         target: "aarch64",
         flags: "-b aarch64 --relocatable",
-        status: Status::LiveWrong,
+        status: Status::Fixed,
         evidence: Evidence::ExecA64,
         m4_default: false,
-        note: "fix on the unmerged v092-a64below branch",
+        note: "6641efec (#1749)",
         also: &[],
     },
     Row {

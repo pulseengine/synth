@@ -24,7 +24,7 @@ artifacts:
         census.
 
         WHAT WAS MEASURED. Each wrong-code issue's own repro was run on main
-        3dc31524 plus the unmerged oracle-kiln and x86objplan stack. The
+        16700da6. The
         result is LIVE-WRONG, FIXED, NOW-DECLINES or CANNOT-REPRO. The census
         is the Rust test crates/synth-oracle/tests/wrong_code_census.rs.
         Twenty-nine rows are measured in the test: 21 run the issue's repro on
@@ -57,8 +57,8 @@ artifacts:
         and #1755 agree with kiln on the paths their issues name as correct,
         so each can print FIXED.
 
-        RESULT: LIVE-WRONG 9 (#1696, #1699, #1744, #1745, #1746, #1747, #1752,
-        #1754, #1755), FIXED 20, NOW-DECLINES 6, CANNOT-REPRO 0. LIVE-WRONG
+        RESULT: LIVE-WRONG 8 (#1696, #1699, #1744, #1745, #1746, #1752,
+        #1754, #1755), FIXED 21, NOW-DECLINES 6, CANNOT-REPRO 0. LIVE-WRONG
         on cortex-m4 with default flags: 4. #1696: the optimized path keeps
         no value across an import call. #1699: the meld dispatch fallback
         passes no wasm arguments. #1754: select overwrites a parameter's home
@@ -76,7 +76,7 @@ artifacts:
         REFUTING COMMAND, to be RUN BEFORE building on this artifact:
         `SYNTH=./target/debug/synth cargo test -p synth-oracle --features exec
         --test wrong_code_census -- --nocapture`. A failing test, or a summary
-        line other than `WRONG-CODE CENSUS: 29 rows measured: 9 LIVE-WRONG, 18
+        line other than `WRONG-CODE CENSUS: 29 rows measured: 8 LIVE-WRONG, 19
         FIXED, 2 NOW-DECLINES; 6 rows cited`, refutes it.
     tags:
       - oracle
@@ -102,7 +102,8 @@ artifacts:
         #1711 117, #1712 117, #1716 234, #1721 234, #1691 98 over the issue's
         own fixture, and others), and the 4 LIVE exec rows disagree (#1696 13
         of 13 calls, #1755 118 of 118, #1754 4 of 6, #1699 1 of 118). arm64:
-        #1747 leaves the poisoned s0/d0 unwritten on all 9 calls; #1745's
+        #1747 agrees with kiln on every call since 6641efec (#1749), where it
+        left the poisoned s0/d0 unwritten on all 9 calls before; #1745's
         compile_module panics on the block shape (debug) and returns the
         caller's x1 for a zero-initialised local. Structural: #1744 (remu and
         RVC e_flags on rv32i), #1746 (`a` missing on ARM, RV32 and AArch64)
