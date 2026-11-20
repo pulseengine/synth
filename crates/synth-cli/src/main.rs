@@ -755,6 +755,16 @@ enum Commands {
         /// a human accepted the obligation for exactly that symbol.
         #[arg(long, value_name = "SYMBOL")]
         allow_writer: Vec<String>,
+
+        /// The core the image runs on. With an ARMv6-M target (`cortex-m0`,
+        /// `cortex-m0plus`) every instruction of every executable section
+        /// must also be an ARMv6-M instruction: a boot shim that still uses
+        /// an ARMv7-M encoding (movw/movt, ldr.w, mov.w, IT, CBZ) is refused
+        /// (#1741). The check also runs, without this flag, on an ELF whose
+        /// build attributes say ARMv6-M; pass the flag for a linked image,
+        /// whose attributes a single ARMv7-M object retags.
+        #[arg(short = 't', long, value_name = "TARGET")]
+        target: Option<String>,
     },
 
     /// List available compilation backends and their status
@@ -954,7 +964,11 @@ fn main() -> Result<()> {
                     Ok(hints)
                 })
                 .transpose()?;
-            refuse_armv6m_unsupported_shape(&target_spec, relocatable, &backend)?;
+            // The backend half of the ARMv6-M shape rule. The object-kind
+            // half is checked where the kind is DECIDED: a module that calls
+            // a function import is a relocatable object without the flag
+            // (`function_imports_force_host_link`), on ARMv6-M as on v7-M.
+            refuse_armv6m_unsupported_shape(&target_spec, true, &backend)?;
             let is_cortex_m =
                 cortex_m || target_spec.family == synth_core::target::ArchFamily::ArmCortexM;
 
@@ -1060,8 +1074,9 @@ fn main() -> Result<()> {
         Commands::VerifyEmbedder {
             input,
             allow_writer,
+            target,
         } => {
-            verify_embedder::verify_embedder_command(&input, allow_writer)?;
+            verify_embedder::verify_embedder_command(&input, allow_writer, target.as_deref())?;
         }
         Commands::Backends => {
             backends_command()?;
@@ -2211,6 +2226,10 @@ fn compile_command(
             mpu_layout,
         );
     }
+
+    // RQ-91-ARMV6M (#1301): what follows builds a self-contained image (an ARM
+    // `--relocatable` compile left through `compile_all_exports` above).
+    refuse_armv6m_unsupported_shape(target_spec, backend.name() != "arm", backend.name())?;
 
     // Single function compilation (when --func-index or --func-name is specified)
     let func_index = func_index.unwrap_or(0);
@@ -5597,6 +5616,11 @@ fn compile_all_exports(
     // is built, so every function is generated for the object that is
     // emitted. Loud on stderr: the user asked for an image and gets an object.
     let relocatable = relocatable || import_call_host_link;
+    // RQ-91-ARMV6M (#1301), RQ-92-WDGTHIN (#1741): ARMv6-M ships relocatable
+    // objects only. Checked on the object kind this compile PRODUCES, so a
+    // module that calls a function import follows the host-link rule above
+    // without `--relocatable`, and a module that does not is still refused.
+    refuse_armv6m_unsupported_shape(target_spec, relocatable, backend.name())?;
     if relocatable && !relocatable_flag {
         warn!(
             "module calls imported function(s) ({} imported): a self-contained image cannot \
@@ -7889,7 +7913,9 @@ fn refuse_armv6m_unsupported_shape(
             "ARMv6-M (cortex-m0 / cortex-m0plus) is EXPERIMENTAL and supports \
              only `--relocatable` objects: a self-contained image carries a \
              vector table and startup code that synth does not check against \
-             ARMv6-M. Add `--relocatable` and link the object yourself (#1301)."
+             ARMv6-M. Add `--relocatable` and link the object yourself (a \
+             module that calls a function import is a relocatable object \
+             already) (#1301)."
         );
     }
     Ok(())
@@ -10710,6 +10736,34 @@ fn detect_arm_thumb(elf: &[u8]) -> Option<bool> {
 /// value in the `"aeabi"` vendor subsection. Tolerant: any malformed structure
 /// yields `None` (the caller falls back to the symbol-table heuristic).
 fn parse_aeabi_thumb_isa_use(data: &[u8]) -> Option<u32> {
+    parse_aeabi_file_attr(data, 9) // Tag_THUMB_ISA_use
+}
+
+/// `Tag_CPU_arch` (6) of an ELF32 ARM file's `.ARM.attributes`, if it has one
+/// (11 = ARMv6-M, 12 = ARMv6S-M). RQ-92-WDGTHIN (#1741).
+fn elf_cpu_arch(elf: &[u8]) -> Option<u32> {
+    if elf.len() < 52 || elf[0..4] != [0x7f, b'E', b'L', b'F'] || elf[4] != 1 || elf[5] != 1 {
+        return None;
+    }
+    let u16le = |off: usize| u16::from_le_bytes(elf[off..off + 2].try_into().unwrap());
+    let u32le = |off: usize| u32::from_le_bytes(elf[off..off + 4].try_into().unwrap());
+    let (e_shoff, e_shentsize, e_shnum) = (u32le(32) as usize, u16le(46) as usize, u16le(48));
+    for i in 0..e_shnum as usize {
+        let base = e_shoff.checked_add(i.checked_mul(e_shentsize)?)?;
+        if base + 40 > elf.len() {
+            continue;
+        }
+        if u32le(base + 4) == 0x7000_0003 {
+            let (off, size) = (u32le(base + 16) as usize, u32le(base + 20) as usize);
+            return parse_aeabi_file_attr(elf.get(off..off.checked_add(size)?)?, 6);
+        }
+    }
+    None
+}
+
+/// The file-scope value of the uleb-valued attribute `want` in the `"aeabi"`
+/// vendor subsection of an `.ARM.attributes` blob.
+fn parse_aeabi_file_attr(data: &[u8], want: u32) -> Option<u32> {
     fn uleb(data: &[u8], pos: &mut usize) -> Option<u32> {
         let mut v: u32 = 0;
         let mut shift = 0u32;
@@ -10772,8 +10826,8 @@ fn parse_aeabi_thumb_isa_use(data: &[u8]) -> Option<u32> {
                     pos += nul + 1;
                 } else {
                     let value = uleb(data, &mut pos)?;
-                    if attr_tag == 9 {
-                        return Some(value); // Tag_THUMB_ISA_use
+                    if attr_tag == want {
+                        return Some(value);
                     }
                 }
             }

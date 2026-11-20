@@ -7,9 +7,14 @@ THE LEVELS (cumulative: L1 must also meet L2)
                        differential in a REQUIRED check, a WCET gate in a
                        required check, and an acceptance-ladder rung that
                        measures THIS backend.
-  L2 execution-tested  wasmtime execution differentials that the oracle-wiring
-                       gate classifies as `wired`, and named loud-decline
-                       evidence. "EVERY unsupported shape declines loudly" is
+  L2 execution-tested  execution differentials that RUN in CI, and named
+                       loud-decline evidence. A differential is either a
+                       wasmtime differential under scripts/repro that the
+                       oracle-wiring gate classifies as `wired`, or a Rust
+                       oracle under crates/synth-oracle/tests (kiln reference
+                       against unicorn; new oracles are Rust since
+                       2026-11-18) that a workflow step runs AND pins by an
+                       exact `ORACLE <tag>:` result line (`rust_differential`). "EVERY unsupported shape declines loudly" is
                        NOT mechanically checkable; what is checked is that the
                        named decline tripwires exist and run. The residual is
                        stated in the table, not implied away.
@@ -21,6 +26,9 @@ WHERE EACH FACT LIVES (one source each, nothing hand-copied)
   * the LEVEL and the evidence NAMES: `support_levels:` in claims.yaml;
   * whether an oracle RUNS: `oracle_wiring_check.classify` (imported, not
     re-implemented), and which JOB runs it: `oracle_wiring_check.step_chunks`;
+    for a Rust oracle, `rust_differential` below, over the same
+    `step_chunks` reading of a workflow step (the wiring gate collects
+    scripts/repro only, so it has no record of a `.rs` oracle to import);
   * which jobs are REQUIRED: `ci_pool_tripwire.REQUIRED_CONTEXTS`, resolved by
     `ci_pool_tripwire.resolve_required_contexts` (imported);
   * which backend a piece of evidence is ABOUT: `BACKENDS` below. It is code,
@@ -91,6 +99,11 @@ SECTION = "## Support levels"
 #                A proof about another ISA's model cannot be cited (RQ-91-LEVELGATE).
 #                None = no Rocq ISA model exists for this backend, so NO proof
 #                file can be bound and L1 is unreachable until one is written.
+#   emu_cpu    — must match the CODE (comments and strings blanked) of a Rust
+#                oracle cited as a differential: the unicorn CPU model the
+#                oracle executes on. Compiling for a target and emulating on
+#                another core's model is not a differential about this
+#                backend. Absent = no Rust oracle can be bound to the backend.
 # The WCET gate is bound by `invocation`, matched against the gate's string
 # literals in a compile-TARGET position (`rust_target_literals`): an argument
 # of a `compile*` helper call, or the literal after `-t`/`--target`/`-b`. A
@@ -126,7 +139,23 @@ BACKENDS = {
         "ladder": r"^cortex-r5$",
         "proof_isa": None,
     },
+    # RQ-92-WDGTHIN (#1741): ARMv6-M. Its differentials are Rust oracles that
+    # execute on unicorn's Cortex-M0 model. No Rocq file models ARMv6-M
+    # encoding, and no WCET model covers the core, so L1 is unreachable.
+    "cortex-m0-armv6m": {
+        "invocation": r"\bcortex-m0(?:plus)?\b",
+        "identity": r"cortex-m0|ARMv6-M",
+        "ladder": r"^cortex-m0(?:plus)?$",
+        "proof_isa": None,
+        "emu_cpu": r"\bCpu::CortexM0\b",
+    },
 }
+
+RUST_ORACLE_DIR = "crates/synth-oracle/tests/"
+# The command that runs the oracle crate WITH its engines; without
+# `--features exec` every oracle file is `#![cfg]`-ed out and runs nothing.
+RUST_ORACLE_RUN = re.compile(
+    r"cargo\s+test\b[^\n]*-p\s+synth-oracle\b[^\n]*--features\s+exec\b")
 
 # The only L1 criterion that may be declared open, and the verifier of its cause.
 OPENABLE = {"ladder"}
@@ -340,6 +369,74 @@ def rust_target_literals(text):
     return out
 
 
+def rust_oracle_tags(text):
+    """The `ORACLE <tag>:` result lines a Rust oracle prints: the tag of every
+    string literal that begins `ORACLE <tag>:`."""
+    tags = set()
+    for s in rust_string_literals(text):
+        m = re.match(r"ORACLE ([^:{}\n]+):", s)
+        if m:
+            tags.add(m.group(1))
+    return tags
+
+
+def rust_differential(root, d, spec, steps):
+    """Why the Rust oracle `d` is NOT a wired execution differential about the
+    backend `spec`, or None when it is one.
+
+    * a kiln-vs-unicorn differential: under RUST_ORACLE_DIR, compiled only
+      with the engines (`#![cfg(feature = "exec")]`), and its CODE calls the
+      harness's judged comparison (`run_case` / `run_hosted`);
+    * ABOUT the backend: a string literal in a compile-TARGET position
+      matches `invocation`, and the code names the backend's emulator model
+      (`emu_cpu`);
+    * WIRED: some workflow step runs the oracle crate with `--features exec`
+      (and, if it filters with `--test`, selects this file) and the SAME step
+      greps, exactly (`grep -qx`), an `ORACLE <tag>:` line whose tag this file
+      prints and no other oracle file does. A step that runs the crate but
+      pins no result line of this file would stay green with the file's
+      tests deleted, so it does not count."""
+    if not d.startswith(RUST_ORACLE_DIR):
+        return (f"is a Rust file outside {RUST_ORACLE_DIR} — only an oracle of the "
+                f"synth-oracle harness can be cited as a differential")
+    text = (root / d).read_text(errors="ignore")
+    _lits, code = _rust_lex(text)
+    if not re.search(r'^#!\[cfg\(feature\s*=\s*"exec"\)\]', text, re.M):
+        return 'is not gated on `#![cfg(feature = "exec")]`, so it runs no engine'
+    if not re.search(r"\b(?:run_case|run_hosted)\s*\(", code):
+        return ("is not a kiln-vs-unicorn execution differential (its code calls "
+                "neither `run_case` nor `run_hosted`)")
+    if not any(re.search(spec["invocation"], s) for s in rust_target_literals(text)):
+        return (f"never compiles for this backend (no compile-target literal "
+                f"matches /{spec['invocation']}/)")
+    emu = spec.get("emu_cpu")
+    if not emu:
+        return ("cannot be bound to this backend — no emulator model is "
+                "registered for it (BACKENDS emu_cpu)")
+    if not re.search(emu, code):
+        return (f"never executes on this backend's emulator model (its code "
+                f"names nothing matching /{emu}/)")
+    stem = pathlib.Path(d).stem
+    others = set()
+    for p in sorted((root / RUST_ORACLE_DIR).glob("*.rs")):
+        if p.name != pathlib.Path(d).name:
+            others |= rust_oracle_tags(p.read_text(errors="ignore"))
+    own = rust_oracle_tags(text) - others
+    if not own:
+        return "prints no `ORACLE <tag>:` result line of its own to pin"
+    for s in steps:
+        if not RUST_ORACLE_RUN.search(s):
+            continue
+        only = re.findall(r"--test\s+([\w-]+)", s)
+        if only and stem not in only:
+            continue
+        if any(re.search(r"grep\s+-qx\s+'ORACLE " + re.escape(t) + ":", s) for t in own):
+            return None
+    return ("is not WIRED (no workflow step runs `cargo test -p synth-oracle "
+            "--features exec` and pins one of its `ORACLE <tag>:` lines with "
+            "`grep -qx`) — DEMOTION")
+
+
 def rocq_strip_comments(text):
     """Rocq source with its comments removed. Rocq comments NEST, so the
     innermost `(* ... *)` is removed until none is left; a non-greedy single
@@ -426,15 +523,23 @@ def check(root, ledger, required):
             continue
         inv, ident = re.compile(spec["invocation"]), re.compile(spec["identity"])
 
-        # --- L2: wired wasmtime differentials about this backend ----------
+        # --- L2: wired execution differentials about this backend ---------
         diffs = e.get("differentials") or []
         if not diffs:
-            fails.append(f"{where}: {level} needs >=1 wasmtime differential; none named")
+            fails.append(f"{where}: {level} needs >=1 execution differential; none named")
         good_diffs = []
         for d in diffs:
             p = root / d
             if not p.exists():
                 fails.append(f"{where}: differential {d} does not exist")
+                continue
+            if d.endswith(".rs"):
+                why = rust_differential(root, d, spec, steps)
+                if why:
+                    fails.append(f"{where}: {d} {why}")
+                    continue
+                named(p.name, "differential")
+                good_diffs.append(p.name)
                 continue
             text = p.read_text(errors="ignore")
             if "wasmtime" not in text:
@@ -603,6 +708,22 @@ jobs:
     steps:
       - run: python3 scripts/oracle_run.py scripts/repro/rv_diff.py
 """
+_ORACLE_WF = """on:
+  pull_request:
+jobs:
+  oracle:
+    name: Oracle
+    steps:
+      - run: |
+          cargo test -p synth-oracle --features exec -- --nocapture | tee log
+          grep -qx 'ORACLE m0-diff: 7 cases agree' log
+"""
+_M0_ORACLE = ('//! An ARMv6-M oracle.\n#![cfg(feature = "exec")]\n'
+              'use synth_oracle::emulate::Cpu;\n'
+              '#[test]\nfn agree() {\n'
+              '    let obj = compile_probes("cortex-m0");\n'
+              '    let c = run_case(&obj, Cpu::CortexM0);\n'
+              '    eprintln!("ORACLE m0-diff: {} cases agree", c);\n}\n')
 _CENSUS = ('def run_synth(synth, module, backend, extra, timeout):\n'
            '    cmd = [synth, "compile", "-b", backend, "--relocatable"]\n'
            'LADDER_RUNGS = [("default", [])]\n')
@@ -612,6 +733,7 @@ _TABLE = ("# M\n\n" + SECTION + "\n\nCites ACCEPTANCE_LADDER.md.\n\n"
           "| CM | L1 verified | m_diff.py in Spec Exec; P.v in Bazel; wcet_gate in "
           "Test; m_decl.rs; coq/P.v; ladder not met: partial_census_1017.py |\n"
           "| RV | L2 execution-tested | rv_diff.py; rv_decl.rs |\n"
+          "| M0 | L2 execution-tested | m0_oracle.rs; m0_decl.rs |\n"
           "| X | L3 experimental | none |\n\n## After\n")
 
 
@@ -628,6 +750,9 @@ def _ledger():
          "differentials": ["scripts/repro/rv_diff.py"],
          "declines": ["crates/c/tests/rv_decl.rs"]},
         {"id": "x86-64", "row": "X", "level": "L3"},
+        {"id": "cortex-m0-armv6m", "row": "M0", "level": "L2",
+         "differentials": [RUST_ORACLE_DIR + "m0_oracle.rs"],
+         "declines": ["crates/c/tests/m0_decl.rs"]},
     ]}
 
 
@@ -637,6 +762,12 @@ def _tree(tmp):
         "scripts/repro/rv_diff.py": _DIFF.format(inv="-b riscv"),
         "crates/c/tests/m_decl.rs": "// Thumb decline\n#[test]\nfn t() {}\n",
         "crates/c/tests/rv_decl.rs": "// riscv decline\n#[test]\nfn t() {}\n",
+        "crates/c/tests/m0_decl.rs": "// cortex-m0 decline\n#[test]\nfn t() {}\n",
+        RUST_ORACLE_DIR + "m0_oracle.rs": _M0_ORACLE,
+        # A second oracle file, about another backend, in the same crate.
+        RUST_ORACLE_DIR + "m3_oracle.rs": _M0_ORACLE.replace("m0-diff", "m3-diff")
+        .replace("cortex-m0", "cortex-m3").replace("CortexM0", "CortexM3"),
+        ".github/workflows/oracle.yml": _ORACLE_WF,
         # The raw string holds an ODD number of quotes before the target
         # literal: a quote-pairing regex mis-pairs everything after it (as it
         # did on the real wcet_bound_gate.rs), so the green baseline itself
@@ -842,6 +973,60 @@ def self_test():
          lad_rv, "'cortex-m-thumb2': L1 ladder criterion NOT MET",
          lambda led: (led["backends"][0].pop("open"),
                       led["backends"][0].update(ladder_rung="riscv")))
+    # --- RQ-92-WDGTHIN: a Rust kiln oracle as an L2 differential ---------------
+    M0 = RUST_ORACLE_DIR + "m0_oracle.rs"
+    WF = ".github/workflows/oracle.yml"
+    GREP = "          grep -qx 'ORACLE m0-diff: 7 cases agree' log\n"
+    case("Rust oracle: its exact result line is no longer grepped",
+         lambda t: _edit(t, WF, GREP, ""), "m0_oracle.rs is not WIRED")
+    case("Rust oracle: the grep is commented out",
+         lambda t: _edit(t, WF, GREP, "          # " + GREP.lstrip()),
+         "m0_oracle.rs is not WIRED")
+    case("Rust oracle: the step greps ANOTHER oracle file's line",
+         lambda t: _edit(t, WF, "ORACLE m0-diff: 7", "ORACLE m3-diff: 7"),
+         "m0_oracle.rs is not WIRED")
+    case("Rust oracle: the crate is run without `--features exec`",
+         lambda t: _edit(t, WF, " --features exec", ""), "m0_oracle.rs is not WIRED")
+    case("Rust oracle: the step filters to another `--test` file",
+         lambda t: _edit(t, WF, "--features exec --", "--features exec --test m3_oracle --"),
+         "m0_oracle.rs is not WIRED")
+    case("Rust oracle: a `--test` filter that selects it stays GREEN",
+         lambda t: _edit(t, WF, "--features exec --", "--features exec --test m0_oracle --"),
+         None)
+    case("Rust oracle: its tag is also printed by another oracle file",
+         lambda t: _edit(t, RUST_ORACLE_DIR + "m3_oracle.rs", "m3-diff", "m0-diff"),
+         "prints no `ORACLE <tag>:` result line of its own")
+    case("Rust oracle: emulates on ANOTHER core's model",
+         lambda t: _edit(t, M0, "run_case(&obj, Cpu::CortexM0)", "run_case(&obj, Cpu::CortexM3)"),
+         "never executes on this backend's emulator model")
+    case("Rust oracle: the emulator model is named in a comment only",
+         lambda t: _edit(t, M0, "run_case(&obj, Cpu::CortexM0)",
+                         "run_case(&obj, Cpu::CortexM3) // Cpu::CortexM0"),
+         "never executes on this backend's emulator model")
+    case("Rust oracle: compiles for ANOTHER target",
+         lambda t: _edit(t, M0, 'compile_probes("cortex-m0")', 'compile_probes("cortex-m3")'),
+         "never compiles for this backend")
+    case("Rust oracle: no judged comparison (run_case only in a comment)",
+         lambda t: _edit(t, M0, "let c = run_case(&obj, Cpu::CortexM0);",
+                         "let c = emu(&obj, Cpu::CortexM0); // run_case(&obj)"),
+         "is not a kiln-vs-unicorn execution differential")
+    case("Rust oracle: not gated on the exec feature",
+         lambda t: _edit(t, M0, '#![cfg(feature = "exec")]\n', ""),
+         "is not gated on")
+    case("Rust file outside the oracle crate cited as a differential",
+         None, "is a Rust file outside",
+         lambda led: led["backends"][3].update(differentials=["crates/c/tests/m0_decl.rs"]))
+    case("BORROWED Rust oracle: RV32 cites the ARMv6-M oracle",
+         lambda t: _edit(t, DOC, "rv_diff.py; rv_decl.rs", "rv_diff.py; m0_oracle.rs; rv_decl.rs"),
+         "'rv32': crates/synth-oracle/tests/m0_oracle.rs never compiles for this backend",
+         lambda led: led["backends"][1]["differentials"].append(M0))
+    case("promotion by assertion: ARMv6-M L2 with no differential",
+         None, "needs >=1 execution differential",
+         lambda led: led["backends"][3].update(differentials=[]))
+    case("ARMv6-M declared L1: no Rocq ISA model, so no proof can be bound",
+         lambda t: _edit(t, DOC, "| M0 | L2 execution-tested |", "| M0 | L1 verified |"),
+         "'cortex-m0-armv6m': L1 needs Rocq proofs",
+         lambda led: led["backends"][3].update(level="L1"))
     print(f"support_level_check self-test: {bad} failure(s)")
     return 1 if bad else 0
 

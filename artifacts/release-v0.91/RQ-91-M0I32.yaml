@@ -88,6 +88,17 @@ artifacts:
         d6fff037 both pins measure 0 of 216 vectors wrong, and the oracle
         pins that 0 exactly.
 
+        ON THE TREE THIS LANDS ON (v0.92, RQ-92-WDGTHIN, Refs #1741): the
+        figures in this record are this lane's own branch, measured before
+        two later changes. The #1754 fix (v0.92 wrong-code batch 1) is
+        underneath: both pinned shapes were re-measured at 0 of 216 vectors
+        wrong, the `KNOWN_1754` pin is gone and they are accepted probes
+        (`s1754_b1`, `s1754_b1b`). Direct calls are lowered, so the two call
+        probes left this oracle's decline module for
+        `armv6m_call_oracle.rs`. The oracle's counts on that tree are 106
+        accepted, 18 declined, 19412 cases, 19370 value comparisons, 21
+        trap/trap.
+
         FAIL-CLOSED BEHIND IT. `armv6m::check_bytes` still checks every
         encoded instruction, and now also refuses any 16-bit MOV/ADD that
         writes R8-R12 (`ReservedWrite`). The NZCV verifier runs on every

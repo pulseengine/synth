@@ -24,6 +24,7 @@
 //! covers every host call (module, field, arguments, results, in order), and
 //! memory effects are compared through what later calls in the sequence read.
 
+pub mod armv6m;
 pub mod compare;
 pub mod cycles;
 pub mod probes;

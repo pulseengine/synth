@@ -9,8 +9,9 @@
 //!
 //! 1. ACCEPTANCE, EXACT both ways: the exports that compile are exactly
 //!    [`ACCEPTED`]; a second module of shapes this lane does not lower
-//!    (division, bit counts, i64 arithmetic, calls, memory, globals, stack-passed
-//!    parameters) declines
+//!    (division, bit counts, i64 arithmetic, memory, globals, stack-passed
+//!    parameters; direct calls are lowered since RQ-92-WDGTHIN and have their own
+//!    oracle, `armv6m_call_oracle.rs`) declines
 //!    exactly [`DECLINED`], each with the ARMv6-M diagnostic. RED on the stack
 //!    base, where only a handful of these compiled.
 //! 2. ARMv6-M, DECODED: every halfword of every accepted function is in the
@@ -36,9 +37,8 @@
 //! with `rd == rm`, scratch always dead), each measured red against a
 //! mutant binary. The `d_rung_*` declines are the shapes only the selector's
 //! register-pressure recovery rungs select (F1, wrong values before they were
-//! declined on ARMv6-M). `KNOWN_1754` pinned the pre-existing #1754
-//! `select` defect, which this lane does not fix; the #1754 fix (v0.92 batch
-//! 1, on main underneath this lane) moved both pins to 0.
+//! declined on ARMv6-M). The two #1754 `select` shapes, pinned wrong by
+//! RQ-91-M0I32, are accepted probes since the fix (`s1754_*`).
 //!
 //! Needs `--features exec`. `SYNTH` may name a prebuilt binary.
 
@@ -47,6 +47,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use synth_oracle::armv6m::{legal16_table, v6m_violations};
 use synth_oracle::compare::{EmuOutcome, RefOutcome, Verdict};
 use synth_oracle::emulate::{self, Cpu, EmuConfig};
 use synth_oracle::reference::Imports;
@@ -250,6 +251,13 @@ const PROBES_WAT: &str = r#"
   (func (export "fz7004_f3") (param i32) (result i32)  (local.set 0 (i32.rotr (i32.shr_u (local.tee 0 (local.get 0)) (i32.shr_s (local.get 0) (local.get 0))) (i32.rotl (i32.shr_u (local.get 0) (i32.const -5)) (i32.shl (local.get 0) (local.get 0))))) (local.set 0 (local.get 0)) (i32.add (i32.rotr (i32.rotl (local.get 0) (local.tee 0 (local.get 0))) (i32.rotr (local.get 0) (i32.rotl (local.get 0) (i32.const 74)))) (local.get 0)))
   (func (export "fz7004_f4") (param i32 i32 i32 i32) (result i32) (local i32 i32 i32) (local.set 1 (i32.rotl (i32.rotl (local.get 2) (local.get 0)) (i32.shr_u (local.get 2) (local.get 5)))) (local.set 2 (local.get 5)) (i32.rotr (i32.rotr (i32.shl (local.get 4) (local.get 4)) (if (result i32) (local.get 3) (then (i32.const -129)) (else (i32.const 1020)))) (select (i32.rotl (local.get 2) (local.get 6)) (select (local.get 3) (i32.const 65536) (local.get 4)) (i32.const -6145))))
   (func (export "fz7004_f5") (param i32 i32) (result i32) (local i32 i32 i32 i32 i32) (nop) (if (i32.rotr (local.get 4) (local.get 3)) (then (local.set 0 (i32.rotr (i32.shr_s (i32.const 7405568) (local.get 1)) (i32.rotl (local.get 4) (local.get 3))))) (else )) (i32.xor (i32.shr_u (i32.rotr (select (local.get 5) (local.get 0) (local.get 3)) (local.tee 2 (local.get 3))) (i32.const 4096)) (local.get 5)))
+  ;; #1754: `select` wrote a parameter's home register while that parameter
+  ;; was still on the operand stack. Pinned wrong here by RQ-91-M0I32 (75 and
+  ;; 150 of 216 vectors); fixed in the direct selector by v0.92 batch 1, and
+  ;; re-measured on that fix at 0 of 216 each, so both are ordinary accepted
+  ;; probes now and every vector is required to agree.
+  (func (export "s1754_b1") (param i32 i32 i32) (result i32) (i32.gt_s (local.get 0) (select (local.get 2) (local.get 0) (local.get 1))))
+  (func (export "s1754_b1b") (param i32 i32 i32) (result i32) (i32.add (local.get 0) (select (local.get 2) (local.get 0) (local.get 1))))
   (func (export "fz7004_f7") (param i32) (result i32) (local i32 i32 i32) (local.set 2 (if (result i32) (i32.const -256) (then (local.get 3)) (else (local.get 0)))) (if (i32.shr_u (i32.rotl (local.get 2) (local.get 0)) (i32.rotr (local.get 1) (local.get 1))) (then (local.set 0 (i32.const 16777215)) (local.set 0 (local.get 0)) (local.set 1 (local.get 3))) (else (local.set 2 (local.get 3)))) (i32.shr_s (i32.shl (i32.shl (local.get 0) (i32.const 147)) (i32.rotr (local.get 2) (local.get 0))) (i32.const 1024)))
 )
 "#;
@@ -260,7 +268,6 @@ const DECLINE_WAT: &str = r#"
   (import "env" "ext" (func $ext (param i32) (result i32)))
   (memory 1)
   (global $g (mut i32) (i32.const 3))
-  (func $inc (param i32) (result i32) local.get 0 i32.const 1 i32.add)
   (func (export "d_div_u") (param i32 i32) (result i32) local.get 0 local.get 1 i32.div_u)
   (func (export "d_rem_s") (param i32 i32) (result i32) local.get 0 local.get 1 i32.rem_s)
   (func (export "d_clz") (param i32) (result i32) local.get 0 i32.clz)
@@ -268,8 +275,6 @@ const DECLINE_WAT: &str = r#"
   (func (export "d_popcnt") (param i32) (result i32) local.get 0 i32.popcnt)
   (func (export "d_i64_add") (param i64 i64) (result i64) local.get 0 local.get 1 i64.add)
   (func (export "d_i64_lt_s") (param i64 i64) (result i32) local.get 0 local.get 1 i64.lt_s)
-  (func (export "d_call") (param i32) (result i32) local.get 0 call $inc)
-  (func (export "d_call_import") (param i32) (result i32) local.get 0 call $ext)
   (func (export "d_load") (param i32) (result i32) local.get 0 i32.load)
   (func (export "d_store") (param i32 i32) local.get 0 local.get 1 i32.store)
   (func (export "d_global_get") (result i32) global.get $g)
@@ -288,27 +293,6 @@ const DECLINE_WAT: &str = r#"
   (func (export "d_scratch_live") (param i32 i32 i32 i32) (result i32) (local i32 i32 i32 i32) (local.set 5 (if (result i32) (local.get 3) (then (local.get 6)) (else (i32.const -1)))) (local.set 3 (if (result i32) (i32.rotr (block $L1 (result i32) (drop (br_if $L1 (local.get 4) (i32.const 1020))) (local.get 3)) (i32.rotr (local.get 4) (local.get 6))) (then (i32.const 71785337)) (else (local.get 7)))) (i32.add (i32.sub (i32.xor (i32.xor (i32.add (i32.add (i32.xor (i32.shl (i32.rotl (i32.shl (local.get 2) (local.get 3)) (i32.shr_s (local.get 4) (i32.const 65280))) (i32.rotr (block $L2 (result i32) (drop (br_if $L2 (local.get 0) (i32.const -1615162075))) (local.get 4)) (local.get 3))) (local.get 0)) (local.get 4)) (local.get 2)) (local.get 3)) (local.get 5)) (local.get 7)) (local.get 1)))
 )
 "#;
-
-/// #1754 (cold review 15 F2): `select` overwrites a parameter's home
-/// register while that parameter is still on the operand stack. PRE-EXISTING
-/// in the ARM direct selector (wrong on cortex-m3 `--relocatable` at the stack
-/// base too), filed as #1754 and NOT fixed in this lane. On ARMv6-M these
-/// shapes compile and return a wrong value on exactly the pinned number of
-/// vectors; the pin is exact both ways, so the fix moves it (to 0) in its own
-/// PR. (repro/b2.wat, the third shape, declines on ARMv6-M: only the spill
-/// rung selects it.) MOVED: the #1754 fix landed on main (v0.92 batch 1,
-/// tests/select_home_alias_1754.rs); re-measured on the tree this lane was
-/// rebased onto, both shapes are 0 of 216 wrong (were 75 and 150), and the
-/// exact pin now holds the fix on ARMv6-M.
-const KNOWN_1754_WAT: &str = r#"
-(module
-  (func (export "k1754_b1") (param i32 i32 i32) (result i32) (i32.gt_s (local.get 0) (select (local.get 2) (local.get 0) (local.get 1))))
-  (func (export "k1754_b1b") (param i32 i32 i32) (result i32) (i32.add (local.get 0) (select (local.get 2) (local.get 0) (local.get 1))))
-)
-"#;
-
-/// Wrong-value vectors per #1754 shape, over `vectors_for(3)` (216 each).
-const KNOWN_1754: &[(&str, usize)] = &[("k1754_b1", 0), ("k1754_b1b", 0)];
 
 /// The exports of [`PROBES_WAT`] that compile for cortex-m0 / cortex-m0plus.
 /// EXACT both ways: a probe moving in either direction reds.
@@ -416,6 +400,8 @@ const ACCEPTED: &[&str] = &[
     "fz7004_f3",
     "fz7004_f4",
     "fz7004_f5",
+    "s1754_b1",
+    "s1754_b1b",
     "fz7004_f7",
 ];
 
@@ -429,8 +415,6 @@ const DECLINED: &[&str] = &[
     "d_popcnt",
     "d_i64_add",
     "d_i64_lt_s",
-    "d_call",
-    "d_call_import",
     "d_load",
     "d_store",
     "d_global_get",
@@ -533,85 +517,6 @@ fn exports(wat_src: &str) -> Vec<String> {
         }
     }
     v
-}
-
-// ------------------------------------------------------------ decode leg --
-
-/// The frozen LLVM-derived 16-bit ARMv6-M table, read from the fixture
-/// (`{"legal_count": N, "legal_ranges": [[lo, hi], ...], ...}`).
-fn legal16_table() -> Vec<(u16, u16)> {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/armv6m_legal16_1301.json"
-    );
-    let text = std::fs::read_to_string(path).expect("fixture");
-    let key = "\"legal_ranges\":";
-    let start = text.find(key).expect("legal_ranges") + key.len();
-    let end = start + text[start..].find("]]").expect("end of legal_ranges");
-    let ints: Vec<u32> = text[start..end]
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.parse().unwrap())
-        .collect();
-    assert!(
-        !ints.is_empty() && ints.len().is_multiple_of(2),
-        "legal_ranges shape"
-    );
-    let t: Vec<(u16, u16)> = ints.chunks(2).map(|c| (c[0] as u16, c[1] as u16)).collect();
-    // The fixture's own count, re-derived: a truncated read reds here.
-    let count: usize = t
-        .iter()
-        .map(|&(lo, hi)| (lo..=hi).filter(|&h| !is_prefix(h)).count())
-        .sum();
-    let key = "\"legal_count\":";
-    let c0 = text.find(key).expect("legal_count") + key.len();
-    let c1 = c0 + text[c0..].find(',').expect("legal_count end");
-    assert_eq!(count, text[c0..c1].trim().parse::<usize>().unwrap());
-    t
-}
-
-fn is_prefix(h: u16) -> bool {
-    matches!(h >> 11, 0b11101..=0b11111)
-}
-
-/// Every reason `bytes` is not ARMv6-M under synth's contract, as
-/// `+offset: hex: why`.
-fn v6m_violations(bytes: &[u8], table: &[(u16, u16)]) -> Vec<String> {
-    let mut bad = Vec::new();
-    let hw = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        let h = hw(i);
-        if is_prefix(h) {
-            if i + 3 >= bytes.len() {
-                bad.push(format!("+{i:x}: {h:04x}: truncated 32-bit"));
-                break;
-            }
-            let h2 = hw(i + 2);
-            let bl = h >> 11 == 0b11110 && h2 & 0xD000 == 0xD000;
-            let barrier = h == 0xF3BF && matches!(h2, 0x8F4F | 0x8F5F | 0x8F6F);
-            if !(bl || barrier) {
-                bad.push(format!("+{i:x}: {h:04x} {h2:04x}: 32-bit, not BL/barrier"));
-            }
-            i += 4;
-            continue;
-        }
-        if !table.iter().any(|&(lo, hi)| (lo..=hi).contains(&h)) {
-            bad.push(format!("+{i:x}: {h:04x}: not in the ARMv6-M table"));
-        } else if h & 0xF800 == 0x4800 {
-            bad.push(format!("+{i:x}: {h:04x}: 16-bit LDR (literal)"));
-        } else if h & 0xFC00 == 0x4400 && matches!((h >> 8) & 3, 0 | 2) {
-            let rd = ((h >> 4) & 0x8) | (h & 7);
-            if (8..=12).contains(&rd) {
-                bad.push(format!("+{i:x}: {h:04x}: writes R{rd}"));
-            }
-        }
-        i += 2;
-    }
-    if !bytes.len().is_multiple_of(2) {
-        bad.push("odd length".into());
-    }
-    bad
 }
 
 // ---------------------------------------------------------------- gates --
@@ -841,8 +746,8 @@ fn accepted_probes_agree_with_kiln_on_the_m0_model() {
         cases.len()
     );
     // EXACT literals: a shrunk probe set or vector list reds here.
-    assert_eq!(cases.len(), 18980, "case count moved");
-    assert_eq!(values, 18938, "value-comparison count moved");
+    assert_eq!(cases.len(), 19412, "case count moved");
+    assert_eq!(values, 19370, "value-comparison count moved");
     assert_eq!(traps, 21, "trap/trap count moved");
 }
 
@@ -918,35 +823,4 @@ fn potency_planted_wrong_reference_reds() {
         })
         .count();
     assert_eq!(disagree, VECTORS.len(), "planted le_s-for-lt_s");
-}
-
-#[test]
-fn known_1754_select_overwrites_param_home_is_pinned() {
-    let w = wat::parse_str(KNOWN_1754_WAT).unwrap();
-    let (obj, e) = compile_wat(KNOWN_1754_WAT, &v6m_flags("cortex-m0"), "known-1754");
-    let obj = obj.unwrap_or_else(|| panic!("cortex-m0: {e}"));
-    let cfg = EmuConfig::new(Cpu::CortexM0);
-    for (p, want) in KNOWN_1754 {
-        assert!(
-            obj.func(p).is_some(),
-            "#1754 shape {p} no longer compiles: {e}"
-        );
-        let wrong = vectors_for(3)
-            .iter()
-            .filter(|a| {
-                let c = run_case(&w, &obj, p, a, FUEL, &Imports::new(), &cfg).unwrap();
-                assert!(
-                    !matches!(c.emulator, EmuOutcome::Illegal { .. }),
-                    "{p}{a:?}: {:?}",
-                    c.emulator
-                );
-                matches!(c.verdict, Verdict::Disagree(_))
-            })
-            .count();
-        eprintln!(
-            "KNOWN #1754 {p}: {wrong} of {} vectors wrong",
-            vectors_for(3).len()
-        );
-        assert_eq!(wrong, *want, "#1754 pin for {p} moved");
-    }
 }

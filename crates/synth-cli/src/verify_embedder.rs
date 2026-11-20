@@ -714,8 +714,246 @@ fn run_objdump(input: &Path, thumb: bool) -> Result<(String, String)> {
     )
 }
 
+// ---------------------------------------------------------------------------
+// The ARMv6-M leg (RQ-92-WDGTHIN, #1741).
+//
+// A Cortex-M0/M0+ executes ARMv6-M: the 16-bit Thumb set plus BL, MSR, MRS and
+// the barriers. Code assembled for ARMv7-M (`movw`/`movt`, `ldr.w`, `mov.w`,
+// `push.w`, IT, CBZ) links without complaint and takes a HardFault on the
+// first such instruction — in a boot shim, before the first export runs. The
+// register scan above cannot see that: `movw r11, #0` in the establishment
+// site is an ACKNOWLEDGED write, and objdump renders it the same for either
+// architecture. So this leg reads the BYTES of every executable section and
+// refuses any instruction that is not ARMv6-M
+// (`synth_backend::armv6m::arch_violations`: the frozen LLVM-derived 16-bit
+// table and the architecture's 32-bit set). `--allow-writer` does not waive
+// it: an acknowledged symbol still has to execute on the core.
+//
+// Code is separated from data by the ELF's own markers: ARM mapping symbols
+// (`$t` Thumb, `$d` data, `$a` ARM) and `STT_FUNC` symbols (Thumb bit set =
+// Thumb code from there; clear = ARM code). Every disagreement is read the
+// fail-closed way, since treating code as data would skip it: a region that
+// begins before any marker is decoded AS THUMB CODE, and where a `$d` and a
+// function symbol name the same address the function wins. The second case
+// is not hypothetical: synth's own objects carry function symbols but no
+// mapping symbols, so in a linked image a function of synth's that follows
+// another object's literal pool sits under that object's `$d` (GNU objdump
+// renders it as `.word` data). ARM-state code is itself a refusal: an
+// M-profile core has no ARM state.
+// ---------------------------------------------------------------------------
+
+/// One thing the ARMv6-M leg refuses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct V6mFinding {
+    /// The executable section it is in.
+    pub section: String,
+    /// Its address (section-relative in an object, absolute in an image).
+    pub address: u64,
+    /// The nearest preceding named symbol of that section.
+    pub symbol: String,
+    /// The instruction bytes, as halfwords in hex (empty for a region).
+    pub bytes: String,
+    /// The ARMv6-M restriction it hits.
+    pub class: &'static str,
+}
+
+/// What the ARMv6-M leg read.
+#[derive(Debug, Default)]
+pub struct V6mReport {
+    /// Bytes decoded as Thumb code.
+    pub code_bytes: usize,
+    /// Bytes skipped as data (`$d` regions).
+    pub data_bytes: usize,
+    /// Non-empty executable sections read.
+    pub sections: usize,
+    /// Executable sections that carry no code/data marker at all.
+    pub unmarked_sections: usize,
+    pub findings: Vec<V6mFinding>,
+}
+
+/// Ordered by who wins at one address: `Data < Thumb < Arm`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Region {
+    Data,
+    Thumb,
+    Arm,
+}
+
+/// Scan every executable section of the ELF32 ARM file `elf` for
+/// instructions that are not ARMv6-M.
+pub fn scan_armv6m(elf: &[u8]) -> Result<V6mReport> {
+    use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
+    let file = object::File::parse(elf).context("not a readable ELF")?;
+    let mut report = V6mReport::default();
+    for section in file.sections() {
+        // `SectionKind::Text` is how `object` reports an ELF `SHF_EXECINSTR`
+        // section with file contents.
+        if section.kind() != SectionKind::Text {
+            continue;
+        }
+        let data = section.data().context("unreadable executable section")?;
+        if data.is_empty() {
+            continue;
+        }
+        let name = section.name().unwrap_or("?").to_string();
+        let base = section.address();
+        // (offset, region), sorted so that at one offset the fail-closed
+        // region is applied last and wins (see `Region`'s order).
+        let mut marks: Vec<(u64, Region)> = Vec::new();
+        let mut labels: Vec<(u64, String)> = Vec::new();
+        for sym in file.symbols() {
+            if sym.section_index() != Some(section.index()) {
+                continue;
+            }
+            let Ok(sname) = sym.name() else { continue };
+            let raw = sym.address().wrapping_sub(base);
+            let mapping = |p: &str| sname == p || sname.starts_with(&format!("{p}."));
+            if mapping("$t") {
+                marks.push((raw, Region::Thumb));
+            } else if mapping("$d") {
+                marks.push((raw, Region::Data));
+            } else if mapping("$a") {
+                marks.push((raw, Region::Arm));
+            } else {
+                if sym.kind() == SymbolKind::Text {
+                    let region = if raw & 1 == 1 {
+                        Region::Thumb
+                    } else {
+                        Region::Arm
+                    };
+                    marks.push((raw & !1, region));
+                }
+                if !sname.is_empty() {
+                    labels.push((raw & !1, sname.to_string()));
+                }
+            }
+        }
+        marks.sort();
+        labels.sort();
+        report.sections += 1;
+        if marks.is_empty() {
+            report.unmarked_sections += 1;
+        }
+        let label_at = |off: u64| -> String {
+            labels
+                .iter()
+                .rev()
+                .find(|(o, _)| *o <= off)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| "(before first symbol)".to_string())
+        };
+        // Regions: Thumb until the first marker says otherwise.
+        let len = data.len() as u64;
+        let mut cuts: Vec<(u64, Region)> = vec![(0, Region::Thumb)];
+        for (off, region) in marks {
+            if off >= len {
+                continue;
+            }
+            match cuts.last_mut() {
+                Some(last) if last.0 == off => last.1 = region,
+                _ => cuts.push((off, region)),
+            }
+        }
+        for (k, &(start, region)) in cuts.iter().enumerate() {
+            let end = cuts.get(k + 1).map_or(len, |c| c.0);
+            let bytes = &data[start as usize..end as usize];
+            match region {
+                Region::Data => report.data_bytes += bytes.len(),
+                Region::Arm => report.findings.push(V6mFinding {
+                    section: name.clone(),
+                    address: base + start,
+                    symbol: label_at(start),
+                    bytes: String::new(),
+                    class: "ARM-state (A32) code: an ARMv6-M core executes Thumb only",
+                }),
+                Region::Thumb => {
+                    report.code_bytes += bytes.len();
+                    for (off, v) in synth_backend::armv6m::arch_violations(bytes) {
+                        report.findings.push(V6mFinding {
+                            section: name.clone(),
+                            address: base + start + off as u64,
+                            symbol: label_at(start + off as u64),
+                            bytes: v.bytes_hex(),
+                            class: v.class(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// Whether `--target` asks for the ARMv6-M leg. An unknown name is an error:
+/// a misspelled target must not silently skip the check it was meant to add.
+fn target_is_armv6m(target: Option<&str>) -> Result<bool> {
+    let Some(name) = target else { return Ok(false) };
+    let spec = synth_core::target::TargetSpec::from_triple(name)
+        .map_err(|e| anyhow::anyhow!("verify-embedder --target {name}: {e}"))?;
+    Ok(spec.is_armv6m())
+}
+
+/// Run the ARMv6-M leg and print its verdict. `Err` on any finding.
+fn verify_armv6m(input: &Path, bytes: &[u8], why: &str) -> Result<()> {
+    let report = scan_armv6m(bytes)?;
+    if report.findings.is_empty() {
+        // NON-VACUITY FLOOR, as for the register scan.
+        anyhow::ensure!(
+            report.code_bytes > 0,
+            "verify-embedder ARMv6-M leg decoded 0 bytes of Thumb code in {} — \
+             refusing to report conformance about nothing",
+            input.display()
+        );
+        println!(
+            "verify-embedder ARMv6-M OK: {} — every instruction in {} bytes of \
+             Thumb code across {} executable section(s) is ARMv6-M ({} data \
+             bytes skipped) [{why}]",
+            input.display(),
+            report.code_bytes,
+            report.sections,
+            report.data_bytes,
+        );
+        if report.unmarked_sections > 0 {
+            println!(
+                "  bounds: {} executable section(s) carry no mapping or function \
+                 symbol and were decoded whole as Thumb code — literal data in \
+                 such a section is decoded as instructions",
+                report.unmarked_sections
+            );
+        }
+        return Ok(());
+    }
+    eprintln!(
+        "verify-embedder REFUSED: {} — {} instruction(s) that are not ARMv6-M \
+         (Cortex-M0/M0+ takes a HardFault on each) [{why}]:",
+        input.display(),
+        report.findings.len(),
+    );
+    for f in &report.findings {
+        eprintln!(
+            "  <{}> {}+0x{:x}: `{}` — {}",
+            f.symbol, f.section, f.address, f.bytes, f.class
+        );
+    }
+    eprintln!(
+        "  fix: build every object in the image for ARMv6-M (-mcpu=cortex-m0 / \
+         cortex-m0plus, -march=armv6-m) and rewrite hand-written assembly that \
+         uses ARMv7-M encodings (movw/movt, ldr.w, mov.w, push.w, IT, CBZ); \
+         --allow-writer does not waive this check"
+    );
+    anyhow::bail!(
+        "{} non-ARMv6-M instruction(s) — the linked code cannot run on an \
+         ARMv6-M core",
+        report.findings.len()
+    )
+}
+
 /// Entry point for `synth verify-embedder`.
-pub fn verify_embedder_command(input: &Path, allow_writer: Vec<String>) -> Result<()> {
+pub fn verify_embedder_command(
+    input: &Path,
+    allow_writer: Vec<String>,
+    target: Option<&str>,
+) -> Result<()> {
     anyhow::ensure!(input.exists(), "File not found: {}", input.display());
     let bytes = std::fs::read(input).context("failed to read input")?;
     let Some(thumb) = crate::detect_arm_thumb(&bytes) else {
@@ -727,6 +965,23 @@ pub fn verify_embedder_command(input: &Path, allow_writer: Vec<String>) -> Resul
             input.display()
         );
     };
+
+    // RQ-92-WDGTHIN (#1741): the ARMv6-M leg, BEFORE the register scan (it needs
+    // no disassembler, and code that cannot execute has no contract to keep).
+    // Asked for with `--target cortex-m0|cortex-m0plus`; also run when the
+    // ELF's own build attributes say ARMv6-M. The explicit flag is the one to
+    // rely on: a linker MERGES `Tag_CPU_arch` upward, so one ARMv7-M object in
+    // the image retags the whole image as ARMv7-M.
+    let tagged = matches!(crate::elf_cpu_arch(&bytes), Some(11 | 12));
+    if target_is_armv6m(target)? {
+        verify_armv6m(
+            input,
+            &bytes,
+            &format!("--target {}", target.unwrap_or_default()),
+        )?;
+    } else if tagged {
+        verify_armv6m(input, &bytes, "Tag_CPU_arch says ARMv6-M")?;
+    }
 
     let (text, tool) = run_objdump(input, thumb)?;
     let report = scan_disassembly(&text, &allow_writer);
