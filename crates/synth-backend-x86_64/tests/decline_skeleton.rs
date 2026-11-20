@@ -1,6 +1,12 @@
-//! Every shape lanes X1-X2 do not lower is an `Err` that NAMES its cause, and
-//! no object is produced. RQ-91-X86SKEL, RQ-91-X86ALU (#1741). The CLI half (non-zero exit, no
-//! file written) is `crates/synth-cli/tests/x86_64_skeleton_1741.rs`.
+//! Every shape lanes X1-X4 do not lower is an `Err` that NAMES its cause, and
+//! no object is produced. RQ-91-X86SKEL, RQ-91-X86ALU, RQ-91-X86FRAME (#1741).
+//! The CLI half (non-zero exit, no file written) is
+//! `crates/synth-cli/tests/x86_64_skeleton_1741.rs`.
+//!
+//! MOVED TO LOWERED in lanes X3-X4, and so no longer here: `local.set`,
+//! `local.tee`, a non-parameter local, a value stack deeper than the
+//! temporaries (it spills), `div`/`rem` and `clz`/`ctz`/`popcnt`. Their
+//! execution oracle is `crates/synth-oracle/tests/x86_64_frame_div_kiln_oracle.rs`.
 
 use synth_backend_x86_64::compile_wasm;
 
@@ -14,74 +20,6 @@ fn err(src: &str) -> String {
 
 /// `(case, module, a substring the refusal must contain)`.
 const CASES: &[(&str, &str, &str)] = &[
-    // Division and remainder: x86 `div`/`idiv` FAULT (#DE) on a zero divisor
-    // and on INT_MIN / -1, where wasm traps on the first and `rem_s` returns
-    // 0. Declined by name until the guards exist (lane X4), never lowered as
-    // a bare `idiv`.
-    (
-        "i32.div_s",
-        r#"(module (func (export "f") (param i32 i32) (result i32)
-             local.get 0 local.get 1 i32.div_s))"#,
-        "I32DivS",
-    ),
-    (
-        "i32.div_u",
-        r#"(module (func (export "f") (param i32 i32) (result i32)
-             local.get 0 local.get 1 i32.div_u))"#,
-        "I32DivU",
-    ),
-    (
-        "i32.rem_s",
-        r#"(module (func (export "f") (param i32 i32) (result i32)
-             local.get 0 local.get 1 i32.rem_s))"#,
-        "I32RemS",
-    ),
-    (
-        "i32.rem_u",
-        r#"(module (func (export "f") (param i32 i32) (result i32)
-             local.get 0 local.get 1 i32.rem_u))"#,
-        "I32RemU",
-    ),
-    (
-        "i64.div_s",
-        r#"(module (func (export "f") (param i64 i64) (result i64)
-             local.get 0 local.get 1 i64.div_s))"#,
-        "I64DivS",
-    ),
-    (
-        "i64.div_u",
-        r#"(module (func (export "f") (param i64 i64) (result i64)
-             local.get 0 local.get 1 i64.div_u))"#,
-        "I64DivU",
-    ),
-    (
-        "i64.rem_s",
-        r#"(module (func (export "f") (param i64 i64) (result i64)
-             local.get 0 local.get 1 i64.rem_s))"#,
-        "I64RemS",
-    ),
-    (
-        "i64.rem_u",
-        r#"(module (func (export "f") (param i64 i64) (result i64)
-             local.get 0 local.get 1 i64.rem_u))"#,
-        "I64RemU",
-    ),
-    // The bit counts: `lzcnt`/`tzcnt`/`popcnt` are above the baseline ISA.
-    (
-        "i32.clz",
-        r#"(module (func (export "f") (param i32) (result i32) local.get 0 i32.clz))"#,
-        "I32Clz",
-    ),
-    (
-        "i32.ctz",
-        r#"(module (func (export "f") (param i32) (result i32) local.get 0 i32.ctz))"#,
-        "I32Ctz",
-    ),
-    (
-        "i64.popcnt",
-        r#"(module (func (export "f") (param i64) (result i64) local.get 0 i64.popcnt))"#,
-        "I64Popcnt",
-    ),
     (
         "unreachable",
         r#"(module (func (export "f") (result i32) unreachable))"#,
@@ -98,19 +36,6 @@ const CASES: &[(&str, &str, &str)] = &[
         r#"(module (func (export "f") (param i32) (result i32)
              local.get 0 if (result i32) i32.const 1 else i32.const 2 end))"#,
         "If",
-    ),
-    (
-        "local.tee",
-        r#"(module (func (export "f") (param i32) (result i32)
-             local.get 0 local.tee 0))"#,
-        "LocalTee",
-    ),
-    (
-        "four temporaries in use at once",
-        r#"(module (func (export "f") (result i32)
-             i32.const 1 i32.const 2 i32.const 3 i32.const 4
-             i32.add i32.add i32.add))"#,
-        "more than 3 temporaries",
     ),
     (
         "f32.add",
@@ -137,17 +62,19 @@ const CASES: &[(&str, &str, &str)] = &[
              local.get 6))"#,
         "7 parameters",
     ),
+    // Lane X3: locals are lowered, but only i32/i64 ones, and only while
+    // the frame fits one page (no stack probe is emitted).
     (
-        "local.set",
-        r#"(module (func (export "f") (param i32) (result i32)
-             local.get 0 local.set 0 local.get 0))"#,
-        "LocalSet",
+        "f32 local",
+        r#"(module (func (export "f") (param i32) (result i32) (local f32)
+             local.get 0))"#,
+        "f32 parameter, result or local",
     ),
     (
-        "non-param local",
-        r#"(module (func (export "f") (param i32) (result i32) (local i32)
-             local.get 1))"#,
-        "non-parameter local",
+        "funcref local",
+        r#"(module (func (export "f") (result i32) (local funcref)
+             i32.const 0))"#,
+        "funcref",
     ),
     (
         "f64 param",
@@ -215,9 +142,9 @@ const CASES: &[(&str, &str, &str)] = &[
     (
         "unsupported helper",
         r#"(module
-             (func (param i32) (result i32) local.get 0 i32.popcnt)
+             (func (param i32) (result i32) local.get 0 unreachable)
              (func (export "f") (param i32) (result i32) local.get 0))"#,
-        "I32Popcnt",
+        "Unreachable",
     ),
 ];
 
@@ -244,17 +171,38 @@ fn invalid_wasm_is_refused_before_lowering() {
     assert!(e.contains("invalid wasm"), "{e}");
 }
 
+/// A frame above one page is refused by name, at exactly the limit: 512
+/// eight-byte slots fit, the 513th does not.
+#[test]
+fn a_frame_above_one_page_is_refused_at_the_limit() {
+    let module = |n: usize| {
+        format!(
+            r#"(module (func (export "f") (result i64) (local {}) local.get 0))"#,
+            vec!["i64"; n].join(" ")
+        )
+    };
+    let ok = wat::parse_str(module(512)).unwrap();
+    compile_wasm(&ok).expect("512 locals fit the 4096-byte frame");
+    let e = err(&module(513));
+    assert!(e.contains("4104 bytes") && e.contains("stack probe"), "{e}");
+}
+
 /// The one exception to "everything else is refused": the shared decoder drops
 /// `nop` before the selector sees it, so a body with `nop` compiles (as
 /// nothing). Pinned so the exception stays stated (REVIEW_13 F4).
 #[test]
 fn nop_is_dropped_by_the_decoder_and_compiles() {
-    let wasm = wat::parse_str(
-        r#"(module (func (export "f") (param i32) (result i32) nop local.get 0 nop))"#,
-    )
-    .unwrap();
-    let obj = compile_wasm(&wasm).expect("nop is dropped at decode, not refused");
-    assert_eq!(obj.functions[0].insts.len(), 2, "mov + ret, no nop");
+    let compile = |body: &str| {
+        let wasm = wat::parse_str(format!(
+            r#"(module (func (export "f") (param i32) (result i32) {body}))"#
+        ))
+        .unwrap();
+        compile_wasm(&wasm).expect("nop is dropped at decode, not refused")
+    };
+    let with = compile("nop local.get 0 nop");
+    let without = compile("local.get 0");
+    assert_eq!(with.functions[0].insts, without.functions[0].insts);
+    assert_eq!(with.elf, without.elf);
 }
 
 /// The cross case stays accepted: `func_1` exported from function 0 beside a

@@ -77,10 +77,16 @@ fn add_compiles_to_an_x86_64_et_rel_with_the_stack_note() {
 fn every_refusal_names_its_cause_and_writes_nothing() {
     let cases: &[(&str, &[&str], &str)] = &[
         (
-            r#"(module (func (export "f") (param i32 i32) (result i32)
-                 local.get 0 local.get 1 i32.div_s))"#,
+            r#"(module (func (export "f") (param i32) (result i32)
+                 local.get 0 if (result i32) i32.const 1 else i32.const 2 end))"#,
             &[],
-            "I32DivS",
+            "unsupported wasm op If",
+        ),
+        (
+            r#"(module (func (export "f") (param i32) (result i32) (local f32)
+                 local.get 0))"#,
+            &[],
+            "f32 parameter, result or local",
         ),
         (
             r#"(module (memory 1) (func (export "f") (param i32) (result i32)
@@ -147,30 +153,28 @@ fn the_backend_is_listed() {
     );
 }
 
-/// RQ-91-X86ALU: the straight-line integer core compiles through the binary,
-/// i64 signatures included; a divide is still refused and writes nothing.
+/// RQ-91-X86ALU, RQ-91-X86FRAME: the straight-line integer core compiles
+/// through the binary, i64 signatures included — and from lanes X3-X4 so do
+/// locals, a value stack deeper than the temporaries, and division.
 #[test]
-fn the_integer_core_compiles_and_division_is_refused() {
-    let (ok, stderr, out) = run(
+fn the_integer_core_locals_and_division_compile() {
+    for wat in [
         r#"(module (func (export "f") (param i64 i64 i32) (result i64)
              local.get 0 local.get 1 i64.sub
              local.get 0 local.get 1 i64.shl
              local.get 2 select
              i64.const 0x1122334455667788 i64.xor))"#,
-        &["-b", "x86_64", "--relocatable"],
-    );
-    assert!(ok, "{stderr}");
-    assert_eq!(&std::fs::read(&out).unwrap()[..5], b"\x7fELF\x02");
-    for op in ["div_s", "div_u", "rem_s", "rem_u"] {
-        let (ok, stderr, out) = run(
-            &format!(
-                r#"(module (func (export "f") (param i64 i64) (result i64)
-                     local.get 0 local.get 1 i64.{op}))"#
-            ),
-            &["-b", "x86_64", "--relocatable"],
-        );
-        assert!(!ok, "i64.{op}: exit 0");
-        assert!(stderr.contains("unsupported wasm op I64"), "{stderr}");
-        assert!(untouched(&out), "i64.{op}: an object was written");
+        r#"(module (func (export "f") (param i64 i64) (result i64) (local i64 i32)
+             local.get 0 local.get 1 i64.div_s local.tee 2
+             local.get 0 local.get 1 i64.rem_u i64.add
+             local.get 2 i64.clz i64.add local.get 3 i64.extend_i32_u i64.add))"#,
+        r#"(module (func (export "f") (result i32)
+             i32.const 1 i32.const 2 i32.const 3 i32.const 4
+             i32.const 5 i32.const 6 i32.const 7 i32.const 8
+             i32.add i32.add i32.add i32.add i32.add i32.add i32.add))"#,
+    ] {
+        let (ok, stderr, out) = run(wat, &["-b", "x86_64", "--relocatable"]);
+        assert!(ok, "{wat}: {stderr}");
+        assert_eq!(&std::fs::read(&out).unwrap()[..5], b"\x7fELF\x02");
     }
 }

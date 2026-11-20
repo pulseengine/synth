@@ -14,10 +14,13 @@
 //! ONE MODULE PER OP, each holding the op in every OPERAND SHAPE the selector
 //! distinguishes: both operands in parameter registers (in both orders), one
 //! or both in temporaries, the same register twice, four-parameter functions
-//! (where `rcx`, the shift-count register, holds a live parameter that is
-//! read back afterwards), and — for i32 ops — operands that are wrapped i64
+//! (where `rcx`, the shift-count register, arrives holding a parameter that
+//! is read back afterwards), and — for i32 ops — operands that are wrapped i64
 //! parameters and wrapped i64 TEMPORARIES, whose upper halves are nonzero
 //! garbage an i32 op must not read and `i64.extend_i32_u` must clear.
+//! (The shapes were drawn for lane X2's register-resident parameters. Since
+//! lane X3 every parameter is homed to a frame slot and loaded into a
+//! temporary, so several shapes now lower alike; they are kept as they are.)
 //!
 //! VECTORS: the both-parameters shape runs EXHAUSTIVELY over the edge values
 //! (every pair; the edge set holds the shift counts 0, 1, 31, 32, 33, 63, 64,
@@ -886,57 +889,67 @@ fn potency_a_mutated_condition_in_the_image_reds() {
     assert_eq!(disagreements(&g, "pp", &g.wat(), &bad), expect);
 }
 
-/// The `rcx` restore after a shift REMOVED from the image (`movq %r10, %rcx`
-/// overwritten with a 3-byte nop): the four-parameter probe, whose tail reads
-/// parameter 3 back, must red. Without the tail the lost parameter would be
-/// invisible.
+/// The shift COUNT's move into `cl` removed from the image (`movl %edi, %ecx`
+/// overwritten with a 2-byte nop). Since lane X3 every parameter is homed and
+/// `rcx` is scratch, so nothing restores it; in the four-parameter probe it
+/// still holds ARGUMENT 3 at that point, and the shift then counts by that
+/// instead of by parameter 1.
 #[test]
-fn potency_a_dropped_rcx_restore_reds() {
+fn potency_a_dropped_count_move_reds() {
     let g = binary("i32.shl", T::I32, T::I32);
     let (_, obj) = compile_x86(&g.wat()).expect("shl compiles");
     let f = obj.func("p4").unwrap().clone();
     let body = &obj.text[f.offset as usize..(f.offset + f.size) as usize];
-    // `movq %r10, %rcx` = 4C 89 D1.
-    let at = body
-        .windows(3)
-        .position(|w| w == [0x4C, 0x89, 0xD1])
-        .expect("the rcx restore in `p4`");
+    // `movl %edi, %ecx` = 89 F9, once in `p4`.
+    let hits: Vec<usize> = body
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| *w == [0x89, 0xF9])
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(hits.len(), 1, "the count move in `p4`");
     let mut bad = obj.clone();
-    bad.text[f.offset as usize + at..f.offset as usize + at + 3]
-        .copy_from_slice(&[0x0F, 0x1F, 0x00]);
+    let at = f.offset as usize + hits[0];
+    bad.text[at..at + 2].copy_from_slice(&[0x66, 0x90]);
     let p = g.probes.iter().find(|p| p.name == "p4").unwrap();
-    // The tail then xors with the COUNT instead of parameter 3.
     let expect = p
         .vectors
         .iter()
-        .filter(|v| v[1] as u32 != v[3] as u32)
+        .filter(|v| {
+            (v[0] as u32).wrapping_shl(v[1] as u32) != (v[0] as u32).wrapping_shl(v[3] as u32)
+        })
         .count();
     assert!(expect >= 30);
     assert_eq!(disagreements(&g, "p4", &g.wat(), &bad), expect);
     assert_eq!(disagreements(&g, "p4", &g.wat(), &obj), 0);
 }
 
-/// A 64-bit move where a 32-bit one is required: `i64.extend_i32_u` lowered
-/// as `movq` carries the POISONED upper half of the i32 argument into the
-/// result. The image is mutated by adding REX.W to the `movl`.
+/// The re-zeroing of `i64.extend_i32_u` removed from the image (`movl %esi,
+/// %esi` overwritten with a 2-byte nop): the wrapped i64 parameter's upper
+/// half reaches the result. Since lane X3 an i32 ARGUMENT is homed and loaded
+/// at 32 bits, so the upper half that survives to the extension is the one a
+/// free `i32.wrap_i64` leaves — the `w` probe.
 #[test]
-fn potency_a_64_bit_move_of_an_i32_argument_reds() {
+fn potency_a_dropped_re_zeroing_reds() {
     let g = unary("i64.extend_i32_u", T::I32, T::I64);
     let (_, obj) = compile_x86(&g.wat()).expect("extend_i32_u compiles");
-    // `p` is `movl %edi, %eax; retq` = 89 F8 C3. Rebuild it with REX.W.
-    let f = obj.func("p").unwrap().clone();
-    let body = obj.text[f.offset as usize..(f.offset + f.size) as usize].to_vec();
-    assert_eq!(body, [0x89, 0xF8, 0xC3], "the lowering of `p` moved");
+    let f = obj.func("w").unwrap().clone();
+    let body = &obj.text[f.offset as usize..(f.offset + f.size) as usize];
+    let hits: Vec<usize> = body
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| *w == [0x89, 0xF6])
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(hits.len(), 1, "the `movl %esi, %esi` of `w`");
     let mut bad = obj.clone();
-    let end = bad.text.len() as u64;
-    bad.text.extend_from_slice(&[0x48, 0x89, 0xF8, 0xC3]);
-    let sym = bad.funcs.get_mut("p").unwrap();
-    sym.offset = end;
-    sym.size = 4;
-    let p = &g.probes[0];
-    // Every vector reds: the poison's upper half is never zero.
-    assert_eq!(disagreements(&g, "p", &g.wat(), &bad), p.vectors.len());
-    assert_eq!(disagreements(&g, "p", &g.wat(), &obj), 0);
+    let at = f.offset as usize + hits[0];
+    bad.text[at..at + 2].copy_from_slice(&[0x66, 0x90]);
+    let p = g.probes.iter().find(|p| p.name == "w").unwrap();
+    let expect = p.vectors.iter().filter(|v| v[0] >> 32 != 0).count();
+    assert!(expect >= 40);
+    assert_eq!(disagreements(&g, "w", &g.wat(), &bad), expect);
+    assert_eq!(disagreements(&g, "w", &g.wat(), &obj), 0);
 }
 
 /// The re-zeroing of `i64.extend_i32_u` ELIDED when the value is already in
@@ -951,9 +964,16 @@ fn potency_an_elided_rezeroing_of_a_wrapped_temporary_reds() {
     let (_, obj) = compile_x86(&g.wat()).expect("extend_i32_u compiles");
     let f = obj.func("wt").unwrap().clone();
     let body = &obj.text[f.offset as usize..(f.offset + f.size) as usize];
-    // `movl %eax, %eax` = 89 C0, immediately before the final `retq`.
-    let at = body.len() - 3;
-    assert_eq!(body[at..], [0x89, 0xC0, 0xC3], "the lowering of `wt` moved");
+    // `movl %esi, %esi` = 89 F6, once in `wt` (since lane X3 the value is in
+    // the first temporary, `rsi`, and a frame epilogue follows).
+    let hits: Vec<usize> = body
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| *w == [0x89, 0xF6])
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(hits.len(), 1, "the lowering of `wt` moved");
+    let at = hits[0];
     let mut bad = obj.clone();
     bad.text[f.offset as usize + at..f.offset as usize + at + 2].copy_from_slice(&[0x66, 0x90]);
     let p = g.probes.iter().find(|p| p.name == "wt").unwrap();

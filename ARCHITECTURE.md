@@ -29,7 +29,7 @@ It carries **five backends**:
 | ARM Cortex-R | `synth-backend` | A32 | cortex-r5 |
 | RISC-V | `synth-backend-riscv` | RV32IMAC | qemu_riscv32, ESP32-C3 |
 | AArch64 (host-native) | `synth-backend-aarch64` | A64 | cortex-a53 (host-linkable ET_REL) |
-| x86-64 (host-native, skeleton) | `synth-backend-x86_64` | x86-64 baseline | x86_64 (SysV ELF64 ET_REL; lanes X1-X2: straight-line i32/i64 integer code in leaf functions, no locals, control flow, calls, division or memory; all else refused by name) |
+| x86-64 (host-native, skeleton) | `synth-backend-x86_64` | x86-64 baseline | x86_64 (SysV ELF64 ET_REL; lanes X1-X4: straight-line i32/i64 integer code in leaf functions with a frame — locals, a spilled operand stack, guarded division, bit counts; no control flow, calls or memory; all else refused by name) |
 
 **Key properties:**
 
@@ -233,10 +233,11 @@ let elf = ElfBuilder::new_arm32();
 - `synth-backend-aarch64` — A64 encoder (clang-cross-verified), EM_AARCH64
   ELF64 emitter; straight-line integer + scalar-float subset (see the
   [Feature Matrix](docs/status/FEATURE_MATRIX.md))
-- `synth-backend-x86_64` — x86-64 SysV backend, lanes X1-X2
-  (RQ-91-X86SKEL, RQ-91-X86ALU): an encoder checked against `llvm-mc` and
-  iced-x86, a rule table and selector for straight-line i32/i64 integer
-  code in leaf functions, and the shared ELF64 writer
+- `synth-backend-x86_64` — x86-64 SysV backend, lanes X1-X4
+  (RQ-91-X86SKEL, RQ-91-X86ALU, RQ-91-X86FRAME): an encoder checked against
+  `llvm-mc` and iced-x86, a rule table and selector for straight-line
+  i32/i64 integer code in leaf functions (an `rbp` frame, homed parameters,
+  locals, spills, `ud2`-guarded division), and the shared ELF64 writer
   (`synth_core::object_plan`) with `.note.GNU-stack`
 - `synth-backend-awsm`, `synth-backend-wasker` — external-toolchain
   integration stubs

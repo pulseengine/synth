@@ -30,6 +30,14 @@
 //! - the CALLER'S frame (every byte at and above the entry `rsp + 8`)
 //!   unwritten.
 //!
+//! WHAT IS CHECKED ON EVERY STORE (RQ-91-X86FRAME; REVIEW of X2, F6): no
+//! write lands BELOW THE RED ZONE, that is, more than 128 bytes under `rsp` as
+//! it is at that store. A function with a frame legitimately writes far below
+//! its ENTRY `rsp`, so this cannot be judged from memory after the return; a
+//! write hook compares each store's address with the live `rsp`. A store
+//! there is memory a signal handler may overwrite at any instruction. (`push`
+//! stores at `rsp - 8` before it moves `rsp`: inside the red zone, allowed.)
+//!
 //! A TRAP is `ud2` (`0F 0B`) at RIP, inside the function, stopped as
 //! UC_ERR_INSN_INVALID (see `trap_insn` in the parent module). Any other
 //! fault — an undecodable byte, a `#DE` from `div`, an unmapped access — is
@@ -38,7 +46,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use unicorn_engine::{Arch, Mode, Prot, RegisterX86, Unicorn};
+use unicorn_engine::{Arch, HookType, Mode, Prot, RegisterX86, Unicorn};
 
 use super::{
     EmuConfig, EmuError, EmuRun, Fault, RETURN_ADDR, STACK_SIZE, STACK_TOP, TEXT_BASE, fault_pc,
@@ -56,6 +64,10 @@ const POISON64: u64 = 0xFEED_FACE_DEAD_BEEF;
 /// the ABI requires at a call.
 const POISON_FLAGS: u64 = 0x8D7;
 const DF: u64 = 1 << 10;
+
+/// The SysV AMD64 red zone: the bytes below `rsp` a leaf function may use
+/// without moving `rsp`.
+const RED_ZONE: u64 = 128;
 
 /// The SysV AMD64 integer argument registers, in order.
 const SYSV_ARGS: [RegisterX86; 6] = [
@@ -173,6 +185,26 @@ pub(super) fn run(
         "add_intr_hook",
     )?;
 
+    // Every store to the stack mapping: below the red zone of the LIVE rsp?
+    // The first such store is kept: (address, rsp at that store).
+    let below: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
+    let below2 = Rc::clone(&below);
+    uc(
+        emu.add_mem_hook(
+            HookType::MEM_WRITE,
+            stack_base,
+            stack_base + STACK_SIZE - 1,
+            move |u, _kind, addr, _size, _value| {
+                let rsp = u.reg_read(RegisterX86::RSP as i32).unwrap_or(0);
+                if addr < rsp.wrapping_sub(RED_ZONE) && below2.get().is_none() {
+                    below2.set(Some((addr, rsp)));
+                }
+                true
+            },
+        ),
+        "add_mem_hook",
+    )?;
+
     for (i, r) in SYSV_ARGS.iter().enumerate() {
         let v = *arg_values.get(i).unwrap_or(&POISON64);
         uc(emu.reg_write(*r as i32, v), "write arg")?;
@@ -264,6 +296,18 @@ pub(super) fn run(
                     .unwrap_or_default(),
             )
         }
+    };
+    // A store below the red zone is an ABI violation whatever happened
+    // afterwards — a value, a trap or a fault.
+    let outcome = match below.get() {
+        Some((addr, rsp)) => EmuOutcome::Illegal {
+            pc: pc_now,
+            reason: format!(
+                "ABI violated: store below the red zone (to 0x{addr:x} with rsp = 0x{rsp:x}, {} bytes under it)",
+                rsp.wrapping_sub(addr)
+            ),
+        },
+        None => outcome,
     };
     Ok(EmuRun {
         outcome,

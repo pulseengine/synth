@@ -30,7 +30,7 @@ bazel test //tests/...             # Renode ARM Cortex-M4 emulation tests
 | `synth-backend` | ARM Thumb-2 (Cortex-M) + A32 (Cortex-R5) encoder, ELF builder, vector table, linker scripts, MPU |
 | `synth-backend-riscv` | RISC-V RV32IMAC backend (selector, encoder, relocatable ELF) — qemu_riscv32 / ESP32-C3 |
 | `synth-backend-aarch64` | AArch64 (A64) host-native backend — i32/i64 core, complete scalar f32/f64, globals, `call_indirect`, bounds-checked linear memory; `-b aarch64` |
-| `synth-backend-x86_64` | x86-64 (SysV AMD64) host-native backend, lanes X1-X2 — straight-line i32/i64 integer code in leaf functions (const, `local.get` of a parameter, ALU, shifts, compares, extensions, `select`) into an ELF64 `ET_REL`; locals, control flow, calls, division and memory are refused by name; `-b x86_64` (VCR-X86-001, #1741) |
+| `synth-backend-x86_64` | x86-64 (SysV AMD64) host-native backend, lanes X1-X4 — straight-line i32/i64 integer code in leaf functions (const, locals, ALU, shifts, compares, extensions, `select`, `div`/`rem` with `ud2` trap guards, `clz`/`ctz`/`popcnt`) into an ELF64 `ET_REL`; control flow, calls, globals, memory and floats are refused by name; `-b x86_64` (VCR-X86-001, #1741) |
 | `synth-backend-awsm` | aWsm backend integration (WASM→native via aWsm) |
 | `synth-backend-wasker` | Wasker backend integration (WASM→Rust transpiler) |
 | `synth-synthesis` | WASM→ARM instruction selection, peephole optimizer, pattern matcher |

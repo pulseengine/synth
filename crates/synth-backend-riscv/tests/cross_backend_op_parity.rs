@@ -2552,10 +2552,11 @@ fn x86_probe(ops: &[WasmOp]) -> Vec<WasmOp> {
 fn x86_outcome(ops: &[WasmOp], num_params: u32) -> Result<(), String> {
     use synth_backend_x86_64::Ty;
     let params = vec![Ty::I32; num_params as usize];
-    let one = synth_backend_x86_64::select(ops, &params, &[Ty::I32]);
+    // No declared locals: the probe table's local ops name parameters.
+    let one = synth_backend_x86_64::select(ops, &params, &[], &[Ty::I32]);
     if one.is_ok()
-        || synth_backend_x86_64::select(ops, &params, &[Ty::I64]).is_ok()
-        || synth_backend_x86_64::select(ops, &params, &[]).is_ok()
+        || synth_backend_x86_64::select(ops, &params, &[], &[Ty::I64]).is_ok()
+        || synth_backend_x86_64::select(ops, &params, &[], &[]).is_ok()
     {
         return Ok(());
     }

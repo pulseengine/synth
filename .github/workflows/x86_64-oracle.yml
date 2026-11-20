@@ -10,9 +10,11 @@
 #   --workspace`; they need no tool.
 # - The execution oracle against kiln (unicorn x86-64, CPU model pinned to
 #   QEMU64) runs in oracle-kiln.yml with the other synth-oracle tests.
-# - THIS job: E1, byte equality of every encoder form with `llvm-mc
-#   -show-encoding`, with SYNTH_REQUIRE_LLVM_MC=1 so a missing llvm-mc is a
-#   failure here, never a skip; and a NATIVE leg, because a hosted
+# - THIS job: E1, byte equality of every encoder form with `llvm-mc`
+#   (`-show-encoding`, and for the branch forms an assembled object, since
+#   llvm-mc prints a branch with a fixup instead of bytes), with
+#   SYNTH_REQUIRE_LLVM_MC=1 so a missing llvm-mc is a failure here, never a
+#   skip; and a NATIVE leg, because a hosted
 #   ubuntu-24.04 runner is an x86-64 machine: the probe object is linked with
 #   GNU ld under --fatal-warnings and run. GNU ld treats an object without
 #   `.note.GNU-stack` as needing an executable stack and warns; lld does not
@@ -76,8 +78,10 @@ jobs:
           set -euo pipefail
           log="$RUNNER_TEMP/e1.log"
           cargo test -p synth-backend-x86_64 --test encoding_llvm_mc -- --nocapture 2>&1 | tee "$log"
-          grep -q '^E1: 11969 forms byte-equal to ' "$log"
-          grep -qE '^test result: ok\. 2 passed; 0 failed' "$log"
+          # 24308 since RQ-91-X86FRAME: the memory, immediate, push/pop,
+          # divide, bit-scan, branch and trap forms joined the 11969 of X1-X2.
+          grep -q '^E1: 24308 forms byte-equal to ' "$log"
+          grep -qE '^test result: ok\. 3 passed; 0 failed' "$log"
       - name: Native leg — GNU ld --fatal-warnings, run on this x86-64 host
         run: |
           set -euo pipefail
@@ -102,7 +106,28 @@ jobs:
             ;; Four parameters: rcx holds the fourth across the shift.
             (func (export "shl4") (param i32 i32 i32 i32) (result i32)
               local.get 0 local.get 1 i32.shl local.get 3 i32.xor)
-            (func (export "ext_s") (param i32) (result i64) local.get 0 i64.extend_i32_s))
+            (func (export "ext_s") (param i32) (result i64) local.get 0 i64.extend_i32_s)
+            ;; RQ-91-X86FRAME: a frame, locals, a spilled operand stack,
+            ;; division (non-trapping operands only: this harness has no
+            ;; signal handler) and bit counts, on real silicon.
+            (func (export "fib") (param i64 i64) (result i64) (local i64 i64)
+              local.get 0 local.set 2 local.get 1 local.set 3
+              local.get 3 local.get 2 local.get 3 i64.add local.set 3 local.set 2
+              local.get 3 local.get 2 local.get 3 i64.add local.set 3 local.set 2
+              local.get 3 local.get 2 local.get 3 i64.add local.set 3 local.set 2
+              local.get 3)
+            (func (export "zero_local") (param i64) (result i64) (local i64 i64)
+              local.get 2)
+            (func (export "deep") (param i32 i32) (result i32)
+              local.get 0 local.get 1 local.get 0 local.get 1 local.get 0
+              local.get 1 local.get 0 local.get 1 local.get 0
+              i32.sub i32.xor i32.sub i32.xor i32.sub i32.xor i32.sub i32.xor)
+            (func (export "div_s") (param i32 i32) (result i32) local.get 0 local.get 1 i32.div_s)
+            (func (export "rem_s64") (param i64 i64) (result i64) local.get 0 local.get 1 i64.rem_s)
+            (func (export "div_u64") (param i64 i64) (result i64) local.get 0 local.get 1 i64.div_u)
+            (func (export "clz") (param i32) (result i32) local.get 0 i32.clz)
+            (func (export "ctz64") (param i64) (result i64) local.get 0 i64.ctz)
+            (func (export "popcnt64") (param i64) (result i64) local.get 0 i64.popcnt))
           EOF
           cat > "$d/harness.c" <<'EOF'
           #include <stdint.h>
@@ -119,6 +144,28 @@ jobs:
           uint64_t sel64(uint64_t, uint64_t, uint32_t);
           uint32_t shl4(uint32_t, uint32_t, uint32_t, uint32_t);
           uint64_t ext_s(uint32_t);
+          uint64_t fib(uint64_t, uint64_t);
+          uint64_t zero_local(uint64_t);
+          uint32_t deep(uint32_t, uint32_t);
+          uint32_t div_s(uint32_t, uint32_t);
+          uint64_t rem_s64(uint64_t, uint64_t);
+          uint64_t div_u64(uint64_t, uint64_t);
+          uint32_t clz(uint32_t);
+          uint64_t ctz64(uint64_t);
+          uint64_t popcnt64(uint64_t);
+          /* Nine values a b a b a b a b a folded from the top by
+             sub xor sub xor sub xor sub xor, as wasm folds them. */
+          static uint32_t deep_ref(uint32_t a, uint32_t b) {
+            uint32_t x = a;
+            for (int i = 0; i < 4; i++) { x = b - x; x = a ^ x; }
+            return x;
+          }
+          /* Fill the stack below the caller with ones, so that a callee's
+             fresh frame is not zero by accident. */
+          static __attribute__((noinline)) void dirty(void) {
+            volatile uint64_t junk[64];
+            for (int k = 0; k < 64; k++) junk[k] = ~0ull;
+          }
           int main(void) {
             const uint32_t v[] = {0u, 1u, 2u, 0x7FFFFFFFu, 0x80000000u, 0xFFFFFFFFu, 0xDEADBEEFu};
             const uint64_t w[] = {0u, 1u, 63u, 0x7FFFFFFFFFFFFFFFull, 0x8000000000000000ull,
@@ -128,6 +175,12 @@ jobs:
             for (int i = 0; i < n; i++) {
               cases++; bad += id(v[i]) != v[i];
               cases++; bad += ext_s(v[i]) != (uint64_t)(int64_t)(int32_t)v[i];
+              /* A local read before it is written must be 0 on a dirty stack. */
+              dirty();
+              cases++; bad += zero_local(w[i]) != 0;
+              cases++; bad += clz(v[i]) != (v[i] ? (uint32_t)__builtin_clz(v[i]) : 32u);
+              cases++; bad += ctz64(w[i]) != (w[i] ? (uint64_t)__builtin_ctzll(w[i]) : 64u);
+              cases++; bad += popcnt64(w[i]) != (uint64_t)__builtin_popcountll(w[i]);
               for (int j = 0; j < n; j++) {
                 uint32_t k = v[(i + j) % n];
                 cases++; bad += add(v[i], v[j]) != (uint32_t)(v[i] + v[j]);
@@ -140,6 +193,20 @@ jobs:
                 cases++; bad += lt_u64(w[i], w[j]) != (uint32_t)(w[i] < w[j]);
                 cases++; bad += sel64(w[i], w[j], k) != (k ? w[i] : w[j]);
                 cases++; bad += shl4(v[i], v[j], 0x5A5A5A5Au, k) != (uint32_t)((v[i] << (v[j] & 31)) ^ k);
+                cases++; bad += fib(w[i], w[j]) != 2 * w[i] + 3 * w[j];
+                cases++; bad += deep(v[i], v[j]) != deep_ref(v[i], v[j]);
+                /* Division: only operands wasm does not trap on. INT_MIN
+                   rem_s -1 is 0 in wasm and a #DE from a bare idiv, so it
+                   IS run; INT_MIN div_s -1 and a zero divisor are not. */
+                if (v[j] != 0 && !(v[i] == 0x80000000u && v[j] == 0xFFFFFFFFu)) {
+                  cases++; bad += div_s(v[i], v[j]) != (uint32_t)((int32_t)v[i] / (int32_t)v[j]);
+                }
+                if (w[j] != 0) {
+                  uint64_t r = (w[i] == 0x8000000000000000ull && w[j] == ~0ull)
+                                 ? 0 : (uint64_t)((int64_t)w[i] % (int64_t)w[j]);
+                  cases++; bad += rem_s64(w[i], w[j]) != r;
+                  cases++; bad += div_u64(w[i], w[j]) != w[i] / w[j];
+                }
               }
             }
             printf("x86_64-native: %d cases, %d bad\n", cases, bad);
@@ -151,7 +218,7 @@ jobs:
           gcc -O0 -c "$d/harness.c" -o "$d/harness.o"
           gcc -Wl,--fatal-warnings -o "$d/run" "$d/harness.o" "$d/probes.o"
           "$d/run" | tee "$d/run.log"
-          grep -qx 'x86_64-native: 504 cases, 0 bad' "$d/run.log"
+          grep -qx 'x86_64-native: 755 cases, 0 bad' "$d/run.log"
           # The linked program's stack is NOT executable (GNU_STACK is RW).
           readelf -lW "$d/run" | grep GNU_STACK | tee "$d/stack.txt"
           grep -q 'RW ' "$d/stack.txt"

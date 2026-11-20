@@ -1,5 +1,5 @@
 //! E2 and E3: every instruction the x86-64 backend EMITS, decoded by iced-x86.
-//! RQ-91-X86SKEL (#1741), VCR-X86-001 cost 4.
+//! RQ-91-X86SKEL, RQ-91-X86FRAME (#1741), VCR-X86-001 cost 4.
 //!
 //! iced-x86 carries its own instruction table (it does not descend from
 //! LLVM's, unlike capstone), so this is a second, independent reading of the
@@ -36,6 +36,36 @@ use forms::{FORM_COUNT, all_forms};
 /// every temporary, a void function, an early `return`, non-exported helpers
 /// and a function exported under two names.
 const PROBES: &[&str] = &[
+    // Lanes X3-X4: locals, the spill path, div/rem with their guards, and the
+    // bit counts (which must decode as bsr/bsf, never lzcnt/tzcnt/popcnt).
+    r#"(module
+         (func (export "locals") (param i32 i64) (result i64) (local i32 i64)
+           local.get 0 local.tee 2 i64.extend_i32_u local.set 3
+           local.get 1 local.get 3 i64.add local.set 1
+           local.get 1 local.get 2 i64.extend_i32_s i64.sub)
+         (func (export "spill") (param i32) (result i32)
+           local.get 0 i32.const 1 i32.const 2 i32.const 3 i32.const 4
+           i32.const 5 i32.const 6 i32.const 7 i32.const 8
+           i32.add i32.add i32.add i32.add i32.add i32.add i32.add i32.add)
+         (func (export "big") (param i64) (result i64)
+           (local i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64)
+           local.get 0 local.set 17 local.get 17)
+         (func (export "div32") (param i32 i32) (result i32)
+           local.get 0 local.get 1 i32.div_s
+           local.get 0 local.get 1 i32.div_u i32.add
+           local.get 0 local.get 1 i32.rem_s i32.add
+           local.get 0 local.get 1 i32.rem_u i32.add)
+         (func (export "div64") (param i64 i64) (result i64)
+           local.get 0 local.get 1 i64.div_s
+           local.get 0 local.get 1 i64.div_u i64.add
+           local.get 0 local.get 1 i64.rem_s i64.add
+           local.get 0 local.get 1 i64.rem_u i64.add)
+         (func (export "bits32") (param i32) (result i32)
+           local.get 0 i32.clz local.get 0 i32.ctz i32.add
+           local.get 0 i32.popcnt i32.add)
+         (func (export "bits64") (param i64) (result i64)
+           local.get 0 i64.clz local.get 0 i64.ctz i64.add
+           local.get 0 i64.popcnt i64.add))"#,
     // Lane X2: every form the selector emits, through the real entry point.
     r#"(module
          (func (export "arith") (param i32 i32) (result i32)
@@ -130,9 +160,20 @@ fn formatter() -> GasFormatter {
 /// difference, stated here rather than normalised away: asked for size
 /// suffixes, iced also suffixes `setCC` with `b` (`setbb %al`), which LLVM's
 /// assembler spells without (`setb %al`).
-fn iced_text(want: &Inst) -> String {
+///
+/// A BRANCH is the second difference: the backend prints it relative to the
+/// instruction (`{disp32} jne .+0x8`, what an assembler needs to be told),
+/// iced prints the absolute target. `next_ip` is the address after the
+/// decoded instruction; the expected target is computed from the REQUESTED
+/// displacement, so a wrong displacement byte is a text mismatch.
+fn iced_text(want: &Inst, next_ip: u64) -> String {
     match want {
         Inst::SetCc { cond, dst } => format!("set{}b %{}", cond.suffix(), dst.name8()),
+        Inst::Jcc { cond, rel } => format!(
+            "j{} 0x{:016x}",
+            cond.suffix(),
+            next_ip.wrapping_add(*rel as i64 as u64)
+        ),
         other => other.att(),
     }
 }
@@ -195,7 +236,7 @@ fn check(text: &[u8], insts: &[Inst], lens: &[usize]) -> Result<usize, String> {
                 ins.len()
             ));
         }
-        if *text != iced_text(want) {
+        if *text != iced_text(want, ins.next_ip()) {
             return Err(format!("#{k}: decoded `{text}` != requested `{want}`"));
         }
         let above = above_baseline(ins);
@@ -218,7 +259,7 @@ fn every_emitted_instruction_decodes_to_what_was_requested_e2_e3() {
         checked += check(&text, &insts, &lens).unwrap_or_else(|e| panic!("{src}: {e}"));
     }
     // Non-vacuity: the probe set exercises a real number of instructions.
-    assert!(checked >= 110, "only {checked} instructions decoded");
+    assert!(checked >= 500, "only {checked} instructions decoded");
 }
 
 /// Every FORM the encoder can produce (the E1 population), decoded by iced.

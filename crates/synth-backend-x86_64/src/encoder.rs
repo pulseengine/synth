@@ -10,7 +10,7 @@
 //! no branch relaxation, so there is no size estimator that could drift from
 //! the encoder (VCR-X86-001 cost 4).
 
-use crate::inst::{AluOp, Cond, Ext, Inst, Reg, ShiftOp, Size};
+use crate::inst::{AluOp, Cond, Ext, ImmOp, Inst, Mem, Reg, ShiftOp, Size};
 
 /// Emit `[REX] opcode... ModRM(11, reg, rm)`.
 ///
@@ -87,6 +87,52 @@ fn op_plus_reg(out: &mut Vec<u8>, w: bool, opcode: u8, r: Reg) {
     out.push(opcode | (r.num() & 7));
 }
 
+/// Emit `[REX] opcode... ModRM SIB? disp?` for the memory operand
+/// `disp(%base)`, the register operand in the ModRM reg field.
+///
+/// LLVM's canonical displacement width: none when the displacement is zero
+/// (except with `rbp`/`r13` as the base, whose mod=00 encoding means
+/// "no base"), 8 bits when it fits, else 32. A base of `rsp`/`r12` takes the
+/// SIB byte `24` (no index, base in the SIB).
+fn rex_op_mem(out: &mut Vec<u8>, w: bool, opcode: &[u8], reg: u8, mem: Mem) {
+    let base = mem.base.num();
+    let rex = 0x40 | (u8::from(w) << 3) | (((reg >> 3) & 1) << 2) | ((base >> 3) & 1);
+    if rex != 0x40 {
+        out.push(rex);
+    }
+    out.extend_from_slice(opcode);
+    let disp8 = i8::try_from(mem.disp).ok();
+    let mode: u8 = if mem.disp == 0 && base & 7 != 5 {
+        0
+    } else if disp8.is_some() {
+        1
+    } else {
+        2
+    };
+    out.push((mode << 6) | ((reg & 7) << 3) | (base & 7));
+    if base & 7 == 4 {
+        out.push(0x24);
+    }
+    match (mode, disp8) {
+        (0, _) => {}
+        (1, Some(d)) => out.push(d as u8),
+        _ => out.extend_from_slice(&mem.disp.to_le_bytes()),
+    }
+}
+
+/// The `/n` opcode extension of `83`/`81`; the accumulator short form is
+/// `(n << 3) | 5`.
+fn imm_ext(op: ImmOp) -> u8 {
+    match op {
+        ImmOp::Add => 0,
+        ImmOp::Or => 1,
+        ImmOp::And => 4,
+        ImmOp::Sub => 5,
+        ImmOp::Xor => 6,
+        ImmOp::Cmp => 7,
+    }
+}
+
 /// Append the encoding of `inst` to `out`; returns its length.
 pub fn encode_into(inst: &Inst, out: &mut Vec<u8>) -> usize {
     let start = out.len();
@@ -144,6 +190,67 @@ pub fn encode_into(inst: &Inst, out: &mut Vec<u8>) -> usize {
             op_plus_reg(out, true, 0xB8, dst);
             out.extend_from_slice(&imm.to_le_bytes());
         }
+        // MOV r, r/m.
+        Inst::Load { size, dst, mem } => rex_op_mem(out, w(size), &[0x8B], dst.num(), mem),
+        // MOV r/m, r.
+        Inst::Store { size, src, mem } => rex_op_mem(out, w(size), &[0x89], src.num(), mem),
+        // op r/m, imm: LLVM takes the sign-extended 8-bit form when the
+        // immediate fits, else the accumulator short form for rax, else
+        // `81 /n id`.
+        Inst::AluImm { op, size, dst, imm } => {
+            let n = imm_ext(op);
+            if let Ok(i) = i8::try_from(imm) {
+                rex_op_modrm(out, w(size), false, &[0x83], n, dst.num());
+                out.push(i as u8);
+            } else if dst == Reg::Rax {
+                if w(size) {
+                    out.push(0x48);
+                }
+                out.push((n << 3) | 5);
+                out.extend_from_slice(&imm.to_le_bytes());
+            } else {
+                rex_op_modrm(out, w(size), false, &[0x81], n, dst.num());
+                out.extend_from_slice(&imm.to_le_bytes());
+            }
+        }
+        // PUSH r64 / POP r64: 64-bit by default, no REX.W.
+        Inst::Push { reg } => op_plus_reg(out, false, 0x50, reg),
+        Inst::Pop { reg } => op_plus_reg(out, false, 0x58, reg),
+        // CDQ / CQO.
+        Inst::Cdq { size } => {
+            if w(size) {
+                out.push(0x48);
+            }
+            out.push(0x99);
+        }
+        // DIV / IDIV r/m.
+        Inst::Div { signed, size, src } => {
+            rex_op_modrm(
+                out,
+                w(size),
+                false,
+                &[0xF7],
+                6 | u8::from(signed),
+                src.num(),
+            );
+        }
+        // BSF / BSR r, r/m. NEVER with an F3 prefix: that is tzcnt/lzcnt.
+        Inst::BitScan {
+            reverse,
+            size,
+            dst,
+            src,
+        } => {
+            let opcode = [0x0F, 0xBC | u8::from(reverse)];
+            rex_op_modrm(out, w(size), false, &opcode, dst.num(), src.num());
+        }
+        // Jcc rel32.
+        Inst::Jcc { cond, rel } => {
+            out.extend_from_slice(&[0x0F, 0x80 | cond_num(cond)]);
+            out.extend_from_slice(&rel.to_le_bytes());
+        }
+        // UD2.
+        Inst::Ud2 => out.extend_from_slice(&[0x0F, 0x0B]),
         // RET (near).
         Inst::Ret => out.push(0xC3),
     }
@@ -259,6 +366,43 @@ mod tests {
             .len(),
             10
         );
+    }
+
+    /// Structure only: the displacement width follows the value, `rsp`/`r12`
+    /// add a SIB byte, and `rbp`/`r13` never use the no-displacement mode.
+    #[test]
+    fn memory_operands_pick_the_shortest_displacement() {
+        let len = |base, disp| {
+            encode(&Inst::Load {
+                size: Size::L,
+                dst: Reg::Rax,
+                mem: Mem { base, disp },
+            })
+            .len()
+        };
+        for &base in &Reg::ALL {
+            let rex = usize::from(base.num() >= 8);
+            let sib = usize::from(base.num() & 7 == 4);
+            let zero = if base.num() & 7 == 5 { 1 } else { 0 };
+            assert_eq!(len(base, 0), 2 + rex + sib + zero, "{base:?}");
+            for d in [1, 127, -128] {
+                assert_eq!(len(base, d), 3 + rex + sib, "{base:?} {d}");
+            }
+            for d in [128, -129, i32::MAX, i32::MIN] {
+                assert_eq!(len(base, d), 6 + rex + sib, "{base:?} {d}");
+            }
+        }
+    }
+
+    /// A branch is 6 bytes whatever its displacement; the trap is 2.
+    #[test]
+    fn branches_have_one_length() {
+        for rel in [0, 2, 127, 128, -1, i32::MAX, i32::MIN] {
+            for cond in Cond::ALL {
+                assert_eq!(encode(&Inst::Jcc { cond, rel }).len(), 6);
+            }
+        }
+        assert_eq!(encode(&Inst::Ud2).len(), 2);
     }
 
     #[test]

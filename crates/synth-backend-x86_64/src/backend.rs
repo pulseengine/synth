@@ -97,6 +97,9 @@ struct ModuleShape {
     func_types: Vec<u32>,
     /// Export names per full function index.
     exports: BTreeMap<u32, Vec<String>>,
+    /// The declared (non-parameter) locals of each locally-defined function,
+    /// in index order, with their EXACT types.
+    locals: Vec<Vec<ValType>>,
 }
 
 fn read_shape(wasm: &[u8]) -> Result<ModuleShape, BackendError> {
@@ -104,6 +107,7 @@ fn read_shape(wasm: &[u8]) -> Result<ModuleShape, BackendError> {
         types: Vec::new(),
         func_types: Vec::new(),
         exports: BTreeMap::new(),
+        locals: Vec::new(),
     };
     let refuse = |what: &str| {
         Err(fail(format!(
@@ -151,10 +155,20 @@ fn read_shape(wasm: &[u8]) -> Result<ModuleShape, BackendError> {
                     }
                 }
             }
-            Payload::CodeSectionStart { .. }
-            | Payload::CodeSectionEntry(_)
-            | Payload::CustomSection(_)
-            | Payload::End(_) => {}
+            Payload::CodeSectionEntry(body) => {
+                let mut locals = Vec::new();
+                let reader = body
+                    .get_locals_reader()
+                    .map_err(|e| fail(format!("x86_64: {e}")))?;
+                for group in reader {
+                    let (count, ty) = group.map_err(|e| fail(format!("x86_64: {e}")))?;
+                    // Validation caps a function's locals (50,000), so this
+                    // cannot be made to allocate without bound.
+                    locals.extend(std::iter::repeat_n(ty, count as usize));
+                }
+                shape.locals.push(locals);
+            }
+            Payload::CodeSectionStart { .. } | Payload::CustomSection(_) | Payload::End(_) => {}
             Payload::ImportSection(_) => {
                 return refuse("an import section (calls and imports are lane X6)");
             }
@@ -214,14 +228,21 @@ pub fn compile_wasm(wasm: &[u8]) -> Result<X86Object, BackendError> {
             ValType::I32 => Ok(Ty::I32),
             ValType::I64 => Ok(Ty::I64),
             other => Err(fail(format!(
-                "x86_64: function '{name}' has a {other} parameter or result; \
-                 the x86_64 backend lowers i32 and i64 signatures only (floats \
-                 and references are later lanes) — refusing"
+                "x86_64: function '{name}' has a {other} parameter, result or \
+                 local; the x86_64 backend lowers i32 and i64 values only \
+                 (floats and references are later lanes) — refusing"
             ))),
         };
         let params: Vec<Ty> = params.iter().map(int).collect::<Result<_, _>>()?;
         let results: Vec<Ty> = results.iter().map(int).collect::<Result<_, _>>()?;
-        let insts = selector::select(&func.ops, &params, &results)
+        let locals: Vec<Ty> = shape
+            .locals
+            .get(local)
+            .ok_or_else(|| fail(format!("x86_64: function {} has no body", func.index)))?
+            .iter()
+            .map(int)
+            .collect::<Result<_, _>>()?;
+        let insts = selector::select(&func.ops, &params, &locals, &results)
             .map_err(|e| fail(format!("function '{name}': {e}")))?;
         let (code, lens) = encoder::encode_all(&insts);
         let mut symbols = vec![sym.clone()];

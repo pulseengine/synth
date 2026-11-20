@@ -1,5 +1,5 @@
-//! The x86-64 lowering RULE TABLE for the simple integer ops — lane X2
-//! (RQ-91-X86ALU, #1741).
+//! The x86-64 lowering RULE TABLE for the integer ops — lanes X2 and X4
+//! (RQ-91-X86ALU, RQ-91-X86FRAME, #1741).
 //!
 //! One row per wasm op: the operand type and the x86 form that computes it.
 //! The selector ([`crate::selector`]) holds one generic routine per
@@ -9,13 +9,19 @@
 //! be GENERATED from it (the `sel_dsl::RULES` / #667 pattern) instead of
 //! written out a second time by hand. No proof is claimed for x86-64 (VCR-X86-001 costs 2
 //! and 3); the rows are checked by execution against kiln
-//! (`crates/synth-oracle/tests/x86_64_alu_kiln_oracle.rs`).
+//! (`crates/synth-oracle/tests/x86_64_alu_kiln_oracle.rs`,
+//! `x86_64_frame_div_kiln_oracle.rs`).
 //!
-//! NOT IN THE TABLE, and declined by the selector by name: `div`/`rem` (the
-//! x86 `div`/`idiv` FAULT on a zero divisor and on `INT_MIN / -1`, where wasm
-//! traps on the first and returns 0 for `rem_s`; they need explicit guards,
-//! lane X4), `clz`/`ctz`/`popcnt` (their one-instruction encodings are above
-//! the baseline ISA level, lane X4), and every float op.
+//! THE MULTI-INSTRUCTION ROWS (lane X4) name a SEQUENCE the selector writes
+//! out instruction by instruction, never one atomic instruction:
+//! - `div`/`rem`: x86 `div`/`idiv` FAULT (#DE) on a zero divisor and on
+//!   `INT_MIN / -1`, where wasm traps on the first, traps on the second for
+//!   `div_s` and returns 0 for `rem_s`. Each row is the guards plus the divide;
+//! - `clz`/`ctz`/`popcnt`: `lzcnt`, `tzcnt` and `popcnt` are above the
+//!   baseline ISA level and are never emitted. `clz`/`ctz` are `bsr`/`bsf`
+//!   with the zero input handled; `popcnt` is the baseline bit-twiddling sum.
+//!
+//! NOT IN THE TABLE, and declined by the selector by name: every float op.
 
 use synth_core::WasmOp;
 
@@ -31,10 +37,9 @@ pub enum Ty {
 /// The shape of one lowering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lowering {
-    /// `a = a OP b` with `op r/m, r`. `commutes` lets the result land in
-    /// `b`'s temporary when `a` has none.
-    Alu { op: AluOp, commutes: bool },
-    /// `a = a * b` with `imul r, r/m` (commutes).
+    /// `a = a OP b` with `op r/m, r`.
+    Alu { op: AluOp },
+    /// `a = a * b` with `imul r, r/m`.
     Mul,
     /// `a = a SHIFT (b mod width)`, the count in `cl`.
     Shift(ShiftOp),
@@ -49,6 +54,16 @@ pub enum Lowering {
     /// `i32.wrap_i64`: no instruction. The value keeps its register and is
     /// retyped; nothing reads bits 63:32 of an i32 value.
     Wrap,
+    /// `a / b` or `a % b`: a zero divisor traps (`ud2`); `signed` division
+    /// also traps on `INT_MIN / -1`, and a signed remainder by -1 is 0
+    /// without dividing. Then `div`/`idiv`; `rem` takes `edx`/`rdx`.
+    Div { signed: bool, rem: bool },
+    /// Leading zeros: `bsr`, the operand width for a zero input.
+    Clz,
+    /// Trailing zeros: `bsf`, the operand width for a zero input.
+    Ctz,
+    /// Population count as shifts, masks and one multiply — no `popcnt`.
+    Popcnt,
 }
 
 /// One row: `op` takes operands of type `ty` and is lowered as `lower`.
@@ -59,12 +74,24 @@ pub struct Rule {
     pub lower: Lowering,
 }
 
-const fn alu(op: WasmOp, ty: Ty, alu: AluOp, commutes: bool) -> Rule {
+const fn alu(op: WasmOp, ty: Ty, alu: AluOp) -> Rule {
     Rule {
         op,
         ty,
-        lower: Lowering::Alu { op: alu, commutes },
+        lower: Lowering::Alu { op: alu },
     }
+}
+
+const fn div(op: WasmOp, ty: Ty, signed: bool, rem: bool) -> Rule {
+    Rule {
+        op,
+        ty,
+        lower: Lowering::Div { signed, rem },
+    }
+}
+
+const fn row(op: WasmOp, ty: Ty, lower: Lowering) -> Rule {
+    Rule { op, ty, lower }
 }
 
 const fn shift(op: WasmOp, ty: Ty, s: ShiftOp) -> Rule {
@@ -98,11 +125,11 @@ use Ty::{I32, I64};
 /// (below), signed `>` is `g`, unsigned `>` is `a` (above).
 pub static RULES: &[Rule] = &[
     // ---- i32 ----
-    alu(WasmOp::I32Add, I32, AluOp::Add, true),
-    alu(WasmOp::I32Sub, I32, AluOp::Sub, false),
-    alu(WasmOp::I32And, I32, AluOp::And, true),
-    alu(WasmOp::I32Or, I32, AluOp::Or, true),
-    alu(WasmOp::I32Xor, I32, AluOp::Xor, true),
+    alu(WasmOp::I32Add, I32, AluOp::Add),
+    alu(WasmOp::I32Sub, I32, AluOp::Sub),
+    alu(WasmOp::I32And, I32, AluOp::And),
+    alu(WasmOp::I32Or, I32, AluOp::Or),
+    alu(WasmOp::I32Xor, I32, AluOp::Xor),
     Rule {
         op: WasmOp::I32Mul,
         ty: I32,
@@ -130,12 +157,19 @@ pub static RULES: &[Rule] = &[
     },
     ext(WasmOp::I32Extend8S, I32, Ext::SxBL, I32),
     ext(WasmOp::I32Extend16S, I32, Ext::SxWL, I32),
+    div(WasmOp::I32DivS, I32, true, false),
+    div(WasmOp::I32DivU, I32, false, false),
+    div(WasmOp::I32RemS, I32, true, true),
+    div(WasmOp::I32RemU, I32, false, true),
+    row(WasmOp::I32Clz, I32, Lowering::Clz),
+    row(WasmOp::I32Ctz, I32, Lowering::Ctz),
+    row(WasmOp::I32Popcnt, I32, Lowering::Popcnt),
     // ---- i64 ----
-    alu(WasmOp::I64Add, I64, AluOp::Add, true),
-    alu(WasmOp::I64Sub, I64, AluOp::Sub, false),
-    alu(WasmOp::I64And, I64, AluOp::And, true),
-    alu(WasmOp::I64Or, I64, AluOp::Or, true),
-    alu(WasmOp::I64Xor, I64, AluOp::Xor, true),
+    alu(WasmOp::I64Add, I64, AluOp::Add),
+    alu(WasmOp::I64Sub, I64, AluOp::Sub),
+    alu(WasmOp::I64And, I64, AluOp::And),
+    alu(WasmOp::I64Or, I64, AluOp::Or),
+    alu(WasmOp::I64Xor, I64, AluOp::Xor),
     Rule {
         op: WasmOp::I64Mul,
         ty: I64,
@@ -164,6 +198,13 @@ pub static RULES: &[Rule] = &[
     ext(WasmOp::I64Extend8S, I64, Ext::SxBQ, I64),
     ext(WasmOp::I64Extend16S, I64, Ext::SxWQ, I64),
     ext(WasmOp::I64Extend32S, I64, Ext::SxLQ, I64),
+    div(WasmOp::I64DivS, I64, true, false),
+    div(WasmOp::I64DivU, I64, false, false),
+    div(WasmOp::I64RemS, I64, true, true),
+    div(WasmOp::I64RemU, I64, false, true),
+    row(WasmOp::I64Clz, I64, Lowering::Clz),
+    row(WasmOp::I64Ctz, I64, Lowering::Ctz),
+    row(WasmOp::I64Popcnt, I64, Lowering::Popcnt),
     // ---- conversions ----
     ext(WasmOp::I64ExtendI32S, I32, Ext::SxLQ, I64),
     Rule {
@@ -194,28 +235,67 @@ mod tests {
                 assert_ne!(a.op, b.op, "two rules for {:?}", a.op);
             }
         }
-        assert_eq!(RULES.len(), 52);
+        assert_eq!(RULES.len(), 66);
     }
 
-    /// The ops whose x86 instruction FAULTS where wasm does not, or whose
-    /// short encoding is above the baseline, have no row.
+    /// Every divide row names its own (signed, rem) pair, at both widths:
+    /// a `rem` sharing `div`'s row would return the quotient.
     #[test]
-    fn division_and_bit_counts_have_no_rule() {
+    fn the_eight_divides_are_eight_distinct_rows() {
+        for (s, u, sr, ur) in [
+            (
+                WasmOp::I32DivS,
+                WasmOp::I32DivU,
+                WasmOp::I32RemS,
+                WasmOp::I32RemU,
+            ),
+            (
+                WasmOp::I64DivS,
+                WasmOp::I64DivU,
+                WasmOp::I64RemS,
+                WasmOp::I64RemU,
+            ),
+        ] {
+            let l = |op: &WasmOp| rule_for(op).unwrap().lower;
+            assert_eq!(
+                l(&s),
+                Lowering::Div {
+                    signed: true,
+                    rem: false
+                }
+            );
+            assert_eq!(
+                l(&u),
+                Lowering::Div {
+                    signed: false,
+                    rem: false
+                }
+            );
+            assert_eq!(
+                l(&sr),
+                Lowering::Div {
+                    signed: true,
+                    rem: true
+                }
+            );
+            assert_eq!(
+                l(&ur),
+                Lowering::Div {
+                    signed: false,
+                    rem: true
+                }
+            );
+        }
+    }
+
+    /// No float op has a row.
+    #[test]
+    fn floats_have_no_rule() {
         for op in [
-            WasmOp::I32DivS,
-            WasmOp::I32DivU,
-            WasmOp::I32RemS,
-            WasmOp::I32RemU,
-            WasmOp::I64DivS,
-            WasmOp::I64DivU,
-            WasmOp::I64RemS,
-            WasmOp::I64RemU,
-            WasmOp::I32Clz,
-            WasmOp::I32Ctz,
-            WasmOp::I32Popcnt,
-            WasmOp::I64Clz,
-            WasmOp::I64Ctz,
-            WasmOp::I64Popcnt,
+            WasmOp::F32Add,
+            WasmOp::F64Add,
+            WasmOp::F32Sqrt,
+            WasmOp::F64Div,
         ] {
             assert!(rule_for(&op).is_none(), "{op:?} has a rule");
         }

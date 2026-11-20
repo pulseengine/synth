@@ -382,6 +382,62 @@ impl Ext {
     }
 }
 
+/// A memory operand `disp(%base)`: a base register and a signed 32-bit
+/// displacement, no index. The encoder picks the shortest of the three
+/// displacement widths (none, 8-bit, 32-bit), as LLVM does; `rsp`/`r12` as a
+/// base need a SIB byte and `rbp`/`r13` always carry a displacement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Mem {
+    pub base: Reg,
+    pub disp: i32,
+}
+
+impl fmt::Display for Mem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let base = self.base.name64();
+        match self.disp {
+            0 => write!(f, "(%{base})"),
+            d if d < 0 => write!(f, "-0x{:x}(%{base})", d.unsigned_abs()),
+            d => write!(f, "0x{d:x}(%{base})"),
+        }
+    }
+}
+
+/// The instructions encoded `op r/m, imm` (`83 /n ib`, `81 /n id`, and the
+/// accumulator short form): the immediate is sign-extended to the operand
+/// size. `Cmp` writes only EFLAGS.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ImmOp {
+    Add,
+    Or,
+    And,
+    Sub,
+    Xor,
+    Cmp,
+}
+
+impl ImmOp {
+    pub const ALL: [ImmOp; 6] = [
+        ImmOp::Add,
+        ImmOp::Or,
+        ImmOp::And,
+        ImmOp::Sub,
+        ImmOp::Xor,
+        ImmOp::Cmp,
+    ];
+
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            ImmOp::Add => "add",
+            ImmOp::Or => "or",
+            ImmOp::And => "and",
+            ImmOp::Sub => "sub",
+            ImmOp::Xor => "xor",
+            ImmOp::Cmp => "cmp",
+        }
+    }
+}
+
 /// One x86-64 instruction, as the selector asks for it.
 ///
 /// Every i32 operation uses the 32-bit operand size, which zeroes bits 63:32
@@ -422,6 +478,47 @@ pub enum Inst {
     MovImmSx { dst: Reg, imm: i32 },
     /// `movabsq $imm64, %dst64` — `REX.W B8+r io`.
     MovAbs { dst: Reg, imm: u64 },
+    /// `mov{l,q} disp(%base), %dst` — MOV r, r/m (`8B /r`). At 32-bit size the
+    /// destination's upper half is zeroed.
+    Load { size: Size, dst: Reg, mem: Mem },
+    /// `mov{l,q} %src, disp(%base)` — MOV r/m, r (`89 /r`). At 32-bit size
+    /// four bytes are written.
+    Store { size: Size, src: Reg, mem: Mem },
+    /// `op{l,q} $imm, %dst` — the immediate sign-extended to the operand size.
+    AluImm {
+        op: ImmOp,
+        size: Size,
+        dst: Reg,
+        imm: i32,
+    },
+    /// `pushq %reg` (`50+r`): `rsp -= 8`, then store.
+    Push { reg: Reg },
+    /// `popq %reg` (`58+r`): load, then `rsp += 8`.
+    Pop { reg: Reg },
+    /// `cltd` / `cqto` (`99`): sign-extend `eax` into `edx` (or `rax` into
+    /// `rdx`), the dividend of a signed divide.
+    Cdq { size: Size },
+    /// `div{l,q} %src` / `idiv{l,q} %src` (`F7 /6`, `F7 /7`): divide
+    /// `edx:eax` (`rdx:rax`) by `src`; quotient to `eax`, remainder to `edx`.
+    /// RAISES #DE on a zero divisor and on a quotient that does not fit, so
+    /// the selector never emits it without its guards.
+    Div { signed: bool, size: Size, src: Reg },
+    /// `bsf{l,q} %src, %dst` / `bsr{l,q} %src, %dst` (`0F BC /r`, `0F BD
+    /// /r`): the index of the lowest (`bsf`) or highest (`bsr`) set bit. ZF is
+    /// set when `src` is zero, and then `dst` is NOT a defined value.
+    BitScan {
+        reverse: bool,
+        size: Size,
+        dst: Reg,
+        src: Reg,
+    },
+    /// `jCC` with a 32-bit displacement (`0F 8x cd`), ALWAYS: there is no
+    /// short form and no relaxation, so the length is 6 whatever the target.
+    /// `rel` is relative to the END of this instruction.
+    Jcc { cond: Cond, rel: i32 },
+    /// `ud2` (`0F 0B`) — the trap. The only trapping instruction the selector
+    /// emits on purpose.
+    Ud2,
     /// `retq` — near return (`C3`).
     Ret,
 }
@@ -444,13 +541,27 @@ impl Inst {
         self.to_string()
     }
 
-    /// The register this instruction WRITES, if any (`cmp`/`test` write only
-    /// EFLAGS). The selector's contract — no callee-saved register and no
-    /// stack pointer is ever written — is checked against this in the
+    /// Every register this instruction WRITES, implicit ones included
+    /// (`cmp`/`test` write only EFLAGS; `push`/`pop` move `rsp`; a divide
+    /// writes `rax` and `rdx`). The selector's contract — which registers may
+    /// be written, and by which instructions — is checked against this in the
     /// selector's tests.
-    pub fn writes(&self) -> Option<Reg> {
+    pub fn writes(&self) -> Vec<Reg> {
         match *self {
-            Inst::Alu { op, dst, .. } => op.writes_dst().then_some(dst),
+            Inst::Alu { op, dst, .. } => {
+                if op.writes_dst() {
+                    vec![dst]
+                } else {
+                    vec![]
+                }
+            }
+            Inst::AluImm { op, dst, .. } => {
+                if op == ImmOp::Cmp {
+                    vec![]
+                } else {
+                    vec![dst]
+                }
+            }
             Inst::Imul { dst, .. }
             | Inst::ShiftCl { dst, .. }
             | Inst::SetCc { dst, .. }
@@ -458,8 +569,14 @@ impl Inst {
             | Inst::Movx { dst, .. }
             | Inst::MovImm32 { dst, .. }
             | Inst::MovImmSx { dst, .. }
-            | Inst::MovAbs { dst, .. } => Some(dst),
-            Inst::Ret => None,
+            | Inst::MovAbs { dst, .. }
+            | Inst::Load { dst, .. }
+            | Inst::BitScan { dst, .. } => vec![dst],
+            Inst::Push { .. } => vec![Reg::Rsp],
+            Inst::Pop { reg } => vec![reg, Reg::Rsp],
+            Inst::Cdq { .. } => vec![Reg::Rdx],
+            Inst::Div { .. } => vec![Reg::Rax, Reg::Rdx],
+            Inst::Store { .. } | Inst::Jcc { .. } | Inst::Ud2 | Inst::Ret => vec![],
         }
     }
 }
@@ -515,6 +632,63 @@ impl fmt::Display for Inst {
                 write!(f, "movq $0x{:x}, %{}", imm as i64 as u64, dst.name64())
             }
             Inst::MovAbs { dst, imm } => write!(f, "movabsq $0x{imm:x}, %{}", dst.name64()),
+            Inst::Load { size, dst, mem } => {
+                write!(f, "mov{} {mem}, %{}", size.suffix(), size.reg(dst))
+            }
+            Inst::Store { size, src, mem } => {
+                write!(f, "mov{} %{}, {mem}", size.suffix(), size.reg(src))
+            }
+            Inst::AluImm { op, size, dst, imm } => {
+                // Unsigned at the operand width, like every other immediate.
+                let bits = match size {
+                    Size::L => u64::from(imm as u32),
+                    Size::Q => imm as i64 as u64,
+                };
+                write!(
+                    f,
+                    "{}{} $0x{bits:x}, %{}",
+                    op.mnemonic(),
+                    size.suffix(),
+                    size.reg(dst)
+                )
+            }
+            Inst::Push { reg } => write!(f, "pushq %{}", reg.name64()),
+            Inst::Pop { reg } => write!(f, "popq %{}", reg.name64()),
+            Inst::Cdq { size } => match size {
+                Size::L => write!(f, "cltd"),
+                Size::Q => write!(f, "cqto"),
+            },
+            Inst::Div { signed, size, src } => write!(
+                f,
+                "{}div{} %{}",
+                if signed { "i" } else { "" },
+                size.suffix(),
+                size.reg(src)
+            ),
+            Inst::BitScan {
+                reverse,
+                size,
+                dst,
+                src,
+            } => write!(
+                f,
+                "bs{}{} %{}, %{}",
+                if reverse { 'r' } else { 'f' },
+                size.suffix(),
+                size.reg(src),
+                size.reg(dst)
+            ),
+            // `.` is the address of the instruction itself, which is 6 bytes
+            // long; `{disp32}` asks the assembler for the 32-bit form.
+            Inst::Jcc { cond, rel } => {
+                let from_start = i64::from(rel) + 6;
+                if from_start < 0 {
+                    write!(f, "{{disp32}} j{} .-0x{:x}", cond.suffix(), -from_start)
+                } else {
+                    write!(f, "{{disp32}} j{} .+0x{from_start:x}", cond.suffix())
+                }
+            }
+            Inst::Ud2 => write!(f, "ud2"),
             Inst::Ret => write!(f, "retq"),
         }
     }
@@ -624,6 +798,146 @@ mod tests {
     }
 
     #[test]
+    fn frame_division_and_branch_forms_print_as_att() {
+        let slot = Mem {
+            base: Reg::Rbp,
+            disp: -8,
+        };
+        assert_eq!(
+            Inst::Load {
+                size: Size::Q,
+                dst: Reg::Rax,
+                mem: slot
+            }
+            .att(),
+            "movq -0x8(%rbp), %rax"
+        );
+        assert_eq!(
+            Inst::Store {
+                size: Size::L,
+                src: Reg::Rdi,
+                mem: Mem {
+                    base: Reg::R12,
+                    disp: 0
+                }
+            }
+            .att(),
+            "movl %edi, (%r12)"
+        );
+        assert_eq!(
+            Inst::Store {
+                size: Size::Q,
+                src: Reg::R9,
+                mem: Mem {
+                    base: Reg::Rsp,
+                    disp: 0x100
+                }
+            }
+            .att(),
+            "movq %r9, 0x100(%rsp)"
+        );
+        assert_eq!(
+            Inst::AluImm {
+                op: ImmOp::Sub,
+                size: Size::Q,
+                dst: Reg::Rsp,
+                imm: 16
+            }
+            .att(),
+            "subq $0x10, %rsp"
+        );
+        // A negative immediate prints unsigned at the operand width.
+        assert_eq!(
+            Inst::AluImm {
+                op: ImmOp::Cmp,
+                size: Size::L,
+                dst: Reg::Rsi,
+                imm: -1
+            }
+            .att(),
+            "cmpl $0xffffffff, %esi"
+        );
+        assert_eq!(
+            Inst::AluImm {
+                op: ImmOp::Cmp,
+                size: Size::Q,
+                dst: Reg::Rsi,
+                imm: -1
+            }
+            .att(),
+            "cmpq $0xffffffffffffffff, %rsi"
+        );
+        assert_eq!(Inst::Push { reg: Reg::Rbp }.att(), "pushq %rbp");
+        assert_eq!(Inst::Pop { reg: Reg::R13 }.att(), "popq %r13");
+        assert_eq!(Inst::Cdq { size: Size::L }.att(), "cltd");
+        assert_eq!(Inst::Cdq { size: Size::Q }.att(), "cqto");
+        assert_eq!(
+            Inst::Div {
+                signed: true,
+                size: Size::L,
+                src: Reg::Rsi
+            }
+            .att(),
+            "idivl %esi"
+        );
+        assert_eq!(
+            Inst::Div {
+                signed: false,
+                size: Size::Q,
+                src: Reg::R8
+            }
+            .att(),
+            "divq %r8"
+        );
+        assert_eq!(
+            Inst::BitScan {
+                reverse: true,
+                size: Size::L,
+                dst: Reg::Rax,
+                src: Reg::Rsi
+            }
+            .att(),
+            "bsrl %esi, %eax"
+        );
+        assert_eq!(
+            Inst::BitScan {
+                reverse: false,
+                size: Size::Q,
+                dst: Reg::R10,
+                src: Reg::R9
+            }
+            .att(),
+            "bsfq %r9, %r10"
+        );
+        // rel is from the END of the 6-byte instruction; `.` is its start.
+        assert_eq!(
+            Inst::Jcc {
+                cond: Cond::Ne,
+                rel: 2
+            }
+            .att(),
+            "{disp32} jne .+0x8"
+        );
+        assert_eq!(
+            Inst::Jcc {
+                cond: Cond::E,
+                rel: -6
+            }
+            .att(),
+            "{disp32} je .+0x0"
+        );
+        assert_eq!(
+            Inst::Jcc {
+                cond: Cond::B,
+                rel: -16
+            }
+            .att(),
+            "{disp32} jb .-0xa"
+        );
+        assert_eq!(Inst::Ud2.att(), "ud2");
+    }
+
+    #[test]
     fn cmp_and_test_write_no_register() {
         for op in [AluOp::Cmp, AluOp::Test] {
             assert_eq!(
@@ -634,10 +948,33 @@ mod tests {
                     src: Reg::Rax
                 }
                 .writes(),
-                None
+                vec![]
             );
         }
-        assert_eq!(Inst::mov32(Reg::Rax, Reg::Rdi).writes(), Some(Reg::Rax));
+        assert_eq!(Inst::mov32(Reg::Rax, Reg::Rdi).writes(), vec![Reg::Rax]);
+        assert!(
+            Inst::AluImm {
+                op: ImmOp::Cmp,
+                size: Size::Q,
+                dst: Reg::Rbx,
+                imm: -1
+            }
+            .writes()
+            .is_empty()
+        );
+        assert_eq!(
+            Inst::Div {
+                signed: true,
+                size: Size::L,
+                src: Reg::Rsi
+            }
+            .writes(),
+            vec![Reg::Rax, Reg::Rdx]
+        );
+        assert_eq!(
+            Inst::Pop { reg: Reg::Rbp }.writes(),
+            vec![Reg::Rbp, Reg::Rsp]
+        );
     }
 
     #[test]

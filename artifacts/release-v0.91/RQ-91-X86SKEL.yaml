@@ -100,7 +100,8 @@ artifacts:
         retq` in an elf64-x86-64 object with a .note.GNU-stack section; then
         `SYNTH=<that binary> cargo test -p synth-oracle --features exec --test
         x86_64_kiln_oracle` (all pass, 877 cases agree; 9 tests in this lane,
-        10 since RQ-91-X86ALU added one) and `cargo test -p
+        10 since RQ-91-X86ALU added one, 11 since RQ-91-X86FRAME added the
+        runner's red-zone test) and `cargo test -p
         synth-backend-x86_64` (E1 runs if llvm-mc is present). On the stack
         base the same compile exits 1 with "Unknown backend 'x86_64'".
 

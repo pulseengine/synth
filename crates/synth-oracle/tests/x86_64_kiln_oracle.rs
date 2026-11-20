@@ -530,3 +530,48 @@ fn potency_stack_flags_caller_frame_and_direction_flag() {
         o => panic!("DF not caught: {o:?}"),
     }
 }
+
+/// RQ-91-X86FRAME (REVIEW of X2, F6): a store BELOW THE RED ZONE — more than
+/// 128 bytes under the live `rsp` — is refused; the lowest red-zone slot is
+/// not, and neither is a frame's own slot once `rsp` has moved down past it.
+#[test]
+fn potency_a_store_below_the_red_zone_is_refused() {
+    let s1 = sig(&[ValType::I32], &[ValType::I32]);
+    let a = [WasmValue::I32(5)];
+    // `movl %edi, -0x88(%rsp)`: 136 bytes under rsp, 8 past the red zone.
+    let mut t = vec![0x89, 0xBC, 0x24, 0x78, 0xFF, 0xFF, 0xFF];
+    t.extend_from_slice(MOV_EAX_EDI_RET);
+    match run_hand(&t, &s1, &a) {
+        EmuOutcome::Illegal { reason, .. } => {
+            assert!(
+                reason.contains("store below the red zone") && reason.contains("136 bytes"),
+                "{reason}"
+            )
+        }
+        o => panic!("a store below the red zone was accepted: {o:?}"),
+    }
+    // `movq %rdi, -0x80(%rsp)`: the LOWEST red-zone slot, allowed.
+    let mut t = vec![0x48, 0x89, 0x7C, 0x24, 0x80];
+    t.extend_from_slice(MOV_EAX_EDI_RET);
+    assert_eq!(
+        run_hand(&t, &s1, &a),
+        EmuOutcome::Values(vec![WasmValue::I32(5)])
+    );
+    // The same address written AFTER `subq $0x100, %rsp` is inside the
+    // function's own frame: allowed. Then `addq $0x100, %rsp` and return.
+    let mut t = vec![0x48, 0x81, 0xEC, 0x00, 0x01, 0x00, 0x00]; // subq $0x100, %rsp
+    t.extend_from_slice(&[0x89, 0x7C, 0x24, 0x78]); // movl %edi, 0x78(%rsp)
+    t.extend_from_slice(&[0x48, 0x81, 0xC4, 0x00, 0x01, 0x00, 0x00]); // addq $0x100, %rsp
+    t.extend_from_slice(MOV_EAX_EDI_RET);
+    assert_eq!(
+        run_hand(&t, &s1, &a),
+        EmuOutcome::Values(vec![WasmValue::I32(5)])
+    );
+    // A store below the red zone followed by a `ud2` is still the violation,
+    // not a trap.
+    let mut t = vec![0x89, 0xBC, 0x24, 0x78, 0xFF, 0xFF, 0xFF, 0x0F, 0x0B];
+    t.extend_from_slice(MOV_EAX_EDI_RET);
+    assert!(
+        matches!(run_hand(&t, &s1, &a), EmuOutcome::Illegal { ref reason, .. } if reason.contains("red zone"))
+    );
+}

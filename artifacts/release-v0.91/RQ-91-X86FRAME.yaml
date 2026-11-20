@@ -1,0 +1,179 @@
+artifacts:
+  - id: RQ-91-X86FRAME
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "`-b x86_64` gives every function a frame: parameters are homed, locals are lowered, a deep operand stack spills, and div/rem and the bit counts are lowered with wasm's traps as guarded `ud2`"
+    description: >
+        Lanes X3 and X4 of the x86-64 backend plan (VCR-X86-001), on top of
+        lane X2 (RQ-91-X86ALU). The plan's suggested second id, X86DIV, is
+        folded into this artifact: the two lanes edit the same selector and
+        were built and measured together.
+
+        LANE X3, THE FRAME. Every function now opens with `pushq %rbp; movq
+        %rsp, %rbp; subq $N, %rsp` and closes every return path with `movq
+        %rbp, %rsp; popq %rbp; retq`. `N` is 8 bytes per local and per spill
+        slot, rounded up to 16. EVERY PARAMETER IS HOMED to its slot in the
+        prologue (the plan's choice, section 1.2: it frees the argument
+        registers and removes the parameter-aliasing class by construction),
+        and every declared local's slot is zeroed there, all 8 bytes.
+        `local.get` loads a copy; `local.set` and `local.tee` store. Lane
+        X2's register-resident parameters, its three temporaries and its
+        `rcx` save and restore around a shift are gone: the temporaries are
+        `rsi, rdi, r8, r9, r10, r11`, and `rax, rcx, rdx` are never allocated
+        (they are the fixed operands of shifts, divides and the result).
+        WHEN THE SIX TEMPORARIES RUN OUT, the deepest register-held value on
+        the operand stack is stored to a spill slot and loaded back when it
+        is popped; lane X2 refused such a function. The only callee-saved
+        registers written are `rbp` and `rsp`, by the five frame
+        instructions; `rbx` and `r12-r15` are never written, and nothing is
+        stored below `rsp` (the red zone is not used).
+
+        A FRAME ABOVE ONE PAGE (4096 bytes: 512 locals and spill slots) IS
+        REFUSED BY NAME. A larger frame could step over a guard page without
+        touching it, and no stack probe is emitted. This limit is this
+        lane's decision, not the plan's; the plan is silent on it.
+
+        LANE X4, DIVISION AND BIT COUNTS. x86 `div`/`idiv` raise #DE on a
+        zero divisor and on INT_MIN / -1. Neither is ever executed with such
+        operands: a zero divisor branches to a `ud2`; `div_s` branches to a
+        second `ud2` when the divisor is -1 and the dividend INT_MIN;
+        `rem_s` by -1 divides 0 instead of the dividend, so the remainder is
+        0 for every dividend and `idiv` cannot overflow. Branches are forward
+        `jCC rel32` over a fixed run of instructions whose length is read
+        from the encoder; there is no label and no size estimate. `clz` and
+        `ctz` are `bsr`/`bsf` with a `cmov` supplying the answer for a zero
+        input; `popcnt` is the baseline shift-and-mask sum with one multiply.
+        NO `lzcnt`, `tzcnt` OR `popcnt` ENCODING IS EMITTED (the plan bans
+        them: on a CPU without LZCNT, `F3 0F BD` runs as `bsr` and gives a
+        different answer without faulting); the iced-x86 feature gate checks
+        that on every emitted instruction. Each of these is a SEQUENCE in the
+        instruction stream, never one atomic instruction. The rule table
+        (rules.rs) grows from 52 to 66 rows; the derived op surface from 59
+        to 75 of 198.
+
+        QUALITY, STATED: the code is correct-first. Every `local.get` is a
+        load and every result is moved to `rax`; `popcnt` shifts by `cl`
+        after loading the count, because the encoder has no shift-by-
+        immediate form yet. No performance claim is made.
+
+        THE EXECUTION ORACLE'S RUNNER GAINS ONE CHECK (the cold review of
+        lane X2, finding F6): every store is compared with the LIVE `rsp`,
+        and a store more than 128 bytes below it (below the red zone) makes
+        the run ILLEGAL. A function with a frame writes far below its entry
+        `rsp` legitimately, so this cannot be judged from memory after the
+        return.
+
+        NOT IN THIS LANE: `unreachable` and every control-flow op (lane X5),
+        so the plan's "parameter written on one path only" probe has no
+        program to be written as yet; calls, globals, memory, floats.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact: with a
+        synth built from this branch, `SYNTH=<that binary> cargo test -p
+        synth-oracle --features exec --test x86_64_frame_div_kiln_oracle --
+        --nocapture` must print the five `ORACLE x86_64-frame` lines (5736,
+        5112, 7806, 1763 and 1292 cases; 460 + 388 divide-by-zero and 11 + 8
+        overflow traps) and pass 17 tests; with SYNTH naming a binary built
+        from lane X2 (3ad771f1) the same command must fail all 17. `cargo
+        test -p synth-backend-x86_64 -- --nocapture` must print `E1: 24308
+        forms byte-equal to` (when llvm-mc is present) and `E2: 24308 forms
+        decode`.
+
+        CITATION: #1741 is the architecture-support issue this lane is one
+        step of. It stays open: x86-64 is at L3, and control flow, calls,
+        globals and memory remain.
+    tags:
+      - feature-loop
+      - backend
+      - oracle
+    links:
+      - type: derives-from
+        target: VCR-X86-001
+    fields:
+      req-type: functional
+      priority: should
+      issue: "#1741"
+      verification-track: execution
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 `synth compile -b x86_64 --relocatable` lowers
+        leaf functions with locals, an operand stack deeper than the
+        temporaries, div/rem and clz/ctz/popcnt; every wasm trap of a divide
+        stops on a `ud2` and never on a CPU exception; INT_MIN rem_s -1
+        returns 0; a local read before it is written reads 0 on a poisoned
+        stack; every instruction form the encoder has is byte-equal to
+        llvm-mc and decodes under iced-x86 inside the baseline ISA level;
+        execution agrees with kiln under unicorn pinned to QEMU64 on every
+        case of the oracle.
+      landed: "v0.91 X86FRAME - #1741 - DELIVERED: the frame, parameter homing, locals and the spilling operand stack in selector.rs; div/rem guards, clz/ctz and popcnt (rules.rs 52 -> 66 rows); ten instruction forms in inst.rs/encoder.rs; exact local types in backend.rs; the red-zone store check in the oracle's x86-64 runner; tests/x86_64_frame_div_kiln_oracle.rs; op surface 59 -> 75 of 198. #1741 stays open (outlives)."
+      verified-by: >
+        DELIVERED, execution-verified under emulation. RED/GREEN: with SYNTH
+        naming a binary built from lane X2 (3ad771f1), all 17 tests of
+        x86_64_frame_div_kiln_oracle.rs fail and 21 of 22 groups are reported
+        as not compiling (`unsupported wasm op`, `non-parameter local`, `more
+        than 3 temporaries at once`); the 22nd, six parameters each returned on its
+        own, compiles there and its 182 cases agree. On this branch all 17
+        pass. EXECUTION: 21,709 cases, all AGREE with kiln under unicorn
+        QEMU64: i32 division 5736 over 4 ops, i64 division 5112 over 4 ops,
+        bit counts 7806 over 6 ops, locals and parameter homing 1763 over 7
+        groups, spilled operand stacks 1292 over 2 groups. TRAPS: for every
+        division case the test computes from the operands alone whether wasm
+        traps and why; kiln's trap class and the emulator's outcome must
+        both match that, and the emulator's stop must be the function's
+        FIRST `ud2` for a zero divisor and its SECOND for the overflow. 848
+        cases trap on a zero divisor and 19 on INT_MIN / -1, counts that
+        were derived by hand from the vector definitions before the first
+        run and matched it. INT_MIN rem_s -1 returns 0 and clz(0)/ctz(0)
+        return the width, as literals on both engines. For the bit counts,
+        the locals and the spill probes the expected VALUE is also computed
+        in the test (Rust's leading_zeros and a stack machine over the same
+        op list), so both engines are checked against a third answer. i32
+        operands with garbage in bits 63:32 arrive three ways (a poisoned
+        argument register, a wrapped i64 parameter, a wrapped i64 TEMPORARY,
+        the X2 review's F1 shape), and are also taken through a spill slot
+        and through an i32 local before being consumed. POTENCY, committed
+        tests on the emitted image: the zero guard's `ud2` overwritten with a
+        nop makes exactly the 22 zero-divisor vectors ILLEGAL (#DE, not a
+        trap); the overflow guard's `ud2` overwritten, and rem_s's zeroed
+        dividend overwritten, each red exactly the one INT_MIN / -1 pair; the
+        zero guard's branch inverted reds every vector (a trap at the wrong
+        site with kiln trapping for another cause is not agreement); kiln
+        running div_u for the compiled div_s reds the computed set; clz's
+        `cmov` overwritten reds exactly the zero inputs; a local's zeroing
+        store overwritten, or narrowed to 32 bits, reds every vector; a
+        spill reload aimed at the wrong slot, an i64 parameter homed at 32
+        bits, and the re-zeroing of `i64.extend_i32_u` overwritten each red
+        their computed sets. MUTANTS, run once on this tree, not committed:
+        60 source mutants of selector.rs and encoder.rs, each rebuilt into
+        synth and run against the three x86-64 execution oracles: 58 red.
+        The two that stay green in execution: a frame not rounded to 16
+        bytes (this lane makes no call, so nothing executes that depends on
+        the alignment; red in the selector's unit tests), and `local.get` of
+        an i32 loading 64 bits (the upper half of an i32 is unspecified by
+        the selector's own rule and every consumer ignores it, so no
+        execution can differ; red in the unit tests' expected text). RUNNER:
+        the red-zone check has its own committed test (a store 136 bytes
+        under rsp is ILLEGAL, the lowest red-zone slot and a frame's own
+        slot are not). ENCODER: E1 24,308 of 24,308 forms byte-equal to
+        llvm-mc 22.1.8 — the 11,969 of lanes X1-X2 and 12,339 new: loads and
+        stores over every base register (the rsp/r12 SIB and rbp/r13
+        forced-displacement cases included) at nine boundary displacements,
+        op-with-immediate at ten boundary immediates, push, pop, cltd/cqto,
+        div/idiv, bsf/bsr, 80 `jCC rel32` and `ud2`. llvm-mc prints a branch
+        with a fixup instead of bytes, so the 80 branches are assembled to an
+        object and `.text` is read back; a displacement one off and a
+        neighbouring condition each disagree on all 80. The REX.B-dropped
+        control disagrees on exactly the 12,112 forms that set REX.B. E2/E3
+        decode the same 24,308 forms and the .text of every probe object
+        under iced-x86 1.22.0 inside x86-64-v1; a branch's expected target
+        is computed from the REQUESTED displacement. OTHER BACKENDS: no Rust
+        source outside the x86-64 crate, the oracle crate, the CLI's x86
+        test and the op-parity test's x86 leg changed. NOT VERIFIED HERE:
+        the x86_64-oracle workflow has not run, so E1 against ubuntu-24.04's
+        older llvm-mc (which must also accept the `{disp32}` prefix the
+        branch forms are printed with) and the native leg (extended here
+        from 504 to 755 cases; only its WAT was compiled and its C
+        syntax-checked on this host) are unexecuted; the oracle-kiln job on
+        the self-hosted pool has not run; no x86-64 code ran on real
+        silicon; Bazel was not built; rivet is not installed on this host,
+        so the artifact was not validated by rivet.
