@@ -5,7 +5,8 @@
 # corpus persistence) are out of scope for #82; this is the smoke gate.
 #
 # Target list mirrors fuzz/Cargo.toml `[[bin]]` entries. Add a new
-# fuzz_target there → add the binary name to `matrix.target` here.
+# fuzz_target there → add the binary name to `TARGETS` in the run step (the
+# step fails if the two lists differ).
 #
 # Refs: issue #82, issue #93 (silent-drop class).
 
@@ -38,44 +39,28 @@ concurrency:
 
 jobs:
   fuzz:
-    name: "${{ matrix.target }} (60s)"
+    # ONE job, four targets in sequence. This was a 4-way matrix: each leg
+    # installed nightly, restored fuzz/target and installed cargo-fuzz to run
+    # one 60 s target (119 rust-cpu minutes over 12 runs, 2026-11-19/20). The
+    # targets share one fuzz crate, so one job pays that setup and the
+    # dependency build once.
+    #
+    # What is kept: all four targets, 60 s of fuzzing each
+    # (`-max_total_time=60`), the seeded corpus, the crash upload, and each
+    # target's former 10-minute ceiling (`timeout 600` around its build and
+    # run). Every target runs whatever the others did, and the job FAILS IF ANY
+    # TARGET FAILS — including the two exploration harnesses that the matrix
+    # marked `continue-on-error` (their own check went red there too; only the
+    # workflow conclusion stayed green). The per-target verdicts are printed
+    # and written to the step summary so a red job names its target.
+    name: "Fuzz smoke — 4 targets (60s each)"
     # Match ci.yml: rust-cpu self-hosted pool, with ubuntu-24.04 fallback if
     # the pool is unavailable (cargo-fuzz needs Linux for libfuzzer-sys ASan).
     # Routes fork PRs to GitHub-hosted runners by default. This is NOT a security
     # boundary: a fork PR can edit this file. Isolation is enforced by the org's
     # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        # Each entry: `target` + `gating`. Gating harnesses pass clean today
-        # and block PR merge on regression. Exploration harnesses keep finding
-        # new bugs at a rate faster than we close them in one cycle; they
-        # report (crash artifacts uploaded) but don't block — `continue-on-
-        # error` is taken from the `gating` flag. Promote an exploration
-        # harness to gating once its bug-list stabilises.
-        include:
-          # `wasm_ops_lower_or_error` is gating again. It was demoted in
-          # PR #117 because wasm_to_ir's inst_id-as-vreg-slot model crashed
-          # on Drop / LocalSet / Store / Block shapes; the slot_stack
-          # refactor (issue #121) closed those. The last panic site in the
-          # optimized path was `ir_to_arm`'s defensive `get_arm_reg`, which
-          # now returns `Result` instead of `panic!`-ing — the whole
-          # `optimize_full` + `ir_to_arm` path is panic-free, so this
-          # harness (contract: "lower or Err, never panic") gates again.
-          - target: wasm_ops_lower_or_error
-            gating: true
-          - target: wasm_to_ir_roundtrip_op_coverage
-            gating: true
-          - target: i64_lowering_doesnt_clobber_params
-            gating: false  # finds real bugs faster than we fix them; tracked as follow-up issues
-          - target: encoder_no_panic
-            gating: false  # encoder-level corner cases; not silicon-blocking
-    # When gating == false, treat job failure as a non-blocking warning. The
-    # matrix value is plain JSON (bool), not untrusted user input, so this is
-    # safe to interpolate.
-    continue-on-error: ${{ matrix.gating == false }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -96,9 +81,7 @@ jobs:
         with:
           tool: cargo-fuzz
 
-      - name: Run fuzz target for 60s
-        env:
-          TARGET: ${{ matrix.target }}
+      - name: Run each fuzz target for 60s
         # Force the GNU target — cargo-fuzz defaults to musl on Linux,
         # whose statically-linked libc is incompatible with ASan
         # (libfuzzer-sys turns ASan on by default). The GNU target has
@@ -110,22 +93,64 @@ jobs:
         # empty-stack`. Without seeding, a regression that re-introduces the
         # panic might be missed if libfuzzer doesn't rediscover the exact
         # input within 60s.
+        #
+        # `wasm_ops_lower_or_error` and `wasm_to_ir_roundtrip_op_coverage` are
+        # the harnesses that pass clean (the first has since PR #117's Drop /
+        # LocalSet / Store / Block crashes were closed by the slot_stack
+        # refactor, issue #121, and `ir_to_arm`'s `get_arm_reg` returns
+        # `Result`). `i64_lowering_doesnt_clobber_params` and
+        # `encoder_no_panic` are exploration harnesses that find real bugs
+        # (tracked as follow-up issues). All four fail this job.
         run: |
-          mkdir -p fuzz/artifacts fuzz/corpus "fuzz/corpus/${TARGET}"
-          if [ -d "fuzz/seed_corpus/${TARGET}" ]; then
-            cp -n fuzz/seed_corpus/"${TARGET}"/* "fuzz/corpus/${TARGET}/" || true
+          set -uo pipefail
+          failed=""
+          n=0
+          mkdir -p fuzz/artifacts fuzz/corpus
+          TARGETS=(wasm_ops_lower_or_error wasm_to_ir_roundtrip_op_coverage i64_lowering_doesnt_clobber_params encoder_no_panic)
+          # The list above must be exactly fuzz/Cargo.toml's `[[bin]]` set: a
+          # target added there and not here would never be fuzzed.
+          have="$(cargo +nightly fuzz list | sort | xargs)"
+          want="$(printf '%s\n' "${TARGETS[@]}" | sort | xargs)"
+          [ -n "$have" ] && [ "$have" = "$want" ] || {
+            echo "::error::fuzz targets in fuzz/Cargo.toml ($have) are not the ones this job runs ($want)"
+            exit 1
+          }
+          for TARGET in "${TARGETS[@]}"; do
+            n=$((n + 1))
+            echo "::group::${TARGET} (60s)"
+            mkdir -p "fuzz/corpus/${TARGET}"
+            if [ -d "fuzz/seed_corpus/${TARGET}" ]; then
+              cp -n fuzz/seed_corpus/"${TARGET}"/* "fuzz/corpus/${TARGET}/" || true
+            fi
+            rc=0
+            timeout 600 cargo +nightly fuzz run "${TARGET}" \
+              --target x86_64-unknown-linux-gnu \
+              -- -max_total_time=60 -print_final_stats=1 || rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -eq 0 ]; then
+              echo "FUZZ ${TARGET}: ok" | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::fuzz target ${TARGET} failed (exit ${rc}; 124 is the 10-minute ceiling)"
+              echo "FUZZ ${TARGET}: FAILED (exit ${rc})" | tee -a "$GITHUB_STEP_SUMMARY"
+              failed="${failed} ${TARGET}"
+            fi
+          done
+          # Four targets must have run: a loop that ran none would be green
+          # about nothing.
+          [ "$n" -eq 4 ] || { echo "::error::ran ${n} fuzz targets, expected 4"; exit 1; }
+          if [ -n "$failed" ]; then
+            echo "FUZZ-SMOKE targets=${n} failed:${failed}"
+            exit 1
           fi
-          cargo +nightly fuzz run "${TARGET}" \
-            --target x86_64-unknown-linux-gnu \
-            -- -max_total_time=60 -print_final_stats=1
+          echo "FUZZ-SMOKE targets=${n} failed=0"
 
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: fuzz-crash-${{ matrix.target }}
+          name: fuzz-crash
           path: |
-            fuzz/artifacts/${{ matrix.target }}/
-            fuzz/corpus/${{ matrix.target }}/
+            fuzz/artifacts/
+            fuzz/corpus/
           retention-days: 30
           if-no-files-found: ignore

@@ -1,0 +1,38 @@
+# The cargo cache for a job that still builds with cargo, slimmed and keyed
+# PER JOB.
+#
+# WHY. The shared `<os>-cargo-<lock>` cache had grown to ~1.1 GB (measured
+# 2026-11-20: `Received ... of 1182904184`), restored in full by every job
+# whatever it built; restore alone was 67-108 s of a 2-4 minute job. Two things
+# make it big: full debug info, and target/*/incremental. This action
+#   - sets CARGO_PROFILE_DEV_DEBUG=line-tables-only for the rest of the job
+#     (backtraces keep file:line; the compiler's codegen is unchanged),
+#   - sets CARGO_INCREMENTAL=0, so target/*/incremental is never written and
+#     therefore never cached,
+#   - keys the cache on the job id, so it holds what THIS job builds and is
+#     never the 1.1 GB cache a differently-configured job saved.
+#
+# SCOPE. Used per job, deliberately. It is NOT used by Clippy or Test (their
+# environments are untouched), nor by the build-synth job (its binary is built
+# with the unmodified dev profile), nor by the two mutation jobs (they rebuild
+# one crate per mutant, which is what incremental compilation is for).
+name: Slim per-job cargo cache
+description: actions/cache for ~/.cargo + target/, keyed per job, with line-tables-only debug info and no incremental
+runs:
+  using: composite
+  steps:
+    - name: Slim the dev profile for this job
+      shell: bash
+      run: |
+        echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+    - name: Cache Cargo dependencies (slim, per job)
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target/
+        key: ${{ runner.os }}-cargo-slim-${{ github.job }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-slim-${{ github.job }}-
