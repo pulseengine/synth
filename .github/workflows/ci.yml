@@ -152,7 +152,7 @@ jobs:
     # Routes fork PRs to GitHub-hosted runners by default. This is NOT a security
     # boundary: a fork PR can edit this file. Isolation is enforced by the org's
     # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: &fc-rust-cpu ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -223,7 +223,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","light"]') }}
+    runs-on: &fc-light ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -244,7 +244,7 @@ jobs:
 
   pin-sweep:
     name: Version Pin Sweep
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","light"]') }}
+    runs-on: *fc-light
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Issue #145: fail at PR time if [workspace.package].version drifts from
@@ -313,7 +313,7 @@ jobs:
     # is the enforcement; run it live before retargeting any required context.
     # SAFETY: the job NAME must stay `Claim Check` — a renamed required
     # context never reports and DEADLOCKS all merges.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","light"]') }}
+    runs-on: *fc-light
     steps:
       # fetch-depth: 0 — the status-evidence gate (RQ-60-FLIPCOUPLE, #1064)
       # scans first-parent commit SUBJECTS for delivery commits ("RQ-N-FOO:
@@ -1394,7 +1394,7 @@ jobs:
     # required context deadlocks every merge until protection is updated).
     name: Rust-test Line Coverage (unit + integration only)
     needs: [test]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
@@ -1442,7 +1442,7 @@ jobs:
             echo "reported separately, in executed checks, by the"
             echo "\`oracle evidence ledger\` job. **Do not add them together.**"
           } >> "$GITHUB_STEP_SUMMARY"
-      - if: github.event.pull_request.head.repo.fork != true
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         name: Upload to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
@@ -1467,7 +1467,7 @@ jobs:
 
   rivet:
     name: Rivet Validation
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -1840,7 +1840,7 @@ jobs:
   # ---------------------------------------------------------------------------
   rivet-federated:
     name: Rivet Federated Graph (advisory)
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2101,7 +2101,7 @@ jobs:
     # Isolated job for the same reason as cmp-select: unicorn/wasmtime are
     # pip-installed here ONLY, so `cargo test --workspace` is not taxed with a
     # C-library build graph.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -2158,7 +2158,7 @@ jobs:
     #
     # `submodules: recursive` is load-bearing: the spec suite is a submodule
     # and the script hard-fails on an empty corpus rather than passing 0/0.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2218,7 +2218,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -2293,7 +2293,7 @@ jobs:
     # context is not moved until this one has a full green cycle, because a
     # required check whose label no runner satisfies never runs and deadlocks
     # every merge in the repo.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -3686,7 +3686,7 @@ jobs:
     # (the v0.50 `JoinValueNotAvailable{R8}` class) fails this job before it
     # ever reaches the mutation. Isolated job: the script mutates the working
     # tree and rebuilds, then always restores it.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -3767,7 +3767,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -3932,7 +3932,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -3994,7 +3994,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4045,7 +4045,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4100,7 +4100,7 @@ jobs:
     # is fine. NOT a required context — retargeting one of those leaves a
     # NAME that never runs and deadlocks every merge, with no red to
     # revert.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4251,7 +4251,7 @@ jobs:
     # reports the declared page count, the shared rewrite_memory_grow_zero fold
     # makes grow(0) return current size, and fixed-memory grow(>0) returns -1.
     # Isolated job: emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4299,7 +4299,7 @@ jobs:
     # so nothing else exercises the optimized path's AAPCS compliance. Covers the
     # 16-bit push and the 32-bit PUSH.W (high-register) forms. Isolated job:
     # emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4349,7 +4349,7 @@ jobs:
     # harness fails loudly on the decoy's return value. The type check is
     # discharged at compile time (closed-world table verification in the
     # selector); its decline paths are unit-gated in synth-core/synth-synthesis.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4400,7 +4400,7 @@ jobs:
     # red = "declines today", green = correct dispatch). Single-table modules
     # stay byte-identical by construction (offset 0 = the pre-#650 expansion),
     # pinned by the frozen-fixture job and the #642/#594/#597 oracles.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4456,7 +4456,7 @@ jobs:
     # stay byte-identical by construction (null_check=false emits the
     # pre-#664 bytes), pinned by the frozen-fixture job and the
     # #642/#650/#594/#597 oracles.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4512,7 +4512,7 @@ jobs:
     # The aarch64 instance of the same defect is covered by the #851
     # param-homing oracle in the aarch64 job; all three backends now share one
     # `synth_core::referenced_locals`.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4588,7 +4588,7 @@ jobs:
     # change (straight-line write-then-read, #457 read-before-write, #970's
     # conditionally-written param). The two oracles are INDEPENDENT evidence
     # per backend, per the #970 two-leg precedent.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4642,7 +4642,7 @@ jobs:
     # Negative results are pinned as such: block/ARM was CORRECT pre-#1096
     # (conservative leg) and loop/ARM was already #509-declined — neither is
     # asserted wrong, per "do not manufacture a wrong answer".
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4708,7 +4708,7 @@ jobs:
     # pinned MATCH so the measured boundary cannot move silently. RV32's
     # refusal of the i64-param module (#312 via #952) is pinned as a
     # recorded decline, not manufactured into a wrong answer.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -4787,7 +4787,7 @@ jobs:
     # text as `.wast` vs `.wat` instead. Needs the suite submodule: the
     # numbers below are measured WITH it (1045 module-leg pairs); a checkout
     # without it fails loudly at 0 audited, never 0/0.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -5216,7 +5216,7 @@ jobs:
     # deleted, made unreachable, or the probe blind — is red HERE, with the
     # `MUTANTS-REACH-WIDE` line grepped so a subset with no such entry
     # cannot pass either.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -5311,7 +5311,7 @@ jobs:
     # copied. Known-open findings are pinned by EXACT count inside each
     # script (#1204, #1211, #1240, #1241, the memory.grow envelope); a pin
     # that moves in either direction is red.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -5397,7 +5397,7 @@ jobs:
     # exception — the #1223 vector was the last pinned-open one and it now
     # matches, which is why the known-open grep below reads 0 (of 0).
     # Declines per leg are pinned EXACTLY (reach moved = red).
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5469,7 +5469,7 @@ jobs:
     # pre-#676 bytes), pinned by the frozen-fixture job, the whole-object
     # no-sidecar test (heterogeneous_table_676.rs) and the
     # #642/#650/#664/#594/#597 oracles.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5533,7 +5533,7 @@ jobs:
     #     Reset_Handler) and -b aarch64, every outcome from wasmtime with GC
     #     enabled; the loud declines are an exact table. Red on c20d37b2: 87
     #     missing traps.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5590,7 +5590,7 @@ jobs:
     # byte gate only covers the `--relocatable` direct path, so nothing else
     # exercises the optimized path's branch resolution. Isolated job: emulation
     # deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5639,7 +5639,7 @@ jobs:
     # pressure on these fixtures; the teardown path must stay covered) and
     # trips loudly if a fixture stops spilling (vacuity guard). Isolated job:
     # emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5690,7 +5690,7 @@ jobs:
     # spills). The frozen byte gate only covers the --relocatable direct path, so
     # nothing else exercises the default self-contained-image path's register
     # pressure. Isolated job: emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5739,7 +5739,7 @@ jobs:
     # so harness drift reddens instead of rotting. Symbols come from the ELF
     # symtab, not `synth disasm` text (host-dependent, PR #489). Isolated job:
     # emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5802,7 +5802,7 @@ jobs:
     # of rotting. The r12_spill_496 oracle covers control_step on the DEFAULT
     # optimized path; this covers the --relocatable direct path. Isolated job:
     # emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5860,7 +5860,7 @@ jobs:
     # Covers a HIGH param count (sum25, reading param 24) and an outgoing 10-arg
     # call. The 64-bit stack-param case stays refused (a #503 follow-up). Isolated
     # job: emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5911,7 +5911,7 @@ jobs:
     #    resort, after the #474 promotion-off fallback) sizes the pool from
     #    the operand-stack-depth bound. Falcon func_60/func_73.
     # Isolated job: emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -5972,7 +5972,7 @@ jobs:
     # Vectors: rot-by-0 identity, rot 32/63/>=64, div by 1/self/0(trap),
     # high-bit patterns, _hi twins for the upper result half.
     # Isolated job: emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -6020,7 +6020,7 @@ jobs:
     # lowers it as a cmp-chain). The frozen byte gate only covers the
     # --relocatable direct path, so nothing else exercises the default path's
     # br_table lowering. Isolated job: emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -6069,7 +6069,7 @@ jobs:
     # (off ⇒ byte-identical, pinned by const_cse_reduction_242.rs's golden), so
     # nothing else exercises the optimized-path const cache. Isolated job:
     # emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -6118,7 +6118,7 @@ jobs:
     # paired passes turn frame reloads into register moves and remove the now-dead
     # stores (flight_algo sp-traffic 20→7, 139→135 insns). Isolated job: emulation
     # deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -6169,7 +6169,7 @@ jobs:
     # absolute 0x2000_0100 base — shifts by stack_size as one). Flag-off
     # byte-identity is pinned by the frozen-fixture job + the startup unit
     # tests. Isolated job: emulation deps pip-installed here ONLY.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -6221,7 +6221,7 @@ jobs:
 
   arena-bind-418-oracle:
     name: "#418 arena-bind self-contained execution oracle"
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -6293,7 +6293,7 @@ jobs:
     # a REQUIRED context that has run on this pool since increment 2. It is
     # NOT required, so the worst case of a pool problem here is a red to
     # revert, never a deadlocked merge.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -6366,7 +6366,7 @@ jobs:
     # a REQUIRED context that has run on this pool since increment 2. It is
     # NOT required, so the worst case of a pool problem here is a red to
     # revert, never a deadlocked merge.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -6425,7 +6425,7 @@ jobs:
     # a REQUIRED context that has run on this pool since increment 2. It is
     # NOT required, so the worst case of a pool problem here is a red to
     # revert, never a deadlocked merge.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -6480,7 +6480,7 @@ jobs:
     # already has (`WasmOp::End`,
     # `crates/synth-backend-aarch64/src/selector.rs:2207`). Filed as WATCHED,
     # not fixed, per this lane's mandate.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -7079,7 +7079,7 @@ jobs:
     # (a local written on one arm of a br_if is never zero-inited, so the merge
     # reads uninitialised stack). They are LISTED by name against their issue
     # inside the harness and ratcheted in both directions, not narrowed away.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     env:
       SYNTH: ./target/debug/synth
     steps:
@@ -7470,7 +7470,7 @@ jobs:
     # `ubuntu-latest`, which RQ-61-CICAP and the v0.71 measurements both found
     # saturated while the self-hosted pool idled, would make the queue worse
     # for every other lane in this file.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -7636,7 +7636,7 @@ jobs:
     name: "Portable arm64 musl asset cross-builds and is static (#1349)"
     # SELF-HOSTED, per the RQ-72-CIPOOL ceiling: a new job defaulting to the
     # GitHub-hosted quota makes every other lane queue longer during a burst.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -7838,7 +7838,7 @@ jobs:
   advisories-and-vex:
     name: "Advisories are checked, and every not_affected is human-asserted (#1359)"
     # SELF-HOSTED, per the RQ-72-CIPOOL ceiling.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -7938,7 +7938,7 @@ jobs:
     # idle self-hosted machines, because the constraint is the GitHub-hosted
     # quota and not the fleet. A new job defaulting to ubuntu-latest makes that
     # worse for every other lane, so this one goes to the pool that has capacity.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: *fc-rust-cpu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -8023,7 +8023,7 @@ jobs:
   # path. curl, not `gh`: self-hosted runners do not have the GitHub CLI.
   script-portability:
     name: Script portability (shellcheck + Python 3.9 floor)
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","light"]') }}
+    runs-on: *fc-light
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
