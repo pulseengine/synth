@@ -163,6 +163,19 @@ impl Backend for ArmBackend {
                     "function '{name}': {reason}"
                 )));
             }
+            // #1450 / RQ-91-MVDROP: the call-site refusal reads the CONFIG's
+            // result tables, which a library caller's default config leaves
+            // empty — an in-module call to a multi-result function then
+            // compiled as a one-value call. Check against the MODULE's tables.
+            if let Some((what, index, count)) = synth_core::find_multi_result_call(
+                &func.ops,
+                &module.func_result_counts,
+                &module.type_result_counts,
+            ) {
+                return Err(BackendError::CompilationFailed(
+                    synth_core::multi_result_call_decline_msg("ARM", what, index, count),
+                ));
+            }
             // THIS function's facts, from the MODULE (#1745): declared param
             // count (#457), i64/f32/f64 param masks (#359, GI-FPU-002
             // #619/#369), f32/f64 return flags (#719), blocktype arity (#509)

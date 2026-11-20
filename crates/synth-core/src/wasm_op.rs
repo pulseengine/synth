@@ -853,7 +853,7 @@ pub fn multi_result_call_decline_msg(backend: &str, what: &str, index: u32, coun
 
 /// #1450 — why a function whose OWN type has more than one result is refused
 /// when it is an entry point: `how` says which kind ("exported", "in a table
-/// (address-taken)", "the function this compile was asked for").
+/// (address-taken)", "selected as this compile's entry point").
 ///
 /// No backend defines a multi-value return convention. Each return sequence
 /// implements the one-result convention and was applied unchanged to an
@@ -864,9 +864,16 @@ pub fn multi_result_call_decline_msg(backend: &str, what: &str, index: u32, coun
 /// AArch64 `mov x0, x10` (x*5, the first result discarded); cortex-m7dp
 /// `(result f32 f32)` `s0` = the second result. An in-module CALL of such a
 /// function is refused separately ([`find_multi_result_call`], RV32 #871,
-/// aarch64 #851), so the only consumer left was one OUTSIDE the module — an
-/// embedder calling the export, or reaching the function through the table —
-/// which has no contract to read the other results by.
+/// aarch64 #851) — on the CLI and, on ARM, in `compile_module` against the
+/// module's own tables — so the only consumer left was one OUTSIDE the module
+/// — an embedder calling the export, or reaching the function through the
+/// table — which has no contract to read the other results by.
+///
+/// The decoder applies this to every function in an element segment, declared
+/// ones included. The CLI emits such a function only when something dispatches
+/// through the table; `AArch64Backend::compile_module` compiles every local
+/// function, so through that API a table-only or `elem declare`-only
+/// multi-result function is refused too (loud, wider than the CLI).
 ///
 /// `None` for 0 or 1 results. The needle is "MULTI-RESULT function".
 pub fn multi_result_function_decline(result_count: u32, how: &str) -> Option<String> {

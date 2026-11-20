@@ -305,8 +305,9 @@ whatever the region holds), not a trap.
   WITHOUT that symbol). Before this refusal the object returned only the
   function's LAST result in R0 (S0 for a float), exit 0. The same refusal
   applies on RV32 and AArch64. A multi-result function that is neither
-  exported nor reachable through a table is not emitted, and a call to one
-  from inside the module is refused at the call site.
+  exported nor reachable through a table is not emitted by `synth compile`,
+  and a call to one from inside the module is refused at the call site
+  (by `synth compile`, and by the library `ArmBackend::compile_module`).
 
 ### The `@`-in-export-names hazard — UNSOLVED, work around it
 
