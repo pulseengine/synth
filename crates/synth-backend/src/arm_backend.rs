@@ -1573,6 +1573,22 @@ fn compile_wasm_to_arm(
                 }
             }
         }
+        // RQ-91-M0I32 (#1301, cold review 15 F1): on ARMv6-M only the `base`
+        // rung ships. Code selected on the exhaustion-recovery rungs (spill,
+        // pool-grow, ...) returned wrong values on 100 of 39,627 accepted fuzz
+        // functions there: a reload landing in a just-popped operand's register
+        // (the #973 class) and a spill stored on one if-arm but reloaded after
+        // the join. The R0-R6 pool sends v6-M functions onto those rungs about
+        // twice as often as v7-M, so until they carry a pressure oracle the
+        // function is declined, loudly, instead. Measured: 0 mismatches on the
+        // same fuzz seeds, acceptance on pressure-heavy code 91 % -> 79 %.
+        if config.target.isa == IsaVariant::Thumb && attempt.is_ok() && rung != "base" {
+            attempt = Err(synth_core::Error::synthesis(format!(
+                "ARMv6-M (RQ-91-M0I32, #1301): this function is selectable only on the \
+                 `{rung}` register-pressure recovery rung, which is not used on ARMv6-M \
+                 (it miscompiled under the R0-R6 pool); refused rather than emitted"
+            )));
+        }
         // VCR-RA measurement (#242): log which recovery rung produced the result,
         // so the per-rung distribution across a corpus can be measured — the size
         // of the failure surface a verified allocator must subsume (see

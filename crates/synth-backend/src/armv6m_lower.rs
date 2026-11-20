@@ -15,7 +15,7 @@
 //! v6-M function is either fully lowered by a listed rule or declines loudly;
 //! there is no silent pass-through.
 //!
-//! - Constants (`Mov #imm`, `Movw`, `Movw`+`Movt`, `Mvn #imm`): a MOVS / LSLS
+//! - Constants (`Mov #imm`, `Movw`, `Movw`+`Movt`): a MOVS / LSLS
 //!   / ADDS #imm8 / MVNS sequence (at most 7 instructions; no literal pool —
 //!   the 16-bit pool load is refused by `armv6m::check_bytes` until a reach
 //!   check exists for it).
@@ -45,6 +45,12 @@
 //! (R1). This pass emits no op whose flags are consumed except `Cmp`/`Cmn`,
 //! which declare all four. A lowering mistake therefore yields a refusal,
 //! never a stream that reads a clobbered flag.
+//!
+//! WHAT THIS PASS DOES NOT COVER: the stream the selector hands it. Selection
+//! under register pressure is the selector's, and its exhaustion-recovery
+//! rungs (spill, pool-grow) miscompiled under the R0-R6 pool (cold review 15
+//! F1: 100 of 39,627 accepted fuzz functions). `compile_wasm_to_arm` therefore
+//! declines, on ARMv6-M, every function the `base` rung cannot select.
 //!
 //! FAIL-CLOSED BEHIND IT. `armv6m::check_bytes` still checks every encoded
 //! instruction (and refuses any write to R8-R12), so a rule that produced a
@@ -148,6 +154,39 @@ fn is_control(op: &ArmOp) -> bool {
 /// conservatively: no op after `i` reads R7, or the first access at or after
 /// `i` in straight-line order is a pure write. Reaching control flow first
 /// counts as live.
+///
+/// SOUND ONLY UNDER [`scratch_never_crosses_control`], which [`lower`]
+/// checks before any rule runs: R7 (the selector's renamed R12) is never live
+/// across a label or branch. A loop back edge therefore cannot carry an R7
+/// value to an earlier read, which the forward scan here does not see.
+/// The invariant [`scratch_dead_at`] rests on (cold review 15 F7): every
+/// read of R7 is preceded by a write to R7 since the last control-flow op or
+/// label, in stream order. `Err` names the first read that is not.
+fn scratch_never_crosses_control(ops: &[ArmOp]) -> Result<(), String> {
+    let mut written = false;
+    for op in ops {
+        if matches!(op, ArmOp::Push { .. } | ArmOp::Pop { .. }) {
+            // Save lists, rebuilt by `fix_prologue`; not a use of the value.
+            written = false;
+            continue;
+        }
+        if is_control(op) {
+            written = false;
+        }
+        if reads(op, SCRATCH) && effect(op).is_some() && !written {
+            return refuse(format!(
+                "`{op:?}` reads the scratch R7 (the selector's R12) without a write \
+                 since the last label or branch: R12 would be live across control \
+                 flow, which the scratch liveness check does not model"
+            ));
+        }
+        if writes(op, SCRATCH) {
+            written = true;
+        }
+    }
+    Ok(())
+}
+
 fn scratch_dead_at(ops: &[ArmOp], i: usize) -> bool {
     if !ops[i..].iter().any(|op| reads(op, SCRATCH)) {
         return true;
@@ -504,6 +543,7 @@ pub fn lower(instrs: Vec<ArmInstruction>, func_tag: usize) -> Result<Vec<ArmInst
         .iter()
         .map(|o| rename_op(o, Reg::R12, SCRATCH))
         .collect();
+    scratch_never_crosses_control(&ops)?;
 
     let mut cx = Ctx {
         out: Vec::with_capacity(ops.len() * 2),
@@ -574,14 +614,6 @@ pub fn lower(instrs: Vec<ArmInstruction>, func_tag: usize) -> Result<Vec<ArmInst
                 },
                 line,
             ),
-            Mvn {
-                rd,
-                op2: Operand2::Imm(v),
-            } if low(*rd) => {
-                for o in materialize(*rd, !(*v as u32)) {
-                    cx.push(o, line);
-                }
-            }
 
             // Frame: `sub sp,#k` / `add sp,#k` (16-bit up to 508).
             Add {
@@ -847,34 +879,12 @@ pub fn lower(instrs: Vec<ArmInstruction>, func_tag: usize) -> Result<Vec<ArmInst
                     cx.push(mk(*rd, SCRATCH), line);
                 }
             }
-            Ror { rd, rn, shift } if low(*rd) && low(*rn) => {
-                let s = shift % 32;
-                if s != 0 {
-                    need_scratch(i, op)?;
-                    for o in materialize(SCRATCH, s) {
-                        cx.push(o, line);
-                    }
-                }
-                if rd != rn {
-                    cx.push(
-                        Mov {
-                            rd: *rd,
-                            op2: Operand2::Reg(*rn),
-                        },
-                        line,
-                    );
-                }
-                if s != 0 {
-                    cx.push(
-                        RorReg {
-                            rd: *rd,
-                            rn: *rd,
-                            rm: SCRATCH,
-                        },
-                        line,
-                    );
-                }
-            }
+            // No rule for `Ror #imm` or `Mvn #imm`: the direct selector, the
+            // only path that reaches ARMv6-M, never emits either (constant
+            // rotates arrive as `RorReg`, `~imm` as `Movw` + `Mvn reg`;
+            // `fold_immediate_shifts` folds only LSL/LSR/ASR). Cold review 15
+            // F3 found both rules unreached by 49,600 fuzz functions; they
+            // were deleted rather than kept untested. Either op refuses.
             Sxtb { rd, rm } | Sxth { rd, rm } | Uxtb { rd, rm } | Uxth { rd, rm }
                 if low(*rd) && low(*rm) =>
             {
@@ -1251,6 +1261,45 @@ mod tests {
         assert!(matches!(out[2], ArmOp::Movs { .. }));
         assert!(matches!(out[3], ArmOp::B { .. }));
         assert!(matches!(out[5], ArmOp::Movs { .. }));
+    }
+
+    /// F7: an R12 value live across a label is refused (the invariant the
+    /// forward scratch-liveness scan rests on); a write after the label is
+    /// accepted.
+    #[test]
+    fn scratch_live_across_a_label_is_refused() {
+        let ins = |op| ArmInstruction {
+            op,
+            source_line: None,
+        };
+        let and_ip = ins(ArmOp::And {
+            rd: Reg::R12,
+            rn: Reg::R1,
+            op2: Operand2::Imm(31),
+        });
+        let label = ins(ArmOp::Label { name: ".Lx".into() });
+        let shift = ins(ArmOp::LslReg {
+            rd: Reg::R2,
+            rn: Reg::R2,
+            rm: Reg::R12,
+        });
+        let push = ins(ArmOp::Push {
+            regs: vec![Reg::R4, Reg::LR],
+        });
+        let pop = ins(ArmOp::Pop {
+            regs: vec![Reg::R4, Reg::PC],
+        });
+        let bad = vec![
+            push.clone(),
+            and_ip.clone(),
+            label.clone(),
+            shift.clone(),
+            pop.clone(),
+        ];
+        let e = lower(bad, 0).unwrap_err();
+        assert!(e.contains("live across control"), "{e}");
+        let good = vec![push, label, and_ip, shift, pop];
+        assert!(lower(good, 0).is_ok());
     }
 
     /// R7 / R8 named by the selected stream, and any unlisted op, refuse.

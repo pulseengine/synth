@@ -200,6 +200,8 @@ jobs:
           grep -qx 'ORACLE wast-merge-1761 control: 28 steps agree and 5 import call sites are bound on single-module input' "$log"
           test "$(grep -cE '^test result: ok\. 5 passed; 0 failed' "$log")" = 1
           # RQ-91-M0I32 (#1301): the ARMv6-M i32 lowering on the Cortex-M0 model.
-          grep -qx 'ORACLE armv6m-i32: 96 of 96 probes accepted, 14 of 14 decline probes declined, on 2 targets' "$log"
-          grep -qx 'ORACLE armv6m-i32: 16108 cases agree on the Cortex-M0 model, 16066 value comparisons, 21 trap/trap' "$log"
-          grep -qE '^test result: ok\. 6 passed; 0 failed' "$log"
+          grep -qx 'ORACLE armv6m-i32: 104 of 104 probes accepted, 20 of 20 decline probes declined, on 2 targets' "$log"
+          grep -qx 'ORACLE armv6m-i32: 18980 cases agree on the Cortex-M0 model, 18938 value comparisons, 21 trap/trap' "$log"
+          grep -qE '^test result: ok\. 7 passed; 0 failed' "$log"
+          grep -qx 'KNOWN #1754 k1754_b1: 75 of 216 vectors wrong' "$log"
+          grep -qx 'KNOWN #1754 k1754_b1b: 150 of 216 vectors wrong' "$log"

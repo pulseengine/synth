@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: emulations >= 5763
+# ci-checks: emulations >= 5715
 """RQ-91-ARMV6M (#1301) — the cortex-m0 / cortex-m0plus profile, SUPPORT LEVEL 3.
 
 WHAT EXISTS. `--target cortex-m0` and `--target cortex-m0plus` (ARMv6-M,
@@ -97,7 +97,11 @@ ILLEGAL-INSTRUCTION failure whatever wasmtime did, and any other unicorn error
 exception is a vector on which wasmtime itself runs out of FUEL (a loop
 counting down from a large argument): there is no reference value and no wasm
 trap, so the vector is a BUDGET outcome — counted and printed, never counted as
-agreement, and still failed on an illegal instruction or a CPU fault. (Before
+agreement, and failed unless unicorn ALSO ran out of its own instruction budget:
+a return, an illegal instruction, a fault or a trap there is a failure (RQ-91-
+M0I32, cold review 15 F5: a budget vector used to pass whatever unicorn
+returned). The budget vectors are pinned EXACTLY, per function, in
+`BUDGET_EXPECTED`, so a new argument-counted loop cannot join unseen. (Before
 v0.91 M0ORACLE any unicorn stop was compared equal to any wasmtime exception,
 so these five vectors of `join_alias_1189.wat:lres` passed as "both trapped".)
 A `Uc`
@@ -424,12 +428,48 @@ def synth(args):
 # argument). Budget outcomes, NOT traps: reported, never counted as agreement.
 BUDGET = collections.Counter()
 FUEL = 10_000_000
-# A CEILING, not a pin of wrong answers: measured 5 at v0.91 (all
-# `join_alias_1189.wat:lres`). More unchecked vectors must be looked at.
-# RQ-91-M0I32: 5 -> 106. Every new one is a loop the i32 lowering now accepts
-# whose trip count is the argument (countdown/sum/do-while shapes over
-# 0x7FFFFFFF / 0xDEADBEEF vectors): wasmtime runs out of fuel, no reference.
-BUDGET_CEILING = 106
+# EXACT, both directions (RQ-91-M0I32, cold review 15 F5; was a ceiling of 5,
+# all `join_alias_1189.wat:lres`, then 106). Every entry is a loop whose trip
+# count is an argument, on the large vectors: wasmtime runs out of fuel and
+# unicorn out of instructions, so there is no reference. Keyed by the leg and
+# the tracked source (leg C) or probe (leg E).
+BUDGET_EXPECTED = {
+    "C scripts__repro__a32_control_flow_1639.wat.o:dowhile": 2,
+    "C scripts__repro__a32_control_flow_1639.wat.o:nest": 8,
+    "C scripts__repro__a32_control_flow_1639.wat.o:optloop": 4,
+    "C scripts__repro__a32_control_flow_1639.wat.o:sum": 4,
+    "C scripts__repro__aarch64_brtable_blockvals_851.wat.o:loop_value": 4,
+    "C scripts__repro__aarch64_brtable_blockvals_851.wat.o:nested_value_frames": 4,
+    "C scripts__repro__aarch64_brtable_blockvals_851.wat.o:table_loop_default_back": 2,
+    "C scripts__repro__aarch64_brtable_blockvals_851.wat.o:table_loop_target0_back": 2,
+    "C scripts__repro__aarch64_ctrlflow_851.wat.o:count_sum": 1,
+    "C scripts__repro__aarch64_ctrlflow_851.wat.o:countdown": 4,
+    "C scripts__repro__aarch64_ctrlflow_851.wat.o:do_while_count": 5,
+    "C scripts__repro__aarch64_ctrlflow_851.wat.o:isqrt_ceil": 1,
+    "C scripts__repro__aarch64_param_homing_851.wat.o:cond_write_param_loop": 4,
+    "C scripts__repro__aarch64_param_homing_851.wat.o:param_countdown_sum": 4,
+    "C scripts__repro__brif_local_zeroinit_990.wat.o:guard_loop_acc": 4,
+    "C scripts__repro__cond_write_param_970.wat.o:cw_loop": 4,
+    "C scripts__repro__home_alias_class_1189_i32.wat.o:loopcnt": 4,
+    "C scripts__repro__if_arm_dead_value_1691.wat.o:t_i32_loop_exit": 3,
+    "C scripts__repro__join_alias_1189.wat.o:iloop": 5,
+    "C scripts__repro__join_alias_1189.wat.o:lres": 5,
+    "C scripts__repro__loop_param_bound_663.wat.o:sum_below": 1,
+    "C scripts__repro__loop_param_bound_663.wat.o:sum_nested": 2,
+    "C scripts__repro__loop_param_bound_663.wat.o:sum_stride": 1,
+    "C scripts__repro__optloop_backedge_1206.wat.o:countdown": 2,
+    "C scripts__repro__optloop_backedge_1206.wat.o:countdown_r7": 2,
+    "C scripts__repro__optloop_backedge_1206.wat.o:down_const": 2,
+    "C scripts__repro__optloop_backedge_1206.wat.o:down_param": 4,
+    "C scripts__repro__optloop_backedge_1206.wat.o:up_from_zero": 4,
+    "C scripts__repro__optloop_backedge_1206.wat.o:up_param": 4,
+    "C scripts__repro__param_block_silent_1097_loop.wat.o:lpb": 2,
+    "C scripts__repro__param_block_silent_1097_loop_lowered.wat.o:lp2": 2,
+    "C scripts__repro__param_block_silent_1097_loop_lowered.wat.o:lpa": 2,
+    "C scripts__repro__param_block_silent_1097_loop_lowered.wat.o:lpd": 2,
+    "C scripts__repro__param_block_silent_1097_loop_lowered.wat.o:lpx": 2,
+    "E loop_count.cortex-m0.o:loop_count": 4,
+}
 VECTORS = [0, 1, 2, 7, 0x7F, 0x80, 0xFF, 0x1234, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF,
            0xDEADBEEF]
 CODE, STK = 0x10000, 0x200000
@@ -512,8 +552,9 @@ OUTCOMES = collections.defaultdict(collections.Counter)
 # legs C and E where wasmtime returned and unicorn returned a value to compare;
 # trap and budget vectors are not comparisons). A floor: adding a fixture
 # cannot redden it.
-# RQ-91-M0I32: 666 -> 5520 (C 4935, E 585), measured.
-VALUE_COMPARISONS_FLOOR = 5520
+# RQ-91-M0I32: 666 -> 5472 (C 4887, E 585), measured after cold review 15 F1
+# (functions the base rung cannot select now decline on ARMv6-M).
+VALUE_COMPARISONS_FLOOR = 5472
 
 
 def vector_args(ps, slots, k):
@@ -534,15 +575,15 @@ def vector_args(ps, slots, k):
 def verdict(trapped, budget, exp, got):
     """The comparison rule, in one place: "agree" | "budget" | "disagree".
 
-    - wasmtime ran out of FUEL: no reference exists. "budget" if unicorn
-      returned or hit its own budget; an illegal instruction, a CPU fault or
-      a UDF trap is still "disagree".
+    - wasmtime ran out of FUEL: no reference exists. "budget" only if unicorn
+      ALSO hit its own budget; a return (with any value), an illegal
+      instruction, a CPU fault or a UDF trap is "disagree".
     - wasmtime TRAPPED: "agree" only on a UDF trap. ILLEGAL, FAULT and HANG
       are "disagree" whatever wasmtime did.
     - otherwise: "agree" only on a return with the identical value (all 64
       bits for an i64 result)."""
     if budget:
-        return "budget" if got[0] in ("hang", "ok") else "disagree"
+        return "budget" if got[0] == "hang" else "disagree"
     if trapped:
         return "agree" if got[0] == "trap" else "disagree"
     return "agree" if got[0] == "ok" and got[1] == exp else "disagree"
@@ -665,7 +706,7 @@ def leg_d(td):
                          "illegal": "disagree", "fault": "disagree", "hang": "disagree"},
         (True, False): {"ok": "disagree", "ok-wrong": "disagree", "trap": "agree",
                         "illegal": "disagree", "fault": "disagree", "hang": "disagree"},
-        (True, True): {"ok": "budget", "ok-wrong": "budget", "trap": "disagree",
+        (True, True): {"ok": "disagree", "ok-wrong": "disagree", "trap": "disagree",
                        "illegal": "disagree", "fault": "disagree", "hang": "budget"},
     }
     bad = [(tb, o, verdict(tb[0], tb[1], None if tb[0] else 5, outcomes[o]), w)
@@ -870,7 +911,7 @@ def main():
             if h in seen:
                 continue
             seen.add(h)
-            co = os.path.join(td, h[:16] + ".o")
+            co = os.path.join(td, f.replace("/", "__") + ".o")
             r = synth([str(ROOT / f), "--target", "cortex-m0", *BASE, *EMBED, "-o", co])
             if r.returncode != 0 or not os.path.exists(co):
                 continue
@@ -890,8 +931,7 @@ def main():
             fail("C corpus: executed nothing")
         print(f"C budget: {sum(BUDGET.values())} vectors unchecked because wasmtime ran out "
               f"of fuel ({FUEL}) — {dict(BUDGET) or 'none'}")
-        if sum(BUDGET.values()) > BUDGET_CEILING:
-            fail(f"C budget: {sum(BUDGET.values())} unchecked vectors > ceiling {BUDGET_CEILING}")
+        # (the exact pin is checked once legs C and E have both run)
         # ---- leg E: per-op probes (and leg V, the value red half) -----------
         leg_e(td)
     # ---- the binding: what legs C, E and V actually executed on ---------------
@@ -913,6 +953,13 @@ def main():
         if parts != VECTORS_RUN[leg]:
             fail(f"partition {leg}: {VECTORS_RUN[leg]} vectors run but {parts} accounted for — "
                  "an outcome passed without being counted")
+    if dict(BUDGET) != BUDGET_EXPECTED:
+        fail(f"budget: vectors {dict(BUDGET)} != pinned {BUDGET_EXPECTED} "
+             f"(new {sorted(set(BUDGET) - set(BUDGET_EXPECTED))}, "
+             f"gone {sorted(set(BUDGET_EXPECTED) - set(BUDGET))}, or a count moved)")
+    else:
+        print(f"budget: {sum(BUDGET.values())} vectors over {len(BUDGET)} functions, "
+              "exactly the pinned set")
     print("ORACLE:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     sys.exit(0 if not FAILS else 1)
 

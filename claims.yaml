@@ -811,7 +811,7 @@ feature_matrix_facts:
         Not a function of a WasmOp, so it is outside the derived op-surface
         artifact; converting it needs a probe harness per shape claim, named as
         follow-up work in this lane's report.
-    - text: "94 tracked corpus inputs"
+    - text: "90 tracked corpus inputs"
       rationale: >
         RQ-91-M0ORACLE (#1301): a MEASUREMENT of the compiler over the tracked
         .wat/.wasm corpus, printed on every CI run by
@@ -937,7 +937,7 @@ support_levels:
     # L3: partial, --relocatable only (#1301, RQ-91-ARMV6M, RQ-91-M0ORACLE).
     # RQ-91-M0I32: an ARMv6-M lowering of the i32 core and structured control
     # flow; everything else is declined loudly.
-    # Measured v0.91: 51 of 112 per-op probes accepted, 94 tracked corpus
+    # Measured v0.91: 51 of 112 per-op probes accepted, 90 tracked corpus
     # inputs yield objects with accepted code; the accepted code is
     # byte-checked and executed vs wasmtime on unicorn's Cortex-M0 model.
     - id: cortex-m0-armv6m

@@ -30,6 +30,15 @@
 //! cortex-m3 `and.w` faults as ILLEGAL on the M0 model; a planted wrong
 //! reference (`le_s` for `lt_s`) disagrees exactly on the equal vectors.
 //!
+//! Cold review 15: the far-branch, `rd == rm` and scratch-liveness probes
+//! kill the five mutants that survived the first version (far `B<cond>` not
+//! inverted / off by one halfword, the commutative rule and shift-by-register
+//! with `rd == rm`, scratch always dead), each measured red against a
+//! mutant binary. The `d_rung_*` declines are the shapes only the selector's
+//! register-pressure recovery rungs select (F1, wrong values before they were
+//! declined on ARMv6-M). `KNOWN_1754` pins the pre-existing #1754 `select`
+//! defect, which this lane does not fix.
+//!
 //! Needs `--features exec`. `SYNTH` may name a prebuilt binary.
 
 #![cfg(feature = "exec")]
@@ -218,6 +227,29 @@ const PROBES_WAT: &str = r#"
   (func (export "i64_or") (param i64 i64) (result i64) local.get 0 local.get 1 i64.or)
   (func (export "i64_xor") (param i64 i64) (result i64) local.get 0 local.get 1 i64.xor)
   (func (export "i64_extend_u") (param i32) (result i64) local.get 0 i64.extend_i32_u)
+  ;; --- cold review 15 F3: shapes that reach rules no other probe reaches ---
+  ;; Conditional branches beyond the 16-bit B<cond> reach (+-254 B), forward
+  ;; and backward: the v6-M encoder's `b<!c> +0; b.n` form.
+  (func (export "far_if") (param i32 i32) (result i32)
+    local.get 0 if (result i32) local.get 1 i32.const 4660 i32.xor i32.const 3 i32.mul i32.const 4757 i32.xor i32.const 5 i32.mul i32.const 4854 i32.xor i32.const 7 i32.mul i32.const 4951 i32.xor i32.const 9 i32.mul i32.const 5048 i32.xor i32.const 11 i32.mul i32.const 5145 i32.xor i32.const 13 i32.mul i32.const 5242 i32.xor i32.const 15 i32.mul i32.const 5339 i32.xor i32.const 17 i32.mul i32.const 5436 i32.xor i32.const 19 i32.mul i32.const 5533 i32.xor i32.const 21 i32.mul i32.const 5630 i32.xor i32.const 23 i32.mul i32.const 5727 i32.xor i32.const 25 i32.mul i32.const 5824 i32.xor i32.const 27 i32.mul i32.const 5921 i32.xor i32.const 29 i32.mul i32.const 6018 i32.xor i32.const 31 i32.mul i32.const 6115 i32.xor i32.const 33 i32.mul i32.const 6212 i32.xor i32.const 35 i32.mul i32.const 6309 i32.xor i32.const 37 i32.mul i32.const 6406 i32.xor i32.const 39 i32.mul i32.const 6503 i32.xor i32.const 41 i32.mul i32.const 6600 i32.xor i32.const 43 i32.mul i32.const 6697 i32.xor i32.const 45 i32.mul i32.const 6794 i32.xor i32.const 47 i32.mul i32.const 6891 i32.xor i32.const 49 i32.mul i32.const 6988 i32.xor i32.const 51 i32.mul i32.const 7085 i32.xor i32.const 53 i32.mul i32.const 7182 i32.xor i32.const 55 i32.mul i32.const 7279 i32.xor i32.const 57 i32.mul i32.const 7376 i32.xor i32.const 59 i32.mul i32.const 7473 i32.xor i32.const 61 i32.mul i32.const 7570 i32.xor i32.const 63 i32.mul i32.const 7667 i32.xor i32.const 65 i32.mul i32.const 7764 i32.xor i32.const 67 i32.mul i32.const 7861 i32.xor i32.const 69 i32.mul i32.const 7958 i32.xor i32.const 71 i32.mul i32.const 8055 i32.xor i32.const 73 i32.mul i32.const 8152 i32.xor i32.const 75 i32.mul i32.const 8249 i32.xor i32.const 77 i32.mul i32.const 8346 i32.xor i32.const 79 i32.mul i32.const 8443 i32.xor i32.const 81 i32.mul else local.get 1 i32.const 1 i32.add end)
+  (func (export "far_if_lt") (param i32 i32) (result i32)
+    local.get 0 local.get 1 i32.lt_s if (result i32) local.get 1 i32.const 4660 i32.xor i32.const 3 i32.mul i32.const 4757 i32.xor i32.const 5 i32.mul i32.const 4854 i32.xor i32.const 7 i32.mul i32.const 4951 i32.xor i32.const 9 i32.mul i32.const 5048 i32.xor i32.const 11 i32.mul i32.const 5145 i32.xor i32.const 13 i32.mul i32.const 5242 i32.xor i32.const 15 i32.mul i32.const 5339 i32.xor i32.const 17 i32.mul i32.const 5436 i32.xor i32.const 19 i32.mul i32.const 5533 i32.xor i32.const 21 i32.mul i32.const 5630 i32.xor i32.const 23 i32.mul i32.const 5727 i32.xor i32.const 25 i32.mul i32.const 5824 i32.xor i32.const 27 i32.mul i32.const 5921 i32.xor i32.const 29 i32.mul i32.const 6018 i32.xor i32.const 31 i32.mul i32.const 6115 i32.xor i32.const 33 i32.mul i32.const 6212 i32.xor i32.const 35 i32.mul i32.const 6309 i32.xor i32.const 37 i32.mul i32.const 6406 i32.xor i32.const 39 i32.mul i32.const 6503 i32.xor i32.const 41 i32.mul i32.const 6600 i32.xor i32.const 43 i32.mul i32.const 6697 i32.xor i32.const 45 i32.mul i32.const 6794 i32.xor i32.const 47 i32.mul i32.const 6891 i32.xor i32.const 49 i32.mul i32.const 6988 i32.xor i32.const 51 i32.mul i32.const 7085 i32.xor i32.const 53 i32.mul i32.const 7182 i32.xor i32.const 55 i32.mul i32.const 7279 i32.xor i32.const 57 i32.mul i32.const 7376 i32.xor i32.const 59 i32.mul i32.const 7473 i32.xor i32.const 61 i32.mul i32.const 7570 i32.xor i32.const 63 i32.mul i32.const 7667 i32.xor i32.const 65 i32.mul i32.const 7764 i32.xor i32.const 67 i32.mul i32.const 7861 i32.xor i32.const 69 i32.mul i32.const 7958 i32.xor i32.const 71 i32.mul i32.const 8055 i32.xor i32.const 73 i32.mul i32.const 8152 i32.xor i32.const 75 i32.mul i32.const 8249 i32.xor i32.const 77 i32.mul i32.const 8346 i32.xor i32.const 79 i32.mul i32.const 8443 i32.xor i32.const 81 i32.mul else local.get 0 end)
+  (func (export "far_loop") (param i32 i32) (result i32) (local i32)
+    local.get 0 i32.const 7 i32.and i32.const 1 i32.add local.set 2
+    loop
+      local.get 1 i32.const 4660 i32.xor i32.const 3 i32.mul i32.const 4757 i32.xor i32.const 5 i32.mul i32.const 4854 i32.xor i32.const 7 i32.mul i32.const 4951 i32.xor i32.const 9 i32.mul i32.const 5048 i32.xor i32.const 11 i32.mul i32.const 5145 i32.xor i32.const 13 i32.mul i32.const 5242 i32.xor i32.const 15 i32.mul i32.const 5339 i32.xor i32.const 17 i32.mul i32.const 5436 i32.xor i32.const 19 i32.mul i32.const 5533 i32.xor i32.const 21 i32.mul i32.const 5630 i32.xor i32.const 23 i32.mul i32.const 5727 i32.xor i32.const 25 i32.mul i32.const 5824 i32.xor i32.const 27 i32.mul i32.const 5921 i32.xor i32.const 29 i32.mul i32.const 6018 i32.xor i32.const 31 i32.mul i32.const 6115 i32.xor i32.const 33 i32.mul i32.const 6212 i32.xor i32.const 35 i32.mul i32.const 6309 i32.xor i32.const 37 i32.mul i32.const 6406 i32.xor i32.const 39 i32.mul i32.const 6503 i32.xor i32.const 41 i32.mul i32.const 6600 i32.xor i32.const 43 i32.mul i32.const 6697 i32.xor i32.const 45 i32.mul i32.const 6794 i32.xor i32.const 47 i32.mul i32.const 6891 i32.xor i32.const 49 i32.mul i32.const 6988 i32.xor i32.const 51 i32.mul i32.const 7085 i32.xor i32.const 53 i32.mul i32.const 7182 i32.xor i32.const 55 i32.mul i32.const 7279 i32.xor i32.const 57 i32.mul i32.const 7376 i32.xor i32.const 59 i32.mul i32.const 7473 i32.xor i32.const 61 i32.mul i32.const 7570 i32.xor i32.const 63 i32.mul i32.const 7667 i32.xor i32.const 65 i32.mul i32.const 7764 i32.xor i32.const 67 i32.mul i32.const 7861 i32.xor i32.const 69 i32.mul i32.const 7958 i32.xor i32.const 71 i32.mul i32.const 8055 i32.xor i32.const 73 i32.mul i32.const 8152 i32.xor i32.const 75 i32.mul i32.const 8249 i32.xor i32.const 77 i32.mul i32.const 8346 i32.xor i32.const 79 i32.mul i32.const 8443 i32.xor i32.const 81 i32.mul local.set 1
+      local.get 2 i32.const 1 i32.sub local.tee 2
+      br_if 0
+    end
+    local.get 1)
+  ;; Reviewer fuzz functions (gen15.py, profile shift, seeds 7000 / 7004):
+  ;; the commutative rule with rd == rm, and shift-by-register with
+  ;; rd == rm != rn (the amount kept in R7).
+  (func (export "fz7000_f6") (param i32 i32) (result i32) (local i32) (block $L1 (if (i32.rotl (local.get 0) (local.get 2)) (then (local.set 1 (i32.rotr (i32.shr_u (local.get 1) (local.get 0)) (i32.shr_s (i32.const 692157298) (local.get 2)))) (local.set 2 (local.get 2)) (local.set 0 (local.get 0))) (else )) (br_if $L1 (local.get 0)) (local.set 0 (local.get 1)) (local.set 1 (local.get 1))) (local.set 0 (local.get 0)) (i32.xor (i32.add (i32.add (i32.shr_s (local.tee 2 (local.get 0)) (i32.shl (local.get 2) (local.get 1))) (local.get 2)) (local.get 1)) (local.get 0)))
+  (func (export "fz7004_f3") (param i32) (result i32)  (local.set 0 (i32.rotr (i32.shr_u (local.tee 0 (local.get 0)) (i32.shr_s (local.get 0) (local.get 0))) (i32.rotl (i32.shr_u (local.get 0) (i32.const -5)) (i32.shl (local.get 0) (local.get 0))))) (local.set 0 (local.get 0)) (i32.add (i32.rotr (i32.rotl (local.get 0) (local.tee 0 (local.get 0))) (i32.rotr (local.get 0) (i32.rotl (local.get 0) (i32.const 74)))) (local.get 0)))
+  (func (export "fz7004_f4") (param i32 i32 i32 i32) (result i32) (local i32 i32 i32) (local.set 1 (i32.rotl (i32.rotl (local.get 2) (local.get 0)) (i32.shr_u (local.get 2) (local.get 5)))) (local.set 2 (local.get 5)) (i32.rotr (i32.rotr (i32.shl (local.get 4) (local.get 4)) (if (result i32) (local.get 3) (then (i32.const -129)) (else (i32.const 1020)))) (select (i32.rotl (local.get 2) (local.get 6)) (select (local.get 3) (i32.const 65536) (local.get 4)) (i32.const -6145))))
+  (func (export "fz7004_f5") (param i32 i32) (result i32) (local i32 i32 i32 i32 i32) (nop) (if (i32.rotr (local.get 4) (local.get 3)) (then (local.set 0 (i32.rotr (i32.shr_s (i32.const 7405568) (local.get 1)) (i32.rotl (local.get 4) (local.get 3))))) (else )) (i32.xor (i32.shr_u (i32.rotr (select (local.get 5) (local.get 0) (local.get 3)) (local.tee 2 (local.get 3))) (i32.const 4096)) (local.get 5)))
+  (func (export "fz7004_f7") (param i32) (result i32) (local i32 i32 i32) (local.set 2 (if (result i32) (i32.const -256) (then (local.get 3)) (else (local.get 0)))) (if (i32.shr_u (i32.rotl (local.get 2) (local.get 0)) (i32.rotr (local.get 1) (local.get 1))) (then (local.set 0 (i32.const 16777215)) (local.set 0 (local.get 0)) (local.set 1 (local.get 3))) (else (local.set 2 (local.get 3)))) (i32.shr_s (i32.shl (i32.shl (local.get 0) (i32.const 147)) (i32.rotr (local.get 2) (local.get 0))) (i32.const 1024)))
 )
 "#;
 
@@ -243,8 +275,36 @@ const DECLINE_WAT: &str = r#"
   (func (export "d_memory_size") (result i32) memory.size)
   (func (export "d_params5") (param i32 i32 i32 i32 i32) (result i32)
     local.get 0 local.get 4 i32.add)
+  ;; cold review 15 F1: shapes only the exhaustion-recovery rungs select
+  ;; (repro/r1.wat .. r4.wat, the spill rung; gen15 pressure 7018 f4, pool-grow).
+  ;; Each returned a wrong value on ARMv6-M before the rungs were declined.
+  (func (export "d_rung_r1") (param i32 i32 i32 i32) (result i32) (local i32 i32 i32 i32 i32) (if (i32.le_u (i32.const 1) (select (i32.extend16_s (local.get 4)) (i32.const 128) (i32.const 31))) (then (return (local.get 2)))) (i32.add (i32.eq (local.get 0) (local.get 1)) (local.get 3)))
+  (func (export "d_rung_r2") (param i32 i32) (result i32) (local i32 i32 i32 i32 i32) (if (select (local.get 5) (i32.const 1738883442) (select (i32.const 1738883442) (i32.mul (local.get 0) (if (result i32) (local.get 0) (then (local.get 3)) (else (local.get 4)))) (if (result i32) (local.get 0) (then (local.get 1)) (else (local.get 6))))) (then (return (local.get 4)))) (local.get 0))
+  (func (export "d_rung_r3") (param i32 i32) (result i32) (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (local.set 6 (i32.le_u (i32.const 0) (i32.le_s (i32.const 0) (i32.mul (local.get 7) (i32.ge_u (local.get 8) (if (result i32) (local.get 0) (then (i32.const 0)) (else (i32.const -2147483648)))))))) (i32.sub (select (local.get 0) (local.get 1) (i32.const 257)) (local.get 6)))
+  (func (export "d_rung_r4") (param i32 i32 i32 i32) (result i32) (local i32 i32 i32 i32 i32) (local.set 3 (i32.rotr (i32.const 1) (select (i32.rotl (local.get 7) (local.get 2)) (i32.const 219) (i32.const 51)))) (i32.xor (i32.xor (i32.sub (local.get 2) (local.get 1)) (local.get 3)) (local.get 0)))
+  (func (export "d_rung_poolgrow") (param i32 i32 i32 i32) (result i32) (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (if (i32.shr_u (local.get 13) (i32.le_u (i32.const 297795584) (i32.lt_s (i32.const -2147483648) (i32.const 16711935)))) (then (block $L1 (local.set 6 (i32.xor (select (local.get 2) (local.get 4) (local.get 11)) (i32.add (i32.rotl (local.get 1) (i32.gt_u (local.get 13) (i32.shr_u (i32.const 305419896) (local.get 12)))) (i32.or (local.get 3) (i32.shr_s (i32.const 1000) (i32.const 1000)))))) (local.set 11 (i32.ge_u (local.get 10) (i32.mul (select (local.get 11) (local.get 5) (local.get 10)) (i32.rotl (i32.sub (i32.const -945194356) (i32.le_s (i32.eqz (local.get 6)) (i32.and (local.get 1) (i32.add (local.get 12) (i32.xor (i32.rotl (local.get 5) (i32.shr_s (local.get 5) (i32.lt_s (local.get 10) (i32.shr_s (i32.rotr (local.get 12) (i32.and (local.get 3) (i32.lt_s (local.get 0) (i32.rotl (i32.const -129) (i32.rotl (local.get 3) (i32.ge_u (local.get 8) (local.get 7))))))) (i32.mul (local.get 8) (i32.xor (local.get 4) (local.get 11))))))) (local.get 0)))))) (i32.mul (i32.const 283) (local.get 8)))))) (br_if $L1 (i32.extend8_s (if (result i32) (local.get 12) (then (local.get 1)) (else (local.get 5))))) (local.set 3 (local.get 8)) (local.set 6 (local.tee 13 (i32.le_u (i32.ge_u (local.get 12) (local.get 4)) (i32.or (local.get 3) (i32.shr_u (local.get 11) (i32.sub (local.get 8) (i32.eq (i32.const -65536) (local.get 0)))))))))) (else (block $L2  (br_if $L2 (select (select (local.get 5) (i32.const -1073709057) (local.get 12)) (local.get 7) (local.get 9))) (local.set 3 (local.get 13)) (local.set 9 (i32.const -199229441))))) (local.set 12 (local.get 3)) (local.set 9 (local.get 2)) (local.set 2 (local.get 6)) (i32.add (i32.sub (i32.sub (i32.xor (i32.sub (i32.add (i32.xor (i32.add (i32.xor (i32.add (i32.add (local.get 13) (local.get 2)) (local.get 11)) (local.get 5)) (local.get 8)) (local.get 0)) (local.get 12)) (local.get 10)) (local.get 1)) (local.get 7)) (local.get 3)) (local.get 4)))
+  ;; F3: the scratch R7 is live where a rule needs it (gen15 shift 7005 f6).
+  (func (export "d_scratch_live") (param i32 i32 i32 i32) (result i32) (local i32 i32 i32 i32) (local.set 5 (if (result i32) (local.get 3) (then (local.get 6)) (else (i32.const -1)))) (local.set 3 (if (result i32) (i32.rotr (block $L1 (result i32) (drop (br_if $L1 (local.get 4) (i32.const 1020))) (local.get 3)) (i32.rotr (local.get 4) (local.get 6))) (then (i32.const 71785337)) (else (local.get 7)))) (i32.add (i32.sub (i32.xor (i32.xor (i32.add (i32.add (i32.xor (i32.shl (i32.rotl (i32.shl (local.get 2) (local.get 3)) (i32.shr_s (local.get 4) (i32.const 65280))) (i32.rotr (block $L2 (result i32) (drop (br_if $L2 (local.get 0) (i32.const -1615162075))) (local.get 4)) (local.get 3))) (local.get 0)) (local.get 4)) (local.get 2)) (local.get 3)) (local.get 5)) (local.get 7)) (local.get 1)))
 )
 "#;
+
+/// #1754 (cold review 15 F2): `select` overwrites a parameter's home
+/// register while that parameter is still on the operand stack. PRE-EXISTING
+/// in the ARM direct selector (wrong on cortex-m3 `--relocatable` at the stack
+/// base too), filed as #1754 and NOT fixed in this lane. On ARMv6-M these
+/// shapes compile and return a wrong value on exactly the pinned number of
+/// vectors; the pin is exact both ways, so the fix moves it (to 0) in its own
+/// PR. (repro/b2.wat, the third shape, declines on ARMv6-M: only the spill
+/// rung selects it.)
+const KNOWN_1754_WAT: &str = r#"
+(module
+  (func (export "k1754_b1") (param i32 i32 i32) (result i32) (i32.gt_s (local.get 0) (select (local.get 2) (local.get 0) (local.get 1))))
+  (func (export "k1754_b1b") (param i32 i32 i32) (result i32) (i32.add (local.get 0) (select (local.get 2) (local.get 0) (local.get 1))))
+)
+"#;
+
+/// Wrong-value vectors per #1754 shape, over `vectors_for(3)` (216 each).
+const KNOWN_1754: &[(&str, usize)] = &[("k1754_b1", 75), ("k1754_b1b", 150)];
 
 /// The exports of [`PROBES_WAT`] that compile for cortex-m0 / cortex-m0plus.
 /// EXACT both ways: a probe moving in either direction reds.
@@ -345,6 +405,14 @@ const ACCEPTED: &[&str] = &[
     "i64_or",
     "i64_xor",
     "i64_extend_u",
+    "far_if",
+    "far_if_lt",
+    "far_loop",
+    "fz7000_f6",
+    "fz7004_f3",
+    "fz7004_f4",
+    "fz7004_f5",
+    "fz7004_f7",
 ];
 
 /// The exports of [`DECLINE_WAT`] that must decline with the ARMv6-M
@@ -364,6 +432,26 @@ const DECLINED: &[&str] = &[
     "d_global_get",
     "d_memory_size",
     "d_params5",
+    "d_rung_r1",
+    "d_rung_r2",
+    "d_rung_r3",
+    "d_rung_r4",
+    "d_rung_poolgrow",
+    "d_scratch_live",
+];
+
+/// Declines whose diagnostic must name a specific cause, not only ARMv6-M.
+const DECLINE_CAUSE: &[(&str, &str)] = &[
+    ("d_rung_r1", "`spill` register-pressure recovery rung"),
+    ("d_rung_r2", "`spill` register-pressure recovery rung"),
+    ("d_rung_r3", "`spill` register-pressure recovery rung"),
+    ("d_rung_r4", "`spill` register-pressure recovery rung"),
+    (
+        "d_rung_poolgrow",
+        "`pool-grow` register-pressure recovery rung",
+    ),
+    ("d_scratch_live", "R7 is live there"),
+    ("d_params5", "incoming stack argument"),
 ];
 
 /// Integer vectors: the kiln oracle's twelve plus the signed and carry edges
@@ -564,6 +652,12 @@ fn accepted_and_declined_sets_are_pinned() {
                 line.contains("ARMv6-M"),
                 "{target}: {d} declined without the ARMv6-M diagnostic: {line}"
             );
+            if let Some((_, cause)) = DECLINE_CAUSE.iter().find(|(n, _)| n == d) {
+                assert!(
+                    line.contains(cause),
+                    "{target}: {d} declined, but not for `{cause}`: {line}"
+                );
+            }
         }
     }
     eprintln!(
@@ -743,8 +837,8 @@ fn accepted_probes_agree_with_kiln_on_the_m0_model() {
         cases.len()
     );
     // EXACT literals: a shrunk probe set or vector list reds here.
-    assert_eq!(cases.len(), 16108, "case count moved");
-    assert_eq!(values, 16066, "value-comparison count moved");
+    assert_eq!(cases.len(), 18980, "case count moved");
+    assert_eq!(values, 18938, "value-comparison count moved");
     assert_eq!(traps, 21, "trap/trap count moved");
 }
 
@@ -820,4 +914,35 @@ fn potency_planted_wrong_reference_reds() {
         })
         .count();
     assert_eq!(disagree, VECTORS.len(), "planted le_s-for-lt_s");
+}
+
+#[test]
+fn known_1754_select_overwrites_param_home_is_pinned() {
+    let w = wat::parse_str(KNOWN_1754_WAT).unwrap();
+    let (obj, e) = compile_wat(KNOWN_1754_WAT, &v6m_flags("cortex-m0"), "known-1754");
+    let obj = obj.unwrap_or_else(|| panic!("cortex-m0: {e}"));
+    let cfg = EmuConfig::new(Cpu::CortexM0);
+    for (p, want) in KNOWN_1754 {
+        assert!(
+            obj.func(p).is_some(),
+            "#1754 shape {p} no longer compiles: {e}"
+        );
+        let wrong = vectors_for(3)
+            .iter()
+            .filter(|a| {
+                let c = run_case(&w, &obj, p, a, FUEL, &Imports::new(), &cfg).unwrap();
+                assert!(
+                    !matches!(c.emulator, EmuOutcome::Illegal { .. }),
+                    "{p}{a:?}: {:?}",
+                    c.emulator
+                );
+                matches!(c.verdict, Verdict::Disagree(_))
+            })
+            .count();
+        eprintln!(
+            "KNOWN #1754 {p}: {wrong} of {} vectors wrong",
+            vectors_for(3).len()
+        );
+        assert_eq!(wrong, *want, "#1754 pin for {p} moved");
+    }
 }
