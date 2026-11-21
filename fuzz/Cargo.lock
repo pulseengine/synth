@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend"
-version = "0.90.0"
+version = "0.91.0"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -338,11 +338,11 @@ dependencies = [
 
 [[package]]
 name = "synth-cfg"
-version = "0.90.0"
+version = "0.91.0"
 
 [[package]]
 name = "synth-core"
-version = "0.90.0"
+version = "0.91.0"
 dependencies = [
  "anyhow",
  "gimli",
@@ -367,14 +367,14 @@ dependencies = [
 
 [[package]]
 name = "synth-opt"
-version = "0.90.0"
+version = "0.91.0"
 dependencies = [
  "synth-cfg",
 ]
 
 [[package]]
 name = "synth-synthesis"
-version = "0.90.0"
+version = "0.91.0"
 dependencies = [
  "anyhow",
  "serde",
