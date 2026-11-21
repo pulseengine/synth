@@ -25,6 +25,11 @@
 //!   stubs clobber every caller-saved register, so a survivor left in one is
 //!   caught.
 //!
+//! - **#1724, the cold review's 19 shapes** (`rv32_call_shapes_from_review_1724`):
+//!   a value below the frame holding the call, loops, branch-result
+//!   registers, a defined callee, six pending values, the #1717 slot area
+//!   shared with an i64 `div_u`, frame locals, a void call, the `else` arm.
+//!
 //! Every object is also decoded under the `esp32c3` profile (RV32IMC, no A):
 //! the new address materialization and the frame saves stay inside it.
 //!
@@ -168,7 +173,11 @@ fn fname(op: &MemOp, off: u32) -> String {
     format!("{}_{off:x}", op.tag)
 }
 
-fn mem_module() -> (Vec<u8>, Vec<String>) {
+/// One module per access op (and one for the constant-address shapes):
+/// kiln converts a module with a memory afresh on every reference run, at a
+/// cost that grows with the module, so one 133-function module made each case
+/// several times dearer than thirteen small ones.
+fn mem_module(ops: &[MemOp], consts: bool) -> (Vec<u8>, Vec<String>) {
     let mut w = format!("(module (memory {PAGES})\n");
     // Deterministic, non-zero bytes in every window the loads read.
     for (start, len) in [(0u32, 8192u32), (0x0010_0000, 256), (MEM - 256, 256)] {
@@ -180,7 +189,7 @@ fn mem_module() -> (Vec<u8>, Vec<String>) {
         w.push_str("\")\n");
     }
     let mut names = Vec::new();
-    for op in OPS {
+    for op in ops {
         for &off in OFFSETS.iter().chain(OOB_OFFSETS) {
             let name = fname(op, off);
             let body = match (op.store, op.i64) {
@@ -210,7 +219,7 @@ fn mem_module() -> (Vec<u8>, Vec<String>) {
     }
     // The issue's shape: a CONSTANT address, the offset folded into the
     // access (`i32.const 0; i32.load offset=1048588`).
-    for (name, body, _) in CONST_ADDR {
+    for (name, body, _) in CONST_ADDR.iter().filter(|_| consts) {
         let _ = writeln!(w, "  (func (export \"{name}\") {body})");
         names.push(name.to_string());
     }
@@ -285,65 +294,75 @@ fn mem_args(op: &MemOp, addr: u32, k: u32) -> Vec<WasmValue> {
 
 #[test]
 fn rv32_memarg_offsets_past_imm12_1254() {
-    let (wasm, names) = mem_module();
     let cfg = EmuConfig::new(Cpu::Rv32Imac);
     let imports = Imports::new();
-    let env = env_for(&wasm, &imports).unwrap();
-    assert_eq!(env.memory.as_ref().map(Vec::len), Some(MEM as usize));
+    let mut groups: Vec<(Vec<MemOp>, bool)> = OPS.iter().map(|op| (vec![*op], false)).collect();
+    groups.push((Vec::new(), true));
+    let modules: Vec<_> = groups
+        .iter()
+        .map(|(ops, consts)| {
+            let (wasm, names) = mem_module(ops, *consts);
+            let env = env_for(&wasm, &imports).unwrap();
+            assert_eq!(env.memory.as_ref().map(Vec::len), Some(MEM as usize));
+            (ops.clone(), *consts, wasm, names, env)
+        })
+        .collect();
+    let n_funcs: usize = modules.iter().map(|m| m.3.len()).sum();
     let mut summary = String::new();
     let mut total = 0usize;
     for bounds in ["none", "software", "mask"] {
-        let run = compile_rv32(&wasm, bounds);
-        let obj = assert_complete(&run, &names, bounds);
         let (mut values, mut traps) = (0usize, 0usize);
-        for op in OPS {
-            for &off in OFFSETS.iter().chain(OOB_OFFSETS) {
-                let f = fname(op, off);
-                let mut cases: Vec<(u32, bool)> = Vec::new();
-                if OFFSETS.contains(&off) {
-                    cases.extend(in_bounds_addrs(op, off).into_iter().map(|a| (a, false)));
-                }
-                // Out of bounds is wasm's trap only under `software`; `none`
-                // leaves it outside the envelope and `mask` wraps it.
-                if bounds == "software" {
-                    cases.extend(oob_addrs(op, off).into_iter().map(|a| (a, true)));
-                }
-                for (k, (addr, oob)) in cases.into_iter().enumerate() {
-                    let args = mem_args(op, addr, k as u32);
-                    let c = run_case_env(&wasm, &obj, &f, &args, FUEL, &imports, &cfg, &env)
-                        .unwrap_or_else(|e| panic!("{bounds}: {f}{args:?}: {e:?}"));
-                    assert!(
-                        c.verdict.is_agree(),
-                        "{bounds}: {f}{args:?}: {:?}\n kiln {:?}\n synth {:?}",
-                        c.verdict,
-                        c.reference,
-                        c.emulator
-                    );
-                    match (&c.reference, &c.emulator, oob) {
-                        (RefOutcome::Values(_), EmuOutcome::Values(_), false) => values += 1,
-                        (RefOutcome::Trap { .. }, EmuOutcome::Trap { .. }, true) => traps += 1,
-                        other => panic!("{bounds}: {f}{args:?}: unexpected {other:?}"),
+        for (ops, consts, wasm, names, env) in &modules {
+            let run = compile_rv32(wasm, bounds);
+            let obj = assert_complete(&run, names, bounds);
+            for op in ops {
+                for &off in OFFSETS.iter().chain(OOB_OFFSETS) {
+                    let f = fname(op, off);
+                    let mut cases: Vec<(u32, bool)> = Vec::new();
+                    if OFFSETS.contains(&off) {
+                        cases.extend(in_bounds_addrs(op, off).into_iter().map(|a| (a, false)));
+                    }
+                    // Out of bounds is wasm's trap only under `software`; `none`
+                    // leaves it outside the envelope and `mask` wraps it.
+                    if bounds == "software" {
+                        cases.extend(oob_addrs(op, off).into_iter().map(|a| (a, true)));
+                    }
+                    for (k, (addr, oob)) in cases.into_iter().enumerate() {
+                        let args = mem_args(op, addr, k as u32);
+                        let c = run_case_env(wasm, &obj, &f, &args, FUEL, &imports, &cfg, env)
+                            .unwrap_or_else(|e| panic!("{bounds}: {f}{args:?}: {e:?}"));
+                        assert!(
+                            c.verdict.is_agree(),
+                            "{bounds}: {f}{args:?}: {:?}\n kiln {:?}\n synth {:?}",
+                            c.verdict,
+                            c.reference,
+                            c.emulator
+                        );
+                        match (&c.reference, &c.emulator, oob) {
+                            (RefOutcome::Values(_), EmuOutcome::Values(_), false) => values += 1,
+                            (RefOutcome::Trap { .. }, EmuOutcome::Trap { .. }, true) => traps += 1,
+                            other => panic!("{bounds}: {f}{args:?}: unexpected {other:?}"),
+                        }
                     }
                 }
             }
-        }
-        for (f, _, arg) in CONST_ADDR {
-            let args: Vec<WasmValue> = arg.iter().map(|a| WasmValue::I32(*a)).collect();
-            let c = run_case_env(&wasm, &obj, f, &args, FUEL, &imports, &cfg, &env)
-                .unwrap_or_else(|e| panic!("{bounds}: {f}: {e:?}"));
-            assert!(
-                c.verdict.is_agree() && matches!(c.reference, RefOutcome::Values(_)),
-                "{bounds}: {f}: {:?}\n kiln {:?}\n synth {:?}",
-                c.verdict,
-                c.reference,
-                c.emulator
-            );
-            values += 1;
+            for (f, _, arg) in CONST_ADDR.iter().filter(|_| *consts) {
+                let args: Vec<WasmValue> = arg.iter().map(|a| WasmValue::I32(*a)).collect();
+                let c = run_case_env(wasm, &obj, f, &args, FUEL, &imports, &cfg, env)
+                    .unwrap_or_else(|e| panic!("{bounds}: {f}: {e:?}"));
+                assert!(
+                    c.verdict.is_agree() && matches!(c.reference, RefOutcome::Values(_)),
+                    "{bounds}: {f}: {:?}\n kiln {:?}\n synth {:?}",
+                    c.verdict,
+                    c.reference,
+                    c.emulator
+                );
+                values += 1;
+            }
         }
         let _ = writeln!(
             summary,
-            "ORACLE rv32-reach-1254 {bounds}: {} functions, {values} in-bounds agree, {traps} trap/trap",
-            names.len()
+            "ORACLE rv32-reach-1254 {bounds}: {n_funcs} functions, {values} in-bounds agree, {traps} trap/trap"
         );
         total += values + traps;
     }
@@ -531,6 +550,228 @@ fn rv32_call_in_frame_with_survivors_1724() {
     // Measured: the calls the taken paths make (a vector with bit 0 or 1 set
     // skips the framed call), identical on both engines by the trace check.
     assert_eq!(host_calls, 158);
+}
+
+/// The 19 extra #1724 shapes from the cold review of 150d33b1 (its
+/// `probe.rs`), where the call sits in a frame and the pending value lies
+/// BELOW that frame, or is carried in other ways the shapes above do not
+/// reach: a value beneath an `if (result ...)` holding the call (i32, i64);
+/// an outer value live across a loop that calls on every iteration; a
+/// frame's `br_if` result register live at the call; nested frames and a
+/// call feeding an `if` condition; a DEFINED callee with high register
+/// pressure that itself calls out; six pending values; an i64 `div_u` and an
+/// in-frame call in one function (the shared #1717 slot area); i32 and i64
+/// frame locals live across the call; a void call; a call in the `else`
+/// arm. The base declines 17 of the 19.
+fn review_shapes() -> Vec<(&'static str, &'static str, String)> {
+    const C1: &str = "local.get 0 i32.const 1 i32.and";
+    let s6: String = (1..=6)
+        .map(|k| format!("local.get 0 i32.const {k} i32.shl "))
+        .collect();
+    let adds6: String = (0..6).map(|_| "i32.add ").collect();
+    vec![
+        (
+            "under_ifres",
+            "i32",
+            format!("{S32} {C1} if (result i32) local.get 0 call $rd else i32.const 5 end i32.add"),
+        ),
+        (
+            "under_ifres_i64",
+            "i64",
+            format!(
+                "{S64} {C1} if (result i32) local.get 0 call $rd else i32.const 5 end i64.extend_i32_u i64.add"
+            ),
+        ),
+        (
+            "under_loop",
+            "i32",
+            format!(
+                "{S32} i32.const 3 local.set 1 loop local.get 0 call $rd drop local.get 1 i32.const 1 i32.sub local.tee 1 br_if 0 end i32.const 9 i32.add"
+            ),
+        ),
+        (
+            "under_loop_i64",
+            "i64",
+            format!(
+                "{S64} i32.const 3 local.set 1 loop local.get 0 local.get 1 i32.add call $rd local.set 3 local.get 1 i32.const 1 i32.sub local.tee 1 br_if 0 end local.get 3 i64.extend_i32_u i64.add"
+            ),
+        ),
+        (
+            "brres",
+            "i32",
+            format!("block (result i32) {S32} {C1} br_if 0 drop local.get 0 call $rd end"),
+        ),
+        (
+            "brres_nested",
+            "i32",
+            format!(
+                "block (result i32) {S32} {C1} br_if 0 drop block local.get 0 call $rd drop end i32.const 7 end"
+            ),
+        ),
+        (
+            "brres_value_under",
+            "i32",
+            format!(
+                "local.get 0 block (result i32) {S32} {C1} br_if 0 drop local.get 0 call $rd end i32.add"
+            ),
+        ),
+        (
+            "nested_args",
+            "i32",
+            format!(
+                "{S32} local.get 0 call $rd {C1} if (result i32) local.get 0 call $rd call $rd else i32.const 1 end call $mix i32.add"
+            ),
+        ),
+        (
+            "heavy_local",
+            "i32",
+            format!(
+                "{S32} {S32} i32.const 3 i32.shl {C1} if (result i32) local.get 0 call $heavy else i32.const 3 end i32.add i32.add"
+            ),
+        ),
+        (
+            "heavy_local_i64",
+            "i64",
+            format!(
+                "{S64} {C1} if (result i32) local.get 0 call $heavy else i32.const 3 end i64.extend_i32_u i64.add"
+            ),
+        ),
+        (
+            "many6",
+            "i32",
+            format!("{s6} {C1} if (result i32) local.get 0 call $rd else i32.const 0 end {adds6}"),
+        ),
+        (
+            "with_div",
+            "i32",
+            format!(
+                "{S32} {C1} if (result i32) local.get 0 call $rd else i32.const 1 end {S64} i64.const 3 i64.div_u i32.wrap_i64 i32.add i32.add"
+            ),
+        ),
+        (
+            "div_then_call_in_if",
+            "i32",
+            format!(
+                "{S32} {S64} {C1} if (result i64) local.get 0 call $rd i64.extend_i32_u else i64.const 1 end i64.div_u i32.wrap_i64 i32.add"
+            ),
+        ),
+        (
+            "locals_survive",
+            "i32",
+            format!(
+                "local.get 0 i32.const 77 i32.mul local.set 1 local.get 0 i64.extend_i32_s i64.const 1000 i64.mul local.set 2 {S32} {C1} if (result i32) local.get 0 call $rd local.set 3 local.get 3 else i32.const 2 end local.get 1 i32.add local.get 2 i32.wrap_i64 i32.add local.get 2 i64.const 32 i64.shr_u i32.wrap_i64 i32.add i32.add"
+            ),
+        ),
+        (
+            "void_under",
+            "i32",
+            format!("{S32} {C1} if local.get 0 local.get 0 call $rd call $wr end"),
+        ),
+        (
+            "promoted_alias",
+            "i32",
+            format!(
+                "local.get 0 local.set 1 local.get 1 {C1} if local.get 0 call $rd local.set 1 end local.get 1 i32.add"
+            ),
+        ),
+        (
+            "call_in_else_arm",
+            "i32",
+            format!("{S32} {C1} if (result i32) i32.const 4 else local.get 0 call $rd end i32.add"),
+        ),
+        (
+            "deep_nest",
+            "i32",
+            format!(
+                "i32.const 5 local.set 1 {S32} block {S32} block {S32} {C1} br_if 1 local.get 0 call $rd i32.add local.set 1 end local.get 1 i32.add local.set 1 end local.get 1 i32.add"
+            ),
+        ),
+        (
+            "call_as_condition",
+            "i32",
+            format!(
+                "{S32} block (result i32) local.get 0 call $rd i32.const 1 i32.and if (result i32) local.get 0 call $rd else i32.const 3 end end i32.add"
+            ),
+        ),
+    ]
+}
+
+fn review_module() -> (Vec<u8>, Vec<String>) {
+    let mut w = String::from(
+        "(module\n  (import \"m\" \"rd\" (func $rd (param i32) (result i32)))\n  \
+         (import \"m\" \"wr\" (func $wr (param i32 i32)))\n  \
+         (import \"m\" \"mix\" (func $mix (param i32 i32) (result i32)))\n",
+    );
+    // A defined callee using many registers and itself calling out.
+    let mut heavy = String::from("local.get 0 call $rd ");
+    for k in 1..=9 {
+        let _ = write!(
+            heavy,
+            "local.get 0 i32.const {k} i32.shr_u i32.const {} i32.mul ",
+            2 * k + 1
+        );
+    }
+    heavy.push_str(&"i32.xor ".repeat(9));
+    let _ = writeln!(w, "  (func $heavy (param i32) (result i32) {heavy})");
+    let mut names = Vec::new();
+    for (name, res, body) in review_shapes() {
+        let _ = writeln!(
+            w,
+            "  (func (export \"{name}\") (param i32) (result {res}) (local i32 i64 i32)\n    {body})"
+        );
+        names.push(name.to_string());
+    }
+    w.push(')');
+    (wat::parse_str(&w).unwrap(), names)
+}
+
+const REVIEW_VECTORS: &[u32] = &[
+    0,
+    1,
+    2,
+    3,
+    0x7FFF_FFFF,
+    0x8000_0000,
+    0xFFFF_FFFF,
+    0xDEAD_BEEF,
+    0x1234_5679,
+];
+
+#[test]
+fn rv32_call_shapes_from_review_1724() {
+    let (wasm, names) = review_module();
+    let cfg = EmuConfig::new(Cpu::Rv32Imac);
+    let imports = call_imports();
+    let env = env_for(&wasm, &imports).unwrap();
+    let run = compile_rv32(&wasm, "none");
+    let obj = assert_complete(&run, &names, "review shapes");
+    let mut agree = 0usize;
+    let mut host_calls = 0usize;
+    for f in &names {
+        for &x in REVIEW_VECTORS {
+            let args = [WasmValue::I32(x)];
+            let c = run_case_env(&wasm, &obj, f, &args, FUEL, &imports, &cfg, &env)
+                .unwrap_or_else(|e| panic!("{f}({x:#x}): {e:?}"));
+            assert!(
+                c.verdict.is_agree() && matches!(c.reference, RefOutcome::Values(_)),
+                "{f}({x:#x}): {:?}\n kiln {:?}\n synth {:?}",
+                c.verdict,
+                c.reference,
+                c.emulator
+            );
+            host_calls += c.host_calls.len();
+            agree += 1;
+        }
+    }
+    println!(
+        "ORACLE rv32-reach-1724-review: {agree} cases agree over {} functions, {host_calls} host calls matched",
+        names.len()
+    );
+    assert_eq!(names.len(), 19);
+    assert_eq!(agree, names.len() * REVIEW_VECTORS.len());
+    // Measured: the calls the taken paths make (`$heavy` is a synth callee,
+    // so its own `rd` call is counted), identical on both engines.
+    assert_eq!(host_calls, 177);
 }
 
 /// POTENCY of the harness on REAL synth output: the memory comparison and

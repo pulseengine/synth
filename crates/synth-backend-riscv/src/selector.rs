@@ -4394,21 +4394,19 @@ impl Selector {
         // consumer WITHOUT executing the mv — a path-dependent silent
         // miscompile. So the move is used at depth 0 only.
         let n_survivors = self.vstack.len() - n_args;
-        // #1724: inside a control frame (where this used to DECLINE with
-        // `Call(N)`) the survivors are kept by the #1717 mechanism instead: every
-        // caller-saved register holding a value that outlives the call (a
-        // vstack entry below the arguments, or an open frame's branch result)
-        // is stored to a frame slot before the marshalling and reloaded into
-        // the SAME register after the result is copied out. The vstack is not
-        // rewritten, and store and reload sit on one straight-line path, so
-        // no other path can observe a difference.
+        // #1724: in a control frame (which used to DECLINE, `Call(N)`) each
+        // caller-saved register of a vstack entry below the arguments is
+        // stored to a frame slot and reloaded into the SAME register after the
+        // result copy (#1717's pair): one straight-line path, vstack untouched.
+        // An open frame's `br_results` is dead here: it carries a value only
+        // on an edge that already LEFT the frame (a br_if's donated register
+        // stays on the vstack), and the join's fall-through writes it first.
         let in_frame = !self.ctrl.is_empty();
         let spilled = if !in_frame {
             Vec::new()
         } else {
             let mut regs: Vec<Reg> = Vec::new();
-            let below = self.vstack[..n_survivors].iter();
-            for v in below.chain(self.ctrl.iter().flat_map(|f| f.br_results.iter())) {
+            for v in &self.vstack[..n_survivors] {
                 let (a, b) = match v {
                     VstackVal::I32(r) => (*r, *r),
                     VstackVal::I64 { lo, hi } => (*lo, *hi),

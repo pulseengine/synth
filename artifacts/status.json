@@ -29,7 +29,7 @@
   "rocq_admitted": 2,
   "rocq_axioms": 93,
   "rocq_qed": 645,
-  "rv32_selector_lines_code": 6631,
+  "rv32_selector_lines_code": 6629,
   "sail_bridge_qed": 92,
   "sel_dsl_pilot_qed": 7,
   "sel_dsl_rule_qed": 80,

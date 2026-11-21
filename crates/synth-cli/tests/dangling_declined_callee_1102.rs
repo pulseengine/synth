@@ -15,6 +15,10 @@
 //! $ ld.lld d.o         # -> undefined symbol: synth_func_0
 //! ```
 //!
+//! That transcript is HISTORY: v0.92 (#1254) lowers the large memarg offset
+//! on RV32, so it no longer declines. The fixtures below use `i32.clz` as the
+//! rv32-only decline instead, and their anchor is `I32Clz`.
+//!
 //! `synth_func_0` names a function the module itself DEFINES, so no linker
 //! input can ever resolve it: the object is not partial, it is UNLINKABLE.
 //! The #952 guard is keyed on declined REQUESTED EXPORTS and the #1013
