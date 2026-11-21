@@ -120,10 +120,12 @@ you want with ASan; on macOS the host triple is correct.
 ## CI integration
 
 `.github/workflows/fuzz-smoke.yml` runs each target for 60 seconds on
-every PR. The matrix mirrors the `[[bin]]` list in `fuzz/Cargo.toml`.
+every PR, in one job. Its `TARGETS` list mirrors the `[[bin]]` list in
+`fuzz/Cargo.toml` (the job fails if the two differ); `GATING` names the
+targets whose failure fails the job, the rest only warn.
 Long-budget runs (1 h / target) and corpus persistence are out of
 scope for #82 and tracked separately on the issue.
 
 If you add a new harness, update **both**:
 1. `fuzz/Cargo.toml` `[[bin]]` block, and
-2. `.github/workflows/fuzz-smoke.yml` `matrix.target`.
+2. `.github/workflows/fuzz-smoke.yml` `TARGETS` (and `GATING` if it must block).

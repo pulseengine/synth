@@ -1,0 +1,88 @@
+# Decides whether the mutation survey replay has anything new to say about this
+# change. Output `run` is `false` ONLY when every changed path is on the short
+# skip-safe list below; in every other case it is `true`.
+#
+# WHY. The replay was the largest single rust-cpu job (187 min over 13 runs in
+# the 2026-11-19/20 window, about 14 min a run). Its inputs are the compiler
+# source, the scripts/repro oracles and their drivers, the ledger (which holds
+# the recorded suite the replay executes), and whatever `cargo test
+# --workspace` reads: one pinned control is killed at that layer, so the replay
+# runs the whole workspace suite. A change that touches none of them replays
+# the exact survey the base commit already ran.
+#
+# FAIL-OPEN, BY CONSTRUCTION. The list names what is SAFE TO SKIP, not what
+# must run, so an unlisted or new path runs the survey. It also runs when
+#   - the event is anything but pull_request or merge_group (push to main
+#     ALWAYS runs: every main commit keeps its survey),
+#   - HEAD^1 is absent (a shallow checkout: the job needs fetch-depth 2),
+#   - a pull_request HEAD is not a two-parent merge commit,
+#   - a merge_group HEAD^1 is not the event's base_sha (a rebase-merged group
+#     of several commits, where HEAD^1 would cover only the last one),
+#   - git fails, or the diff is empty.
+#
+# SKIP-SAFE: docs/** except the ledger docs/status/mutation_survey.json;
+# the rivet YAML under artifacts/ (artifacts/**/*.yaml|yml); claims.yaml; and
+# *.md outside crates/ and artifacts/. Nothing under crates/, scripts/,
+# tests/, fuzz/, .github/, coq/, nor Cargo.toml / Cargo.lock, is ever
+# skip-safe.
+#
+# artifacts/ IS NOT SKIP-SAFE AS A WHOLE. artifacts/aarch64-op-surface.json is
+# read by a workspace test (cross_backend_op_parity.rs,
+# a64_op_surface_artifact_is_fresh_242), which the replay runs; a change to it
+# alone can red the replay. So only the YAML is listed, and every other file
+# there (the .json and .md ones included) runs the replay.
+#
+# A skipped replay still REPORTS the job's check, green, having said so in the
+# log and the step summary. It is not evidence about the mutants: the evidence
+# is the base commit's own run.
+name: Does this change reach the mutation survey?
+description: Fail-open path filter for the mutation survey replay; outputs run=true|false
+outputs:
+  run:
+    description: "'false' only when every changed path is skip-safe; otherwise 'true'"
+    value: ${{ steps.d.outputs.run }}
+runs:
+  using: composite
+  steps:
+    - id: d
+      shell: bash
+      env:
+        MG_BASE: ${{ github.event.merge_group.base_sha }}
+      run: |
+        set -uo pipefail
+        decide() {
+          echo "run=$1" >> "$GITHUB_OUTPUT"
+          if [ "$1" = false ]; then
+            msg="MUTATION SURVEY REPLAY SKIPPED: $2 — the replay did NOT run on this commit; its evidence is the base commit's run"
+          else
+            msg="mutation survey replay RUNS: $2"
+          fi
+          echo "$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        }
+        case "$GITHUB_EVENT_NAME" in
+          pull_request|merge_group) ;;
+          *) decide true "event '$GITHUB_EVENT_NAME' always runs it" ;;
+        esac
+        base="$(git rev-parse --verify -q 'HEAD^1^{commit}')" || decide true "HEAD^1 is not available (shallow checkout?)"
+        if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+          [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3 ] || decide true "pull_request HEAD is not a two-parent merge commit"
+        else
+          [ -n "$MG_BASE" ] && [ "$base" = "$MG_BASE" ] || decide true "merge_group HEAD^1 ($base) is not the group's base_sha ($MG_BASE)"
+        fi
+        files="$(git -c core.quotePath=false diff --name-only --no-renames "$base" HEAD)" || decide true "git diff against $base failed"
+        [ -n "$files" ] || decide true "the diff against $base is empty"
+        n=0
+        while IFS= read -r f; do
+          n=$((n + 1))
+          case "$f" in
+            docs/status/mutation_survey.json) decide true "the ledger changed" ;;
+            crates/*) decide true "'$f' changed" ;;
+            artifacts/*.yaml|artifacts/*.yml) ;;
+            artifacts/*) decide true "'$f' changed (only the YAML under artifacts/ is skip-safe)" ;;
+            docs/*|claims.yaml|*.md) ;;
+            *) decide true "'$f' changed" ;;
+          esac
+        done <<< "$files"
+        decide false "all $n changed path(s) are skip-safe (docs, artifacts YAML, claims.yaml, *.md outside crates/ and artifacts/)"

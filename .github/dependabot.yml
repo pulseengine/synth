@@ -5,7 +5,12 @@ version: 2
 # where one release arrived as 4-8 PRs.)
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    # `/` covers .github/workflows only. The composite actions under
+    # .github/actions/ carry the same sha pins (actions/cache, upload- and
+    # download-artifact) and must be bumped in the same PR, or the pins drift.
+    directories:
+      - /
+      - /.github/actions/*
     schedule:
       interval: weekly
     labels:
