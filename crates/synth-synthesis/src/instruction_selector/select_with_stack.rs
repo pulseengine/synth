@@ -270,18 +270,11 @@ impl InstructionSelector {
         let mut max_stack_args: u32 = 0;
         for op in wasm_ops {
             let arg_count = match op {
-                Call(func_idx) => {
-                    // Meld dispatch imports take no AAPCS args (index in R0).
-                    let is_import = *func_idx < self.num_imports;
-                    if is_import && !self.relocatable {
-                        0
-                    } else {
-                        self.func_arg_counts
-                            .get(*func_idx as usize)
-                            .copied()
-                            .unwrap_or(0)
-                    }
-                }
+                Call(func_idx) => self
+                    .func_arg_counts
+                    .get(*func_idx as usize)
+                    .copied()
+                    .unwrap_or(0),
                 CallIndirect { type_index, .. } => self
                     .type_arg_counts
                     .get(*type_index as usize)
@@ -5968,43 +5961,40 @@ impl InstructionSelector {
                             )));
                         }
                     }
-                    let is_import = *func_idx < self.num_imports;
-                    // #197: a relocatable host-link import is a *direct* AAPCS
-                    // call (`BL func_N` → wasm field name), so it marshals args
-                    // into R0–R3 exactly like a local call. Only the legacy Meld
-                    // dispatch ABI (non-relocatable imports) puts the import
-                    // index in R0 and takes no AAPCS args.
-                    let meld_dispatch = is_import && !self.relocatable;
-                    // GI-FPU-002 phase 3 (#369): the legacy Meld dispatch ABI
-                    // (import index in R0, no AAPCS args) has no VFP
-                    // marshalling — a float-signature import there declines
-                    // loudly rather than silently dropping its float args.
-                    if meld_dispatch && has_float_boundary {
+                    // #197 / #1699: an import is called ONE way — a direct
+                    // AAPCS call (`BL func_N`, rewritten to the wasm field
+                    // name), marshalled into R0–R3 exactly like a local call,
+                    // on a host-linked (`relocatable`) compile. A compile for
+                    // the self-contained image has no way to call an import
+                    // at all: nothing in that image defines it. The legacy
+                    // Meld dispatch lowering that used to stand here (`MOV
+                    // R0, #index; BL __meld_dispatch_import`) passed the
+                    // import index and NONE of the wasm arguments (#1699), so
+                    // it is gone and this is a loud decline. The CLI never
+                    // reaches it: a module that calls a function import is
+                    // compiled relocatable.
+                    if *func_idx < self.num_imports && !self.relocatable {
                         return Err(synth_core::Error::synthesis(format!(
-                            "GI-FPU-002 phase 3: import func_{func_idx} has a \
-                             float signature but the Meld dispatch import ABI \
-                             marshals no AAPCS-VFP registers — declining loudly \
-                             (compile with --relocatable for direct AAPCS import \
-                             calls, #369)"
+                            "call to imported function func_{func_idx}: an import is a \
+                             host-linked symbol, but this function is being compiled for a \
+                             self-contained image (`relocatable` is off), which cannot \
+                             resolve it — declining. Compile the module host-linked \
+                             (`--relocatable`; the CLI does so for any module that calls \
+                             a function import) for a direct AAPCS `bl <field>` call (#1699)"
                         )));
                     }
 
                     // ── #195: AAPCS argument count for this callee ──
                     // Look up how many integer args the callee expects so we can
-                    // move the top-N operand-stack values into R0–R3. Meld
-                    // dispatch imports are excluded: that ABI puts the import
-                    // index in R0 (see below), which would collide with arg0.
-                    // Direct imports (#197) and local calls marshal normally —
-                    // `func_arg_counts` is indexed by the full wasm function
-                    // index (imports first), so an import's entry is valid.
-                    let arg_count = if meld_dispatch {
-                        0
-                    } else {
-                        self.func_arg_counts
-                            .get(*func_idx as usize)
-                            .copied()
-                            .unwrap_or(0)
-                    };
+                    // move the top-N operand-stack values into R0–R3. Imports
+                    // (#197) and local calls marshal alike — `func_arg_counts`
+                    // is indexed by the full wasm function index (imports
+                    // first), so an import's entry is valid.
+                    let arg_count = self
+                        .func_arg_counts
+                        .get(*func_idx as usize)
+                        .copied()
+                        .unwrap_or(0);
 
                     // #195: pop the call arguments off the operand stack FIRST so
                     // they are excluded from caller-saved preservation (they are
@@ -6139,35 +6129,16 @@ impl InstructionSelector {
                         cf.add_instruction();
                     }
 
-                    if meld_dispatch {
-                        // Legacy import call — dispatch through the Meld runtime
-                        // (import index in R0, then BL __meld_dispatch_import).
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Mov {
-                                rd: Reg::R0,
-                                op2: Operand2::Imm(*func_idx as i32),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Bl {
-                                label: "__meld_dispatch_import".to_string(),
-                            },
-                            source_line: Some(idx),
-                        });
-                    } else {
-                        // Direct `BL func_N`: a local call, or (#197) a
-                        // relocatable import whose `func_N` symbol the ELF
-                        // builder rewrites to the wasm field name (e.g.
-                        // `k_spin_lock`) for the host linker to resolve.
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Bl {
-                                label: format!("func_{}", func_idx),
-                            },
-                            source_line: Some(idx),
-                        });
-                    }
+                    // Direct `BL func_N`: a local call, or (#197) an import
+                    // whose `func_N` symbol the ELF builder rewrites to the
+                    // wasm field name (e.g. `k_spin_lock`) for the host
+                    // linker to resolve.
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Bl {
+                            label: format!("func_{}", func_idx),
+                        },
+                        source_line: Some(idx),
+                    });
                     cf.add_instruction();
 
                     if callee_ret_f32 || callee_ret_f64 {
@@ -6881,8 +6852,17 @@ impl InstructionSelector {
                     //   - live param  → #193 param-clobber class
                     //   - val2==cond  → cmp consumed cond, but a later read can't
                     //   - val2==val1  → degenerate; fresh dst keeps it simple
+                    //   - val2 still on the operand stack → #1754: `local.get`
+                    //     pushes a local's HOME register, so a second copy of
+                    //     val2's register can sit below the select's operands
+                    //     with no later `local.get` (`live_params` is blind to
+                    //     it); `p0 + select(p2, p0, p1)` returned `p2 + p2`.
+                    //     Read AFTER the three pops: only other aliases remain.
                     // Falls back to the fresh-dst two-move form otherwise.
-                    let in_place = !live_params.contains(&val2) && val2 != cond_reg && val2 != val1;
+                    let in_place = !live_params.contains(&val2)
+                        && val2 != cond_reg
+                        && val2 != val1
+                        && !stack_live_regs(&stack).contains(&val2);
                     let dst = if in_place {
                         val2
                     } else {

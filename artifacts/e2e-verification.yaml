@@ -316,15 +316,19 @@ artifacts:
     description: >
       Unit tests in synth-synthesis verifying that import call stub
       generation produces correct ARM instruction sequences. Tests
-      cover: (1) __meld_dispatch_import generic dispatch path with
-      argument marshalling, (2) __meld_import_N per-import direct
-      dispatch with AAPCS argument placement, (3) trap check after
-      dispatch return, (4) return value lifting. Tests use synth's
-      existing test infrastructure (compile WASM instruction, verify
-      emitted ARM instructions) without requiring linking or execution.
+      cover what synth implements (KB-001, KB-TR-001): an import call is
+      a direct AAPCS `BL func_N` (rewritten to the import's bare field
+      name) on a host-linked compile, and a loud decline naming #1699 on
+      any other compile. The generic `__meld_dispatch_import` path and the
+      `__meld_import_N` symbols this entry used to list are not built.
+      Tests use synth's existing test infrastructure (compile WASM
+      instruction, verify emitted ARM instructions) without requiring
+      linking; the EXECUTED proof is
+      crates/synth-oracle/tests/import_boundary_oracle.rs.
     status: implemented
     note: >
-      Covered by crates/synth-backend/tests/meld_abi_test.rs::test_import_dispatch_stub_generation()
+      Covered by crates/synth-backend/tests/meld_abi_test.rs::test_full_import_call_pipeline()
+      and ::test_import_call_without_host_link_declines_1699()
     tags: [e2e, unit-test, import-stub, synth-synthesis]
     links:
       - type: verifies
@@ -334,10 +338,13 @@ artifacts:
     fields:
       method: automated-test
       steps:
-        run: "cargo test -p synth-synthesis -- test_import_dispatch"
+        run: "cargo test -p synth-synthesis -- test_control_flow_call_import"
         coverage: >
-          Generic dispatch stub, per-import direct stub, trap check,
-          return value lift. Both single-arg and multi-arg imports.
+          The import call is one direct `BL func_N` on a host-linked
+          compile and a decline naming #1699 otherwise; R0 never carries
+          the import index. The generic dispatch stub, the
+          `__meld_import_N` stub, the trap check and the return-value
+          lift are not built, so nothing here covers them.
 
   - id: E2E-VER-009
     type: sys-verification

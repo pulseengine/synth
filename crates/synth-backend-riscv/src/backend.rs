@@ -201,29 +201,35 @@ impl Backend for RiscVBackend {
         let mut elf_funcs = Vec::new();
         for func in &exports {
             let name = func.export_name.clone().unwrap();
-            // #457: THIS function's DECLARED param count (imports-first full
-            // index) caps the access-pattern param inference, so a
-            // read-before-write local gets a zero-inited frame slot instead of
-            // an argument-register home. None when the driver supplied no
-            // arg-count table (hand-built modules) — pure inference, as before.
-            let declared_params = config.func_arg_counts.get(func.index as usize).copied();
-            // #1093: thread THIS function's blocktype-arity side-table too, so
-            // the module-level path carries the same channel the CLI
-            // per-function loop sets — the parameter-taking-block-type decline
-            // in `compile_function_with_opts` fires on every driver path.
-            let func_config = if declared_params.is_some() || !func.block_arity.is_empty() {
-                Some(CompileConfig {
-                    current_func_param_count: declared_params,
-                    current_func_block_arity: func.block_arity.clone(),
-                    ..config.clone()
-                })
-            } else {
-                None
-            };
-            let cfg = func_config.as_ref().unwrap_or(config);
+            // #1450: an exported multi-result function has no return
+            // convention to be compiled against — refuse the module.
+            if let Some(reason) = synth_core::multi_result_function_decline(
+                module
+                    .func_result_counts
+                    .get(func.index as usize)
+                    .copied()
+                    .unwrap_or(0),
+                "exported",
+            ) {
+                return Err(BackendError::CompilationFailed(format!(
+                    "function '{name}': {reason}"
+                )));
+            }
+            // THIS function's facts, from the MODULE (#1745): the declared
+            // param count (#457) caps the access-pattern param inference, so
+            // a read-before-write local gets a zero-inited frame slot instead
+            // of an argument-register home; the i64-param mask places each
+            // param in its a-register (pair); the blocktype arity (#1093,
+            // #1739) drives the value-carrying branches and the
+            // parameter-taking-block decline. The count was read from the
+            // CALLER's config and the i64 mask was never set here, so a
+            // library caller with a default config got wrong code.
+            let func_config = config.for_function(module, func);
+            let cfg = &func_config;
             let compiled = compile_function_with_opts(&name, &func.ops, cfg, opts)?;
             elf_funcs.push(RiscVElfFunction {
                 name: compiled.name.clone(),
+                aliases: Vec::new(),
                 ops: compile_to_riscv_ops(&func.ops, cfg, opts, &compiled)?,
             });
             functions.push(compiled);
@@ -480,6 +486,7 @@ fn compile_function_with_opts(
     // carries.
     let elf_func = RiscVElfFunction {
         name: name.to_string(),
+        aliases: Vec::new(),
         ops: selection.ops,
     };
     let (bytes, call_relocs) = encode_function_bytes(&elf_func)?;

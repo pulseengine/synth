@@ -315,7 +315,21 @@ PINS = {
 # wasm's results are (2, 1). On arm_m7dp the five never shipped at all:
 # with --allow-skipped-exports the module was refused whole by #1102
 # (`type-all-f32-f64 -> func_11`). No file bucket moves.
-SKIPPED_FUNCTION_PINS = {"arm_m4f": 1491, "arm_m7dp": 1398}
+#
+# #1450: 1491 -> 1493 (arm_m4f) and 1398 -> 1400 (arm_m7dp). On every ARM leg
+# EXACTLY two exports move, both in if.wast and both compiled before:
+# `multi` (result i32 i64 i32) and `add64_u_with_carry` (result i64 i32). An
+# exported multi-result function is now refused (`MULTI-RESULT function`) —
+# no backend defines a multi-value return convention, and the one-result
+# return sequence handed back only the LAST result. 13 exports in 5 files
+# (block, br, call, if, loop) carry the refusal on every leg; those not
+# listed as moving (11 on the ARM legs and aarch64, 10 on riscv) were
+# already skipped for another reason and only change their message.
+# The unpinned legs, measured the same way: arm 1565 -> 1567 (the same two),
+# riscv 1665 -> 1668 (block `break-multi-value`, br `as-return-values`, if
+# `break-multi-value`), aarch64 1264 -> 1266 (br `as-return-values`, if
+# `add64_u_with_carry`). No file bucket moves on any leg.
+SKIPPED_FUNCTION_PINS = {"arm_m4f": 1493, "arm_m7dp": 1400}
 
 # Doc-cited derived figure, re-asserted at runtime against the pins above so
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:

@@ -426,13 +426,18 @@ impl Backend for AArch64Backend {
                      (#369, #554)"
                 )));
             }
-            // #457: THIS function's declared param count (imports-first full
-            // index) caps the param-count inference in `compile_function`.
-            let declared_params = config.func_arg_counts.get(func.index as usize).copied();
+            // THIS function's facts, from the MODULE (#1745): the declared
+            // param count (#457) caps the param-count inference, the f32/f64
+            // param masks home float params in V registers, and the
+            // blocktype arity is the only channel carrying a frame's block
+            // type. None of the three was threaded from the module: the count
+            // was read from the CALLER's config, and with a default config a
+            // value-carrying block lowered as void (returning the caller's
+            // x0), a zero-initialised local was read from x1, and a float
+            // param did not compile.
             // #851: thread num_imports + func_arg_counts (call metadata) so the
             // call lowering can classify import vs local and marshal args.
             let func_config = CompileConfig {
-                current_func_param_count: declared_params.or(config.current_func_param_count),
                 num_imports: module.num_imported_funcs,
                 func_arg_counts: module.func_arg_counts.clone(),
                 // #851 lane L3: the substrate metadata + the fail-safe gate.
@@ -448,7 +453,7 @@ impl Backend for AArch64Backend {
                 type_ret_f32: module.type_ret_f32.clone(),
                 type_ret_f64: module.type_ret_f64.clone(),
                 global_widths: module.globals.iter().map(|g| g.slot_bytes).collect(),
-                ..config.clone()
+                ..config.for_function(module, func)
             };
             let compiled = self.compile_function_with_results(
                 &name,

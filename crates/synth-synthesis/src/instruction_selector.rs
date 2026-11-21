@@ -6474,11 +6474,11 @@ pub struct InstructionSelector {
     regs: RegisterState,
     /// Bounds checking configuration
     bounds_check: BoundsCheckConfig,
-    /// Number of imported functions (calls to func_idx < this go through Meld dispatch)
+    /// Number of imported functions (func_idx < this is an import: a host-linked symbol)
     num_imports: u32,
     /// Relocatable host-link mode (#197). When set, an import call emits a
     /// direct `BL func_N` (the relocatable-ELF builder rewrites `func_N` to the
-    /// wasm field name, e.g. `k_spin_lock`) instead of `__meld_dispatch_import`.
+    /// wasm field name, e.g. `k_spin_lock`); when clear it declines (#1699).
     relocatable: bool,
     /// #275: reject `call_indirect` on the SELF-CONTAINED image path. The
     /// dispatch loads the function pointer from the contiguous R11 table
@@ -7458,7 +7458,7 @@ impl InstructionSelector {
 
     /// Enable relocatable host-link mode (#197): import calls emit a direct
     /// `BL func_N` (rewritten to the wasm field name by the relocatable-ELF
-    /// builder) instead of dispatching through `__meld_dispatch_import`.
+    /// builder). Without it an import call is a loud decline (#1699).
     pub fn set_relocatable(&mut self, relocatable: bool) {
         self.relocatable = relocatable;
     }
@@ -11638,12 +11638,13 @@ mod tests {
     }
 
     /// GI-FPU-002 phase 3 (#369): boundaries the marshalling does NOT cover
-    /// keep loud declines — a float-signature import on the legacy Meld
-    /// dispatch ABI, and an i64 integer argument mixed into a float-signature
-    /// call (its even-aligned core pair is not marshalled on this path).
+    /// keep loud declines — a float-signature import on a compile that is not
+    /// host-linked (no import can be called there at all, #1699), and an i64
+    /// integer argument mixed into a float-signature call (its even-aligned
+    /// core pair is not marshalled on this path).
     #[test]
     fn test_369_unmarshalled_float_boundaries_decline_loudly() {
-        // Meld-dispatch import (non-relocatable) with a float signature.
+        // Non-relocatable import with a float signature.
         let mut selector = fresh_selector();
         selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
         selector.set_num_imports(1);
@@ -11658,9 +11659,8 @@ mod tests {
         );
         let r = selector.select_with_stack(&[WasmOp::F32Const(1.5), WasmOp::Call(0)], 0);
         assert!(
-            r.as_ref()
-                .is_err_and(|e| e.to_string().contains("Meld dispatch")),
-            "float-signature Meld-dispatch import must decline loudly: {r:?}"
+            r.as_ref().is_err_and(|e| e.to_string().contains("#1699")),
+            "float-signature import on a self-contained compile must decline loudly: {r:?}"
         );
         // i64 argument mixed with an f32 argument.
         let mut selector = fresh_selector();
@@ -13108,18 +13108,35 @@ mod tests {
         assert!(has_bl, "Call(5) should emit BL func_5");
     }
 
+    /// #1699: an import call is a direct AAPCS call on a host-linked compile,
+    /// and a loud decline otherwise — never `MOV R0, #index; BL
+    /// __meld_dispatch_import`, which passed no wasm argument.
     #[test]
     fn test_control_flow_call_import() {
-        // Call an imported function via Meld dispatch
         let db = RuleDatabase::new();
+        let wasm_ops = vec![WasmOp::I32Const(7), WasmOp::Call(1)]; // import index 1 (< 3)
+
         let mut selector = InstructionSelector::new(db.rules().to_vec());
         selector.set_num_imports(3);
+        selector.set_func_arg_counts(vec![0, 1, 0], Vec::new());
+        selector.set_func_result_counts(vec![0, 0, 0]);
+        let err = selector
+            .select_with_stack(&wasm_ops, 0)
+            .expect_err("a self-contained compile must decline an import call");
+        assert!(err.to_string().contains("#1699"), "{err}");
 
-        let wasm_ops = vec![WasmOp::Call(1)]; // Import index 1 (< 3)
+        selector.set_relocatable(true);
         let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
-
-        // Should emit MOV R0, #1 (import index) then BL __meld_dispatch_import
-        let has_mov = arm_instrs.iter().any(|i| {
+        let is_bl = |i: &&ArmInstruction| matches!(&i.op, ArmOp::Bl { .. });
+        let calls: Vec<&ArmInstruction> = arm_instrs.iter().filter(is_bl).collect();
+        assert_eq!(calls.len(), 1, "one call");
+        assert!(
+            matches!(&calls[0].op, ArmOp::Bl { label } if label == "func_1"),
+            "a direct call to the import: {:?}",
+            calls[0].op
+        );
+        // The import index is never what R0 carries into the call.
+        let loads_index = arm_instrs.iter().any(|i| {
             matches!(
                 &i.op,
                 ArmOp::Mov {
@@ -13128,12 +13145,7 @@ mod tests {
                 }
             )
         });
-        assert!(has_mov, "Import call should set R0 to import index");
-
-        let has_bl = arm_instrs
-            .iter()
-            .any(|i| matches!(&i.op, ArmOp::Bl { label } if label == "__meld_dispatch_import"));
-        assert!(has_bl, "Import call should BL to __meld_dispatch_import");
+        assert!(!loads_index, "R0 must not be loaded with the import index");
     }
 
     #[test]
@@ -15024,6 +15036,48 @@ mod tests {
             .count();
         assert_eq!(ne, 1, "in-place select emits exactly one NE override move");
         assert_eq!(eq, 0, "in-place select elides the EQ keep-val2 move");
+    }
+
+    #[test]
+    fn test_select_not_in_place_over_a_stacked_alias_1754() {
+        // #1754: `p0 + select(p2, p0, p1)`. `local.get 0` pushes R0 twice; the
+        // select's val2 is R0 and no later `local.get 0` exists, so the
+        // in-place form used R0 as its destination while the add's first
+        // operand was still R0 on the stack (f(5,1,7) = 14, not 12). The
+        // select must take a fresh destination: both conditional moves, and
+        // neither writes R0.
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0), // the add's first operand: R0, stays stacked
+            WasmOp::LocalGet(2), // val1
+            WasmOp::LocalGet(0), // val2: R0 again
+            WasmOp::LocalGet(1), // cond
+            WasmOp::Select,
+            WasmOp::I32Add,
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 3).unwrap();
+        let moves: Vec<(Reg, Condition)> = instrs
+            .iter()
+            .filter_map(|i| {
+                if let ArmOp::SelectMove { rd, cond, .. } = &i.op {
+                    Some((*rd, *cond))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(moves.len(), 2, "fresh-destination select: {moves:?}");
+        assert!(
+            moves.iter().all(|(rd, _)| *rd != Reg::R0),
+            "select wrote R0 while R0 was still on the operand stack: {moves:?}"
+        );
+        let add_reads_r0 = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Add { rn: Reg::R0, .. } | ArmOp::Adds { rn: Reg::R0, .. }
+            )
+        });
+        assert!(add_reads_r0, "the add reads param 0 from R0: {instrs:?}");
     }
 
     #[test]

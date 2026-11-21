@@ -17,9 +17,18 @@
 //! - Running out of the instruction budget is its own outcome, never a trap.
 //!
 //! WHAT IS REFUSED, with a typed error, rather than run and judged wrongly:
-//! floating-point signatures (synth's hard-float targets pass them in S
-//! registers and the soft-float convention is not shown on real code), stack
-//! arguments, multi-value results, and any function carrying a relocation.
+//! floating-point signatures on ARM and RV32 (synth's hard-float targets pass
+//! them in S registers and the soft-float convention is not shown on real
+//! code), stack arguments, multi-value results, and any function carrying a
+//! relocation.
+//!
+//! AArch64 (#1745) has its own runner, [`run_a64`]: AAPCS64, with float
+//! arguments and results in V registers, and `brk` as the trap.
+//!
+//! WHAT IS POISONED, so that reading something uninitialised cannot agree
+//! with wasm's zero: the whole stack mapping on every core, every unused
+//! argument register, on AArch64 also x8-x18 and d16-d31, and on the two VFP
+//! cores d0-d15.
 //! No linear memory is mapped: modules with a memory are refused one level up
 //! ([`crate::run_case`]), because memory effects are not compared.
 //!
@@ -33,7 +42,8 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use unicorn_engine::{
-    Arch, ArmCpuModel, Mode, Prot, RegisterARM, RegisterRISCV, Riscv32CpuModel, Unicorn, uc_error,
+    Arch, Arm64CpuModel, ArmCpuModel, Mode, Prot, RegisterARM, RegisterARM64, RegisterRISCV,
+    Riscv32CpuModel, Unicorn, uc_error,
 };
 
 use crate::compare::EmuOutcome;
@@ -49,20 +59,45 @@ pub enum Cpu {
     CortexM3,
     /// ARMv7E-M, Thumb-2. Float signatures are refused (see the module doc).
     CortexM4,
-    /// ARMv7E-M, Thumb-2 (unicorn's Cortex-M7 model). Used by the target
-    /// record's `cortex-m7dp` row; float signatures are refused as on M4.
+    /// Cortex-M4 for synth's `cortex-m4f` target: CPACR CP10/CP11 and
+    /// FPEXC.EN are written and d0-d15 poisoned. A float RESULT is read from
+    /// s0/d0; a float PARAMETER is still refused. (unicorn 2.1.5 runs VFP
+    /// instructions on its M4 model without the CPACR write too; the write is
+    /// what silicon needs and costs nothing here.)
+    CortexM4F,
+    /// Cortex-M7 with its double-precision FPU enabled, likewise, for
+    /// `cortex-m7dp`.
+    CortexM7F,
+    /// ARMv7E-M, Thumb-2 (synth's `cortex-m7dp`) with the VFP left as reset
+    /// leaves it: float signatures are refused, as on `CortexM4`. The import
+    /// boundary oracle's leg and the target record's `cortex-m7dp` row;
+    /// `CortexM7F` is the float-result one.
     CortexM7,
     /// RV32IMAC: unicorn's SiFive E31, which is exactly RV32IMAC (+U), so an
     /// F/D instruction is undefined here as it is on the target.
     Rv32Imac,
+    /// ARMv8-A, A64 (#1745). The only core on which float signatures run:
+    /// see [`run_a64`] for the AAPCS64 set-up.
+    CortexA53,
 }
 
 impl Cpu {
     pub(crate) fn machine(self) -> Machine {
         match self {
             Cpu::Rv32Imac => Machine::RiscV32,
-            _ => Machine::Arm,
+            Cpu::CortexA53 => Machine::AArch64,
+            Cpu::CortexM0
+            | Cpu::CortexM3
+            | Cpu::CortexM4
+            | Cpu::CortexM4F
+            | Cpu::CortexM7
+            | Cpu::CortexM7F => Machine::Arm,
         }
+    }
+
+    /// The run enables the VFP and reads float results from it.
+    fn vfp(self) -> bool {
+        matches!(self, Cpu::CortexM4F | Cpu::CortexM7F)
     }
 
     /// The unicorn CPU-model id this core is emulated as.
@@ -70,9 +105,10 @@ impl Cpu {
         match self {
             Cpu::CortexM0 => ArmCpuModel::CORTEX_M0 as i32,
             Cpu::CortexM3 => ArmCpuModel::CORTEX_M3 as i32,
-            Cpu::CortexM4 => ArmCpuModel::CORTEX_M4 as i32,
-            Cpu::CortexM7 => ArmCpuModel::CORTEX_M7 as i32,
+            Cpu::CortexM4 | Cpu::CortexM4F => ArmCpuModel::CORTEX_M4 as i32,
+            Cpu::CortexM7 | Cpu::CortexM7F => ArmCpuModel::CORTEX_M7 as i32,
             Cpu::Rv32Imac => Riscv32CpuModel::SIFIVE_E31 as i32,
+            Cpu::CortexA53 => Arm64CpuModel::A53 as i32,
         }
     }
 }
@@ -80,9 +116,13 @@ impl Cpu {
 /// Where the image lives. Fixed, so a run is reproducible.
 pub const TEXT_BASE: u64 = 0x0001_0000;
 pub const STACK_TOP: u64 = 0x0030_0000;
-const STACK_SIZE: u64 = 0x0002_0000;
+pub(crate) const STACK_SIZE: u64 = 0x0002_0000;
 pub const RETURN_ADDR: u64 = 0x0040_0000;
 pub(crate) const POISON: u32 = 0xFEED_FACE;
+/// AArch64: what an unused argument register holds, and (its high half) the
+/// upper 32 bits of a register carrying an i32 or f32 argument, which
+/// AAPCS64 leaves unspecified.
+const POISON64: u64 = 0xFEED_FACE_FEED_FACE;
 
 /// Per-run configuration.
 #[derive(Clone, Debug)]
@@ -132,9 +172,19 @@ pub enum EmuError {
     },
     /// Argument or result shape the calling-convention setup does not carry.
     Abi(String),
+    /// HOSTED: the object references a symbol that is neither defined in it
+    /// nor one of the module's function imports (by bare field name), so no
+    /// embedder contract says what a call to it does.
+    UnresolvedSymbol(String),
+    /// HOSTED: a relocation the harness does not resolve (anything other
+    /// than `R_ARM_THM_CALL`), or one it could not apply.
+    Reloc(String),
+    /// HOSTED: the module needs instantiation state the harness does not
+    /// materialize (data segments, globals, tables, a start function).
+    Uninstantiated(&'static str),
 }
 
-fn uc<T>(r: Result<T, uc_error>, what: &str) -> Result<T, EmuError> {
+pub(crate) fn uc<T>(r: Result<T, uc_error>, what: &str) -> Result<T, EmuError> {
     r.map_err(|e| EmuError::Unicorn(format!("{what}: {e:?}")))
 }
 
@@ -192,10 +242,11 @@ pub(crate) enum Fault {
 /// every exception it delivers there (unicorn-engine-sys 2.1.5,
 /// qemu/accel/tcg/cpu-exec.c, the TARGET_RISCV block), whatever the
 /// instruction's length.
-fn fault_pc(machine: Machine, fault: Fault) -> u64 {
+pub(crate) fn fault_pc(machine: Machine, fault: Fault) -> u64 {
     match (machine, fault) {
         (Machine::RiscV32, Fault::Hook { reported_pc, .. }) => reported_pc.wrapping_sub(4),
         (Machine::Arm, Fault::Hook { reported_pc, .. }) => reported_pc & !1,
+        (Machine::AArch64, Fault::Hook { reported_pc, .. }) => reported_pc,
         (_, Fault::Error { pc, .. }) => pc & !1,
     }
 }
@@ -211,10 +262,16 @@ fn fault_pc(machine: Machine, fault: Fault) -> u64 {
 ///   unicorn "stop interrupt" (riscv_stop_interrupt): no hook,
 ///   UC_ERR_INSN_INVALID, PC at the instruction.
 ///
-/// A hook stop is never a trap: BKPT, NOCP, ecall, an illegal instruction
-/// (including `c.unimp` = `0x0000`, which zero padding decodes as) are all
-/// ILLEGAL.
+/// On ARM and RV32 a hook stop is never a trap: BKPT, NOCP, ecall, an illegal
+/// instruction (including `c.unimp` = `0x0000`, which zero padding decodes
+/// as) are all ILLEGAL. AArch64 is the reverse, see [`a64_trap_insn`].
 fn trap_insn(machine: Machine, fault: Fault, bytes: &[u8]) -> Option<&'static str> {
+    let h = |i: usize| -> Option<u16> {
+        Some(u16::from_le_bytes([*bytes.get(i)?, *bytes.get(i + 1)?]))
+    };
+    if machine == Machine::AArch64 {
+        return a64_trap_insn(fault, u32::from(h(0)?) | (u32::from(h(2)?) << 16));
+    }
     let Fault::Error {
         err: uc_error::INSN_INVALID,
         ..
@@ -222,16 +279,27 @@ fn trap_insn(machine: Machine, fault: Fault, bytes: &[u8]) -> Option<&'static st
     else {
         return None;
     };
-    let h = |i: usize| -> Option<u16> {
-        Some(u16::from_le_bytes([*bytes.get(i)?, *bytes.get(i + 1)?]))
-    };
     match machine {
+        Machine::AArch64 => None,
         Machine::Arm => (h(0)? & 0xFF00 == 0xDE00).then_some("udf"),
         Machine::RiscV32 => {
             let w = u32::from(h(0)?) | (u32::from(h(2)?) << 16);
             (w == 0x0010_0073).then_some("ebreak")
         }
     }
+}
+
+/// AArch64: `brk #imm16` (`0xD4200000 | imm16 << 5`; `encoder::brk`, the
+/// only trap the A64 selector emits). unicorn delivers it to the interrupt
+/// hook as exception 7 (QEMU's EXCP_BKPT) with the PC AT the instruction.
+/// Measured on unicorn 2.1.5: `udf` and `hlt` arrive as exception 1 and
+/// `svc` as exception 2, so neither the hook alone nor the bytes alone
+/// decide.
+fn a64_trap_insn(fault: Fault, word: u32) -> Option<&'static str> {
+    let Fault::Hook { intno: 7, .. } = fault else {
+        return None;
+    };
+    (word & 0xFFE0_001F == 0xD420_0000).then_some("brk")
 }
 
 /// Judge a fault: a trap only per [`trap_insn`] AND with the PC inside the
@@ -254,6 +322,23 @@ pub(crate) fn judge(machine: Machine, fault: Fault, bytes: &[u8], func: &Range<u
     }
 }
 
+/// Fill the whole stack mapping with POISON words. unicorn maps zeroed
+/// pages, and wasm zero-initialises locals: on a zeroed stack a lowering that
+/// DROPS the zero-store of a local's frame slot would agree with wasm.
+fn poison_stack(emu: &mut Unicorn<'_, ()>) -> Result<(), EmuError> {
+    let fill: Vec<u8> = POISON
+        .to_le_bytes()
+        .iter()
+        .copied()
+        .cycle()
+        .take(STACK_SIZE as usize)
+        .collect();
+    uc(
+        emu.mem_write(STACK_TOP - STACK_SIZE / 2, &fill),
+        "poison stack",
+    )
+}
+
 /// The registers a run checks preserved, by name.
 fn callee_saved(machine: Machine) -> Vec<(i32, String)> {
     match machine {
@@ -273,7 +358,193 @@ fn callee_saved(machine: Machine) -> Vec<(i32, String)> {
             s.extend((18..28).map(|n| (x(n), format!("s{}", n - 16))));
             s
         }
+        // AAPCS64: x19-x28, the frame pointer x29, and the low 64 bits of
+        // v8-v15 (read as d8-d15).
+        // unicorn numbers x0-x28 and d0-d31 contiguously; x29 is NOT
+        // `X0 + 29` (that id is another register), so it is named.
+        Machine::AArch64 => (19..29)
+            .map(|n| (RegisterARM64::X0 as i32 + n, format!("x{n}")))
+            .chain([(RegisterARM64::X29 as i32, "x29".to_string())])
+            .chain((8..16).map(|n| (RegisterARM64::D0 as i32 + n, format!("d{n}"))))
+            .collect(),
     }
+}
+
+/// The AAPCS64 argument registers for `args`: `(x0.., v0..)`. Integers and
+/// floats count independently. An i32 or f32 argument's upper 32 bits are
+/// POISON: the convention leaves them unspecified, so code that reads them
+/// is wrong and must show.
+fn aapcs64_regs(args: &[WasmValue]) -> Result<(Vec<u64>, Vec<u64>), EmuError> {
+    let hi = POISON64 & !0xFFFF_FFFF;
+    let (mut gp, mut fp) = (Vec::new(), Vec::new());
+    for a in args {
+        match *a {
+            WasmValue::I32(v) => gp.push(hi | u64::from(v)),
+            WasmValue::I64(v) => gp.push(v),
+            WasmValue::F32(v) => fp.push(hi | u64::from(v)),
+            WasmValue::F64(v) => fp.push(v),
+        }
+    }
+    if gp.len() > 8 || fp.len() > 8 {
+        return Err(EmuError::Abi(format!(
+            "AAPCS64: {} integer and {} float arguments do not fit x0-x7 / v0-v7 \
+             (stack arguments are not set up)",
+            gp.len(),
+            fp.len()
+        )));
+    }
+    Ok((gp, fp))
+}
+
+/// Run an A64 function under AAPCS64.
+///
+/// Integer arguments go in x0-x7 and float arguments in v0-v7 (written as
+/// d0-d7), see [`aapcs64_regs`]; every unused argument register holds
+/// POISON. x19-x29 and d8-d15 are seeded and checked preserved over all 64
+/// bits, SP is checked balanced, and x30 returns to the sentinel. The result
+/// is read from x0 (the low 32 bits for an i32) or d0 (the low 32 bits for
+/// an f32).
+fn run_a64(
+    obj: &CompiledObject,
+    sym: &crate::synth::FuncSym,
+    sig: &Signature,
+    args: &[WasmValue],
+    cfg: &EmuConfig,
+) -> Result<EmuRun, EmuError> {
+    let machine = Machine::AArch64;
+    let (gp, fp) = aapcs64_regs(args)?;
+    let mut emu = uc(Unicorn::new(Arch::ARM64, Mode::ARM), "Unicorn::new")?;
+    let requested = cfg.cpu.model_id();
+    uc(emu.ctl_set_cpu_model(requested), "ctl_set_cpu_model")?;
+    let readback = uc(emu.ctl_get_cpu_model(), "ctl_get_cpu_model")?;
+    if readback != requested {
+        return Err(EmuError::CpuModelMismatch {
+            requested,
+            readback,
+        });
+    }
+    let text_len = (obj.text.len() as u64 + 0xFFF) & !0xFFF;
+    uc(
+        emu.mem_map(TEXT_BASE, text_len.max(0x1000), Prot::ALL),
+        "map text",
+    )?;
+    uc(emu.mem_write(TEXT_BASE, &obj.text), "write text")?;
+    uc(
+        emu.mem_map(
+            STACK_TOP - STACK_SIZE / 2,
+            STACK_SIZE,
+            Prot::READ | Prot::WRITE,
+        ),
+        "map stack",
+    )?;
+    poison_stack(&mut emu)?;
+    uc(
+        emu.mem_map(RETURN_ADDR, 0x1000, Prot::ALL),
+        "map return page",
+    )?;
+    let hit: Rc<Cell<Option<(u64, u32)>>> = Rc::new(Cell::new(None));
+    let hit2 = Rc::clone(&hit);
+    uc(
+        emu.add_intr_hook(move |u, intno| {
+            let pc = u.pc_read().unwrap_or(u64::MAX);
+            hit2.set(Some((pc, intno)));
+            let _ = u.emu_stop();
+        }),
+        "add_intr_hook",
+    )?;
+    for i in 0..8usize {
+        uc(
+            emu.reg_write(
+                RegisterARM64::X0 as i32 + i as i32,
+                *gp.get(i).unwrap_or(&POISON64),
+            ),
+            "write x arg",
+        )?;
+        uc(
+            emu.reg_write(
+                RegisterARM64::D0 as i32 + i as i32,
+                *fp.get(i).unwrap_or(&POISON64),
+            ),
+            "write v arg",
+        )?;
+    }
+    // Every other caller-saved register a function may use as scratch: an
+    // uninitialised read of one must not look like wasm's zero.
+    for n in 8..19 {
+        uc(
+            emu.reg_write(RegisterARM64::X0 as i32 + n, POISON64),
+            "poison x8-x18",
+        )?;
+    }
+    for n in 16..32 {
+        uc(
+            emu.reg_write(RegisterARM64::D0 as i32 + n, POISON64),
+            "poison d16-d31",
+        )?;
+    }
+    let mut seeds = Vec::new();
+    for (k, (r, name)) in callee_saved(machine).into_iter().enumerate() {
+        let v = 0xC0DE_0000_C0DE_0000 | k as u64;
+        uc(emu.reg_write(r, v), "seed callee-saved")?;
+        seeds.push((r, name, v));
+    }
+    uc(emu.reg_write(RegisterARM64::SP, STACK_TOP), "write SP")?;
+    uc(emu.reg_write(RegisterARM64::X30, RETURN_ADDR), "write x30")?;
+    let entry = TEXT_BASE + sym.offset;
+
+    let r = emu.emu_start(entry, RETURN_ADDR, 0, cfg.budget);
+    let pc_now = uc(emu.reg_read(RegisterARM64::PC), "read PC")?;
+    let fault = match (hit.get(), r) {
+        (Some((reported_pc, intno)), _) => Some(Fault::Hook { reported_pc, intno }),
+        (None, Err(err)) => Some(Fault::Error { pc: pc_now, err }),
+        (None, Ok(())) => None,
+    };
+    let outcome = if let Some(fault) = fault {
+        let pc = fault_pc(machine, fault);
+        let mut bytes = vec![0u8; 4];
+        if emu.mem_read(pc, &mut bytes).is_err() {
+            bytes.clear();
+        }
+        judge(machine, fault, &bytes, &(entry..entry + sym.size))
+    } else if pc_now != RETURN_ADDR {
+        EmuOutcome::Budget
+    } else {
+        let mut viol = Vec::new();
+        for (r, name, v) in &seeds {
+            if uc(emu.reg_read(*r), "read callee-saved")? != *v {
+                viol.push(format!("{name} clobbered"));
+            }
+        }
+        if uc(emu.reg_read(RegisterARM64::SP), "read SP")? != STACK_TOP {
+            viol.push("SP imbalance".into());
+        }
+        if !viol.is_empty() {
+            EmuOutcome::Illegal {
+                pc: pc_now,
+                reason: format!("ABI violated: {}", viol.join(", ")),
+            }
+        } else {
+            let x0 = uc(emu.reg_read(RegisterARM64::X0), "read x0")?;
+            let d0 = uc(emu.reg_read(RegisterARM64::D0), "read d0")?;
+            EmuOutcome::Values(
+                sig.results
+                    .first()
+                    .map(|t| {
+                        vec![match t {
+                            ValType::I32 => WasmValue::I32(x0 as u32),
+                            ValType::I64 => WasmValue::I64(x0),
+                            ValType::F32 => WasmValue::F32(d0 as u32),
+                            ValType::F64 => WasmValue::F64(d0),
+                        }]
+                    })
+                    .unwrap_or_default(),
+            )
+        }
+    };
+    Ok(EmuRun {
+        outcome,
+        cpu_model_readback: readback,
+    })
 }
 
 /// Run `func` from `obj` with `args` under `cfg`.
@@ -305,12 +576,15 @@ pub fn run(
     if machine == Machine::Arm && !sym.thumb {
         return Err(EmuError::NotThumb(func.to_string()));
     }
-    if sig
-        .params
-        .iter()
-        .chain(&sig.results)
-        .any(|t| matches!(t, ValType::F32 | ValType::F64))
-    {
+    let is_float = |t: &ValType| matches!(t, ValType::F32 | ValType::F64);
+    let float_refused = match machine {
+        Machine::AArch64 => false,
+        // A VFP core reads a float result from s0/d0. Float PARAMETERS are
+        // not set up (AAPCS-VFP back-filling is not implemented).
+        Machine::Arm if cfg.cpu.vfp() => sig.params.iter().any(is_float),
+        _ => sig.params.iter().chain(&sig.results).any(is_float),
+    };
+    if float_refused {
         return Err(EmuError::FloatAbi {
             func: func.to_string(),
             machine,
@@ -330,6 +604,7 @@ pub fn run(
     let words = match machine {
         Machine::Arm => aapcs_words(&sig.params, args)?,
         Machine::RiscV32 => ilp32_words(args)?,
+        Machine::AArch64 => return run_a64(obj, &sym, sig, args, cfg),
     };
 
     let (arch, mode) = match machine {
@@ -339,6 +614,7 @@ pub fn run(
         // ARM_FEATURE_M themselves, so plain THUMB + the model is M-class.
         Machine::Arm => (Arch::ARM, Mode::THUMB),
         Machine::RiscV32 => (Arch::RISCV, Mode::RISCV32),
+        Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
     };
     let mut emu = uc(Unicorn::new(arch, mode), "Unicorn::new")?;
     // BEFORE any mapping: the CPU is materialized on first use, after which a
@@ -367,6 +643,7 @@ pub fn run(
         ),
         "map stack",
     )?;
+    poison_stack(&mut emu)?;
     uc(
         emu.mem_map(RETURN_ADDR, 0x1000, Prot::ALL),
         "map return page",
@@ -387,12 +664,32 @@ pub fn run(
     let arg_regs: Vec<i32> = match machine {
         Machine::Arm => (0..4).map(|i| RegisterARM::R0 as i32 + i).collect(),
         Machine::RiscV32 => (10..18).map(|n| RegisterRISCV::X0 as i32 + n).collect(),
+        Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
     };
     for (i, r) in arg_regs.iter().enumerate() {
         uc(
             emu.reg_write(*r, u64::from(*words.get(i).unwrap_or(&POISON))),
             "write arg",
         )?;
+    }
+    if cfg.cpu.vfp() {
+        // CPACR CP10/CP11 full access, then FPEXC.EN (off at reset on
+        // silicon). Every D register is POISON, so an uninitialised VFP home
+        // does not read as wasm's zero.
+        uc(
+            emu.reg_write(RegisterARM::C1_C0_2, 0x00F0_0000),
+            "enable CPACR",
+        )?;
+        uc(
+            emu.reg_write(RegisterARM::FPEXC, 0x4000_0000),
+            "enable FPEXC",
+        )?;
+        for n in 0..16 {
+            uc(
+                emu.reg_write(RegisterARM::D0 as i32 + n, POISON64),
+                "poison d0-d15",
+            )?;
+        }
     }
     let mut seeds = Vec::new();
     for (k, (r, name)) in callee_saved(machine).into_iter().enumerate() {
@@ -403,6 +700,7 @@ pub fn run(
     let (sp_reg, pc_reg) = match machine {
         Machine::Arm => (RegisterARM::SP as i32, RegisterARM::PC as i32),
         Machine::RiscV32 => (RegisterRISCV::SP as i32, RegisterRISCV::PC as i32),
+        Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
     };
     uc(emu.reg_write(sp_reg, STACK_TOP), "write SP")?;
     let entry = TEXT_BASE + sym.offset;
@@ -421,6 +719,7 @@ pub fn run(
             )?;
             entry
         }
+        Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
     };
 
     // timeout 0: no wall-clock thread (see the module doc).
@@ -466,6 +765,12 @@ pub fn run(
                 .take(sig.results.iter().map(|t| t.words()).sum())
             {
                 out_words.push(uc(emu.reg_read(*r), "read result")? as u32);
+            }
+            // A float result on a VFP core is in d0 (s0 is its low half);
+            // every other core was refused a float signature above.
+            if sig.results.first().is_some_and(is_float) {
+                let d0 = uc(emu.reg_read(RegisterARM::D0), "read d0")?;
+                out_words = vec![d0 as u32, (d0 >> 32) as u32];
             }
             EmuOutcome::Values(
                 sig.results

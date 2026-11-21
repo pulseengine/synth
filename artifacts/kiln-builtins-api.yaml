@@ -22,21 +22,31 @@ artifacts:
 
   - id: KB-001
     type: system-req
-    title: __meld_dispatch_import -- generic import dispatch bridge
+    title: Import call boundary -- direct AAPCS call to the import's field-name symbol
     description: >
-      Synth-compiled code shall call host imports via an extern "C" function
-      __meld_dispatch_import(import_index: u32, args: *const value_t,
-      args_len: u32, ret: *mut value_t) -> i32. This is the generic dispatch
-      entry point: synth emits a BL __meld_dispatch_import instruction for
-      each WASM import call, passing the import index and a pointer to the
-      canonical-ABI-lowered argument buffer in linear memory. The dispatcher
-      in kiln-builtins routes the call to the appropriate host function
-      based on the import index. The return value is 0 for success, non-zero
-      for trap. This function must use C ABI (AAPCS on ARM) so that synth
-      can generate the call using standard ARM calling convention (R0-R3
-      for first four arguments).
+      Synth-compiled code shall call each WASM function import DIRECTLY, as
+      an AAPCS call to an undefined symbol whose name is the import's bare
+      wasm field name, byte for byte (`poll-task`, `mpu-write`,
+      `[task-return]0`); the module name is not part of the symbol. The call
+      is `bl <field>` with an R_ARM_THM_CALL relocation (R_ARM_CALL on A32):
+      WASM arguments in R0-R3 and then on the stack, the result in R0 (R0:R1
+      for an i64). The callee may clobber R0-R3, R12 and the flags as AAPCS
+      allows and shall preserve R9, R10 and R11, which the embedder sets
+      before any export runs (R11 = linear-memory base, R10 = its size in
+      bytes, R9 = globals-table base). kiln-builtins (or any embedder) provides
+      one extern "C" function per imported field under that name; its P3
+      built-ins (`__p3_task_return` etc.) therefore need an alias per field,
+      e.g. `#[export_name = "[task-return]0"]`. A module that calls a
+      function import is compiled to this host-linked object with or without
+      `--relocatable`. There is NO generic dispatcher: the
+      `__meld_dispatch_import(import_index, ...)` entry this requirement used
+      to specify was never implemented by a provider, and synth's lowering for
+      it passed the import index in R0 and none of the WASM arguments (#1699);
+      it was removed and no synth output references that symbol. Duplicate
+      field names across modules, and a field name equal to a symbol the object
+      defines, are refused at compile time (RQ-91-NAMECOLL, #1698).
     status: draft
-    tags: [kiln-builtins, import-dispatch, c-abi, aapcs]
+    tags: [kiln-builtins, import-call, c-abi, aapcs]
     links:
       - type: derives-from
         target: BR-002
@@ -57,13 +67,17 @@ artifacts:
     fields:
       req-type: interface
       priority: must
-      symbol: __meld_dispatch_import
-      signature: "extern \"C\" fn(import_index: u32, args: *const value_t, args_len: u32, ret: *mut value_t) -> i32"
+      symbol: "<the import's bare wasm field name>"
+      signature: "extern \"C\" fn(<the import's wasm parameters>) -> <its wasm result>"
       calling-convention: AAPCS
       verification-criteria: >
-        Synth emits BL __meld_dispatch_import with R0=import_index,
-        R1=args_ptr, R2=args_len, R3=ret_ptr; kiln-builtins resolves
-        the symbol and dispatches to correct host function.
+        crates/synth-oracle/tests/import_boundary_oracle.rs: default-flags and
+        --relocatable objects for cortex-m4, cortex-m3 and cortex-m7dp are
+        linked against host stubs that clobber every caller-saved register and
+        executed against the kiln interpreter; every return value AND every
+        host call (field, arguments, result) must agree. The undefined call
+        targets of each object are asserted to be exactly the bare import
+        field names, and no object contains __meld_dispatch_import.
 
   - id: KB-002
     type: system-req
@@ -232,18 +246,25 @@ artifacts:
 
   - id: KB-TR-001
     type: sw-req
-    title: Import call stub generation for __meld_dispatch_import
+    title: Import call generation -- direct AAPCS call, host-linked compiles only
     description: >
-      synth-synthesis shall generate ARM Thumb-2 call stubs for each WASM
-      import that: (1) lower canonical ABI arguments into a stack-allocated
-      value_t array, (2) set R0 = import_index, R1 = args pointer,
-      R2 = args_len, R3 = ret pointer, (3) emit BL __meld_dispatch_import,
-      (4) check R0 for trap (non-zero = trap), (5) lift the return value
-      from ret buffer. The stub shall be emitted inline at each call site
-      for single-use imports and as a shared trampoline for imports called
-      more than once in the same function.
+      synth-synthesis shall lower a call to a WASM function import as a direct
+      AAPCS call: (1) pop the import's arguments and move them into R0-R3 (and
+      the outgoing stack region past four words) with a cycle-safe parallel
+      move, (2) spill every live value held in a caller-saved register and
+      reload it after the call, (3) emit `BL func_N`, which the relocatable
+      ELF builder rewrites to the import's bare field name, (4) push a result
+      only when the import returns one. This lowering exists ONLY on a
+      host-linked compile (`CompileConfig::relocatable`); the CLI sets that
+      for every module that calls a function import. On any other compile an import
+      call is a loud decline, on both selectors and on the optimized path
+      (which declines every function containing a call, because it has no
+      call model). The generic-dispatch stub this requirement used to specify
+      (value_t argument buffer, R0 = import index, BL
+      __meld_dispatch_import, trap check) is NOT built and its partial
+      lowering was removed (#1699).
     status: proposed
-    tags: [kiln-builtins, codegen, import-stub, synth-synthesis]
+    tags: [kiln-builtins, codegen, import-call, synth-synthesis]
     links:
       - type: derives-from
         target: KB-001
@@ -256,9 +277,11 @@ artifacts:
       priority: must
       crate: synth-synthesis
       verification-criteria: >
-        Generated ARM code for a WASM import call contains BL to
-        __meld_dispatch_import with correct R0-R3 setup; Z3 validates
-        argument lowering correctness; trap check branch present after BL.
+        crates/synth-oracle/tests/import_boundary_oracle.rs (executed, against
+        kiln); crates/synth-backend/tests/meld_abi_test.rs and the
+        instruction_selector unit test `test_control_flow_call_import` pin the
+        shape: one `BL func_N` per import call on a relocatable compile, an
+        error naming #1699 otherwise.
 
   - id: KB-TR-002
     type: sw-req
@@ -336,7 +359,9 @@ artifacts:
       compute argument buffer sizes and offsets for the generic dispatch
       path (__meld_dispatch_import). The type definition shall be shared
       between synth (for codegen) and kiln-builtins (for runtime) via a
-      common header or WIT definition.
+      common header or WIT definition. NOTE: synth has no generic dispatch
+      path (KB-001: imports are direct AAPCS calls, the dispatch lowering was
+      removed, #1699), so nothing consumes this type today.
     status: proposed
     tags: [kiln-builtins, value-type, c-abi, rfc46]
     links:

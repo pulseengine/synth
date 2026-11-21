@@ -571,14 +571,12 @@ enum CallClass {
     /// A DIRECT `BL func_<idx>` to a callee that may be a local/bounded function —
     /// resolved against the module by the composer. Carries the target label.
     Direct(String),
-    /// An INDIRECT call (`Blx <reg>`, `call_indirect`, or a function-pointer
-    /// dispatch label such as `__meld_dispatch_import`): callee not statically
+    /// An INDIRECT call (`Blx <reg>` or `call_indirect`): callee not statically
     /// known → the function DECLINES [`WcetDecline::IndirectCall`].
     Indirect,
     /// A DIRECT `BL <label>` to a runtime helper / external symbol that has NO
-    /// per-function body in this module (`__aeabi_*`, a bridge, an import trampoline
-    /// other than the dispatch above): cannot compose a bound → the function
-    /// DECLINES [`WcetDecline::Call`].
+    /// per-function body in this module (`__aeabi_*`, a bridge): cannot compose a
+    /// bound → the function DECLINES [`WcetDecline::Call`].
     External,
 }
 
@@ -587,14 +585,13 @@ enum CallClass {
 /// A `BL func_<idx>` is the selector's shape for a direct local call (or a direct
 /// relocatable-import call, whose `func_N` symbol the ELF builder retargets to the
 /// import name — that import has no body here, so the composer resolves it to
-/// External and declines). `__meld_dispatch_import` is a runtime function-pointer
-/// dispatch (indirect). `Blx`/`CallIndirect` are indirect by construction.
+/// External and declines). `Blx`/`CallIndirect` are indirect by construction. (The
+/// `__meld_dispatch_import` label this used to class as indirect is no longer
+/// emitted by any selector, #1699.)
 fn classify_call(op: &ArmOp) -> Option<CallClass> {
     match op {
         ArmOp::Bl { label } => {
-            if label == "__meld_dispatch_import" {
-                Some(CallClass::Indirect)
-            } else if is_local_func_label(label) {
+            if is_local_func_label(label) {
                 Some(CallClass::Direct(label.clone()))
             } else {
                 Some(CallClass::External)
