@@ -44,6 +44,14 @@ artifacts:
         The numbers name where it was analysed, not an open scope. All
         are closed, so `issue-scope: closes` authorises nothing; the
         record answers the residual it names, not the issues.
+
+        RE-MEASURED AT RELEASE PREP, 2026-11-21T13:05Z, on main 0f0d082f:
+        NOT DELIVERED, carried. The refuting grep still finds 12 builder
+        definitions in crates/synth-cli/src/main.rs and 10 distinct names, the
+        same 10 as at planning: the builder count did not go down. Both
+        dependent refuters are still LIVE on a 0.91.0 debug build of this tree
+        (see RQ-91-R5DATAINIT and RQ-91-M3SELFBL). No pull request in
+        v0.90.0..0f0d082f unifies the builders.
     tags:
       - feature-loop
       - refactor
@@ -58,6 +66,7 @@ artifacts:
       issue: "#1645"
       verification-track: manual
       issue-scope: closes
+      disposition: deferred
       done-when: >
         manual:2027-03-31 the self-contained and relocatable images
         are produced by one builder with per-ISA hooks; the distinct

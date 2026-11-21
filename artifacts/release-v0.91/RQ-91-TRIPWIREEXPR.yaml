@@ -33,6 +33,15 @@ artifacts:
         names where it was analysed, not an open scope. It is closed,
         so `issue-scope: closes` authorises nothing; the record
         answers the residual it names, not the issue.
+
+        RE-MEASURED AT RELEASE PREP, 2026-11-21T13:05Z, on main 0f0d082f:
+        NOT DELIVERED, carried; still LIVE. pool_of() is unchanged; over
+        load_workflows(), 5 of the 10 REQUIRED_CONTEXTS resolve to an
+        unresolved `${{ ... }}` expression (Format, Clippy, Claim Check,
+        Version Pin Sweep, Rivet Validation) and 5 to ubuntu-24.04 (the
+        GitHub-hosted label moved from ubuntu-latest in PR #1753). The Claim
+        Check log of ci.yml run 44885852550 on 53dee34d prints `10 required
+        contexts (pinned), 5 on ubuntu-24.04, 5 elsewhere`.
     tags:
       - feature-loop
       - process
@@ -47,6 +56,7 @@ artifacts:
       issue: "#1636"
       verification-track: manual
       issue-scope: closes
+      disposition: deferred
       done-when: >
         manual:2027-03-31 pool_of() resolves the non-fork branch of an
         expression runs-on to its label set, the self-hosted checks

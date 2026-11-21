@@ -32,6 +32,14 @@ artifacts:
         new refusal the review could not rule off the ladder, was
         analysed. It is closed. The number names where it was
         analysed, not an open scope.
+
+        RE-MEASURED AT RELEASE PREP, 2026-11-21T13:05Z, on main 0f0d082f:
+        NOT PERFORMED, carried. `ls /Volumes/Work/corpora/wasm-243` gives No
+        such file or directory; /Volumes/ lists only
+        com.apple.TimeMachine.localsnapshots, Data, Macintosh HD and Recovery.
+        The ladder was not re-run in v0.91, so the modules v0.90 and v0.91
+        newly refuse stay UNMEASURED and unclaimed; the v0.91.0 CHANGELOG says
+        so. Awaited: the corpus volume mounted.
     tags:
       - feature-loop
       - process
@@ -46,6 +54,7 @@ artifacts:
       issue: "#1643"
       verification-track: manual
       issue-scope: closes
+      disposition: deferred
       done-when: >
         manual:2027-03-31 the ladder is re-run over its named corpus
         at a stated commit, the modules v0.90 and v0.91 newly refuse

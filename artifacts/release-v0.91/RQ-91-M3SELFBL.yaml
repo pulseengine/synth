@@ -32,6 +32,12 @@ artifacts:
         #1662 is where this defect was found. The numbers name where
         it was analysed, not an open scope. #1645 is closed, so
         `issue-scope: closes` authorises nothing.
+
+        RE-MEASURED AT RELEASE PREP, 2026-11-21T13:05Z, on main 0f0d082f:
+        NOT DELIVERED, carried; still LIVE. synth 0.91.0 debug build of this
+        tree: the refuting compile exits 0 with no warning, and
+        `arm-none-eabi-objdump -d` shows one `bl`, `b2: f7ff fffe bl b2
+        <caller+0x12>`, a branch-and-link to itself, as at planning.
     tags:
       - feature-loop
       - bug
@@ -46,6 +52,7 @@ artifacts:
       issue: "#1645"
       verification-track: manual
       issue-scope: closes
+      disposition: deferred
       done-when: >
         manual:2027-03-31 a self-contained cortex-m --func-name image
         of a function that calls another either includes and links the
