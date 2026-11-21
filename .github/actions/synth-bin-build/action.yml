@@ -1,0 +1,88 @@
+# Builds the `synth` binary ONCE per CI run and publishes it, fingerprinted, as
+# the `synth-bin` artifact. Consumers take it with ./.github/actions/synth-bin.
+#
+# WHY. Measured over 2026-11-19T17:00Z..2026-11-20T08:00Z: 39% of rust-cpu
+# minutes (581 of 1497) were the "Cache Cargo dependencies" step — about 55
+# jobs per run each restoring the same ~1.1 GB target/ to run the same
+# `cargo build -p synth-cli`, then driving python oracles against the result.
+#
+# WHAT IS BUILT is exactly what those jobs built: `cargo build -p synth-cli`,
+# the dev profile, default features (`riscv` is in synth-cli's default set, so
+# the two jobs that spelled `--features riscv` built the same binary). No
+# profile override, no env change: this job's cache has its own key
+# (`<os>-synthbin-`, not a prefix-match for the shared `<os>-cargo-` restore
+# key) so it is never the one a slimmed job (./.github/actions/cargo-cache)
+# saved. Like the slim caches it is SAVED ONLY ON A PUSH TO MAIN and restored
+# everywhere else: a cache saved from a PR ref is scoped to that ref, and the
+# repository's cache was already over its 10 GB budget.
+#
+# THE FINGERPRINT is what makes a shared binary safe to trust: the commit, the
+# Cargo.lock digest, the profile and features, the toolchain, and the binary's
+# own sha256. A consumer verifies every field and FAILS on any mismatch — it
+# never rebuilds, because a silent rebuild is how a job ends up testing a
+# binary nobody named.
+name: Build the shared synth binary
+description: cargo build -p synth-cli (dev, default features), fingerprint it, upload it as `synth-bin`
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+    # Restore everywhere; SAVE only on a push to main (see the header).
+    - name: Cache Cargo dependencies (this job's own key) — restore and save (push to main)
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target/
+        key: ${{ runner.os }}-synthbin-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-synthbin-
+    - name: Cache Cargo dependencies (this job's own key) — restore only
+      if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target/
+        key: ${{ runner.os }}-synthbin-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-synthbin-
+    - name: Build synth
+      shell: bash
+      run: cargo build -p synth-cli
+    - name: Fingerprint
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || {
+          echo "::error::checked-out HEAD $(git rev-parse HEAD) is not GITHUB_SHA $GITHUB_SHA; refusing to fingerprint a tree the run does not name"
+          exit 1
+        }
+        out="$RUNNER_TEMP/synth-bin"
+        rm -rf "$out" && mkdir -p "$out"
+        cp target/debug/synth "$out/synth"
+        "$out/synth" --version
+        {
+          echo "commit=$GITHUB_SHA"
+          echo "cargo_lock_sha256=$(sha256sum Cargo.lock | cut -d' ' -f1)"
+          echo "profile=dev"
+          echo "features=default"
+          echo "command=cargo build -p synth-cli"
+          echo "rustc=$(rustc -V)"
+          echo "host=$(rustc -vV | sed -n 's/^host: //p')"
+          echo "synth_sha256=$(sha256sum "$out/synth" | cut -d' ' -f1)"
+        } > "$out/FINGERPRINT"
+        cat "$out/FINGERPRINT"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      with:
+        name: synth-bin
+        path: ${{ runner.temp }}/synth-bin/
+        # 7 days, so a single failed consumer can still be re-run after a
+        # weekend; `overwrite` because a re-run of THIS job in the same run
+        # uploads the same name again (same commit, and consumers re-verify).
+        retention-days: 7
+        overwrite: true
+        if-no-files-found: error

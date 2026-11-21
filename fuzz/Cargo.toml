@@ -34,7 +34,7 @@ path = "src/lib.rs"
 # Each [[bin]] below is a libfuzzer entry point. To add a new harness:
 #   1. Drop a new file under fuzz_targets/<name>.rs.
 #   2. Add a matching [[bin]] entry here.
-#   3. Add the target name to .github/workflows/fuzz-smoke.yml `matrix.target`.
+#   3. Add the target name to .github/workflows/fuzz-smoke.yml `TARGETS`.
 # ---------------------------------------------------------------------------
 
 [[bin]]

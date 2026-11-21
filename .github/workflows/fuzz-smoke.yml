@@ -5,7 +5,8 @@
 # corpus persistence) are out of scope for #82; this is the smoke gate.
 #
 # Target list mirrors fuzz/Cargo.toml `[[bin]]` entries. Add a new
-# fuzz_target there → add the binary name to `matrix.target` here.
+# fuzz_target there → add the binary name to `TARGETS` in the run step's env
+# (the step fails if the two lists differ), and to `GATING` if it must block.
 #
 # Refs: issue #82, issue #93 (silent-drop class).
 
@@ -38,44 +39,39 @@ concurrency:
 
 jobs:
   fuzz:
-    name: "${{ matrix.target }} (60s)"
+    # ONE job, four targets in sequence. This was a 4-way matrix: each leg
+    # installed nightly, restored fuzz/target and installed cargo-fuzz to run
+    # one 60 s target (119 rust-cpu minutes over 12 runs, 2026-11-19/20). The
+    # targets share one fuzz crate, so one job pays that setup and the
+    # dependency build once.
+    #
+    # What is kept: all four targets, 60 s of fuzzing each
+    # (`-max_total_time=60`), the seeded corpus, the crash upload, each
+    # target's former 10-minute ceiling (`timeout 600` around its build and
+    # run), and the GATING SPLIT the matrix expressed with `continue-on-error`:
+    #   - GATING targets pass clean today; a failure fails this job.
+    #   - EXPLORATION targets keep finding real bugs faster than they are
+    #     closed; a failure is a `::warning::`, a line in the step summary and
+    #     an uploaded crash, and does NOT fail the job. Promote one to GATING
+    #     once its bug list stabilises.
+    # Every target runs whatever the others did: nothing exits the loop early.
+    # The log and the step summary name each target with `pass`, `FAIL` or
+    # `exploration-FAIL`, so a red job says which target broke.
+    #
+    # Check name: the matrix reported `<target> (60s)` per leg; this job
+    # reports one check. Going back to four legs is a small change: add
+    # `strategy.matrix.target`, name the job "${{ matrix.target }} (60s)",
+    # and set the step's TARGETS to `${{ matrix.target }}` (the step already
+    # takes its lists from env and loops over whatever it is given; drop the
+    # `cargo fuzz list` equality, which is about the whole set).
+    name: "Fuzz smoke — 4 targets (60s each)"
     # Match ci.yml: rust-cpu self-hosted pool, with ubuntu-24.04 fallback if
     # the pool is unavailable (cargo-fuzz needs Linux for libfuzzer-sys ASan).
     # Routes fork PRs to GitHub-hosted runners by default. This is NOT a security
     # boundary: a fork PR can edit this file. Isolation is enforced by the org's
     # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        # Each entry: `target` + `gating`. Gating harnesses pass clean today
-        # and block PR merge on regression. Exploration harnesses keep finding
-        # new bugs at a rate faster than we close them in one cycle; they
-        # report (crash artifacts uploaded) but don't block — `continue-on-
-        # error` is taken from the `gating` flag. Promote an exploration
-        # harness to gating once its bug-list stabilises.
-        include:
-          # `wasm_ops_lower_or_error` is gating again. It was demoted in
-          # PR #117 because wasm_to_ir's inst_id-as-vreg-slot model crashed
-          # on Drop / LocalSet / Store / Block shapes; the slot_stack
-          # refactor (issue #121) closed those. The last panic site in the
-          # optimized path was `ir_to_arm`'s defensive `get_arm_reg`, which
-          # now returns `Result` instead of `panic!`-ing — the whole
-          # `optimize_full` + `ir_to_arm` path is panic-free, so this
-          # harness (contract: "lower or Err, never panic") gates again.
-          - target: wasm_ops_lower_or_error
-            gating: true
-          - target: wasm_to_ir_roundtrip_op_coverage
-            gating: true
-          - target: i64_lowering_doesnt_clobber_params
-            gating: false  # finds real bugs faster than we fix them; tracked as follow-up issues
-          - target: encoder_no_panic
-            gating: false  # encoder-level corner cases; not silicon-blocking
-    # When gating == false, treat job failure as a non-blocking warning. The
-    # matrix value is plain JSON (bool), not untrusted user input, so this is
-    # safe to interpolate.
-    continue-on-error: ${{ matrix.gating == false }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -96,9 +92,23 @@ jobs:
         with:
           tool: cargo-fuzz
 
-      - name: Run fuzz target for 60s
+      - name: Run each fuzz target for 60s
+        id: fz
         env:
-          TARGET: ${{ matrix.target }}
+          # Every target this job runs. Must equal fuzz/Cargo.toml's `[[bin]]`
+          # set (checked below).
+          TARGETS: wasm_ops_lower_or_error wasm_to_ir_roundtrip_op_coverage i64_lowering_doesnt_clobber_params encoder_no_panic
+          # The subset whose failure fails the job. `wasm_ops_lower_or_error`
+          # is gating again: it was demoted in PR #117 because wasm_to_ir's
+          # inst_id-as-vreg-slot model crashed on Drop / LocalSet / Store /
+          # Block shapes; the slot_stack refactor (issue #121) closed those,
+          # and `ir_to_arm`'s `get_arm_reg` now returns `Result` instead of
+          # panicking, so its contract ("lower or Err, never panic") holds.
+          # The other two targets are exploration:
+          # `i64_lowering_doesnt_clobber_params` finds real bugs faster than
+          # we fix them (tracked as follow-up issues); `encoder_no_panic` is
+          # encoder-level corner cases, not silicon-blocking.
+          GATING: wasm_ops_lower_or_error wasm_to_ir_roundtrip_op_coverage
         # Force the GNU target — cargo-fuzz defaults to musl on Linux,
         # whose statically-linked libc is incompatible with ASan
         # (libfuzzer-sys turns ASan on by default). The GNU target has
@@ -111,21 +121,80 @@ jobs:
         # panic might be missed if libfuzzer doesn't rediscover the exact
         # input within 60s.
         run: |
-          mkdir -p fuzz/artifacts fuzz/corpus "fuzz/corpus/${TARGET}"
-          if [ -d "fuzz/seed_corpus/${TARGET}" ]; then
-            cp -n fuzz/seed_corpus/"${TARGET}"/* "fuzz/corpus/${TARGET}/" || true
+          set -uo pipefail
+          read -ra T <<< "$TARGETS"
+          read -ra G <<< "$GATING"
+          # The list must be exactly fuzz/Cargo.toml's `[[bin]]` set: a target
+          # added there and not here would never be fuzzed.
+          have="$(cargo +nightly fuzz list | sort | xargs)"
+          want="$(printf '%s\n' "${T[@]}" | sort | xargs)"
+          if [ -z "$have" ] || [ "$have" != "$want" ]; then
+            echo "::error::fuzz targets in fuzz/Cargo.toml ($have) are not the ones this job runs ($want)"
+            exit 1
           fi
-          cargo +nightly fuzz run "${TARGET}" \
-            --target x86_64-unknown-linux-gnu \
-            -- -max_total_time=60 -print_final_stats=1
+          # Every GATING name must be a target, or a typo would silently make
+          # a gating target exploration.
+          for g in ${G[@]+"${G[@]}"}; do
+            case " ${T[*]} " in
+              *" $g "*) ;;
+              *) echo "::error::GATING names '$g', which is not in TARGETS"; exit 1 ;;
+            esac
+          done
+          mkdir -p fuzz/artifacts fuzz/corpus
+          n=0
+          failed_gating=""
+          failed_explore=""
+          for tgt in "${T[@]}"; do
+            n=$((n + 1))
+            kind=exploration
+            case " ${G[*]-} " in *" $tgt "*) kind=gating ;; esac
+            echo "::group::${tgt} (60s, ${kind})"
+            mkdir -p "fuzz/corpus/${tgt}"
+            if [ -d "fuzz/seed_corpus/${tgt}" ]; then
+              if ! cp -n fuzz/seed_corpus/"${tgt}"/* "fuzz/corpus/${tgt}/"; then
+                echo "note: seeding ${tgt} copied nothing new (cp -n returned non-zero)"
+              fi
+            fi
+            rc=0
+            timeout 600 cargo +nightly fuzz run "${tgt}" \
+              --target x86_64-unknown-linux-gnu \
+              -- -max_total_time=60 -print_final_stats=1 || rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -eq 0 ]; then
+              echo "FUZZ ${tgt} (${kind}): pass" | tee -a "$GITHUB_STEP_SUMMARY"
+            elif [ "$kind" = gating ]; then
+              echo "::error::gating fuzz target ${tgt} failed (exit ${rc}; 124 is the 10-minute ceiling)"
+              echo "FUZZ ${tgt} (${kind}): FAIL (exit ${rc})" | tee -a "$GITHUB_STEP_SUMMARY"
+              failed_gating="${failed_gating} ${tgt}"
+            else
+              echo "::warning::exploration fuzz target ${tgt} failed (exit ${rc}; 124 is the 10-minute ceiling) — recorded, not fatal"
+              echo "FUZZ ${tgt} (${kind}): exploration-FAIL (exit ${rc})" | tee -a "$GITHUB_STEP_SUMMARY"
+              failed_explore="${failed_explore} ${tgt}"
+            fi
+          done
+          # Every listed target must have run: a loop that ran none would be
+          # green about nothing.
+          if [ "$n" -eq 0 ] || [ "$n" -ne "${#T[@]}" ]; then
+            echo "::error::ran ${n} fuzz targets, expected ${#T[@]}"
+            exit 1
+          fi
+          if [ -n "${failed_gating}${failed_explore}" ]; then
+            echo "any_failed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "FUZZ-SMOKE targets=${n} gating-failed=[${failed_gating# }] exploration-failed=[${failed_explore# }]" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -n "$failed_gating" ]; then
+            exit 1
+          fi
 
       - name: Upload crash artifacts
-        if: failure()
+        # Keyed on the step's own output, not `failure()`: an exploration
+        # failure leaves the job green and must still upload its crash.
+        if: always() && steps.fz.outputs.any_failed == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: fuzz-crash-${{ matrix.target }}
+          name: fuzz-crash
           path: |
-            fuzz/artifacts/${{ matrix.target }}/
-            fuzz/corpus/${{ matrix.target }}/
+            fuzz/artifacts/
+            fuzz/corpus/
           retention-days: 30
           if-no-files-found: ignore

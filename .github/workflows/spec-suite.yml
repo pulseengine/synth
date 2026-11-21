@@ -34,6 +34,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  PYTHONUNBUFFERED: "1"
+  CARGO_TERM_PROGRESS_WHEN: never
   # #910: the per-job measured-evidence ledger the oracle driver appends to.
   ORACLE_EVIDENCE_JSONL: oracle-evidence.jsonl
 
