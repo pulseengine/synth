@@ -154,3 +154,6 @@ jobs:
           # line satisfies `grep -q`. Pin how many result lines carry each count.
           test "$(grep -cE '^test result: ok\. 13 passed; 0 failed' "$log")" = 2
           test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 3
+          # No kiln state crosses reference runs (memory and globals).
+          grep -qx 'test memory_does_not_cross_calls ... ok' "$log"
+          grep -qx 'test globals_do_not_cross_calls ... ok' "$log"

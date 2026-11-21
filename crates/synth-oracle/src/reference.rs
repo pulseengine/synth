@@ -226,18 +226,50 @@ thread_local! {
     /// The kiln worker's cache of CONVERTED modules, keyed by their bytes.
     /// `Module::from_kiln_module` is the expensive step (measured ~12 ms per
     /// call in a Linux VM, against microseconds for decode, instantiation and
-    /// execution), and a `Module` is immutable: every call still gets a fresh
-    /// engine and a fresh `ModuleInstance`, so no state crosses calls.
+    /// execution). A converted `Module` is NOT stateless: kiln instances share
+    /// the module's memory (and possibly its globals and tables), so a store
+    /// in one call was visible to a load in the next call on the same bytes.
+    /// Only modules that define no memory, global or table are cached, so no
+    /// state crosses calls (`tests/kiln_no_shared_state.rs`).
     static MODULES: std::cell::RefCell<std::collections::HashMap<Vec<u8>, Arc<Module>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+/// True when the module can carry state between instances: it defines (or
+/// imports) a memory, a global or a table. Such a module is never cached.
+fn has_instance_state(wasm: &[u8]) -> bool {
+    use wasmparser::{Parser, Payload, TypeRef};
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload {
+            Ok(Payload::MemorySection(s)) if s.count() > 0 => return true,
+            Ok(Payload::GlobalSection(s)) if s.count() > 0 => return true,
+            Ok(Payload::TableSection(s)) if s.count() > 0 => return true,
+            Ok(Payload::ImportSection(s)) => {
+                for imp in s.into_imports() {
+                    match imp {
+                        Ok(imp) if matches!(imp.ty, TypeRef::Func(_)) => {}
+                        _ => return true,
+                    }
+                }
+            }
+            // An unparsable module is treated as stateful: never cached.
+            Err(_) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn converted_module(wasm: &[u8]) -> kiln_error::Result<Arc<Module>> {
-    if let Some(m) = MODULES.with(|c| c.borrow().get(wasm).cloned()) {
+    let cacheable = !has_instance_state(wasm);
+    if cacheable && let Some(m) = MODULES.with(|c| c.borrow().get(wasm).cloned()) {
         return Ok(m);
     }
     let km = decode_module(wasm)?;
     let m = Arc::new(*Module::from_kiln_module(&km)?);
+    if !cacheable {
+        return Ok(m);
+    }
     MODULES.with(|c| {
         let mut c = c.borrow_mut();
         if c.len() >= 64 {
