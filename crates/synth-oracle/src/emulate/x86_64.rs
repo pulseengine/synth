@@ -30,13 +30,23 @@
 //! - the CALLER'S frame (every byte at and above the entry `rsp + 8`)
 //!   unwritten.
 //!
-//! WHAT IS CHECKED ON EVERY STORE (RQ-91-X86FRAME; REVIEW of X2, F6): no
-//! write lands BELOW THE RED ZONE, that is, more than 128 bytes under `rsp` as
-//! it is at that store. A function with a frame legitimately writes far below
-//! its ENTRY `rsp`, so this cannot be judged from memory after the return; a
-//! write hook compares each store's address with the live `rsp`. A store
-//! there is memory a signal handler may overwrite at any instruction. (`push`
-//! stores at `rsp - 8` before it moves `rsp`: inside the red zone, allowed.)
+//! WHAT IS CHECKED ON EVERY STORE (RQ-91-X86FRAME; cold reviews of X2, F6,
+//! and of X3/X4, N1 and N2), by a write hook that reads the LIVE `rsp` — a
+//! function with a frame legitimately writes far below its ENTRY `rsp`, so
+//! none of this can be judged from memory after the return:
+//! - NO STORE BELOW `rsp - 8`. This is synth's own rule, STRICTER than the
+//!   ABI: SysV lets a leaf function use the 128 bytes under `rsp` (the red
+//!   zone), but the x86-64 selector reserves every slot it writes and says
+//!   it never stores below `rsp`. A spill slot left out of the frame size
+//!   would sit in the red zone, where the first `call` of a later lane
+//!   overwrites it. The 8 bytes are `push`'s: it stores at `rsp - 8` and
+//!   then moves `rsp`;
+//! - A STORE INTO THE FUNCTION'S OWN FRAME FINDS `rsp` 16-BYTE ALIGNED. The
+//!   frame is everything from the live `rsp` up to the return address; the
+//!   ABI wants `rsp` aligned there before any `call`. (A `push` stores below
+//!   `rsp`, so the entry `pushq %rbp`, made at `rsp % 16 == 8`, is exempt.)
+//!
+//! Each violation is reported with the address of the STORE INSTRUCTION.
 //!
 //! A TRAP is `ud2` (`0F 0B`) at RIP, inside the function, stopped as
 //! UC_ERR_INSN_INVALID (see `trap_insn` in the parent module). Any other
@@ -65,9 +75,19 @@ const POISON64: u64 = 0xFEED_FACE_DEAD_BEEF;
 const POISON_FLAGS: u64 = 0x8D7;
 const DF: u64 = 1 << 10;
 
-/// The SysV AMD64 red zone: the bytes below `rsp` a leaf function may use
-/// without moving `rsp`.
-const RED_ZONE: u64 = 128;
+/// How far below the live `rsp` a store may land: the 8 bytes a `push`
+/// writes before it moves `rsp`. NOT the ABI's 128-byte red zone — the
+/// selector's rule is that it stores nothing below `rsp` (module doc).
+const PUSH_SLOT: u64 = 8;
+
+/// One store the write hook refused.
+#[derive(Clone, Copy)]
+struct BadStore {
+    /// RIP of the storing instruction.
+    pc: u64,
+    addr: u64,
+    rsp: u64,
+}
 
 /// The SysV AMD64 integer argument registers, in order.
 const SYSV_ARGS: [RegisterX86; 6] = [
@@ -185,19 +205,31 @@ pub(super) fn run(
         "add_intr_hook",
     )?;
 
-    // Every store to the stack mapping: below the red zone of the LIVE rsp?
-    // The first such store is kept: (address, rsp at that store).
-    let below: Rc<Cell<Option<(u64, u64)>>> = Rc::new(Cell::new(None));
-    let below2 = Rc::clone(&below);
+    // Every store to the stack mapping, judged against the LIVE rsp (module
+    // doc). The first store of each kind is kept.
+    let below: Rc<Cell<Option<BadStore>>> = Rc::new(Cell::new(None));
+    let misaligned: Rc<Cell<Option<BadStore>>> = Rc::new(Cell::new(None));
+    let (below2, misaligned2) = (Rc::clone(&below), Rc::clone(&misaligned));
+    // The return address sits at STACK_TOP - 8; the function's own frame is
+    // every byte below it.
+    let return_slot = STACK_TOP - 8;
     uc(
         emu.add_mem_hook(
             HookType::MEM_WRITE,
             stack_base,
             stack_base + STACK_SIZE - 1,
             move |u, _kind, addr, _size, _value| {
+                // A failed read gives rsp = 0 and pc = MAX: the store is then
+                // reported as misaligned-or-below, never passed over.
                 let rsp = u.reg_read(RegisterX86::RSP as i32).unwrap_or(0);
-                if addr < rsp.wrapping_sub(RED_ZONE) && below2.get().is_none() {
-                    below2.set(Some((addr, rsp)));
+                let pc = u.reg_read(RegisterX86::RIP as i32).unwrap_or(u64::MAX);
+                let store = BadStore { pc, addr, rsp };
+                if addr < rsp.wrapping_sub(PUSH_SLOT) && below2.get().is_none() {
+                    below2.set(Some(store));
+                }
+                if addr >= rsp && addr < return_slot && rsp % 16 != 0 && misaligned2.get().is_none()
+                {
+                    misaligned2.set(Some(store));
                 }
                 true
             },
@@ -297,17 +329,28 @@ pub(super) fn run(
             )
         }
     };
-    // A store below the red zone is an ABI violation whatever happened
-    // afterwards — a value, a trap or a fault.
-    let outcome = match below.get() {
-        Some((addr, rsp)) => EmuOutcome::Illegal {
-            pc: pc_now,
+    // A refused store is a violation whatever happened afterwards — a
+    // value, a trap or a fault. The PC reported is the STORE's.
+    let outcome = if let Some(s) = below.get() {
+        EmuOutcome::Illegal {
+            pc: s.pc,
             reason: format!(
-                "ABI violated: store below the red zone (to 0x{addr:x} with rsp = 0x{rsp:x}, {} bytes under it)",
-                rsp.wrapping_sub(addr)
+                "frame rule violated: store below rsp (to 0x{:x} with rsp = 0x{:x}, {} bytes under it)",
+                s.addr,
+                s.rsp,
+                s.rsp.wrapping_sub(s.addr)
             ),
-        },
-        None => outcome,
+        }
+    } else if let Some(s) = misaligned.get() {
+        EmuOutcome::Illegal {
+            pc: s.pc,
+            reason: format!(
+                "ABI violated: frame store with rsp not 16-byte aligned (to 0x{:x} with rsp = 0x{:x})",
+                s.addr, s.rsp
+            ),
+        }
+    } else {
+        outcome
     };
     Ok(EmuRun {
         outcome,

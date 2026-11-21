@@ -37,6 +37,10 @@
 //! or `more than 3 temporaries at once`; the 22nd (six parameters, each
 //! returned on its own) is within lane X2 and compiles.
 //!
+//! RANDOM TREES. Beside the shaped probes, 60 seeded random expression trees
+//! (the cold reviewer's cross-check, committed) are run three ways: kiln, the
+//! emulated code, and a Rust evaluator of the tree.
+//!
 //! The small harness below (types, edge values, the seeded stream) repeats
 //! the one in `x86_64_alu_kiln_oracle.rs`; integration tests share no module.
 //!
@@ -1501,6 +1505,306 @@ fn the_named_edge_cases_hold() {
             assert_eq!(c.emulator, EmuOutcome::Values(vec![t.val(w)]), "{op}");
         }
     }
+}
+
+// -------------------------------------------------------- random trees ----
+//
+// Written by the cold reviewer of f0277592 as an independent cross-check and
+// committed here with a fixed seed and exact counts: random expression trees
+// that mix parameters and declared locals of both widths, `local.tee` inside
+// the tree, wrap/extend, the divides (so some vectors trap), the bit counts
+// and `eqz`. Three answers are compared per case: kiln, the emulated code,
+// and the evaluator below.
+
+/// One node of a random expression tree.
+
+#[derive(Clone, Debug)]
+enum Node {
+    Get(u32),
+    Const(T, u64),
+    Bin(T, &'static str, Box<Node>, Box<Node>),
+    Un(T, &'static str, Box<Node>),
+    Tee(u32, Box<Node>),
+    Wrap(Box<Node>),
+    Ext(bool, Box<Node>),
+}
+
+const BINS: &[&str] = &[
+    "add", "sub", "mul", "xor", "and", "or", "rotl", "shr_s", "shr_u", "div_s", "div_u", "rem_s",
+    "rem_u",
+];
+const UNS: &[&str] = &["clz", "ctz", "popcnt", "eqz"];
+
+struct Gen<'a> {
+    r: Rng,
+    locals: &'a [T],
+}
+
+impl Gen<'_> {
+    fn pick(&mut self, n: usize) -> usize {
+        (self.r.next() % n as u64) as usize
+    }
+    fn tree(&mut self, t: T, depth: u32) -> Node {
+        if depth == 0 || self.pick(12) == 0 {
+            let cands: Vec<u32> = (0..self.locals.len() as u32)
+                .filter(|&i| self.locals[i as usize] == t)
+                .collect();
+            if !cands.is_empty() && self.pick(4) != 0 {
+                return Node::Get(cands[self.pick(cands.len())]);
+            }
+            let k = [0u64, 1, u64::MAX, 1 << 31, 1 << 63, 7, self.r.next()][self.pick(7)];
+            return Node::Const(t, t.mask(k));
+        }
+        match self.pick(10) {
+            0 => {
+                let cands: Vec<u32> = (0..self.locals.len() as u32)
+                    .filter(|&i| self.locals[i as usize] == t)
+                    .collect();
+                if cands.is_empty() {
+                    return self.tree(t, depth - 1);
+                }
+                let i = cands[self.pick(cands.len())];
+                Node::Tee(i, Box::new(self.tree(t, depth - 1)))
+            }
+            1 => match t {
+                T::I32 => Node::Wrap(Box::new(self.tree(T::I64, depth - 1))),
+                T::I64 => Node::Ext(self.pick(2) == 0, Box::new(self.tree(T::I32, depth - 1))),
+            },
+            2 => {
+                let op = UNS[self.pick(UNS.len())];
+                if op == "eqz" {
+                    // eqz yields i32 from either type
+                    if t == T::I32 {
+                        let st = if self.pick(2) == 0 { T::I32 } else { T::I64 };
+                        return Node::Un(st, "eqz", Box::new(self.tree(st, depth - 1)));
+                    }
+                    return Node::Un(t, "popcnt", Box::new(self.tree(t, depth - 1)));
+                }
+                Node::Un(t, op, Box::new(self.tree(t, depth - 1)))
+            }
+            _ => {
+                let op = BINS[self.pick(BINS.len())];
+                // Right-heavy: the left operand stays live while a deep
+                // right operand is built, so the stack exceeds six values.
+                let a = self.tree(t, (depth - 1).min(2));
+                let b = self.tree(t, depth - 1);
+                Node::Bin(t, op, Box::new(a), Box::new(b))
+            }
+        }
+    }
+}
+
+/// The tree as wasm text, operands first.
+fn emit(n: &Node, s: &mut String) {
+    match n {
+        Node::Get(i) => s.push_str(&format!(" local.get {i}")),
+        Node::Const(t, k) => match t {
+            T::I32 => s.push_str(&format!(" i32.const {}", *k as u32 as i32)),
+            T::I64 => s.push_str(&format!(" i64.const {}", *k as i64)),
+        },
+        Node::Bin(t, op, a, b) => {
+            emit(a, s);
+            emit(b, s);
+            s.push_str(&format!(" {}.{op}", t.s()));
+        }
+        Node::Un(t, op, a) => {
+            emit(a, s);
+            s.push_str(&format!(" {}.{op}", t.s()));
+        }
+        Node::Tee(i, a) => {
+            emit(a, s);
+            s.push_str(&format!(" local.tee {i}"));
+        }
+        Node::Wrap(a) => {
+            emit(a, s);
+            s.push_str(" i32.wrap_i64");
+        }
+        Node::Ext(sx, a) => {
+            emit(a, s);
+            s.push_str(if *sx {
+                " i64.extend_i32_s"
+            } else {
+                " i64.extend_i32_u"
+            });
+        }
+    }
+}
+
+/// Wasm-order evaluation over the locals `l`; `Err(())` on a trap.
+fn eval(n: &Node, l: &mut [u64]) -> Result<u64, ()> {
+    Ok(match n {
+        Node::Get(i) => l[*i as usize],
+        Node::Const(_, k) => *k,
+        Node::Tee(i, a) => {
+            let v = eval(a, l)?;
+            l[*i as usize] = v;
+            v
+        }
+        Node::Wrap(a) => eval(a, l)? & 0xFFFF_FFFF,
+        Node::Ext(sx, a) => {
+            let v = eval(a, l)?;
+            if *sx {
+                v as u32 as i32 as i64 as u64
+            } else {
+                v & 0xFFFF_FFFF
+            }
+        }
+        Node::Un(t, op, a) => {
+            let v = t.mask(eval(a, l)?);
+            match (*op, *t) {
+                ("eqz", _) => u64::from(v == 0),
+                ("clz", T::I32) => u64::from((v as u32).leading_zeros()),
+                ("clz", T::I64) => u64::from(v.leading_zeros()),
+                ("ctz", T::I32) => u64::from((v as u32).trailing_zeros()),
+                ("ctz", T::I64) => u64::from(v.trailing_zeros()),
+                ("popcnt", _) => u64::from(v.count_ones()),
+                o => unreachable!("{o:?}"),
+            }
+        }
+        Node::Bin(t, op, a, b) => {
+            let x = t.mask(eval(a, l)?);
+            let y = t.mask(eval(b, l)?);
+            let w = t.bits();
+            let sx = |v: u64| -> i64 {
+                match t {
+                    T::I32 => v as u32 as i32 as i64,
+                    T::I64 => v as i64,
+                }
+            };
+            let r = match *op {
+                "add" => x.wrapping_add(y),
+                "sub" => x.wrapping_sub(y),
+                "mul" => x.wrapping_mul(y),
+                "xor" => x ^ y,
+                "and" => x & y,
+                "or" => x | y,
+                "rotl" => match t {
+                    T::I32 => u64::from((x as u32).rotate_left(y as u32 & 31)),
+                    T::I64 => x.rotate_left((y & 63) as u32),
+                },
+                "shr_u" => x >> (y & u64::from(w - 1)),
+                "shr_s" => (sx(x) >> (y & u64::from(w - 1))) as u64,
+                "div_u" | "rem_u" => {
+                    if y == 0 {
+                        return Err(());
+                    }
+                    if *op == "div_u" { x / y } else { x % y }
+                }
+                "div_s" | "rem_s" => {
+                    if y == 0 {
+                        return Err(());
+                    }
+                    let (a, b) = (sx(x), sx(y));
+                    if b == -1 {
+                        if *op == "rem_s" {
+                            0
+                        } else if x == t.int_min() {
+                            return Err(());
+                        } else {
+                            a.wrapping_neg() as u64
+                        }
+                    } else if *op == "div_s" {
+                        (a / b) as u64
+                    } else {
+                        (a % b) as u64
+                    }
+                }
+                o => unreachable!("{o}"),
+            };
+            t.mask(r)
+        }
+    })
+}
+
+/// 60 seeded modules, one random tree each (depth 4 to 13, right-heavy so
+/// the operand stack outgrows the temporaries), 40 vectors per module: ten
+/// from the edge values, thirty seeded. Every case has to agree with kiln AND
+/// with the evaluator; a case the evaluator says traps must stop on a `ud2`.
+#[test]
+fn random_trees_agree_with_kiln_and_an_evaluator() {
+    let mut cases = 0;
+    let mut traps = 0;
+    let mut bad = Vec::new();
+    let mut declined = Vec::new();
+    for seed in 0..60u64 {
+        let mut r = Rng::new(&format!("review/{seed}"));
+        let np = 1 + (r.next() % 6) as usize;
+        let nl = (r.next() % 5) as usize;
+        let tys: Vec<T> = (0..np + nl)
+            .map(|_| if r.next() & 1 == 0 { T::I32 } else { T::I64 })
+            .collect();
+        let result = if r.next() & 1 == 0 { T::I32 } else { T::I64 };
+        let mut g = Gen { r, locals: &tys };
+        let depth = 4 + (seed % 10) as u32;
+        let tree = g.tree(result, depth);
+        let mut body = String::new();
+        if nl > 0 {
+            let d: Vec<&str> = tys[np..].iter().map(|t| t.s()).collect();
+            body.push_str(&format!("(local {})", d.join(" ")));
+        }
+        emit(&tree, &mut body);
+        let params: Vec<&str> = tys[..np].iter().map(|t| t.s()).collect();
+        let wat = format!(
+            "(module (func (export \"f\") (param {}) (result {}) {body}))",
+            params.join(" "),
+            result.s()
+        );
+        let (wasm, obj) = match compile_x86(&wat) {
+            Ok(x) => x,
+            Err(e) => {
+                declined.push(format!("  seed {seed}: {e}"));
+                continue;
+            }
+        };
+        let mut vr = Rng::new(&format!("review/v/{seed}"));
+        for vi in 0..40 {
+            let raw: Vec<u64> = (0..np)
+                .map(|k| {
+                    let e = tys[k].edges();
+                    if vi < 10 {
+                        e[(vi * 7 + k) % e.len()]
+                    } else {
+                        vr.next()
+                    }
+                })
+                .collect();
+            let args: Vec<WasmValue> = raw.iter().zip(&tys).map(|(&b, &t)| t.val(b)).collect();
+            let mut l: Vec<u64> = raw.iter().zip(&tys).map(|(&b, &t)| t.mask(b)).collect();
+            l.extend(std::iter::repeat_n(0, nl));
+            let want = eval(&tree, &mut l);
+            let c = run_case(&wasm, &obj, "f", &args, FUEL, &Imports::new(), &cfg())
+                .unwrap_or_else(|e| panic!("seed {seed} {raw:x?}: harness error {e:?}"));
+            cases += 1;
+            let ok = c.verdict.is_agree()
+                && match (&want, &c.emulator) {
+                    (Ok(v), EmuOutcome::Values(got)) => got == &vec![result.val(*v)],
+                    (Err(()), EmuOutcome::Trap { insn, .. }) => {
+                        traps += 1;
+                        insn == "ud2"
+                    }
+                    (Ok(_) | Err(()), _) => false,
+                };
+            if !ok {
+                bad.push(format!(
+                    "  seed {seed} {raw:x?}: want {want:x?} ref {:?} emu {:?}\n{wat}",
+                    c.reference, c.emulator
+                ));
+            }
+        }
+    }
+    for l in declined.iter().chain(bad.iter().take(5)) {
+        eprintln!("{l}");
+    }
+    assert!(
+        declined.is_empty() && bad.is_empty(),
+        "x86_64-frame random trees: {} modules did not compile, {} of {cases} cases are wrong",
+        declined.len(),
+        bad.len()
+    );
+    assert_eq!((cases, traps), (2400, 1064), "counts moved");
+    eprintln!(
+        "ORACLE x86_64-frame random trees: {cases} cases agree over 60 modules, {traps} traps on ud2"
+    );
 }
 
 // ---------------------------------------------------------------- potency --

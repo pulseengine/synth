@@ -29,6 +29,20 @@ artifacts:
         instructions; `rbx` and `r12-r15` are never written, and nothing is
         stored below `rsp` (the red zone is not used).
 
+        TWO DEVIATIONS FROM THE PLAN, both this lane's and both stated.
+        (1) SPILLING REPLACES A REFUSAL: X86_PLAN.md section 1.2 says "a
+        stack deeper than the pool declines loudly in v1". This lane spills
+        instead, on the coordinator's brief for X3 ("a value stack deeper
+        than 3 temporaries spills to the frame instead of being refused").
+        It is more reach than the plan asked for, and it is what the spill
+        probes and the random trees of the oracle exist to check. (2) KILN
+        REPLACES WASMTIME: the plan names scripts/repro/
+        x86_64_locals_differential.py and x86_64_divrem_differential.py
+        against wasmtime. This lane has no Python oracle: its execution
+        oracle is Rust, in crates/synth-oracle, with kiln as the reference,
+        as lane X1 (RQ-91-X86SKEL) and lane X2 already did and as the lane
+        rules now require of every new oracle.
+
         A FRAME ABOVE ONE PAGE (4096 bytes: 512 locals and spill slots) IS
         REFUSED BY NAME. A larger frame could step over a guard page without
         touching it, and no stack probe is emitted. This limit is this
@@ -57,11 +71,15 @@ artifacts:
         after loading the count, because the encoder has no shift-by-
         immediate form yet. No performance claim is made.
 
-        THE EXECUTION ORACLE'S RUNNER GAINS ONE CHECK (the cold review of
-        lane X2, finding F6): every store is compared with the LIVE `rsp`,
-        and a store more than 128 bytes below it (below the red zone) makes
-        the run ILLEGAL. A function with a frame writes far below its entry
-        `rsp` legitimately, so this cannot be judged from memory after the
+        THE EXECUTION ORACLE'S RUNNER GAINS TWO CHECKS (the cold review of
+        lane X2, finding F6, tightened by the cold review of this lane, N1
+        and N2): every store is compared with the LIVE `rsp`. A store below
+        `rsp - 8` makes the run ILLEGAL: that is the selector's own rule,
+        stricter than the ABI's 128-byte red zone, and the 8 bytes are a
+        `push`'s. A store into the function's own frame while `rsp` is not
+        16-byte aligned is ILLEGAL too. Both report the address of the store
+        instruction. A function with a frame writes far below its entry `rsp`
+        legitimately, so neither can be judged from memory after the
         return.
 
         NOT IN THIS LANE: `unreachable` and every control-flow op (lane X5),
@@ -71,10 +89,11 @@ artifacts:
         REFUTING COMMAND, to be RUN BEFORE building on this artifact: with a
         synth built from this branch, `SYNTH=<that binary> cargo test -p
         synth-oracle --features exec --test x86_64_frame_div_kiln_oracle --
-        --nocapture` must print the five `ORACLE x86_64-frame` lines (5736,
+        --nocapture` must print the six `ORACLE x86_64-frame` lines (5736,
         5112, 7806, 1763 and 1292 cases; 460 + 388 divide-by-zero and 11 + 8
-        overflow traps) and pass 17 tests; with SYNTH naming a binary built
-        from lane X2 (3ad771f1) the same command must fail all 17. `cargo
+        overflow traps; 2400 random-tree cases with 1064 traps) and pass 18
+        tests; with SYNTH naming a binary built from lane X2 (3ad771f1) the
+        same command must fail all 18. `cargo
         test -p synth-backend-x86_64 -- --nocapture` must print `E1: 24308
         forms byte-equal to` (when llvm-mc is present) and `E2: 24308 forms
         decode`.
@@ -108,11 +127,11 @@ artifacts:
       landed: "v0.91 X86FRAME - #1741 - DELIVERED: the frame, parameter homing, locals and the spilling operand stack in selector.rs; div/rem guards, clz/ctz and popcnt (rules.rs 52 -> 66 rows); ten instruction forms in inst.rs/encoder.rs; exact local types in backend.rs; the red-zone store check in the oracle's x86-64 runner; tests/x86_64_frame_div_kiln_oracle.rs; op surface 59 -> 75 of 198. #1741 stays open (outlives)."
       verified-by: >
         DELIVERED, execution-verified under emulation. RED/GREEN: with SYNTH
-        naming a binary built from lane X2 (3ad771f1), all 17 tests of
+        naming a binary built from lane X2 (3ad771f1), all 18 tests of
         x86_64_frame_div_kiln_oracle.rs fail and 21 of 22 groups are reported
         as not compiling (`unsupported wasm op`, `non-parameter local`, `more
         than 3 temporaries at once`); the 22nd, six parameters each returned on its
-        own, compiles there and its 182 cases agree. On this branch all 17
+        own, compiles there and its 182 cases agree. On this branch all 18
         pass. EXECUTION: 21,709 cases, all AGREE with kiln under unicorn
         QEMU64: i32 division 5736 over 4 ops, i64 division 5112 over 4 ops,
         bit counts 7806 over 6 ops, locals and parameter homing 1763 over 7
@@ -131,7 +150,13 @@ artifacts:
         operands with garbage in bits 63:32 arrive three ways (a poisoned
         argument register, a wrapped i64 parameter, a wrapped i64 TEMPORARY,
         the X2 review's F1 shape), and are also taken through a spill slot
-        and through an i32 local before being consumed. POTENCY, committed
+        and through an i32 local before being consumed. RANDOM TREES (the
+        cold reviewer's cross-check of f0277592, committed with a fixed seed):
+        60 seeded modules, one random expression tree each, mixing parameters
+        and declared locals of both widths, local.tee, wrap/extend, the
+        divides, the bit counts and eqz; 2,400 cases agree three ways (kiln,
+        the emulated code, a Rust evaluator of the tree), 1,064 of them
+        traps on a `ud2`. POTENCY, committed
         tests on the emitted image: the zero guard's `ud2` overwritten with a
         nop makes exactly the 22 zero-divisor vectors ILLEGAL (#DE, not a
         trap); the overflow guard's `ud2` overwritten, and rem_s's zeroed
@@ -143,18 +168,26 @@ artifacts:
         store overwritten, or narrowed to 32 bits, reds every vector; a
         spill reload aimed at the wrong slot, an i64 parameter homed at 32
         bits, and the re-zeroing of `i64.extend_i32_u` overwritten each red
-        their computed sets. MUTANTS, run once on this tree, not committed:
-        60 source mutants of selector.rs and encoder.rs, each rebuilt into
-        synth and run against the three x86-64 execution oracles: 58 red.
-        The two that stay green in execution: a frame not rounded to 16
-        bytes (this lane makes no call, so nothing executes that depends on
-        the alignment; red in the selector's unit tests), and `local.get` of
-        an i32 loading 64 bits (the upper half of an i32 is unspecified by
-        the selector's own rule and every consumer ignores it, so no
+        their computed sets. MUTANTS, not committed: 60 source mutants of
+        selector.rs and encoder.rs, each rebuilt into synth and run against
+        the three x86-64 execution oracles. On f0277592, with the runner
+        refusing only stores below the 128-byte red zone: 58 red. With the
+        runner tightened in the follow-up (no store below rsp - 8; a frame
+        store needs rsp 16-byte aligned) the frame mutants were run again: a
+        frame not rounded to 16 bytes, green before, is red in 17 execution
+        tests, and the reviewer's M9 (spill slots left out of the frame
+        size), red before only through the one probe whose spills pass 128
+        bytes, is red in 5. ONE mutant stays green in execution: `local.get`
+        of an i32 loading 64 bits (the upper half of an i32 is unspecified
+        by the selector's own rule and every consumer ignores it, so no
         execution can differ; red in the unit tests' expected text). RUNNER:
-        the red-zone check has its own committed test (a store 136 bytes
-        under rsp is ILLEGAL, the lowest red-zone slot and a frame's own
-        slot are not). ENCODER: E1 24,308 of 24,308 forms byte-equal to
+        the store checks have committed tests: a store 16 or 136 bytes under
+        rsp is ILLEGAL and reported at the PC of the store, a `push` and a
+        frame's own slot are not; a frame store at a misaligned rsp is
+        ILLEGAL. E1 RACE (cold review B1): f0277592 assembled the branch
+        forms to one object path shared by three concurrent tests; under 12
+        busy loops it failed 5 of 60 runs, and with a path per call 0 of
+        60. ENCODER: E1 24,308 of 24,308 forms byte-equal to
         llvm-mc 22.1.8 — the 11,969 of lanes X1-X2 and 12,339 new: loads and
         stores over every base register (the rsp/r12 SIB and rbp/r13
         forced-displacement cases included) at nine boundary displacements,

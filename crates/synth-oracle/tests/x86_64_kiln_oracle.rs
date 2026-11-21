@@ -531,47 +531,83 @@ fn potency_stack_flags_caller_frame_and_direction_flag() {
     }
 }
 
-/// RQ-91-X86FRAME (REVIEW of X2, F6): a store BELOW THE RED ZONE — more than
-/// 128 bytes under the live `rsp` — is refused; the lowest red-zone slot is
-/// not, and neither is a frame's own slot once `rsp` has moved down past it.
+/// RQ-91-X86FRAME (cold reviews: X2 F6, X3/X4 N1 and N2): a store below
+/// `rsp - 8` is refused — synth's own rule, stricter than the ABI's 128-byte
+/// red zone — and the report carries the PC of the STORE. A frame's own slot
+/// is fine once `rsp` has moved down past it, and so is `push`.
 #[test]
-fn potency_a_store_below_the_red_zone_is_refused() {
+fn potency_a_store_below_rsp_is_refused_at_its_pc() {
+    use synth_oracle::emulate::TEXT_BASE;
     let s1 = sig(&[ValType::I32], &[ValType::I32]);
     let a = [WasmValue::I32(5)];
-    // `movl %edi, -0x88(%rsp)`: 136 bytes under rsp, 8 past the red zone.
+    // `movl %edi, %eax` (2 bytes) first, so the store is NOT at the entry:
+    // then `movl %edi, -0x10(%rsp)`, 16 bytes under rsp.
+    let mut t = vec![0x89, 0xF8, 0x89, 0x7C, 0x24, 0xF0];
+    t.extend_from_slice(MOV_EAX_EDI_RET);
+    match run_hand(&t, &s1, &a) {
+        EmuOutcome::Illegal { pc, reason } => {
+            assert!(
+                reason.contains("store below rsp") && reason.contains("16 bytes under"),
+                "{reason}"
+            );
+            assert_eq!(pc, TEXT_BASE + 2, "the PC of the store, not of the stop");
+        }
+        o => panic!("a store below rsp was accepted: {o:?}"),
+    }
+    // Deep inside the ABI's red zone is refused just the same:
+    // `movl %edi, -0x88(%rsp)`.
     let mut t = vec![0x89, 0xBC, 0x24, 0x78, 0xFF, 0xFF, 0xFF];
     t.extend_from_slice(MOV_EAX_EDI_RET);
     match run_hand(&t, &s1, &a) {
-        EmuOutcome::Illegal { reason, .. } => {
-            assert!(
-                reason.contains("store below the red zone") && reason.contains("136 bytes"),
-                "{reason}"
-            )
+        EmuOutcome::Illegal { pc, reason } => {
+            assert!(reason.contains("136 bytes under"), "{reason}");
+            assert_eq!(pc, TEXT_BASE);
         }
-        o => panic!("a store below the red zone was accepted: {o:?}"),
+        o => panic!("{o:?}"),
     }
-    // `movq %rdi, -0x80(%rsp)`: the LOWEST red-zone slot, allowed.
-    let mut t = vec![0x48, 0x89, 0x7C, 0x24, 0x80];
+    // `pushq %rdi; popq %rax; retq`: a push stores at rsp - 8. Allowed.
+    assert_eq!(
+        run_hand(&[0x57, 0x58, 0xC3], &s1, &a),
+        EmuOutcome::Values(vec![WasmValue::I32(5)])
+    );
+    // The address refused above, written AFTER `subq $0x108, %rsp`, is the
+    // function's own frame (and rsp is 16-byte aligned there): allowed.
+    let mut t = vec![0x48, 0x81, 0xEC, 0x08, 0x01, 0x00, 0x00]; // subq $0x108, %rsp
+    t.extend_from_slice(&[0x89, 0xBC, 0x24, 0x80, 0x00, 0x00, 0x00]); // movl %edi, 0x80(%rsp)
+    t.extend_from_slice(&[0x48, 0x81, 0xC4, 0x08, 0x01, 0x00, 0x00]); // addq $0x108, %rsp
     t.extend_from_slice(MOV_EAX_EDI_RET);
     assert_eq!(
         run_hand(&t, &s1, &a),
         EmuOutcome::Values(vec![WasmValue::I32(5)])
     );
-    // The same address written AFTER `subq $0x100, %rsp` is inside the
-    // function's own frame: allowed. Then `addq $0x100, %rsp` and return.
+    // A store below rsp followed by a `ud2` is still the violation, not a
+    // trap.
+    let mut t = vec![0x89, 0x7C, 0x24, 0xF0, 0x0F, 0x0B];
+    t.extend_from_slice(MOV_EAX_EDI_RET);
+    assert!(matches!(
+        run_hand(&t, &s1, &a),
+        EmuOutcome::Illegal { ref reason, .. } if reason.contains("below rsp")
+    ));
+}
+
+/// The alignment half: a store into the function's own frame while `rsp` is
+/// not 16-byte aligned is refused, at the store's PC. `subq $0x100, %rsp`
+/// from the entry `rsp` (which is 8 mod 16) leaves it misaligned; the same
+/// function with `$0x108` is the accepted case above.
+#[test]
+fn potency_a_frame_store_at_a_misaligned_rsp_is_refused() {
+    use synth_oracle::emulate::TEXT_BASE;
+    let s1 = sig(&[ValType::I32], &[ValType::I32]);
+    let a = [WasmValue::I32(5)];
     let mut t = vec![0x48, 0x81, 0xEC, 0x00, 0x01, 0x00, 0x00]; // subq $0x100, %rsp
     t.extend_from_slice(&[0x89, 0x7C, 0x24, 0x78]); // movl %edi, 0x78(%rsp)
     t.extend_from_slice(&[0x48, 0x81, 0xC4, 0x00, 0x01, 0x00, 0x00]); // addq $0x100, %rsp
     t.extend_from_slice(MOV_EAX_EDI_RET);
-    assert_eq!(
-        run_hand(&t, &s1, &a),
-        EmuOutcome::Values(vec![WasmValue::I32(5)])
-    );
-    // A store below the red zone followed by a `ud2` is still the violation,
-    // not a trap.
-    let mut t = vec![0x89, 0xBC, 0x24, 0x78, 0xFF, 0xFF, 0xFF, 0x0F, 0x0B];
-    t.extend_from_slice(MOV_EAX_EDI_RET);
-    assert!(
-        matches!(run_hand(&t, &s1, &a), EmuOutcome::Illegal { ref reason, .. } if reason.contains("red zone"))
-    );
+    match run_hand(&t, &s1, &a) {
+        EmuOutcome::Illegal { pc, reason } => {
+            assert!(reason.contains("not 16-byte aligned"), "{reason}");
+            assert_eq!(pc, TEXT_BASE + 7);
+        }
+        o => panic!("a misaligned frame store was accepted: {o:?}"),
+    }
 }

@@ -95,8 +95,14 @@ fn assemble(mc: &str, lines: &[String]) -> Vec<Vec<u8>> {
 /// `llvm-mc -filetype=obj` over `lines`: the bytes of `.text`, which must
 /// carry no relocation (every branch target is a fixed distance away).
 fn assemble_object(mc: &str, lines: &[String]) -> Vec<u8> {
+    // A path of its OWN for every call. Three tests in this binary assemble
+    // the branches, on three threads; with one shared name a thread could
+    // delete or half-overwrite the object another was about to read (cold
+    // review of f0277592, B1: 2 failures in 60 runs under load).
+    static CALL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let out = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("e1-branches-{}.o", std::process::id()));
+        .join(format!("e1-branches-{}-{call}.o", std::process::id()));
     let mut child = Command::new(mc)
         .args(["--triple=x86_64", "-filetype=obj", "-o"])
         .arg(&out)

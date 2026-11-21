@@ -3998,8 +3998,9 @@ claims:
       # Created at 250 (lane X1: local.get of a parameter, i32.add, return).
       # 496 since lane X2 (RQ-91-X86ALU; 494 as first committed, plus two
       # doc-comment lines for cold review F7): the straight-line integer core. The
-      # per-op choice of instruction is NOT in this file: it is the 52-row
-      # table in rules.rs; the selector holds one routine per lowering shape.
+      # per-op choice of instruction is NOT in this file: it is the table in
+      # rules.rs (52 rows in lane X2, 66 since lanes X3-X4); the selector holds
+      # one routine per lowering shape.
       # 798 since lanes X3-X4 (RQ-91-X86FRAME): the frame (prologue, epilogue,
       # parameter homing, local zeroing), the spilling operand stack, and the
       # multi-instruction sequences of div/rem (with their trap guards),
