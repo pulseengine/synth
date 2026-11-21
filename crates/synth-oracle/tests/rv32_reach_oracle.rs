@@ -173,10 +173,12 @@ fn fname(op: &MemOp, off: u32) -> String {
     format!("{}_{off:x}", op.tag)
 }
 
-/// One module per access op (and one for the constant-address shapes):
-/// kiln converts a module with a memory afresh on every reference run, at a
-/// cost that grows with the module, so one 133-function module made each case
-/// several times dearer than thirteen small ones.
+/// The module holding `ops` at every offset, plus the constant-address
+/// shapes when `consts`. The test builds ONE module with all of them; the
+/// grouping parameter stays so a split is a one-line change if per-run kiln
+/// cost ever grows with module size again (it did under an intermediate
+/// cache design: one module 154 s against 64 s split; with the shared cached
+/// module one module is the faster, 49 s against 59 s, measured locally).
 fn mem_module(ops: &[MemOp], consts: bool) -> (Vec<u8>, Vec<String>) {
     let mut w = format!("(module (memory {PAGES})\n");
     // Deterministic, non-zero bytes in every window the loads read.
@@ -296,8 +298,7 @@ fn mem_args(op: &MemOp, addr: u32, k: u32) -> Vec<WasmValue> {
 fn rv32_memarg_offsets_past_imm12_1254() {
     let cfg = EmuConfig::new(Cpu::Rv32Imac);
     let imports = Imports::new();
-    let mut groups: Vec<(Vec<MemOp>, bool)> = OPS.iter().map(|op| (vec![*op], false)).collect();
-    groups.push((Vec::new(), true));
+    let groups: Vec<(Vec<MemOp>, bool)> = vec![(OPS.to_vec(), true)];
     let modules: Vec<_> = groups
         .iter()
         .map(|(ops, consts)| {
