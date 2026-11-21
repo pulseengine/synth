@@ -145,7 +145,7 @@ decline), and a corruption in a directive no leg executes is not graded at all.
   * the accounting equation above, per (leg, file);
   * `# ci-checks: emulations` (oracle_run.py) counts real emulator entries.
 
-Run (needs wasmtime==48.0.0 + unicorn==2.1.4 + pyelftools + the submodule):
+Run (needs wasmtime==50.0.1 + unicorn==2.1.4 + pyelftools + the submodule):
   SYNTH=./target/debug/synth SYNTH_TEST=./target/debug/synth-test \\
       python3 scripts/repro/spec_exec_1636_differential.py
   ... --only i32 --leg cortex-m4        # a quick slice (floors not applied)

@@ -193,7 +193,7 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install emulation deps (reference engine PINNED)
-        run: pip install wasmtime==48.0.0 unicorn==2.1.4 pyelftools || pip install --break-system-packages wasmtime==48.0.0 unicorn==2.1.4 pyelftools
+        run: pip install wasmtime==50.0.1 unicorn==2.1.4 pyelftools || pip install --break-system-packages wasmtime==50.0.1 unicorn==2.1.4 pyelftools
       - name: Execute the spec suite's assert_return / assert_trap directives (#1636)
         run: |
           set -euo pipefail
