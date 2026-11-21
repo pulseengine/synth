@@ -503,6 +503,7 @@ fn compile_function_with_opts(
             symbol: r.symbol,
             kind: r.kind.core_kind(),
             access_width: None,
+            addend: 0,
         })
         .collect();
 

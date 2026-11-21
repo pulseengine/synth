@@ -827,6 +827,7 @@ fn emit_literal_pool(
             symbol: lit.symbol.clone(),
             kind: synth_core::backend::RelocKind::Abs32,
             access_width: lit.access_width,
+            addend: 0,
         });
 
         // Patch the placeholder `LDR.W rd,[pc,#imm12]`. Thumb-2 LDR (literal):
@@ -2401,6 +2402,7 @@ fn compile_wasm_to_arm(
                 symbol: label.clone(),
                 kind,
                 access_width: None,
+                addend: 0,
             });
         }
         // #237: symbol-relative MOVW/MOVT (the `--native-pointer-abi` static-data
@@ -2412,6 +2414,7 @@ fn compile_wasm_to_arm(
                 symbol: symbol.clone(),
                 kind: synth_core::backend::RelocKind::MovwAbs,
                 access_width: None,
+                addend: 0,
             });
         }
         if let ArmOp::MovtSym { symbol, .. } = &instr.op {
@@ -2420,6 +2423,7 @@ fn compile_wasm_to_arm(
                 symbol: symbol.clone(),
                 kind: synth_core::backend::RelocKind::MovtAbs,
                 access_width: None,
+                addend: 0,
             });
         }
         // #345: defer the literal-pool word + reloc + offset patch to the

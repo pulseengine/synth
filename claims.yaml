@@ -4597,9 +4597,11 @@ claims:
         path: crates/synth-backend-aarch64/src/substrate.rs
       # The regions are placed in the object, not assumed: a `.data` blob and a
       # `.text`-resident table, reached PC-relatively (no base register).
+      # (RQ-91-X86OBJPLAN: the `.data` blob's DEFINITION moved to the shared
+      # object plan; the aarch64 elf.rs only re-exports it.)
       - kind: count-min
-        pattern: 'DataBlob'
-        glob: ['crates/synth-backend-aarch64/src/elf.rs']
+        pattern: 'pub struct DataBlob \{'
+        glob: ['crates/synth-core/src/object_plan.rs']
         min: 1
       - kind: count-min
         pattern: 'AArch64AdrPrelPgHi21'
@@ -5797,11 +5799,11 @@ claims:
         expect: 1                                                       # register
       - kind: count-eq                       # RQ-65-FUNCN: st_info is DERIVED
         pattern: 'let info = \(\(f\.binding as u8\) << 4\) \| stt;'   # from the
-        glob: ['crates/synth-backend-aarch64/src/elf.rs']            # plan's
+        glob: ['crates/synth-core/src/object_plan.rs']               # plan's
         expect: 1                            # binding — no 0x12 literal left
       - kind: count-eq                       # ...which the plan CARRIES
-        pattern: 'pub binding: SymbolBinding,'
-        glob: ['crates/synth-backend-aarch64/src/elf.rs']
+        pattern: 'pub binding: SymbolBinding,'   # (shared since RQ-91-X86OBJPLAN)
+        glob: ['crates/synth-core/src/object_plan.rs']
         expect: 1
       - kind: count-eq                       # ...as the ONE shared enum
         pattern: '^pub enum SymbolBinding \{'

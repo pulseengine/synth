@@ -396,12 +396,12 @@ fn plan_table(input: &PlanInputs) -> Result<ElfFunction, String> {
                 } else {
                     format!("func_{f}")
                 };
-                relocations.push(CodeRelocation {
-                    offset: (s as u32 * TABLE_SLOT_BYTES) + 4,
+                relocations.push(CodeRelocation::site(
+                    (s as u32 * TABLE_SLOT_BYTES) + 4,
                     symbol,
-                    kind: RelocKind::AArch64Jump26,
-                    access_width: None,
-                });
+                    RelocKind::AArch64Jump26,
+                    0,
+                ));
                 // `b #0` placeholder — the JUMP26 relocation supplies the imm26.
                 code.extend_from_slice(&enc::b_uncond(0).to_le_bytes());
             }

@@ -179,11 +179,13 @@ impl AArch64Backend {
         // emitted globals region / funcref table.
         let relocations: Vec<CodeRelocation> = call_sites
             .iter()
-            .map(|cs| CodeRelocation {
-                offset: cs.offset,
-                symbol: format!("func_{}", cs.callee),
-                kind: RelocKind::AArch64Call26,
-                access_width: None,
+            .map(|cs| {
+                CodeRelocation::site(
+                    cs.offset,
+                    format!("func_{}", cs.callee),
+                    RelocKind::AArch64Call26,
+                    0,
+                )
             })
             .chain(sym_relocs)
             .collect();

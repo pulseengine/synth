@@ -192,6 +192,9 @@ pub fn build_macho_object_from_plan(plan: &ObjectPlan) -> Vec<u8> {
                  (RQ-64-MACHO): only the four AArch64 kinds are expressible"
             ),
         };
+        // RQ-91-X86OBJPLAN: this writer has no `ARM64_RELOC_ADDEND` pair, so a
+        // site addend it cannot carry is refused, never dropped.
+        assert_eq!(r.addend, 0, "aarch64 Mach-O writer: nonzero addend");
         // relocation_info: r_address (section-relative), then the packed
         // word r_symbolnum:24 | r_pcrel:1 | r_length:2 | r_extern:1 | r_type:4.
         let symbolnum = u32::try_from(r.symbol).expect("symbol index fits 24 bits");
@@ -408,6 +411,20 @@ mod tests {
     use crate::elf::{DataBlob, ElfFunction, build_relocatable_object_full};
     use synth_core::backend::CodeRelocation;
 
+    /// RQ-91-X86OBJPLAN: Mach-O ARM64 has no addend slot here; a nonzero site
+    /// addend is refused, never dropped.
+    #[test]
+    #[should_panic(expected = "aarch64 Mach-O writer: nonzero addend")]
+    fn nonzero_addend_is_refused() {
+        let site = CodeRelocation::site(0, "func_0", RelocKind::AArch64Call26, -4);
+        let f = [ElfFunction::code(
+            vec!["func_0".into()],
+            vec![0; 4],
+            vec![site],
+        )];
+        let _ = build_macho_object_full(&f, &DataBlob::default(), &[]);
+    }
+
     fn u32_at(b: &[u8], off: usize) -> u32 {
         u32::from_le_bytes(b[off..off + 4].try_into().unwrap())
     }
@@ -489,12 +506,12 @@ mod tests {
             ElfFunction::code(
                 vec!["func_1".into(), "run".into()],
                 vec![0x00, 0x00, 0x00, 0x94, 0xC0, 0x03, 0x5F, 0xD6], // bl #0; ret
-                vec![CodeRelocation {
-                    offset: 0,
-                    symbol: "func_2".into(),
-                    kind: RelocKind::AArch64Call26,
-                    access_width: None,
-                }],
+                vec![CodeRelocation::site(
+                    0,
+                    "func_2",
+                    RelocKind::AArch64Call26,
+                    0,
+                )],
             ),
             ElfFunction::code(
                 vec!["func_2".into()],
@@ -505,35 +522,20 @@ mod tests {
                     0xC0, 0x03, 0x5F, 0xD6, // ret
                 ],
                 vec![
-                    CodeRelocation {
-                        offset: 0,
-                        symbol: "__synth_globals".into(),
-                        kind: RelocKind::AArch64AdrPrelPgHi21,
-                        access_width: None,
-                    },
-                    CodeRelocation {
-                        offset: 4,
-                        symbol: "__synth_globals".into(),
-                        kind: RelocKind::AArch64AddAbsLo12Nc,
-                        access_width: None,
-                    },
-                    CodeRelocation {
-                        offset: 8,
-                        symbol: "host_add".into(),
-                        kind: RelocKind::AArch64Call26,
-                        access_width: None,
-                    },
+                    CodeRelocation::site(0, "__synth_globals", RelocKind::AArch64AdrPrelPgHi21, 0),
+                    CodeRelocation::site(4, "__synth_globals", RelocKind::AArch64AddAbsLo12Nc, 0),
+                    CodeRelocation::site(8, "host_add", RelocKind::AArch64Call26, 0),
                 ],
             ),
             ElfFunction {
                 symbols: vec!["__synth_func_table".into()],
                 code: vec![1, 0, 0, 0, 0x00, 0x00, 0x00, 0x14], // [class 1][b #0]
-                relocations: vec![CodeRelocation {
-                    offset: 4,
-                    symbol: "func_1".into(),
-                    kind: RelocKind::AArch64Jump26,
-                    access_width: None,
-                }],
+                relocations: vec![CodeRelocation::site(
+                    4,
+                    "func_1",
+                    RelocKind::AArch64Jump26,
+                    0,
+                )],
                 is_object: true,
             },
         ];
@@ -738,12 +740,12 @@ mod tests {
         let f = vec![ElfFunction::code(
             vec!["func_1".into()],
             vec![0x00, 0x00, 0x00, 0x94],
-            vec![CodeRelocation {
-                offset: 0,
-                symbol: "func_0".into(),
-                kind: RelocKind::AArch64Call26,
-                access_width: None,
-            }],
+            vec![CodeRelocation::site(
+                0,
+                "func_0",
+                RelocKind::AArch64Call26,
+                0,
+            )],
         )];
         let e = build_macho_object_full(&f, &DataBlob::default(), &[]).unwrap_err();
         let msg = format!("{e}");

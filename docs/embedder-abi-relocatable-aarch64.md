@@ -70,7 +70,7 @@ Stated so the claim cannot outrun its instrument:
   relocation is emitted or exercised; the claim is a STATIC library and
   `-static` is what ran. Every relocation synth emits is PC-relative
   (`R_AARCH64_CALL26`/`JUMP26`/`ADR_PREL_PG_HI21`/`ADD_ABS_LO12_NC`,
-  `elf.rs:15-23`), so a `-pie` link is plausible — and NOT claimed.
+  `elf.rs:26-34`), so a `-pie` link is plausible — and NOT claimed.
 - **libc.** The harness is freestanding. A libc-linked embedder adds nothing
   synth's object depends on, but it is not what executed.
 - **Anything about the ISA the sibling oracles already cover** — op
@@ -183,8 +183,8 @@ symptom is a wrong value on some other path, not a build error — the #1131
 
 - **Globals** live in synth's own `.data`, at the `STT_OBJECT` symbol
   `__synth_globals` (`crates/synth-backend-aarch64/src/substrate.rs:56-64`
-  layout — one 8-byte slot per global; the symbol planned in `elf.rs`
-  `plan_object`, LOCAL since RQ-65-FUNCN — see "Symbols" below),
+  layout — one 8-byte slot per global; the symbol planned in the shared
+  `synth_core::object_plan::plan_object`, LOCAL since RQ-65-FUNCN — see "Symbols" below),
   **with their decoded constant initializers already in the bytes**. A normal
   static link places the section and the loader maps it; there is no globals
   register and nothing for the embedder to seed. Code reaches the region by
@@ -206,11 +206,11 @@ symptom is a wrong value on some other path, not a build error — the #1131
 
 - **Exports:** an exported function is a GLOBAL `STT_FUNC` symbol under its
   wasm export name (`backend.rs:334-340`); the binding is the plan's
-  (`elf.rs` `PlannedSymbol::binding`, rendered as `st_info = (bind << 4) |
-  type` in `build_relocatable_object_full`). Read the symbol table by
+  (`synth_core::object_plan` `PlannedSymbol::binding`, rendered as
+  `st_info = (bind << 4) | type` in `write_elf64_rel`). Read the symbol table by
   section type (`SHT_SYMTAB`), not name.
 - **Imports:** a called import becomes a GLOBAL `STT_FUNC` at `SHN_UNDEF`
-  under its wasm FIELD name (`elf.rs` `plan_object`, `backend.rs:405-410`,
+  under its wasm FIELD name (`object_plan.rs` `plan_object`, `backend.rs:405-410`,
   the #1017 wasm2c/Wasker pattern), with an `R_AARCH64_CALL26` at each call
   site. Define it in C with the matching AAPCS64 signature and the linker
   binds it; omit it and `ld.lld` refuses with `undefined symbol: host_add`
