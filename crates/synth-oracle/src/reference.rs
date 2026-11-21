@@ -162,6 +162,8 @@ pub struct RefRun {
     pub calls: Vec<HostCall>,
     /// Fuel consumed.
     pub fuel_used: u64,
+    /// Linear memory 0 after the call (`None` for a module without one).
+    pub memory: Option<Vec<u8>>,
 }
 
 struct ImportScan {
@@ -316,7 +318,7 @@ fn load(
     engine: &mut StacklessEngine,
     wasm: &[u8],
     fuel: u64,
-) -> Result<(Arc<Module>, usize), RefError> {
+) -> Result<(Arc<Module>, usize, Arc<ModuleInstance>), RefError> {
     let e = |stage: &str, err: kiln_error::Error| RefError::Instantiate(format!("{stage}: {err}"));
     let (module, shared) = converted_module(wasm).map_err(|x| e("decode/convert", x))?;
     let id = engine.peek_next_instance_id();
@@ -353,7 +355,7 @@ fn load(
             .execute(idx, start as usize, vec![])
             .map_err(|x| e("start function", x))?;
     }
-    Ok((module, idx))
+    Ok((module, idx, inst))
 }
 
 fn classify(err: &kiln_error::Error) -> RefOutcome {
@@ -399,7 +401,7 @@ fn execute_seq(
         imports,
         log: Arc::clone(&log),
     }));
-    let (module, inst) = load(&mut engine, wasm, fuel)?;
+    let (module, inst, instance) = load(&mut engine, wasm, fuel)?;
     let mut runs = Vec::new();
     for (export, args) in steps {
         let ex = module
@@ -427,10 +429,21 @@ fn execute_seq(
         };
         let calls = log.lock().expect("host log poisoned")[logged..].to_vec();
         let done = !matches!(outcome, RefOutcome::Values(_));
+        let memory = match instance.memory_count() {
+            Ok(0) => None,
+            Ok(_) => Some(
+                instance
+                    .memory(0)
+                    .and_then(|m| m.0.buffer())
+                    .map_err(|e| RefError::Instantiate(format!("read memory 0: {e}")))?,
+            ),
+            Err(e) => return Err(RefError::Instantiate(format!("memory count: {e}"))),
+        };
         runs.push(RefRun {
             outcome,
             calls,
             fuel_used: fuel - left.min(fuel),
+            memory,
         });
         if done {
             break;

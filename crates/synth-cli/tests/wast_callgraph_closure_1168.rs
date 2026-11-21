@@ -91,17 +91,18 @@ const LABEL_COLLISION_WAST: &str = r#"(module
 (assert_return (invoke "g") (i32.const 1))
 "#;
 
-/// A retained callee that DECLINES on rv32 (offset past the immediate range,
-/// the #1102 fixture) — as a `.wast`. Before the closure it was never
+/// A retained callee that DECLINES on rv32 (`i32.clz`, the #1102 fixture's
+/// rv32-only decline since v0.92 #1254 lowers the large memarg offset it
+/// used before) — as a `.wast`. Before the closure it was never
 /// compiled and the object shipped with `U synth_func_0`; now it is retained,
 /// declines, and the gate refuses under the #1102 wording.
 const DECLINED_CALLEE_WAST: &str = r#"(module
   (memory 32)
   (func $big (param i32) (result i32)
-    (i32.load offset=1048588 (local.get 0)))
+    (i32.clz (local.get 0)))
   (func (export "entry") (param i32) (result i32)
     (call $big (local.get 0))))
-(assert_return (invoke "entry" (i32.const 0)) (i32.const 0))
+(assert_return (invoke "entry" (i32.const 0)) (i32.const 32))
 "#;
 
 fn compile(dir: &Path, src_name: &str, text: &str, out_name: &str, args: &[&str]) -> Output {
@@ -389,7 +390,7 @@ fn wast_declined_callee_hits_the_1102_gate_rv32() {
     );
     let err = stderr(&out);
     assert!(
-        err.contains("warning: skipping function 'func_0'") && err.contains("immediate 1048588"),
+        err.contains("warning: skipping function 'func_0'") && err.contains("I32Clz"),
         "fixture no longer trips the decline this test depends on — premise gone.\n{err}"
     );
     assert_eq!(out.status.code(), Some(1), "clean refusal expected\n{err}");

@@ -316,6 +316,75 @@ pub fn memory0_initial_bytes(wasm: &[u8]) -> Result<Option<u64>, String> {
     Ok(None)
 }
 
+/// The initial image of the module's linear memory: `initial` pages of
+/// zeros with every active data segment applied in declaration order (a
+/// later segment wins an overlap, as instantiation does). `None` for a
+/// module without a memory.
+///
+/// Refused, because the emulator's mapping would not be the reference's:
+/// an imported memory, more than one memory, a memory64 or custom-page-size
+/// memory, a passive segment, and a segment whose offset is not a plain
+/// `i32.const` or that does not fit the memory (instantiation would trap).
+pub fn memory_image(wasm: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    use wasmparser::{DataKind, Operator, Parser, Payload, TypeRef};
+    let mut image: Option<Vec<u8>> = None;
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload.map_err(|e| e.to_string())? {
+            Payload::ImportSection(r) => {
+                for imp in r.into_imports() {
+                    if let TypeRef::Memory(_) = imp.map_err(|e| e.to_string())?.ty {
+                        return Err("an imported memory is not mapped".into());
+                    }
+                }
+            }
+            Payload::MemorySection(r) => {
+                for m in r {
+                    let m = m.map_err(|e| e.to_string())?;
+                    if image.is_some() {
+                        return Err("more than one memory".into());
+                    }
+                    if m.memory64 || m.page_size_log2.is_some() {
+                        return Err("memory64 / custom page size is not mapped".into());
+                    }
+                    let bytes = m
+                        .initial
+                        .checked_mul(65536)
+                        .filter(|b| *b <= 1 << 28)
+                        .ok_or("memory too large to map")?;
+                    image = Some(vec![0u8; bytes as usize]);
+                }
+            }
+            Payload::DataSection(r) => {
+                for d in r {
+                    let d = d.map_err(|e| e.to_string())?;
+                    let DataKind::Active {
+                        memory_index: 0,
+                        offset_expr,
+                    } = d.kind
+                    else {
+                        return Err("a passive or memory-k data segment".into());
+                    };
+                    let mut ops = offset_expr.get_operators_reader();
+                    let off = match (ops.read(), ops.read()) {
+                        (Ok(Operator::I32Const { value }), Ok(Operator::End)) => value as u32,
+                        _ => return Err("a data offset that is not `i32.const`".into()),
+                    };
+                    let img = image.as_mut().ok_or("a data segment without a memory")?;
+                    let end = off as usize + d.data.len();
+                    if end > img.len() {
+                        return Err(format!(
+                            "data segment [{off:#x}, {end:#x}) leaves the memory"
+                        ));
+                    }
+                    img[off as usize..end].copy_from_slice(d.data);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(image)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +455,28 @@ mod tests {
         assert_eq!(memory0_initial_bytes(&w), Ok(Some(3 * 65536)));
         let w = wat::parse_str("(module)").unwrap();
         assert_eq!(memory0_initial_bytes(&w), Ok(None));
+    }
+
+    #[test]
+    fn memory_image_applies_segments_in_order_and_refuses_what_it_cannot_map() {
+        let m = wat::parse_str(
+            "(module (memory 1) (data (i32.const 4) \"\\01\\02\\03\") (data (i32.const 5) \"\\ff\"))",
+        )
+        .unwrap();
+        let img = memory_image(&m).unwrap().unwrap();
+        assert_eq!(img.len(), 65536);
+        assert_eq!(&img[3..8], &[0, 1, 0xff, 3, 0]);
+        let none = wat::parse_str("(module (func))").unwrap();
+        assert_eq!(memory_image(&none), Ok(None));
+        for bad in [
+            "(module (import \"e\" \"m\" (memory 1)))",
+            "(module (memory 1) (data \"x\"))",
+            "(module (memory 1) (data (i32.const 65535) \"xy\"))",
+        ] {
+            assert!(
+                memory_image(&wat::parse_str(bad).unwrap()).is_err(),
+                "{bad}"
+            );
+        }
     }
 }

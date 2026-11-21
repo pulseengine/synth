@@ -665,8 +665,10 @@ fn call_reloc(offset: u64, symbol: &str) -> TextReloc {
     TextReloc {
         offset,
         r_type: R_ARM_THM_CALL,
+        addend: 0,
         symbol: symbol.to_string(),
         target: None,
+        undefined: true,
     }
 }
 

@@ -909,8 +909,10 @@ fn internal_call_clobbers_r2_and_checks_callee_saved() {
         obj.relocs = vec![TextReloc {
             offset: 4,
             r_type: R_ARM_THM_CALL,
+            addend: 0,
             symbol: "leaf".into(),
             target: Some(target),
+            undefined: false,
         }];
         obj.text_relocs = vec![4];
         let mut image = Hosted::link(&obj, &wasm, &Imports::new(), &cfg).unwrap();
