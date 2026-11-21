@@ -52,6 +52,52 @@ def _no_dupes(loader, node, deep=False):
 Strict.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dupes)
 
 
+# FORK GUARD (security, 2026-11-20). A pull-request job may reach a self-hosted
+# runner only through the fail-CLOSED guard below: the event is not a pull
+# request, or the PR's head repo IS this repo. The fail-OPEN form
+# `head.repo.fork && 'ubuntu-24.04' || <self-hosted>` sends fork code to the
+# self-hosted pool whenever the fork flag is null (a fork PR whose head repo was
+# deleted), so any mention of `head.repo.fork` is refused outright.
+FAIL_CLOSED_GUARD = ("(github.event_name != 'pull_request' || "
+                     "github.event.pull_request.head.repo.full_name == "
+                     "github.repository) && ")
+PR_EVENTS = {"pull_request", "pull_request_target"}
+
+
+def _triggers(d) -> set:
+    # YAML 1.1 reads a bare `on:` key as boolean True.
+    on = d.get("on", d.get(True))
+    if isinstance(on, str):
+        return {on}
+    if isinstance(on, (list, dict)):
+        return set(on)
+    return set()
+
+
+def fork_guard(name: str, text: str, d: dict) -> list[str]:
+    out = []
+    for n, line in enumerate(text.splitlines(), 1):
+        if "head.repo.fork" in line:
+            out.append(f"{name}:{n}: fail-open fork guard (`head.repo.fork`); use "
+                       f"the fail-closed form {FAIL_CLOSED_GUARD.strip()} ...")
+    if not (_triggers(d) & PR_EVENTS):
+        return out
+    for job, spec in (d.get("jobs") or {}).items():
+        if not isinstance(spec, dict):
+            continue
+        ro = spec.get("runs-on")
+        if ro is None:
+            continue
+        if isinstance(ro, str) and "${{" in ro:
+            if "self-hosted" in ro and FAIL_CLOSED_GUARD not in ro:
+                out.append(f"{name}: job {job}: `runs-on` can pick a self-hosted "
+                           f"runner without the fail-closed guard")
+        elif "self-hosted" in str(ro):
+            out.append(f"{name}: job {job}: unconditional self-hosted `runs-on` in "
+                       f"a workflow that pull requests trigger")
+    return out
+
+
 def check(path: Path) -> list[str]:
     out = []
     try:
@@ -68,6 +114,7 @@ def check(path: Path) -> list[str]:
         return [f"{path.name}: top level is {type(d).__name__}, not a mapping"]
     if "jobs" not in d:
         out.append(f"{path.name}: no `jobs` key")
+    out += fork_guard(path.name, text, d)
     for job, spec in (d.get("jobs") or {}).items():
         if not isinstance(spec, dict):
             out.append(f"{path.name}: job {job} is not a mapping")
@@ -140,6 +187,32 @@ def self_test() -> int:
     msgs = check(tmp)
     ok(any("neither" in m for m in msgs),
        "NEGATIVE CONTROL: a step with neither `run` nor `uses` is reported")
+    tmp.unlink()
+
+    # NEGATIVE CONTROLS 3-5: the fork guard.
+    sh = "fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"rust-cpu\"]')"
+    head = "name: x\non: [pull_request]\njobs:\n  j:\n    runs-on: "
+    tail = "\n    steps:\n      - run: true\n"
+    cases = {
+        "fail-open `head.repo.fork` form":
+            "${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || "
+            + sh + " }}",
+        "self-hosted expression without the guard":
+            "${{ github.event_name == 'push' && " + sh + " || 'ubuntu-24.04' }}",
+        "unconditional self-hosted list": "[self-hosted, linux, x64, rust-cpu]",
+    }
+    for what, ro in cases.items():
+        with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
+            fh.write(head + ro + tail); tmp = Path(fh.name)
+        ok(check(tmp) != [], f"NEGATIVE CONTROL: {what} is refused")
+        tmp.unlink()
+    good = "${{ " + FAIL_CLOSED_GUARD + sh + " || 'ubuntu-24.04' }}"
+    alias = (f"name: x\non: [pull_request]\njobs:\n  a:\n    runs-on: &g {good}"
+             f"{tail}  b:\n    runs-on: *g{tail}")
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
+        fh.write(alias); tmp = Path(fh.name)
+    ok(check(tmp) == [], "POSITIVE CONTROL: the fail-closed guard, also through "
+                         "a YAML alias, passes")
     tmp.unlink()
 
     # The empty-population refusal.
