@@ -2315,6 +2315,8 @@ fn compile_command(
             // RQ-91-COMPEXPORTS (#1191): refuse a component BEFORE loom and
             // arena_bind read the bytes, so the refusal is what the user sees.
             synth_core::refuse_component_encoding(&wasm_bytes)?;
+            // #1207: an invalid module is refused before loom reads it.
+            synth_core::validate_core_module(&wasm_bytes)?;
 
             // Run Loom WASM optimizer if --loom is enabled
             let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;
@@ -3576,6 +3578,17 @@ fn extract_all_modules_from_wast(contents: &str) -> Result<Vec<Vec<u8>>> {
 /// module if none have exports.
 fn extract_module_from_wast(contents: &str) -> Result<Vec<u8>> {
     let modules = extract_all_modules_from_wast(contents)?;
+
+    // #1207: every top-level module must validate. The preference loop below
+    // passes over a module that fails to decode, so without this an invalid
+    // module would be skipped in favour of a later one. A component is left
+    // to its own refusal (#1191), which fires once it is the chosen module.
+    for (idx, module_bytes) in modules.iter().enumerate() {
+        if synth_core::refuse_component_encoding(module_bytes).is_ok() {
+            synth_core::validate_core_module(module_bytes)
+                .with_context(|| format!("module {idx} of the .wast"))?;
+        }
+    }
 
     // Prefer a module with exports
     for module_bytes in &modules {
@@ -4881,8 +4894,18 @@ fn compile_all_exports(
 
         for (idx, wasm_bytes) in module_binaries.iter().enumerate() {
             synth_core::refuse_component_encoding(wasm_bytes)?; // #1191
+            // #1207: a top-level module that does not validate refuses the
+            // whole compile. The decode below validates too, but its `Err`
+            // arm SKIPS the module, and an invalid module must never be
+            // passed over while an object is still written.
+            synth_core::validate_core_module(wasm_bytes)
+                .with_context(|| format!("module {idx} of the .wast"))?;
             // Run Loom optimizer on each module if --loom is enabled
             let wasm_bytes = maybe_run_loom(loom, wasm_bytes.clone())?;
+            if loom {
+                synth_core::validate_core_module(&wasm_bytes)
+                    .with_context(|| format!("module {idx} of the .wast, after loom"))?;
+            }
             // First decoded module is the SBOM default; refined below to
             // the module whose imports get merged.
             if sbom_wasm_bytes.is_none() {
@@ -5158,6 +5181,9 @@ fn compile_all_exports(
         // RQ-91-COMPEXPORTS (#1191): refuse a component BEFORE loom and
         // arena_bind read the bytes, so the refusal is what the user sees.
         synth_core::refuse_component_encoding(&wasm_bytes)?;
+        // #1207: an invalid module is refused before loom and arena_bind
+        // read it.
+        synth_core::validate_core_module(&wasm_bytes)?;
 
         // Run Loom optimizer if --loom is enabled
         let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;

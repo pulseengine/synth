@@ -37,6 +37,17 @@
 ;; suppression with no red half to justify it. The sweep guards it directly:
 ;; a regression makes this module decline again and reds the sweep, with no
 ;; entry to go stale and nothing to forget to remove.
+;;
+;; #1207: THIS FILE WAS INVALID WEBASSEMBLY until the two extra `drop`s near
+;; the end were added. As committed in v0.70 the function body ended with
+;; three values on the stack for one declared result ("type mismatch: values
+;; remaining on stack at end of block"), and nothing noticed because synth
+;; validated no input. The two drops remove the leftover address and f32
+;; before the final call. They emit no code on ARM: measured on the pre-#1207
+;; binary, the object for the old text and for this text is byte-identical on
+;; every ARM leg that compiles it (cortex-m4f and cortex-m7dp, default and
+;; --relocatable, and --native-pointer-abi), and the exit code is unchanged on
+;; the legs that decline it. So the stream shape above is the same one.
 (module
   (memory 1)
   (func $h (param i32) (result i32) local.get 0)
@@ -87,6 +98,8 @@
     i32.const 2130706432
     i32.lt_u
     select
+    drop
+    drop
     drop
     local.get 3
     call $h)

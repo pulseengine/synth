@@ -71,6 +71,35 @@ jobs:
       # lowering on ARM is ever compiled here. Same binary, no new deps.
       - name: Run spec-suite compile census (exact-pinned, all backends)
         run: python3 scripts/spec_compile_census.py
+      # Refs #1207: every `assert_invalid` and `assert_malformed` module of the
+      # suite goes to `synth compile` on three backends and must be REFUSED.
+      # For assert_invalid a refusal counts only when stderr carries the
+      # validator's own diagnostic, so a non-zero exit for an unrelated
+      # reason (an op synth does not lower) is red, not green. Rust, in
+      # crates/synth-cli/tests/invalid_module_refused_1207.rs; the two suite
+      # tests are `#[ignore]`d because the required Test job has no
+      # submodule, and this workflow is the one that checks it out. Red on
+      # the pre-fix binary (381c8432): none of the 16 314 assert_invalid
+      # compiles is refused as invalid, 1 803 of the `--func-index 0` ones and
+      # 44 of the `--all-exports` ones exit 0, and 12 do not finish.
+      # Default test threading on purpose: with --test-threads=1 libtest
+      # prefixes the first line a test prints and the exact greps miss it.
+      - name: Every spec assert_invalid / assert_malformed module is refused (#1207)
+        run: |
+          set -euo pipefail
+          cargo test -p synth-cli --test invalid_module_refused_1207 -- \
+            --include-ignored --nocapture 2>&1 | tee /tmp/invalid1207.log
+          # EXACT counts, so a suite that shrinks, a backend leg that drops or
+          # a test that stops running reds here as well as in the test.
+          grep -qx 'ORACLE invalid-1207 spec --all-exports: 8157 of 8157 assert_invalid compiles refused as invalid (2719 modules x 3 backends), 0 accepted, 0 timed out' /tmp/invalid1207.log
+          grep -qx 'ORACLE invalid-1207 spec --func-index 0: 8157 of 8157 assert_invalid compiles refused as invalid (2719 modules x 3 backends), 0 accepted, 0 timed out' /tmp/invalid1207.log
+          test "$(grep -cE '^ORACLE invalid-1207 spec (--all-exports|--func-index 0) \[(arm|riscv|aarch64)\]: 2719 refused as invalid, 0 accepted, 0 other$' /tmp/invalid1207.log)" = 6
+          grep -qx 'ORACLE invalid-1207 library: 5438 of 5438 assert_invalid decodes refused as invalid (2 entry points)' /tmp/invalid1207.log
+          # The control: the validator rejects no top-level module of the suite.
+          grep -qx 'ORACLE invalid-1207 control: 2230 of 2230 top-level spec modules validate' /tmp/invalid1207.log
+          grep -qx 'ORACLE malformed-1207 spec: 5835 of 5835 assert_malformed compiles refused (712 binary + 1233 text modules x 3 backends), 0 accepted, 0 timed out' /tmp/invalid1207.log
+          grep -qx 'ORACLE invalid-1207 curated: 273 refusals of 273 (13 fixtures x (3 backends x 6 entry paths + 3 library entry points)); valid twins: 177 compile, 57 declined for a stated non-validation reason, 0 refused as invalid' /tmp/invalid1207.log
+          grep -qE '^test result: ok\. 3 passed; 0 failed; 0 ignored' /tmp/invalid1207.log
       # RQ-65-MVPCORE (#1017) / #1225: the census above measures the
       # SINGLE-MODULE path for a one-module .wast (what every execution oracle
       # compiles) and the refusing multi-module merge for the rest. This step

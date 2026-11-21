@@ -1083,8 +1083,61 @@ pub fn refuse_component_encoding(wasm_bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// #1207: the feature set a module is VALIDATED under before it is decoded.
+///
+/// An allow-list, not `WasmFeatures::all()` minus exceptions: `all()` grows
+/// with every wasmparser release, and a proposal that relaxes a typing rule
+/// makes a module the standard calls invalid validate. Measured on the pinned
+/// spec suite with the decode parser's set (`all()` minus two): 8 of its
+/// 2700 `assert_invalid` modules VALIDATE (six `br_on_cast`/`br_on_cast_fail`
+/// type mismatches the custom-descriptors proposal relaxes, two
+/// "non-empty tag result type" the stack-switching proposal permits). Under
+/// this set none does, and none of the suite's 2211 top-level modules is
+/// rejected.
+///
+/// `WASM3` is the WebAssembly 3.0 standard. `CUSTOM_PAGE_SIZES` is the one
+/// post-3.0 proposal synth accepts on purpose (#1315/#1441: `(pagesize 1)`
+/// and `(pagesize 65536)`). A module that is valid here can still be DECLINED
+/// later by name (memory64, GC, exceptions, atomics...): validity is about
+/// the input having a meaning, not about synth lowering it.
+pub fn validation_features() -> wasmparser::WasmFeatures {
+    wasmparser::WasmFeatures::WASM3 | wasmparser::WasmFeatures::CUSTOM_PAGE_SIZES
+}
+
+/// The phrase every #1207 refusal starts with (tests and oracles match it).
+pub const INVALID_MODULE_NEEDLE: &str = "invalid WebAssembly module";
+
+/// #1207: refuse a core module that does not VALIDATE.
+///
+/// Before this, nothing validated the input: the decoder read operators and
+/// the selectors lowered them against a simulated stack that was never
+/// checked for height or type. A module the specification rejects (the
+/// issue's `loop (result i32)` whose only value a `br_if` pops) compiled with
+/// exit 0 on ARM and RV32, and so did 12 of 13 fixtures on AArch64. An
+/// invalid module has no semantics, so no object can be right for it.
+///
+/// The check is `wasmparser`'s validator (never a hand-written one) under
+/// [`validation_features`]. It runs inside both decode entry points, so every
+/// route to a `DecodedModule` or a `FunctionOps` list passes it — the CLI's
+/// whole-module, single-function and `.wast` paths, and a library caller of
+/// `Backend::compile_module`, whose only source of a `DecodedModule` is
+/// [`decode_wasm_module`].
+pub fn validate_core_module(wasm_bytes: &[u8]) -> Result<()> {
+    wasmparser::Validator::new_with_features(validation_features())
+        .validate_all(wasm_bytes)
+        .map(|_| ())
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "{INVALID_MODULE_NEEDLE}: {e}. The module does not pass \
+                 WebAssembly validation, so it has no defined behaviour and \
+                 nothing is compiled; refusing (#1207)"
+            )
+        })
+}
+
 pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     refuse_component_encoding(wasm_bytes)?;
+    validate_core_module(wasm_bytes)?;
     let mut functions = Vec::new();
     let mut memories = Vec::new();
     let mut imported_memories: Vec<WasmMemory> = Vec::new();
@@ -1933,6 +1986,7 @@ fn apply_name_section(functions: &mut [FunctionOps], names: &HashMap<u32, String
 /// Decode a WASM binary and extract all function bodies as WasmOp sequences
 pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
     refuse_component_encoding(wasm_bytes)?;
+    validate_core_module(wasm_bytes)?; // #1207
     let mut functions = Vec::new();
     let mut func_index = 0u32;
     let mut num_imported_funcs = 0u32;
@@ -3176,6 +3230,64 @@ mod tests {
         let wasm = wat::parse_str(COMPONENT_1191).expect("component parses");
         let err = decode_wasm_functions(&wasm).expect_err("a component must be refused");
         assert!(format!("{err:#}").contains("#1191"));
+    }
+
+    // #1207: the issue's module. The `br_if` pops the only value the loop's
+    // `(result i32)` needs, so the loop's end is reached with an empty stack.
+    const INVALID_1207: &str = r#"(module
+      (func (export "cu_add_tee") (param i32) (result i32) (local i32)
+        (loop (result i32)
+          local.get 1 i32.const 1 i32.add local.tee 1
+          local.get 0 i32.lt_s
+          br_if 0)))"#;
+
+    #[test]
+    fn invalid_module_1207_refused_by_both_decode_entry_points() {
+        let wasm = wat::parse_str(INVALID_1207).expect("well-formed text");
+        for err in [
+            decode_wasm_module(&wasm).map(|_| ()).expect_err("refused"),
+            decode_wasm_functions(&wasm)
+                .map(|_| ())
+                .expect_err("refused"),
+            validate_core_module(&wasm).expect_err("refused"),
+        ] {
+            let msg = format!("{err:#}");
+            assert!(msg.contains(INVALID_MODULE_NEEDLE), "{msg}");
+            // The validator's own words, not a paraphrase.
+            assert!(msg.contains("type mismatch"), "{msg}");
+            assert!(msg.contains("#1207"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn validation_feature_set_1207_is_wasm3_plus_custom_page_sizes() {
+        // Accepted on purpose (#1315/#1441): valid only with the
+        // custom-page-sizes proposal on.
+        let pagesize = wat::parse_str("(module (memory 1 (pagesize 1)))").expect("parses");
+        validate_core_module(&pagesize).expect("custom page sizes validate");
+        // WebAssembly 3.0: multi-memory and memory64 validate (synth declines
+        // memory64 later, by name, #1209 — validity is not acceptance).
+        let wasm3 = wat::parse_str("(module (memory 1) (memory i64 1))").expect("parses");
+        validate_core_module(&wasm3).expect("wasm 3.0 validates");
+        // A post-3.0 proposal synth does not claim is NOT valid input, though
+        // the decode parser's own feature set would read it.
+        let wide = wat::parse_str(
+            "(module (func (param i64 i64 i64 i64) (result i64 i64)
+               local.get 0 local.get 1 local.get 2 local.get 3 i64.add128))",
+        )
+        .expect("parses");
+        let msg = format!("{:#}", validate_core_module(&wide).expect_err("refused"));
+        assert!(msg.contains(INVALID_MODULE_NEEDLE), "{msg}");
+        // An in-flight proposal relaxes a 3.0 typing rule: a tag with a
+        // result is invalid WebAssembly 3.0 and valid under stack-switching.
+        let tag = wat::parse_str("(module (tag (result i32)))").expect("parses");
+        assert!(validate_core_module(&tag).is_err());
+        assert!(
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                .validate_all(&tag)
+                .is_ok(),
+            "control: `all()` accepts it, which is why the set is an allow-list"
+        );
     }
 
     #[test]
