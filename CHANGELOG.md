@@ -10,11 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This release fixes wrong code first. Silent wrong code is fixed on ARM, RV32 and the
 native-pointer ABI; in each case the compile exited 0 and the program computed something different
 from wasmtime. Each fix was checked red before and green after by execution against wasmtime or
-kiln under unicorn, except the MPU encoding fix, which is unit-checked against ARM's CMSIS table;
-no hardware was run.
+kiln under unicorn, except the MPU encoding fix, which is unit-checked against ARM's CMSIS table,
+and the export-alias fix (#1746, #1752), which is checked on the object's symbol tables; no
+hardware was run.
 Where supporting an input is out of scope, it is now refused loudly, and each new refusal is
 counted below over the population its PR measured. **Visible changes:** a Cortex-M module that
-calls a function import is now always the `--relocatable` object (#1767, below); a WebAssembly
+calls a function import now compiles to the `--relocatable` object, and a single-function
+Cortex-M compile of a function that makes any call is refused (#1767, below); a WebAssembly
 component is refused instead of decoded (#1191); and no Intel macOS (x86_64-apple-darwin) assets
 are built. How many real-world modules newly refuse was **not measured**: the 243-module
 acceptance-ladder corpus was not mounted, so the ladder was not re-run (RQ-91-CORPUS).
@@ -22,7 +24,9 @@ acceptance-ladder corpus was not mounted, so the ladder was not re-run (RQ-91-CO
 ### Wrong code fixed: ARM
 
 Every figure is from the delivering PR's own differential, red on its base and green on its
-branch, as recorded in its release artifact.
+branch, as recorded in its release artifact; PR #1767's import boundary, `select`,
+`compile_module` and multi-result entries have no release artifact, and their figures are
+recorded in the PR body.
 
 - **The import call boundary** (#1696, #1755, #1699, #1758; PR #1767). On default flags a
   Cortex-M module that calls a function import was an `ET_REL` object built from functions
@@ -90,8 +94,8 @@ branch, as recorded in its release artifact.
 
 The per-shape native-pointer guards are replaced by one address-provenance decision and one
 validator over the emitted stream (#1672, #1568, #1604, #1661, #739; PR #1682). The `fn npa_*`
-helpers fall from 15 to 5, and the three per-shape refusals and their call sites are deleted;
-the change is a net addition of lines (about +1930 / -1020 over `crates/`).
+helpers fall from 15 to 6, and the three per-shape refusals and their call sites are deleted;
+the change is a net addition of lines (+2554 / -1018 over `crates/`).
 
 - **A constant static address reached through arithmetic or a `select`** (#1568) faulted; 4 of 4
   equal after, and 59 matrix cells refused on the base now execute equal.
@@ -129,6 +133,11 @@ the change is a net addition of lines (about +1930 / -1020 over `crates/`).
 
 ### New loud refusals
 
+- **A single-function Cortex-M compile of a function that makes a call** (PR #1767):
+  `--func-name`/`--func-index` on cortex-m of a function with any call, internal or import. It
+  used to ship a `bl` to itself at exit 0, the Thumb twin of #1645. Over 268 tracked files, 86 of
+  1492 `--func-name` compiles per Cortex-M target newly refuse (53 files). Compile the whole
+  module or use `--relocatable`.
 - **Multi-result entry points** (#1450; PR #1767): a function with more than one result that is
   exported, in a compiled element segment or named by a single-function compile, on ARM, RV32
   and AArch64. It used to compile and return only its last result. The spec census pins move by
@@ -200,8 +209,6 @@ the change is a net addition of lines (about +1930 / -1020 over `crates/`).
 - **Self-contained cortex-r5 images still ship `.text` only** (RQ-91-R5DATAINIT): active data
   segments and global initialisers are dropped with exit 0. Re-measured on 0.91.0 at release
   prep: 0 copies of the segment bytes.
-- **`--target cortex-m3 --func-name` on a function that calls another still ships a `bl` to
-  itself** and exits 0 (RQ-91-M3SELFBL). Re-measured on 0.91.0: `bl b2` at `b2`.
 - **The shared image builder was not built** (RQ-91-IMAGEBUILDER): 10 distinct builders remain.
 - `compile_module` still reads the module-level tables from the caller on ARM and RV32 (#1745),
   and cortex-r5 and float or stack arguments at an import were not executed (#1696); stated in

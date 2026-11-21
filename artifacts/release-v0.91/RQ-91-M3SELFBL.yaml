@@ -38,6 +38,18 @@ artifacts:
         tree: the refuting compile exits 0 with no warning, and
         `arm-none-eabi-objdump -d` shows one `bl`, `b2: f7ff fffe bl b2
         <caller+0x12>`, a branch-and-link to itself, as at planning.
+
+        CORRECTED AT COLD REVIEW (docs/reviews/v0.91-cold-review.md F1):
+        the release-prep measurement above ran on 0f0d082f, before PR #1767
+        merged (0213a5a0). On 40178418 the refuting compile exits 1 with no
+        object: "function 'caller' carries 1 relocation(s) ... the call
+        sites would ship as `bl` to themselves. Compile the whole module
+        ... or use --relocatable (#1645, #1696)". A refusal refutes this
+        record, so the defect is no longer LIVE at the release commit. The
+        refusal came from PR #1767, not from this record's lane
+        (RQ-91-IMAGEBUILDER), and the done-when's other arm, an image that
+        includes and links the callee, is not delivered; status and
+        disposition stay as filed.
     tags:
       - feature-loop
       - bug
