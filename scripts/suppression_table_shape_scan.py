@@ -93,7 +93,6 @@ CLASSIFIED = {
     ("rv32_dead_arm_value_1739_differential.py", "EXTRA_DECLINES"): ("decline", "a join register live below an inner frame's entry (#1739): renaming it on one path is unsound, so it is refused; exact both ways"),
     ("litpool_islands_345_differential.py", "INTENDED_ACCEPTANCES"): ("decline", "declines with islands off, compiles with them on, by design"),
     ("home_alias_audit_corpus_1189.py", "PLANT_EXPECTED"): ("red-half", "DERIVED plant expectations, the potency evidence"),
-    ("invalid_accept_1207_differential.py", "DECLINES"): ("red-half", "the exact-pin companion: expected verdict per cell, exact BOTH ways"),
     ("expansion_canary_gate_1021.py", "SANCTIONED"): ("config", "{'r12'} — a sanctioned scratch register in the contract"),
     ("falcon_opt_1318_differential.py", "EXPECTED_MACHINE"): ("config", "ELF machine name per backend"),
     ("rv32_dead_arm_value_1739_differential.py", "SKIP_VECTORS"): ("config", "one input of one export not run: t_i32_loop_exit(0x80000000) loops two billion times, past the emulator budget; the export's other 8 inputs run"),

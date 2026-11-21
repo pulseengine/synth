@@ -3983,9 +3983,36 @@ claims:
         # (12 / 9 / 12 mismatches) measure 0 and are deleted.
         # v0.92 batch 2 (#1763): 129 -> 126, the three #1231 operand-class
         # pins (2 / 1 / 1 refusals) measure 0 and are deleted.
-        value: 126
+        # #1207: 126 -> 87, the 39 cells of the invalid-accept table are
+        # refused by the validator and the table is empty.
+        value: 87
         baseline: 27
         waivers:
+          - to: 87
+            reason: >-
+              Refs #1207: 126 -> 87. Not a growth waiver: 39 entries CLOSED BY
+              A FIX, not deleted or merged. invalid_accept_1207_differential
+              .py's KNOWN table pinned 13 invalid modules x 3 backends: 38
+              cells "accept" (synth compiled a module wasmtime rejects at
+              validation, exit 0, object written) and one cell "decline"
+              (cu_add_tee on AArch64, refused by that selector's own End
+              check). Every input module is now validated with wasmparser
+              before it is decoded (synth_core::validate_core_module, WASM3
+              plus custom-page-sizes), so all 39 cells are refused with the
+              validator's own diagnostic and the table is an empty literal:
+              it now lists cells STILL wrongly accepted, and the oracle reds
+              on an accept that is not listed and on a decline that is not the
+              validator's. Measured with the pre-fix binary (381c8432): 38
+              accepted, 1 declined, RESULT FAIL against the empty table; with
+              the fix: 0 accepted, 39 declined, PASS. The census the issue
+              asked for runs in Rust
+              (crates/synth-cli/tests/invalid_module_refused_1207.rs, wired in
+              spec-suite.yml): 2719 assert_invalid modules x 3 backends x 2
+              entry paths, 16314 of 16314 refused as invalid, where the
+              pre-fix binary refuses none as invalid and exits 0 on 1803 of
+              the --func-index 0 compiles and 44 of the --all-exports ones. An
+              entry is still required because 87 remains above the baseline of
+              27.
           - to: 126
             reason: >-
               v0.92 batch 2 (Refs #1763, #1231): 129 -> 126. Not a growth
@@ -4248,7 +4275,9 @@ claims:
         # 12 + 9 + 12 = 33 cases.
         # v0.92 batch 2 (#1763): 165 -> 162, the three closed #1231 pins at
         # one case per entry (that table carries no `cases_at`).
-        value: 162
+        # #1207: 162 -> 123, the 39 closed invalid-accept cells at one case
+        # per entry (that table carries no `cases_at`).
+        value: 123
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the six tables in the
       # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in
@@ -4269,7 +4298,9 @@ claims:
       # is the LARGEST table in the population — `invalid_accept_1207_differential
       # .py:133 KNOWN` is a DictComp contributing 39 of the 84 counted entries, so a
       # reader who believed this comment would have thought the biggest table was
-      # invisible to both. THE TWO REMAINING ESCAPES ARE NOT THE SAME SHAPE, and the
+      # invisible to both. (HISTORICAL since the #1207 fix: that table is an empty
+      # literal now, no comprehension table remains in the population, and the
+      # comprehension path is exercised by test_claim_check.py alone.) THE TWO REMAINING ESCAPES ARE NOT THE SAME SHAPE, and the
       # first version of this correction got the second one wrong too, so it is
       # measured here rather than reasoned: `NAME = dict(...)` has no `= {`, so the
       # regex misses it entirely. `NAME = {}` followed by `.update()` calls DOES match
