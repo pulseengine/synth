@@ -111,7 +111,9 @@ jobs:
         if: failure() || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
-          bazel mod deps --lockfile_mode=update > /dev/null
+          # Never with REPIN set: Bazel records it in the lock (wohl#113).
+          env -u CARGO_BAZEL_REPIN -u CARGO_BAZEL_REPIN_ONLY -u REPIN \
+            bazel mod deps --lockfile_mode=update > /dev/null
           git diff --stat -- MODULE.bazel.lock
           echo "To fix a red check: commit this file, or run 'bazel mod deps --lockfile_mode=update' locally and commit the result."
       - name: Upload the regenerated MODULE.bazel.lock

@@ -104,10 +104,10 @@ publish = false
 """
 
 
-def run(cmd, cwd):
+def run(cmd, cwd, env=None):
     """Run cmd, return (rc, combined output). Never raises on a non-zero rc."""
     p = subprocess.run(
-        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
     )
     return p.returncode, p.stdout
 
@@ -267,6 +267,21 @@ BAZEL_STALE_TEXT = "MODULE.bazel.lock is no longer up-to-date"
 BAZEL_RECORDED_CARGO_LOCK = re.compile(rb'("@@//Cargo\.lock": ")([0-9a-f]{64})(")')
 
 
+# Bazel records the env vars a module extension reads as lock inputs. A lock
+# written with CARGO_BAZEL_REPIN=1 set records "1", and --lockfile_mode=error
+# then refuses it wherever REPIN is unset (wohl#113). So the lock must record
+# every REPIN variable as null, and this script runs Bazel with them unset.
+REPIN_VARS = ("CARGO_BAZEL_REPIN", "CARGO_BAZEL_REPIN_ONLY", "REPIN")
+BAZEL_RECORDED_REPIN = re.compile(
+    rb'"(' + b"|".join(v.encode() for v in REPIN_VARS) + rb')": (?!null\b)([^,\n]*)'
+)
+
+
+def repin_recorded(lock_bytes):
+    """The REPIN variables the lock records with a non-null value."""
+    return [(m[1].decode(), m[2].decode()) for m in BAZEL_RECORDED_REPIN.finditer(lock_bytes)]
+
+
 def bazel_errors(out):
     return "\n".join(l for l in out.splitlines() if l.startswith("ERROR")) or out[-2000:]
 
@@ -285,7 +300,7 @@ def bazel_control():
         BAZEL_LOCK.write_bytes(
             BAZEL_RECORDED_CARGO_LOCK.sub(lambda m: m[1] + flipped + m[3], original)
         )
-        rc, out = run(BAZEL_CHECK, ROOT)
+        rc, out = run(BAZEL_CHECK, ROOT, bazel_env())
     finally:
         BAZEL_LOCK.write_bytes(original)
     if BAZEL_LOCK.read_bytes() != original:
@@ -302,11 +317,30 @@ def bazel_control():
     return True
 
 
+def bazel_env():
+    return {k: v for k, v in os.environ.items() if k not in REPIN_VARS}
+
+
+def repin_control():
+    """True when repin_recorded() flags a lock that records REPIN as "1"."""
+    planted = b'"CARGO_BAZEL_REPIN": "1",\n"REPIN": null'
+    if repin_recorded(planted) != [("CARGO_BAZEL_REPIN", '"1"')]:
+        print("FAIL(control): a lock recording CARGO_BAZEL_REPIN=\"1\" was not flagged")
+        return False
+    print("control OK: a lock recording CARGO_BAZEL_REPIN=\"1\" is refused")
+    return True
+
+
 def cmd_bazel():
     if not BAZEL_LOCK.is_file():
         sys.exit("FAIL: MODULE.bazel.lock is missing")
-    rc, out = run(BAZEL_CHECK, ROOT)
-    ok = rc == 0
+    repin = repin_recorded(BAZEL_LOCK.read_bytes())
+    for var, val in repin:
+        print(f"::error file=MODULE.bazel.lock::MODULE.bazel.lock records {var}={val}. "
+              f"It was regenerated with {var} set, and --lockfile_mode=error refuses "
+              f"it once {var} is unset. Regenerate with `env -u {var} {BAZEL_REGENERATE}`.")
+    rc, out = run(BAZEL_CHECK, ROOT, bazel_env())
+    ok = rc == 0 and not repin
     if ok:
         print("  fresh   MODULE.bazel.lock")
     else:
@@ -315,7 +349,7 @@ def cmd_bazel():
               f"Run `{BAZEL_REGENERATE}` and commit MODULE.bazel.lock in this PR. "
               "Any change to Cargo.lock, Cargo.toml, MODULE.bazel or a "
               "crates/*/Cargo.toml needs it, a dependabot cargo bump included.")
-    return bazel_control() and ok
+    return repin_control() and bazel_control() and ok
 
 
 def main():
