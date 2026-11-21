@@ -168,17 +168,17 @@ fn curated() -> Vec<(String, String, String)> {
     let mut v = Vec::new();
     for ty in ["i32", "i64", "f32", "f64"] {
         for ctor in ["block", "loop", "if"] {
-            let (bad, good) = match ctor {
-                "if" => (
-                    "(if (i32.const 0) (then))".to_string(),
-                    "(if (i32.const 0) (then))".to_string(),
-                ),
-                _ => (format!("({ctor})"), format!("({ctor})")),
+            // An empty construct, then the function's end with no value
+            // for its declared result (block.wast, loop.wast, if.wast:
+            // `type-empty-*`).
+            let empty = match ctor {
+                "if" => "(if (i32.const 0) (then))".to_string(),
+                _ => format!("({ctor})"),
             };
             v.push((
                 format!("type-empty-{ctor}-{ty}"),
-                format!(r#"(func (export "f") (result {ty}) {bad})"#),
-                format!(r#"(func (export "f") (result {ty}) {good} ({ty}.const 0))"#),
+                format!(r#"(func (export "f") (result {ty}) {empty})"#),
+                format!(r#"(func (export "f") (result {ty}) {empty} ({ty}.const 0))"#),
             ));
         }
     }

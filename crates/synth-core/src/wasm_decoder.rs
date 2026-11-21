@@ -3940,9 +3940,11 @@ mod tests {
             (module
                 (memory 1)
                 (func (export "load_store") (param i32)
+                    ;; #1207: address first, then the value. The fixture
+                    ;; used to push the value first, which does not validate.
+                    local.get 0
                     local.get 0
                     v128.load
-                    local.get 0
                     v128.store
                 )
             )
@@ -5193,6 +5195,13 @@ mod tests {
     // proposals off. Reverting it to `Parser::new(0)` makes the first case a
     // decode error and the second an `Array(4)` target that reads the `end`
     // byte as its offset.
+    //
+    // #1207: a load with either bit set has an alignment far above natural,
+    // so the module is INVALID and the decode entry points now refuse it
+    // before `decode_parser` runs. These tests therefore read the operator
+    // from `decode_parser` directly (the #1649 pin, unchanged in substance),
+    // and separately require the refusal to be the validator's ALIGNMENT
+    // verdict — the same reading of the bits, one layer earlier.
 
     fn i32_load_module(memop: &[u8]) -> Vec<u8> {
         let sec = |id: u8, b: &[u8]| {
@@ -5214,30 +5223,56 @@ mod tests {
         m
     }
 
-    fn only_load(memop: &[u8]) -> (Vec<WasmOp>, Option<String>) {
-        let f = decode_wasm_functions(&i32_load_module(memop))
-            .expect("decodes as 0.262 did")
-            .remove(0);
-        (f.ops, f.unsupported)
+    /// The module's one `i32.load`, as `decode_parser` reads it and as
+    /// `convert_operator` lowers it.
+    fn only_load(memop: &[u8]) -> Vec<WasmOp> {
+        let module = i32_load_module(memop);
+        let mut loads = Vec::new();
+        for payload in decode_parser().parse_all(&module) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.expect("payload") {
+                for op in body.get_operators_reader().expect("operators") {
+                    let op = op.expect("decodes as 0.262 did");
+                    assert!(
+                        !matches!(memarg_target(&op), Some(wasmparser::MemArgTarget::Array(_))),
+                        "bit 5 read as a GC array target"
+                    );
+                    if matches!(op, wasmparser::Operator::I32Load { .. }) {
+                        loads.push(convert_operator(&op).expect("i32.load lowers"));
+                    }
+                }
+            }
+        }
+        // #1207: the same bytes through the decode entry point are refused,
+        // and for the ALIGNMENT, not for an ordering or array immediate.
+        let err = decode_wasm_functions(&module).expect_err("alignment above natural");
+        let msg = format!("{err:#}");
+        assert!(msg.contains(INVALID_MODULE_NEEDLE), "{msg}");
+        assert!(
+            msg.contains("alignment must not be larger than natural"),
+            "{msg}"
+        );
+        loads
     }
 
     #[test]
     fn memarg_bit4_is_alignment_not_an_ordering_flag_1649() {
-        let (ops, unsupported) = only_load(&[0x12, 0x00]);
-        assert_eq!(unsupported, None);
-        assert!(ops.contains(&WasmOp::I32Load {
-            offset: 0,
-            align: 0x12
-        }));
+        assert_eq!(
+            only_load(&[0x12, 0x00]),
+            vec![WasmOp::I32Load {
+                offset: 0,
+                align: 0x12
+            }]
+        );
     }
 
     #[test]
     fn memarg_bit5_is_alignment_not_an_array_target_1649() {
-        let (ops, unsupported) = only_load(&[0x22, 0x04]);
-        assert_eq!(unsupported, None);
-        assert!(ops.contains(&WasmOp::I32Load {
-            offset: 4,
-            align: 0x22
-        }));
+        assert_eq!(
+            only_load(&[0x22, 0x04]),
+            vec![WasmOp::I32Load {
+                offset: 4,
+                align: 0x22
+            }]
+        );
     }
 }
