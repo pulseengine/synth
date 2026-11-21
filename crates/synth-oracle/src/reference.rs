@@ -226,24 +226,24 @@ thread_local! {
     /// The kiln worker's cache of CONVERTED modules, keyed by their bytes.
     /// `Module::from_kiln_module` is the expensive step (measured ~12 ms per
     /// call in a Linux VM, against microseconds for decode, instantiation and
-    /// execution). A converted `Module` is NOT stateless: kiln instances share
-    /// the module's memory (and possibly its globals and tables), so a store
-    /// in one call was visible to a load in the next call on the same bytes.
-    /// Only modules that define no memory, global or table are cached, so no
-    /// state crosses calls (`tests/kiln_no_shared_state.rs`).
+    /// execution). A converted `Module` is NOT stateless: its memories, globals
+    /// and tables sit behind `Arc`s that every instance shares, so a store in
+    /// one call was once visible to a load in the next call on the same bytes.
+    /// The cache therefore holds a PRISTINE template that is never
+    /// instantiated, and every run gets `fresh_copy` of it: the module cloned
+    /// with each memory, global and table deep-copied into a new `Arc`
+    /// (`tests/kiln_no_shared_state.rs`).
     static MODULES: std::cell::RefCell<std::collections::HashMap<Vec<u8>, Arc<Module>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-/// True when the module can carry state between instances: it defines (or
-/// imports) a memory, a global or a table. Such a module is never cached.
-fn has_instance_state(wasm: &[u8]) -> bool {
+/// True when the module imports something other than a function. Such a
+/// module is never cached: an imported memory, global or table is outside
+/// what `fresh_copy` re-creates.
+fn has_non_func_import(wasm: &[u8]) -> bool {
     use wasmparser::{Parser, Payload, TypeRef};
     for payload in Parser::new(0).parse_all(wasm) {
         match payload {
-            Ok(Payload::MemorySection(s)) if s.count() > 0 => return true,
-            Ok(Payload::GlobalSection(s)) if s.count() > 0 => return true,
-            Ok(Payload::TableSection(s)) if s.count() > 0 => return true,
             Ok(Payload::ImportSection(s)) => {
                 for imp in s.into_imports() {
                     match imp {
@@ -252,7 +252,7 @@ fn has_instance_state(wasm: &[u8]) -> bool {
                     }
                 }
             }
-            // An unparsable module is treated as stateful: never cached.
+            // An unparsable module is never cached.
             Err(_) => return true,
             _ => {}
         }
@@ -260,24 +260,51 @@ fn has_instance_state(wasm: &[u8]) -> bool {
     false
 }
 
+/// The template with every piece of instance state deep-copied, so nothing a
+/// run writes can reach the template or another run. `Memory`, `Table` and
+/// `Global` each implement `Clone` as a full copy of their contents.
+fn fresh_copy(template: &Module) -> Module {
+    use kiln_runtime::module::{GlobalWrapper, MemoryWrapper, TableWrapper};
+    let mut m = template.clone();
+    m.memories = template
+        .memories
+        .iter()
+        .map(|w| MemoryWrapper(Arc::new((*w.0).clone())))
+        .collect();
+    m.tables = template
+        .tables
+        .iter()
+        .map(|w| TableWrapper(Arc::new((*w.0).clone())))
+        .collect();
+    m.globals = template
+        .globals
+        .iter()
+        .map(|w| {
+            let g = w.0.read().expect("kiln global lock poisoned").clone();
+            GlobalWrapper(Arc::new(std::sync::RwLock::new(g)))
+        })
+        .collect();
+    m
+}
+
 fn converted_module(wasm: &[u8]) -> kiln_error::Result<Arc<Module>> {
-    let cacheable = !has_instance_state(wasm);
-    if cacheable && let Some(m) = MODULES.with(|c| c.borrow().get(wasm).cloned()) {
-        return Ok(m);
+    let cacheable = !has_non_func_import(wasm);
+    if cacheable && let Some(t) = MODULES.with(|c| c.borrow().get(wasm).cloned()) {
+        return Ok(Arc::new(fresh_copy(&t)));
     }
     let km = decode_module(wasm)?;
-    let m = Arc::new(*Module::from_kiln_module(&km)?);
-    if !cacheable {
-        return Ok(m);
+    let template = *Module::from_kiln_module(&km)?;
+    let run = Arc::new(fresh_copy(&template));
+    if cacheable {
+        MODULES.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() >= 64 {
+                c.clear();
+            }
+            c.insert(wasm.to_vec(), Arc::new(template));
+        });
     }
-    MODULES.with(|c| {
-        let mut c = c.borrow_mut();
-        if c.len() >= 64 {
-            c.clear();
-        }
-        c.insert(wasm.to_vec(), Arc::clone(&m));
-    });
-    Ok(m)
+    Ok(run)
 }
 
 /// Load and instantiate. The start function, if any, runs under `fuel`, so a

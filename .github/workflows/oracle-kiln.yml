@@ -149,11 +149,13 @@ jobs:
           grep -qx 'ORACLE import-boundary structural: 12 default-flags objects are byte-identical to --relocatable' "$log"
           grep -qE '^test result: ok\. 13 passed; 0 failed' "$log"
           # v0.92 batch 1: two test binaries report 13 (compile_module_1745,
-          # import_boundary_oracle) and three report 3 (select_home_alias_1754,
-          # multi_result_export_1450_oracle, target_record), and one matching
-          # line satisfies `grep -q`. Pin how many result lines carry each count.
+          # import_boundary_oracle) and four report 3 (select_home_alias_1754,
+          # multi_result_export_1450_oracle, target_record, kiln_no_shared_state),
+          # and one matching line satisfies `grep -q`. Pin how many result lines
+          # carry each count.
           test "$(grep -cE '^test result: ok\. 13 passed; 0 failed' "$log")" = 2
-          test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 3
-          # No kiln state crosses reference runs (memory and globals).
+          test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 4
+          # No kiln state crosses reference runs (memory, globals, tables).
           grep -qx 'test memory_does_not_cross_calls ... ok' "$log"
           grep -qx 'test globals_do_not_cross_calls ... ok' "$log"
+          grep -qx 'test tables_do_not_cross_calls ... ok' "$log"

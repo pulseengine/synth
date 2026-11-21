@@ -63,3 +63,28 @@ fn globals_do_not_cross_calls() {
         "a global set in an earlier run leaked: {after:?}"
     );
 }
+
+#[test]
+fn tables_do_not_cross_calls() {
+    // `tset` fills slot 0, which starts null; `call0` dispatches through it.
+    // On a fresh instance `call0` must trap on the null entry.
+    let m = wat::parse_str(
+        "(module (table 1 funcref) (type $t (func (result i32))) \
+         (func $one (type $t) i32.const 1) (elem declare func $one) \
+         (func (export \"tset\") i32.const 0 ref.func $one table.set 0) \
+         (func (export \"call0\") (result i32) i32.const 0 call_indirect (type $t)))",
+    )
+    .unwrap();
+    let imp = Imports::new();
+    let before = reference::run(&m, "call0", &[], 100_000, &imp).unwrap();
+    assert!(
+        matches!(before.outcome, RefOutcome::Trap { .. }),
+        "control: a null slot must trap on a fresh instance: {before:?}"
+    );
+    reference::run(&m, "tset", &[], 100_000, &imp).unwrap();
+    let after = reference::run(&m, "call0", &[], 100_000, &imp).unwrap();
+    assert!(
+        matches!(after.outcome, RefOutcome::Trap { .. }),
+        "a table.set in an earlier run leaked: {after:?}"
+    );
+}
