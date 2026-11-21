@@ -1,0 +1,61 @@
+artifacts:
+  - id: RQ-91-LOWERCORE
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "The control-frame bookkeeping of the one-pass selectors (frame record, label arity, blocktype ordinal, dead-code skip, join rule) exists once, in synth-core, and AArch64 output does not move"
+    description: >
+        Lane S1 of the x86-64 backend plan (VCR-X86-001, reuse item R3).
+        The AArch64 selector declared its control-frame record, the
+        label-arity rule, the blocktype ordinal, the dead-code skip (#1740)
+        and the live-edge rule at `end` inside `select_typed_cf_calls`. They
+        move to `crates/synth-core/src/lower.rs` as `Frame`, `FrameKind`,
+        `label_arities` and `Control`, generic over the backend's branch
+        position and its per-frame payload. Nothing that emits moves: the
+        backend keeps its output buffer and resolves its own branches. The
+        x86-64 selector's control flow (RQ-91-X86CTRL) is built on the same
+        code, so the rule the AArch64 source calls soundness-critical (a
+        branch to a `loop` carries the loop's PARAMETERS, a branch to a
+        `block`/`if` its RESULTS) is written once.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact: compile
+        every `.wat`, `.wasm` and `.wast` under scripts/repro, tests and
+        examples (591 inputs, 284 of them the spec suite) with a synth built
+        from this commit and one built from its parent, `-b aarch64` in four
+        invocations each (`--relocatable --all-exports` to ELF and to
+        Mach-O, the default, `--all-exports`): all 2,364 pairs must agree in
+        exit code, object bytes and stderr text.
+
+        CITATION: #1741 is the architecture-support issue this lane is one
+        step of; it stays open.
+    tags:
+      - feature-loop
+      - backend
+      - refactor
+    links:
+      - type: derives-from
+        target: VCR-X86-001
+    fields:
+      req-type: functional
+      priority: should
+      issue: "#1741"
+      verification-track: differential
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 the frame record, the label-arity rule, the
+        blocktype ordinal, the dead-code skip and the join rule are defined
+        once in synth-core and used by both the AArch64 and the x86-64
+        selector; AArch64 objects are byte-identical before and after.
+      landed: "v0.91 LOWERCORE - #1741 - DELIVERED: crates/synth-core/src/lower.rs (Frame, FrameKind, label_arities, Control) with 13 unit tests; the AArch64 selector uses it; aarch64_selector_lines_code 3131 -> 3037, banked. #1741 stays open (outlives)."
+      verified-by: >
+        DELIVERED, byte-identity-verified. 591 inputs (284 from the spec
+        suite), four `-b aarch64` invocations each: 2,364 of 2,364 pairs
+        identical in exit code and object bytes between the parent (57d4aed8)
+        and this commit, with no stderr difference. NEGATIVE CONTROLS, each a
+        one-line mutant of lower.rs rebuilt into synth and run through the
+        same comparison: a loop label carrying the loop's results moves 44
+        pairs (11 inputs in every mode: 32 in exit code or bytes, 12 in
+        stderr text only); a join treated as always reached moves 24 (6
+        inputs); the blocktype ordinal not advanced in dead code moves 4 (1
+        input). So the comparison sees each of the three rules. UNIT:
+        13 tests in lower.rs, one per rule and per edge into a join.

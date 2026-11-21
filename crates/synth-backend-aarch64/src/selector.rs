@@ -145,6 +145,7 @@ use crate::encoder as enc;
 use crate::encoder::{Cond, FReg, Reg};
 use synth_core::WasmOp;
 use synth_core::backend::{CodeRelocation, FUNC_TABLE_SYMBOL, RelocKind};
+use synth_core::lower::{self, BlockTypeDecline, Closed, Control, ElseError, FrameKind};
 
 /// The GP value-stack temp registers: caller-saved `w9/x9..w15/x15` (7 slots).
 /// `w0..w7` hold incoming integer params; results funnel back through `x0`.
@@ -699,16 +700,25 @@ pub fn select_with_declared_locals(
     //
     // This "dispatch on the TARGET frame's kind, not on the branch op" is what
     // makes loop back-edges correct alongside forward block exits.
-    enum Kind {
-        /// A plain `block`: branches to it go to its END (forward).
-        Block,
-        /// A `loop`: branches to it go to `entry` (the loop header, backward).
-        Loop { entry: usize },
-        /// An `if`: like Block for `br` (branches go to END), but also carries
-        /// the position of the `cbz`/`b.cond` that skips the THEN arm, patched
-        /// at `else` (to the else arm) or at `end` (past the then arm).
-        If { else_fixup: Option<usize> },
-    }
+    //
+    // The frame record, the label-arity rule (`Frame::label_arity` vs
+    // `Frame::result_arity`), the blocktype ordinal, reachability and the
+    // join rule are the ISA-neutral bookkeeping of [`synth_core::lower`],
+    // shared with the x86-64 selector (RQ-91-LOWERCORE, #1741). A branch
+    // position is a word index into `words`.
+    //
+    // Reachability (#851, #1740): code after an UNCONDITIONAL transfer (`br`,
+    // `br_table`, `return`, `unreachable`) is unreachable, and WASM validates
+    // it against a POLYMORPHIC stack, so it may pop values that are not there,
+    // or pop below its frame's entry height (`br 1 ; drop ; drop`). It is
+    // SKIPPED, not lowered (`Control::skip_dead`): lowering it against the
+    // straight-line model popped the live values BENEATH the frame out of the
+    // model (the code after the join then read nothing: `binop underflow`, and
+    // a debug-build panic at the join), or underflowed outright. `else`/`end`
+    // of the LIVE frame the transfer sat in are lowered as before (that join
+    // is reached by the frame's other edges, and the model is truncated to the
+    // frame's entry height).
+    type Kind = FrameKind<usize>;
     /// VCR-A64-CF-001 — the reconciliation registers a VALUE-CARRYING frame
     /// reserves. Both files are reserved because the blocktype-arity side-table
     /// carries counts only; `file` records which one the first reconciliation
@@ -718,61 +728,8 @@ pub fn select_with_declared_locals(
         fp: FReg,
         file: Option<File>,
     }
-    struct Frame {
-        kind: Kind,
-        /// Word positions in `words` of FORWARD branches targeting this frame's
-        /// END, awaiting fix-up when the frame closes (Block/If only; a Loop's
-        /// branches are backward and resolved eagerly).
-        pending: Vec<usize>,
-        /// #1740 — the `else` skip branch of an if whose THEN arm ended dead.
-        /// It is emitted (and patched) like any forward branch, but it never
-        /// executes, so it is NOT an edge into the join: kept apart from
-        /// `pending`, whose non-emptiness says the join is reached.
-        dead_skip: Option<usize>,
-        /// Value-stack height on entry — a void frame must restore it at `End`.
-        stack_entry: usize,
-        /// How many values a `br`/`br_if`/`br_table` to THIS frame's LABEL
-        /// carries. For a Block/If the label is its END, so this is the frame's
-        /// RESULT count; for a Loop the label is its HEADER, so this is the
-        /// frame's PARAMETER count. Getting that distinction wrong is a SILENT
-        /// MISCOMPILE, not a decline: reconciling on a `loop (result i32)`
-        /// back-edge would overwrite the result register with a garbage value
-        /// on every iteration. Only 0 or 1 (params and multi-value decline).
-        label_arity: u8,
-        /// How many values the frame's FALL-THROUGH `End` leaves on the stack
-        /// (the frame's result count). Only 0 or 1.
-        result_arity: u8,
-        /// Reserved reconciliation registers — `Some` iff the frame is
-        /// value-carrying (`result_arity == 1`).
-        slot: Option<Slot>,
-    }
-    let mut ctrl: Vec<Frame> = Vec::new();
-    // Ordinal counter over Block/Loop/If in op order — the key into
-    // `block_arity`. Incremented on EVERY control op encountered (even declined
-    // ones, though a decline aborts the whole compile so alignment is moot).
-    let mut ctrl_ord: usize = 0;
-    // Reachability of the current linear position (#851). Code after an
-    // UNCONDITIONAL transfer (`br`, `return`, `unreachable`) is unreachable and
-    // WASM's stack becomes polymorphic there — the straight-line height model no
-    // longer tracks the real stack. We keep truncating the value stack to the
-    // frame's entry height at `else`/`end` (that fixes the model), but SKIP the
-    // fall-through height assert when unreachable (it only holds on a reachable
-    // fall-through). `br_if` is conditional, so its fall-through stays reachable.
-    let mut reachable = true;
-    // #1740 — dead code is SKIPPED, not lowered. WASM validates unreachable
-    // code against a POLYMORPHIC stack, so it may pop values that are not
-    // there, or pop below its frame's entry height (`br 1 ; drop ; drop`).
-    // Lowering it against the straight-line model popped the live values
-    // BENEATH the frame out of the model (the code after the join then read
-    // nothing: `binop underflow`, and a debug-build panic at the join), or
-    // underflowed outright. Nothing can reach that code at runtime: a frame
-    // opened in it is entered only by falling into it, and a branch to such a
-    // frame's label sits inside it — so it is dead in its entirety, and so is
-    // the fall-through past its `end`. `dead_depth` counts the frames opened
-    // in dead code; `else`/`end` at depth 0 close the LIVE frame the transfer
-    // sat in and are lowered as before (that join is reached by the frame's
-    // other edges, and the model is truncated to the frame's entry height).
-    let mut dead_depth: usize = 0;
+    type Frame = lower::Frame<usize, Slot>;
+    let mut ctl: Control<usize, Slot> = Control::new();
 
     // VCR-A64-CF-001 (#851/#509) — RESERVED reconciliation registers.
     //
@@ -839,24 +796,23 @@ pub fn select_with_declared_locals(
                      is_loop: bool,
                      stack: &[Val]|
      -> Result<(u8, u8, Option<Slot>), SelectError> {
-        let (params, results) = arity;
-        if params != 0 {
-            return Err(SelectError(format!(
-                "{what} #{ord} has type {arity:?} — a PARAMETER-taking block \
-                 type (multi-value) is not lowered on aarch64: the \
-                 reconciliation slot is ONE register, so block params would \
-                 need a per-path multi-register shuffle; loud-declining \
-                 (VCR-A64-CF-001)"
-            )));
-        }
-        if results > 1 {
-            return Err(SelectError(format!(
-                "{what} #{ord} has type {arity:?} — a MULTI-VALUE result block \
-                 type is not lowered on aarch64 (the reconciliation slot is ONE \
-                 register); loud-declining (VCR-A64-CF-001)"
-            )));
-        }
-        let slot = if results == 1 {
+        let (label_arity, result_arity) = lower::label_arities(arity, is_loop).map_err(|d| {
+            SelectError(match d {
+                BlockTypeDecline::Params => format!(
+                    "{what} #{ord} has type {arity:?} — a PARAMETER-taking block \
+                     type (multi-value) is not lowered on aarch64: the \
+                     reconciliation slot is ONE register, so block params would \
+                     need a per-path multi-register shuffle; loud-declining \
+                     (VCR-A64-CF-001)"
+                ),
+                BlockTypeDecline::MultiValue => format!(
+                    "{what} #{ord} has type {arity:?} — a MULTI-VALUE result block \
+                     type is not lowered on aarch64 (the reconciliation slot is ONE \
+                     register); loud-declining (VCR-A64-CF-001)"
+                ),
+            })
+        })?;
+        let slot = if result_arity == 1 {
             let gp = alloc_temp(stack)?;
             reserved_gp.set(reserved_gp.get() | 1u32 << gp);
             let fp = match alloc_ftemp(stack) {
@@ -873,7 +829,7 @@ pub fn select_with_declared_locals(
         } else {
             None
         };
-        Ok((if is_loop { params } else { results }, results, slot))
+        Ok((label_arity, result_arity, slot))
     };
 
     /// VCR-A64-CF-001 — move `v` into a value-carrying frame's reconciliation
@@ -1652,23 +1608,8 @@ pub fn select_with_declared_locals(
     };
 
     for op in ops {
-        if !reachable {
-            match op {
-                WasmOp::Block | WasmOp::Loop | WasmOp::If => {
-                    // Keep the `block_arity` side-table aligned: it is keyed by
-                    // the ordinal of EVERY block/loop/if, dead ones included.
-                    ctrl_ord += 1;
-                    dead_depth += 1;
-                    continue;
-                }
-                WasmOp::Else if dead_depth > 0 => continue,
-                WasmOp::End if dead_depth > 0 => {
-                    dead_depth -= 1;
-                    continue;
-                }
-                WasmOp::Else | WasmOp::End => {}
-                _ => continue,
-            }
+        if ctl.skip_dead(op) {
+            continue;
         }
         match op {
             WasmOp::LocalGet(i) => {
@@ -1786,7 +1727,7 @@ pub fn select_with_declared_locals(
             WasmOp::Unreachable => {
                 words.push(enc::brk(0));
                 // `unreachable` traps unconditionally: fall-through is dead.
-                reachable = false;
+                ctl.transfer();
             }
 
             // --- control flow (#538 cf increment; VCR-A64-CF-001 value-carrying) ---
@@ -1800,12 +1741,10 @@ pub fn select_with_declared_locals(
             // (`unreachable`-polymorphic fall-through makes a stack-height
             // proxy UNSOUND — the arity table is the signal).
             WasmOp::Block => {
-                let ord = ctrl_ord;
-                ctrl_ord += 1;
-                let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
+                let (ord, arity) = ctl.block_type(block_arity);
                 let (label_arity, result_arity, slot) =
                     open_slot("block", ord, arity, false, &stack)?;
-                ctrl.push(Frame {
+                ctl.open(Frame {
                     kind: Kind::Block,
                     pending: Vec::new(),
                     dead_skip: None,
@@ -1821,21 +1760,20 @@ pub fn select_with_declared_locals(
             // enclosing `End` are unreachable (WASM stack-polymorphic) — the
             // selector still lowers them, but the branch skips them at runtime.
             WasmOp::Br(depth) => {
-                let d = *depth as usize;
-                if d >= ctrl.len() {
+                let Some(target) = ctl.target(*depth) else {
                     return Err(SelectError(format!(
                         "br {depth}: target depth exceeds open block nesting \
                          ({} open) — only branches to enclosing blocks are \
                          supported (a branch to the function body is not)",
-                        ctrl.len()
+                        ctl.depth()
                     )));
-                }
-                let target = ctrl.len() - 1 - d;
+                };
+                let ctrl = ctl.frames_mut();
                 // VCR-A64-CF-001 — a branch to a VALUE-CARRYING label hands the
                 // label its result: move the top-of-stack into the target
                 // frame's reserved register FIRST, so the join reads one
                 // register on every incoming edge.
-                reconcile_branch(&mut words, &mut ctrl, &stack, target, "br")?;
+                reconcile_branch(&mut words, ctrl, &stack, target, "br")?;
                 let pos = words.len();
                 if let Kind::Loop { entry } = ctrl[target].kind {
                     // BACKWARD branch to the loop header — resolve immediately.
@@ -1847,25 +1785,24 @@ pub fn select_with_declared_locals(
                     ctrl[target].pending.push(pos);
                 }
                 // Unconditional transfer: fall-through is unreachable.
-                reachable = false;
+                ctl.transfer();
             }
             // `br_if N` — pop an i32 condition; branch to the block-N END iff it
             // is nonzero → `cbnz w_cond, <block-end>`. Not-taken falls through.
             WasmOp::BrIf(depth) => {
-                let d = *depth as usize;
-                if d >= ctrl.len() {
+                let Some(target) = ctl.target(*depth) else {
                     return Err(SelectError(format!(
                         "br_if {depth}: target depth exceeds open block nesting \
                          ({} open)",
-                        ctrl.len()
+                        ctl.depth()
                     )));
-                }
+                };
                 let cond = pop_gp(&mut stack, "br_if")?;
-                let target = ctrl.len() - 1 - d;
+                let ctrl = ctl.frames_mut();
                 // VCR-A64-CF-001 — the condition sat ABOVE the branch's result,
                 // so reconcile only after popping it. PEEK, don't pop: the
                 // not-taken path still owns the value.
-                reconcile_branch(&mut words, &mut ctrl, &stack, target, "br_if")?;
+                reconcile_branch(&mut words, ctrl, &stack, target, "br_if")?;
                 let pos = words.len();
                 if let Kind::Loop { entry } = ctrl[target].kind {
                     // BACKWARD conditional branch to the loop header.
@@ -1926,15 +1863,14 @@ pub fn select_with_declared_locals(
                 // lowering is sound.
                 let height = stack.len();
                 for &depth in targets.iter().chain(std::iter::once(default)) {
-                    let d = depth as usize;
-                    if d >= ctrl.len() {
+                    let Some(target) = ctl.target(depth) else {
                         return Err(SelectError(format!(
                             "br_table target depth {depth} exceeds open block \
                              nesting ({} open)",
-                            ctrl.len()
+                            ctl.depth()
                         )));
-                    }
-                    let frame = &ctrl[ctrl.len() - 1 - d];
+                    };
+                    let frame = &ctl.frames()[target];
                     if frame.label_arity != 0 || frame.stack_entry != height {
                         return Err(SelectError(format!(
                             "br_table with VALUE-CARRYING targets (target depth \
@@ -1948,6 +1884,7 @@ pub fn select_with_declared_locals(
                 }
                 // The chain. `idx` was popped, so no value-stack entry holds it
                 // and nothing below can be disturbed.
+                let ctrl = ctl.frames_mut();
                 for (i, &depth) in targets.iter().enumerate() {
                     let target = ctrl.len() - 1 - depth as usize;
                     if i > 0 {
@@ -1983,7 +1920,7 @@ pub fn select_with_declared_locals(
                     ctrl[dflt].pending.push(pos);
                 }
                 // Every index transfers control: the fall-through is dead.
-                reachable = false;
+                ctl.transfer();
             }
             // `loop` (#851): opens a control frame whose branch target is the
             // loop HEADER (the current position), so a `br`/`br_if` to it is a
@@ -2006,12 +1943,10 @@ pub fn select_with_declared_locals(
             // height) would no longer hold. Loop-carried state must live in
             // non-param LOCAL SLOTS (memory), reloaded each iteration.
             WasmOp::Loop => {
-                let ord = ctrl_ord;
-                ctrl_ord += 1;
-                let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
+                let (ord, arity) = ctl.block_type(block_arity);
                 let (label_arity, result_arity, slot) =
                     open_slot("loop", ord, arity, true, &stack)?;
-                ctrl.push(Frame {
+                ctl.open(Frame {
                     kind: Kind::Loop { entry: words.len() },
                     pending: Vec::new(),
                     dead_skip: None,
@@ -2030,9 +1965,7 @@ pub fn select_with_declared_locals(
             // reconciliation slot guarantees (the then-arm deposits at `else`,
             // the else-arm at `end`).
             WasmOp::If => {
-                let ord = ctrl_ord;
-                ctrl_ord += 1;
-                let arity = block_arity.get(ord).copied().unwrap_or((0, 0));
+                let (ord, arity) = ctl.block_type(block_arity);
                 let cond = pop_gp(&mut stack, "if")?;
                 // Reserve AFTER popping the condition so the condition's temp
                 // is a candidate for the slot (it is dead from here on).
@@ -2041,7 +1974,7 @@ pub fn select_with_declared_locals(
                 // cbz: fall THROUGH into the then-arm when cond != 0; branch to
                 // the else/end when cond == 0. Offset patched at else/end.
                 words.push(enc::cbz(cond, 0)); // placeholder
-                ctrl.push(Frame {
+                ctl.open(Frame {
                     kind: Kind::If {
                         else_fixup: Some(else_pos),
                     },
@@ -2059,17 +1992,18 @@ pub fn select_with_declared_locals(
             // `cbz` to land HERE (the else-arm entry). The value stack is reset
             // to the if's entry height (a void then-arm must not leave a value).
             WasmOp::Else => {
-                let frame = ctrl
-                    .last_mut()
-                    .ok_or_else(|| SelectError("else without a matching if".into()))?;
-                let else_fixup = match &mut frame.kind {
-                    Kind::If { else_fixup } => else_fixup
-                        .take()
-                        .ok_or_else(|| SelectError("duplicate else for one if".into()))?,
-                    _ => {
-                        return Err(SelectError("else does not close an if block".into()));
-                    }
-                };
+                let else_fixup = ctl.begin_else().map_err(|e| {
+                    SelectError(
+                        match e {
+                            ElseError::NoFrame => "else without a matching if",
+                            ElseError::Duplicate => "duplicate else for one if",
+                            ElseError::NotIf => "else does not close an if block",
+                        }
+                        .into(),
+                    )
+                })?;
+                let reachable = ctl.reachable();
+                let frame = ctl.innermost_mut().expect("begin_else found the if");
                 // VCR-A64-CF-001 — a value-producing then-arm hands the join
                 // its result here, immediately before the `b end` below (the
                 // no-clobber-window property [`reconcile_into`] documents).
@@ -2100,19 +2034,13 @@ pub fn select_with_declared_locals(
                     "void then-arm must restore stack height"
                 );
                 stack.truncate(frame.stack_entry);
-                let then_live = reachable;
-                // The else-arm is a `cbz` target — always reachable.
-                reachable = true;
-                // Skip the else-arm when the then-arm falls through.
+                // Skip the else-arm when the then-arm falls through. #1740: a
+                // dead then-arm never reaches this `b`; `enter_else` then keeps
+                // it out of the edges into the join (and marks the else-arm, a
+                // `cbz` target, reachable).
                 let skip_pos = words.len();
                 words.push(enc::b_uncond(0)); // placeholder; patched at end
-                if then_live {
-                    frame.pending.push(skip_pos);
-                } else {
-                    // #1740: a dead then-arm never reaches this `b`; it is no
-                    // edge into the join (see `End`'s reachability rule).
-                    frame.dead_skip = Some(skip_pos);
-                }
+                ctl.enter_else(Some(skip_pos));
                 // The if's cbz now lands at the else-arm entry (current pos).
                 let here = words.len();
                 patch_branch(&mut words, else_fixup, here)?;
@@ -2126,7 +2054,7 @@ pub fn select_with_declared_locals(
             WasmOp::Return => {
                 epilogue(&mut words, stack.last().copied(), frame_size, is_non_leaf);
                 // Unconditional transfer: fall-through is unreachable.
-                reachable = false;
+                ctl.transfer();
             }
 
             // --- i32 arithmetic / bitwise ---
@@ -2334,7 +2262,15 @@ pub fn select_with_declared_locals(
             // when no block is open — ends the FUNCTION body (funnel the result
             // into x0/d0 and return).
             WasmOp::End => {
-                if let Some(mut frame) = ctrl.pop() {
+                if let Some(closed) = ctl.end() {
+                    // `reachable` is the FALL-THROUGH's; `ctl` already holds
+                    // the join's (`Control::end`, the #1740 join rule).
+                    let Closed {
+                        mut frame,
+                        fallthrough_live: reachable,
+                        fixups,
+                        ..
+                    } = closed;
                     // VCR-A64-CF-001 — the FALL-THROUGH edge of a
                     // value-carrying frame deposits its result. This MUST be
                     // emitted before `here` is taken: the forward branches
@@ -2363,31 +2299,10 @@ pub fn select_with_declared_locals(
                     // branches were backward and already resolved. Patch each
                     // placeholder via the kind-preserving `patch_branch`.
                     let here = words.len();
-                    // #1740 — the join is reached iff a LIVE edge enters it: the
-                    // fall-through, a forward branch (every branch in `pending`
-                    // was lowered while reachable, because dead code is
-                    // skipped), or an else-less if's `cbz`. A loop's `end` has
-                    // only its fall-through (its branches go to the header).
-                    let join_live = reachable
-                        || !frame.pending.is_empty()
-                        || matches!(
-                            frame.kind,
-                            Kind::If {
-                                else_fixup: Some(_)
-                            }
-                        );
-                    if let Some(pos) = frame.dead_skip {
-                        patch_branch(&mut words, pos, here)?;
-                    }
-                    // An `if` with NO `else`: its `cbz` still needs to skip the
-                    // then-arm to here (the fall-through past the then-arm).
-                    if let Kind::If {
-                        else_fixup: Some(pos),
-                    } = frame.kind
-                    {
-                        patch_branch(&mut words, pos, here)?;
-                    }
-                    for pos in frame.pending {
+                    // `fixups` is the dead else-skip, an else-less if's `cbz`
+                    // (it still has to skip the then-arm to here) and the
+                    // pending forward branches.
+                    for pos in fixups {
                         patch_branch(&mut words, pos, here)?;
                     }
                     // A void frame leaves the value stack exactly as on entry —
@@ -2416,15 +2331,6 @@ pub fn select_with_declared_locals(
                             File::Fp => Val::fp(slot.fp),
                         });
                     }
-                    // #1740 — after the frame closes, the position is reachable
-                    // iff the join is. When no live edge enters it (every path
-                    // through the frame ended in br-outward / return /
-                    // unreachable), the code after `end` is dead and is skipped
-                    // like any other dead code; its frame value is never read.
-                    // (Before #1740 this was `true` unconditionally, so a
-                    // float frame entered by no edge left a GP placeholder
-                    // that the dead float op after `end` then refused.)
-                    reachable = join_live;
                 } else {
                     epilogue(&mut words, stack.last().copied(), frame_size, is_non_leaf);
                 }
