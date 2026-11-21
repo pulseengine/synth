@@ -5,6 +5,224 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.91.0] - 2026-11-21
+
+This release fixes wrong code first. Silent wrong code is fixed on ARM, RV32 and the
+native-pointer ABI; in each case the compile exited 0 and the program computed something different
+from wasmtime. Each fix was checked red before and green after by execution against wasmtime or
+kiln under unicorn, except the MPU encoding fix, which is unit-checked against ARM's CMSIS table;
+no hardware was run.
+Where supporting an input is out of scope, it is now refused loudly, and each new refusal is
+counted below over the population its PR measured. **Visible changes:** a Cortex-M module that
+calls a function import is now always the `--relocatable` object (#1767, below); a WebAssembly
+component is refused instead of decoded (#1191); and no Intel macOS (x86_64-apple-darwin) assets
+are built. How many real-world modules newly refuse was **not measured**: the 243-module
+acceptance-ladder corpus was not mounted, so the ladder was not re-run (RQ-91-CORPUS).
+
+### Wrong code fixed: ARM
+
+Every figure is from the delivering PR's own differential, red on its base and green on its
+branch, as recorded in its release artifact.
+
+- **The import call boundary** (#1696, #1755, #1699, #1758; PR #1767). On default flags a
+  Cortex-M module that calls a function import was an `ET_REL` object built from functions
+  compiled for two different models, and gave wrong values four ways: a value across a call
+  (60 of 60 steps wrong), arguments (45 of 63 wrong), dispatch (9 call sites to
+  `__meld_dispatch_import`, 0 of 33 linkable), and a store then load (12 of 30 wrong). Such a
+  module is now the `--relocatable` compile, whole: an import is called directly by its bare
+  wasm field name under AAPCS, with R11/R10/R9 set by the embedder, and the Meld dispatch
+  fallback is removed. No synth output references `__meld_dispatch_import` and the `--link`
+  script no longer declares it. Active data segments and global initialisers in such a module
+  need `--embedder-data-init` / `--embedder-global-init`. A module whose imports are never
+  called from a retained function is still a self-contained image, byte for byte. After the
+  fix every leg agrees with the reference, and the default object equals the `--relocatable`
+  object on 12 of 12 target and module pairs.
+- **Export aliases** (#1746, #1752; PR #1767). The decoder kept only the last export name of a
+  function, so a module exporting one function under two names lost exports at exit 0, and an
+  export spelled `func_K` captured `call K`: on ARM it returned 222 where wasmtime returns 111.
+  Every export name is now a global symbol at the same address on every relocatable writer, and
+  a name that cannot be emitted is refused.
+- **i32 `select` on the direct selector** (#1754; PR #1767). The in-place form wrote over a
+  register still on the operand stack: `f(5,1,7)` returned 14 where wasm returns 12. 128 of 880
+  cases were wrong on the base (32 of 176 on each of four legs), 0 after.
+- **An i64 result lost its high word at an explicit exit** (#1710, PR #1718). 29450 of 52800
+  cases correct on the base, 52800 of 52800 after, over 32 producers x 11 exits x 3 signatures
+  on cortex-m4, m4f, m7dp, r5 and two self-contained images.
+- **An i64 `select` on a fused compare picked the wrong half** (#1711, PR #1719). 3131 of 4188
+  on the base, 4188 of 4188 after, on seven legs including cortex-r5 A32.
+- **div/rem/rotl scratch temps landed on the op's own operands or on a pending value** (#1712,
+  #1715, #1716, #1721; PR #1722). 21548 of 23056 on the base, 23232 of 23232 after; a second
+  oracle over values pending below the op, 116016 of 117544 (64 declines) on the base, 117992 of
+  117992 (0 declines) after.
+- **An i64 local round trip dropped a word** (#1713, #1241; PR #1728). `local.get` of an i64
+  param then `local.tee` lost the high word. 228 of 851 calls wrong on the base, 0 of 855 after;
+  #1241's three boot-sweep pins now measure 0 and are deleted.
+- **A param after a wide param was read and written at the wrong home**, on ARM and RV32 (#1714,
+  PR #1725). 961 failures on the base, 0 after.
+- **An `if` arm ending in a transfer left its dead values for the code after the `if`** (#1691,
+  PR #1694). The refuting module returned 0 / -7 where wasmtime returns 99 / 93 on cortex-m4 and
+  cortex-r5. 788 failures in 1392 emulations on the base, 0 after.
+- **An ARM function did not return its wasm stack top** (#1450, PR #1697). The base was wrong on
+  111 cells; after the fix 500 values equal wasmtime, with 76 refusals (below).
+- **An imported global shifted every defined global's slot** (#1676, PR #1680). 14 of 32 compared
+  values wrong on the base, 0 after; a read of an imported global now refuses.
+- **A called import whose symbol collided with a defined name bound to the definition** (#1698,
+  PR #1700). `use_import()` returned 7 where wasmtime returns 42, on all five configurations.
+  Such an import is now refused on every backend.
+- **A component was decoded as one flattened module** (#1191, PR #1687). 35 of 35 shape and
+  mode cases were accepted or wrong; one export returned 2 where wasmtime's component runtime
+  returns 101. A component is now refused, naming `meld fuse`.
+- **The published MPU model encoded each PMSAv7 region at twice its size** (#1677, PR #1678). The
+  RASR SIZE field is now log2(size) - 1, checked for all 28 sizes against ARM's CMSIS constants.
+- **Workaround for older versions:** compile with `--relocatable` for the import boundary; none
+  for the others.
+
+### Wrong code fixed: RV32
+
+- **A value pending below an i64 div/rem did not survive the long-division core** (#1717, PR
+  #1727). 108 wrong vectors over 27 exports on the base, 1396 of 1396 after.
+- **i64 `clz`/`ctz`/`popcnt` left the result's high word unwritten** (#1720, PR #1729). 54 wrong
+  vectors over 9 exports and 15 declines on the base, 1752 of 1752 after.
+- **Code after an `if` read a dead arm's value** (#1739, PR #1748). 137 failures in 395
+  emulations on the base, 0 in 602 after; 11 functions newly compile.
+
+### Wrong code fixed: the native-pointer ABI
+
+The per-shape native-pointer guards are replaced by one address-provenance decision and one
+validator over the emitted stream (#1672, #1568, #1604, #1661, #739; PR #1682). The `fn npa_*`
+helpers fall from 15 to 5, and the three per-shape refusals and their call sites are deleted;
+the change is a net addition of lines (about +1930 / -1020 over `crates/`).
+
+- **A constant static address reached through arithmetic or a `select`** (#1568) faulted; 4 of 4
+  equal after, and 59 matrix cells refused on the base now execute equal.
+- **A memory-0 static below the stack-pointer init** (#739) now executes equal or, with a
+  run-time offset, is refused.
+- **A memory-0 address stored in a data segment and dereferenced** (#1672) faulted where
+  wasmtime returns `0x88776655`; it is now refused as `npa-data-pointer (#1672)`.
+- **An access straddling into a data segment through a computed constant** (#1604) is now
+  refused as `npa-region-straddle (#1604)`.
+- **In-bounds memory-0 bulk ops trapped under `--safety-bounds software`** (#1661): 0 of 4 in-bounds
+  calls were correct; the module is now refused.
+- gale's censuses of its core modules found false-positive refusals on earlier revisions of the
+  branch; after the fix, the four modules involved compile on cortex-m3 and cortex-m7dp
+  byte-identical to the base 0185ba07.
+
+### Reach
+
+- **f32/f64 loads and stores on a non-default memory** are lowered (#1673, PR #1689): 0 of 1666
+  calls compiled on the base; on cortex-m7dp all five fixture functions compile, and cortex-m4f
+  declines f64 with memory 0's own refusal. Nothing newly refuses.
+- **AArch64 compiles dead code that pops below its frame's entry height** (#1740, PR #1749),
+  where it panicked or declined: 56 spec exports and 54 tracked-corpus functions newly compile,
+  and 279 calls to the new or changed tracked exports match wasmtime.
+- **ARMv6-M: `--target cortex-m0` and `cortex-m0plus`** (#1301, PR #1685), refuse-only,
+  relocatable only, support level 3. There is no ARMv6-M lowering: every emitted instruction is
+  checked against the ARMv6-M encoding table and a function with anything outside it is
+  refused. Over 268 tracked inputs cortex-m0 accepts 83 of 1532 exported functions (cortex-m3:
+  1247). The ARMv6-M oracle executes on unicorn's Cortex-M0 model (PR #1743), and nine
+  flag-setting ops are their own variants under an NZCV-liveness verifier over the emitted Thumb
+  bytes (PR #1750).
+- **MPU isolation facts for the embedder** (#1145). `--emit-memory-facts` writes each function's
+  direct memories and calls for gale's build-time MPU gate (PR #1681), and `--mpu-layout
+  pmsav7|pmsav7-srd` pads each `.synth.wasm_mem_k` to a legal PMSAv7 region (PR #1683). synth
+  still emits no MPU programming.
+
+### New loud refusals
+
+- **Multi-result entry points** (#1450; PR #1767): a function with more than one result that is
+  exported, in a compiled element segment or named by a single-function compile, on ARM, RV32
+  and AArch64. It used to compile and return only its last result. The spec census pins move by
+  2 each (1491 / 1398 to 1493 / 1400).
+- **A multi-result call or `call_indirect` on ARM** (#1450, PR #1697): over 268 tracked files one
+  function newly refuses (`control_call_drop` `f`, the wrong one), and the spec compile census
+  moves 7 `call.wast` functions.
+- **A read of an imported global on ARM** (#1676, PR #1680): 22 of 256 spec invocations; 0 over
+  the tracked corpus.
+- **A called import whose symbol collides** (#1698, PR #1700): 13 spec invocations of 12,620; 0
+  changed bytes elsewhere.
+- **A WebAssembly component** (#1191, PR #1687): every component input.
+- **RV32 functions that touch an i64 param** (#1714, PR #1725): 12 spec functions, some wrong on
+  the base and some right only by chance. cortex-m7dp gains 7.
+- **The native-pointer refusals above.** 0 newly refuse over the repo corpus. One stated cost
+  (PR #1682): `while p != 0x2008`, where a segment starts at 0x2008, executed correctly on the
+  base and is now refused as `npa-end-pointer-compare (#1604)`.
+
+### Verification you can see
+
+- **A Rust execution oracle on kiln and unicorn** (`crates/synth-oracle`, PR #1751). Its first
+  oracle runs 22 probes on cortex-m3 and rv32imac: 6048 cases agree with kiln, and a planted
+  reference (kiln running `i32.sub` for `i32.add`) disagrees on 120 of 144 per leg.
+- **`target-record`** writes synth's half of North Star O1 as one schema-valid
+  `north-star-input.O1.json`: reach, execution match, WCET and hardware run per target, each
+  with an in-run negative control (PR #1766).
+- **Backend support levels L1 to L3** are pinned in `claims.yaml` and held by
+  `support_level_check.py` (#1286, PRs #1688, #1742). One L1 criterion is recorded as **not
+  met**: the acceptance ladder's `arm` rung compiles A32, not Cortex-M Thumb-2. The RV32 and
+  AArch64 selectors gained line-count ratchets.
+- **The spec-execution ratchet reds on a corrupted `.wast` expectation** instead of filing it as
+  not representable (PR #1695).
+- **Each oracle's emulation floor is held against the base tree** by `oracle_wiring_check.py
+  --floor-base`, replacing the summed pin that a compensating move could pass (#910, PR #1679).
+- The x86-64 groundwork moves the relocatable object plan and ELF64 RELA writer to
+  `synth-core` with per-site addends; 1180 of 1180 AArch64 invocations are byte-identical
+  (PR #1765).
+
+### Release assets
+
+- **No x86_64-apple-darwin (Intel macOS) assets** from this release on (PR #1760). Intel Mac
+  users: build from source (`cargo install --git https://github.com/pulseengine/synth
+  synth-cli`). `npm install @pulseengine/synth` on an Intel Mac now fails with an
+  unsupported-platform error. Five tarballs remain.
+
+### Gates and tooling
+
+- Three required gates fail closed: the Rivet Validation classifier, the Z3 verdicts and an
+  empty claims ledger (PR #1730).
+- Every self-hosted job's fork guard fails closed, and a check refuses the fail-open form;
+  57 jobs moved (PR #1768).
+- The workflows behind the 10 required contexts run on `merge_group` (PR #1759). GitHub-hosted
+  jobs are pinned to `ubuntu-24.04` (PR #1753); 33 apt-free jobs moved to the self-hosted pool
+  (PR #1708); a PR's superseded runs are cancelled (PR #1686).
+- CI builds the synth binary once per run and 34 oracle jobs download it, checked against a
+  fingerprint of the commit, `Cargo.lock`, profile and features; the mutation survey replay runs
+  only when the diff can reach it, Fuzz Smoke is one job and cargo-deny is a pinned prebuilt
+  (PR #1770).
+- The pinned Python wasmtime oracle moves from 48.0.0 to 50.0.1 (PR #1764).
+- `extract_r1_numbers` skips binary-name digits and merges thousands separators (#1575,
+  PR #1690).
+- Dependencies: ordeal =0.22.1 to =0.36.1, with synth-verify taught the five 0.28 derived-op
+  nodes (PRs #1705, #1732) and the ordeal crates built optimized in the dev profile (PR #1706);
+  the wasm-tools family to 0.263 (PR #1707); z3 0.21.1 to 0.23.0 (PRs #1702, #1733); object
+  0.40.0 to 0.41.0 (PR #1734); chrono dropped, unmaintained per RUSTSEC-2026-0543 (PR #1736).
+
+### Known gaps
+
+- **Self-contained cortex-r5 images still ship `.text` only** (RQ-91-R5DATAINIT): active data
+  segments and global initialisers are dropped with exit 0. Re-measured on 0.91.0 at release
+  prep: 0 copies of the segment bytes.
+- **`--target cortex-m3 --func-name` on a function that calls another still ships a `bl` to
+  itself** and exits 0 (RQ-91-M3SELFBL). Re-measured on 0.91.0: `bl b2` at `b2`.
+- **The shared image builder was not built** (RQ-91-IMAGEBUILDER): 10 distinct builders remain.
+- `compile_module` still reads the module-level tables from the caller on ARM and RV32 (#1745),
+  and cortex-r5 and float or stack arguments at an import were not executed (#1696); stated in
+  PR #1767.
+- **npm is still at 0.69.0** (#1460). On 2026-11-21, 0.90.0 and 0.89.2 return 404; the last
+  publish attempt (run 42434103438) failed with `E_STAGE_REQUIRED`. Carried.
+- The ci_pool_tripwire still cannot resolve an expression `runs-on` (5 of 10 required contexts)
+  and its drift cross-check still prints UNAVAILABLE in CI (RQ-91-TRIPWIREEXPR,
+  RQ-91-TRIPWIREPROT).
+- The architecture-model step (#1136) is filed for v0.91 and was not performed; spar#445 is
+  still open.
+
+### Compliance envelope
+
+The default is unchanged: with `--safety-bounds none` synth emits no out-of-bounds trap, and
+`--safety-bounds mpu` traps nothing from synth (it is accepted only on an ARM `--relocatable`
+object with `--embedder-mpu`). `--emit-memory-facts` and `--mpu-layout` give the embedder facts
+and a region layout; the embedder still programs the MPU. Under `--native-pointer-abi
+--safety-bounds software`, a module with a memory-0 `memory.fill` or `memory.copy` is now refused
+instead of trapping in bounds (#1661).
+
 ## [0.90.0] - 2026-11-07
 
 This release fixes wrong code first. Three classes of silent wrong code are gone: A32 branches,

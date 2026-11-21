@@ -34,6 +34,14 @@ artifacts:
         names where it was analysed, not an open scope. It is closed,
         so `issue-scope: closes` authorises nothing; the record
         answers the residual it names, not the issue.
+
+        RE-MEASURED AT RELEASE PREP, 2026-11-21T13:05Z, on main 0f0d082f:
+        NOT DELIVERED, carried; still LIVE. The newest ci.yml run on main,
+        44889661244 on 0f0d082f, was queued, so the newest completed one was
+        read: run 44885852550 on 53dee34d, Claim Check job 136790929792
+        (success) prints `ci-pool: live required-context list UNAVAILABLE (no
+        gh, no network, or no token) — the pinned contract above still ran;
+        only the drift cross-check is skipped`, then `ci-pool: 0 failure(s)`.
     tags:
       - feature-loop
       - process
@@ -48,6 +56,7 @@ artifacts:
       issue: "#1636"
       verification-track: manual
       issue-scope: closes
+      disposition: deferred
       done-when: >
         manual:2027-03-31 the drift cross-check reads protection on
         the runner (a token that can read it, through REST without gh)

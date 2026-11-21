@@ -46,6 +46,17 @@ artifacts:
         found. The numbers name where it was analysed, not an open
         scope. Both issues are closed, so `issue-scope: closes`
         authorises nothing.
+
+        RE-MEASURED AT RELEASE PREP, 2026-11-21T13:05Z, on main 0f0d082f:
+        NOT DELIVERED, carried; still LIVE. synth 0.91.0 debug build of this
+        tree. cortex-r5: rc 0, no warning; the only section besides the string
+        and symbol tables is `.text` (0x28 bytes at 0x8000); 0 copies of the
+        segment bytes 11 22 33 44; the global image disassembles to 4
+        instructions, none materialising 0x13572468. Control cortex-m3: rc 0,
+        `#758 data ROM image: 260 bytes at 0x000000fc, copied to linmem
+        0x20000000 at reset`, 1 copy of the segment bytes, and the global
+        image materialises the init with `movw ip, #0x2468` / `movt ip,
+        #0x1357`.
     tags:
       - feature-loop
       - bug
@@ -60,6 +71,7 @@ artifacts:
       issue: "#1640"
       verification-track: manual
       issue-scope: closes
+      disposition: deferred
       done-when: >
         manual:2027-03-31 a self-contained cortex-r5 image with an
         active data segment or a global initialiser either executes
