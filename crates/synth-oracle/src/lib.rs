@@ -17,11 +17,16 @@
 //! multi-value results (see `emulate`).
 
 pub mod compare;
+pub mod cycles;
+pub mod probes;
+pub mod record;
 pub mod synth;
 pub mod value;
 
 #[cfg(feature = "exec")]
 pub mod emulate;
+#[cfg(feature = "exec")]
+pub mod image;
 #[cfg(feature = "exec")]
 pub mod reference;
 

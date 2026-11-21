@@ -104,5 +104,12 @@ jobs:
           # shrunk probe set or vector list reds here as well as in the test.
           grep -qx 'ORACLE kiln-probe: 6048 cases agree across 2 legs, 72 trap/trap' "$log"
           grep -qx 'stress: 32000 concurrent runs of add(2,3), 0 not Values(5)' "$log"
+          # Exact per binary (RQ-91-TARGETRECORD): 15 kiln_probe_oracle.rs;
+          # 20 the lib's unit tests (8 before the target record added the
+          # record and cycles modules); 3 tests/target_record.rs (the binary
+          # end to end, refusals, the boot contract); 1 the target-record
+          # binary's own unit test.
           grep -qE '^test result: ok\. 15 passed; 0 failed' "$log"
-          grep -qE '^test result: ok\. 8 passed; 0 failed' "$log"
+          grep -qE '^test result: ok\. 20 passed; 0 failed' "$log"
+          grep -qE '^test result: ok\. 3 passed; 0 failed' "$log"
+          grep -qE '^test result: ok\. 1 passed; 0 failed' "$log"
