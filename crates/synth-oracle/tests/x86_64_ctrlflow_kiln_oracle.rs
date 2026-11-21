@@ -1517,10 +1517,68 @@ impl Gen {
         }
     }
 
-    fn function(&mut self, name: &str) -> String {
+    /// A body of one of three shapes a conditional edge's carried-value copy
+    /// is only visible in: the copy must run on the TAKEN path alone, and a
+    /// copy on both paths overwrites the home slot of the label's entry
+    /// height, which holds a live operand beneath the carried value only when
+    /// operands are deep enough to be homed.
+    ///   0: seven spilled operands live beneath a value-carrying block whose
+    ///      two inner operands meet a value-carrying `br_if`;
+    ///   1: a `loop (result i32)` with a counter back-edge and a value live
+    ///      beneath it;
+    ///   2: a value-carrying `br_if` with seven live operands beneath it.
+    fn shaped(&mut self, kind: usize) -> String {
+        match kind {
+            0 => {
+                let vs: Vec<String> = (0..7).map(|_| self.expr(0)).collect();
+                self.labels.push(L::Val);
+                let pre = self.stmts(1);
+                let a = self.expr(1);
+                let b = self.expr(1);
+                let c = self.cond(1);
+                self.labels.pop();
+                format!(
+                    "{} block (result i32) {pre} {a} {b} {c} br_if 0 i32.add end {}",
+                    vs.join(" "),
+                    "i32.add ".repeat(7)
+                )
+            }
+            1 => {
+                let c = 6 + self.counters;
+                self.counters += 1;
+                let n = 2 + self.pick(3);
+                let under = self.expr(1);
+                self.labels.push(L::Loop);
+                let body = self.stmts(2);
+                let v = self.expr(1);
+                self.labels.pop();
+                format!(
+                    "{under} i32.const {n} local.set {c} loop (result i32) {body} {v} local.get {c} i32.const 1 i32.sub local.tee {c} br_if 0 end i32.add"
+                )
+            }
+            _ => {
+                let vs: Vec<String> = (0..7).map(|_| self.expr(0)).collect();
+                self.labels.push(L::Val);
+                let v = self.expr(1);
+                let c = self.cond(1);
+                let t = self.label(L::Val).expect("the block is valued");
+                self.labels.pop();
+                format!(
+                    "block (result i32) {} {v} {c} br_if {t} {} end",
+                    vs.join(" "),
+                    "i32.add ".repeat(7)
+                )
+            }
+        }
+    }
+
+    fn function(&mut self, name: &str, kind: Option<usize>) -> String {
         self.labels = vec![L::Val];
         self.counters = 0;
-        let body = format!("{} {}", self.stmts(3), self.expr(3));
+        let body = match kind {
+            None => format!("{} {}", self.stmts(3), self.expr(3)),
+            Some(k) => self.shaped(k),
+        };
         let locals = "i32 ".repeat(4 + self.counters as usize);
         format!(
             "  (func (export \"{name}\") (param i32 i32) (result i32) (local {locals}) {body})\n"
@@ -1529,7 +1587,11 @@ impl Gen {
 }
 
 const RANDOM_MODULES: usize = 40;
-const RANDOM_FUNCS: usize = 5;
+/// Functions per module: the first `RANDOM_PLAIN` are free-form programs, the
+/// rest each wrap the three shapes the free-form generator reaches too rarely
+/// (see `Gen::shaped`).
+const RANDOM_PLAIN: usize = 5;
+const RANDOM_FUNCS: usize = RANDOM_PLAIN + 3;
 const RANDOM_VECTORS: usize = 8;
 
 #[test]
@@ -1557,7 +1619,8 @@ fn random_structured_programs_agree_with_kiln() {
         let mut g = Gen::new(&format!("x86-ctrl-random/{m}"));
         let mut wat = String::from("(module\n");
         for f in 0..RANDOM_FUNCS {
-            wat.push_str(&g.function(&format!("f{f}")));
+            let kind = f.checked_sub(RANDOM_PLAIN);
+            wat.push_str(&g.function(&format!("f{f}"), kind));
         }
         wat.push_str(")\n");
         for tok in wat.split_whitespace() {
@@ -1605,7 +1668,7 @@ fn random_structured_programs_agree_with_kiln() {
     );
     assert_eq!(
         (cases, values, traps),
-        (1600, 1480, 120),
+        (2560, 2383, 177),
         "the random population moved"
     );
     eprintln!(
@@ -1614,7 +1677,7 @@ fn random_structured_programs_agree_with_kiln() {
     );
     assert_eq!(
         seen,
-        [646, 72, 360, 170, 150, 291, 225, 118, 195, 118],
+        [821, 119, 451, 212, 171, 465, 253, 133, 248, 149],
         "the generated constructs moved"
     );
     eprintln!(
