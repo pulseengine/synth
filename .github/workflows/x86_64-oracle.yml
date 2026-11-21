@@ -80,7 +80,9 @@ jobs:
           cargo test -p synth-backend-x86_64 --test encoding_llvm_mc -- --nocapture 2>&1 | tee "$log"
           # 24308 since RQ-91-X86FRAME: the memory, immediate, push/pop,
           # divide, bit-scan, branch and trap forms joined the 11969 of X1-X2.
-          grep -q '^E1: 24308 forms byte-equal to ' "$log"
+          # 24316 since RQ-91-X86CTRL: 8 `jmp rel32` forms, through the
+          # object route with the 80 `jCC rel32`.
+          grep -q '^E1: 24316 forms byte-equal to ' "$log"
           grep -qE '^test result: ok\. 3 passed; 0 failed' "$log"
       - name: Native leg — GNU ld --fatal-warnings, run on this x86-64 host
         run: |

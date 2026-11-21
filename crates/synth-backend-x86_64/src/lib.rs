@@ -1,20 +1,25 @@
 //! x86-64 (SysV AMD64) host-native backend for synth — lanes X1 (the skeleton,
-//! RQ-91-X86SKEL), X2 (the straight-line integer core, RQ-91-X86ALU) and
-//! X3-X4 (the frame, locals, division and bit counts, RQ-91-X86FRAME); #1741,
-//! VCR-X86-001, approved 2026-11-18.
+//! RQ-91-X86SKEL), X2 (the straight-line integer core, RQ-91-X86ALU), X3-X4
+//! (the frame, locals, division and bit counts, RQ-91-X86FRAME) and X5
+//! (structured control flow, RQ-91-X86CTRL); #1741, VCR-X86-001, approved
+//! 2026-11-18.
 //!
 //! `synth compile m.wat -b x86_64 [--relocatable]` lowers LEAF functions of
-//! STRAIGHT-LINE i32/i64 integer code — `local.get`/`set`/`tee` on parameters
+//! i32/i64 integer code — `local.get`/`set`/`tee` on parameters
 //! and zero-initialised locals, `const`, add/sub/mul/and/or/xor, shifts and
 //! rotates, compares and `eqz`, the extensions and `wrap`, `div`/`rem` with
 //! wasm's traps as explicit `ud2` guards, `clz`/`ctz`/`popcnt` from baseline
-//! instructions, `select`, `drop`, `nop`, `return` and `end` — with at most
+//! instructions, `select`, `drop`, `nop`, `return`, `end`, and `block`,
+//! `loop`, `if`/`else`, `br`, `br_if`, `br_table` (at most 16 targets) and
+//! `unreachable` over block types of zero or one i32/i64 result — with at most
 //! six i32/i64 parameters and at most one i32/i64 result, into a SysV ELF64
 //! `ET_REL` (`EM_X86_64`) written by the SHARED object plan
 //! (`synth_core::object_plan`). Every function has an `rbp` frame; parameters
 //! are homed to it and an operand stack deeper than the temporaries spills to
-//! it. Everything else is refused loudly, by name: control flow, calls,
-//! memory, globals, floats, and a frame above one page.
+//! it. Everything else is refused loudly, by name: calls, memory, globals,
+//! floats, block parameters and multi-value blocks, and a frame above one
+//! page. The control-frame bookkeeping is shared with AArch64
+//! (`synth_core::lower`).
 //!
 //! Structure, after `synth-backend-aarch64`:
 //! - [`inst`]: the instruction type, one variant per emitted form, and its
@@ -42,4 +47,4 @@ pub mod rules;
 pub mod selector;
 
 pub use backend::{X86_64Backend, X86Function, X86Object, compile_wasm};
-pub use selector::{SelectError, Ty, select};
+pub use selector::{BlockSig, SelectError, Ty, select, select_function};

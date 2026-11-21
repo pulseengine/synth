@@ -37,7 +37,7 @@ use wasmparser::{Encoding, ExternalKind, Parser, Payload, ValType};
 
 use crate::encoder;
 use crate::inst::Inst;
-use crate::selector::{self, Ty};
+use crate::selector::{self, BlockSig, Ty};
 
 /// `EM_X86_64`.
 pub const EM_X86_64: u16 = 62;
@@ -100,6 +100,9 @@ struct ModuleShape {
     /// The declared (non-parameter) locals of each locally-defined function,
     /// in index order, with their EXACT types.
     locals: Vec<Vec<ValType>>,
+    /// Per function body: the type of every `block`/`loop`/`if`, in op
+    /// order, as (parameter types, result types).
+    blocks: Vec<Vec<(Vec<ValType>, Vec<ValType>)>>,
 }
 
 fn read_shape(wasm: &[u8]) -> Result<ModuleShape, BackendError> {
@@ -108,11 +111,12 @@ fn read_shape(wasm: &[u8]) -> Result<ModuleShape, BackendError> {
         func_types: Vec::new(),
         exports: BTreeMap::new(),
         locals: Vec::new(),
+        blocks: Vec::new(),
     };
     let refuse = |what: &str| {
         Err(fail(format!(
             "x86_64: the module has {what}, which the x86_64 backend does not \
-             lower yet (#1741: straight-line i32/i64 leaf functions only) — refusing"
+             lower yet (#1741: i32/i64 leaf functions only) — refusing"
         )))
     };
     for payload in Parser::new(0).parse_all(wasm) {
@@ -167,6 +171,29 @@ fn read_shape(wasm: &[u8]) -> Result<ModuleShape, BackendError> {
                     locals.extend(std::iter::repeat_n(ty, count as usize));
                 }
                 shape.locals.push(locals);
+                // Every block type, in op order, dead code included: the
+                // selector keys them by the same ordinal it counts.
+                let mut blocks = Vec::new();
+                let ops = body
+                    .get_operators_reader()
+                    .map_err(|e| fail(format!("x86_64: {e}")))?;
+                for op in ops {
+                    let bt = match op.map_err(|e| fail(format!("x86_64: {e}")))? {
+                        wasmparser::Operator::Block { blockty }
+                        | wasmparser::Operator::Loop { blockty }
+                        | wasmparser::Operator::If { blockty } => blockty,
+                        _ => continue,
+                    };
+                    blocks.push(match bt {
+                        wasmparser::BlockType::Empty => (Vec::new(), Vec::new()),
+                        wasmparser::BlockType::Type(t) => (Vec::new(), vec![t]),
+                        wasmparser::BlockType::FuncType(i) => match shape.types.get(i as usize) {
+                            Some(Some((p, r))) => (p.clone(), r.clone()),
+                            _ => return refuse(&format!("a block of non-function type {i}")),
+                        },
+                    });
+                }
+                shape.blocks.push(blocks);
             }
             Payload::CodeSectionStart { .. } | Payload::CustomSection(_) | Payload::End(_) => {}
             Payload::ImportSection(_) => {
@@ -242,7 +269,30 @@ pub fn compile_wasm(wasm: &[u8]) -> Result<X86Object, BackendError> {
             .iter()
             .map(int)
             .collect::<Result<_, _>>()?;
-        let insts = selector::select(&func.ops, &params, &locals, &results)
+        // Block types: a parameter is only counted (the selector declines a
+        // parameter-taking block type by name), a result must be i32/i64.
+        let blocks: Vec<BlockSig> = shape
+            .blocks
+            .get(local)
+            .ok_or_else(|| fail(format!("x86_64: function {} has no body", func.index)))?
+            .iter()
+            .map(|(p, r)| {
+                let block = |t: &ValType| match t {
+                    ValType::I32 => Ok(Ty::I32),
+                    ValType::I64 => Ok(Ty::I64),
+                    other => Err(fail(format!(
+                        "x86_64: function '{name}' has a block whose type carries a \
+                         {other}; the x86_64 backend lowers i32 and i64 values only \
+                         — refusing"
+                    ))),
+                };
+                Ok(BlockSig {
+                    params: p.len(),
+                    results: r.iter().map(block).collect::<Result<_, _>>()?,
+                })
+            })
+            .collect::<Result<_, BackendError>>()?;
+        let insts = selector::select_function(&func.ops, &params, &locals, &results, &blocks)
             .map_err(|e| fail(format!("function '{name}': {e}")))?;
         let (code, lens) = encoder::encode_all(&insts);
         let mut symbols = vec![sym.clone()];

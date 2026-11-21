@@ -58,11 +58,12 @@ pub const DISP: [i32; 9] = [0, 8, -8, 0x7F, -0x80, 0x80, -0x81, i32::MAX, i32::M
 pub const REL: [i32; 8] = [0, 2, 0x7F, 0x80, 0x1234_5678, -6, -0x80, i32::MAX - 6];
 
 /// The forms `llvm-mc -show-encoding` prints with a FIXUP instead of bytes:
-/// the branches. E1 assembles these to an object and reads `.text` back.
-/// (Unused by the iced test, which shares this module.)
+/// the branches, `jCC` and (lane X5) `jmp`. E1 assembles these to an object
+/// and reads `.text` back. (Unused by the iced test, which shares this
+/// module.)
 #[allow(dead_code)]
 pub fn is_branch(i: &Inst) -> bool {
-    matches!(i, Inst::Jcc { .. })
+    matches!(i, Inst::Jcc { .. } | Inst::Jmp { .. })
 }
 
 /// The number of forms [`all_forms`] must enumerate, as a literal.
@@ -74,7 +75,8 @@ pub fn is_branch(i: &Inst) -> bool {
 /// and `rbp`/`r13` (forced displacement) special cases are in it; AluImm
 /// 6 x 2 x 16 x 10 = 1,920; Push and Pop 2 x 16; Cdq 2; Div 2 x 2 x 16;
 /// BitScan 2 x 2 x 256; Jcc 10 x 8; ud2.
-pub const FORM_COUNT: usize = 11_969 + 9_216 + 1_920 + 32 + 2 + 64 + 1_024 + 80 + 1;
+/// Lane X5 (8): `jmp rel32` at the 8 displacements of [`REL`].
+pub const FORM_COUNT: usize = 11_969 + 9_216 + 1_920 + 32 + 2 + 64 + 1_024 + 80 + 1 + 8;
 
 pub fn all_forms() -> Vec<Inst> {
     let mut v = Vec::new();
@@ -164,6 +166,9 @@ pub fn all_forms() -> Vec<Inst> {
         for rel in REL {
             v.push(Inst::Jcc { cond, rel });
         }
+    }
+    for rel in REL {
+        v.push(Inst::Jmp { rel });
     }
     v.push(Inst::Ud2);
     v.push(Inst::Ret);

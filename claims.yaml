@@ -760,6 +760,14 @@ feature_matrix_facts:
         `br_table_subshape_asymmetry_882`, but no status field exposes it, so
         the template's copy is not re-derived. The cheapest remaining
         conversion: publish the const as a status field.
+    - text: "`br_table` of at most 16 targets"
+      rationale: >
+        The x86-64 limit (RQ-91-X86CTRL). `BR_TABLE_LIMIT` is a named const in
+        the x86-64 selector, and the selector's unit test
+        `control_flow_declines_name_their_cause` lowers 16 targets and refuses
+        17 by name (so does tests/decline_skeleton.rs), but no status field
+        exposes it, so the template's copy is not re-derived — the same
+        residual as the aarch64 `past 16 targets` entry above.
     - text: "an 8-byte slot"
       rationale: >
         The aarch64 globals slot width. Expressed as arithmetic on offsets in
@@ -983,7 +991,7 @@ support_levels:
       row: "Cortex-R5 self-contained image (`--target cortex-r5`)"
       level: L3
     # L3: bootstrap under VCR-X86-001 (approved 2026-11-18). The crate exists
-    # (lanes X1-X4, RQ-91-X86SKEL, RQ-91-X86ALU and RQ-91-X86FRAME, #1741) and has oracles in CI; no level is
+    # (lanes X1-X5, RQ-91-X86SKEL, RQ-91-X86ALU, RQ-91-X86FRAME and RQ-91-X86CTRL, #1741) and has oracles in CI; no level is
     # claimed until the L2 evidence passes this checker. Evidence is
     # deliberately NOT named here: the checker skips L3 rows, so a name listed
     # at L3 would look held and be unchecked.
@@ -4024,10 +4032,17 @@ claims:
       # multi-instruction sequences of div/rem (with their trap guards),
       # clz/ctz and popcnt, each written out instruction by instruction. The
       # table grew to 66 rows; the rcx save/restore of lane X2 is gone.
+      # 1395 since lane X5 (RQ-91-X86CTRL): block, loop, if/else, br, br_if,
+      # br_table and unreachable, emitting only — the frame record, the label
+      # arity rule, the dead-code skip and the join rule are shared
+      # (synth-core/src/lower.rs, RQ-91-LOWERCORE). The growth is the home-slot
+      # rule that makes every join's register state the same on every edge,
+      # the per-edge copy of a carried value, label resolution from the
+      # encoder's lengths, the two-pass frame layout, and their doc comments.
       - kind: ratchet
         name: x86_selector_lines_code
         direction: track
-        value: 798
+        value: 1395
       # Beside it, independently: the derived x86-64 surface is a FLOOR, so
       # the lowered set cannot shrink. It does NOT bound the selector's lines
       # (a line can be added while this stays 3; REVIEW_13 F1 measured it).
@@ -4035,11 +4050,13 @@ claims:
       # consts, select, drop and nop join local.get(param), i32.add, return.
       # 59 -> 75 with lanes X3-X4 (RQ-91-X86FRAME): local.set, local.tee, the
       # eight div/rem ops and the six bit counts.
+      # 75 -> 84 with lane X5 (RQ-91-X86CTRL): block, br, br_if, br_table,
+      # end, if, if_else, loop and unreachable.
       - kind: ratchet
         name: x86_ops_lowered
         direction: up
-        value: 75
-        baseline: 75
+        value: 84
+        baseline: 84
       # The plan's third X1 pin (REVIEW_13 F5): the x86-64 selector's `_ =>`
       # arms are a ceiling from creation, at the live value 1. 0 since lane X2
       # (RQ-91-X86ALU): every operand-location match is spelled out.

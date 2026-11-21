@@ -319,6 +319,22 @@ impl Cond {
             Cond::G => "g",
         }
     }
+
+    /// The condition that holds exactly when `self` does not.
+    pub fn negate(self) -> Cond {
+        match self {
+            Cond::B => Cond::Ae,
+            Cond::Ae => Cond::B,
+            Cond::E => Cond::Ne,
+            Cond::Ne => Cond::E,
+            Cond::Be => Cond::A,
+            Cond::A => Cond::Be,
+            Cond::L => Cond::Ge,
+            Cond::Ge => Cond::L,
+            Cond::Le => Cond::G,
+            Cond::G => Cond::Le,
+        }
+    }
 }
 
 /// The widening moves: source view, extension, destination view.
@@ -516,6 +532,10 @@ pub enum Inst {
     /// short form and no relaxation, so the length is 6 whatever the target.
     /// `rel` is relative to the END of this instruction.
     Jcc { cond: Cond, rel: i32 },
+    /// `jmp` with a 32-bit displacement (`E9 cd`), ALWAYS: no short form, no
+    /// relaxation, so the length is 5 whatever the target. `rel` is relative
+    /// to the END of this instruction.
+    Jmp { rel: i32 },
     /// `ud2` (`0F 0B`) — the trap. The only trapping instruction the selector
     /// emits on purpose.
     Ud2,
@@ -576,7 +596,9 @@ impl Inst {
             Inst::Pop { reg } => vec![reg, Reg::Rsp],
             Inst::Cdq { .. } => vec![Reg::Rdx],
             Inst::Div { .. } => vec![Reg::Rax, Reg::Rdx],
-            Inst::Store { .. } | Inst::Jcc { .. } | Inst::Ud2 | Inst::Ret => vec![],
+            Inst::Store { .. } | Inst::Jcc { .. } | Inst::Jmp { .. } | Inst::Ud2 | Inst::Ret => {
+                vec![]
+            }
         }
     }
 }
@@ -686,6 +708,15 @@ impl fmt::Display for Inst {
                     write!(f, "{{disp32}} j{} .-0x{:x}", cond.suffix(), -from_start)
                 } else {
                     write!(f, "{{disp32}} j{} .+0x{from_start:x}", cond.suffix())
+                }
+            }
+            // The same for `jmp`, which is 5 bytes long.
+            Inst::Jmp { rel } => {
+                let from_start = i64::from(rel) + 5;
+                if from_start < 0 {
+                    write!(f, "{{disp32}} jmp .-0x{:x}", -from_start)
+                } else {
+                    write!(f, "{{disp32}} jmp .+0x{from_start:x}")
                 }
             }
             Inst::Ud2 => write!(f, "ud2"),
@@ -935,6 +966,9 @@ mod tests {
             "{disp32} jb .-0xa"
         );
         assert_eq!(Inst::Ud2.att(), "ud2");
+        assert_eq!(Inst::Jmp { rel: 0 }.att(), "{disp32} jmp .+0x5");
+        assert_eq!(Inst::Jmp { rel: -5 }.att(), "{disp32} jmp .+0x0");
+        assert_eq!(Inst::Jmp { rel: -16 }.att(), "{disp32} jmp .-0xb");
     }
 
     #[test]
@@ -975,6 +1009,22 @@ mod tests {
             Inst::Pop { reg: Reg::Rbp }.writes(),
             vec![Reg::Rbp, Reg::Rsp]
         );
+    }
+
+    /// x86 pairs each condition with its negation in the low opcode bit.
+    #[test]
+    fn negate_flips_the_low_condition_bit() {
+        for c in Cond::ALL {
+            assert_eq!(c.negate().negate(), c);
+            let (a, b) = (
+                crate::encoder::encode(&Inst::Jcc { cond: c, rel: 0 }),
+                crate::encoder::encode(&Inst::Jcc {
+                    cond: c.negate(),
+                    rel: 0,
+                }),
+            );
+            assert_eq!(a[1] ^ b[1], 1, "{c:?}");
+        }
     }
 
     #[test]

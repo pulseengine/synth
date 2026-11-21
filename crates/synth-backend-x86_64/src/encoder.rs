@@ -249,6 +249,11 @@ pub fn encode_into(inst: &Inst, out: &mut Vec<u8>) -> usize {
             out.extend_from_slice(&[0x0F, 0x80 | cond_num(cond)]);
             out.extend_from_slice(&rel.to_le_bytes());
         }
+        // JMP rel32.
+        Inst::Jmp { rel } => {
+            out.push(0xE9);
+            out.extend_from_slice(&rel.to_le_bytes());
+        }
         // UD2.
         Inst::Ud2 => out.extend_from_slice(&[0x0F, 0x0B]),
         // RET (near).
@@ -401,6 +406,9 @@ mod tests {
             for cond in Cond::ALL {
                 assert_eq!(encode(&Inst::Jcc { cond, rel }).len(), 6);
             }
+        }
+        for rel in [0, 2, 127, 128, -1, i32::MAX, i32::MIN] {
+            assert_eq!(encode(&Inst::Jmp { rel }).len(), 5);
         }
         assert_eq!(encode(&Inst::Ud2).len(), 2);
     }

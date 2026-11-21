@@ -1,5 +1,6 @@
-//! Every shape lanes X1-X4 do not lower is an `Err` that NAMES its cause, and
-//! no object is produced. RQ-91-X86SKEL, RQ-91-X86ALU, RQ-91-X86FRAME (#1741).
+//! Every shape lanes X1-X5 do not lower is an `Err` that NAMES its cause, and
+//! no object is produced. RQ-91-X86SKEL, RQ-91-X86ALU, RQ-91-X86FRAME,
+//! RQ-91-X86CTRL (#1741).
 //! The CLI half (non-zero exit, no file written) is
 //! `crates/synth-cli/tests/x86_64_skeleton_1741.rs`.
 //!
@@ -7,6 +8,12 @@
 //! `local.tee`, a non-parameter local, a value stack deeper than the
 //! temporaries (it spills), `div`/`rem` and `clz`/`ctz`/`popcnt`. Their
 //! execution oracle is `crates/synth-oracle/tests/x86_64_frame_div_kiln_oracle.rs`.
+//!
+//! MOVED TO LOWERED in lane X5: `block`, `loop`, `if`, `unreachable` and dead
+//! code after `return` (skipped, not refused). Their execution oracle is
+//! `crates/synth-oracle/tests/x86_64_ctrlflow_kiln_oracle.rs`. What control
+//! flow still refuses is below: a block type with parameters or with more
+//! than one result, a float block result, and `br_table` past 16 targets.
 
 use synth_backend_x86_64::compile_wasm;
 
@@ -20,22 +27,33 @@ fn err(src: &str) -> String {
 
 /// `(case, module, a substring the refusal must contain)`.
 const CASES: &[(&str, &str, &str)] = &[
+    // Lane X5: control flow is lowered, but a label carries at most one
+    // i32/i64 value and br_table has at most 16 targets.
     (
-        "unreachable",
-        r#"(module (func (export "f") (result i32) unreachable))"#,
-        "Unreachable",
+        "block with a parameter",
+        r#"(module (type $t (func (param i32) (result i32)))
+             (func (export "f") (param i32) (result i32)
+               local.get 0 block (type $t) end))"#,
+        "block type with parameters",
     ),
     (
-        "loop",
+        "loop with two results",
         r#"(module (func (export "f") (param i32) (result i32)
-             loop (result i32) local.get 0 end))"#,
-        "Loop",
+             loop (result i32 i32) local.get 0 local.get 0 end drop))"#,
+        "more than one result",
     ),
     (
-        "if",
+        "if with a float result",
         r#"(module (func (export "f") (param i32) (result i32)
-             local.get 0 if (result i32) i32.const 1 else i32.const 2 end))"#,
-        "If",
+             local.get 0 if (result f32) f32.const 1 else f32.const 2 end drop
+             i32.const 0))"#,
+        "block whose type carries a f32",
+    ),
+    (
+        "br_table with 17 targets",
+        r#"(module (func (export "f") (param i32)
+             block local.get 0 br_table 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 end))"#,
+        "br_table with 17 targets",
     ),
     (
         "f32.add",
@@ -98,12 +116,6 @@ const CASES: &[(&str, &str, &str)] = &[
         "multi-value",
     ),
     (
-        "dead code after return",
-        r#"(module (func (export "f") (param i32 i32) (result i32)
-             local.get 0 return local.get 1))"#,
-        "follows `return`",
-    ),
-    (
         "import",
         r#"(module (import "env" "g" (func $g)) (func (export "f")))"#,
         "import section",
@@ -124,12 +136,6 @@ const CASES: &[(&str, &str, &str)] = &[
         "start function",
     ),
     (
-        "block",
-        r#"(module (func (export "f") (param i32) (result i32)
-             block (result i32) local.get 0 end))"#,
-        "Block",
-    ),
-    (
         "no export",
         r#"(module (func (param i32) (result i32) local.get 0))"#,
         "no exported functions",
@@ -142,9 +148,9 @@ const CASES: &[(&str, &str, &str)] = &[
     (
         "unsupported helper",
         r#"(module
-             (func (param i32) (result i32) local.get 0 unreachable)
+             (func (param i32) (result i32) local.get 0 call 0)
              (func (export "f") (param i32) (result i32) local.get 0))"#,
-        "Unreachable",
+        "Call",
     ),
 ];
 

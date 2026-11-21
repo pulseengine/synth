@@ -1,0 +1,137 @@
+artifacts:
+  - id: RQ-91-X86CTRL
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "`-b x86_64` lowers structured control flow — block, loop, if/else, br, br_if, br_table of at most 16 targets, unreachable as ud2 — with rel32 branches only, on the control-frame bookkeeping it shares with AArch64"
+    description: >
+        Lane X5 of the x86-64 backend plan (VCR-X86-001), on lanes X3-X4
+        (RQ-91-X86FRAME) and lane S1 (RQ-91-LOWERCORE).
+
+        WHAT IS LOWERED. `block`, `loop`, `if`/`else`, `br`, `br_if`,
+        `br_table` with at most 16 targets besides the default (one compare
+        and one branch per target; no jump table), `unreachable` as a bare
+        `ud2`, `return` from any depth, and a `br` to the function body
+        itself (a return). Block types of zero or one i32/i64 result; a
+        label carries at most one value, on every kind of edge, including
+        `br_table`. Code after an unconditional transfer is skipped, never
+        lowered, so dead code that pops below its frame's entry height (the
+        "below entry height" shapes) cannot reach the selector.
+
+        THE SHARED PART. The frame record, the label-arity rule (a branch to a
+        loop carries the loop's parameters, to a block or if its results),
+        the blocktype ordinal, the dead-code skip and the join rule are
+        `synth_core::lower` (RQ-91-LOWERCORE), the same code the AArch64
+        selector uses. The x86-64 selector only emits.
+
+        HOW A JOIN GETS ONE REGISTER STATE. When a block, loop or if opens,
+        every value on the operand stack is stored to the HOME slot of its
+        depth and its register freed. A value a label carries goes to the
+        home slot of the label's entry height on every edge into it. So at
+        every label all six temporaries are free and no spill slot is live,
+        whichever edge arrived. A taken `br_if` or `br_table` entry copies its
+        value on the taken path only. Home slots sit in the frame below the
+        spill slots; a body that uses them is lowered twice, the first pass
+        counting spill slots, and the two passes are checked to agree. A
+        function without control flow is encoded exactly as before.
+
+        BRANCHES are always `jmp rel32` (`E9`) or `jCC rel32` (`0F 8x`):
+        no short form, no relaxation. Each is recorded as an instruction
+        index and resolved once the body is complete, from the encoder's own
+        lengths; a branch's length does not depend on its displacement.
+
+        REFUSED BY NAME: a block type with parameters or with more than one
+        result (the shared rule's decline), a float block result (module
+        level), and a `br_table` past 16 targets.
+
+        QUALITY, STATED: correct-first. Every frame entry stores the whole
+        operand stack to memory and a join reads its value back. No
+        performance claim is made.
+
+        DEVIATIONS FROM THE PLAN. The plan names a Python oracle,
+        `x86_64_ctrlflow_differential.py`, against wasmtime; this lane's
+        oracle is Rust, in crates/synth-oracle, against kiln, as the lane
+        rules require. The plan refuses value-carrying `br_table` targets
+        (the AArch64 residual); this lane lowers them.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact: with a
+        synth built from this branch, `SYNTH=<that binary> cargo test -p
+        synth-oracle --features exec --test x86_64_ctrlflow_kiln_oracle --
+        --nocapture` must print the seven `ORACLE x86_64-ctrl` lines (295,
+        550, 129, 170, 50 with 27 traps, 133, and 1600 random cases with 120
+        traps) and pass 11 tests; with SYNTH naming a binary built from
+        57d4aed8 the same command must fail 10 of 11 (the float declines pass
+        on both). `cargo test -p synth-backend-x86_64 -- --nocapture` must
+        print `E1: 24316 forms byte-equal to` and `E1 functions: 4
+        functions, 18 branches byte-equal` when llvm-mc is present.
+
+        CITATION: #1741 is the architecture-support issue this lane is one
+        step of. It stays open: x86-64 is at L3, and calls, globals and
+        memory remain.
+    tags:
+      - feature-loop
+      - backend
+      - oracle
+    links:
+      - type: derives-from
+        target: VCR-X86-001
+    fields:
+      req-type: functional
+      priority: should
+      issue: "#1741"
+      verification-track: execution
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 `synth compile -b x86_64 --relocatable` lowers
+        block, loop, if/else, br, br_if, br_table of at most 16 targets and
+        unreachable, with value-carrying frames and rel32 branches only;
+        every shape the plan pins (the #1691 fixture's integer exports and
+        the below-entry-height shapes) gives its exact value or a named
+        decline, never a panic; execution agrees with kiln under unicorn
+        pinned to QEMU64 on every shaped case and on a fixed-seed population
+        of random structured programs; every branch form and every emitted
+        control-flow function is byte-equal to llvm-mc.
+      landed: "v0.91 X86CTRL - #1741 - DELIVERED: control flow in the x86-64 selector on synth_core::lower; the jmp rel32 form; block types read in backend.rs; tests/x86_64_ctrlflow_kiln_oracle.rs; op surface 75 -> 84 of 198. #1741 stays open (outlives)."
+      verified-by: >
+        DELIVERED, execution-verified under emulation. RED/GREEN: with SYNTH
+        naming a binary built from 57d4aed8, 10 of the 11 tests of
+        x86_64_ctrlflow_kiln_oracle.rs fail, every group refused at compile;
+        the 11th (the fixture's float shapes are named declines) passes on
+        both, as it must. On this branch all 11 pass. EXECUTION, every case
+        agreeing with kiln under unicorn QEMU64 AND giving the value (or the
+        `ud2`) the test computes in Rust from the arguments: loops 295 cases
+        over 6 probes (top- and bottom-tested, a result loop whose back-edge
+        must carry nothing, nested, i64, a br_table back-edge); blocks and
+        ifs 550 over 8 (value-carrying br_if to inner and outer blocks, seven
+        values beneath a block so the deepest is spilled, nested result ifs,
+        else-less ifs, a br_if to the function body); br out of nested loops
+        129 over 2; br_table 170 over 6 (1, 2, 5 and 16 targets at every
+        index plus 0x7fffffff, 0x80000000, 0xffffffff and 0xfffffffe, and
+        value-carrying i32 and i64 targets); unreachable 50 cases, 27 of them
+        traps, each stopping on its own `ud2` (checked by address, kiln's
+        class `unreachable`); the pinned shapes 133 cases over 19 exports,
+        each its exact value: all 17 integer exports of the #1691 fixture
+        (t_i32_void_target, t_i32_unreachable and t_i64_void_target among
+        them, and its below-entry-height shape refuse_below) and cold review
+        1's below-entry-height shapes v1 and v4. Four of the fixture's nine
+        float exports, one of each shape class, are refused naming the float
+        type, with no object written and no panic. RANDOM: 40 seeded modules of 5 random
+        structured functions each (646 blocks, 72 counted loops, 360 ifs,
+        170 elses, 150 br, 291 br_if, 225 br_table, 118 return, 195
+        unreachable, 118 select, with dead code after transfers and values
+        beneath frames), 1,600 cases, all agree, 120 traps on `ud2`; the
+        construct counts are pinned. POTENCY, committed tests on the emitted
+        image: an `if`'s skip branch inverted reds exactly the vectors whose
+        arms differ; the second of three `ud2` replaced by a nop reds exactly
+        the index that reaches it (it then stops on the third); one br_table
+        compare's immediate changed reds exactly the two indices whose
+        dispatch moves. ENCODER: E1 24,316 of 24,316 forms byte-equal to
+        llvm-mc 22.1.8 (8 new `jmp rel32` beside the 80 `jCC rel32`, both
+        through the object route); a displacement one off disagrees on all 88
+        branch forms. Four emitted control-flow functions (18 branches),
+        printed and assembled to an object by llvm-mc, equal synth's bytes.
+        E2/E3: every form and every probe object decodes under iced-x86 to
+        the requested text and length inside x86-64-v1, control-flow probes
+        included. UNCHANGED REACH: compiled with `-b x86_64` (two
+        invocations) over the 591-input corpus, every input the base binary
+        accepted is byte-identical on this branch.

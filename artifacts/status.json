@@ -44,8 +44,8 @@
   "verus_spec_fns": 8,
   "wasm_op_variant_count_pin": "280",
   "wasmcert_bridge_qed": 104,
-  "x86_ops_lowered": 75,
+  "x86_ops_lowered": 84,
   "x86_ops_probed": 198,
-  "x86_selector_lines_code": 798,
+  "x86_selector_lines_code": 1395,
   "x86_selector_wildcard_arms_code": 0
 }

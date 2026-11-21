@@ -36,6 +36,36 @@ use forms::{FORM_COUNT, all_forms};
 /// every temporary, a void function, an early `return`, non-exported helpers
 /// and a function exported under two names.
 const PROBES: &[&str] = &[
+    // Lane X5: every control-flow shape, so every `jmp`/`jCC rel32` the
+    // selector resolves decodes to the target it was resolved to.
+    r#"(module
+         (func (export "loop") (param i32) (result i32) (local i32 i32)
+           local.get 0 i32.const 15 i32.and local.set 1
+           block loop
+             local.get 1 i32.eqz br_if 1
+             local.get 2 local.get 1 i32.add local.set 2
+             local.get 1 i32.const 1 i32.sub local.set 1
+             br 0
+           end end
+           local.get 2)
+         (func (export "ifs") (param i32 i64) (result i64)
+           local.get 0 if (result i64) local.get 1 else i64.const 9 end
+           local.get 0 i32.const 2 i32.and if nop else unreachable end)
+         (func (export "table") (param i32) (result i32)
+           block block block
+             local.get 0 br_table 0 1 2
+           end i32.const 1 return end i32.const 2 return end
+           i32.const 3)
+         (func (export "valued") (param i32) (result i32)
+           i32.const 100
+           block (result i32) block (result i32)
+             i32.const 5 local.get 0 br_table 0 1 0
+           end i32.const 1 i32.add end
+           i32.sub)
+         (func (export "out") (param i32) (result i32)
+           i32.const 7 block (result i32) loop
+             local.get 0 local.get 0 br_if 1 drop local.get 0 br 2
+           end unreachable end i32.add))"#,
     // Lanes X3-X4: locals, the spill path, div/rem with their guards, and the
     // bit counts (which must decode as bsr/bsf, never lzcnt/tzcnt/popcnt).
     r#"(module
@@ -174,6 +204,7 @@ fn iced_text(want: &Inst, next_ip: u64) -> String {
             cond.suffix(),
             next_ip.wrapping_add(*rel as i64 as u64)
         ),
+        Inst::Jmp { rel } => format!("jmp 0x{:016x}", next_ip.wrapping_add(*rel as i64 as u64)),
         other => other.att(),
     }
 }

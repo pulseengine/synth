@@ -1,14 +1,16 @@
-//! The x86-64 instruction selector — lanes X1 to X4 (RQ-91-X86SKEL,
-//! RQ-91-X86ALU, RQ-91-X86FRAME, #1741).
+//! The x86-64 instruction selector — lanes X1 to X5 (RQ-91-X86SKEL,
+//! RQ-91-X86ALU, RQ-91-X86FRAME, RQ-91-X86CTRL, #1741).
 //!
-//! LOWERED: straight-line integer code in a LEAF function of at most six
-//! i32/i64 parameters, any i32/i64 locals that fit the frame limit, and zero
-//! or one i32/i64 result — `local.get`/`local.set`/`local.tee`,
+//! LOWERED: integer code in a LEAF function of at most six i32/i64
+//! parameters, any i32/i64 locals that fit the frame limit, and zero or one
+//! i32/i64 result — `local.get`/`local.set`/`local.tee`,
 //! `i32.const`/`i64.const`, the ops of the rule table
 //! ([`crate::rules::RULES`]: add, sub, mul, and, or, xor, the shifts and
 //! rotates, the compares and `eqz`, the extensions and `wrap`, `div`/`rem`
 //! with their trap guards, `clz`/`ctz`/`popcnt`), `select`, `drop`, `nop`,
-//! `return` and the function's final `end`.
+//! `return`, and (lane X5) structured control flow: `block`, `loop`,
+//! `if`/`else`, `br`, `br_if`, `br_table` of at most 16 targets,
+//! `unreachable` and `end`, with block types of zero or one i32/i64 result.
 //!
 //! EVERYTHING ELSE IS DECLINED BY NAME: [`SelectError::Unsupported`] carries
 //! the op itself, so the message says which op, never "unsupported op". A
@@ -60,9 +62,33 @@
 //! a second `ud2` on `INT_MIN / -1`, and `rem_s` by -1 divides 0 instead of
 //! the dividend (the remainder is 0 for every dividend). Branches are forward
 //! `jCC rel32` over a fixed run of instructions whose length is read from the
-//! encoder, so there is no label and no size estimate.
+//! encoder, so there is no label and no size estimate. `unreachable` is a
+//! bare `ud2`.
+//!
+//! CONTROL FLOW (lane X5). The frame record, the label-arity rule, the
+//! blocktype ordinal, the dead-code skip and the join rule are
+//! [`synth_core::lower`], shared with the AArch64 selector; this module only
+//! emits. Every branch is `jmp rel32` or `jCC rel32` (no short form, no
+//! relaxation), recorded as an instruction index and resolved once the body
+//! is complete, from the encoder's lengths (an instruction's length does not
+//! depend on its displacement). THE REGISTER STATE AT A JOIN is made the same
+//! on every edge by one rule: when a `block`, `loop` or `if` opens, every
+//! value on the operand stack is stored to the HOME slot of its depth (its
+//! register freed), so every value beneath a frame lives in memory while the
+//! frame is open — nothing inside can spill, move or overwrite it, because
+//! the allocator only ever spills register-held values and live code never
+//! pops below its frame's entry height (dead code, which may, is skipped). A
+//! value a label carries goes to the home slot of the label's entry height,
+//! on every edge into it (a fall-through `end` or `else`, a `br`, a taken
+//! `br_if`, a `br_table` entry), and the join reads it from there. At every
+//! label all six temporaries are free and no spill slot is live. A branch to
+//! the function body itself is a return: its value goes to home slot 0 and
+//! the shared epilogue loads it into `rax`. Home slots sit in the frame below
+//! the spill slots, so a function without control flow is laid out — and
+//! encoded — exactly as before lane X5.
 
 use synth_core::WasmOp;
+use synth_core::lower::{self, BlockTypeDecline, Control, ElseError, FrameKind};
 
 use crate::encoder::encode;
 use crate::inst::{AluOp, Cond, Ext, ImmOp, Inst, Mem, Reg, ShiftOp, Size};
@@ -93,6 +119,18 @@ pub const CALLEE_SAVED: [Reg; 7] = [
     Reg::R15,
 ];
 
+/// The most `br_table` targets lowered (besides the default). Each is a
+/// compare and a branch; a jump table is not built.
+pub const BR_TABLE_LIMIT: usize = 16;
+
+/// A block type, read from the module: its parameter count and its result
+/// types (only i32 and i64 reach the selector; the backend refuses others).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BlockSig {
+    pub params: usize,
+    pub results: Vec<Ty>,
+}
+
 /// The largest frame lowered, in bytes below `rbp`. One page: a larger frame
 /// could step over a guard page without touching it, and no stack probe is
 /// emitted.
@@ -103,7 +141,7 @@ pub const FRAME_LIMIT: u32 = 4096;
 pub enum SelectError {
     /// The op has no x86-64 lowering in this lane.
     #[error(
-        "x86_64: unsupported wasm op {0:?} (lanes X1-X4 lower straight-line i32/i64 integer code only: const, local.get/set/tee, add/sub/mul/and/or/xor, shifts and rotates, compares, extensions, div/rem, clz/ctz/popcnt, select, drop, return)"
+        "x86_64: unsupported wasm op {0:?} (lanes X1-X5 lower i32/i64 integer code only: const, local.get/set/tee, add/sub/mul/and/or/xor, shifts and rotates, compares, extensions, div/rem, clz/ctz/popcnt, select, drop, return, block/loop/if/else/br/br_if/br_table/unreachable)"
     )]
     Unsupported(WasmOp),
     /// More than six parameters: the seventh would be stack-passed.
@@ -119,10 +157,21 @@ pub enum SelectError {
         "x86_64: the frame needs {0} bytes for locals and spilled values, above the {FRAME_LIMIT}-byte limit; a larger frame needs a stack probe, which is not lowered"
     )]
     FrameTooLarge(u64),
-    /// An op follows `return` before the function's final `end` (dead code
-    /// is not lowered in this lane).
-    #[error("x86_64: {0:?} follows `return`; unreachable code is not lowered")]
-    AfterReturn(WasmOp),
+    /// A block type with parameters, or with more than one result: a label
+    /// carries at most one value here.
+    #[error(
+        "x86_64: {op:?} #{ord} has a block type with {what}, which is not lowered (a label carries at most one value)"
+    )]
+    BlockType {
+        op: WasmOp,
+        ord: usize,
+        what: &'static str,
+    },
+    /// A `br_table` with more targets than [`BR_TABLE_LIMIT`].
+    #[error(
+        "x86_64: br_table with {0} targets; at most {BR_TABLE_LIMIT} are lowered (each is a compare and a branch; no jump table is built)"
+    )]
+    BrTableTargets(usize),
     /// The op stream did not end in exactly one final `end`.
     #[error("x86_64: the function body does not end in its final `end`")]
     NoFinalEnd,
@@ -139,6 +188,10 @@ enum Loc {
     Reg(Reg),
     /// Spill slot `k` of the frame.
     Spill(u32),
+    /// The HOME slot of operand-stack depth `d`: where the value at depth `d`
+    /// lives once a control frame has opened above it (module doc). Only the
+    /// value at depth `d` ever lives there.
+    Home(u32),
 }
 
 /// One value on the wasm operand stack.
@@ -228,11 +281,155 @@ struct Sel<'a> {
     /// Spill slots that are free again, and how many were ever needed.
     free_spills: Vec<u32>,
     spills: u32,
+    /// The frame slot index of home slot 0, and how many home slots were used.
+    home_base: u64,
+    homes: u32,
+    /// Branches to resolve once the body is complete: (the branch's
+    /// instruction index, the target's instruction index).
+    links: Vec<(usize, usize)>,
 }
 
 impl Sel<'_> {
     fn spill_mem(&self, k: u32) -> Result<Mem, SelectError> {
         slot(self.locals.len() as u64 + u64::from(k))
+    }
+
+    fn home_mem(&mut self, d: u32) -> Result<Mem, SelectError> {
+        self.homes = self.homes.max(d + 1);
+        slot(self.home_base + u64::from(d))
+    }
+
+    /// Give back whatever `v` held.
+    fn release_val(&mut self, v: Val) {
+        match v.loc {
+            Loc::Reg(r) => self.release(r),
+            Loc::Spill(k) => self.free_spills.push(k),
+            Loc::Home(_) => {}
+        }
+    }
+
+    /// Cut the operand stack to `n` values, releasing what the rest held.
+    fn truncate(&mut self, n: usize) {
+        while self.stack.len() > n {
+            let v = self.stack.pop().expect("longer than n");
+            self.release_val(v);
+        }
+    }
+
+    /// Store every value on the operand stack to the home slot of its depth
+    /// (module doc). Afterwards no temporary and no spill slot is in use by
+    /// the stack. Only `mov`s: EFLAGS are untouched.
+    fn flush(&mut self) -> Result<(), SelectError> {
+        for d in 0..self.stack.len() {
+            let v = self.stack[d];
+            let depth = d as u32;
+            match v.loc {
+                Loc::Home(h) if h == depth => continue,
+                Loc::Home(h) => {
+                    return Err(SelectError::Malformed(format!(
+                        "the operand at depth {d} lives in the home slot of depth {h}"
+                    )));
+                }
+                Loc::Reg(r) => {
+                    let mem = self.home_mem(depth)?;
+                    self.out.push(Inst::Store {
+                        size: Size::Q,
+                        src: r,
+                        mem,
+                    });
+                    self.release(r);
+                }
+                Loc::Spill(k) => {
+                    let from = self.spill_mem(k)?;
+                    let mem = self.home_mem(depth)?;
+                    self.out.push(Inst::Load {
+                        size: Size::Q,
+                        dst: Reg::Rax,
+                        mem: from,
+                    });
+                    self.out.push(Inst::Store {
+                        size: Size::Q,
+                        src: Reg::Rax,
+                        mem,
+                    });
+                    self.free_spills.push(k);
+                }
+            }
+            self.stack[d].loc = Loc::Home(depth);
+        }
+        Ok(())
+    }
+
+    /// Whether the top value is somewhere other than home slot `e`.
+    fn top_not_home(&self, e: u32) -> bool {
+        !matches!(self.stack.last(), Some(Val { loc: Loc::Home(d), .. }) if *d == e)
+    }
+
+    /// COPY the top value (of type `ty`, at depth `e` or above) into home slot
+    /// `e`, where a label of entry height `e` reads its value. The value stays
+    /// where it is. Only `mov`s, through `rax`.
+    fn copy_top_home(&mut self, at: &WasmOp, e: usize, ty: Ty) -> Result<(), SelectError> {
+        let Some(&v) = self.stack.last() else {
+            return Err(SelectError::Malformed(format!(
+                "{at:?} carries a value from an empty stack"
+            )));
+        };
+        if self.stack.len() <= e || v.ty != ty {
+            return Err(SelectError::Malformed(format!(
+                "{at:?} carries a {:?} at depth {} to a label of type {ty:?} at height {e}",
+                v.ty,
+                self.stack.len() - 1
+            )));
+        }
+        let e = e as u32;
+        let to = self.home_mem(e)?;
+        let from = match v.loc {
+            Loc::Home(d) if d == e => return Ok(()),
+            Loc::Reg(r) => {
+                self.out.push(Inst::Store {
+                    size: Size::Q,
+                    src: r,
+                    mem: to,
+                });
+                return Ok(());
+            }
+            Loc::Home(d) => self.home_mem(d)?,
+            Loc::Spill(k) => self.spill_mem(k)?,
+        };
+        self.out.push(Inst::Load {
+            size: Size::Q,
+            dst: Reg::Rax,
+            mem: from,
+        });
+        self.out.push(Inst::Store {
+            size: Size::Q,
+            src: Reg::Rax,
+            mem: to,
+        });
+        Ok(())
+    }
+
+    /// A fall-through edge into the label of a frame with entry height `e`:
+    /// the stack must hold exactly the frame's result (if any), which goes to
+    /// home slot `e`.
+    fn fall_into(&mut self, at: &WasmOp, e: usize, result: Option<Ty>) -> Result<(), SelectError> {
+        let want = e + usize::from(result.is_some());
+        if self.stack.len() != want {
+            return Err(SelectError::Malformed(format!(
+                "{} value(s) on the stack at {at:?}, the frame expects {want}",
+                self.stack.len()
+            )));
+        }
+        match result {
+            Some(ty) => self.copy_top_home(at, e, ty),
+            None => Ok(()),
+        }
+    }
+
+    /// Emit a branch with a displacement to be resolved; its index.
+    fn branch(&mut self, inst: Inst) -> usize {
+        self.out.push(inst);
+        self.out.len() - 1
     }
 
     fn local(&self, at: &WasmOp, index: u32) -> Result<(Ty, Mem), SelectError> {
@@ -266,7 +463,7 @@ impl Sel<'_> {
             .enumerate()
             .find_map(|(i, v)| match v.loc {
                 Loc::Reg(r) => Some((i, r)),
-                Loc::Spill(_) => None,
+                Loc::Spill(_) | Loc::Home(_) => None,
             });
         let Some((i, r)) = victim else {
             return Err(SelectError::Malformed(
@@ -318,6 +515,16 @@ impl Sel<'_> {
                     mem,
                 });
                 self.free_spills.push(k);
+                Ok((r, v.ty))
+            }
+            Loc::Home(d) => {
+                let r = self.alloc()?;
+                let mem = self.home_mem(d)?;
+                self.out.push(Inst::Load {
+                    size: Size::Q,
+                    dst: r,
+                    mem,
+                });
                 Ok((r, v.ty))
             }
         }
@@ -624,10 +831,15 @@ impl Sel<'_> {
             self.out.push(mov(size_of(ty), Reg::Rax, r));
             self.release(r);
         }
+        self.epilogue();
+        Ok(())
+    }
+
+    /// Drop the frame and return.
+    fn epilogue(&mut self) {
         self.out.push(mov(Size::Q, Reg::Rsp, Reg::Rbp));
         self.out.push(Inst::Pop { reg: Reg::Rbp });
         self.out.push(Inst::Ret);
-        Ok(())
     }
 }
 
@@ -667,17 +879,31 @@ fn prologue(params: &[Ty], locals: usize, frame: u32) -> Result<Vec<Inst>, Selec
     Ok(v)
 }
 
-/// Lower one function body.
-///
-/// `params` and `results` are the function's declared signature and `locals`
-/// its declared non-parameter locals, in index order; the caller has already
-/// checked that every one of them is `i32` or `i64` ([`crate::backend`] reads
-/// the exact types from the module).
+/// Lower one function body whose block types are all void (hand-built op
+/// streams carry no block-type table). See [`select_function`].
 pub fn select(
     ops: &[WasmOp],
     params: &[Ty],
     locals: &[Ty],
     results: &[Ty],
+) -> Result<Vec<Inst>, SelectError> {
+    select_function(ops, params, locals, results, &[])
+}
+
+/// Lower one function body.
+///
+/// `params` and `results` are the function's declared signature and `locals`
+/// its declared non-parameter locals, in index order; the caller has already
+/// checked that every one of them is `i32` or `i64` ([`crate::backend`] reads
+/// the exact types from the module). `blocks` is the type of every `block`,
+/// `loop` and `if` in op order (dead ones included); an op past its end is a
+/// void block.
+pub fn select_function(
+    ops: &[WasmOp],
+    params: &[Ty],
+    locals: &[Ty],
+    results: &[Ty],
+    blocks: &[BlockSig],
 ) -> Result<Vec<Inst>, SelectError> {
     if params.len() > ARG_REGS.len() {
         return Err(SelectError::TooManyParams(params.len() as u32));
@@ -689,15 +915,241 @@ pub fn select(
     if let Some(last) = all_locals.len().checked_sub(1) {
         slot(last as u64)?;
     }
+    // The home slots sit below the spill slots, whose count is known only
+    // once the body is lowered. So a body that uses them is lowered TWICE:
+    // the first pass counts the spill slots (its home addresses are
+    // provisional and its output is dropped), the second places the homes
+    // below them. No decision of the lowering reads an address, so both
+    // passes make the same decisions; that is checked.
+    let base = all_locals.len() as u64;
+    let first = lower_body(ops, &all_locals, results, blocks, base)?;
+    let body = if first.homes == 0 {
+        first
+    } else {
+        let second = lower_body(
+            ops,
+            &all_locals,
+            results,
+            blocks,
+            base + u64::from(first.spills),
+        )?;
+        if (second.spills, second.homes) != (first.spills, first.homes) {
+            return Err(SelectError::Malformed(format!(
+                "the two passes disagree: {} spill and {} home slots, then {} and {}",
+                first.spills, first.homes, second.spills, second.homes
+            )));
+        }
+        second
+    };
+    // The frame: one 8-byte slot per local, per spill slot and per home slot,
+    // rounded up to 16 so rsp stays 16-byte aligned (it is after `pushq
+    // %rbp`).
+    let slots = base + u64::from(body.spills) + u64::from(body.homes);
+    let bytes = slots * 8;
+    if bytes > u64::from(FRAME_LIMIT) {
+        return Err(SelectError::FrameTooLarge(bytes));
+    }
+    let frame = (bytes as u32).next_multiple_of(16);
+    let mut out = prologue(params, all_locals.len(), frame)?;
+    out.extend(body.out);
+    Ok(out)
+}
+
+/// One lowered body, without its prologue.
+struct Lowered {
+    out: Vec<Inst>,
+    spills: u32,
+    homes: u32,
+}
+
+type Frame = lower::Frame<usize, Ty>;
+type Kind = FrameKind<usize>;
+
+/// The frame a `block`/`loop`/`if` opens: its label and result arity
+/// ([`lower::label_arities`], the shared rule) and its result type.
+fn open_frame(
+    ctl: &mut Control<usize, Ty>,
+    op: &WasmOp,
+    blocks: &[BlockSig],
+    arities: &[(u8, u8)],
+) -> Result<(u8, u8, Option<Ty>), SelectError> {
+    let is_loop = matches!(op, WasmOp::Loop);
+    let (ord, arity) = ctl.block_type(arities);
+    let (label_arity, result_arity) =
+        lower::label_arities(arity, is_loop).map_err(|d| SelectError::BlockType {
+            op: op.clone(),
+            ord,
+            what: match d {
+                BlockTypeDecline::Params => "parameters",
+                BlockTypeDecline::MultiValue => "more than one result",
+            },
+        })?;
+    let ty = if result_arity == 1 {
+        Some(
+            blocks
+                .get(ord)
+                .and_then(|b| b.results.first().copied())
+                .ok_or_else(|| {
+                    SelectError::Malformed(format!("{op:?} #{ord} has no result type"))
+                })?,
+        )
+    } else {
+        None
+    };
+    Ok((label_arity, result_arity, ty))
+}
+
+fn new_frame(kind: Kind, stack_entry: usize, arity: (u8, u8, Option<Ty>)) -> Frame {
+    Frame {
+        kind,
+        pending: Vec::new(),
+        dead_skip: None,
+        stack_entry,
+        label_arity: arity.0,
+        result_arity: arity.1,
+        slot: arity.2,
+    }
+}
+
+/// The frame a branch of relative depth `depth` targets.
+fn target(ctl: &Control<usize, Ty>, at: &WasmOp, depth: u32) -> Result<usize, SelectError> {
+    ctl.target(depth).ok_or_else(|| {
+        SelectError::Malformed(format!(
+            "{at:?}: depth {depth} with {} label(s) open",
+            ctl.depth()
+        ))
+    })
+}
+
+/// What a branch to frame `t` must hand over: `Some((entry height, type))`
+/// when its label carries a value.
+fn carried(
+    ctl: &Control<usize, Ty>,
+    at: &WasmOp,
+    t: usize,
+) -> Result<Option<(usize, Ty)>, SelectError> {
+    let f = &ctl.frames()[t];
+    if f.label_arity == 0 {
+        return Ok(None);
+    }
+    let ty = f
+        .slot
+        .ok_or_else(|| SelectError::Malformed(format!("{at:?}: a valued label has no type")))?;
+    Ok(Some((f.stack_entry, ty)))
+}
+
+/// Record the branch at instruction `pos` as an edge to frame `t`'s label: a
+/// loop's header is known (backward), a block's or if's end is not yet
+/// (forward, resolved at its `end`).
+fn record(s: &mut Sel, ctl: &mut Control<usize, Ty>, t: usize, pos: usize) {
+    match ctl.frames()[t].kind {
+        Kind::Loop { entry } => s.links.push((pos, entry)),
+        Kind::Block | Kind::If { .. } => ctl.frames_mut()[t].pending.push(pos),
+    }
+}
+
+/// A CONDITIONAL edge to frame `t`, taken when `cond` holds (the flags are
+/// already set). When the label carries a value that is not yet in its home
+/// slot, the copy runs on the taken path only: the home slot of the label's
+/// entry height may hold a live value on the path that falls through.
+fn cond_edge(
+    s: &mut Sel,
+    ctl: &mut Control<usize, Ty>,
+    at: &WasmOp,
+    t: usize,
+    cond: Cond,
+) -> Result<(), SelectError> {
+    if let Some((e, ty)) = carried(ctl, at, t)?
+        && s.top_not_home(e as u32)
+    {
+        let over = s.branch(Inst::Jcc {
+            cond: cond.negate(),
+            rel: 0,
+        });
+        s.copy_top_home(at, e, ty)?;
+        let pos = s.branch(Inst::Jmp { rel: 0 });
+        record(s, ctl, t, pos);
+        let here = s.out.len();
+        s.links.push((over, here));
+    } else {
+        let pos = s.branch(Inst::Jcc { cond, rel: 0 });
+        record(s, ctl, t, pos);
+    }
+    Ok(())
+}
+
+/// An UNCONDITIONAL edge to frame `t`.
+fn edge(
+    s: &mut Sel,
+    ctl: &mut Control<usize, Ty>,
+    at: &WasmOp,
+    t: usize,
+) -> Result<(), SelectError> {
+    if let Some((e, ty)) = carried(ctl, at, t)? {
+        s.copy_top_home(at, e, ty)?;
+    }
+    let pos = s.branch(Inst::Jmp { rel: 0 });
+    record(s, ctl, t, pos);
+    Ok(())
+}
+
+/// Write each recorded branch's displacement, from the encoder's lengths. A
+/// branch's length does not depend on its displacement (always rel32).
+fn resolve(out: &mut [Inst], links: &[(usize, usize)]) -> Result<(), SelectError> {
+    let mut off = Vec::with_capacity(out.len() + 1);
+    let mut at = 0usize;
+    for i in out.iter() {
+        off.push(at);
+        at += encode(i).len();
+    }
+    off.push(at);
+    for &(b, t) in links {
+        let rel = i32::try_from(off[t] as i64 - off[b + 1] as i64)
+            .map_err(|_| SelectError::Malformed("a branch beyond rel32".into()))?;
+        match &mut out[b] {
+            Inst::Jcc { rel: r, .. } | Inst::Jmp { rel: r } => *r = rel,
+            other => {
+                return Err(SelectError::Malformed(format!(
+                    "a branch was recorded at `{other}`"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lower_body(
+    ops: &[WasmOp],
+    all_locals: &[Ty],
+    results: &[Ty],
+    blocks: &[BlockSig],
+    home_base: u64,
+) -> Result<Lowered, SelectError> {
+    let arities: Vec<(u8, u8)> = blocks
+        .iter()
+        .map(|b| {
+            (
+                u8::try_from(b.params).unwrap_or(u8::MAX),
+                u8::try_from(b.results.len()).unwrap_or(u8::MAX),
+            )
+        })
+        .collect();
     let mut s = Sel {
-        locals: &all_locals,
+        locals: all_locals,
         out: Vec::new(),
         stack: Vec::new(),
         free: TEMP_REGS.iter().rev().copied().collect(),
         free_spills: Vec::new(),
         spills: 0,
+        home_base,
+        homes: 0,
+        links: Vec::new(),
     };
-    let mut returned = false;
+    let mut ctl: Control<usize, Ty> = Control::new();
+    // The function body is the OUTERMOST frame: its label is the function's
+    // end, so a `br` to it returns, carrying the function's result.
+    let n = results.len() as u8;
+    ctl.open(new_frame(Kind::Block, 0, (n, n, results.first().copied())));
     let mut ended = false;
     for op in ops {
         if ended {
@@ -705,8 +1157,11 @@ pub fn select(
                 "{op:?} follows the function's final `end`"
             )));
         }
-        if returned && !matches!(op, WasmOp::End) {
-            return Err(SelectError::AfterReturn(op.clone()));
+        // Code after `br`/`br_table`/`return`/`unreachable` is dead: wasm
+        // validates it against a polymorphic stack, so it may pop values that
+        // are not there. It is skipped, never lowered (the shared rule).
+        if ctl.skip_dead(op) {
+            continue;
         }
         match op {
             WasmOp::LocalGet(i) => {
@@ -750,29 +1205,176 @@ pub fn select(
                 s.push(dst, Ty::I64);
             }
             WasmOp::Select => s.select(op)?,
-            WasmOp::Drop => match s.pop_any(op)?.loc {
-                Loc::Reg(r) => s.release(r),
-                Loc::Spill(k) => s.free_spills.push(k),
-            },
+            WasmOp::Drop => {
+                let v = s.pop_any(op)?;
+                s.release_val(v);
+            }
             WasmOp::Nop => {}
             WasmOp::Return => {
                 s.ret(results, op)?;
-                returned = true;
+                ctl.transfer();
             }
-            // Only the function's own `end` reaches here: `block`, `loop` and
-            // `if` are declined, so no other frame can be open.
-            WasmOp::End => {
-                if !returned {
-                    if s.stack.len() != results.len() {
-                        return Err(SelectError::Malformed(format!(
-                            "{} value(s) on the stack at the final `end`, {} result(s) declared",
-                            s.stack.len(),
-                            results.len()
-                        )));
-                    }
-                    s.ret(results, op)?;
+            WasmOp::Unreachable => {
+                s.out.push(Inst::Ud2);
+                ctl.transfer();
+            }
+            WasmOp::Block | WasmOp::Loop => {
+                let arity = open_frame(&mut ctl, op, blocks, &arities)?;
+                s.flush()?;
+                let kind = if matches!(op, WasmOp::Loop) {
+                    Kind::Loop { entry: s.out.len() }
+                } else {
+                    Kind::Block
+                };
+                ctl.open(new_frame(kind, s.stack.len(), arity));
+            }
+            WasmOp::If => {
+                let arity = open_frame(&mut ctl, op, blocks, &arities)?;
+                let c = s.pop_reg(op, Ty::I32)?;
+                s.flush()?;
+                s.out.push(Inst::Alu {
+                    op: AluOp::Test,
+                    size: Size::L,
+                    dst: c,
+                    src: c,
+                });
+                // To the else arm, or past the then arm, when the condition
+                // is zero.
+                let skip = s.branch(Inst::Jcc {
+                    cond: Cond::E,
+                    rel: 0,
+                });
+                s.release(c);
+                let kind = Kind::If {
+                    else_fixup: Some(skip),
+                };
+                ctl.open(new_frame(kind, s.stack.len(), arity));
+            }
+            WasmOp::Else => {
+                let skip_then = ctl.begin_else().map_err(|e| {
+                    SelectError::Malformed(
+                        match e {
+                            ElseError::NoFrame => "else with no open frame",
+                            ElseError::Duplicate => "a second else for one if",
+                            ElseError::NotIf => "else closes a frame that is not an if",
+                        }
+                        .into(),
+                    )
+                })?;
+                let f = ctl.frames().last().expect("begin_else found the if");
+                let (entry, result) = (f.stack_entry, f.slot);
+                // A live then arm hands the join its result and jumps over
+                // the else arm; a dead one emits nothing.
+                let over_else = if ctl.reachable() {
+                    s.fall_into(op, entry, result)?;
+                    Some(s.branch(Inst::Jmp { rel: 0 }))
+                } else {
+                    None
+                };
+                s.truncate(entry);
+                ctl.enter_else(over_else);
+                let here = s.out.len();
+                s.links.push((skip_then, here));
+            }
+            WasmOp::Br(depth) => {
+                let t = target(&ctl, op, *depth)?;
+                edge(&mut s, &mut ctl, op, t)?;
+                ctl.transfer();
+            }
+            WasmOp::BrIf(depth) => {
+                let t = target(&ctl, op, *depth)?;
+                let c = s.pop_reg(op, Ty::I32)?;
+                s.out.push(Inst::Alu {
+                    op: AluOp::Test,
+                    size: Size::L,
+                    dst: c,
+                    src: c,
+                });
+                cond_edge(&mut s, &mut ctl, op, t, Cond::Ne)?;
+                s.release(c);
+            }
+            WasmOp::BrTable { targets, default } => {
+                if targets.len() > BR_TABLE_LIMIT {
+                    return Err(SelectError::BrTableTargets(targets.len()));
                 }
-                ended = true;
+                let ts: Vec<usize> = targets
+                    .iter()
+                    .map(|d| target(&ctl, op, *d))
+                    .collect::<Result<_, _>>()?;
+                let dflt = target(&ctl, op, *default)?;
+                let idx = s.pop_reg(op, Ty::I32)?;
+                // One compare per index; an index past the last (unsigned,
+                // so a negative one too) falls to the default.
+                for (i, &t) in ts.iter().enumerate() {
+                    s.out.push(Inst::AluImm {
+                        op: ImmOp::Cmp,
+                        size: Size::L,
+                        dst: idx,
+                        imm: i as i32,
+                    });
+                    cond_edge(&mut s, &mut ctl, op, t, Cond::E)?;
+                }
+                edge(&mut s, &mut ctl, op, dflt)?;
+                s.release(idx);
+                ctl.transfer();
+            }
+            WasmOp::End => {
+                let f = ctl
+                    .frames()
+                    .last()
+                    .ok_or_else(|| SelectError::Malformed("end with no open frame".into()))?;
+                let (entry, result) = (f.stack_entry, f.slot);
+                let function = ctl.depth() == 1;
+                let fall = ctl.reachable();
+                if function {
+                    let closed = ctl.end().expect("the function frame is open");
+                    if closed.fixups.is_empty() {
+                        // Only the fall-through returns (or nothing does).
+                        if fall {
+                            if s.stack.len() != results.len() {
+                                return Err(SelectError::Malformed(format!(
+                                    "{} value(s) on the stack at the final `end`, {} result(s) declared",
+                                    s.stack.len(),
+                                    results.len()
+                                )));
+                            }
+                            s.ret(results, op)?;
+                        }
+                    } else {
+                        // Branches to the function body: one shared epilogue
+                        // reading the result from home slot 0.
+                        if fall {
+                            s.fall_into(op, 0, result)?;
+                        }
+                        let here = s.out.len();
+                        s.links.extend(closed.fixups.iter().map(|&p| (p, here)));
+                        if let Some(ty) = result {
+                            let mem = s.home_mem(0)?;
+                            s.out.push(Inst::Load {
+                                size: size_of(ty),
+                                dst: Reg::Rax,
+                                mem,
+                            });
+                        }
+                        s.epilogue();
+                    }
+                    ended = true;
+                } else {
+                    if fall {
+                        s.fall_into(op, entry, result)?;
+                    }
+                    let closed = ctl.end().expect("a frame is open");
+                    let here = s.out.len();
+                    s.links.extend(closed.fixups.iter().map(|&p| (p, here)));
+                    s.truncate(entry);
+                    // The join reads the label's value from its home slot.
+                    if let (Some(ty), true) = (result, closed.join_live) {
+                        s.stack.push(Val {
+                            loc: Loc::Home(entry as u32),
+                            ty,
+                        });
+                    }
+                }
             }
             other => match rule_for(other) {
                 Some(rule) => s.apply(other, rule)?,
@@ -783,17 +1385,12 @@ pub fn select(
     if !ended {
         return Err(SelectError::NoFinalEnd);
     }
-    // The frame: one 8-byte slot per local and per spill slot, rounded up to
-    // 16 so rsp stays 16-byte aligned (it is after `pushq %rbp`).
-    let slots = all_locals.len() as u64 + u64::from(s.spills);
-    let bytes = slots * 8;
-    if bytes > u64::from(FRAME_LIMIT) {
-        return Err(SelectError::FrameTooLarge(bytes));
-    }
-    let frame = (bytes as u32).next_multiple_of(16);
-    let mut out = prologue(params, all_locals.len(), frame)?;
-    out.append(&mut s.out);
-    Ok(out)
+    resolve(&mut s.out, &s.links)?;
+    Ok(Lowered {
+        out: s.out,
+        spills: s.spills,
+        homes: s.homes,
+    })
 }
 
 #[cfg(test)]
@@ -1445,14 +2042,16 @@ mod tests {
         check_contract(&v);
         assert_eq!(att(&v[v.len() - 3..]), EPILOGUE);
         assert_eq!(v.iter().filter(|i| **i == Inst::Ret).count(), 1);
+        // Lane X5: code after `return` is dead and skipped, not lowered and
+        // not refused: the output is the same as without it.
         assert_eq!(
             select(
-                &[LocalGet(1), Return, LocalGet(0), End],
+                &[LocalGet(1), Return, LocalGet(0), Drop, Drop, End],
                 &[I32, I32],
                 &[],
                 &[I32]
             ),
-            Err(SelectError::AfterReturn(LocalGet(0)))
+            Ok(v)
         );
         // `return` with more on the stack than the result: the top is it.
         assert_eq!(
@@ -1495,10 +2094,112 @@ mod tests {
             select(&[LocalGet(0)], &[I32], &[], &[I32]),
             Err(SelectError::NoFinalEnd)
         );
-        for op in [Call(0), Unreachable, Block, Loop, F32Add, GlobalGet(0)] {
+        for op in [Call(0), F32Add, GlobalGet(0), MemorySize(0)] {
             let e = select(&[op.clone(), End], &[I32], &[], &[]).unwrap_err();
             assert_eq!(e, SelectError::Unsupported(op.clone()));
             assert!(e.to_string().contains(&format!("{op:?}")), "{e}");
+        }
+    }
+
+    fn sig(results: &[Ty]) -> BlockSig {
+        BlockSig {
+            params: 0,
+            results: results.to_vec(),
+        }
+    }
+
+    /// Lane X5: a `br` that is the last thing in its block jumps to the very
+    /// next instruction (rel 0), and the value it carries is in the label's
+    /// home slot, inside this frame.
+    #[test]
+    fn a_branch_to_the_next_instruction_has_displacement_zero() {
+        let v = select_function(
+            &[Block, I32Const(7), Br(0), End, End],
+            &[],
+            &[],
+            &[I32],
+            &[sig(&[I32])],
+        )
+        .unwrap();
+        check_contract(&v);
+        let jmps: Vec<&Inst> = v.iter().filter(|i| matches!(i, Inst::Jmp { .. })).collect();
+        assert_eq!(jmps, [&Inst::Jmp { rel: 0 }]);
+        assert_eq!(
+            att(&v),
+            [
+                "pushq %rbp",
+                "movq %rsp, %rbp",
+                "subq $0x10, %rsp",
+                "movl $0x7, %esi",
+                "movq %rsi, -0x8(%rbp)",
+                "{disp32} jmp .+0x5",
+                "movq -0x8(%rbp), %rsi",
+                "movl %esi, %eax",
+                "movq %rbp, %rsp",
+                "popq %rbp",
+                "retq",
+            ]
+        );
+    }
+
+    /// The value beneath a block is stored to its home slot when the block
+    /// opens, and the frame counts that slot.
+    #[test]
+    fn a_value_beneath_a_frame_lives_in_its_home_slot() {
+        let v = select_function(
+            &[I32Const(1), Block, End, End],
+            &[],
+            &[I64],
+            &[I32],
+            &[sig(&[])],
+        )
+        .unwrap();
+        check_contract(&v);
+        assert!(att(&v).contains(&"movq %rsi, -0x10(%rbp)".to_string()));
+    }
+
+    #[test]
+    fn control_flow_declines_name_their_cause() {
+        let table = |n: usize| BrTable {
+            targets: vec![0; n],
+            default: 0,
+        };
+        for n in [0, 1, BR_TABLE_LIMIT] {
+            select(&[Block, I32Const(0), table(n), End, End], &[], &[], &[]).unwrap();
+        }
+        let e = select(&[Block, I32Const(0), table(17), End, End], &[], &[], &[]).unwrap_err();
+        assert_eq!(e, SelectError::BrTableTargets(17));
+        assert!(e.to_string().contains("at most 16"), "{e}");
+        let with = |b: BlockSig| select_function(&[Block, End, End], &[], &[], &[], &[b]);
+        let e = with(BlockSig {
+            params: 1,
+            results: vec![],
+        })
+        .unwrap_err();
+        assert!(e.to_string().contains("parameters"), "{e}");
+        let e = with(sig(&[I32, I64])).unwrap_err();
+        assert!(e.to_string().contains("more than one result"), "{e}");
+        assert!(matches!(e, SelectError::BlockType { ord: 0, .. }));
+    }
+
+    /// A malformed control structure is an `Err`, never a panic.
+    #[test]
+    fn malformed_control_flow_is_an_error() {
+        for ops in [
+            vec![Else, End],
+            vec![Block, Else, End, End],
+            vec![Br(1), End],
+            vec![Block, BrIf(2), End, End],
+            vec![Block, End],
+            vec![End, End],
+        ] {
+            assert!(
+                matches!(
+                    select(&ops, &[I32], &[], &[]),
+                    Err(SelectError::Malformed(_) | SelectError::NoFinalEnd)
+                ),
+                "{ops:?}"
+            );
         }
     }
 

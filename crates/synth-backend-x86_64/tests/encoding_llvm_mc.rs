@@ -5,13 +5,14 @@
 //! The test enumerates the whole operand space of every form (`forms/mod.rs`:
 //! all 16 x 16 register pairs at both operand sizes, every condition, boundary
 //! immediates, and from lane X3 every memory base at boundary displacements —
-//! 24,308 encodings), prints each with the backend's AT&T printer, feeds the
+//! 24,316 encodings), prints each with the backend's AT&T printer, feeds the
 //! text to `llvm-mc` in one batch, and requires the encoding LLVM reports to
 //! equal the encoder's bytes, form by form. The expected bytes come from
 //! LLVM's tables, never from a byte string written here.
 //!
-//! BRANCHES take a second route. `-show-encoding` prints a `jCC` with a FIXUP
-//! in place of its displacement bytes, so the 80 branch forms are assembled
+//! BRANCHES take a second route. `-show-encoding` prints a `jCC` or a `jmp`
+//! with a FIXUP in place of its displacement bytes, so the 88 branch forms
+//! (80 `jCC rel32` and, from lane X5, 8 `jmp rel32`) are assembled
 //! to an OBJECT (`-filetype=obj`) and `.text` is read back: the displacement
 //! bytes are then LLVM's too. The object must carry no relocation.
 //!
@@ -147,15 +148,20 @@ fn llvm_encodings(mc: &str, forms: &[Inst]) -> Vec<Vec<u8>> {
     );
     let branch_text: Vec<String> = branches.iter().map(|f| f.att()).collect();
     let obj = assemble_object(mc, &branch_text);
-    // Every branch form is 6 bytes in synth's encoding; if LLVM chose another
-    // length the object is not 6 bytes per form, and the comparison below
-    // disagrees from the first such form on.
+    // Every branch form has one length in synth's encoding (6 for `jCC`, 5
+    // for `jmp`); if LLVM chose another length the object's size differs,
+    // and the comparison below disagrees from the first such form on.
+    let lens: Vec<usize> = branches.iter().map(|f| encode(f).len()).collect();
     assert_eq!(
         obj.len(),
-        6 * branches.len(),
-        "llvm-mc did not assemble every branch to 6 bytes"
+        lens.iter().sum::<usize>(),
+        "llvm-mc did not assemble every branch to its rel32 length"
     );
-    let mut branch_bytes = obj.chunks(6).map(<[u8]>::to_vec);
+    let mut at = 0;
+    let mut branch_bytes = lens.into_iter().map(|n| {
+        at += n;
+        obj[at - n..at].to_vec()
+    });
     forms
         .iter()
         .map(|f| {
@@ -193,7 +199,7 @@ fn every_encoder_form_is_byte_equal_to_llvm_mc_e1() {
     let text: Vec<String> = forms.iter().map(Inst::att).collect();
     let got = llvm_encodings(&mc, &forms);
     assert_eq!(got.len(), forms.len());
-    assert_eq!(forms.iter().filter(|f| is_branch(f)).count(), 80);
+    assert_eq!(forms.iter().filter(|f| is_branch(f)).count(), 88);
     let mut bad = Vec::new();
     for ((f, t), want) in forms.iter().zip(&text).zip(&got) {
         let ours = encode(f);
@@ -245,9 +251,9 @@ fn a_dropped_rex_b_disagrees_with_llvm_mc() {
 }
 
 /// Potency of the OBJECT route the branches take: a displacement one byte
-/// off, and a neighbouring condition, each disagree with LLVM on every one of
-/// the 80 branch forms. (The REX.B control above cannot reach a branch: it
-/// has no register.)
+/// off disagrees with LLVM on every one of the 88 branch forms, and a
+/// neighbouring condition on every one of the 80 `jCC`. (The REX.B control
+/// above cannot reach a branch: it has no register.)
 #[test]
 fn a_wrong_branch_displacement_or_condition_disagrees_with_llvm_mc() {
     use synth_backend_x86_64::inst::Cond;
@@ -256,13 +262,27 @@ fn a_wrong_branch_displacement_or_condition_disagrees_with_llvm_mc() {
         return;
     };
     let branches: Vec<Inst> = all_forms().into_iter().filter(is_branch).collect();
-    assert_eq!(branches.len(), 80);
+    assert_eq!(branches.len(), 88);
     let got = llvm_encodings(&mc, &branches);
+    let mut jmps = 0;
     for (f, want) in branches.iter().zip(&got) {
-        let Inst::Jcc { cond, rel } = *f else {
-            unreachable!("is_branch admits only Jcc");
-        };
         assert_eq!(&encode(f), want, "{f}: the unmutated branch disagrees");
+        let (cond, rel) = match *f {
+            Inst::Jcc { cond, rel } => (cond, rel),
+            Inst::Jmp { rel } => {
+                jmps += 1;
+                let off_by_one = Inst::Jmp {
+                    rel: rel.wrapping_add(1),
+                };
+                assert_ne!(
+                    &encode(&off_by_one),
+                    want,
+                    "{f}: a wrong displacement agrees"
+                );
+                continue;
+            }
+            _ => unreachable!("is_branch admits only Jcc and Jmp"),
+        };
         let off_by_one = Inst::Jcc {
             cond,
             rel: rel.wrapping_add(1),
@@ -279,4 +299,66 @@ fn a_wrong_branch_displacement_or_condition_disagrees_with_llvm_mc() {
         };
         assert_ne!(&encode(&other), want, "{f}: a wrong condition agrees");
     }
+    assert_eq!(jmps, 8);
+}
+
+/// Lane X5 (RQ-91-X86CTRL): whole emitted FUNCTIONS with control flow, each
+/// printed as AT&T text and assembled by `llvm-mc` to an object, must equal
+/// the bytes synth emitted. A branch is printed relative to itself (`{disp32}
+/// jne .+0x8`), so this checks every displacement the selector RESOLVED, not
+/// only the encoder's forms: a wrong label would assemble the printed text to
+/// the same bytes only if the printer were wrong in the same way, and the
+/// iced-x86 leg reads the targets back independently.
+#[test]
+fn emitted_control_flow_functions_are_byte_equal_to_llvm_mc() {
+    let Some(mc) = mc_or_skip("emitted_control_flow_functions_are_byte_equal_to_llvm_mc") else {
+        return;
+    };
+    let src = r#"(module
+      (func (export "loop") (param i32) (result i32) (local i32 i32)
+        local.get 0 i32.const 15 i32.and local.set 1
+        block loop
+          local.get 1 i32.eqz br_if 1
+          local.get 2 local.get 1 i32.add local.set 2
+          local.get 1 i32.const 1 i32.sub local.set 1
+          br 0
+        end end
+        local.get 2)
+      (func (export "ifs") (param i32 i64) (result i64)
+        local.get 0 if (result i64) local.get 1 else i64.const 9 end
+        local.get 0 i32.const 2 i32.and if nop else unreachable end)
+      (func (export "valued") (param i32) (result i32)
+        i32.const 100
+        block (result i32) block (result i32)
+          i32.const 5 local.get 0 br_table 0 1 0 1 0
+        end i32.const 1 i32.add end
+        i32.sub)
+      (func (export "out") (param i32) (result i32)
+        i32.const 7 block (result i32) loop
+          local.get 0 local.get 0 br_if 1 drop local.get 0 br 2
+        end unreachable end i32.add))"#;
+    let wasm = wat::parse_str(src).unwrap();
+    let obj = synth_backend_x86_64::compile_wasm(&wasm).unwrap();
+    let mut branches = 0;
+    for f in &obj.functions {
+        let text: Vec<String> = f.insts.iter().map(Inst::att).collect();
+        branches += f
+            .insts
+            .iter()
+            .filter(|i| matches!(i, Inst::Jcc { .. } | Inst::Jmp { .. }))
+            .count();
+        assert_eq!(
+            assemble_object(&mc, &text),
+            f.code,
+            "{:?}: llvm-mc assembles the printed function to other bytes",
+            f.symbols
+        );
+    }
+    // Non-vacuity, exact: the four functions carry 18 branches (the div
+    // guards add none here; every one is a control-flow edge).
+    assert_eq!(branches, 18);
+    eprintln!(
+        "E1 functions: {} functions, {branches} branches byte-equal",
+        obj.functions.len()
+    );
 }

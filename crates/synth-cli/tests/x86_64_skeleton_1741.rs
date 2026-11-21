@@ -76,11 +76,20 @@ fn add_compiles_to_an_x86_64_et_rel_with_the_stack_note() {
 #[test]
 fn every_refusal_names_its_cause_and_writes_nothing() {
     let cases: &[(&str, &[&str], &str)] = &[
+        // Lane X5 (RQ-91-X86CTRL) lowers `if`; a block type with two
+        // results is still refused by name.
         (
             r#"(module (func (export "f") (param i32) (result i32)
-                 local.get 0 if (result i32) i32.const 1 else i32.const 2 end))"#,
+                 local.get 0 if (result i32 i32) i32.const 1 i32.const 2
+                 else i32.const 2 i32.const 3 end drop))"#,
             &[],
-            "unsupported wasm op If",
+            "more than one result",
+        ),
+        (
+            r#"(module (func (export "f") (param i32) (result i32)
+                 local.get 0 call 0))"#,
+            &[],
+            "unsupported wasm op Call",
         ),
         (
             r#"(module (func (export "f") (param i32) (result i32) (local f32)
@@ -155,7 +164,8 @@ fn the_backend_is_listed() {
 
 /// RQ-91-X86ALU, RQ-91-X86FRAME: the straight-line integer core compiles
 /// through the binary, i64 signatures included — and from lanes X3-X4 so do
-/// locals, a value stack deeper than the temporaries, and division.
+/// locals, a value stack deeper than the temporaries, and division, and from
+/// lane X5 control flow.
 #[test]
 fn the_integer_core_locals_and_division_compile() {
     for wat in [
@@ -172,6 +182,16 @@ fn the_integer_core_locals_and_division_compile() {
              i32.const 1 i32.const 2 i32.const 3 i32.const 4
              i32.const 5 i32.const 6 i32.const 7 i32.const 8
              i32.add i32.add i32.add i32.add i32.add i32.add i32.add))"#,
+        // Lane X5 (RQ-91-X86CTRL): structured control flow.
+        r#"(module (func (export "f") (param i32) (result i32) (local i32)
+             block (result i32) loop
+               local.get 1 local.get 0 i32.add local.set 1
+               local.get 0 i32.const 1 i32.sub local.tee 0
+               br_if 0 end
+               local.get 1 local.get 0 br_table 0 0
+             end
+             local.get 0 if (result i32) unreachable else i32.const 1 end
+             i32.add))"#,
     ] {
         let (ok, stderr, out) = run(wat, &["-b", "x86_64", "--relocatable"]);
         assert!(ok, "{wat}: {stderr}");
