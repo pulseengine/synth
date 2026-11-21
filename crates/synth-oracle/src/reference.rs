@@ -226,26 +226,88 @@ thread_local! {
     /// The kiln worker's cache of CONVERTED modules, keyed by their bytes.
     /// `Module::from_kiln_module` is the expensive step (measured ~12 ms per
     /// call in a Linux VM, against microseconds for decode, instantiation and
-    /// execution), and a `Module` is immutable: every call still gets a fresh
-    /// engine and a fresh `ModuleInstance`, so no state crosses calls.
+    /// execution). A converted `Module` is NOT stateless: its memories, globals
+    /// and tables sit behind `Arc`s that every instance shares, so a store in
+    /// one call was once visible to a load in the next call on the same bytes.
+    /// The cache therefore keeps the converted module as a PRISTINE template:
+    /// every instance of it is given deep copies of the template's memories,
+    /// globals and tables before any initializer runs, so nothing an instance
+    /// writes reaches the template (`tests/kiln_no_shared_state.rs`).
     static MODULES: std::cell::RefCell<std::collections::HashMap<Vec<u8>, Arc<Module>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-fn converted_module(wasm: &[u8]) -> kiln_error::Result<Arc<Module>> {
-    if let Some(m) = MODULES.with(|c| c.borrow().get(wasm).cloned()) {
-        return Ok(m);
+/// True when the module imports something other than a function. Such a
+/// module is never cached: an imported memory, global or table is outside
+/// what `own_memories_and_globals` and `own_tables` re-create.
+fn has_non_func_import(wasm: &[u8]) -> bool {
+    use wasmparser::{Parser, Payload, TypeRef};
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload {
+            Ok(Payload::ImportSection(s)) => {
+                for imp in s.into_imports() {
+                    match imp {
+                        Ok(imp) if matches!(imp.ty, TypeRef::Func(_)) => {}
+                        _ => return true,
+                    }
+                }
+            }
+            // An unparsable module is never cached.
+            Err(_) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The converted module for `wasm`, and whether it is the SHARED cached
+/// template (in which case the caller must give the instance its own state).
+fn converted_module(wasm: &[u8]) -> kiln_error::Result<(Arc<Module>, bool)> {
+    let cacheable = !has_non_func_import(wasm);
+    if cacheable && let Some(t) = MODULES.with(|c| c.borrow().get(wasm).cloned()) {
+        return Ok((t, true));
     }
     let km = decode_module(wasm)?;
     let m = Arc::new(*Module::from_kiln_module(&km)?);
-    MODULES.with(|c| {
-        let mut c = c.borrow_mut();
-        if c.len() >= 64 {
-            c.clear();
-        }
-        c.insert(wasm.to_vec(), Arc::clone(&m));
-    });
-    Ok(m)
+    if cacheable {
+        MODULES.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() >= 64 {
+                c.clear();
+            }
+            c.insert(wasm.to_vec(), Arc::clone(&m));
+        });
+    }
+    Ok((m, cacheable))
+}
+
+/// Replace the instance's memories and globals, which `populate_*`
+/// copied from the shared template as `Arc` clones, with deep copies of the
+/// template's (still pristine) values. `Memory`, `Table` and `Global` each
+/// implement `Clone` as a full copy of their contents. Called right after the
+/// `populate_*` step and before any initializer writes, so neither the
+/// template nor a later run sees anything this run does. Only for cached
+/// modules, which import nothing but functions, so the instance indices
+/// equal the module's.
+fn own_memories_and_globals(inst: &ModuleInstance, module: &Module) -> kiln_error::Result<()> {
+    use kiln_runtime::module::{GlobalWrapper, MemoryWrapper};
+    for (i, w) in module.memories.iter().enumerate() {
+        inst.set_memory(i, MemoryWrapper(Arc::new((*w.0).clone())))?;
+    }
+    for (i, w) in module.globals.iter().enumerate() {
+        let g = w.0.read().expect("kiln global lock poisoned").clone();
+        inst.set_global(i, GlobalWrapper(Arc::new(std::sync::RwLock::new(g))))?;
+    }
+    Ok(())
+}
+
+/// The table half of the state swap; see `own_memories_and_globals`.
+fn own_tables(inst: &ModuleInstance, module: &Module) -> kiln_error::Result<()> {
+    use kiln_runtime::module::TableWrapper;
+    for (i, w) in module.tables.iter().enumerate() {
+        inst.set_table(i, TableWrapper(Arc::new((*w.0).clone())))?;
+    }
+    Ok(())
 }
 
 /// Load and instantiate. The start function, if any, runs under `fuel`, so a
@@ -256,7 +318,7 @@ fn load(
     fuel: u64,
 ) -> Result<(Arc<Module>, usize), RefError> {
     let e = |stage: &str, err: kiln_error::Error| RefError::Instantiate(format!("{stage}: {err}"));
-    let module = converted_module(wasm).map_err(|x| e("decode/convert", x))?;
+    let (module, shared) = converted_module(wasm).map_err(|x| e("decode/convert", x))?;
     let id = engine.peek_next_instance_id();
     let inst =
         Arc::new(ModuleInstance::new(Arc::clone(&module), id).map_err(|x| e("instance", x))?);
@@ -264,10 +326,16 @@ fn load(
         .map_err(|x| e("memories", x))?;
     inst.populate_globals_from_module()
         .map_err(|x| e("globals", x))?;
+    if shared {
+        own_memories_and_globals(&inst, &module).map_err(|x| e("fresh state", x))?;
+    }
     inst.reevaluate_deferred_globals()
         .map_err(|x| e("globals", x))?;
     inst.populate_tables_from_module()
         .map_err(|x| e("tables", x))?;
+    if shared {
+        own_tables(&inst, &module).map_err(|x| e("fresh state", x))?;
+    }
     inst.evaluate_table_init_exprs()
         .map_err(|x| e("tables", x))?;
     inst.initialize_dropped_segments()
