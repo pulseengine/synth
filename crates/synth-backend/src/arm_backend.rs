@@ -149,82 +149,44 @@ impl Backend for ArmBackend {
         let mut functions = Vec::new();
         for func in &exports {
             let name = func.export_name.clone().unwrap();
-            // #359: copy THIS function's declared param widths into the config so
-            // `compile_function` (which carries no function index) can refuse a
-            // 64-bit param on the AAPCS stack-argument path. Cheap clone only when
-            // a signature table is present and this function has a width entry —
-            // otherwise reuse the shared config (every existing module unchanged).
-            // #509: same per-function pattern for the blocktype-arity side-table
-            // (value-carrying-branch lowering).
-            let params = config
-                .func_params_i64
-                .get(func.index as usize)
-                .filter(|p| !p.is_empty());
-            // #457: THIS function's DECLARED param count (imports-first full
-            // index), so the backend can cap the access-pattern inference that
-            // mistook a read-before-write local for a param. `None` when the
-            // driver supplied no arg-count table (hand-built modules).
-            let declared_params = config.func_arg_counts.get(func.index as usize).copied();
-            // GI-FPU-002 (#619/#369): THIS function's declared f32-param mask.
-            let params_f32 = config
-                .func_params_f32
-                .get(func.index as usize)
-                .filter(|p| !p.is_empty());
-            // GI-FPU-002 phase 2 (#369): THIS function's declared f64-param
-            // mask (hard-float targets decline f64 params loudly).
-            let params_f64 = config
-                .func_params_f64
-                .get(func.index as usize)
-                .filter(|p| !p.is_empty());
-            // GI-FPU-002 phase 2 (#719/#369): THIS function's declared f32/f64
-            // return flag, so the epilogue soundness guard fires on every driver
-            // path (not only the CLI loops).
-            let ret_f32 = config
-                .func_ret_f32
-                .get(func.index as usize)
-                .copied()
-                .unwrap_or(false);
-            let ret_f64 = config
-                .func_ret_f64
-                .get(func.index as usize)
-                .copied()
-                .unwrap_or(false);
-            // #1214: THIS function's declared-i64-local side-table. Guarded by
-            // `.any(i64)`, not `!is_empty()` — every function with ANY declared
-            // local (i32 included) has a non-empty vector, and that would
-            // widen this memoization guard to nearly every function for no
-            // reason; only a function that actually declares an i64 local
-            // needs the extra clone.
-            let declared_i64_locals = &func.declared_i64_locals;
-            // #1594: same guard shape — only a function declaring a float
-            // local needs the clone (the entry zero-init of its VFP home).
-            let declared_float_locals = &func.declared_float_locals;
-            let func_config = if params.is_some()
-                || params_f32.is_some()
-                || params_f64.is_some()
-                || !func.block_arity.is_empty()
-                || declared_params.is_some()
-                || ret_f32
-                || ret_f64
-                || declared_i64_locals.iter().any(|&b| b)
-                || declared_float_locals.iter().any(|&w| w != 0)
-            {
-                Some(CompileConfig {
-                    current_func_params_i64: params.cloned().unwrap_or_default(),
-                    current_func_params_f32: params_f32.cloned().unwrap_or_default(),
-                    current_func_params_f64: params_f64.cloned().unwrap_or_default(),
-                    current_func_ret_f32: ret_f32,
-                    current_func_ret_f64: ret_f64,
-                    current_func_block_arity: func.block_arity.clone(),
-                    current_func_declared_i64_locals: declared_i64_locals.clone(),
-                    current_func_declared_float_locals: declared_float_locals.clone(),
-                    current_func_param_count: declared_params,
-                    ..config.clone()
-                })
-            } else {
-                None
-            };
-            let cfg = func_config.as_ref().unwrap_or(config);
+            // #1450: an exported multi-result function has no return
+            // convention to be compiled against — refuse the module.
+            if let Some(reason) = synth_core::multi_result_function_decline(
+                module
+                    .func_result_counts
+                    .get(func.index as usize)
+                    .copied()
+                    .unwrap_or(0),
+                "exported",
+            ) {
+                return Err(BackendError::CompilationFailed(format!(
+                    "function '{name}': {reason}"
+                )));
+            }
+            // #1450 / RQ-91-MVDROP: the call-site refusal reads the CONFIG's
+            // result tables, which a library caller's default config leaves
+            // empty — an in-module call to a multi-result function then
+            // compiled as a one-value call. Check against the MODULE's tables.
+            if let Some((what, index, count)) = synth_core::find_multi_result_call(
+                &func.ops,
+                &module.func_result_counts,
+                &module.type_result_counts,
+            ) {
+                return Err(BackendError::CompilationFailed(
+                    synth_core::multi_result_call_decline_msg("ARM", what, index, count),
+                ));
+            }
+            // THIS function's facts, from the MODULE (#1745): declared param
+            // count (#457), i64/f32/f64 param masks (#359, GI-FPU-002
+            // #619/#369), f32/f64 return flags (#719), blocktype arity (#509)
+            // and declared i64/float locals (#1214, #1594). `compile_function`
+            // carries no function index, so they travel in the config. They
+            // were read from the CALLER's config tables, which a library
+            // caller leaves empty: a zero-initialised local was then read
+            // from an argument register and an i64 param from the wrong
+            // register pair, with `Ok` returned.
+            let func_config = config.for_function(module, func);
+            let cfg = &func_config;
             let compiled = self.compile_function(&name, &func.ops, cfg)?;
             functions.push(compiled);
         }
@@ -1842,10 +1804,6 @@ fn compile_wasm_to_arm(
         };
 
         let mut bridge = OptimizerBridge::with_config(opt_config);
-        // #188: tell the bridge how many imports there are so it declines only
-        // LOCAL calls (and leaves import calls on the optimized path, keeping
-        // the #173 field-name relocation rewrite intact).
-        bridge.set_num_imports(config.num_imports);
         // #543 Phase 2: thread the integrator-marked volatile DMA-window ranges
         // (`--volatile-segment <base>:<len>`) to the bridge's address-caching
         // levers — base-CSE (#468) excludes any access inside a marked range
@@ -4602,27 +4560,33 @@ mod tests {
         assert_eq!(registry.available().len(), 1);
     }
 
+    /// #1696 / #1755 / #1699: a compile that is NOT host-linked
+    /// (`relocatable: false`) cannot call an import, on either path. The
+    /// optimized path declines every call (it has no call model) and falls
+    /// back to the direct selector, which declines an import call instead of
+    /// emitting the Meld dispatch stub (index in R0, no arguments). So the
+    /// backend returns an error — never code.
     #[test]
-    fn test_compile_import_call_produces_relocations() {
+    fn test_compile_import_call_without_relocatable_declines_1699() {
         let backend = ArmBackend::new();
-        // Simulate a WASM module where func index 0 is an import.
-        // Call(0) should generate MOV R0, #0; BL __meld_dispatch_import
-        let ops = vec![WasmOp::Call(0)];
-        let config = CompileConfig {
-            num_imports: 1,
-            no_optimize: true, // Direct instruction selection to preserve Call semantics
-            ..CompileConfig::default()
-        };
-
-        let result = backend.compile_function("caller", &ops, &config);
-        assert!(result.is_ok());
-
-        let func = result.unwrap();
-        assert!(!func.code.is_empty());
-        assert_eq!(func.relocations.len(), 1);
-        assert_eq!(func.relocations[0].symbol, "__meld_dispatch_import");
-        // The BL is the second instruction (after MOV R0, #0), so offset should be > 0
-        assert!(func.relocations[0].offset > 0);
+        // Func index 0 is an import taking one i32; the caller passes its param.
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::Call(0), WasmOp::LocalGet(0)];
+        for no_optimize in [true, false] {
+            let config = CompileConfig {
+                num_imports: 1,
+                func_arg_counts: vec![1, 1],
+                func_result_counts: vec![0, 1],
+                no_optimize,
+                ..CompileConfig::default()
+            };
+            let err = backend
+                .compile_function("caller", &ops, &config)
+                .expect_err("an import call must not compile for the self-contained image");
+            assert!(
+                err.to_string().contains("#1699"),
+                "no_optimize={no_optimize}: {err}"
+            );
+        }
     }
 
     /// Regression test for #197: in `relocatable` mode, an import call must

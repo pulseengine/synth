@@ -80,8 +80,8 @@ pub enum WcetDecline {
     Loop,
     /// A DIRECT call (`Bl func_N`) that could not be composed into a bound because
     /// the callee is unbounded or unresolvable in THIS module — an external/imported
-    /// callee (a WASM import, `__meld_dispatch_import`, or an `__aeabi_*` runtime
-    /// helper: it has no per-function body in this module to sum). #778 phase 3
+    /// callee (a WASM import or an `__aeabi_*` runtime helper: it has no
+    /// per-function body in this module to sum). #778 phase 3
     /// composes direct calls to LOCAL, bounded callees over the direct call graph;
     /// this reason remains for the direct edges that cannot be composed.
     Call,
@@ -91,9 +91,8 @@ pub enum WcetDecline {
     /// is the #778 phase-3 decline-honesty guard: composition only bounds an acyclic
     /// direct call graph.
     Recursion,
-    /// An INDIRECT call (`Blx <reg>` / `call_indirect` / a function-pointer
-    /// dispatch such as `__meld_dispatch_import`): the callee is not statically
-    /// known, so its bound cannot be composed. Declined, not guessed. (#778 phase 3.)
+    /// An INDIRECT call (`Blx <reg>` / `call_indirect`): the callee is not
+    /// statically known, so its bound cannot be composed. Declined, not guessed. (#778 phase 3.)
     IndirectCall,
     /// A caller whose own body is bounded but that DIRECTLY calls a callee which
     /// itself declined (transitively): a decline must PROPAGATE up the call graph —

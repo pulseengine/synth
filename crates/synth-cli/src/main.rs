@@ -1351,9 +1351,91 @@ fn print_hardware_info(caps: &HardwareCapabilities) {
     println!("  RAM: {} KB", caps.ram_size / 1024);
 }
 
+/// #1746: refuse an export name that a RELOCATABLE object cannot define as
+/// itself. Since #1746 every export name of a function becomes a GLOBAL symbol
+/// of an ET_REL object (before, only the last-declared one did and the rest
+/// vanished without a word), so a name the symbol table cannot carry fails
+/// the compile instead of shipping a symbol that is not the export:
+/// - an EMPTY name — an `st_name` of the empty string is no name a linker can
+///   resolve;
+/// - a name containing NUL — the string table is NUL-terminated, so the
+///   symbol would be a TRUNCATED, different name;
+/// - `func_<K>` / `synth_func_<K>` where `K` is ANOTHER function this object
+///   places (`placed`, which excludes imports and indices the module does not
+///   have) — the in-object call labels the selectors relocate against
+///   (ARM/A32/AArch64 `func_K`, RV32 `synth_func_K`). Measured on the v0.91
+///   base for PRIMARY names, filed as #1752: ARM bound a call to function 0 to
+///   an export `func_0` of function 1, and AArch64 bound a call to function 1
+///   to an export `func_1` of function 0. An IMPORT index's label is not
+///   refused (RQ-91-NAMECOLL, #1698, rewrites import calls to the field name
+///   first), nor a `func_K` naming no function. `placed` is `None` on the
+///   single-function writers, which place one function and no call;
+/// - a `__synth_` name — synth's own reserved symbols (`__synth_globals`,
+///   `__synth_wasm_data`, `__synth_mem_base_N`, ...).
+///
+/// Self-contained images (`--cortex-m`, A32) do not call this: they carry no
+/// alias symbols and are byte-identical to the pre-#1746 output.
+fn refuse_unemittable_export_names<'a>(
+    index: u32,
+    names: impl IntoIterator<Item = &'a String>,
+    placed: Option<&std::collections::HashSet<u32>>,
+) -> Result<()> {
+    for name in names {
+        let why = if name.is_empty() {
+            Some(
+                "it is empty, and an empty symbol name is no name a linker can resolve".to_string(),
+            )
+        } else if name.contains('\0') {
+            Some(
+                "it contains a NUL byte, and the symbol string table is \
+                 NUL-terminated, so the symbol would be a truncated, different name"
+                    .to_string(),
+            )
+        } else if let Some(k) = name
+            .strip_prefix("synth_func_")
+            .or_else(|| name.strip_prefix("func_"))
+            .and_then(|rest| rest.parse::<u32>().ok().filter(|k| k.to_string() == rest))
+            .filter(|k| *k != index && placed.is_some_and(|p| p.contains(k)))
+        {
+            Some(format!(
+                "it is spelled like synth's in-object call label for function {k}, \
+                 so a call to function {k} could bind to this export instead (#1752)"
+            ))
+        } else if name.starts_with("__synth_") {
+            Some("the `__synth_` prefix is reserved for synth's own symbols".to_string())
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            anyhow::bail!(
+                "export {:?} of function {} cannot be emitted as a symbol: {why}. \
+                 Every export name of a function is defined as a symbol of a \
+                 relocatable object (#1746); rename the export",
+                name,
+                index
+            );
+        }
+    }
+    Ok(())
+}
+
+/// #1746: `name` is one of `f`'s export names — the primary or an alias.
+fn exports_as(f: &FunctionOps, name: &str) -> bool {
+    f.export_name.as_deref() == Some(name) || f.export_aliases.iter().any(|a| a == name)
+}
+
 /// Compiled function for ELF building (name + code bytes + relocations)
 struct ElfFunction {
     name: String,
+    /// #1746: the function's OTHER export names (`FunctionOps::export_aliases`).
+    /// Every relocatable writer defines each one as a GLOBAL `STT_FUNC` at the
+    /// function's address with its size, beside `name`. Empty for a function
+    /// exported at most once, which leaves the object byte-identical.
+    export_aliases: Vec<String>,
+    /// #1746: the function is EXPORTED (its `name` is an export name). Kept
+    /// apart from `name != func_N`, which misreads an export spelled like its
+    /// own label as internal and bound it LOCAL.
+    exported: bool,
     /// #394 Tier-1.x: the developer-facing name from the wasm `name` custom
     /// section (present for internal functions too, unlike the export name).
     /// Consumed ONLY by the `--debug-line` `DW_TAG_subprogram` emit — symbol
@@ -2192,6 +2274,17 @@ fn compile_command(
     // #642: call_indirect guard inputs (compile-time table size + closed-world
     // type verdicts). Default = decline every call_indirect (demo path).
     let mut call_indirect_guards = synth_core::CallIndirectGuards::default();
+    // #1746: the selected function's OTHER export names — the relocatable
+    // single-function writers (RV32, AArch64) define each one beside
+    // `func_name`. Empty for the demo path and for a once-exported function.
+    let mut func_aliases: Vec<String> = Vec::new();
+    // #1746: the selected function's wasm index (the AArch64 single-function
+    // object's in-object `func_N` label). `None` on the demo path.
+    let mut func_wasm_index: Option<u32> = None;
+    // #1746: whether the selection is exported (an export may be spelled like
+    // its own `func_N` label), and the verdict on its names.
+    let mut func_exported = false;
+    let mut func_name_refusal: Result<()> = Ok(());
     let (wasm_ops, func_name): (Vec<WasmOp>, String) = match (&input, &demo) {
         (Some(path), _) => {
             info!("Compiling WASM file: {}", path.display());
@@ -2297,6 +2390,8 @@ fn compile_command(
             .unwrap_or(0);
             let module_func_params_i64 = module.func_params_i64;
             let module_func_arg_counts = module.func_arg_counts;
+            // #1450: the selected function's own result count.
+            let module_func_result_counts = module.func_result_counts.clone();
             func_params_f32_all = module.func_params_f32.clone();
             func_params_f64_all = module.func_params_f64.clone();
             // GI-FPU-002 phase 2 (#719/#369): per-function/per-type f32/f64
@@ -2329,9 +2424,12 @@ fn compile_command(
             }
 
             let func = if let Some(ref name) = func_name_arg {
+                // #1746: ANY export name selects its function — before, only
+                // the last-declared name of an aliased index was found, so
+                // `-n <other export name>` refused an exported function.
                 functions
                     .into_iter()
-                    .find(|f| f.export_name.as_deref() == Some(name.as_str()))
+                    .find(|f| exports_as(f, name))
                     .context(format!("Function '{}' not found", name))?
             } else {
                 functions
@@ -2340,6 +2438,12 @@ fn compile_command(
                     .context(format!("Function index {} not found", func_index))?
             };
 
+            // #1746: checked by the relocatable single-function writers only.
+            func_name_refusal = refuse_unemittable_export_names(
+                func.index,
+                func.export_name.iter().chain(&func.export_aliases),
+                None,
+            );
             let name = func
                 .export_name
                 .clone()
@@ -2391,6 +2495,25 @@ fn compile_command(
             // honestly here, the single-function analogue of the `--all-exports`
             // loud-skip (#369). Backend-agnostic: this guards the ARM/RISC-V
             // direct paths too, not just `-b aarch64`.
+            // #1450: the function this compile was asked for is the object's
+            // entry point whether or not the module exports it (`--func-index`
+            // can name an unexported one), so a multi-result signature is
+            // refused here by its own name.
+            if let Some(reason) = synth_core::multi_result_function_decline(
+                module_func_result_counts
+                    .get(func.index as usize)
+                    .copied()
+                    .unwrap_or(0),
+                "selected as this compile's entry point",
+            ) {
+                anyhow::bail!(
+                    "function '{}': {} — the '{}' backend refuses it rather than \
+                     emit an object that returns one of its results",
+                    name,
+                    reason,
+                    backend.name()
+                );
+            }
             if let Some(reason) = &func.unsupported {
                 anyhow::bail!(
                     "function '{}' contains an unsupported operator ({}) the '{}' \
@@ -2403,6 +2526,9 @@ fn compile_command(
                 );
             }
 
+            func_aliases = func.export_aliases.clone();
+            func_wasm_index = Some(func.index);
+            func_exported = func.export_name.is_some();
             (func.ops, name)
         }
         (None, Some(demo_name)) => {
@@ -2593,7 +2719,14 @@ fn compile_command(
         // container differs. Discriminate on backend name, not target family:
         // `cortex_a53()` is `ArchFamily::ArmCortexA` (isa AArch64), so a family
         // check would misroute it into the ARM builder.
-        build_aarch64_elf(&code, &func_name, object_format)?
+        func_name_refusal?; // #1746
+        build_aarch64_elf(
+            &code,
+            func_wasm_index.filter(|_| func_exported),
+            &func_name,
+            &func_aliases,
+            object_format,
+        )?
     } else if matches!(target_spec.family, synth_core::target::ArchFamily::RiscV) {
         // #871: the single-function RISC-V wrapper carries no relocation
         // plumbing — a function whose code contains external-call
@@ -2610,10 +2743,27 @@ fn compile_command(
                 compiled.relocations.len()
             );
         }
-        build_riscv_elf(&code, &func_name)?
+        func_name_refusal?; // #1746
+        build_riscv_elf(&code, &func_name, &func_aliases)?
     } else if cortex_m {
         // #1640: see `refuse_a32_cortex_m_image`.
         refuse_a32_cortex_m_image(target_spec)?;
+        // The Thumb twin of #1645, found with #1696: this image holds ONLY
+        // the selected function and `build_cortex_m_elf` patches nothing, so
+        // a call to an import or to another function shipped as a `bl` to
+        // its own address, exit 0. Refuse; the module path links or patches
+        // every call.
+        if !compiled.relocations.is_empty() {
+            anyhow::bail!(
+                "function '{}' carries {} relocation(s) (calls to imports or to other \
+                 functions), but the single-function self-contained Cortex-M image \
+                 contains only this function — the call sites would ship as `bl` to \
+                 themselves. Compile the whole module (drop --func-index/--func-name, \
+                 or pass --all-exports), or use --relocatable (#1645, #1696).",
+                func_name,
+                compiled.relocations.len()
+            );
+        }
         // #758: the single-function self-contained builder ships no data
         // segments (only the multi-function `--all-exports` path does). Rather
         // than emit an image whose initialized regions silently read zero,
@@ -4390,6 +4540,71 @@ fn refuse_shared_memory(memories: &[synth_core::wasm_decoder::WasmMemory]) -> Re
     Ok(())
 }
 
+/// #1696 / #1755 / #1699 / #1758: a module that CALLS an imported function is
+/// host-linked, with or without `--relocatable`.
+///
+/// On ARM a call to a function import cannot be resolved inside a
+/// self-contained image: it is an undefined symbol only a host linker binds,
+/// so such a module has always been emitted as an `ET_REL` object. But
+/// `--relocatable` was the only thing that set [`CompileConfig::relocatable`],
+/// and the output kind was decided AFTER code generation, so on default flags
+/// the object's functions were compiled for the self-contained image:
+/// optimized-path functions addressed linear memory at the absolute
+/// `0x2000_0100` while direct-selector functions in the same object used R11
+/// (#1758), the optimized path called imports with no argument marshalling and
+/// no caller-saved preservation (#1755, #1696), and the direct selector called
+/// them through `__meld_dispatch_import` with only the import index (#1699).
+/// All wrong values at exit 0.
+///
+/// So the decision is made HERE, from the decoded module and before any code
+/// is generated: a call to a function import means the compile is the
+/// `--relocatable` compile, whole. One selector, one linear-memory model
+/// (R11/R10), one import ABI (a direct AAPCS `bl <field>`), and every
+/// `--relocatable` refusal.
+///
+/// The key is a call the compile RETAINS, not the import's declaration and
+/// not a call anywhere in the module. `roots` are the functions the compile
+/// starts from (the exports, an accepted start function, or the one requested
+/// root), and the walk is the #235 closure the compile itself uses
+/// (`reachable_from_roots`): a function nothing reaches is dropped, so an
+/// import call inside it emits no symbol. Such a module, like one whose
+/// imports are never called at all, references nothing external; it was a
+/// complete self-contained image before and still is. The two callers
+/// re-check this answer against the closure they compile from, and the
+/// `#1758 tripwire` after code generation refuses anything it could miss.
+///
+/// ARM only. RV32 and AArch64 emit `ET_REL` for every module, and their
+/// selectors do not read `relocatable` for memory addressing or import calls.
+fn function_imports_force_host_link(
+    backend_name: &str,
+    functions: &[FunctionOps],
+    num_imported_funcs: u32,
+    elem_func_indices: &[u32],
+    roots: &std::collections::BTreeSet<u32>,
+) -> bool {
+    if backend_name != "arm" || num_imported_funcs == 0 {
+        return false;
+    }
+    let retained = reachable_from_roots(functions, num_imported_funcs, elem_func_indices, roots);
+    retained_functions_call_an_import(functions, num_imported_funcs, &retained)
+}
+
+/// Whether a function in `retained` calls a function import.
+fn retained_functions_call_an_import(
+    functions: &[FunctionOps],
+    num_imported_funcs: u32,
+    retained: &std::collections::BTreeSet<u32>,
+) -> bool {
+    functions
+        .iter()
+        .filter(|f| retained.contains(&f.index))
+        .any(|f| {
+            f.ops
+                .iter()
+                .any(|op| matches!(op, WasmOp::Call(idx) if *idx < num_imported_funcs))
+        })
+}
+
 /// Compile all exported functions (plus their reachable internal callees, #235)
 /// into a multi-function ELF.
 #[allow(clippy::too_many_arguments)]
@@ -4466,6 +4681,13 @@ fn compile_all_exports(
     let path = input.context("--all-exports requires an input file")?;
 
     info!("Compiling all exports from: {}", path.display());
+
+    // What the user typed. `relocatable` is re-derived below, once the module
+    // is decoded (`function_imports_force_host_link`); the few decisions that
+    // are about the FLAG keep reading this.
+    let relocatable_flag = relocatable;
+    // Set while decoding: some module calls a function import.
+    let mut import_call_host_link = false;
 
     // VCR-DEC-003 (#396): accumulate the branch-transformation map across
     // functions as they compile, then serialize the sidecar at the end.
@@ -4639,6 +4861,28 @@ fn compile_all_exports(
             }
             match decode_wasm_module(&wasm_bytes) {
                 Ok(module) => {
+                    // A module that calls a function import is checked as
+                    // the host-linked module it will be compiled as. The
+                    // roots here are ALL of this module's exports: which of
+                    // them survive the last-module-wins override is known
+                    // only once every module is decoded (pass 2), and the
+                    // survivors are a subset, so this can only err towards
+                    // the host-linked object. Pass 2 checks that.
+                    let own_exports: std::collections::BTreeSet<u32> = module
+                        .functions
+                        .iter()
+                        .filter(|f| f.export_name.is_some())
+                        .map(|f| f.index)
+                        .collect();
+                    let host_link = function_imports_force_host_link(
+                        backend.name(),
+                        &module.functions,
+                        module.num_imported_funcs,
+                        &module.elem_func_indices,
+                        &own_exports,
+                    );
+                    import_call_host_link |= host_link;
+                    let relocatable = relocatable || host_link;
                     // RQ-59-STARTFN (#1046): a WAST-embedded module carrying
                     // a (start ...) declaration is dropped the same way —
                     // refuse the whole compile rather than silently merge
@@ -4683,7 +4927,8 @@ fn compile_all_exports(
 
                     let pos = decoded.len();
                     for func in &module.functions {
-                        if let Some(name) = &func.export_name {
+                        // #1746: every export name, aliases included.
+                        for name in func.export_name.iter().chain(&func.export_aliases) {
                             export_owner.insert(name.clone(), (pos, func.index));
                         }
                     }
@@ -4762,6 +5007,19 @@ fn compile_all_exports(
             if std::env::var_os("EXPORTS_ONLY_275").is_some() {
                 reachable = roots.clone();
             }
+            // The host-link decision (pass 1) was taken over a superset of
+            // these functions; it must cover every import call retained here.
+            anyhow::ensure!(
+                import_call_host_link
+                    || backend.name() != "arm"
+                    || !retained_functions_call_an_import(
+                        &module.functions,
+                        module.num_imported_funcs,
+                        &reachable
+                    ),
+                "internal: module {idx} retains a call to a function import, but the compile \
+                 was not marked host-linked (#1758)"
+            );
             // #1225: what the merge cannot represent, refused over the
             // functions it would actually retain.
             refuse_wast_merge_unrepresentable(idx, &module, &reachable)?;
@@ -4787,11 +5045,16 @@ fn compile_all_exports(
                 if !reachable.contains(&func.index) {
                     continue;
                 }
-                let owns_export = func
-                    .export_name
-                    .as_deref()
-                    .is_some_and(|n| export_owner.get(n) == Some(&(pos, func.index)));
-                if !owns_export {
+                let owns = |n: &str| export_owner.get(n) == Some(&(pos, func.index));
+                // #1746: an alias a later module re-exported is superseded
+                // exactly like a primary name.
+                func.export_aliases.retain(|a| owns(a));
+                let owns_export = func.export_name.as_deref().is_some_and(owns);
+                if !owns_export && !func.export_aliases.is_empty() {
+                    // The primary was superseded but an alias survives: the
+                    // last surviving alias becomes the primary.
+                    func.export_name = func.export_aliases.pop();
+                } else if !owns_export {
                     // A superseded export (a later module re-exported the
                     // name) that is still reachable from THIS module's
                     // surviving exports: keep the BODY as a file-local
@@ -4910,6 +5173,46 @@ fn compile_all_exports(
         };
 
         let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
+        // From here on this module is compiled as what it will be emitted as
+        // (the #418 arena bind above has already removed a bound import).
+        // The roots are the ones the #235 closure below starts from: the one
+        // requested root, else the exports plus a defined start function (a
+        // start function that is not accepted refuses the compile anyway).
+        // That closure re-checks the answer.
+        let host_link_roots: std::collections::BTreeSet<u32> = match &single_root {
+            Some(SingleRoot::Name(name)) => module
+                .functions
+                .iter()
+                .filter(|f| f.export_name.as_deref() == Some(name.as_str()))
+                .map(|f| f.index)
+                .take(1)
+                .collect(),
+            Some(SingleRoot::Index(idx)) => module
+                .functions
+                .iter()
+                .filter(|f| f.index == *idx)
+                .map(|f| f.index)
+                .collect(),
+            None => module
+                .functions
+                .iter()
+                .filter(|f| f.export_name.is_some())
+                .map(|f| f.index)
+                .chain(
+                    module
+                        .start_function
+                        .filter(|idx| *idx >= module.num_imported_funcs),
+                )
+                .collect(),
+        };
+        import_call_host_link = function_imports_force_host_link(
+            backend.name(),
+            &module.functions,
+            module.num_imported_funcs,
+            &module.elem_func_indices,
+            &host_link_roots,
+        );
+        let relocatable = relocatable || import_call_host_link;
         // RQ-66-BOTHWRONG (#1209): unconditional, independent of the
         // start-function decision below — memory64 is refused on every
         // compile mode this path serves.
@@ -4957,7 +5260,11 @@ fn compile_all_exports(
         let start_is_defined = module
             .start_function
             .is_some_and(|idx| idx >= module.num_imported_funcs);
-        if cortex_m && !relocatable && backend.name() == "arm" && start_is_defined {
+        // Keyed on the FLAG: a start function in a module that calls a function
+        // import is still accepted here and refused after compilation, with
+        // the message that names the cause (imports made this a relocatable
+        // object, which runs no startup).
+        if cortex_m && !relocatable_flag && backend.name() == "arm" && start_is_defined {
             accepted_start_function = module.start_function;
             info!(
                 "  (start ...) function index {} accepted: the self-contained image's \
@@ -5102,7 +5409,7 @@ fn compile_all_exports(
                 SingleRoot::Name(name) => module
                     .functions
                     .iter()
-                    .find(|f| f.export_name.as_deref() == Some(name.as_str()))
+                    .find(|f| exports_as(f, name))
                     .with_context(|| format!("Function '{}' not found", name))?,
                 SingleRoot::Index(idx) => module
                     .functions
@@ -5144,6 +5451,19 @@ fn compile_all_exports(
         } else {
             reachable_from_exports(&module.functions, num_imports, &elem_func_indices)
         };
+        // The host-link decision above was taken from this same closure,
+        // before it existed; the two must agree on what is retained.
+        anyhow::ensure!(
+            backend.name() != "arm"
+                || import_call_host_link
+                    == retained_functions_call_an_import(
+                        &module.functions,
+                        num_imports,
+                        &reachable
+                    ),
+            "internal: the host-link decision ({import_call_host_link}) disagrees with the \
+             functions this compile retains (#1758)"
+        );
         // #275 non-vacuity probe (feature `exports_only_275_probe`, NEVER in a
         // default/release build): `EXPORTS_ONLY_275=1` reverts to the pre-#235
         // exports-only behavior (drop every non-exported reachable callee) so the
@@ -5216,6 +5536,23 @@ fn compile_all_exports(
             a64_inputs,                          // #851 lane L3
         )
     };
+
+    // #1696 / #1755 / #1699 / #1758: a call to a function import makes this
+    // the `--relocatable` compile, whole — decided here, before `CompileConfig`
+    // is built, so every function is generated for the object that is
+    // emitted. Loud on stderr: the user asked for an image and gets an object.
+    let relocatable = relocatable || import_call_host_link;
+    if relocatable && !relocatable_flag {
+        warn!(
+            "module calls imported function(s) ({} imported): a self-contained image cannot \
+             resolve them, so this compile produces a relocatable object (ET_REL), exactly as \
+             --relocatable does — each import is a direct AAPCS `bl <import field name>` for \
+             your linker, and the embedder sets R11 (linear-memory base), R10 (its size in \
+             bytes) and R9 (globals table) before any export runs \
+             (docs/embedder-abi-relocatable-arm.md; #1696)",
+            max_num_imported_funcs
+        );
+    }
 
     // Log memory information
     if !all_memories.is_empty() {
@@ -5336,7 +5673,7 @@ fn compile_all_exports(
     // Log import information
     if max_num_imported_funcs > 0 {
         info!(
-            "Module imports {} functions (Meld dispatch enabled):",
+            "Module imports {} functions (host-linked: direct `bl <field>` calls):",
             max_num_imported_funcs
         );
         for imp in &all_imports {
@@ -5349,6 +5686,19 @@ fn compile_all_exports(
     if all_exports.is_empty() {
         anyhow::bail!("No exported functions found in module");
     }
+    // #1746: every export name becomes a symbol of a relocatable object; a
+    // name that cannot be one is refused — by the relocatable writers only
+    // (below), since self-contained images are unchanged.
+    let export_name_refusal: Result<()> = {
+        let placed: std::collections::HashSet<u32> = all_exports.iter().map(|f| f.index).collect();
+        all_exports.iter().try_for_each(|f| {
+            refuse_unemittable_export_names(
+                f.index,
+                f.export_name.iter().chain(&f.export_aliases),
+                Some(&placed),
+            )
+        })
+    };
 
     info!("Found {} exported functions:", all_exports.len());
     for f in &all_exports {
@@ -5623,6 +5973,9 @@ fn compile_all_exports(
         // #197: --relocatable forces the direct selector + direct func_N import
         // ABI so host-linked objects get fp-relative memory access and
         // caller-saved preservation (the optimized path is wrong for ET_REL).
+        // #1696/#1758: also set by a call to a function import
+        // (`function_imports_force_host_link`), so no ET_REL object is ever
+        // built from functions compiled for the self-contained image.
         relocatable,
         // #237: native-pointer ABI — wasm statics (initialized + zero-init/BSS)
         // become __synth_wasm_data-relative across the whole linear memory.
@@ -5922,6 +6275,16 @@ fn compile_all_exports(
                 fc.func_result_counts = t.func_result_counts.clone();
                 fc.type_arg_counts = t.type_arg_counts.clone();
                 fc.type_result_counts = t.type_result_counts.clone();
+                // The import COUNT is per module too. The merged config
+                // carries the largest count of any module, so a local call
+                // `call N` in a module with fewer imports read as a call to
+                // import N. The ARM selector declines an import call on a
+                // compile that is not host-linked (#1699), so a correct
+                // local call in an import-free module was refused because
+                // ANOTHER module in the file declares an import. (On a
+                // host-linked compile both readings lower to the same
+                // `BL func_N`, so this changes no emitted byte.)
+                fc.num_imports = origin.num_imports;
             }
             // #457: THIS function's DECLARED param count, so the backends can
             // cap the access-pattern param inference that mistook a
@@ -5948,15 +6311,32 @@ fn compile_all_exports(
         // link error naming it rather than a silently-wrong result. (#180/#185
         // "unsupported op must Err, never silently continue".)
         if let Some(reason) = &func.unsupported {
-            eprintln!(
-                "warning: skipping function '{name}': contains an unsupported \
-                 operator ({reason}) the {} backend cannot lower — emitting no \
-                 code for it rather than a silent miscompile (GI-FPU-001, #369)",
-                backend.name()
-            );
+            // #1450: a multi-result ENTRY POINT is flagged through the same
+            // field but is a signature refusal, not a dropped operator, so it
+            // is reported in its own words.
+            let multi_result = reason.contains("MULTI-RESULT function");
+            if multi_result {
+                eprintln!(
+                    "warning: skipping function '{name}': {reason} — the {} \
+                     backend emits no code for it rather than an object that \
+                     returns one of its results",
+                    backend.name()
+                );
+            } else {
+                eprintln!(
+                    "warning: skipping function '{name}': contains an unsupported \
+                     operator ({reason}) the {} backend cannot lower — emitting no \
+                     code for it rather than a silent miscompile (GI-FPU-001, #369)",
+                    backend.name()
+                );
+            }
             skipped_funcs.push((
                 name.clone(),
-                format!("unsupported operator: {reason}"),
+                if multi_result {
+                    reason.clone()
+                } else {
+                    format!("unsupported operator: {reason}")
+                },
                 func.export_name.is_some(),
                 func.index,
                 origin.module,
@@ -6237,6 +6617,15 @@ fn compile_all_exports(
         compiled_origins.push(origin);
         compiled_funcs.push(ElfFunction {
             name: name.clone(),
+            // #1746: every other export name of this index; `name` is the
+            // primary only when the function is exported (an internal callee
+            // has neither).
+            export_aliases: if func.export_name.is_some() {
+                func.export_aliases.clone()
+            } else {
+                Vec::new()
+            },
+            exported: func.export_name.is_some(),
             // #394 Tier-1.x: thread the `name`-section name through for the
             // DWARF subprogram DIE (internal functions get their REAL name).
             debug_name: func.debug_name.clone(),
@@ -6369,10 +6758,24 @@ fn compile_all_exports(
     // module whose ONLY export was skipped keeps that existing message
     // ("nothing to emit") rather than being relabeled here.
     if !allow_skipped_exports {
-        let skipped_exports: Vec<&str> = skipped_funcs
+        // #1746: a skipped export takes ALL its export names with it — name
+        // every one, so a consumer linking by an alias sees it refused here.
+        let skipped_exports: Vec<String> = skipped_funcs
             .iter()
             .filter(|(_, _, is_export, _, _)| *is_export)
-            .map(|(n, _, _, _, _)| n.as_str())
+            .map(|(n, _, _, idx, module)| {
+                let aliases = all_exports
+                    .iter()
+                    .zip(all_origins.iter())
+                    .find(|(f, o)| f.index == *idx && o.module == *module)
+                    .map(|(f, _)| f.export_aliases.as_slice())
+                    .unwrap_or_default();
+                if aliases.is_empty() {
+                    n.clone()
+                } else {
+                    format!("{n} (also exported as {})", aliases.join(", "))
+                }
+            })
             .collect();
         if !skipped_exports.is_empty() {
             let total_exports = all_exports
@@ -6619,12 +7022,33 @@ fn compile_all_exports(
         .iter()
         .flat_map(|f| &f.relocations)
         .any(|r| !internal_labels.contains(r.symbol.as_str()));
+    // #1758 tripwire: on ARM an external relocation turns the output into an
+    // ET_REL object, and an ET_REL object is only sound when its functions
+    // were generated for one (R11-relative memory, the direct import ABI).
+    // `function_imports_force_host_link` guarantees that for import calls; if
+    // any OTHER external symbol ever appears on a compile that was not
+    // configured relocatable, refuse instead of shipping the mixed object.
+    if backend.name() == "arm"
+        && !relocatable
+        && let Some(r) = compiled_funcs
+            .iter()
+            .flat_map(|f| &f.relocations)
+            .find(|r| !internal_labels.contains(r.symbol.as_str()))
+    {
+        anyhow::bail!(
+            "internal: a function compiled for the self-contained image references the \
+             external symbol `{}`, which only a host linker can resolve — the object \
+             would mix the self-contained memory model with a host-linked one (#1758). \
+             Refusing; compile with --relocatable.",
+            r.symbol
+        );
+    }
 
     // Build multi-function ELF
     // When there are EXTERNAL relocations, produce a relocatable object (.o)
-    // instead of an executable. This lets the output be linked with the Kiln
-    // bridge crate (which provides __meld_dispatch_import and
-    // __meld_get_memory_base). The --relocatable flag forces ET_REL output
+    // instead of an executable. This lets the output be linked with the
+    // embedder's objects (which define each imported function under its
+    // bare wasm field name). The --relocatable flag forces ET_REL output
     // even when the wasm has no imports, for linking into a host build system
     // (e.g. Zephyr).
     //
@@ -6762,6 +7186,7 @@ fn compile_all_exports(
         if let Some(reason) = &default_memory_nonconst_data {
             anyhow::bail!("aarch64: {reason} — refusing to ship the region uninitialized (#851)");
         }
+        export_name_refusal?; // #1746
         // #546: the AArch64 backend emits its own EM_AARCH64 ELF64 (ET_REL)
         // object. This must precede the `has_external_relocations || relocatable`
         // arm so `-b aarch64 --relocatable` isn't stolen into the ARM builder.
@@ -6829,6 +7254,7 @@ fn compile_all_exports(
                 rv_mem_size
             );
         }
+        export_name_refusal?; // #1746
         let rv_wasm_data = synth_core::static_data_addr::pack_segment_records(&rv_segments);
         let rv_served = synth_core::static_data_addr::served_image_from_records(&rv_wasm_data)
             .ok_or_else(|| {
@@ -6899,14 +7325,17 @@ fn compile_all_exports(
                  embedder populates the segments at instantiation"
             );
         }
+        export_name_refusal?; // #1746
         let total_relocs: usize = compiled_funcs.iter().map(|f| f.relocations.len()).sum();
         if has_relocations {
             info!(
                 "Producing relocatable object (ET_REL): {} import call relocations",
                 total_relocs
             );
-        } else {
+        } else if relocatable_flag {
             info!("Producing relocatable object (ET_REL): forced by --relocatable");
+        } else {
+            info!("Producing relocatable object (ET_REL): the module calls imported functions");
         }
         build_relocatable_elf(
             &compiled_funcs,
@@ -7129,7 +7558,10 @@ fn compile_all_exports(
         } else {
             println!("  ELF type: relocatable object (ET_REL)");
             println!(
-                "\n  Link with: arm-none-eabi-ld -o firmware.elf {} kiln_bridge.o",
+                "\n  Link with: arm-none-eabi-ld -o firmware.elf {} <objects defining the \
+                 imports and your startup>\n  (each wasm import is an undefined symbol named by \
+                 its bare field name; the embedder sets R11/R10/R9 before any export runs — \
+                 docs/embedder-abi-relocatable-arm.md)",
                 output.display()
             );
         }
@@ -7569,9 +8001,9 @@ fn refuse_a32_cortex_m_image(target: &TargetSpec) -> Result<()> {
 
 /// Build a relocatable ELF object (.o) with undefined symbols and relocations.
 ///
-/// Produced when the WASM module has imports — the resulting .o needs to be linked
-/// with the Kiln bridge (which provides `__meld_dispatch_import` etc.) to create
-/// a final firmware binary.
+/// Produced when the WASM module calls imports — the resulting .o needs to be linked
+/// with the embedder's objects (which define each imported function under its bare
+/// wasm field name) to create a final firmware binary.
 /// #237: native-pointer-ABI layout for the wasm data region — used-extent
 /// sizing (gale: 64 KiB-page granularity is RAM-prohibitive on the MCUs this
 /// targets) plus materialized global slots appended after the used extent.
@@ -8693,7 +9125,10 @@ fn build_relocatable_elf(
     // cross-object resolution.
     for (i, func) in funcs.iter().enumerate() {
         let internal_label = format!("func_{}", func.wasm_index);
-        let is_exported = func.name != internal_label;
+        // #1746: the export flag, not `name != func_N` — an export spelled
+        // like its own label is exported (one GLOBAL symbol, which is also the
+        // label in-object calls relocate against).
+        let is_exported = func.exported;
         let export_sym = Symbol::new(&func.name)
             .with_value(func_offsets[i])
             .with_size(func.code.len() as u32)
@@ -8709,7 +9144,7 @@ fn build_relocatable_elf(
         sym_indices.insert(func.name.clone(), sym_count);
 
         // `func_{wasm_index}` alias (skip if the export name already is that).
-        if is_exported {
+        if is_exported && func.name != internal_label {
             let internal_sym = Symbol::new(&internal_label)
                 .with_value(func_offsets[i])
                 .with_size(func.code.len() as u32)
@@ -8719,6 +9154,24 @@ fn build_relocatable_elf(
             elf_builder.add_symbol(internal_sym);
             sym_count += 1;
             sym_indices.insert(internal_label, sym_count);
+        }
+
+        // #1746: every OTHER export name of this index — GLOBAL, same address
+        // and size. Before this a module exporting one function under several
+        // names (wit-bindgen's `wdg_refresh` + `gust:hal/wdg@0.1.0#refresh`)
+        // shipped only the last-declared name; a consumer linking by another
+        // got an undefined symbol. Appended after `func_N`, so a module with
+        // no aliased export is byte-identical.
+        for alias in &func.export_aliases {
+            let alias_sym = Symbol::new(alias)
+                .with_value(func_offsets[i])
+                .with_size(func.code.len() as u32)
+                .with_binding(SymbolBinding::Global)
+                .with_type(SymbolType::Func)
+                .with_section(4);
+            elf_builder.add_symbol(alias_sym);
+            sym_count += 1;
+            sym_indices.insert(alias.clone(), sym_count);
         }
     }
 
@@ -10579,7 +11032,7 @@ fn verify_command(
 /// RV32 object file (EM_RISCV, RVC e_flags) rather than the generic ARM
 /// ELF that `build_simple_elf` emits.
 #[cfg(feature = "riscv")]
-fn build_riscv_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
+fn build_riscv_elf(code: &[u8], func_name: &str, aliases: &[String]) -> Result<Vec<u8>> {
     use synth_backend_riscv::{Reg, RiscVElfBuilder, RiscVElfFunction, RiscVOp};
 
     // The RISC-V ELF builder operates on `Vec<RiscVOp>` to support label
@@ -10603,6 +11056,7 @@ fn build_riscv_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
         .collect();
     let f = RiscVElfFunction {
         name: func_name.to_string(),
+        aliases: aliases.to_vec(), // #1746
         ops: placeholder_ops,
     };
 
@@ -10622,7 +11076,7 @@ fn build_riscv_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
 }
 
 #[cfg(not(feature = "riscv"))]
-fn build_riscv_elf(_code: &[u8], _func_name: &str) -> Result<Vec<u8>> {
+fn build_riscv_elf(_code: &[u8], _func_name: &str, _aliases: &[String]) -> Result<Vec<u8>> {
     anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
 }
 
@@ -10741,6 +11195,8 @@ fn build_multi_func_riscv_elf(
             .collect();
         placeholder_funcs.push(RiscVElfFunction {
             name: func.name.clone(),
+            // #1746: every other export name of this index.
+            aliases: func.export_aliases.clone(),
             ops: placeholder_ops,
         });
     }
@@ -10818,15 +11274,28 @@ fn build_multi_func_riscv_elf(
 /// (EM_ARM/ELF32) container. Mirrors `build_riscv_elf` — the per-backend ELF path.
 fn build_aarch64_elf(
     code: &[u8],
+    wasm_index: Option<u32>,
     func_name: &str,
+    aliases: &[String],
     object_format: ObjectFormatArg,
 ) -> Result<Vec<u8>> {
     use synth_backend_aarch64::elf::{DataBlob, ElfFunction as A64ElfFunction};
-    let funcs = [A64ElfFunction::code(
-        vec![func_name.to_string()],
-        code.to_vec(),
-        Vec::new(),
-    )];
+    // #1746: `symbols[0]` is the in-object label the plan binds LOCAL (#1180);
+    // every name after it is GLOBAL. This wrapper used to pass the export name
+    // ALONE, so it landed in the LOCAL slot and the object exported nothing
+    // (`nm` showed `t add`) — the module path's shape, `func_N` then the export
+    // names, is used instead. `wasm_index` is `Some` only for an EXPORTED
+    // selection, whose name goes GLOBAL even when it is spelled like its own
+    // label (`func_N` LOCAL and `func_N` GLOBAL, as on the module path). A
+    // non-exported selection (`--func-index` of an internal function, or the
+    // demo) keeps its one name LOCAL as before.
+    let mut symbols = Vec::new();
+    if let Some(i) = wasm_index {
+        symbols.push(format!("func_{i}"));
+    }
+    symbols.push(func_name.to_string());
+    symbols.extend(aliases.iter().cloned());
+    let funcs = [A64ElfFunction::code(symbols, code.to_vec(), Vec::new())];
     Ok(build_aarch64_object(
         &funcs,
         &DataBlob::default(),
@@ -10886,9 +11355,14 @@ fn build_multi_func_aarch64_elf(
             // that follows is GLOBAL; see `ElfFunction::symbols`.
             let func_sym = format!("func_{}", f.wasm_index);
             let mut symbols = vec![func_sym.clone()];
-            if f.name != func_sym {
+            // #1746: an export spelled like its own label still gets its
+            // GLOBAL (beside the LOCAL label, which relocations resolve to).
+            if f.exported || f.name != func_sym {
                 symbols.push(f.name.clone());
             }
+            // #1746: the function's other export names, GLOBAL like the
+            // primary (every `symbols[k]`, k > 0), same offset and size.
+            symbols.extend(f.export_aliases.iter().cloned());
             // #851: forward the call relocations so `bl func_N` sites resolve
             // via `.rela.text` (these were dropped pre-#851).
             A64ElfFunction::code(symbols, f.code.clone(), f.relocations.clone())
@@ -11838,6 +12312,7 @@ mod tests {
         FunctionOps {
             index,
             export_name: export.map(String::from),
+            export_aliases: Vec::new(),
             debug_name: None,
             ops,
             op_offsets: Vec::new(),
@@ -12143,6 +12618,8 @@ mod tests {
         let code = vec![0u8; 8]; // MOVW + MOVT placeholders
         let func = ElfFunction {
             name: "decide".to_string(),
+            export_aliases: Vec::new(),
+            exported: true,
             debug_name: None,
             wasm_index: 0,
             code,
@@ -12264,6 +12741,8 @@ mod tests {
         code[4..8].copy_from_slice(&0u32.to_le_bytes()); // __synth_globals + 0
         let func = ElfFunction {
             name: "decide".to_string(),
+            export_aliases: Vec::new(),
+            exported: true,
             debug_name: None,
             wasm_index: 0,
             code,
@@ -12372,6 +12851,8 @@ mod tests {
         code[0..4].copy_from_slice(&C.to_le_bytes());
         let func = ElfFunction {
             name: "stack_push_decide".to_string(),
+            export_aliases: Vec::new(),
+            exported: true,
             debug_name: None,
             wasm_index: 0,
             code,
@@ -12900,6 +13381,8 @@ mod tests {
     fn a32_func(name: &str, idx: u32, code: Vec<u8>, relocs: &[(u32, &str)]) -> ElfFunction {
         ElfFunction {
             name: name.to_string(),
+            export_aliases: Vec::new(),
+            exported: true,
             debug_name: None,
             wasm_index: idx,
             code,

@@ -190,6 +190,132 @@ pub fn has_linear_memory(wasm: &[u8]) -> Result<bool, String> {
     Ok(false)
 }
 
+/// One function import, in import order (which is function-index order).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FuncImport {
+    pub module: String,
+    pub field: String,
+    pub sig: Signature,
+}
+
+/// Every FUNCTION import of the module, with its signature.
+pub fn function_imports(wasm: &[u8]) -> Result<Vec<FuncImport>, String> {
+    use wasmparser::{CompositeInnerType, Parser, Payload, TypeRef, ValType as WVal};
+    let conv = |v: &WVal| -> Result<ValType, String> {
+        match v {
+            WVal::I32 => Ok(ValType::I32),
+            WVal::I64 => Ok(ValType::I64),
+            WVal::F32 => Ok(ValType::F32),
+            WVal::F64 => Ok(ValType::F64),
+            other => Err(format!("unsupported value type {other:?}")),
+        }
+    };
+    let mut types: Vec<Option<Result<Signature, String>>> = Vec::new();
+    let mut out = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload.map_err(|e| e.to_string())? {
+            Payload::TypeSection(r) => {
+                for rec in r {
+                    for sub in rec.map_err(|e| e.to_string())?.into_types() {
+                        types.push(match &sub.composite_type.inner {
+                            CompositeInnerType::Func(ft) => Some((|| {
+                                Ok(Signature {
+                                    params: ft
+                                        .params()
+                                        .iter()
+                                        .map(conv)
+                                        .collect::<Result<_, String>>()?,
+                                    results: ft
+                                        .results()
+                                        .iter()
+                                        .map(conv)
+                                        .collect::<Result<_, String>>()?,
+                                })
+                            })()),
+                            _ => None,
+                        });
+                    }
+                }
+            }
+            Payload::ImportSection(r) => {
+                for imp in r.into_imports() {
+                    let imp = imp.map_err(|e| e.to_string())?;
+                    if let TypeRef::Func(t) = imp.ty {
+                        let sig =
+                            types.get(t as usize).cloned().flatten().ok_or_else(|| {
+                                format!("import type {t} is not a function type")
+                            })??;
+                        out.push(FuncImport {
+                            module: imp.module.to_string(),
+                            field: imp.name.to_string(),
+                            sig,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// The instantiation state a module needs that the HOSTED harness does not
+/// materialize, if any: the reason, for a refusal.
+///
+/// The hosted emulator maps memory 0 zero-filled and sets R11/R10; it writes
+/// no data segment, seeds no globals table (R9) and builds no funcref table.
+/// A module that needs one of those would be judged on state the embedder
+/// never set up, so it is refused instead.
+pub fn uninstantiated_state(wasm: &[u8]) -> Result<Option<&'static str>, String> {
+    use wasmparser::{Parser, Payload, TypeRef};
+    let mut memories = 0u32;
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload.map_err(|e| e.to_string())? {
+            Payload::DataSection(r) if r.count() > 0 => return Ok(Some("a data segment")),
+            Payload::GlobalSection(r) if r.count() > 0 => return Ok(Some("a global")),
+            Payload::TableSection(r) if r.count() > 0 => return Ok(Some("a table")),
+            Payload::ElementSection(r) if r.count() > 0 => {
+                return Ok(Some("an element segment"));
+            }
+            Payload::StartSection { .. } => return Ok(Some("a start function")),
+            Payload::MemorySection(r) => {
+                memories += r.count();
+            }
+            Payload::ImportSection(r) => {
+                for imp in r.into_imports() {
+                    match imp.map_err(|e| e.to_string())?.ty {
+                        TypeRef::Func(_) => {}
+                        _ => return Ok(Some("a non-function import")),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if memories > 1 {
+        return Ok(Some("more than one memory"));
+    }
+    Ok(None)
+}
+
+/// Memory 0's declared initial size in bytes (default 64 KiB pages), or
+/// `None` when the module defines no memory.
+pub fn memory0_initial_bytes(wasm: &[u8]) -> Result<Option<u64>, String> {
+    use wasmparser::{Parser, Payload};
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::MemorySection(r) = payload.map_err(|e| e.to_string())?
+            && let Some(m) = r.into_iter().next()
+        {
+            let m = m.map_err(|e| e.to_string())?;
+            if m.memory64 || m.page_size_log2.is_some() {
+                return Err("memory64 / custom page size is not carried".into());
+            }
+            return Ok(Some(m.initial * 65536));
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +330,61 @@ mod tests {
         assert_eq!(has_linear_memory(&with), Ok(true));
         assert_eq!(has_linear_memory(&imported), Ok(true));
         assert_eq!(has_linear_memory(&without), Ok(false));
+    }
+
+    #[test]
+    fn function_imports_carry_module_field_and_signature() {
+        let w = wat::parse_str(
+            r#"(module
+                 (import "env" "log" (func (param i32)))
+                 (import "env" "m" (memory 1))
+                 (import "host" "add2" (func (param i32 i64) (result i32))))"#,
+        )
+        .unwrap();
+        let imps = function_imports(&w).unwrap();
+        assert_eq!(imps.len(), 2);
+        assert_eq!(
+            (imps[0].module.as_str(), imps[0].field.as_str()),
+            ("env", "log")
+        );
+        assert_eq!(imps[0].sig.results, vec![]);
+        assert_eq!(imps[1].field, "add2");
+        assert_eq!(imps[1].sig.params, vec![ValType::I32, ValType::I64]);
+        assert_eq!(imps[1].sig.results, vec![ValType::I32]);
+    }
+
+    #[test]
+    fn uninstantiated_state_names_what_the_hosted_harness_leaves_out() {
+        let reason = |w: &str| uninstantiated_state(&wat::parse_str(w).unwrap()).unwrap();
+        assert_eq!(reason("(module (memory 1) (func (export \"f\")))"), None);
+        assert_eq!(
+            reason("(module (import \"e\" \"f\" (func)) (func (export \"g\")))"),
+            None
+        );
+        assert_eq!(
+            reason("(module (memory 1) (data (i32.const 0) \"x\"))"),
+            Some("a data segment")
+        );
+        assert_eq!(
+            reason("(module (global (mut i32) (i32.const 1)))"),
+            Some("a global")
+        );
+        assert_eq!(reason("(module (table 1 funcref))"), Some("a table"));
+        assert_eq!(
+            reason("(module (func $s) (start $s))"),
+            Some("a start function")
+        );
+        assert_eq!(
+            reason("(module (import \"e\" \"g\" (global i32)))"),
+            Some("a non-function import")
+        );
+        assert_eq!(
+            reason("(module (memory 1) (memory 1))"),
+            Some("more than one memory")
+        );
+        let w = wat::parse_str("(module (memory 3))").unwrap();
+        assert_eq!(memory0_initial_bytes(&w), Ok(Some(3 * 65536)));
+        let w = wat::parse_str("(module)").unwrap();
+        assert_eq!(memory0_initial_bytes(&w), Ok(None));
     }
 }

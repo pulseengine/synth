@@ -1,11 +1,14 @@
-//! Meld ABI Integration Test
+//! Import call boundary — selector and ELF-builder level.
 //!
-//! Tests the full pipeline for WASM modules with imports:
-//!   WASM (with imports) → instruction selection (with dispatch stubs)
-//!     → ARM encoding → ELF with relocations for __meld_dispatch_import
+//! An imported function is called ONE way: a direct AAPCS call, `BL func_N`
+//! (rewritten to the bare wasm field name by the relocatable ELF builder), on
+//! a host-linked (`relocatable`) compile. The legacy Meld dispatch lowering
+//! (`MOV R0, #index; BL __meld_dispatch_import`) passed the import index and
+//! none of the wasm arguments (#1699) and is gone: a compile for the
+//! self-contained image declines an import call loudly instead.
 //!
-//! This validates the ABI contract between Synth-compiled code and
-//! the Kiln runtime's kiln-synth-bridge crate.
+//! The executed proof is `crates/synth-oracle/tests/import_boundary_oracle.rs`;
+//! these tests pin the lowering's shape at the API the backends call.
 
 use synth_backend::{
     ArmEncoder, ArmRelocationType, ElfBuilder, ElfSectionType, Relocation, Section, SectionFlags,
@@ -14,45 +17,44 @@ use synth_backend::{
 use synth_core::{ImportEntry, ImportKind};
 use synth_synthesis::{ArmOp, InstructionSelector, RuleDatabase, WasmOp};
 
-/// Test that instruction selection generates __meld_dispatch_import stubs
-/// for imported function calls.
+fn bl_labels(instrs: &[synth_synthesis::ArmInstruction]) -> Vec<String> {
+    instrs
+        .iter()
+        .filter_map(|i| {
+            if let ArmOp::Bl { label } = &i.op {
+                Some(label.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// #1699: without the host-link configuration there is no way to call an
+/// import, and neither selector entry point emits one — a loud decline, never
+/// the dispatch stub.
 #[test]
-fn test_import_dispatch_stub_generation() {
-    // WASM ops that call an imported function (index 0)
+fn test_import_call_without_host_link_declines_1699() {
     let wasm_ops = vec![
         WasmOp::I32Const(42), // Argument to the import
         WasmOp::Call(0),      // Call import #0
     ];
-
     let db = RuleDatabase::with_standard_rules();
+
     let mut selector = InstructionSelector::new(db.rules().to_vec());
-    selector.set_num_imports(1); // 1 import
+    selector.set_num_imports(1);
+    selector.set_func_arg_counts(vec![1], Vec::new());
+    let err = selector
+        .select_with_stack(&wasm_ops, 0)
+        .expect_err("a self-contained compile must decline an import call");
+    assert!(err.to_string().contains("#1699"), "{err}");
 
-    let arm_instrs = selector
+    let mut selector = InstructionSelector::new(db.rules().to_vec());
+    selector.set_num_imports(1);
+    let err = selector
         .select(&wasm_ops)
-        .expect("instruction selection should succeed");
-
-    // Should contain a BL to __meld_dispatch_import
-    let has_dispatch_bl = arm_instrs
-        .iter()
-        .any(|instr| matches!(&instr.op, ArmOp::Bl { label } if label == "__meld_dispatch_import"));
-    assert!(
-        has_dispatch_bl,
-        "expected BL __meld_dispatch_import for import call, got: {:?}",
-        arm_instrs.iter().map(|i| &i.op).collect::<Vec<_>>()
-    );
-
-    // Should contain MOV R0, #0 (import index)
-    let has_index_mov = arm_instrs.iter().any(|instr| {
-        matches!(&instr.op, ArmOp::Mov { rd, op2 }
-            if matches!(rd, synth_synthesis::Reg::R0)
-            && matches!(op2, synth_synthesis::Operand2::Imm(0)))
-    });
-    assert!(
-        has_index_mov,
-        "expected MOV R0, #0 for import index, got: {:?}",
-        arm_instrs.iter().map(|i| &i.op).collect::<Vec<_>>()
-    );
+        .expect_err("select_default has no import call lowering");
+    assert!(err.to_string().contains("#1699"), "{err}");
 }
 
 /// Test that local function calls (non-import) still generate func_N labels.
@@ -89,9 +91,9 @@ fn test_local_function_call_not_dispatch() {
 }
 
 /// Test that ELF builder can add relocations and undefined symbols
-/// for the Meld bridge.
+/// for an import the host linker resolves.
 #[test]
-fn test_elf_relocation_for_meld_dispatch() {
+fn test_elf_relocation_for_an_import_symbol() {
     let mut elf_builder = ElfBuilder::new_arm32().with_entry(0x8000);
 
     // Minimal .text section
@@ -103,8 +105,8 @@ fn test_elf_relocation_for_meld_dispatch() {
         .with_data(code);
     elf_builder.add_section(text);
 
-    // Add undefined symbol for __meld_dispatch_import
-    let sym_idx = elf_builder.add_undefined_symbol("__meld_dispatch_import");
+    // Add an undefined symbol for the import, under its field name
+    let sym_idx = elf_builder.add_undefined_symbol("log");
     assert!(sym_idx > 0, "symbol index should be > 0 (0 is STN_UNDEF)");
 
     // Add relocation for a BL instruction at offset 8 in .text
@@ -130,10 +132,11 @@ fn test_elf_relocation_for_meld_dispatch() {
     );
 }
 
-/// Test the complete Meld ABI pipeline: WASM with imports → ELF with relocations.
+/// The complete pipeline: WASM with an import → direct AAPCS call → ELF with
+/// a relocation against the import's own symbol.
 #[test]
-fn test_full_meld_abi_pipeline() {
-    // Simulate a WASM module that imports "env.log" and calls it
+fn test_full_import_call_pipeline() {
+    // A WASM module that imports "env.log" and calls it.
     let imports = [ImportEntry {
         module: "env".to_string(),
         name: "log".to_string(),
@@ -147,14 +150,22 @@ fn test_full_meld_abi_pipeline() {
         WasmOp::Call(0), // Call import #0 (env.log)
     ];
 
-    // Step 1: Instruction selection with import awareness
+    // Step 1: host-linked instruction selection
     let db = RuleDatabase::with_standard_rules();
     let mut selector = InstructionSelector::new(db.rules().to_vec());
     selector.set_num_imports(imports.len() as u32);
+    selector.set_func_arg_counts(vec![1], Vec::new());
+    selector.set_func_result_counts(vec![0]);
+    selector.set_relocatable(true);
 
     let arm_instrs = selector
-        .select(&wasm_ops)
+        .select_with_stack(&wasm_ops, 0)
         .expect("instruction selection failed");
+    assert_eq!(
+        bl_labels(&arm_instrs),
+        vec!["func_0".to_string()],
+        "one direct call, no dispatch stub"
+    );
 
     // Step 2: Encode to ARM machine code
     let encoder = ArmEncoder::new_arm32();
@@ -162,7 +173,7 @@ fn test_full_meld_abi_pipeline() {
     let mut bl_offsets = Vec::new();
 
     for instr in &arm_instrs {
-        if matches!(&instr.op, ArmOp::Bl { label } if label == "__meld_dispatch_import") {
+        if matches!(&instr.op, ArmOp::Bl { .. }) {
             bl_offsets.push(code.len() as u32);
         }
         let encoded = encoder.encode(&instr.op).expect("ARM encoding failed");
@@ -170,10 +181,7 @@ fn test_full_meld_abi_pipeline() {
     }
 
     assert!(!code.is_empty(), "should generate machine code");
-    assert!(
-        !bl_offsets.is_empty(),
-        "should have at least one BL to __meld_dispatch_import"
-    );
+    assert_eq!(bl_offsets.len(), 1);
 
     // Step 3: Build ELF with relocations
     let mut elf_builder = ElfBuilder::new_arm32().with_entry(0x8000);
@@ -194,14 +202,13 @@ fn test_full_meld_abi_pipeline() {
         .with_section(4);
     elf_builder.add_symbol(func_sym);
 
-    // Add undefined symbol for the Meld dispatch bridge
-    let dispatch_sym_idx = elf_builder.add_undefined_symbol("__meld_dispatch_import");
+    // The import is an undefined symbol under its BARE field name.
+    let import_sym_idx = elf_builder.add_undefined_symbol(&imports[0].name);
 
-    // Add relocations for each BL to __meld_dispatch_import
     for offset in &bl_offsets {
         elf_builder.add_relocation(Relocation {
             offset: *offset,
-            symbol_index: dispatch_sym_idx,
+            symbol_index: import_sym_idx,
             reloc_type: ArmRelocationType::Call,
         });
     }
@@ -211,26 +218,19 @@ fn test_full_meld_abi_pipeline() {
 
     // Validate
     assert_eq!(&elf_data[0..4], &[0x7f, b'E', b'L', b'F']);
-
-    // Verify the import metadata round-trips
-    assert_eq!(imports[0].module, "env");
-    assert_eq!(imports[0].name, "log");
-    assert!(matches!(imports[0].kind, ImportKind::Function(_)));
-
-    println!("  Meld ABI pipeline test passed:");
-    println!("  - {} import(s) declared", imports.len());
-    println!("  - {} ARM instructions generated", arm_instrs.len());
-    println!("  - {} bytes of machine code", code.len());
-    println!(
-        "  - {} relocation(s) for __meld_dispatch_import",
-        bl_offsets.len()
+    assert!(
+        !elf_data
+            .windows(b"__meld_dispatch_import".len())
+            .any(|w| w == b"__meld_dispatch_import"),
+        "no dispatch symbol"
     );
-    println!("  - {} byte ELF with .rel.text section", elf_data.len());
+    assert!(matches!(imports[0].kind, ImportKind::Function(_)));
 }
 
-/// Test multiple imports generate distinct dispatch calls.
+/// Two imports are two direct calls, each to its own symbol, with the
+/// argument in R0 — never an import index.
 #[test]
-fn test_multiple_import_dispatch() {
+fn test_multiple_imports_are_direct_calls() {
     // Two imports: env.log (index 0) and env.read (index 1)
     let wasm_ops = vec![
         WasmOp::I32Const(1),
@@ -242,43 +242,16 @@ fn test_multiple_import_dispatch() {
     let db = RuleDatabase::with_standard_rules();
     let mut selector = InstructionSelector::new(db.rules().to_vec());
     selector.set_num_imports(2);
+    selector.set_func_arg_counts(vec![1, 1], Vec::new());
+    selector.set_func_result_counts(vec![0, 0]);
+    selector.set_relocatable(true);
 
     let arm_instrs = selector
-        .select(&wasm_ops)
+        .select_with_stack(&wasm_ops, 0)
         .expect("instruction selection failed");
 
-    // Count BL __meld_dispatch_import occurrences
-    let dispatch_count = arm_instrs
-        .iter()
-        .filter(|i| matches!(&i.op, ArmOp::Bl { label } if label == "__meld_dispatch_import"))
-        .count();
     assert_eq!(
-        dispatch_count, 2,
-        "expected 2 dispatch calls, got {}",
-        dispatch_count
-    );
-
-    // Should have MOV R0, #0 and MOV R0, #1 for the two import indices
-    let mov_indices: Vec<i32> = arm_instrs
-        .iter()
-        .filter_map(|i| match &i.op {
-            ArmOp::Mov { rd, op2 }
-                if matches!(rd, synth_synthesis::Reg::R0)
-                    && matches!(op2, synth_synthesis::Operand2::Imm(_)) =>
-            {
-                if let synth_synthesis::Operand2::Imm(val) = op2 {
-                    Some(*val)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        })
-        .collect();
-
-    assert!(
-        mov_indices.contains(&0) && mov_indices.contains(&1),
-        "expected MOV R0 with indices 0 and 1, got {:?}",
-        mov_indices
+        bl_labels(&arm_instrs),
+        vec!["func_0".to_string(), "func_1".to_string()]
     );
 }

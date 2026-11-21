@@ -174,11 +174,12 @@ artifacts:
     type: sw-verification
     title: Import call stub generation verification
     description: >
-      Verifies that import call dispatch stubs are correctly generated,
-      including __meld_dispatch_import generic dispatch path and per-import
-      direct dispatch with AAPCS argument placement. Tests validate the
-      full Meld ABI pipeline from import index resolution through ARM
-      instruction emission.
+      Verifies the import call lowering synth implements (KB-TR-001): a
+      direct AAPCS `BL func_N` per import call on a host-linked compile,
+      and a loud decline naming #1699 otherwise. Tests validate the
+      pipeline from the import call through ARM instruction emission and
+      an ELF relocation against the import's own symbol. No
+      __meld_dispatch_import path exists to verify.
     status: implemented
     tags: [import-dispatch, meld-abi, unit-tests]
     links:
@@ -187,10 +188,11 @@ artifacts:
     fields:
       method: automated-test
       steps:
-        run: "cargo test -p synth-backend -- meld_abi"
+        run: "cargo test -p synth-backend --test meld_abi_test"
         coverage: >
-          test_import_dispatch_stub_generation() and
-          test_full_meld_abi_pipeline() in
+          test_import_call_without_host_link_declines_1699(),
+          test_full_import_call_pipeline() and
+          test_multiple_imports_are_direct_calls() in
           crates/synth-backend/tests/meld_abi_test.rs
 
   - id: SWVER-009

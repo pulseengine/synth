@@ -754,12 +754,6 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
 
 pub struct OptimizerBridge {
     config: OptimizationConfig,
-    /// Number of imported functions (wasm function indices `< num_imports` are
-    /// imports). Used to distinguish import calls (handled in the optimized
-    /// path, dispatched via `func_N` → field-name rewrite, #173) from local
-    /// calls (declined so the direct selector can preserve caller-saved regs
-    /// across them, #188). Defaults to 0.
-    num_imports: u32,
     /// VCR-RA-001 (#242, #496): allocation-time spill-on-exhaustion override
     /// for tests. `None` (default) reads the `SYNTH_SPILL_ON_EXHAUST` env flag;
     /// `Some(_)` forces the lever on/off regardless of the environment (unit
@@ -821,7 +815,6 @@ impl OptimizerBridge {
     pub fn new() -> Self {
         Self {
             config: OptimizationConfig::default(),
-            num_imports: 0,
             spill_on_exhaust: None,
             volatile_segments: Vec::new(),
             bounds_check: BoundsCheckConfig::None,
@@ -835,7 +828,6 @@ impl OptimizerBridge {
     pub fn with_config(config: OptimizationConfig) -> Self {
         Self {
             config,
-            num_imports: 0,
             spill_on_exhaust: None,
             volatile_segments: Vec::new(),
             bounds_check: BoundsCheckConfig::None,
@@ -867,11 +859,6 @@ impl OptimizerBridge {
     /// materializes (see [`OptimizerBridge::linmem_base`]).
     pub fn set_linmem_base(&mut self, base: u32) {
         self.linmem_base = base;
-    }
-
-    /// Set the number of imported functions (see [`OptimizerBridge::num_imports`]).
-    pub fn set_num_imports(&mut self, num_imports: u32) {
-        self.num_imports = num_imports;
     }
 
     /// #543 Phase 2: thread the integrator-marked volatile DMA-window ranges
@@ -3453,26 +3440,26 @@ impl OptimizerBridge {
         use crate::rules::{ArmOp, Operand2, Reg};
         use std::collections::HashMap;
 
-        // #188: the optimized path's register allocator does NOT model the
-        // AAPCS caller-saved clobber of a `BL` (R0–R3, R12). A function
-        // containing a LOCAL call can therefore read a param (or temp) from a
-        // register the callee overwrote — the confirmed miscompile in issue
-        // #188. Decline such functions so the backend falls back to the direct
-        // `select_with_stack` selector, which spills/reloads caller-saved
-        // registers across calls. This is honest degradation: the function
-        // still compiles correctly, just without IR-level optimization.
-        //
-        // Import calls (`func_idx < num_imports`) are NOT declined: they keep
-        // going through the optimized path so the CLI's import-field-name
-        // relocation rewrite (`func_N` → wasm field name, #173) still applies.
-        // (Caller-saved preservation across import calls is a separate, pre-
-        // existing gap tracked outside #188.)
-        if instructions.iter().any(|inst| {
-            matches!(inst.opcode, Opcode::Call { func_idx, .. } if func_idx >= self.num_imports)
-        }) {
+        // #188 / #1696 / #1755: the optimized path has NO call model. Its
+        // register allocator does not know a `BL` clobbers R0–R3 and R12, it
+        // never moves an argument into R0–R3, and the IR `Call` carries no
+        // result count (a void callee still pushed a value). A function with
+        // ANY call — to a local function (#188) or to an import (#1696 lost
+        // the value live across the call, #1755 the arguments) — is declined
+        // so the backend falls back to the direct `select_with_stack`
+        // selector, which implements all three. Honest degradation: the
+        // function still compiles correctly, just without IR-level
+        // optimization. Import calls used to be let through here; the
+        // `func_N` → field-name relocation rewrite (#173) they were kept for
+        // applies to the direct selector's `BL func_N` just the same.
+        if instructions
+            .iter()
+            .any(|inst| matches!(inst.opcode, Opcode::Call { .. }))
+        {
             return Err(synth_core::Error::synthesis(
-                "optimized path declines functions with local calls (no caller-saved \
-                 clobber model — see #188); falling back to direct selector"
+                "optimized path declines functions with calls (no call model: no \
+                 caller-saved clobber, no argument marshalling — see #188, #1696, \
+                 #1755); falling back to direct selector"
                     .to_string(),
             ));
         }
@@ -6763,26 +6750,19 @@ impl OptimizerBridge {
                     last_result_vreg = Some(dest.0);
                 }
 
-                // Direct call. Emit `BL func_<idx>`; the AAPCS return value
-                // is in R0, so we bind `dest` to R0. This MUST register
-                // `dest` in `vreg_to_arm` — without that mapping, any
-                // downstream consumer of the call result would hit the
-                // unmapped-vreg path in `get_arm_reg` (formerly the silent
-                // R0 fallback, now the PR #101 defensive panic — same class
-                // of bug that motivated this fix).
-                //
-                // Caveat (out of scope for this PR): a call clobbers
-                // R0..R3, so any vreg currently mapped to R0..R3 that
-                // *survives* the call is invalidated by it. We don't model
-                // that here — fully correct call-boundary regalloc in the
-                // optimized path needs a broader rework. The narrow goal
-                // here is "compile cleanly, don't panic on `WasmOp::Call`."
-                Opcode::Call { dest, func_idx } => {
-                    arm_instrs.push(ArmOp::Bl {
-                        label: format!("func_{}", func_idx),
-                    });
-                    vreg_to_arm.insert(dest.0, Reg::R0);
-                    last_result_vreg = Some(dest.0);
+                // A call never reaches this lowering: `ir_to_arm_impl`
+                // declines every function that contains one before any op is
+                // lowered (#188, #1696, #1755 — this path has no call model).
+                // The bare `BL func_N` that stood here bound the result to R0
+                // and nothing else: no argument moves, no caller-saved
+                // preservation, a result for a void callee. Kept as an error,
+                // not an emission, so the decline above cannot be removed
+                // without this arm failing the compile instead.
+                Opcode::Call { func_idx, .. } => {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "optimized path reached a call to func_{func_idx}: it has no \
+                         call model and must decline such functions up front (#1696)"
+                    )));
                 }
             }
 
@@ -6865,14 +6845,6 @@ impl OptimizerBridge {
                     value_stack.pop();
                     value_stack.pop();
                     value_stack.pop();
-                    value_stack.push(dest.0);
-                }
-                // Call: produce 1 (the AAPCS return value in R0). The IR
-                // doesn't yet carry arg-count metadata, so we do NOT pop
-                // arg slots from the value stack — same imprecision as the
-                // unhandled-call case prior to this fix; deferred to a
-                // broader call-lowering rework.
-                Opcode::Call { dest, .. } => {
                     value_stack.push(dest.0);
                 }
                 // Label, Branch, Nop, Return: no stack effect

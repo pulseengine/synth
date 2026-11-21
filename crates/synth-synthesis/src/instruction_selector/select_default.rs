@@ -466,23 +466,19 @@ impl InstructionSelector {
 
             Call(func_idx) => {
                 if *func_idx < self.num_imports {
-                    // Import call — dispatch through Meld runtime
-                    // R0 = import index, then BL __meld_dispatch_import
-                    vec![
-                        ArmOp::Mov {
-                            rd: Reg::R0,
-                            op2: Operand2::Imm(*func_idx as i32),
-                        },
-                        ArmOp::Bl {
-                            label: "__meld_dispatch_import".to_string(),
-                        },
-                    ]
-                } else {
-                    // Local function call
-                    vec![ArmOp::Bl {
-                        label: format!("func_{}", func_idx),
-                    }]
+                    // #1699: the Meld dispatch lowering that stood here passed
+                    // the import index in R0 and none of the wasm arguments.
+                    // An import call is lowered only by `select_with_stack`,
+                    // as a direct AAPCS call on a host-linked compile.
+                    return Err(synth_core::Error::synthesis(format!(
+                        "call to imported function func_{func_idx} reached select_default, \
+                         which has no import call lowering — declined (#1699)"
+                    )));
                 }
+                // Local function call
+                vec![ArmOp::Bl {
+                    label: format!("func_{}", func_idx),
+                }]
             }
 
             CallIndirect {
