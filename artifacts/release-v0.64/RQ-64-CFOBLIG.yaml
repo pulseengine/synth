@@ -1,8 +1,7 @@
 artifacts:
   - id: RQ-64-CFOBLIG
     type: system-req
-    title: "The Block/End correspondence obligation \u2014 where all 180 of gale's remaining\
-  \ uncovered instances live"
+    title: "The Block/End correspondence obligation \u2014 where all 180 of gale's remaining uncovered instances live"
     description: >
       CARRIED FROM v0.63, where it was deferred with the reason below. The
       substance is unchanged; see RQ-63-CFOBLIG for the full analysis, which is
@@ -27,9 +26,7 @@ artifacts:
       verification-track: proof
       issue: "#1057"
       carried-from: RQ-63-CFOBLIG
-      done-when: "manual: either Block/End carry a kernel-checked correspondence obligation reflected\
-  \ semantically in proof-inventory.json, or the obstruction is stated precisely enough\
-  \ to be VCR-ISA-001 input \u2014 with no existence-only theorem named `*_correct`"
+      done-when: "manual: either Block/End carry a kernel-checked correspondence obligation reflected semantically in proof-inventory.json, or the obstruction is stated precisely enough to be VCR-ISA-001 input \u2014 with no existence-only theorem named `*_correct`"
       verified-by: >-
         DONE-WHEN BRANCH B, taken deliberately: the obstruction is stated
         precisely enough to be VCR-ISA-001 input, with no existence-only

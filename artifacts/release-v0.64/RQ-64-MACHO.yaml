@@ -1,8 +1,7 @@
 artifacts:
   - id: RQ-64-MACHO
     type: system-req
-    title: "Shipping synth output as a normal host library is blocked by the CONTAINER, not the\
-  \ ISA \u2014 aarch64 already emits linkable objects, just not Mach-O"
+    title: "Shipping synth output as a normal host library is blocked by the CONTAINER, not the ISA \u2014 aarch64 already emits linkable objects, just not Mach-O"
     description: >
       CARRIED FROM v0.63, where it was deferred with the reason below. The
       substance is unchanged; see RQ-63-MACHO for the full analysis, which is
@@ -27,10 +26,7 @@ artifacts:
       verification-track: differential
       issue: "#242"
       carried-from: RQ-63-MACHO
-      done-when: "manual: synth emits a Mach-O MH_OBJECT for CPU_TYPE_ARM64 behind an explicit flag;\
-  \ the object links with the host linker into a loadable library and the linked code\
-  \ EXECUTES with results matching wasmtime; the emitted .text is byte-identical to\
-  \ the ELF path for the same module"
+      done-when: "manual: synth emits a Mach-O MH_OBJECT for CPU_TYPE_ARM64 behind an explicit flag; the object links with the host linker into a loadable library and the linked code EXECUTES with results matching wasmtime; the emitted .text is byte-identical to the ELF path for the same module"
       landed: >-
         PR #1184 — the ObjectPlan refactor (140/140 ELF objects byte-identical),
         the `--object-format macho` writer, the red-first byte-identity sweep

@@ -1,9 +1,7 @@
 artifacts:
   - id: RQ-64-ARCHMODEL
     type: system-req
-    title: "Define how a synth-compiled artifact executes on a target, and model in AADL what\
-  \ AADL expresses \u2014 starting with timing, which already has a consumer reconstructing\
-  \ it"
+    title: "Define how a synth-compiled artifact executes on a target, and model in AADL what AADL expresses \u2014 starting with timing, which already has a consumer reconstructing it"
     description: >
       CARRIED FROM v0.63, where it was deferred with the reason below. The
       substance is unchanged; see RQ-63-ARCHMODEL for the full analysis, which is
@@ -56,9 +54,6 @@ artifacts:
       verification-track: review
       issue: "#1136"
       carried-from: RQ-63-ARCHMODEL
-      done-when: "manual: a synth AADL model exists that parses under `spar parse` and carries at least\
-  \ the execution-on-target basics (memory regions, processor binding, MPU) plus timing\
-  \ properties traceable to --emit-wcet; what AADL cannot express is stated explicitly;\
-  \ and RQ-62-LOOPCONFORM counts steps 1-2 as a real step rather than an N/A"
+      done-when: "manual: a synth AADL model exists that parses under `spar parse` and carries at least the execution-on-target basics (memory regions, processor binding, MPU) plus timing properties traceable to --emit-wcet; what AADL cannot express is stated explicitly; and RQ-62-LOOPCONFORM counts steps 1-2 as a real step rather than an N/A"
       verified-by: >-
         PENDING — carried unchanged from RQ-63-ARCHMODEL.
