@@ -74,7 +74,7 @@ jobs:
           # and a corpus that is not a checkout at the gitlink fails reach.
           submodules: recursive
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable (branch)
       - name: Cache Cargo dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
