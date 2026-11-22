@@ -52,6 +52,10 @@ artifacts:
         dependent refuters are still LIVE on a 0.91.0 debug build of this tree
         (see RQ-91-R5DATAINIT and RQ-91-M3SELFBL). No pull request in
         v0.90.0..0f0d082f unifies the builders.
+
+        CORRECTED AT COLD REVIEW (docs/reviews/v0.91-cold-review.md F1): on
+        40178418 one dependent refuter (RQ-91-R5DATAINIT) is still LIVE;
+        RQ-91-M3SELFBL's compile is refused since PR #1767.
     tags:
       - feature-loop
       - refactor
