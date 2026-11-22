@@ -72,7 +72,7 @@ artifacts:
         context DEADLOCKS them), rollback is a revert whose own CI runs the
         reverted config, and increment 1's job had been green on that pool for
         5/5 consecutive main runs first. Acceptance evidence is the green cycle
-        itself: Clippy `success` on `pulseengine-ci-01-6`
+        itself: Clippy `success` on `rust-cpu-runner-6`
         [self-hosted,linux,x64,rust-cpu], 70s.
 
         TWO OF MY OWN MEASUREMENTS WERE WRONG AND ARE CORRECTED ON #1062 AND
@@ -117,7 +117,7 @@ artifacts:
       # to `implemented` would claim an outcome that has not happened.
       #
       # WHAT INCREMENT 1 MEASURED, and it corrects the plan rather than
-      # confirming it: the moved job ran on pulseengine-ci-01-10 and passed,
+      # confirming it: the moved job ran on rust-cpu-runner-10 and passed,
       # but timing against main's ubuntu-latest run of the same job was
       #     rust-cpu      queue 3s  exec 67s  total 70s
       #     ubuntu-latest queue 4s  exec 37s  total 41s

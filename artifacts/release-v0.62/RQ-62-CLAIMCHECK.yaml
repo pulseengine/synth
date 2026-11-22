@@ -40,7 +40,7 @@ artifacts:
       REDUNDANCY IS A SEPARATE AXIS FROM CAPACITY, and this artifact now owns
       the invariant because a live incident proved the two are not the same
       thing. On 2026-09-02 the `light` pool had EXACTLY ONE runner
-      (pulseengine-ci-01-8) and it went offline. Two REQUIRED contexts —
+      (rust-cpu-runner-8) and it went offline. Two REQUIRED contexts —
       `Format` and `Version Pin Sweep` — were routed there, so both were
       assigned to a dead machine, sat 600s, and failed having executed ZERO
       steps. Branch protection needs a required context to PASS; a dead pool
@@ -83,7 +83,7 @@ artifacts:
         (runs 33964585152/33963403143/33963070649/33956182017/33945195476) —
         execution 12-18s behind 4m15s-7m09s of quota queue wait (>94% of wall
         time queueing). First self-hosted cycle (PR #1153, run 33972280351):
-        picked up by pulseengine-ci-01-8 in 3s, success in 22s — the green
+        picked up by rust-cpu-runner-8 in 3s, success in 22s — the green
         cycle on the destination pool is the acceptance evidence and is
         self-demonstrating, since the PR cannot merge without this required
         context passing there. Destination pool sampled WITH QUEUE DEPTH

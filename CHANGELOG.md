@@ -1666,7 +1666,7 @@ the better finding. A first version said the no-show discriminator fails because
 spread inside a single cancellation" — and concluded "cluster by a time window, not by
 equality". Measured: run 37907716195 has 71 jobs and 13 cancelled, but only **12** carry
 `steps == 0`. The thirteenth, `fact-spec elision oracle (#494 ...)`, carries `steps=33`,
-`runner_name='pulseengine-ci-01-9'`, `runner_id=10495` and `started_at != created_at` —
+`runner_name='rust-cpu-runner-9'`, `runner_id=10495` and `started_at != created_at` —
 a job that RAN on a named runner and was cancelled mid-flight. It is the sole job at
 `09:57:58Z`. So the `steps == 0` population is **uniform**, 12 of 12 at one timestamp,
 and the spread was manufactured by admitting a 33-step job into a population defined by
@@ -2079,7 +2079,7 @@ cannot fail the job.
 2026-10-01..02, EVERY sampled runner transitions exactly once from 1.98.1 to
 1.99.0 and never back — 6 of 6 monotone, with no single log ever containing two
 versions. The window holds 46 Clippy jobs over those seven runners; which 26 were read is
-not recorded, so it is a sample. The seventh runner, `pulseengine-ci-01-5`, has
+not recorded, so it is a sample. The seventh runner, `rust-cpu-runner-5`, has
 exactly ONE usable observation (1.99.0) because its other Clippy job in the
 window failed at `Set up job` with one step — and one observation cannot exhibit
 or refute a transition. Not because its jobs never compiled: the job that ran
@@ -2416,8 +2416,8 @@ its input, and the module is not in the thread; it has been asked for.
   all three heads of the release branch with ZERO Rust files changed between them.
   Cause: `dtolnay/rust-toolchain@stable` resolves to whatever stable each self-hosted
   runner has already cached — both logs say `stable-x86_64-unknown-linux-gnu
-  **unchanged**` — and the two runners disagreed. `main`'s job ran on `...-01-12` at
-  rustc **1.98.1** and passed; the branch's ran on `...-01-11` at rustc **1.99.0** and
+  **unchanged**` — and the two runners disagreed. `main`'s job ran on `rust-cpu-runner-12` at
+  rustc **1.98.1** and passed; the branch's ran on `rust-cpu-runner-11` at rustc **1.99.0** and
   failed. The 1.99.0 runner was RIGHT: that release adds
   `needless_borrows_for_generic_args`, which fires three times in
   `crates/synth-synthesis/src/liveness.rs` (`:5793`, `:9614`, `:9621`), all `&closure`

@@ -99,7 +99,7 @@ artifacts:
       experiment that would answer it. Saying so is the point; v0.71 wrote that
       note precisely so a later release would not quietly assume either way.
 
-      AND CI ANSWERED THE FIRST TWO. Run on pulseengine-ci-01-10:
+      AND CI ANSWERED THE FIRST TWO. Run on rust-cpu-runner-10:
 
         Build synth for aarch64-unknown-linux-musl (rust-lld)  SUCCESS  199 s
         The issue's acceptance property (elf_static_check)     SUCCESS

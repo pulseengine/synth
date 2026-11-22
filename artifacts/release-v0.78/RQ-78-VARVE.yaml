@@ -88,7 +88,7 @@ artifacts:
         and destroy the evidence needed to resolve the ambiguity.
         THE OPEN QUESTION IS UPSTREAM AND NOT SYNTH'S: what is the `2026.09` line's authoritative
         counter? varve#204 is its diagnostic half. Runner 8 at hwm 13 deserves its own look. v0.77's
-        release PR failed this job on `pulseengine-ci-01-6`, an hwm=4 runner, at the `varve install`
+        release PR failed this job on `rust-cpu-runner-6`, an hwm=4 runner, at the `varve install`
         step — consistent with the mechanism but NOT independent confirmation, because the runner is a
         proxy for the value rather than a second measurement of it.
       done-when: "manual:2026-09-30 the non-action is recorded with the fleet evidence and the inversion stated, varve.toml and the workflows are confirmed UNCHANGED, and the authoritative-counter question is carried upstream rather than answered locally"

@@ -5,7 +5,7 @@ THE INVARIANT: a REQUIRED status context must not target a runner-label set
 satisfiable by fewer than two ONLINE runners.
 
 PROVENANCE — a live incident, not a hypothetical. On 2026-09-02 the `light`
-pool had EXACTLY ONE runner (pulseengine-ci-01-8) and it went offline. Two
+pool had EXACTLY ONE runner (rust-cpu-runner-8) and it went offline. Two
 required contexts (`Format`, `Version Pin Sweep`) were routed there, were
 assigned to a dead machine, sat 600s, and failed having executed ZERO steps.
 Branch protection needs a required context to PASS; a dead pool cannot

@@ -60,7 +60,7 @@ artifacts:
       MEASURED ON THIS RELEASE, not inferred: RQ-71-MUSL's new job was written
       for `ubuntu-latest` out of habit, moved to
       `[self-hosted, linux, x64, rust-cpu]` after the maintainer's question, and
-      passed first time on `pulseengine-ci-01-12` in 3m38s.
+      passed first time on `rust-cpu-runner-12` in 3m38s.
 
       WHY IT IS NOT A BATCH, and the reason this lane is careful rather than
       quick: retargeting a REQUIRED context is the one move that can DEADLOCK
@@ -100,7 +100,7 @@ artifacts:
       the four required contexts move "only after the tripwire proves the pool serves
       them". On run 35888386080, FIVE of the nine required contexts ALREADY ran on
       self-hosted and passed — Format, Clippy, Claim Check, Version Pin Sweep and
-      Rivet Validation, on pulseengine-ci-01-8/-9/-10. The pool demonstrably serves
+      Rivet Validation, on rust-cpu-runner-8/9/10. The pool demonstrably serves
       required checks today.
 
       WHY THE REMAINING FOUR STILL DO NOT MOVE, checked individually rather than
