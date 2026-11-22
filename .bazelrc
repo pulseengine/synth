@@ -4,6 +4,13 @@
 common --enable_bzlmod
 common --enable_platform_specific_config
 
+# MODULE.bazel.lock must be current (owner decision 2026-11-20). The rules_rust
+# crate extension records the sha256 of Cargo.lock, Cargo.toml, MODULE.bazel
+# and every crates/*/Cargo.toml. Any change that moves one of those inputs must
+# regenerate the lock in the same PR:
+#   bazel mod deps --lockfile_mode=update
+common --lockfile_mode=error
+
 # Build settings
 build --incompatible_strict_action_env
 build --verbose_failures

@@ -33,7 +33,11 @@ updates:
         patterns:
           - "*"
   - package-ecosystem: cargo
-    directory: /
+    # /fuzz is its own workspace with a committed Cargo.lock (lockfiles.yml
+    # refuses a stale one), so a shared-crate bump must move both locks.
+    directories:
+      - /
+      - /fuzz
     schedule:
       interval: weekly
     labels:

@@ -1,0 +1,126 @@
+# Lockfiles: every committed Cargo.lock is current with its manifests, every
+# one is audited for advisories, and MODULE.bazel.lock is current.
+#
+# `fuzz/` is its own cargo workspace and its Cargo.lock was gitignored, so its
+# dependencies were re-resolved on every run and a dependency release could
+# break the fuzz job with no commit here. The advisory audit in ci.yml and
+# release.yml covers the root workspace only. Both jobs below discover the
+# committed locks with `git ls-files`, so a new nested workspace is covered
+# without an edit to this file, and a workspace root with NO committed lock is
+# refused.
+#
+# The freshness job is also the substitute for `--locked` on ci.yml's cargo
+# commands: ci.yml sits at GitHub's workflow-size ceiling and cannot take the
+# flag on every invocation. A lock proven current cannot be re-resolved by a
+# later cargo command on the same commit.
+#
+# Each job runs a planted control on every run and fails if the control
+# passes: a stale lock must be refused, and a lock pinning a crate with a
+# known RustSec advisory must be refused. See scripts/lockfile_check.py.
+#
+# MODULE.bazel.lock: .bazelrc sets `--lockfile_mode=error` (owner decision
+# 2026-11-20), so a stale lock fails every Bazel command. The Bazel job below
+# reports that on its own, with the command to run, without building anything. Any change to Cargo.lock,
+# Cargo.toml, MODULE.bazel or a crates/*/Cargo.toml needs
+# `bazel mod deps --lockfile_mode=update` in the same PR. A dependabot cargo
+# PR cannot do that, so its Bazel job goes red until a follow-up commit adds
+# the regenerated lock. When the check fails, the job regenerates the lock on
+# the Linux runner and uploads it as the `module-bazel-lock` artifact; a manual
+# run (workflow_dispatch) uploads it too.
+#
+# This lives outside ci.yml because ci.yml cannot grow.
+#
+# NOT in the required-check set, for the reason Spec Suite records: a new
+# required context that fails to run deadlocks every merge. Adding it is the
+# owner's call.
+name: Lockfiles
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# CI load (org hosted queue, 2026-11-08): a new push to a PR cancels that
+# PR's superseded run of this workflow. Pushes to main are keyed by commit sha,
+# so a main run is never cancelled or replaced: every main commit stays verified.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  freshness:
+    name: Lockfile freshness
+    # Self-hosted `light` pool: only `cargo metadata`, nothing is compiled.
+    # Fail-closed fork guard: only a same-repo PR or a non-PR event reaches
+    # self-hosted.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Every committed Cargo.lock is current, and a stale one is refused
+        run: python3 scripts/lockfile_check.py freshness
+
+  advisories:
+    name: Advisory audit, every lock
+    # The pool ci.yml's advisory job uses: cargo-deny is compiled here when it
+    # is not already installed. Same fail-closed fork guard as above.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: lockfiles-advisories
+      # The same install line as ci.yml's advisory job.
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny || cargo deny --version
+      - name: Every committed Cargo.lock is audited, and a known advisory is refused
+        run: python3 scripts/lockfile_check.py audit
+
+  bazel-lock:
+    name: Bazel lockfile freshness
+    # Same runner and same Nix and Bazel setup as ci.yml's "Bazel Build &
+    # Proofs" job. Nothing is built: `bazel mod deps` resolves modules and
+    # evaluates the module extensions only.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@f34d6a05eae3c24acab7fa54587492daeaeffdab # 0.19.2
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+      - name: MODULE.bazel.lock is current, and a stale one is refused
+        run: python3 scripts/lockfile_check.py bazel
+      # The lock CI accepts is the one a Linux runner writes. On a failure, or
+      # on a manual run, write it here and hand it over as an artifact.
+      - name: Regenerate MODULE.bazel.lock on this runner
+        if: failure() || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          # Never with REPIN set: Bazel records it in the lock (wohl#113).
+          env -u CARGO_BAZEL_REPIN -u CARGO_BAZEL_REPIN_ONLY -u REPIN \
+            bazel mod deps --lockfile_mode=update > /dev/null
+          git diff --stat -- MODULE.bazel.lock
+          echo "To fix a red check: commit this file, or run 'bazel mod deps --lockfile_mode=update' locally and commit the result."
+      - name: Upload the regenerated MODULE.bazel.lock
+        if: failure() || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: module-bazel-lock
+          path: MODULE.bazel.lock
+          retention-days: 7
+          if-no-files-found: error
