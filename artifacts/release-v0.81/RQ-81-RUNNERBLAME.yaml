@@ -53,9 +53,9 @@ artifacts:
       verified-by: >-
         REFUTED, by this lane's own refuting command, and the issue refuted ITSELF by the criterion it
         wrote down. #1451's body says: "Refuting observation: any job completing successfully on
-        `pulseengine-ci-01-5`, with steps > 0. One such job and this diagnosis is wrong." That job exists.
+        `rust-cpu-runner-5`, with steps > 0. One such job and this diagnosis is wrong." That job exists.
         THE MEASUREMENT, two independent ways rather than one lucky sample. Job 110992202896 on
-        pulseengine-ci-01-5 at 2026-10-02T19:21:49Z: conclusion=success, 11 steps, and it reached the
+        rust-cpu-runner-5 at 2026-10-02T19:21:49Z: conclusion=success, 11 steps, and it reached the
         compiler — step 4 `Record the resolved toolchain (RQ-80-TOOLCHAIN)` and step 6 `Run clippy` both
         succeeded at rustc 1.99.0. Then the whole recent window, because one job proves only one job: over
         100 runs spanning 2026-10-02..2026-10-07, 31 failed, and across those 231 FAILED JOBS the count of

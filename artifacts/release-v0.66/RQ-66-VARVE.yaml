@@ -137,7 +137,7 @@ artifacts:
 
       RE-RUN, MEASURED (run 34381956416, job 102568731138, this branch's
       current head — not a prediction): landed on a DIFFERENT runner,
-      `pulseengine-ci-01-12`. `varve install`, `Sync externals` (7 externals
+      `rust-cpu-runner-12`. `varve install`, `Sync externals` (7 externals
       synced), `Validate the federated graph` (**Result: PASS, 381
       warnings**) and the non-vacuity guard (**Cross-repo backlinks: 1032**,
       matching #1012's authoring count) ALL ran and passed. The job is still
@@ -303,7 +303,7 @@ artifacts:
         (missing `always()`, so it silently didn't run once a later step
         failed for an unrelated reason; fixed). Both fixes verified locally,
         then pushed. RE-RUN, MEASURED (run 34381956416, job 102568731138,
-        current head, landed on a DIFFERENT runner `pulseengine-ci-01-12`):
+        current head, landed on a DIFFERENT runner `rust-cpu-runner-12`):
         `varve install`, `Sync externals` (7 externals), `Validate the
         federated graph` (PASS, 381 warnings) and the non-vacuity guard
         (Cross-repo backlinks: 1032) ALL PASSED. Job still RED because the
@@ -339,7 +339,7 @@ artifacts:
         one-line follow-up once #1242 merges.
 
         LIVE CONFIRMATION (run 34384697392, job 102577926865, current head
-        910a06cb): landed on a THIRD distinct runner, `pulseengine-ci-01-11`.
+        910a06cb): landed on a THIRD distinct runner, `rust-cpu-runner-11`.
         `varve verify` found the SAME known hazard again
         (`rivet` -> `/var/lib/runners/runner11/.cargo/bin/rivet`) — three
         different runners now, same mechanism, strengthening rather than
@@ -357,7 +357,7 @@ artifacts:
         carries RQ-66-PINDEBT #1242): the coordinator reported the
         Shadowing gate RED again on a fresh run and correctly suspected the
         pin's SHAPE, not a regression. Confirmed: run 34395957454, job
-        102615600973, a FOURTH distinct runner (`pulseengine-ci-01-6`),
+        102615600973, a FOURTH distinct runner (`rust-cpu-runner-6`),
         same commit, same pin — `varve verify` came back COMPLETELY CLEAN
         (`layer 2026.09.2 ... verified: signature OK, 12 tool(s) match
         their signed digests`, zero `REQ-SHADOW-001` lines). The exact-match

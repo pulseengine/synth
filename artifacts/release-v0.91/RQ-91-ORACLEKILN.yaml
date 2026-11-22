@@ -77,7 +77,7 @@ artifacts:
         is at its size ceiling (a 514,837-byte ci.yml was rejected as a workflow
         file issue with 0 jobs, run 44505673142; 511,836 bytes still ran).
         THE CI JOB'S FIRST RUN (run 44587233237, runner
-        pulseengine-ci-01-11) built unicorn and kiln on the pool, so the
+        rust-cpu-runner-11) built unicorn and kiln on the pool, so the
         cmake/bindgen setup works there, and was CANCELLED at its 45-minute
         timeout: one sweep leg took 28 minutes. Measured cause, in an aarch64
         Ubuntu VM: kiln's `Module::from_kiln_module` ran once per CASE (~12 ms

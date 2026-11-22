@@ -45,7 +45,7 @@ artifacts:
         is to CLUSTER BY A TIME WINDOW.
         MEASURED: run 37907716195 has 71 jobs, 13 cancelled, and only TWELVE with `steps == 0`.
         The thirteenth — `fact-spec elision oracle (#494 ...)` — carries `steps=33`,
-        `runner_name='pulseengine-ci-01-9'`, `runner_id=10495` and `started_at != created_at`: a
+        `runner_name='rust-cpu-runner-9'`, `runner_id=10495` and `started_at != created_at`: a
         job that RAN on a named runner and was cancelled mid-flight. It is the sole job at
         09:57:58Z.
         So the `steps == 0` population is UNIFORM — 12 of 12 at one timestamp — and the

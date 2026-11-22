@@ -9,8 +9,8 @@ artifacts:
       one of the nine REQUIRED contexts — passed on `main` and failed on all three heads of the
       release branch. Cause: `dtolnay/rust-toolchain@stable` resolves to whatever stable each
       self-hosted runner has already CACHED (both logs report the toolchain `unchanged`), and
-      the runners disagreed. main's job ran on `...-01-12` at rustc 1.98.1 and passed; the
-      branch's ran on `...-01-11` at rustc 1.99.0 and failed.
+      the runners disagreed. main's job ran on `rust-cpu-runner-12` at rustc 1.98.1 and passed; the
+      branch's ran on `rust-cpu-runner-11` at rustc 1.99.0 and failed.
 
       THE 1.99.0 RUNNER WAS RIGHT — that release adds `needless_borrows_for_generic_args`, which
       fired three times in `liveness.rs`. v0.79 fixed it, VERIFIED RED-FIRST against 1.99.0
@@ -56,7 +56,7 @@ artifacts:
         THE CORRECTED CHARACTERIZATION. The window 2026-10-01..02 holds 46 Clippy jobs over SEVEN distinct
         runners; the monotonicity observation below rests on a 26-run sample spanning six of them, and
         which 26 were read is NOT recorded in this tree, so treat the sample as a sample. The seventh
-        runner, `pulseengine-ci-01-5`, is outside the denominator for a reason worth stating precisely
+        runner, `rust-cpu-runner-5`, is outside the denominator for a reason worth stating precisely
         because an earlier wording got it wrong: it has exactly ONE usable version observation (1.99.0,
         job 110992202896 — which SUCCEEDED with 11 steps and did run clippy), since its other Clippy job
         in the window, 110259172327, failed at `Set up job` with one step. ONE observation cannot exhibit

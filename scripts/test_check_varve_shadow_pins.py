@@ -5,10 +5,10 @@ Fixtures are REAL captured `varve verify` output, not synthesized text:
 
 - FIXTURE_CI_RUN1 / FIXTURE_CI_RUN2 / FIXTURE_CI_RUN3: the exact stdout from
   three real CI runs on pulseengine/synth PR #1244 (`rivet-federated` job) —
-  runners `pulseengine-ci-01-9`, `-01-12` and `-01-11` — all three reporting
+  runners `rust-cpu-runner-9`, `-12` and `-11` — all three reporting
   exactly one shadowed tool: `rivet`.
 - FIXTURE_CI_RUN4_CLEAN: the exact stdout from a FOURTH real CI run, runner
-  `pulseengine-ci-01-6` — completely clean, no shadow at all. This is the
+  `rust-cpu-runner-6` — completely clean, no shadow at all. This is the
   fixture that falsified the second design (an exact-match pin that
   required the shadow to be PRESENT): the same repo, the same pin, the
   same commit, a DIFFERENT runner — clean. Proof the observable is
@@ -66,7 +66,7 @@ Fix: run `varve shim install` and put the shim directory FIRST on PATH (`. "$VAR
 """
 
 # Real, captured from job 102615600973 (run 34395957454), runner
-# pulseengine-ci-01-6, on the SAME commit/pin as runs 1-3 above. Completely
+# rust-cpu-runner-6, on the SAME commit/pin as runs 1-3 above. Completely
 # clean — this is the fixture that falsified exact-match-on-presence.
 FIXTURE_CI_RUN4_CLEAN = (
     "layer 2026.09.2 sha256:67d585476be898dcd6c7f0e31fb8abe9c6548f708b3cb44804ad61cc5d999025"

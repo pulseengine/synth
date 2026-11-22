@@ -5,8 +5,8 @@
 hand-written parser here, the shipped tool's own check. Wired into the
 `rivet-federated` CI job (#1244), it found `rivet` on the runner's PATH
 resolving to an ambient `.cargo/bin/rivet` instead of the varve-pinned copy,
-on THREE distinct self-hosted runners (`pulseengine-ci-01-9`,
-`-01-12`, `-01-11`).
+on THREE distinct self-hosted runners (`rust-cpu-runner-9`,
+`-12`, `-11`).
 
 REVISION HISTORY, because the wrong model was tried first and the mistake is
 worth keeping visible:
@@ -24,7 +24,7 @@ worth keeping visible:
    home-alias tables: a given WASM shape ALWAYS produces the same wrong
    bytes, deterministically, on every run, on every machine). It is the
    WRONG shape here: a FOURTH real CI run, on a fourth distinct runner
-   (`pulseengine-ci-01-6`), came back with `varve verify` completely CLEAN
+   (`rust-cpu-runner-6`), came back with `varve verify` completely CLEAN
    — no shadow at all. The observable is not a property of the CODE or the
    PIN; it is a property of RUNNER STATE (whether the required `rivet`
    job's `cargo install --force --git`, no `--root`, happened to run on
@@ -83,8 +83,8 @@ KNOWN_OPEN: dict[str, tuple[str, str, str]] = {
         "#1236",
         "required `rivet` job's cargo install (no --root) shadows the pin's "
         "rivet on shared self-hosted runners WHEN a given runner has run "
-        "that job before — observed present on pulseengine-ci-01-9, -01-12, "
-        "-01-11 and ABSENT (clean) on -01-6 in PR #1244, confirming this is "
+        "that job before — observed present on rust-cpu-runner-9, -12, "
+        "-11 and ABSENT (clean) on -6 in PR #1244, confirming this is "
         "runner-state, not a stable repo property",
         r"\.cargo/bin/rivet$",
     ),

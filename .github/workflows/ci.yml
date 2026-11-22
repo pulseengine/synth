@@ -1969,7 +1969,7 @@ jobs:
         #     (the "improvement must be captured" ratchet rule). This is
         #     the RIGHT shape for a REPRODUCIBLE CODE DEFECT. It is the
         #     WRONG shape here: a fourth real run, on a fourth distinct
-        #     runner (`pulseengine-ci-01-6`), came back with `varve verify`
+        #     runner (`rust-cpu-runner-6`), came back with `varve verify`
         #     completely CLEAN — no shadow at all, same commit, same pin.
         #     The observable is RUNNER STATE (has this specific shared,
         #     persistent machine run the sibling job before), not a repo

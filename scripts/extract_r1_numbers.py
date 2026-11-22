@@ -128,8 +128,9 @@ SCRUBBERS: list[tuple[str, str]] = [
     ("tool-name-digits", r"(?<=[A-Za-z]-)0\d{2,}\b"),
     # artifact ids: RQ-85-FALCON2, BR-001
     ("artifact-id", r"\b(?:RQ|BR|LS|VCR|GI)-[0-9A-Za-z-]+"),
-    # runner names: ci-01-8, pulseengine-ci-01-10
-    ("runner", r"\b(?:[a-z]+-)*ci-\d+-\d+\b"),
+    # runner names: ci-NN-N style ids (pool-ci-07-3), and the neutral
+    # rust-cpu-runner-N ids the records use since the host names were removed
+    ("runner", r"\b(?:(?:[a-z]+-)*ci-\d+-\d+|rust-cpu-runner-\d+)\b"),
     # version and layer strings: v0.85.0, 0.85.0, 2026.10.9
     ("version", r"\bv?\d+\.\d+(?:\.\d+)*\b"),
     # issue/PR refs
@@ -257,7 +258,7 @@ def self_test() -> int:
         ("artifact-id", "RQ-85-FALCON2 and BR-001 say"),
         # RQ-91-EXTRACTR1: binary/tool-name digits are not quantities.
         ("tool-name-digits", "ran synth-090 and synth-0892 under review-088"),
-        ("runner", "ran on pulseengine-ci-01-10 and ci-01-8"),
+        ("runner", "ran on pool-ci-07-3, ci-99-1 and rust-cpu-runner-9"),
         ("file-line", "ARCHMODEL3.yaml:16 says exactly that"),
         ("version", "the layer 2026.10.9 pin at v0.85.0 and 0.84.0"),
         ("ref", "see #1318 and #1520"),

@@ -40,7 +40,7 @@ jobs:
     # NOT a required context, so it can be added and renamed freely.
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
     # MEASURED, not guessed. The first run on the pool (run 44587233237,
-    # runner pulseengine-ci-01-11) built in about 4 minutes (synth 1m06s,
+    # runner rust-cpu-runner-11) built in about 4 minutes (synth 1m06s,
     # clippy 1m12s, the test build 1m41s) and then spent 28 minutes on ONE
     # sweep leg: kiln re-converted the module for every case
     # (Module::from_kiln_module, ~12 ms in an aarch64 Linux VM, ~470 ms per
