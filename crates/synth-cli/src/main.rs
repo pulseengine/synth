@@ -1446,6 +1446,12 @@ struct ElfFunction {
     /// internal calls (`BL func_N`, emitted by the selector against the WASM
     /// index) resolve to this function's address (#167).
     wasm_index: u32,
+    /// #1761: the imported-function count of the module this function came
+    /// from (`FuncOrigin::num_imports`). A relocation `func_N` in THIS
+    /// function names an import only when `N` is below it; see
+    /// [`import_call_index`]. On a single-module input it is the module's
+    /// import count for every function.
+    num_imports: u32,
     code: Vec<u8>,
     /// Relocations targeting external symbols (from import dispatch stubs)
     relocations: Vec<synth_core::backend::CodeRelocation>,
@@ -4037,8 +4043,13 @@ fn check_wast_merge_labels(
                 .unwrap_or_default();
             if t < o.num_imports {
                 // An import call: the ELF builders map `func_t` to the MERGED
-                // import table's field name at index t (#173/#871), and a
-                // defined `func_t` label takes precedence over that mapping.
+                // import table's field name at index t (#173/#871). They do
+                // that for an import call SITE only (#1761,
+                // `import_call_index`), so a function another module defines
+                // at index t does not capture this call in the builder. It is
+                // still refused here: the other consumers of the label (the
+                // self-contained image's in-place patch, the WCET and
+                // stack-depth composers) resolve `func_t` by name alone.
                 if !modules_defining.is_empty() {
                     problems.push(format!(
                         "'{name}' (module {wast_idx}) calls import {t}, but module(s) \
@@ -4102,6 +4113,24 @@ fn parse_index_label(symbol: &str) -> Option<u32> {
         .or_else(|| symbol.strip_prefix("func_"))
         .filter(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|rest| rest.parse::<u32>().ok())
+}
+
+/// #1761: the import index a relocation of `func` calls, or `None` when the
+/// relocation is not an import call.
+///
+/// A call lowers to a relocation against the index label `func_N`, and the
+/// label does not say which module the call came from. On the multi-module
+/// `.wast` merge two modules share one label space but each has its own
+/// function index space: `func_0` is import 0 in a module that has an import
+/// and the first DEFINED function in a module that has none. So "is this an
+/// import call" is a fact about the call site's owning module: `N` below
+/// that module's own import count ([`ElfFunction::num_imports`]). Every ELF
+/// builder asks here before it maps a label to an import's field name.
+/// Before #1761 they asked the MERGED import table (the table of the module
+/// with the most imports), and a recursive call in an import-free module was
+/// relocated against another module's import.
+fn import_call_index(func: &ElfFunction, symbol: &str) -> Option<u32> {
+    parse_index_label(symbol).filter(|n| *n < func.num_imports)
 }
 
 /// #235/#1168: the transitive `call` closure from a given ROOT set (the
@@ -6630,6 +6659,7 @@ fn compile_all_exports(
             // DWARF subprogram DIE (internal functions get their REAL name).
             debug_name: func.debug_name.clone(),
             wasm_index: func.index,
+            num_imports: origin.num_imports, // #1761
             code: compiled.code,
             relocations: compiled.relocations,
             // VCR-DBG-001 step 4: carry the op-offset side table + the backend's
@@ -9356,6 +9386,13 @@ fn build_relocatable_elf(
             );
         }
     }
+    // #1761: the field a relocation of `func` calls, when it is an import
+    // call of `func`'s OWN module. The label alone does not decide it: on the
+    // .wast merge `func_N` is an import in one module and a defined function
+    // in another (see `import_call_index`).
+    let import_field = |func: &ElfFunction, symbol: &str| {
+        import_call_index(func, symbol).and_then(|_| import_label_to_field.get(symbol))
+    };
 
     // RQ-91-NAMECOLL (#1698): refuse a CALLED import whose field name is not a
     // distinct symbol of its own. Its symbol must not be a name this object
@@ -9371,7 +9408,7 @@ fn build_relocatable_elf(
     let mut other_externals: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for func in funcs {
         for reloc in &func.relocations {
-            if let Some(&(module, field)) = import_label_to_field.get(&reloc.symbol) {
+            if let Some(&(module, field)) = import_field(func, &reloc.symbol) {
                 called_imports.push(synth_core::import_symbols::CalledImport { module, field });
             } else if !sym_indices.contains_key(&reloc.symbol) {
                 other_externals.insert(reloc.symbol.as_str());
@@ -9408,7 +9445,7 @@ fn build_relocatable_elf(
     let mut external_count = 0usize;
     for func in funcs {
         for reloc in &func.relocations {
-            let effective = match import_label_to_field.get(&reloc.symbol) {
+            let effective = match import_field(func, &reloc.symbol) {
                 Some(&(_, field)) => field.to_string(),
                 None if sym_indices.contains_key(&reloc.symbol) => {
                     continue; // internal call to a compiled function — already defined
@@ -9426,7 +9463,7 @@ fn build_relocatable_elf(
             };
             // Resolve an import's label (func_N) to its symbol index so the
             // relocation-emission loop below finds it.
-            if import_label_to_field.contains_key(&reloc.symbol) {
+            if import_field(func, &reloc.symbol).is_some() {
                 import_label_index.insert(reloc.symbol.clone(), idx);
             }
         }
@@ -9446,10 +9483,14 @@ fn build_relocatable_elf(
                 .get(&(i, reloc.offset))
                 .map(|(s, _)| s.as_str())
                 .unwrap_or(reloc.symbol.as_str());
-            let sym_idx = match import_label_index.get(sym_name) {
-                Some(&i) => i,
-                None => sym_indices[sym_name],
-            };
+            // #1761: the import binding applies to an import call site only;
+            // the same label in a function of another module is its own
+            // defined `func_N`.
+            let sym_idx =
+                match import_field(func, sym_name).and_then(|_| import_label_index.get(sym_name)) {
+                    Some(&i) => i,
+                    None => sym_indices[sym_name],
+                };
             // #237: map the relocation kind. BL calls → R_ARM_THM_CALL; the
             // symbol-relative static-data MOVW/MOVT → R_ARM_MOVW_ABS_NC/MOVT_ABS.
             let reloc_type = match reloc.kind {
@@ -11125,18 +11166,32 @@ fn build_multi_func_riscv_elf(
         .flat_map(|f| &f.relocations)
         .for_each(|r| r.assert_no_addend("RV32 ELF writer"));
 
-    // #871: label → symbol mapping (imports first, then compiled functions —
-    // a local function shadows nothing because wasm indices are disjoint).
-    let mut label_to_symbol: std::collections::HashMap<String, String> =
+    // #871: label → symbol mapping, one map for the imports and one for the
+    // compiled functions. #1761: which map a relocation reads is decided per
+    // call site by the owning module's import count (`import_call_index`),
+    // not by the order two maps were merged in: on the .wast merge
+    // `synth_func_N` is an import in one module and a defined function in
+    // another.
+    let mut import_symbol: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for imp in imports {
         if matches!(imp.kind, synth_core::ImportKind::Function(_)) {
-            label_to_symbol.insert(format!("synth_func_{}", imp.index), imp.name.clone());
+            import_symbol.insert(format!("synth_func_{}", imp.index), imp.name.clone());
         }
     }
+    let mut local_symbol: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for func in funcs {
-        label_to_symbol.insert(format!("synth_func_{}", func.wasm_index), func.name.clone());
+        local_symbol.insert(format!("synth_func_{}", func.wasm_index), func.name.clone());
     }
+    let symbol_of = |func: &ElfFunction, label: &str| -> String {
+        let map = if import_call_index(func, label).is_some() {
+            &import_symbol
+        } else {
+            &local_symbol
+        };
+        map.get(label).cloned().unwrap_or_else(|| label.to_string())
+    };
 
     // Same placeholder-then-overwrite approach as build_riscv_elf.
     // We accumulate a single .text spanning all functions and patch the
@@ -11174,10 +11229,7 @@ fn build_multi_func_riscv_elf(
                     reloc.offset
                 ),
             };
-            let symbol = label_to_symbol
-                .get(&reloc.symbol)
-                .cloned()
-                .unwrap_or_else(|| reloc.symbol.clone());
+            let symbol = symbol_of(func, &reloc.symbol);
             call_relocs.push(RiscVCallReloc {
                 offset: (start as u32) + reloc.offset,
                 symbol,
@@ -11224,13 +11276,12 @@ fn build_multi_func_riscv_elf(
             std::collections::HashSet::new();
         for func in funcs {
             for reloc in &func.relocations {
-                if let Some(&(module, field)) = import_of_label.get(&reloc.symbol) {
+                if let Some(&(module, field)) = import_call_index(func, &reloc.symbol)
+                    .and_then(|_| import_of_label.get(&reloc.symbol))
+                {
                     called.push(synth_core::import_symbols::CalledImport { module, field });
                 } else {
-                    let sym = label_to_symbol
-                        .get(&reloc.symbol)
-                        .cloned()
-                        .unwrap_or_else(|| reloc.symbol.clone());
+                    let sym = symbol_of(func, &reloc.symbol);
                     if !defined.contains(&sym) {
                         other_externals.insert(sym);
                     }
@@ -11380,11 +11431,16 @@ fn build_multi_func_aarch64_elf(
     // which the #1013 guard refuses (never a fabricated external). The
     // substrate table's import trampolines already carry field names. A
     // module with no function imports takes neither branch — byte-identical.
-    for f in &mut a64_funcs {
+    // #1761: and only where the call site's OWN module has import `i`
+    // (`import_call_index`). The funcref table, appended after the functions,
+    // has no owning function and keeps the object-wide count.
+    for (k, f) in a64_funcs.iter_mut().enumerate() {
+        let own_imports = funcs.get(k).map_or(num_imported_funcs, |e| e.num_imports);
         for r in &mut f.relocations {
             if let Some(rest) = r.symbol.strip_prefix("func_")
                 && let Ok(i) = rest.parse::<u32>()
                 && i < num_imported_funcs
+                && i < own_imports
                 && let Some(name) = import_func_symbols
                     .get(i as usize)
                     .filter(|n| !n.is_empty())
@@ -11414,8 +11470,8 @@ fn build_multi_func_aarch64_elf(
         };
         for f in funcs {
             for r in &f.relocations {
-                if let Some(rest) = r.symbol.strip_prefix("func_")
-                    && let Ok(i) = rest.parse::<u32>()
+                if let Some(i) = import_call_index(f, &r.symbol)
+                    && r.symbol.starts_with("func_")
                     && i < num_imported_funcs
                 {
                     push(i);
@@ -12622,6 +12678,7 @@ mod tests {
             exported: true,
             debug_name: None,
             wasm_index: 0,
+            num_imports: 0,
             code,
             relocations: vec![
                 synth_core::backend::CodeRelocation {
@@ -12745,6 +12802,7 @@ mod tests {
             exported: true,
             debug_name: None,
             wasm_index: 0,
+            num_imports: 0,
             code,
             relocations: vec![
                 synth_core::backend::CodeRelocation {
@@ -12855,6 +12913,7 @@ mod tests {
             exported: true,
             debug_name: None,
             wasm_index: 0,
+            num_imports: 0,
             code,
             relocations: vec![synth_core::backend::CodeRelocation {
                 offset: 0,
@@ -13385,6 +13444,7 @@ mod tests {
             exported: true,
             debug_name: None,
             wasm_index: idx,
+            num_imports: 0,
             code,
             relocations: relocs
                 .iter()

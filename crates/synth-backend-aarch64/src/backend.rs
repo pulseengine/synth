@@ -159,7 +159,7 @@ impl AArch64Backend {
         // Its `substrate_emitted` flag is FAIL-SAFE — false unless the driver
         // has actually placed `__synth_globals` / `__synth_func_table`.
         let ctx = module_ctx(config);
-        let (words, call_sites, sym_relocs) = selector::select_typed_cf_calls(
+        let (words, call_sites, sym_relocs) = selector::select_with_declared_locals(
             ops,
             num_params,
             &config.current_func_params_f32,
@@ -170,6 +170,8 @@ impl AArch64Backend {
             func_ret_float,
             bounds,
             &ctx,
+            // #1763: a float local lives in the FP register file.
+            &config.current_func_declared_float_locals,
         )
         .map_err(|e| BackendError::CompilationFailed(e.to_string()))?;
         let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();

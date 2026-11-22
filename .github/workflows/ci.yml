@@ -6171,7 +6171,7 @@ jobs:
           set -euo pipefail
           python scripts/oracle_run.py \
             scripts/repro/aarch64_operand_class_1231_differential.py | tee /tmp/1231.txt
-          grep -qE '^#1231 CHECKS=3/3 sources; TOTAL=4$' /tmp/1231.txt
+          grep -qE '^#1231 CHECKS=3/3 sources; TOTAL=0$' /tmp/1231.txt
           grep -q '^RESULT: PASS' /tmp/1231.txt
       # #910: close the job with what it EXECUTED.
       - name: Differential evidence ledger (#910)

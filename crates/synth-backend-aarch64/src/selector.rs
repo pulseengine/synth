@@ -414,6 +414,49 @@ pub fn select_typed_cf_calls(
     bounds: MemBounds,
     ctx: &ModuleCtx,
 ) -> Result<Selection, SelectError> {
+    select_with_declared_locals(
+        ops,
+        num_params,
+        params_f32,
+        params_f64,
+        block_arity,
+        func_arg_counts,
+        func_result_counts,
+        func_ret_float,
+        bounds,
+        ctx,
+        &[],
+    )
+}
+
+/// Same as [`select_typed_cf_calls`], plus the DECLARED float type of each
+/// non-param local (#1763): `declared_float_locals[k]` is `4` when local
+/// `num_params + k` is declared f32, `8` when f64, `0` otherwise (the
+/// decoder's `FunctionOps::declared_float_locals`).
+///
+/// A value-stack entry carries its register FILE, and everything downstream
+/// (the float operators, the result register of the epilogue, call
+/// marshalling) keys on it. A local's slot has no file of its own, so
+/// `local.get` used to push a GP entry for every local: a float local's bits
+/// were loaded into an `x` temp and a function returning it wrote `x0`,
+/// never `v0`. With the table, a float local is read into an FP temp
+/// (`ldr s`/`ldr d`) and written from one (`str s`/`str d`), so the entry has
+/// the file its type says. An empty table keeps every local in the GP file
+/// (hand-built op streams).
+#[allow(clippy::too_many_arguments)]
+pub fn select_with_declared_locals(
+    ops: &[WasmOp],
+    num_params: u32,
+    params_f32: &[bool],
+    params_f64: &[bool],
+    block_arity: &[(u8, u8)],
+    func_arg_counts: &[u32],
+    func_result_counts: &[u32],
+    func_ret_float: &[bool],
+    bounds: MemBounds,
+    ctx: &ModuleCtx,
+    declared_float_locals: &[u8],
+) -> Result<Selection, SelectError> {
     if num_params > 8 {
         return Err(SelectError(format!(
             "{num_params} params — supports at most 8 register params"
@@ -558,6 +601,34 @@ pub fn select_typed_cf_calls(
     let local_slot_off = |idx: u32| -> u32 { (idx - slot_base) * 8 };
     // Is local `idx` slot-resident (vs a register-resident param in a leaf)?
     let slot_resident = |idx: u32| -> bool { home_params || idx >= num_params };
+    // #1763: the declared float width of a NON-PARAM local (4 = f32, 8 = f64),
+    // or `None` for an integer local, a param (a homed param is GP: homing a
+    // float param is declined above) and an index past the table.
+    let float_local = |idx: u32| -> Option<u8> {
+        let k = idx.checked_sub(num_params)?;
+        declared_float_locals
+            .get(k as usize)
+            .copied()
+            .filter(|w| matches!(w, 4 | 8))
+    };
+    // The load / store of a float local's slot at its own width: `s` forms
+    // move 4 bytes (the slot's upper word stays zero), `d` forms all 8.
+    let float_slot_load = |dst: FReg, idx: u32, width: u8| -> u32 {
+        let off = local_slot_off(idx);
+        if width == 8 {
+            enc::ldr_d(dst, enc::SP, off / 8)
+        } else {
+            enc::ldr_s(dst, enc::SP, off / 4)
+        }
+    };
+    let float_slot_store = |src: FReg, idx: u32, width: u8| -> u32 {
+        let off = local_slot_off(idx);
+        if width == 8 {
+            enc::str_d(src, enc::SP, off / 8)
+        } else {
+            enc::str_s(src, enc::SP, off / 4)
+        }
+    };
 
     // Prologue. Order (each step lowers SP; epilogue reverses):
     //   1. #851 non-leaf: `stp x29,x30,[sp,#-16]!` saves FP/LR (a `bl` clobbers
@@ -1601,7 +1672,15 @@ pub fn select_typed_cf_calls(
         }
         match op {
             WasmOp::LocalGet(i) => {
-                if slot_resident(*i) {
+                if let (true, Some(width)) = (slot_resident(*i), float_local(*i)) {
+                    // #1763: a float local is read into a FRESH FP temp, at
+                    // its own width. The entry is FP-file, so a float
+                    // operator accepts it and a function returning it writes
+                    // v0. (The slot was zeroed whole at entry: +0.0.)
+                    let dst = alloc_ftemp(&stack)?;
+                    words.push(float_slot_load(dst, *i, width));
+                    stack.push(Val::fp(dst));
+                } else if slot_resident(*i) {
                     // Non-param local (#851): LOAD its stack slot into a FRESH GP
                     // temp — a copy, so a later `local.set` of the same index
                     // cannot alias this value. 64-bit load (both i32 and i64 read
@@ -1623,7 +1702,11 @@ pub fn select_typed_cf_calls(
             // future change to the homing predicate cannot silently drop a
             // store.
             WasmOp::LocalSet(i) => {
-                if slot_resident(*i) {
+                if let (true, Some(width)) = (slot_resident(*i), float_local(*i)) {
+                    // #1763: a float local takes an FP operand.
+                    let src = pop_fp(&mut stack, "local.set")?;
+                    words.push(float_slot_store(src, *i, width));
+                } else if slot_resident(*i) {
                     let src = pop_gp(&mut stack, "local.set")?;
                     words.push(enc::str_x_imm(src, enc::SP, local_slot_off(*i)));
                 } else {
@@ -1638,7 +1721,16 @@ pub fn select_typed_cf_calls(
             // Store the top value WITHOUT popping it (peek + `str`). Same
             // slot-residency invariant as `local.set`.
             WasmOp::LocalTee(i) => {
-                if slot_resident(*i) {
+                if let (true, Some(width)) = (slot_resident(*i), float_local(*i)) {
+                    // #1763: as `local.set`, without popping.
+                    let top = *stack
+                        .last()
+                        .ok_or_else(|| SelectError("local.tee underflow".into()))?;
+                    if top.file != File::Fp {
+                        return Err(SelectError("local.tee: expected FP operand, got GP".into()));
+                    }
+                    words.push(float_slot_store(top.reg, *i, width));
+                } else if slot_resident(*i) {
                     let top = *stack
                         .last()
                         .ok_or_else(|| SelectError("local.tee underflow".into()))?;

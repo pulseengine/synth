@@ -1291,7 +1291,7 @@ claims:
   # boundary is still stated.
   - id: SYNTH-SPEC-FAMILY-MVP-CORE
     doc: docs/status/SPEC_FAMILY_CENSUS.md
-    text: "| **MVP core** | 80 | **13** / 19 | **9** / 22 | **19** / 18 |"
+    text: "| **MVP core** | 80 | **13** / 19 | **9** / 22 | **21** / 16 |"
     evidence:
       - kind: count-eq                       # the family split is EMITTED, not just documented
         pattern: 'def report_by_family\('
@@ -1306,7 +1306,7 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-README
     doc: README.md
-    text: "full-module compile 16 ARM / 9 RV32 / 22 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0"
+    text: "full-module compile 16 ARM / 9 RV32 / 24 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0"
     evidence:
       - kind: count-eq                       # arm pins in the census script
         pattern: 'ok=16, partial=27'
@@ -1317,7 +1317,7 @@ claims:
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # aarch64 pins
-        pattern: 'ok=22, partial=19'
+        pattern: 'ok=24, partial=17'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # doc-cited ok+partial figures
@@ -1384,7 +1384,7 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-MATRIX
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 22 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0; ARM with an FPU (#1609 — the ARM leg above is `--cortex-m` = cortex-m3, which declines every f32/f64 function): full-module compile 19 cortex-m4f / 26 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
+    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 24 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0; ARM with an FPU (#1609 — the ARM leg above is `--cortex-m` = cortex-m3, which declines every f32/f64 function): full-module compile 19 cortex-m4f / 26 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
     evidence:
       - kind: count-eq                       # same script pins as the README leg
         pattern: 'ok=16, partial=27'
@@ -1395,7 +1395,7 @@ claims:
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: 'ok=22, partial=19'
+        pattern: 'ok=24, partial=17'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
@@ -3762,9 +3762,24 @@ claims:
       - kind: ratchet
         name: rv32_selector_lines_code
         direction: down
-        value: 6547
+        value: 6601
         baseline: 6242
         waivers:
+          - to: 6601
+            reason: >-
+              v0.92 batch 2 (Refs #1762): 6547 -> 6601 (+54). The RV32 selector
+              learned a local's width only from a store into it, so a declared
+              i64 (or f64) local that is read and never written got a 4-byte
+              slot and one register, and a function returning it left a1 unset
+              (silent wrong code, exit 0; main returned 0xFEEDFACE00000000 for
+              wasm's 0 under the harness poison). The growth is one more entry
+              point, `select_with_declared_locals`, which takes the decoder's
+              declared widths, their threading to the layout pass, and the
+              seeded call to the shared `function_i64_locals` (the inference
+              ARM already uses). zero_init_wide_local_1762.rs is red on the
+              base (44 of the 60 RV32 cases: 28 wrong values, 16 refused) and
+              300 of 300 on the fix. No hand-written arm was replaced, so none
+              could be deleted.
           - to: 6547
             reason: >-
               RV32DEADARM (Refs #1739): 6242 -> 6547 (+305). The RV32 selector
@@ -3781,9 +3796,24 @@ claims:
       - kind: ratchet
         name: aarch64_selector_lines_code
         direction: down
-        value: 3131
+        value: 3223
         baseline: 3067
         waivers:
+          - to: 3223
+            reason: >-
+              v0.92 batch 2 (Refs #1763): 3131 -> 3223 (+92). The AArch64
+              selector read every non-param local into a GP temp, so a float
+              local's value-stack entry was GP-file: a function returning a
+              never-written f32/f64 local wrote x0 and never v0 (silent wrong
+              code, exit 0; f(2.5) returned 2.5 for wasm's 0), a float local
+              reached a `call` as an integer argument, and every other use of a
+              float local was a refusal. The growth is one more entry point,
+              `select_with_declared_locals`, taking the decoder's declared
+              float locals, and an FP-file arm in each of `local.get`,
+              `local.set` and `local.tee` with its width-exact slot load/store.
+              float_local_file_1763.rs is red on the base (87 of the 94 A64
+              cases: 30 wrong values, 57 refused) and 202 of 202 on the fix.
+              No hand-written arm was replaced, so none could be deleted.
           - to: 3131
             reason: >-
               A64BELOW (Refs #1740, #1747): 3067 -> 3131 (+64). The AArch64
@@ -3951,9 +3981,28 @@ claims:
         direction: down
         # I64TEE (#1713): 132 -> 129, the three #1241 boot-sweep pins
         # (12 / 9 / 12 mismatches) measure 0 and are deleted.
-        value: 129
+        # v0.92 batch 2 (#1763): 129 -> 126, the three #1231 operand-class
+        # pins (2 / 1 / 1 refusals) measure 0 and are deleted.
+        value: 126
         baseline: 27
         waivers:
+          - to: 126
+            reason: >-
+              v0.92 batch 2 (Refs #1763, #1231): 129 -> 126. Not a growth
+              waiver: THREE pins CLOSED BY A FIX, not deleted or merged. The
+              three entries of aarch64_operand_class_1231_differential.py's
+              KNOWN table (local_set.wast 2, memory_redundancy.wast 1, the
+              align.wast extraction 1) pinned the AArch64 selector refusing a
+              float local ("local.set: expected GP operand, got FP"). The
+              selector now reads and writes a float local in the FP register
+              file, and all three measure 0 with the fixed binary (2 / 1 / 1
+              with the pre-fix one). The oracle keeps running the same three
+              sources: it holds each to 0 refusals of the class, in either
+              direction, and requires the 4 exports that carried the refusal
+              to be compiled, so a refusal of any kind reds it. The newly
+              compiled code is executed against kiln in
+              crates/synth-oracle/tests/float_local_file_1763.rs. An entry is
+              still required because 126 remains above the baseline of 27.
           - to: 129
             reason: >-
               I64TEE (#1713): 132 -> 129. Not a growth waiver — THREE pins
@@ -4197,7 +4246,9 @@ claims:
         # #539 envelope entry at one directive.
         # I64TEE (#1713): 198 -> 165, the three closed #1241 boot-sweep pins'
         # 12 + 9 + 12 = 33 cases.
-        value: 165
+        # v0.92 batch 2 (#1763): 165 -> 162, the three closed #1231 pins at
+        # one case per entry (that table carries no `cases_at`).
+        value: 162
       # THE POPULATION TRIPWIRE. Every top-level KNOWN*/PINNED* dict LITERAL
       # under scripts/repro is either one of the six tables in the
       # population (RQ-66-WATCHED, v0.66, added the two `KNOWN` tables in

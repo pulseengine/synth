@@ -403,6 +403,44 @@ pub fn select_with_block_arity(
     params_wide: &[bool],
     block_arity: &[(u8, u8)],
 ) -> Result<RiscVSelection, SelectorError> {
+    select_with_declared_locals(
+        wasm_ops,
+        num_params,
+        options,
+        func_ret_i64,
+        type_ret_i64,
+        func_arg_counts,
+        func_result_counts,
+        globals,
+        params_wide,
+        block_arity,
+        &[],
+    )
+}
+
+/// Same as [`select_with_block_arity`], plus the DECLARED width of each
+/// non-param local (#1762): `declared_wide_locals[k]` is true when local
+/// `num_params + k` is declared i64 or f64, the two types that take an
+/// 8-byte slot and travel as a register pair. The declaration is the only
+/// source of the width of a local that is never written: the dataflow
+/// inference learns a local's width from a store into it, so
+/// `(local i64) local.get 0` was laid out as a 4-byte slot, pushed as one
+/// register, and the function returned with a1 never written. An empty
+/// table keeps the inference alone (hand-built op streams).
+#[allow(clippy::too_many_arguments)]
+pub fn select_with_declared_locals(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    options: SelectorOptions,
+    func_ret_i64: &[bool],
+    type_ret_i64: &[bool],
+    func_arg_counts: &[u32],
+    func_result_counts: &[u32],
+    globals: &RvGlobalsCtx,
+    params_wide: &[bool],
+    block_arity: &[(u8, u8)],
+    declared_wide_locals: &[bool],
+) -> Result<RiscVSelection, SelectorError> {
     // #472: read the local-promotion flag exactly once, here, so the rest of the
     // selector (and its unit tests) work off a plain bool.
     //
@@ -446,6 +484,7 @@ pub fn select_with_block_arity(
         globals,
         params_wide,
         block_arity,
+        declared_wide_locals,
     )
 }
 
@@ -480,6 +519,7 @@ fn select_inner(
     globals: &RvGlobalsCtx,
     params_wide: &[bool],
     block_arity: &[(u8, u8)],
+    declared_wide_locals: &[bool],
 ) -> Result<RiscVSelection, SelectorError> {
     // The unpromoted lowering. With the flag off this IS the result (single
     // run, byte-identical baseline); with the flag on it is the size bar every
@@ -500,6 +540,7 @@ fn select_inner(
         globals,
         params_wide,
         block_arity,
+        declared_wide_locals,
     );
     if !promote_locals {
         return baseline.map(|(sel, _)| sel);
@@ -520,6 +561,7 @@ fn select_inner(
         globals,
         params_wide,
         block_arity,
+        declared_wide_locals,
     ) {
         Ok((_, promoted)) => promoted,
         Err(_) => Vec::new(),
@@ -553,6 +595,7 @@ fn select_inner(
             globals,
             params_wide,
             block_arity,
+            declared_wide_locals,
         ) else {
             continue;
         };
@@ -610,8 +653,10 @@ fn select_attempt(
     globals: &RvGlobalsCtx,
     params_wide: &[bool],
     block_arity: &[(u8, u8)],
+    declared_wide_locals: &[bool],
 ) -> Result<(RiscVSelection, Vec<u32>), SelectorError> {
     let mut ctx = Selector::new_with_options(num_params, options);
+    ctx.declared_wide_locals = declared_wide_locals.to_vec(); // #1762
     ctx.globals = globals.clone();
     ctx.block_arity = block_arity.to_vec(); // #1739
     ctx.func_ret_i64 = func_ret_i64.to_vec();
@@ -1545,6 +1590,9 @@ struct Selector {
     /// bail out honestly — the RV32 i64-*param* ABI (an i64 param occupies an
     /// aligned even/odd a-register pair per the psABI) is not modeled yet.
     i64_locals: std::collections::HashSet<u32>,
+    /// #1762: the declared width of each non-param local (`[k]` is local
+    /// `num_params + k`; true = i64 or f64). Seeds `i64_locals`.
+    declared_wide_locals: Vec<bool>,
     /// #312: per-function "returns i64" table (full wasm function index,
     /// imports first). Empty = treat every call result as i32 (legacy).
     func_ret_i64: Vec<bool>,
@@ -1648,6 +1696,7 @@ impl Selector {
             local_frame_bytes: 0,
             div_save_base: None,
             i64_locals: std::collections::HashSet::new(),
+            declared_wide_locals: Vec::new(),
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
             func_arg_counts: Vec::new(),
@@ -1678,8 +1727,13 @@ impl Selector {
         // class). This ctx has no per-type table — `call_indirect` on RV32 is
         // a loud decline, so the empty slice can only under-pop on op streams
         // that would not compile here anyway.
-        self.i64_locals = synth_synthesis::infer_i64_locals(
+        // #1762: seeded with the DECLARED wide locals. A local that is read
+        // and never written has no store to infer a width from.
+        self.i64_locals = synth_synthesis::function_i64_locals(
             wasm_ops,
+            num_params,
+            &[],
+            &self.declared_wide_locals,
             &self.func_ret_i64,
             &self.type_ret_i64,
             &self.func_arg_counts,
@@ -10406,6 +10460,7 @@ mod tests {
             &RvGlobalsCtx::default(),
             &[],
             &[],
+            &[],
         )
         .unwrap()
         .ops
@@ -10688,6 +10743,7 @@ mod tests {
             None,
             false,
             &RvGlobalsCtx::default(),
+            &[],
             &[],
             &[],
         )
@@ -11150,6 +11206,7 @@ mod tests {
             false,
             fuse,
             &RvGlobalsCtx::default(),
+            &[],
             &[],
             &[],
         )
