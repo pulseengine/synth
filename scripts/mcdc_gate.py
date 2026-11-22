@@ -502,6 +502,11 @@ BRANCH_POPULATION = {
     # (params=0 compiles, params=1/2 decline). Value taken from the gate's
     # own REPIN output on the #1096 evidence, not hand-counted.
     "synth_backend_riscv::backend::compile_function_with_opts": 11,
+    # v0.92 wrong-code batch 2 (#1780, RV32 wide locals): the new
+    # `declared_wide_locals` builds the declared-width table with one
+    # closure carrying one branch. A source change, so a repin; the value
+    # is the gate's own REPIN output on #1780's run, not hand-counted.
+    "synth_backend_riscv::backend::declared_wide_locals::_$u7b$$u7b$closure$u7d$$u7d$": 1,
     "synth_backend_riscv::backend::effective_num_params": 1,
     "synth_backend_riscv::backend::ensure_supported_target": 4,
     "synth_core::static_data_addr::resolve_owner": 4,
