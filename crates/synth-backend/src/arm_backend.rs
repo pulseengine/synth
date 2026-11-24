@@ -1053,6 +1053,9 @@ fn compile_wasm_to_arm(
             config.func_arg_counts.clone(),
             config.type_arg_counts.clone(),
         );
+        // #1785: declared callee param widths, so an i64 call argument is
+        // marshalled as an AAPCS register pair / 8-aligned stack slot.
+        selector.set_callee_params_i64(config.func_params_i64.clone());
         // #197: in relocatable host-link mode, emit direct `func_N` BLs for
         // imports (rewritten to the wasm field name by build_relocatable_elf)
         // instead of `__meld_dispatch_import`.

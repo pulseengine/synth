@@ -23,7 +23,9 @@ mod select_with_stack;
 /// #369 ph3: (has_float_params, returns_float, per-arg VFP homes) for a callee.
 type FloatSig = (bool, bool, Vec<(u32, VfpReg)>);
 /// #369 ph3: (core arg regs, VFP move pairs) staged for a marshalled call.
-type MarshalPlan = (Vec<Reg>, Vec<(VfpReg, VfpReg)>);
+type MarshalPlan = (Vec<(Reg, bool)>, Vec<(VfpReg, VfpReg)>);
+/// #1785: (core register moves `(dst, src)`, outgoing stack stores `(sp off, src)`).
+type CallMarshal = (Vec<(Reg, Reg)>, Vec<(i32, Reg)>);
 
 /// Bounds checking configuration for memory operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -796,6 +798,15 @@ struct SpillState {
     /// hand out. Empty everywhere but ARMv6-M, where R7 is the lowering's
     /// scratch and R8 has no 16-bit load, store or push.
     excluded: &'static [Reg],
+    /// The wasm op (`line`) whose operands [`pop_operand`] is popping, and the
+    /// registers it has popped for that op so far (an i64 as both halves).
+    /// They are consumed by the op, which has not been emitted yet, so a
+    /// spilled operand's RELOAD at the same `line` must avoid them: the
+    /// operand already popped is on neither the vstack nor `reserved`
+    /// (the #973 class at every multi-operand op, not only `select`).
+    /// Seen at #1785: `i64.mul (local.get 0) (call ...)` reloaded the spilled
+    /// `local.get` into R0:R1 over the call's i64 result.
+    op_popped: (usize, Vec<Reg>),
 }
 
 impl SpillState {
@@ -817,6 +828,7 @@ impl SpillState {
             vfp_frame_home_locals: false,
             area_reserved: true,
             excluded: &[],
+            op_popped: (usize::MAX, Vec::new()),
         }
     }
     /// Reserve a free slot, returning its byte offset from SP.
@@ -1625,6 +1637,30 @@ fn pop_operand(
             ));
         }
     };
+    // #1785: a reload must also avoid what this same op already popped.
+    if spill.op_popped.0 != line {
+        spill.op_popped = (line, Vec::new());
+    }
+    let mut avoid: Vec<Reg> = reserved.to_vec();
+    avoid.extend_from_slice(&spill.op_popped.1);
+    let reg = pop_operand_inner(v, stack, next_temp, instructions, spill, &avoid, line)?;
+    spill.op_popped.1.push(reg);
+    if let Some(hi) = v.is_i64().then(|| i64_pair_hi(reg).ok()).flatten() {
+        spill.op_popped.1.push(hi);
+    }
+    Ok(reg)
+}
+
+/// [`pop_operand`]'s body for an already-popped entry `v`.
+fn pop_operand_inner(
+    v: StackVal,
+    stack: &mut [StackVal],
+    next_temp: &mut u8,
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    reserved: &[Reg],
+    line: usize,
+) -> Result<Reg> {
     match v {
         StackVal::Reg { reg, .. } => Ok(reg),
         // GI-FPU-002: an integer op tried to pop an f32 value. Well-typed wasm
@@ -1998,11 +2034,6 @@ fn alloc_consecutive_pair(
 fn is_caller_saved(reg: Reg) -> bool {
     crate::reg_contract::CALL_CLOBBERED.contains(&reg)
 }
-
-/// AAPCS integer/pointer argument registers, in order: R0, R1, R2, R3.
-/// Arguments beyond the fourth are passed on the stack (not yet handled — see
-/// the scope note on `marshal_call_args`).
-const ARG_REGS: [Reg; 4] = crate::reg_contract::ARGUMENT;
 
 /// Given the low register of an i64 register pair, return the high register.
 ///
@@ -6644,6 +6675,11 @@ pub struct InstructionSelector {
     /// GI-FPU-002 phase 3 (#369): per-callee f64-param masks (full function
     /// index), the D-pool half of the call-site marshalling tables above.
     callee_params_f64: Vec<Vec<bool>>,
+    /// #1785/#929: per-callee DECLARED 64-bit param masks (full function index,
+    /// i64 and f64 lumped like `params_i64`). A direct call lays its core
+    /// arguments out with `aapcs_param_layout` over these — the same walk the
+    /// callee's own prologue homes them with. Empty ⇒ every argument narrow.
+    callee_params_i64: Vec<Vec<bool>>,
     /// #643: byte width of each defined global's storage slot, indexed by
     /// global index — 4 for i32/f32, 8 for i64/f64, 16 for v128. The globals
     /// table (R9-relative) is laid out by SUMMING these widths, NOT `idx * 4`:
@@ -6883,6 +6919,7 @@ impl InstructionSelector {
             callee_type_ret_f64: Vec::new(),
             callee_params_f32: Vec::new(),
             callee_params_f64: Vec::new(),
+            callee_params_i64: Vec::new(),
             global_widths: Vec::new(),
             block_arity: Vec::new(),
             func_arg_counts: Vec::new(),
@@ -6945,6 +6982,7 @@ impl InstructionSelector {
             callee_type_ret_f64: Vec::new(),
             callee_params_f32: Vec::new(),
             callee_params_f64: Vec::new(),
+            callee_params_i64: Vec::new(),
             global_widths: Vec::new(),
             block_arity: Vec::new(),
             func_arg_counts: Vec::new(),
@@ -7867,6 +7905,11 @@ impl InstructionSelector {
     pub fn set_func_arg_counts(&mut self, func_arg_counts: Vec<u32>, type_arg_counts: Vec<u32>) {
         self.func_arg_counts = func_arg_counts;
         self.type_arg_counts = type_arg_counts;
+    }
+
+    /// #1785/#929: per-callee declared 64-bit param masks (see the field).
+    pub fn set_callee_params_i64(&mut self, func_params_i64: Vec<Vec<bool>>) {
+        self.callee_params_i64 = func_params_i64;
     }
 
     /// Set bounds checking configuration
@@ -8855,89 +8898,121 @@ impl InstructionSelector {
         }
     }
 
-    /// #195: Pop the top-`arg_count` operand-stack registers as call arguments.
+    /// #1785/#929: the DECLARED width of each core (integer-position) argument
+    /// of a direct call to `func_idx` — `float_params` (the callee's AAPCS-VFP
+    /// args) are skipped, as the core walk skips them. Empty table ⇒ narrow.
+    fn call_arg_widths(&self, func_idx: u32, arg_count: u32, float_params: &[u32]) -> Vec<bool> {
+        let decl: &[bool] = self
+            .callee_params_i64
+            .get(func_idx as usize)
+            .map_or(&[], |v| v);
+        (0..arg_count)
+            .filter(|k| !float_params.contains(k))
+            .map(|k| decl.get(k as usize).copied().unwrap_or(false))
+            .collect()
+    }
+
+    /// #1785: the AAPCS marshal plan of popped core arguments `(lo, is_i64)`:
+    /// `(register moves (dst, src), outgoing stack stores (sp offset, src))`.
+    /// The layout IS [`aapcs_param_layout`] — the walk synth's callee prologue
+    /// homes params with — so caller and callee agree by construction: an
+    /// i64 takes the next even pair (an odd NCRN is skipped and never
+    /// back-filled), low word in the lower register; one that does not fit
+    /// goes to an 8-aligned NSAA and every later argument follows it onto the
+    /// stack. All-narrow ⇒ arg `i` → `R<i>`, arg `k>=4` → `[sp, (k-4)*4]`.
+    fn call_arg_marshal(srcs: &[(Reg, bool)]) -> Result<CallMarshal> {
+        let widths: Vec<bool> = srcs.iter().map(|&(_, w)| w).collect();
+        let lay = aapcs_param_layout(srcs.len() as u32, &widths, &[], &[]);
+        let (mut moves, mut stores) = (Vec::new(), Vec::new());
+        for (k, &(lo, wide)) in srcs.iter().enumerate() {
+            let k = k as u32;
+            let words = if wide {
+                vec![lo, i64_pair_hi(lo)?]
+            } else {
+                vec![lo]
+            };
+            if let Some(&dst) = lay.regs.get(&k) {
+                moves.push((dst, words[0]));
+                if wide {
+                    moves.push((i64_pair_hi(dst)?, words[1]));
+                }
+            } else if let Some(&(off, _)) = lay.stack.get(&k) {
+                for (w, &src) in words.iter().enumerate() {
+                    stores.push((off + 4 * w as i32, src));
+                }
+            }
+        }
+        Ok((moves, stores))
+    }
+
+    /// #359/#1785: the outgoing stack-argument bytes a call needs (unaligned):
+    /// the end of the last NSAA slot of its core arguments.
+    fn call_nsaa_bytes(widths: &[bool]) -> i32 {
+        let lay = aapcs_param_layout(widths.len() as u32, widths, &[], &[]);
+        lay.stack
+            .values()
+            .map(|&(off, wide)| off + if wide { 8 } else { 4 })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// #195/#1785: pop the top-`widths.len()` operands as call arguments,
+    /// returned in argument order as `(lo, is_i64)`. Popping here (before
+    /// caller-saved preservation) is deliberate: arguments are consumed by the
+    /// call, so they are excluded from the [`preserve_caller_saved`] set.
     ///
-    /// The WASM operand-stack top is the LAST argument, so the returned vector
-    /// is reversed to index `0..n` = argument `0..n` (arg `i` → `ARG_REGS[i]`).
-    /// At most `ARG_REGS.len()` (4) arguments are popped; see the scope note on
-    /// [`InstructionSelector::emit_arg_moves`].
-    ///
-    /// Popping the args here (before caller-saved preservation) is deliberate:
-    /// arguments are consumed by the call, not live across it, so they must be
-    /// excluded from the [`preserve_caller_saved`] spill set.
+    /// Ok-or-Err (#929): an operand whose width disagrees with the callee's
+    /// DECLARED width is refused — a 64-bit operand where no width table says
+    /// so (`call_indirect`, hand-built streams) would otherwise be marshalled
+    /// as one word and shift every later argument. A spilled argument's
+    /// reload avoids every register an already-popped argument occupies.
     fn pop_call_args(
         stack: &mut Vec<StackVal>,
         next_temp: &mut u8,
         instructions: &mut Vec<ArmInstruction>,
         spill: &mut SpillState,
-        arg_count: u32,
+        widths: &[bool],
         idx: usize,
-    ) -> Result<Vec<Reg>> {
-        // #359: pop ALL `arg_count` operands (previously only the top 4, which
-        // for a >4-arg call dropped arg0 and shifted args into r0..r3). After the
-        // reverse, `srcs[0..N]` == arg0..argN-1; the caller marshals srcs[0..4]
-        // into r0..r3 and stores srcs[4..N] to the outgoing stack region.
-        let n = arg_count as usize;
-        // #359 Ok-or-Err (#180/#185): a stack-passed arg (index >= 4) that is i64
-        // would be stored as a single 4-byte STR (silent lo-half truncation) —
-        // the register conversion below discards width. Refuse before popping.
-        // The top of `stack` is the LAST arg, so arg index k sits at
-        // `stack[stack.len() - n + k]`.
-        if n > ARG_REGS.len() && stack.len() >= n {
-            let base = stack.len() - n;
-            for k in ARG_REGS.len()..n {
-                if stack[base + k].is_i64() {
-                    return Err(synth_core::Error::synthesis(format!(
-                        "#503: call arg {k} is passed on the stack and is i64/f64; \
-                         only i32 stack args are supported"
-                    )));
-                }
-            }
-        }
-        // #929 (CRITICAL): the SAME refusal for REGISTER argument positions,
-        // which had none — so a 64-bit argument was silently marshalled as one
-        // 32-bit register and every later argument shifted down one.
-        //
-        // `emit_arg_moves` has always DOCUMENTED that it cannot do this
-        // ("i64/f64 arguments — which AAPCS passes in register *pairs* — are NOT
-        // marshalled"), and then marshalled them anyway. A documented
-        // non-capability with nothing enforcing it is not a limitation, it is a
-        // silent miscompile: `synth compile` exited 0, no warning, and the
-        // callee received garbage.
-        //
-        // The refusal is for EVERY i64 register argument, not only the
-        // "not last" shape gale measured. AAPCS assigns an i64 an EVEN-ALIGNED
-        // pair, so for `(i32, i64)` the second argument belongs in r2:r3 while
-        // synth places its low half in r1. That shape looked correct only
-        // because the callee under test returned the i32; the i64 parameter was
-        // already wrong. Refusing the whole class is the honest boundary.
-        //
-        // FOLLOW-UP (named, gated): real AAPCS pair marshalling. The #928
-        // conformance gate currently declines 118 assertions as `i64-pair` —
-        // that is exactly this capability, and it is the acceptance oracle
-        // waiting for the implementation.
+    ) -> Result<Vec<(Reg, bool)>> {
+        let n = widths.len();
         if stack.len() >= n {
             let base = stack.len() - n;
-            for k in 0..n.min(ARG_REGS.len()) {
-                if stack[base + k].is_i64() {
-                    return Err(synth_core::Error::synthesis(format!(
-                        "#929: call arg {k} is 64-bit and would be passed in a \
-                         register; AAPCS requires an even-aligned register PAIR \
-                         and synth marshals only one 32-bit register per \
-                         argument, so the high half would be dropped and every \
-                         later argument shifted down. Declining rather than \
-                         emitting a silent miscompile"
-                    )));
+            for (k, &w) in widths.iter().enumerate() {
+                if stack[base + k].is_i64() != w {
+                    return Err(Self::call_arg_width_err(k, w));
                 }
             }
         }
-        let mut srcs: Vec<Reg> = Vec::with_capacity(n);
-        for _ in 0..n {
-            let r = pop_operand(stack, next_temp, instructions, spill, &[], idx)?;
-            srcs.push(r);
+        let mut srcs: Vec<(Reg, bool)> = Vec::with_capacity(n);
+        let mut taken: Vec<Reg> = Vec::new();
+        for &w in widths.iter().rev() {
+            let r = pop_operand(stack, next_temp, instructions, spill, &taken, idx)?;
+            taken.push(r);
+            if w {
+                taken.push(i64_pair_hi(r)?);
+            }
+            srcs.push((r, w));
         }
         srcs.reverse();
         Ok(srcs)
+    }
+
+    /// #929/#1785: the refusal for an argument whose operand width disagrees
+    /// with the declared one.
+    fn call_arg_width_err(k: usize, declared_wide: bool) -> synth_core::Error {
+        synth_core::Error::synthesis(format!(
+            "#929: call arg {k} is {} but the callee's declared param is {}; \
+             AAPCS places a 64-bit argument in an even-aligned register PAIR or \
+             an 8-byte stack slot, so marshalling it at the wrong width would \
+             drop or invent a word and shift every later argument. Declining \
+             rather than emitting a silent miscompile",
+            if declared_wide { "32-bit" } else { "64-bit" },
+            if declared_wide {
+                "64-bit"
+            } else {
+                "32-bit or unknown (a call_indirect has no per-type width table)"
+            },
+        ))
     }
 
     /// GI-FPU-002 phase 3 (#369): pop the arguments of a FLOAT-signature call.
@@ -8945,13 +9020,13 @@ impl InstructionSelector {
     /// `pop_float`/`pop_double` (recording its AAPCS-VFP destination from
     /// `float_dst`), an integer param via the legacy `pop_operand`. Returns
     /// `(int_srcs, float_args)`: `int_srcs[k]` is the k-th INTEGER param's
-    /// source register (the core pool skips float params per AAPCS-VFP, so
-    /// integer position — not wasm param index — maps to `ARG_REGS`/NSAA),
-    /// and `float_args` the float params' `(src, dst)` register pairs.
-    ///
-    /// Ok-or-Err: an i64 integer argument mixed with float args is declined
-    /// loudly (its even-aligned core PAIR is not marshalled on this path —
-    /// the same #503 boundary the integer path has).
+    /// `(lo, is_i64)` (the core pool skips float params per AAPCS-VFP, so
+    /// integer position — not wasm param index — is what
+    /// [`Self::call_arg_marshal`] lays out), and `float_args` the float
+    /// params' `(src, dst)` register pairs. `int_widths[k]` is the k-th
+    /// integer param's declared width (#1785: an i64 among float args is
+    /// marshalled like any other; a width mismatch is refused, #929).
+    #[allow(clippy::too_many_arguments)]
     fn pop_call_args_mixed(
         stack: &mut Vec<StackVal>,
         next_temp: &mut u8,
@@ -8959,11 +9034,14 @@ impl InstructionSelector {
         spill: &mut SpillState,
         arg_count: u32,
         float_dst: &std::collections::HashMap<u32, VfpReg>,
+        int_widths: &[bool],
         idx: usize,
     ) -> Result<MarshalPlan> {
         let n = arg_count as usize;
-        let mut int_srcs: Vec<Reg> = Vec::new();
+        let mut int_srcs: Vec<(Reg, bool)> = Vec::new();
         let mut float_args: Vec<(VfpReg, VfpReg)> = Vec::new();
+        let mut taken: Vec<Reg> = Vec::new();
+        let mut int_pos = int_widths.len();
         for i in (0..n).rev() {
             if let Some(&dst) = float_dst.get(&(i as u32)) {
                 let src = if vfp_d_index(dst).is_some() {
@@ -8973,16 +9051,23 @@ impl InstructionSelector {
                 };
                 float_args.push((src, dst));
             } else {
-                if stack.last().is_some_and(|v| v.is_i64()) {
-                    return Err(synth_core::Error::synthesis(format!(
-                        "GI-FPU-002 phase 3: call arg {i} is i64 in a \
-                         float-signature call — the even-aligned core register \
-                         pair is not marshalled alongside VFP args; declining \
-                         loudly (#369/#503)"
-                    )));
+                int_pos = int_pos.checked_sub(1).ok_or_else(|| {
+                    synth_core::Error::synthesis(
+                        "GI-FPU-002 phase 3: integer argument count disagrees \
+                         with the callee's width table (compiler bug)"
+                            .to_string(),
+                    )
+                })?;
+                let w = int_widths[int_pos];
+                if stack.last().is_some_and(|v| v.is_i64() != w) {
+                    return Err(Self::call_arg_width_err(i, w));
                 }
-                let r = pop_operand(stack, next_temp, instructions, spill, &[], idx)?;
-                int_srcs.push(r);
+                let r = pop_operand(stack, next_temp, instructions, spill, &taken, idx)?;
+                taken.push(r);
+                if w {
+                    taken.push(i64_pair_hi(r)?);
+                }
+                int_srcs.push((r, w));
             }
         }
         int_srcs.reverse();
@@ -9073,7 +9158,7 @@ impl InstructionSelector {
         Ok(())
     }
 
-    /// #359: spill the stack-passed call arguments (index >= 4) into the
+    /// #359/#1785: store the stack-passed call argument words into the
     /// outgoing-argument region at the bottom of the current frame, BEFORE
     /// caller-saved preservation, the CallIndirect table-index relocation, and
     /// the r0..r3 parallel move. The popped arg registers are NOT in
@@ -9081,18 +9166,17 @@ impl InstructionSelector {
     /// stack-arg source; storing first (there is no dynamic SP, so `[sp,#imm]` is
     /// valid the instant after the pop) closes every clobber window.
     ///
-    /// `arg_srcs[k]` for k in 4..N goes to `[sp, (k-4)*4]`. Returns the count of
-    /// instructions emitted (for the cf counter). Ok-or-Err (#180/#185): refuses
-    /// when a computed `[sp,#imm]` offset exceeds the 12-bit (4095) immediate.
+    /// `stores` is [`Self::call_arg_marshal`]'s `(nsaa offset, src)` list (an
+    /// i64 contributes its lo then hi word at an 8-aligned offset). Returns the
+    /// count of instructions emitted (for the cf counter). Ok-or-Err
+    /// (#180/#185): refuses an offset past the 12-bit (4095) immediate.
     fn emit_stack_args(
         &self,
         instructions: &mut Vec<ArmInstruction>,
-        arg_srcs: &[Reg],
+        stores: &[(i32, Reg)],
         idx: usize,
     ) -> Result<usize> {
-        let mut emitted = 0;
-        for (k, &src) in arg_srcs.iter().enumerate().skip(ARG_REGS.len()) {
-            let off = (k as i32 - ARG_REGS.len() as i32) * 4;
+        for &(off, src) in stores {
             if off > 4095 {
                 return Err(synth_core::Error::synthesis(format!(
                     "#503: outgoing stack-arg offset {off} exceeds the 12-bit \
@@ -9106,27 +9190,24 @@ impl InstructionSelector {
                 },
                 source_line: Some(idx),
             });
-            emitted += 1;
         }
-        Ok(emitted)
+        Ok(stores.len())
     }
 
     /// #195: Emit the cycle-safe parallel move of call arguments into R0–R3.
     ///
-    /// `arg_srcs[i]` is moved into `ARG_REGS[i]`. MUST be called AFTER
-    /// [`preserve_caller_saved`] (so live non-arg values already sit in the
-    /// spill area) and immediately before the `BL`/`CallIndirect`, so these are
-    /// the last register writes before the branch.
-    ///
-    /// Scope: only ≤4 integer (i32/pointer-width) arguments are handled. i64/f64
-    /// arguments — which AAPCS passes in register *pairs* / 8-byte stack slots —
-    /// and arguments beyond the fourth (which spill to the stack) are NOT
-    /// marshalled; this covers the gale runtime primitives (`k_spin_lock`,
-    /// `k_sem_give`, …), which take ≤4 pointer/i32 arguments. See issue #195.
+    /// `moves` is the `(dst, src)` register half of [`Self::call_arg_marshal`]
+    /// (#1785: an i64 argument is two moves into its even pair). It is ONE
+    /// parallel move, so a source that is also another argument's destination
+    /// (e.g. an i64 whose halves sit in R0:R1 bound for R2:R3 while an i32 in
+    /// R2 is bound for R0) is read before it is overwritten. MUST be called
+    /// AFTER [`preserve_caller_saved`] (so live non-arg values already sit in
+    /// the spill area) and immediately before the `BL`/`CallIndirect`, so these
+    /// are the last register writes before the branch.
     fn emit_arg_moves(
         &self,
         instructions: &mut Vec<ArmInstruction>,
-        arg_srcs: &[Reg],
+        moves: &[(Reg, Reg)],
         stack: &[Reg],
         local_to_reg: &std::collections::HashMap<u32, Reg>,
         layout: &LocalLayout,
@@ -9134,15 +9215,9 @@ impl InstructionSelector {
         idx: usize,
     ) -> Result<usize> {
         use crate::parallel_move::{MoveStep, sequentialize};
-        if arg_srcs.is_empty() {
+        if moves.is_empty() {
             return Ok(0);
         }
-        // The resolver takes (dst, src) pairs; arg `i` goes to ARG_REGS[i].
-        let moves: Vec<(Reg, Reg)> = arg_srcs
-            .iter()
-            .enumerate()
-            .map(|(i, &src)| (ARG_REGS[i], src))
-            .collect();
         // Scratch candidate for cycle-breaking: a callee-saved register holding
         // no live value, when one exists — the resolver uses it ONLY to break a
         // true cycle, and filters it against the move set itself (an arg source
@@ -9156,10 +9231,10 @@ impl InstructionSelector {
             .ok()
             .into_iter()
             .collect();
-        let steps = sequentialize(&moves, &scratch).map_err(|e| {
+        let steps = sequentialize(moves, &scratch).map_err(|e| {
             synth_core::Error::synthesis(format!(
                 "call-arg marshalling produced an invalid parallel move set: {e} \
-                 (compiler bug: ARG_REGS destinations are distinct by construction)"
+                 (compiler bug: AAPCS argument registers are distinct by construction)"
             ))
         })?;
 
@@ -9509,7 +9584,7 @@ impl InstructionSelector {
             // Cycle-safe parallel move of the pair into R0:R1.
             self.emit_arg_moves(
                 instructions,
-                &[lo, hi],
+                &[(Reg::R0, lo), (Reg::R1, hi)],
                 &stack_live_regs(stack),
                 local_to_reg,
                 layout,
@@ -11692,13 +11767,40 @@ mod tests {
             vec![vec![true, false]], // func 0 takes (f32, i64)
             Vec::new(),
         );
-        let r = selector.select_with_stack(
-            &[WasmOp::F32Const(1.5), WasmOp::I64Const(7), WasmOp::Call(0)],
-            0,
-        );
+        let ops = [WasmOp::F32Const(1.5), WasmOp::I64Const(7), WasmOp::Call(0)];
+        let r = selector.select_with_stack(&ops, 0);
         assert!(
-            r.as_ref().is_err_and(|e| e.to_string().contains("i64")),
-            "i64 arg in a float-signature call must decline loudly: {r:?}"
+            r.as_ref().is_err_and(|e| e.to_string().contains("#929")),
+            "an i64 arg with no declared width must decline loudly (#929): {r:?}"
+        );
+        // #1785: with the callee's declared widths the i64 is marshalled — the
+        // f32 takes S0 (AAPCS-VFP), so the core walk gives the i64 R0:R1.
+        selector.set_callee_params_i64(vec![vec![false, true]]);
+        let arm = selector
+            .select_with_stack(&ops, 0)
+            .expect("#1785: an i64 beside an f32 argument lowers");
+        let bl = arm
+            .iter()
+            .position(|i| matches!(i.op, ArmOp::Bl { .. }))
+            .expect("a BL");
+        let pair = arm[..bl].iter().any(|i| {
+            matches!(
+                i.op,
+                ArmOp::I64Const {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    ..
+                }
+            )
+        });
+        let moved = |r: Reg| {
+            arm[..bl]
+                .iter()
+                .any(|i| matches!(i.op, ArmOp::Mov { rd, .. } if rd == r))
+        };
+        assert!(
+            pair || (moved(Reg::R0) && moved(Reg::R1)),
+            "the i64 lands in R0:R1: {arm:#?}"
         );
     }
 
@@ -18444,8 +18546,11 @@ mod tests {
         .unwrap();
         stack.push(StackVal::i32(fresh)); // the new temp pins its register
         // Drain the stack: every entry must pop to a register, including the
-        // spilled one, which reloads via LDR [SP, #0].
+        // spilled one, which reloads via LDR [SP, #0]. Each pop is its own op
+        // (`line`): within ONE op a reload avoids everything that op already
+        // popped (#1785), and nine live pops leave nothing to reload into.
         let before = instructions.len();
+        let mut line = 1;
         while !stack.is_empty() {
             pop_operand(
                 &mut stack,
@@ -18453,9 +18558,10 @@ mod tests {
                 &mut instructions,
                 &mut spill,
                 &[],
-                1,
+                line,
             )
             .unwrap();
+            line += 1;
         }
         let reloads: Vec<_> = instructions[before..]
             .iter()
@@ -18621,7 +18727,7 @@ mod tests {
         let n = selector
             .emit_arg_moves(
                 &mut instructions,
-                &[Reg::R1, Reg::R0], // arg0 in R1, arg1 in R0 — a swap
+                &[(Reg::R0, Reg::R1), (Reg::R1, Reg::R0)], // arg0 in R1, arg1 in R0 — a swap
                 &live,
                 &std::collections::HashMap::new(),
                 &arg_move_layout(true),
@@ -18663,7 +18769,7 @@ mod tests {
         let n = selector
             .emit_arg_moves(
                 &mut instructions,
-                &[Reg::R1, Reg::R0],
+                &[(Reg::R0, Reg::R1), (Reg::R1, Reg::R0)],
                 &[],
                 &std::collections::HashMap::new(),
                 &arg_move_layout(true),
@@ -18702,7 +18808,7 @@ mod tests {
         let n = selector
             .emit_arg_moves(
                 &mut instructions,
-                &[Reg::R2, Reg::R3],
+                &[(Reg::R0, Reg::R2), (Reg::R1, Reg::R3)],
                 &live,
                 &std::collections::HashMap::new(),
                 &arg_move_layout(true),
@@ -18724,6 +18830,60 @@ mod tests {
         assert_eq!(movs, vec![(Reg::R0, Reg::R2), (Reg::R1, Reg::R3)]);
     }
 
+    /// #1785: the AAPCS call-argument layout. An i64 takes the next even pair
+    /// (an odd NCRN is skipped, never back-filled), lo in the lower register;
+    /// one that does not fit goes to an 8-aligned NSAA and every later
+    /// argument follows it; an all-narrow call is the legacy `R<i>` /
+    /// `[sp,(k-4)*4]` layout.
+    #[test]
+    fn call_arg_marshal_aapcs_matrix_1785() {
+        use Reg::*;
+        let m = |srcs: &[(Reg, bool)]| InstructionSelector::call_arg_marshal(srcs).unwrap();
+        // (i32, i64): R1 skipped; the pair is R2:R3.
+        assert_eq!(
+            m(&[(R6, false), (R4, true)]),
+            (vec![(R0, R6), (R2, R4), (R3, R5)], vec![])
+        );
+        // (i32, i64, i32): the trailing i32 is NOT back-filled into R1.
+        assert_eq!(
+            m(&[(R6, false), (R4, true), (R7, false)]),
+            (vec![(R0, R6), (R2, R4), (R3, R5)], vec![(0, R7)])
+        );
+        // (i32, i32, i32, i64): the i64 goes to the stack at NSAA 0.
+        assert_eq!(
+            m(&[(R6, false), (R7, false), (R8, false), (R4, true)]),
+            (vec![(R0, R6), (R1, R7), (R2, R8)], vec![(0, R4), (4, R5)])
+        );
+        // (i64, i32, i64): the second i64 to the stack.
+        assert_eq!(
+            m(&[(R0, true), (R6, false), (R4, true)]),
+            (vec![(R0, R0), (R1, R1), (R2, R6)], vec![(0, R4), (4, R5)])
+        );
+        // (i32 x5, i64): the i64 after one stacked i32 is 8-aligned (NSAA 8).
+        let mut a: Vec<(Reg, bool)> = vec![(R6, false); 5];
+        a.push((R4, true));
+        assert_eq!(m(&a).1, vec![(0, R6), (8, R4), (12, R5)]);
+        // All-narrow: the legacy layout, bit for bit.
+        let narrow: Vec<(Reg, bool)> = [R4, R5, R6, R7, R8, R1].map(|r| (r, false)).to_vec();
+        assert_eq!(
+            m(&narrow),
+            (
+                vec![(R0, R4), (R1, R5), (R2, R6), (R3, R7)],
+                vec![(0, R8), (4, R1)]
+            )
+        );
+        assert_eq!(InstructionSelector::call_nsaa_bytes(&[false; 6]), 8);
+        assert_eq!(
+            InstructionSelector::call_nsaa_bytes(&[false, true, true]),
+            8
+        );
+        assert_eq!(InstructionSelector::call_nsaa_bytes(&[true, true, true]), 8);
+        assert_eq!(
+            InstructionSelector::call_nsaa_bytes(&[true, false, false]),
+            0
+        );
+    }
+
     /// An i32-only first pass has NO spill area: a cycle that needs the slot
     /// must fail with the LADDER-RECOVERABLE exhaustion `Err` (the backend
     /// retry re-runs with the area reserved), not silently alias the frame.
@@ -18737,7 +18897,7 @@ mod tests {
         let err = selector
             .emit_arg_moves(
                 &mut instructions,
-                &[Reg::R1, Reg::R0],
+                &[(Reg::R0, Reg::R1), (Reg::R1, Reg::R0)],
                 &live,
                 &std::collections::HashMap::new(),
                 &arg_move_layout(false),

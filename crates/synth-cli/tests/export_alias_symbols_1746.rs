@@ -534,11 +534,16 @@ fn func_name_selects_by_any_export_name() {
 
 #[test]
 fn skipped_export_refusal_names_its_aliases() {
-    // #952 on an aliased export: every name it takes with it is named.
+    // #952 on an aliased export: every name it takes with it is named. The
+    // export is declined by #929 (an i64 argument of a `call_indirect`; the
+    // direct-call form of this fixture compiles since #1785).
     let wat = r#"(module
-  (func $g (param i32 i64) (result i32) (local.get 0))
+  (type $t (func (param i32 i64) (result i32)))
+  (table 1 funcref)
+  (elem (i32.const 0) $g)
+  (func $g (type $t) (local.get 0))
   (func (export "f") (export "gust:x/y@0.1.0#f") (result i32)
-    (call $g (i32.const 7) (i64.const 9))))"#;
+    (call_indirect (type $t) (i32.const 7) (i64.const 9) (i32.const 0))))"#;
     let dir = work("952");
     let src = dir.join("m.wat");
     std::fs::write(&src, wat).unwrap();

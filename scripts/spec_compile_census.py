@@ -301,7 +301,13 @@ PINS = {
     # `write` / `result` exports (7 functions) have an i32 param at index 4
     # after VFP-homed float params (core register R0); the param-home walk
     # stopped at index 4 and declined them as "absent from the frame layout".
-    "arm_m7dp": dict(ok=26, partial=24, all_declined=85, module_decline=103,
+    # I64ARGS (#1785): arm_m7dp ok 26 -> 27, partial 24 -> 23 — EXACTLY one
+    # file moves, endianness.wast partial -> ok (its `i64_load` and
+    # `f64_load` call a helper with an i64 argument, refused with #929 until
+    # an i64 call argument was marshalled as an AAPCS register pair). Diffed
+    # file by file against the pre-fix binary on all three ARM legs: the only
+    # moves are the newly compiling exports listed at SKIPPED_FUNCTION_PINS.
+    "arm_m7dp": dict(ok=27, partial=23, all_declined=85, module_decline=103,
                      no_module=9, no_exports=9, parse_fail=1, panic=0,
                      other_error=0),
 }
@@ -340,7 +346,14 @@ PINS = {
 # riscv 1665 -> 1668 (block `break-multi-value`, br `as-return-values`, if
 # `break-multi-value`), aarch64 1264 -> 1266 (br `as-return-values`, if
 # `add64_u_with_carry`). No file bucket moves on any leg.
-SKIPPED_FUNCTION_PINS = {"arm_m4f": 1493, "arm_m7dp": 1400}
+# I64ARGS (#1785): 1493 -> 1482 (arm_m4f) and 1400 -> 1387 (arm_m7dp); the
+# unpinned arm leg 1567 -> 1556. Every move is an export that made a call with
+# an i64 argument (#929) and now compiles: call.wast even, odd, fac, fac-acc,
+# fib, type-first-i64, type-second-i64 (+ type-second-f64 on arm_m7dp, an f64
+# beside an i64 on the AAPCS-VFP path); endianness.wast i64_load (+ f64_load
+# on arm_m7dp); fac.wast fac-rec, fac-rec-named; left-to-right.wast i64_call.
+# aarch64 and riscv do not move.
+SKIPPED_FUNCTION_PINS = {"arm_m4f": 1482, "arm_m7dp": 1387}
 
 # Doc-cited derived figure, re-asserted at runtime against the pins above so
 # this comment line cannot rot: at-least-one-export (ok+partial) per backend:
@@ -545,7 +558,7 @@ FAMILY_OK_PINS = {
                  "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                  "memory64": 1, "bulk memory": 1, "reference types": 0,
                  "multi-value": 0},
-    "arm_m7dp": {"MVP core": 22, "multi-memory": 1, "SIMD": 0, "GC": 0,
+    "arm_m7dp": {"MVP core": 23, "multi-memory": 1, "SIMD": 0, "GC": 0,
                  "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                  "memory64": 2, "bulk memory": 1, "reference types": 0,
                  "multi-value": 0},

@@ -267,26 +267,41 @@ impl InstructionSelector {
         // 0 when every call passes <=4 args — the frame is then byte-identical to
         // the pre-#359 layout. `saturating_sub` avoids the u32 underflow that would
         // otherwise inflate the region for every small-arg call.
-        let mut max_stack_args: u32 = 0;
+        // #1785: a direct call's i64 core args take 8-aligned 8-byte NSAA slots
+        // (and push later args onto the stack), so the region also covers the
+        // AAPCS layout of the DECLARED widths; the legacy count term keeps every
+        // all-narrow (and float-signature) frame byte-identical.
+        let mut max_stack_bytes: i32 = 0;
         for op in wasm_ops {
-            let arg_count = match op {
-                Call(func_idx) => self
-                    .func_arg_counts
-                    .get(*func_idx as usize)
-                    .copied()
-                    .unwrap_or(0),
-                CallIndirect { type_index, .. } => self
-                    .type_arg_counts
-                    .get(*type_index as usize)
-                    .copied()
-                    .unwrap_or(0),
+            let (arg_count, widths) = match op {
+                Call(func_idx) => {
+                    let n = self
+                        .func_arg_counts
+                        .get(*func_idx as usize)
+                        .copied()
+                        .unwrap_or(0);
+                    let floats: Vec<u32> = self
+                        .callee_float_signature(*func_idx)
+                        .map(|(_, _, l)| l.iter().map(|&(i, _)| i).collect())
+                        .unwrap_or_default();
+                    (n, self.call_arg_widths(*func_idx, n, &floats))
+                }
+                CallIndirect { type_index, .. } => (
+                    self.type_arg_counts
+                        .get(*type_index as usize)
+                        .copied()
+                        .unwrap_or(0),
+                    Vec::new(),
+                ),
                 _ => continue,
             };
             // #503: no conservative >8 cap — `emit_stack_args` is generic in the
             // arg index and its 12-bit `[sp,#imm]` guard is the real backstop.
-            max_stack_args = max_stack_args.max(arg_count.saturating_sub(4));
+            max_stack_bytes = max_stack_bytes
+                .max((arg_count.saturating_sub(4) * 4) as i32)
+                .max(Self::call_nsaa_bytes(&widths));
         }
-        let outgoing_arg_bytes = ((max_stack_args as i32) * 4 + 7) & !7;
+        let outgoing_arg_bytes = (max_stack_bytes + 7) & !7;
 
         let mut instructions = Vec::new();
 
@@ -6035,6 +6050,10 @@ impl InstructionSelector {
                             )?;
                         }
                     }
+                    // #1785: core args are laid out by their DECLARED widths
+                    // (an i64 is an even register pair or an 8-aligned slot).
+                    let float_params: Vec<u32> = float_arg_layout.iter().map(|&(i, _)| i).collect();
+                    let widths = self.call_arg_widths(*func_idx, arg_count, &float_params);
                     let (arg_srcs, float_args) = if float_arg_layout.is_empty() {
                         (
                             Self::pop_call_args(
@@ -6042,7 +6061,7 @@ impl InstructionSelector {
                                 &mut next_temp,
                                 &mut instructions,
                                 &mut spill,
-                                arg_count,
+                                &widths,
                                 idx,
                             )?,
                             Vec::new(),
@@ -6057,19 +6076,20 @@ impl InstructionSelector {
                             &mut spill,
                             arg_count,
                             &float_dst,
+                            &widths,
                             idx,
                         )?
                     };
+                    let (reg_moves, stack_stores) = Self::call_arg_marshal(&arg_srcs)?;
 
-                    // #359: store args index>=4 to the outgoing stack region
+                    // #359: store stack-passed args to the outgoing stack region
                     // BEFORE preservation and the r0..r3 move (their sources are
                     // already popped, so the move could otherwise clobber them).
-                    let n_stack_args = self.emit_stack_args(&mut instructions, &arg_srcs, idx)?;
+                    let n_stack_args =
+                        self.emit_stack_args(&mut instructions, &stack_stores, idx)?;
                     for _ in 0..n_stack_args {
                         cf.add_instruction();
                     }
-                    // Only the first <=4 args are marshalled into r0..r3.
-                    let reg_srcs = &arg_srcs[..arg_srcs.len().min(ARG_REGS.len())];
 
                     // ── #188: caller-saved preservation across the call ──
                     // A BL clobbers R0–R3 and R12. Any live value (operand-stack
@@ -6119,7 +6139,7 @@ impl InstructionSelector {
                     // parallel move so chains/swaps among R0–R3 are handled.
                     let n_arg_moves = self.emit_arg_moves(
                         &mut instructions,
-                        reg_srcs,
+                        &reg_moves,
                         &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,
@@ -6316,25 +6336,29 @@ impl InstructionSelector {
                         .get(*type_index as usize)
                         .copied()
                         .unwrap_or(0);
+                    // #929: no per-TYPE width table reaches the selector, so every
+                    // argument is declared narrow and a 64-bit operand here is
+                    // refused by the width check (not marshalled as one word).
                     let arg_srcs = Self::pop_call_args(
                         &mut stack,
                         &mut next_temp,
                         &mut instructions,
                         &mut spill,
-                        arg_count,
+                        &vec![false; arg_count as usize],
                         idx,
                     )?;
+                    let (reg_moves, stack_stores) = Self::call_arg_marshal(&arg_srcs)?;
 
-                    // #359: store args index>=4 to the outgoing stack region
+                    // #359: store stack-passed args to the outgoing stack region
                     // BEFORE the table-index relocation (free_callee_saved below
                     // could pick an R4–R8 reg still holding a stack-arg source),
                     // preservation, and the r0..r3 move. The popped arg regs are
                     // not in stack_live_regs, so storing first closes the window.
-                    let n_stack_args = self.emit_stack_args(&mut instructions, &arg_srcs, idx)?;
+                    let n_stack_args =
+                        self.emit_stack_args(&mut instructions, &stack_stores, idx)?;
                     for _ in 0..n_stack_args {
                         cf.add_instruction();
                     }
-                    let reg_srcs = &arg_srcs[..arg_srcs.len().min(ARG_REGS.len())];
 
                     // #195: the arg moves write R0–R3, but the `CallIndirect`
                     // expansion reads `table_idx_reg` to compute the branch
@@ -6345,20 +6369,20 @@ impl InstructionSelector {
                     // marshalling so every LATER `free_callee_saved` call avoids
                     // it, then pop it back off just before emitting the call.
                     //
-                    // #1211: `reg_srcs` was already popped off `stack` by
+                    // #1211: the `reg_moves` sources were already popped off `stack` by
                     // `pop_call_args` above, so `stack_live_regs(&stack)` alone
-                    // is blind to it — `free_callee_saved` could (and did) hand
-                    // back a register one of `reg_srcs` was still sitting in,
+                    // is blind to them — `free_callee_saved` could (and did) hand
+                    // back a register one of the `reg_moves` sources was still sitting in,
                     // and the relocation MOV then silently overwrote a live call
                     // argument with the table index (a non-zero-table
                     // `call_indirect` dispatched the right function with the
                     // table index in place of its real second argument). Protect
-                    // `reg_srcs` explicitly — they stay live until the
+                    // the `reg_moves` sources explicitly — they stay live until the
                     // `emit_arg_moves` call below consumes them.
                     let mut table_pushed = false;
-                    if !reg_srcs.is_empty() {
+                    if !reg_moves.is_empty() {
                         let mut protect = stack_live_regs(&stack);
-                        protect.extend_from_slice(reg_srcs);
+                        protect.extend(reg_moves.iter().map(|&(_, src)| src));
                         let safe = self.free_callee_saved(&protect, &local_to_reg, &layout)?;
                         instructions.push(ArmInstruction {
                             op: ArmOp::Mov {
@@ -6401,7 +6425,7 @@ impl InstructionSelector {
                     // index on the stack keeps the scratch picker away from it.
                     let n_arg_moves = self.emit_arg_moves(
                         &mut instructions,
-                        reg_srcs,
+                        &reg_moves,
                         &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,

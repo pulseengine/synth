@@ -1,6 +1,7 @@
 //! #952 — a declined REQUESTED export must exit non-zero, not 0.
 //!
-//! Measured on v0.56.0:
+//! Measured on v0.56.0 (that direct-call fixture compiles since #1785; the
+//! test below uses the `call_indirect` shape that still declines with #929):
 //!
 //! ```wat
 //! (module
@@ -84,12 +85,18 @@ fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-/// gale's exact repro (via #929): `f` is the module's SOLE export, and it is
-/// the function that gets declined (the callee's i64 param forces the i64
-/// register-pair marshalling #929 refuses on the CALLER, `f`).
+/// `f` is the module's SOLE export, and it is the function that gets
+/// declined. gale's original repro (a DIRECT call `$g(i32 7, i64 9)`) compiles
+/// since #1785 marshals i64 arguments per AAPCS; the same #929 refusal still
+/// fires for an i64 argument of a `call_indirect` (no per-type width table),
+/// so that is the fixture now.
 const REQUESTED_EXPORT_DECLINED: &str = r#"(module
-  (func $g (param i32 i64) (result i32) (local.get 0))
-  (func (export "f") (result i32) (call $g (i32.const 7) (i64.const 9))))
+  (type $t (func (param i32 i64) (result i32)))
+  (table 1 funcref)
+  (elem (i32.const 0) $g)
+  (func $g (type $t) (local.get 0))
+  (func (export "f") (result i32)
+    (call_indirect (type $t) (i32.const 7) (i64.const 9) (i32.const 0))))
 "#;
 
 /// Internal-helper skips with NO dangling reference stay routine. `$hard`

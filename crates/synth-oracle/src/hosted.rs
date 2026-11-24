@@ -15,7 +15,7 @@
 //!   [`EmuError::UnresolvedSymbol`] unless the test supplied a raw stub for it
 //!   ([`HostConfig::raw_symbol`]): no embedder contract says what a call to it
 //!   does, so it is not guessed.
-//! - **Host stubs.** A stub reads its arguments from R0-R3 per AAPCS and the
+//! - **Host stubs.** A stub reads its arguments per AAPCS (R0-R3, then the stack) and the
 //!   import's own signature, calls the SAME host function the reference was
 //!   given, logs the call, writes the result, and then CLOBBERS every
 //!   caller-saved register that does not carry the result (R0-R3, R12) with
@@ -38,9 +38,13 @@
 //! - **Sequences.** One image runs several calls; linear memory persists
 //!   between them, so a store through one export is read through another.
 //!
-//! REFUSED with a typed error rather than run: A32 code, float and stack
-//! arguments at an import boundary, and any module that needs instantiation
-//! state this harness does not write ([`crate::value::uninstantiated_state`]).
+//! A stub reads stack-passed arguments too (Refs #1785: the full base-AAPCS
+//! layout, 8-aligned i64 slots, no register back-fill) and fails the run when
+//! SP is not 8-byte aligned at the call.
+//!
+//! REFUSED with a typed error rather than run: A32 code, float arguments at
+//! an import boundary, and any module that needs instantiation state this
+//! harness does not write ([`crate::value::uninstantiated_state`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -161,22 +165,39 @@ pub struct Hosted {
     pub cpu_model_readback: i32,
 }
 
-/// Read an import's arguments from R0-R3 per AAPCS (i64 in an even pair).
-fn args_from_regs(sig: &Signature, regs: [u32; 4]) -> Vec<WasmValue> {
-    let mut i = 0;
+/// Read an import's arguments per base AAPCS (Refs #1785): an i64 takes the
+/// next EVEN register pair (an odd NCRN is skipped and never back-filled);
+/// one that does not fit sets NCRN to 4 and is read from the next 8-aligned
+/// stacked-argument address, and every later argument is read from the stack
+/// too. `stack(off)` reads the word at `SP + off` as the stub sees it.
+fn args_from_aapcs(sig: &Signature, regs: [u32; 4], stack: &dyn Fn(u32) -> u32) -> Vec<WasmValue> {
+    let (mut ncrn, mut nsaa) = (0usize, 0u32);
     let mut out = Vec::new();
     for t in &sig.params {
-        if t.words() == 2 && i % 2 == 1 {
-            i += 1;
+        let n = t.words();
+        if n == 2 && ncrn % 2 == 1 {
+            ncrn += 1;
         }
-        out.push(WasmValue::from_words(*t, &regs[i..i + t.words()]));
-        i += t.words();
+        let words: Vec<u32> = if ncrn + n <= 4 {
+            ncrn += n;
+            regs[ncrn - n..ncrn].to_vec()
+        } else {
+            ncrn = 4;
+            if n == 2 && !nsaa.is_multiple_of(8) {
+                nsaa += 4;
+            }
+            nsaa += 4 * n as u32;
+            (0..n as u32)
+                .map(|w| stack(nsaa - 4 * n as u32 + 4 * w))
+                .collect()
+        };
+        out.push(WasmValue::from_words(*t, &words));
     }
     out
 }
 
-/// The boundary shapes a host stub can carry: integer arguments that fit
-/// R0-R3 and at most one integer result.
+/// The boundary shapes a host stub can carry: integer arguments (in R0-R3
+/// and on the stack, per AAPCS) and at most one integer result.
 fn check_import_abi(imp: &FuncImport) -> Result<(), EmuError> {
     let name = format!("{}::{}", imp.module, imp.field);
     if imp
@@ -195,16 +216,7 @@ fn check_import_abi(imp: &FuncImport) -> Result<(), EmuError> {
             "import {name} returns more than one value"
         )));
     }
-    // Reuse the caller-side layout: the words must fit R0-R3.
-    let zeros: Vec<WasmValue> = imp
-        .sig
-        .params
-        .iter()
-        .map(|t| WasmValue::from_words(*t, &[0, 0]))
-        .collect();
-    aapcs_words(&imp.sig.params, &zeros)
-        .map(|_| ())
-        .map_err(|_| EmuError::Abi(format!("import {name} takes stack arguments")))
+    Ok(())
 }
 
 fn page_up(n: u64) -> u64 {
@@ -374,13 +386,30 @@ impl Hosted {
                     u.reg_read(RegisterARM::R0 as i32 + i).unwrap_or(0) as u32
                 };
                 let regs = [reg(u, 0), reg(u, 1), reg(u, 2), reg(u, 3)];
+                let sp = u.reg_read(RegisterARM::SP as i32).unwrap_or(0) as u32;
+                let stack = |off: u32| {
+                    let mut b = [0u8; 4];
+                    match u.mem_read(u64::from(sp.wrapping_add(off)), &mut b) {
+                        Ok(()) => u32::from_le_bytes(b),
+                        Err(_) => POISON,
+                    }
+                };
                 // What R0-R3 hold on return: the result words, then clobber.
                 let mut out = [CLOBBER, CLOBBER | 1, CLOBBER | 2, CLOBBER | 3];
                 match &stubs[(off / STUB_STRIDE) as usize] {
                     Stub::Import { imp, f } => {
-                        let args = args_from_regs(&imp.sig, regs);
+                        let args = args_from_aapcs(&imp.sig, regs, &stack);
                         let r = f(&args);
                         let mut s = sh.borrow_mut();
+                        // AAPCS 5.2.1.2: SP is 8-byte aligned at a public
+                        // interface, so an 8-aligned NSAA is 8-aligned in memory.
+                        if !sp.is_multiple_of(8) {
+                            s.failure = Some(format!(
+                                "call to {}::{} with SP {sp:#x}, not 8-byte aligned",
+                                imp.module, imp.field
+                            ));
+                            let _ = u.emu_stop();
+                        }
                         s.log.push(HostCall {
                             module: imp.module.clone(),
                             field: imp.field.clone(),
@@ -669,18 +698,53 @@ mod tests {
             results: vec![],
         };
         let regs = [1, 2, 3, 4];
+        // The stack word at SP+off reads as 0x100 + off.
+        let st = |off: u32| 0x100 + off;
+        let args = |p: &[ValType]| args_from_aapcs(&sig(p), regs, &st);
+        use ValType::{I32, I64};
         assert_eq!(
-            args_from_regs(&sig(&[ValType::I32, ValType::I32]), regs),
+            args(&[I32, I32]),
             vec![WasmValue::I32(1), WasmValue::I32(2)]
         );
         // An i64 after an i32 skips R1 and takes R2:R3.
         assert_eq!(
-            args_from_regs(&sig(&[ValType::I32, ValType::I64]), regs),
+            args(&[I32, I64]),
             vec![WasmValue::I32(1), WasmValue::I64(0x0000_0004_0000_0003)]
         );
         assert_eq!(
-            args_from_regs(&sig(&[ValType::I64, ValType::I32]), regs),
+            args(&[I64, I32]),
             vec![WasmValue::I64(0x0000_0002_0000_0001), WasmValue::I32(3)]
+        );
+        // Refs #1785: an i64 that does not fit goes to the stack, and so does
+        // every later argument (no back-fill of R3); an 8-aligned NSAA.
+        assert_eq!(
+            args(&[I32, I32, I32, I64]),
+            vec![
+                WasmValue::I32(1),
+                WasmValue::I32(2),
+                WasmValue::I32(3),
+                WasmValue::I64(0x0000_0104_0000_0100)
+            ]
+        );
+        assert_eq!(
+            args(&[I64, I32, I64, I32]),
+            vec![
+                WasmValue::I64(0x0000_0002_0000_0001),
+                WasmValue::I32(3),
+                WasmValue::I64(0x0000_0104_0000_0100),
+                WasmValue::I32(0x108)
+            ]
+        );
+        assert_eq!(
+            args(&[I32, I32, I32, I32, I32, I64]),
+            vec![
+                WasmValue::I32(1),
+                WasmValue::I32(2),
+                WasmValue::I32(3),
+                WasmValue::I32(4),
+                WasmValue::I32(0x100),
+                WasmValue::I64(0x0000_010C_0000_0108)
+            ]
         );
         // Refused boundaries.
         let imp = |p: &[ValType], r: &[ValType]| FuncImport {
@@ -692,7 +756,7 @@ mod tests {
             },
         };
         assert!(check_import_abi(&imp(&[ValType::I32; 4], &[ValType::I64])).is_ok());
-        assert!(check_import_abi(&imp(&[ValType::I32; 5], &[])).is_err());
+        assert!(check_import_abi(&imp(&[ValType::I32; 5], &[])).is_ok());
         assert!(check_import_abi(&imp(&[ValType::F32], &[])).is_err());
         assert!(check_import_abi(&imp(&[], &[ValType::F64])).is_err());
         assert!(check_import_abi(&imp(&[], &[ValType::I32, ValType::I32])).is_err());

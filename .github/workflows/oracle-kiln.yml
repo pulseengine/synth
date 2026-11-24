@@ -149,12 +149,12 @@ jobs:
           grep -qx 'ORACLE import-boundary structural: 12 default-flags objects are byte-identical to --relocatable' "$log"
           grep -qE '^test result: ok\. 13 passed; 0 failed' "$log"
           # v0.92 batch 1: two test binaries report 13 (compile_module_1745,
-          # import_boundary_oracle) and five report 3 (select_home_alias_1754,
+          # import_boundary_oracle) and six report 3 (select_home_alias_1754,
           # multi_result_export_1450_oracle, target_record, kiln_no_shared_state,
-          # zero_init_wide_local_1762), and one matching line satisfies
+          # zero_init_wide_local_1762, i64_call_args_1785), and one matching line satisfies
           # `grep -q`. Pin how many result lines carry each count.
           test "$(grep -cE '^test result: ok\. 13 passed; 0 failed' "$log")" = 2
-          test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 5
+          test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 6
           # No kiln state crosses reference runs (memory, globals, tables).
           grep -qx 'test memory_does_not_cross_calls ... ok' "$log"
           grep -qx 'test globals_do_not_cross_calls ... ok' "$log"
@@ -222,3 +222,19 @@ jobs:
           # tests/armv6m_call_oracle.rs is the only test binary that reports 9
           # passed (measured on the tree restacked onto v0.92 batch 2).
           test "$(grep -cE '^test result: ok\. 9 passed; 0 failed' "$log")" = 1
+          # v0.92, Refs #1785 / #929 (tests/i64_call_args_1785.rs): an i64
+          # CALL ARGUMENT on ARM Thumb-2 is passed where base AAPCS puts it
+          # (even register pair, skipped odd NCRN, 8-aligned stack slot, later
+          # args stacked). 10 signatures, local and import callees, constant
+          # and register-sourced arguments: linked and EXECUTED on cortex-m4,
+          # cortex-m3 and cortex-m7 --relocatable and cortex-m4 default flags
+          # (the import stub reads R0-R3 and the stack per AAPCS and checks SP
+          # alignment), and the self-contained --cortex-m image booted on
+          # cortex-m4. Third test: an i64 operand live across a call is not
+          # reloaded over the call's i64 result (call.wast `fac`, found by the
+          # spec-execution oracle once it compiled; the i32-argument twin
+          # `mulcall` was a silent miscompile on d6fff037). Its result line is
+          # a sixth "3 passed".
+          grep -qx 'ORACLE i64-call-args-1785 hosted: 400 steps agree across 4 legs x 10 signatures, 200 host calls matched' "$log"
+          grep -qx 'ORACLE i64-call-args-1785 self-contained: 50 steps agree across 10 signatures' "$log"
+          grep -qx 'ORACLE i64-call-args-1785 live-across-call: 40 steps agree across 4 legs' "$log"
