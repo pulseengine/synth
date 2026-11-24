@@ -78,12 +78,15 @@ artifacts:
         at the multi-pop sites; make an arm's spill visible at the join) is
         the selector's, and re-enables the rungs behind a pressure fuzz.
 
-        KNOWN, NOT FIXED HERE: #1754 (cold review 15 F2), `select`
-        overwriting a parameter's home register while the parameter is
-        still on the operand stack. Pre-existing in the ARM direct selector
-        and wrong on cortex-m3 `--relocatable` at the stack base too; on
-        ARMv6-M two reduced shapes compile and are pinned, exact both ways,
-        as known-wrong by the Rust oracle (`KNOWN_1754`).
+        #1754 (cold review 15 F2), `select` overwriting a parameter's home
+        register while the parameter is still on the operand stack, was
+        pre-existing in the ARM direct selector and not fixed by this lane.
+        On the lane's own base its two reduced ARMv6-M shapes compiled and
+        were pinned, exact both ways, as known-wrong by the Rust oracle
+        (`KNOWN_1754`). The ARM direct-selector fix landed underneath in
+        v0.92 wrong-code batch 1 (#1767); on the tree rebased onto main
+        d6fff037 both pins measure 0 of 216 vectors wrong, and the oracle
+        pins that 0 exactly.
 
         FAIL-CLOSED BEHIND IT. `armv6m::check_bytes` still checks every
         encoded instruction, and now also refuses any 16-bit MOV/ADD that
@@ -149,8 +152,10 @@ artifacts:
         and ALL AGREE: 18938 value comparisons, 21 trap/trap. Every accepted
         function decodes as ARMv6-M against the frozen LLVM table and the
         cortex-m0plus .text equals the cortex-m0 .text. #1754 (pre-existing
-        `select` defect, not fixed here): its two shapes compile and are
-        wrong on exactly 75 and 150 of 216 vectors, pinned both ways. Stack
+        `select` defect, not fixed here): on the lane's base its two shapes
+        compiled and were wrong on exactly 75 and 150 of 216 vectors, pinned
+        both ways; on the tree rebased onto main d6fff037 (batch 1's fix
+        underneath) both measure 0 of 216. Stack
         base f7a77f2e: 6 of 7 tests RED (11 of 104 accepted). With kiln's
         converted module cached (ORACLEKILN, carried as its own commit) the
         whole test takes about 45 s locally (was 12-13 min).
