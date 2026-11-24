@@ -36,8 +36,9 @@
 //! with `rd == rm`, scratch always dead), each measured red against a
 //! mutant binary. The `d_rung_*` declines are the shapes only the selector's
 //! register-pressure recovery rungs select (F1, wrong values before they were
-//! declined on ARMv6-M). `KNOWN_1754` pins the pre-existing #1754 `select`
-//! defect, which this lane does not fix.
+//! declined on ARMv6-M). `KNOWN_1754` pinned the pre-existing #1754
+//! `select` defect, which this lane does not fix; the #1754 fix (v0.92 batch
+//! 1, on main underneath this lane) moved both pins to 0.
 //!
 //! Needs `--features exec`. `SYNTH` may name a prebuilt binary.
 
@@ -295,7 +296,10 @@ const DECLINE_WAT: &str = r#"
 /// shapes compile and return a wrong value on exactly the pinned number of
 /// vectors; the pin is exact both ways, so the fix moves it (to 0) in its own
 /// PR. (repro/b2.wat, the third shape, declines on ARMv6-M: only the spill
-/// rung selects it.)
+/// rung selects it.) MOVED: the #1754 fix landed on main (v0.92 batch 1,
+/// tests/select_home_alias_1754.rs); re-measured on the tree this lane was
+/// rebased onto, both shapes are 0 of 216 wrong (were 75 and 150), and the
+/// exact pin now holds the fix on ARMv6-M.
 const KNOWN_1754_WAT: &str = r#"
 (module
   (func (export "k1754_b1") (param i32 i32 i32) (result i32) (i32.gt_s (local.get 0) (select (local.get 2) (local.get 0) (local.get 1))))
@@ -304,7 +308,7 @@ const KNOWN_1754_WAT: &str = r#"
 "#;
 
 /// Wrong-value vectors per #1754 shape, over `vectors_for(3)` (216 each).
-const KNOWN_1754: &[(&str, usize)] = &[("k1754_b1", 75), ("k1754_b1b", 150)];
+const KNOWN_1754: &[(&str, usize)] = &[("k1754_b1", 0), ("k1754_b1b", 0)];
 
 /// The exports of [`PROBES_WAT`] that compile for cortex-m0 / cortex-m0plus.
 /// EXACT both ways: a probe moving in either direction reds.
