@@ -97,7 +97,12 @@ artifacts:
         probes left this oracle's decline module for
         `armv6m_call_oracle.rs`. The oracle's counts on that tree are 106
         accepted, 18 declined, 19412 cases, 19370 value comparisons, 21
-        trap/trap.
+        trap/trap: measured first on the M0L2 lane's pre-restack base
+        (60d4d499, batch 1 + M0I32) and re-measured unchanged on the tree
+        restacked onto v092-m0i32 f4ccf064 (main d6fff037, batch 2
+        underneath), where the call oracle's figures (32 accepted, 5
+        declined, 484 steps, 638 host calls, 594 halfwords, 54 BL) are also
+        unchanged.
 
         FAIL-CLOSED BEHIND IT. `armv6m::check_bytes` still checks every
         encoded instruction, and now also refuses any 16-bit MOV/ADD that
