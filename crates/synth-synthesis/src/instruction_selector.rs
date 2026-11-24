@@ -792,6 +792,10 @@ struct SpillState {
     /// resolver) must check this and fail with the ladder-recoverable
     /// exhaustion `Err` instead.
     area_reserved: bool,
+    /// RQ-91-M0I32 (#1301): registers the temp and pair allocators must never
+    /// hand out. Empty everywhere but ARMv6-M, where R7 is the lowering's
+    /// scratch and R8 has no 16-bit load, store or push.
+    excluded: &'static [Reg],
 }
 
 impl SpillState {
@@ -812,6 +816,7 @@ impl SpillState {
             vfp_spill_on_exhaustion: false,
             vfp_frame_home_locals: false,
             area_reserved: true,
+            excluded: &[],
         }
     }
     /// Reserve a free slot, returning its byte offset from SP.
@@ -1175,8 +1180,10 @@ fn alloc_temp_or_spill(
     reserved: &[Reg],
     line: usize,
 ) -> Result<Reg> {
+    let mut avoid: Vec<Reg> = reserved.to_vec();
+    avoid.extend_from_slice(spill.excluded);
     loop {
-        match alloc_temp_safe(next_temp, stack, reserved) {
+        match alloc_temp_safe(next_temp, stack, &avoid) {
             Ok(reg) => return Ok(reg),
             Err(e) => {
                 if !spill.spill_on_exhaustion
@@ -1949,6 +1956,7 @@ fn alloc_consecutive_pair(
         let mut live = stack_live_regs(stack);
         live.extend_from_slice(extra_avoid);
         live.extend_from_slice(reserved);
+        live.extend_from_slice(spill.excluded);
 
         let n = ALLOCATABLE_REGS.len();
         let mut nt = *next_temp;
@@ -6729,6 +6737,8 @@ pub struct InstructionSelector {
     /// are promoted; read-before-write (#457), control-flow, and i64 locals fall
     /// back to the frame unchanged. See [`compute_local_promotion`].
     local_promote: bool,
+    /// RQ-91-M0I32 (#1301): see [`SpillState::excluded`]. Empty by default.
+    excluded_alloc_regs: &'static [Reg],
     /// #587 pool-grow recovery rung: size of the i64 spill-slot pool. Default
     /// [`I64_SPILL_SLOTS`] — the backend raises it (clamped to
     /// [`I64_SPILL_SLOTS_MAX`]) only for a retry after an attempt failed with
@@ -6888,6 +6898,7 @@ impl InstructionSelector {
             vfp_wide_file: false,
             vfp_frame_home_locals: false,
             local_promote: false,
+            excluded_alloc_regs: &[],
             i64_spill_slots: I64_SPILL_SLOTS,
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
@@ -6949,6 +6960,7 @@ impl InstructionSelector {
             vfp_wide_file: false,
             vfp_frame_home_locals: false,
             local_promote: false,
+            excluded_alloc_regs: &[],
             i64_spill_slots: I64_SPILL_SLOTS,
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
@@ -7034,6 +7046,12 @@ impl InstructionSelector {
     /// bit-identical. See the `local_promote` field and [`compute_local_promotion`].
     pub fn set_local_promote(&mut self, enabled: bool) {
         self.local_promote = enabled;
+    }
+
+    /// RQ-91-M0I32 (#1301): registers no temp or pair may be allocated to
+    /// (ARMv6-M: R7, its lowering scratch, and R8). Empty by default.
+    pub fn set_excluded_alloc_regs(&mut self, regs: &'static [Reg]) {
+        self.excluded_alloc_regs = regs;
     }
 
     /// #494 phase 2b (divisor-nonzero fact): per-site trap-guard elision marks

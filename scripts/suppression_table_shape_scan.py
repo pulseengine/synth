@@ -97,6 +97,7 @@ CLASSIFIED = {
     ("falcon_opt_1318_differential.py", "EXPECTED_MACHINE"): ("config", "ELF machine name per backend"),
     ("rv32_dead_arm_value_1739_differential.py", "SKIP_VECTORS"): ("config", "one input of one export not run: t_i32_loop_exit(0x80000000) loops two billion times, past the emulator budget; the export's other 8 inputs run"),
     ("partial_census_1017.py", "EXCLUDE_PARTS"): ("config", "path components skipped when walking the tree"),
+    ("armv6m_1301_differential.py", "BUDGET_EXPECTED"): ("config", "vectors with no reference value, exact both ways (RQ-91-M0I32, cold review 15 F5): argument-counted loops on the large vectors where wasmtime runs out of fuel; each passes ONLY if unicorn also exhausts its instruction budget (a return, fault, trap or illegal instruction reds), and a new or vanished entry reds; same class as SKIP_VECTORS"),
     ("selector_parity_197_differential.py", "INFORMATIONAL_KINDS"): ("envelope", "divergence KINDS recorded but never gating — the one entry here that suppresses a GATING decision rather than pinning a decline; its members are envelope state cases (reference-vs-literal is not a synth verdict; a post-OOB-trap mismatch is the documented default-image envelope)"),
 }
 

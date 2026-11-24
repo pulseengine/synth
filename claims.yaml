@@ -811,14 +811,14 @@ feature_matrix_facts:
         Not a function of a WasmOp, so it is outside the derived op-surface
         artifact; converting it needs a probe harness per shape claim, named as
         follow-up work in this lane's report.
-    - text: "32 tracked corpus inputs"
+    - text: "91 tracked corpus inputs"
       rationale: >
         RQ-91-M0ORACLE (#1301): a MEASUREMENT of the compiler over the tracked
         .wat/.wasm corpus, printed on every CI run by
         armv6m_1301_differential.py ("C corpus: N objects with accepted code").
         It moves whenever a fixture is added, so it is not pinned; the
         script's own non-vacuity check is that it executes at least one
-        function. The 8-of-112 probe figure beside it IS pinned
+        function. The 51-of-112 probe figure beside it IS pinned
         (SYNTH-MATRIX-ARMV6M-PROBES).
 
 # -----------------------------------------------------------------------------
@@ -935,9 +935,9 @@ support_levels:
       row: "x86-64"
       level: L3
     # L3: partial, --relocatable only (#1301, RQ-91-ARMV6M, RQ-91-M0ORACLE).
-    # No ARMv6-M lowering: a function compiles only when the v7-M encoder's
-    # output is already ARMv6-M, every other function is declined loudly.
-    # Measured v0.91: 8 of 112 per-op probes accepted, 32 tracked corpus
+    # RQ-91-M0I32: an ARMv6-M lowering of the i32 core and structured control
+    # flow; everything else is declined loudly.
+    # Measured v0.91: 51 of 112 per-op probes accepted, 91 tracked corpus
     # inputs yield objects with accepted code; the accepted code is
     # byte-checked and executed vs wasmtime on unicorn's Cortex-M0 model.
     - id: cortex-m0-armv6m
@@ -2112,9 +2112,27 @@ claims:
         # 6641efec on cortex-m4, cortex-m3 and cortex-m7dp; GREEN here).
         # v0.92 BATCH1 (SELECTALIAS + IMPORTABI on one tree): 21427 -> 21403,
         # derived on the batch tree; neither lane's own `to:` holds there.
-        value: 21403
+        # M0I32 (#1301): 21403 -> 21422, waived below (chained after BATCH1's;
+        # rebased onto v0.92 batch 2).
+        value: 21422
         baseline: 17897
         waivers:
+          - to: 21422
+            reason: >-
+              M0I32 (Refs #1301): 21403 -> 21422 (+19, re-derived after cargo
+              fmt on the tree rebased onto v0.92 batch 2; the same +19 the lane
+              measured as 21427 -> 21446 on its own base). The ARMv6-M (cortex-m0 / cortex-m0plus) register contract
+              needs the direct selector's temp and pair allocators to skip R7
+              (the v6-M lowering's scratch) and R8 (no 16-bit load, store or
+              push): one `excluded` field on `SpillState`, read by
+              `alloc_temp_or_spill` and `alloc_consecutive_pair`, and its
+              setter. Empty on every other target, so their bytes cannot move
+              (measured: 0 differences over the non-v6-M corpus x
+              configuration matrix in RQ-91-M0I32). No new lowering arm and no
+              wildcard arm: the v6-M lowering itself is a rule table OUTSIDE
+              this population (`crates/synth-backend/src/armv6m_lower.rs`).
+              Gated by crates/synth-oracle/tests/armv6m_i32_oracle.rs (RED on
+              the stack base f7a77f2e, GREEN on this branch).
           - to: 21403
             reason: >-
               v0.92 wrong-code batch 1 (Refs #1754, #1696, #1755, #1699, #1758):
@@ -3632,7 +3650,10 @@ claims:
         # decline and the direct call instead of the dispatch stub).
         # v0.92 BATCH1 (both lanes on one tree): 32447 -> 32477, derived on the
         # batch tree. No waiver (tracked, no direction).
-        value: 32477
+        # M0I32 (#1301): 32477 -> 32496: the +19 code growth (waived on
+        # selector_lines_code), test module unchanged; re-derived on the tree
+        # rebased onto v0.92 batch 2. No waiver.
+        value: 32496
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a
@@ -4710,14 +4731,14 @@ claims:
   # moves the probe pin moves this literal and reds here until the row moves.
   - id: SYNTH-MATRIX-ARMV6M-PROBES
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "8 of 112 per-op probes accepted (i32 add/sub/extend, `local.tee`, a void function, i64 identity)"
+    text: "51 of 112 per-op probes accepted"
     evidence:
       - kind: count-eq
         pattern: '^PROBE_COUNT = 112$'
         glob: ['scripts/repro/armv6m_1301_differential.py']
         expect: 1
       - kind: count-eq
-        pattern: '^PROBE_ACCEPTED = \{"add_imm1", "i32_add", "i32_sub", "i32_extend8_s", "i32_extend16_s",\n\s+"local_tee", "void_fn", "i64_ident"\}$'
+        pattern: '^PROBE_ACCEPTED = \{"add_imm1", "add_imm1000", "add_imm200", "block_br_if", "br_table",\n\s+"c_255", "c_256", "c_big", "c_ffff", "c_neg1", "c_small",\n\s+"early_return", "i32_add", "i32_and", "i32_eq", "i32_eqz",\n\s+"i32_extend16_s", "i32_extend8_s", "i32_ge_s", "i32_ge_u",\n\s+"i32_gt_s", "i32_gt_u", "i32_le_s", "i32_le_u", "i32_lt_s",\n\s+"i32_lt_u", "i32_mul", "i32_ne", "i32_or", "i32_rotl", "i32_rotr",\n\s+"i32_shl", "i32_shr_s", "i32_shr_u", "i32_sub", "i32_xor", "i64_and",\n\s+"i64_extend_i32_u", "i64_ident", "i64_or", "i64_xor", "if_else",\n\s+"if_void", "local_tee", "loop_count", "many_locals", "nop_drop",\n\s+"select", "shl_imm3", "unreachable", "void_fn"\}$'
         glob: ['scripts/repro/armv6m_1301_differential.py']
         expect: 1
       - kind: count-eq                       # the oracle is CI-wired, once

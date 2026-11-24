@@ -1175,7 +1175,15 @@ fn compile_wasm_to_arm(
         // can drop promotion as an exhaustion-recovery rung (promotion pins r4-r8,
         // which on a dense function leaves the spill allocator with nothing to
         // free → the frame-slot path is the escape that restores compilability).
-        selector.set_local_promote(local_promote);
+        // RQ-91-M0I32 (#1301): on ARMv6-M promotion is off (it pins R4-R8, and
+        // R7/R8 are not allocatable there), and R7/R8 are excluded from the
+        // temp and pair allocators: R7 is the v6-M lowering's scratch
+        // (`armv6m_lower`), and R8 has no 16-bit load, store or push.
+        let armv6m = config.target.isa == IsaVariant::Thumb;
+        selector.set_local_promote(local_promote && !armv6m);
+        if armv6m {
+            selector.set_excluded_alloc_regs(crate::armv6m_lower::EXCLUDED_ALLOC);
+        }
         // #494 phase 2b: certificate-discharged div/rem trap-guard elision
         // marks (empty in every compile without SYNTH_FACT_SPEC + facts).
         selector
@@ -1565,6 +1573,22 @@ fn compile_wasm_to_arm(
                 }
             }
         }
+        // RQ-91-M0I32 (#1301, cold review 15 F1): on ARMv6-M only the `base`
+        // rung ships. Code selected on the exhaustion-recovery rungs (spill,
+        // pool-grow, ...) returned wrong values on 100 of 39,627 accepted fuzz
+        // functions there: a reload landing in a just-popped operand's register
+        // (the #973 class) and a spill stored on one if-arm but reloaded after
+        // the join. The R0-R6 pool sends v6-M functions onto those rungs about
+        // twice as often as v7-M, so until they carry a pressure oracle the
+        // function is declined, loudly, instead. Measured: 0 mismatches on the
+        // same fuzz seeds, acceptance on pressure-heavy code 91 % -> 79 %.
+        if config.target.isa == IsaVariant::Thumb && attempt.is_ok() && rung != "base" {
+            attempt = Err(synth_core::Error::synthesis(format!(
+                "ARMv6-M (RQ-91-M0I32, #1301): this function is selectable only on the \
+                 `{rung}` register-pressure recovery rung, which is not used on ARMv6-M \
+                 (it miscompiled under the R0-R6 pool); refused rather than emitted"
+            )));
+        }
         // VCR-RA measurement (#242): log which recovery rung produced the result,
         // so the per-rung distribution across a corpus can be measured — the size
         // of the failure surface a verified allocator must subsume (see
@@ -1919,7 +1943,14 @@ fn compile_wasm_to_arm(
     let realloc_on = std::env::var("SYNTH_RANGE_REALLOC").map_or(true, |v| v != "0");
     let (arm_instrs, ran_realloc) = if realloc_on {
         use synth_synthesis::rules::Reg;
-        const POOL: [Reg; 9] = synth_synthesis::reg_contract::ALLOCATABLE;
+        const V7_POOL: [Reg; 9] = synth_synthesis::reg_contract::ALLOCATABLE;
+        // RQ-91-M0I32 (#1301): the re-allocator must not move a value INTO
+        // R7/R8 on ARMv6-M either (the selector already keeps them out).
+        let pool: &[Reg] = if config.target.isa == IsaVariant::Thumb {
+            &crate::armv6m_lower::ALLOC_POOL
+        } else {
+            &V7_POOL
+        };
         // VCR-DEC-001 (epic #242, the North Star's first foothold): the
         // SYNTH_GRAPH_ALLOC graph-colouring allocator SPIKE. When enabled it
         // replaces STEP 1 of the re-allocation (the segment-based
@@ -1960,7 +1991,7 @@ fn compile_wasm_to_arm(
                 sizing_encoder.encode(op).ok().map(|b| b.len())
             };
             let stats_on = std::env::var("SYNTH_GRAPH_ALLOC_STATS").is_ok();
-            match synth_synthesis::graph_alloc::reallocate(&arm_instrs, &POOL, &enc) {
+            match synth_synthesis::graph_alloc::reallocate(&arm_instrs, pool, &enc) {
                 // SYNTH_GRAPH_ALLOC_FORCE (test seam, RQ-60-RACOST
                 // increment 2): ship every validated candidate WITHOUT the
                 // final-byte arbiter — the pre-arbiter behaviour. Used by
@@ -2007,7 +2038,7 @@ fn compile_wasm_to_arm(
                     // assertion, promoted from a gate into a construction.
                     let ship = synth_synthesis::liveness::reallocate_function_post_exhaust(
                         &arm_instrs,
-                        &POOL,
+                        pool,
                         post_exhaust,
                     );
                     let size_of = |stream: &[synth_synthesis::ArmInstruction]| -> Option<usize> {
@@ -2094,7 +2125,7 @@ fn compile_wasm_to_arm(
                     }
                     synth_synthesis::liveness::reallocate_function_post_exhaust(
                         &arm_instrs,
-                        &POOL,
+                        pool,
                         post_exhaust,
                     )
                 }
@@ -2102,7 +2133,7 @@ fn compile_wasm_to_arm(
         } else {
             synth_synthesis::liveness::reallocate_function_post_exhaust(
                 &arm_instrs,
-                &POOL,
+                pool,
                 post_exhaust,
             )
         };
@@ -2150,10 +2181,23 @@ fn compile_wasm_to_arm(
         selected_vfp_frame_homes.borrow().as_ref(),
     )?;
 
+    // RQ-91-M0I32 (#1301): ARMv6-M lowers the allocated stream to 16-bit
+    // forms (constants, IT diamonds, two-operand data processing) and encodes
+    // it with the v6-M encoder mode. No other target reaches either, so their
+    // bytes are unchanged by construction.
+    let armv6m = config.target.isa == IsaVariant::Thumb;
+    let arm_instrs = if armv6m {
+        crate::armv6m_lower::lower(arm_instrs, config.current_func_index.unwrap_or(0) as usize)?
+    } else {
+        arm_instrs
+    };
+
     // Encode to binary — use Thumb-2 for Cortex-M targets
     let use_thumb2 = matches!(config.target.isa, IsaVariant::Thumb2 | IsaVariant::Thumb);
 
-    let encoder = if use_thumb2 {
+    let encoder = if armv6m {
+        ArmEncoder::new_armv6m()
+    } else if use_thumb2 {
         ArmEncoder::new_thumb2_with_fpu(config.target.fpu)
     } else {
         ArmEncoder::new_arm32()
@@ -2798,7 +2842,11 @@ fn finish_allocated_stream(
     // and per-pair pressure commit — see `apply_spill_realloc_post_exhaust`.
     // Flag off (the default): `false` selects the shipping behavior bit for
     // bit.
-    let arm_instrs = if !std::env::var("SYNTH_SPILL_REALLOC").is_ok_and(|v| v == "0") {
+    // RQ-91-M0I32 (#1301): not on ARMv6-M. It re-homes frame values into
+    // free R0-R8 registers, and R7/R8 are not allocatable there.
+    let arm_instrs = if !std::env::var("SYNTH_SPILL_REALLOC").is_ok_and(|v| v == "0")
+        && config.target.isa != IsaVariant::Thumb
+    {
         let (out, n) =
             synth_synthesis::liveness::apply_spill_realloc_post_exhaust(&arm_instrs, post_exhaust);
         let (out, d) = synth_synthesis::liveness::eliminate_dead_frame_stores(&out);

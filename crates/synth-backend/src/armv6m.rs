@@ -124,6 +124,11 @@ pub enum V6mViolation {
     },
     /// A 32-bit prefix halfword with no second halfword in the encoding.
     Truncated(u16),
+    /// RQ-91-M0I32 (#1301): a 16-bit `MOV`/`ADD` (high-register form) that
+    /// WRITES R8-R12. ARMv6-M, but outside the v6-M register contract: synth
+    /// allocates no R8 and writes no R12 there, and R9-R11 belong to the
+    /// embedder (gale notice 20261118T091556-9870f8).
+    ReservedWrite(u16),
 }
 
 impl V6mViolation {
@@ -136,6 +141,7 @@ impl V6mViolation {
             Self::LdrLiteral16(_) => "16-bit LDR literal: pool reach not checked on ARMv6-M",
             Self::Wide { class, .. } => class,
             Self::Truncated(_) => "truncated 32-bit encoding",
+            Self::ReservedWrite(_) => "write to R8-R12 (outside the ARMv6-M register contract)",
         }
     }
 
@@ -146,7 +152,8 @@ impl V6mViolation {
             | Self::CbzCbnz(h)
             | Self::Undefined16(h)
             | Self::LdrLiteral16(h)
-            | Self::Truncated(h) => {
+            | Self::Truncated(h)
+            | Self::ReservedWrite(h) => {
                 format!("{h:04x}")
             }
             Self::Wide { hw1, hw2, .. } => format!("{hw1:04x} {hw2:04x}"),
@@ -162,6 +169,19 @@ pub fn is_wide_prefix(hw: u16) -> bool {
 /// Whether the 16-bit halfword `hw` is an ARMv6-M instruction.
 pub fn legal_16(hw: u16) -> bool {
     LEGAL_16.iter().any(|&(lo, hi)| (lo..=hi).contains(&hw))
+}
+
+/// RQ-91-M0I32 (#1301): the register R8-R12 a 16-bit instruction writes, if
+/// any. On ARMv6-M only `ADD rdn, rm` and `MOV rd, rm` (`0100 01 op D Rm Rdn`,
+/// op 0 / 2) can write a high register; every other 16-bit form names R0-R7
+/// only (or SP / PC implicitly).
+pub fn writes_reserved(hw: u16) -> Option<u16> {
+    if hw & 0xFC00 != 0x4400 {
+        return None;
+    }
+    let op = (hw >> 8) & 3;
+    let rd = ((hw >> 4) & 0x8) | (hw & 7);
+    (matches!(op, 0 | 2) && (8..=12).contains(&rd)).then_some(rd)
 }
 
 /// Whether `hw` is the 16-bit LDR (literal), `0100 1 Rt imm8`.
@@ -222,6 +242,9 @@ pub fn check_bytes(bytes: &[u8]) -> Result<(), (usize, V6mViolation)> {
         } else {
             if is_ldr_literal_16(hw) {
                 return Err((off, V6mViolation::LdrLiteral16(hw)));
+            }
+            if writes_reserved(hw).is_some() {
+                return Err((off, V6mViolation::ReservedWrite(hw)));
             }
             if !legal_16(hw) {
                 let v = if hw & 0xFF00 == 0xBF00 {
@@ -376,6 +399,19 @@ mod tests {
             check_bytes(&le(&[0x1C42, 0xF240, 0x002A])).unwrap_err().0,
             2
         );
+        // RQ-91-M0I32: a write to R8-R12 is refused; reads and SP/PC are not.
+        for (h, rd) in [(0x4680u16, 8u16), (0x4684, 12), (0x44C8, 8), (0x46DA, 10)] {
+            assert_eq!(writes_reserved(h), Some(rd), "{h:04x}");
+            assert_eq!(
+                cls(&[h]),
+                "write to R8-R12 (outside the ARMv6-M register contract)"
+            );
+        }
+        for h in [0x4640u16, 0x4660, 0x4610, 0x46F7, 0x4685, 0x4548, 0x4770] {
+            // mov r0,r8 / mov r0,r12 / mov r0,r2 / mov pc,lr / mov sp,r0 /
+            // cmp r0,r9 / bx lr
+            assert_eq!(writes_reserved(h), None, "{h:04x}");
+        }
         // Truncated: a 32-bit prefix with no second halfword.
         assert!(matches!(
             check_bytes(&le(&[0xF240])).unwrap_err().1,
