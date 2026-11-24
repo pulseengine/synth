@@ -1,8 +1,27 @@
 #!/usr/bin/env python3
 # ci-status: wired
 # ci-checks: compiles >= 39
-"""RQ-66-UNWATCHED (#1207): `synth compile` ACCEPTS invalid WebAssembly —
+"""RQ-66-UNWATCHED (#1207): `synth compile` ACCEPTED invalid WebAssembly —
 exit 0, ELF emitted, on modules wasmtime rejects at validation.
+
+STATUS (#1207 fix): CLOSED, AND THE PIN TABLE IS EMPTY. Every input module is
+now validated with wasmparser before it is decoded
+(`synth_core::validate_core_module`), so all 39 cells below are REFUSED, and
+each refusal must carry the validator's own diagnostic ("invalid WebAssembly
+module ... (#1207)") — a non-zero exit for any other reason is red. Measured:
+38 accepted / 1 declined on the pre-fix binary (381c8432), 0 / 39 with the
+fix. `KNOWN` now lists the cells that are STILL wrongly accepted, which is
+none; a cell that starts being accepted again is red until it is listed.
+
+The full spec-suite census this file's own text argues against below is now
+run, in Rust, by `crates/synth-cli/tests/invalid_module_refused_1207.rs`:
+2 719 `assert_invalid` modules x 3 backends x 2 entry paths, every one
+refused BY THE VALIDATOR. The objection recorded below (a non-zero exit mostly measured
+unsupported ops) held while no validator existed; requiring the validator's
+diagnostic removes it. This file stays as the wasmtime-confirmed twin: 13
+fixtures whose invalidity a SECOND engine asserts on every run.
+
+THE REST OF THIS DOCSTRING IS THE PRE-FIX RECORD, kept as written.
 
 THE DEFECT, per the issue's own repro (a stack-height violation at a
 `loop`-`(result i32)` end: `br_if` pops the loop's only value, and the
@@ -125,21 +144,24 @@ FIXTURES["cu_add_tee"] = """\
 assert len(FIXTURES) == 13, f"expected 13 fixtures, got {len(FIXTURES)}"
 
 # ---------------------------------------------------------------------------
-# KNOWN — (fixture, backend) -> verdict. Exact pin: a cell that moves in
-# EITHER direction (a false accept fixed, or a decline that regresses to an
-# accept) is red. Default is "accept" (the defect); only exceptions listed.
+# KNOWN — the (fixture, backend) cells synth STILL wrongly accepts, each with
+# the issue that tracks it. EMPTY since the #1207 fix: all 39 cells are
+# refused by the validator. Exact in both directions: a cell listed here that
+# is refused is red (remove the entry), and a cell not listed that is
+# accepted is red.
+#
+# Before the fix this was a 39-entry comprehension (38 "accept", and
+# ("cu_add_tee", "aarch64") "decline" — AArch64's own End-arity check, which
+# the validator now pre-empts on that cell too).
 # ---------------------------------------------------------------------------
-DECLINES: set[tuple[str, str]] = {
-    ("cu_add_tee", "aarch64"),
-}
-KNOWN: dict[tuple[str, str], str] = {
-    (name, be): ("decline" if (name, be) in DECLINES else "accept")
-    for name in FIXTURES
-    for be in BACKENDS
-}
-EXPECT_ACCEPT = sum(1 for v in KNOWN.values() if v == "accept")
-EXPECT_DECLINE = sum(1 for v in KNOWN.values() if v == "decline")
-assert EXPECT_ACCEPT + EXPECT_DECLINE == 39
+KNOWN: dict[tuple[str, str], str] = {}
+CELLS = len(FIXTURES) * len(BACKENDS)
+assert CELLS == 39
+EXPECT_ACCEPT = len(KNOWN)
+EXPECT_DECLINE = CELLS - EXPECT_ACCEPT
+
+# What a correct refusal says (synth_core::wasm_decoder::INVALID_MODULE_NEEDLE).
+NEEDLE = "invalid WebAssembly module"
 
 
 def wasmtime_confirms_invalid(wat_text: str, engine: wasmtime.Engine) -> str | None:
@@ -194,7 +216,7 @@ def main() -> int:
                 rc, output = run_synth(synth, wat_path, be)
                 n_compiles += 1
                 got = "accept" if rc == 0 else "decline"
-                want = KNOWN[(name, be)]
+                want = "accept" if (name, be) in KNOWN else "decline"
                 if got == "accept":
                     n_accept += 1
                 else:
@@ -204,16 +226,20 @@ def main() -> int:
                         f"{name} / {be}: synth {got}ed (exit={rc}), pin says "
                         f"{want} — wasmtime rejects this module with "
                         f"{reject_msg!r}. A pin move is a real behavior change: "
-                        f"re-measure, then update KNOWN/DECLINES here.")
-                # Sanity on the one declining cell: the decline must be the
-                # RIGHT kind (a stack/value-arity refusal), not some unrelated
-                # failure that happens to exit non-zero.
-                if got == "decline" and be == "aarch64" and name == "cu_add_tee":
-                    if "value stack" not in output and "no result" not in output:
+                        f"re-measure, then update KNOWN here.")
+                # A decline must be the RIGHT kind: the validator's own
+                # diagnostic, not an unrelated failure that happens to exit
+                # non-zero (an unsupported op, a missing FPU), and no object.
+                if got == "decline":
+                    if NEEDLE not in output or "#1207" not in output:
                         fails.append(
-                            f"{name} / {be}: declined, but not for the expected "
-                            f"reason (want a value-stack/arity message): "
-                            f"{output.strip().splitlines()[-1:] }")
+                            f"{name} / {be}: declined, but not by the "
+                            f"validator (want {NEEDLE!r} and #1207): "
+                            f"{output.strip().splitlines()[-1:]}")
+                    if wat_path.with_suffix(".elf").exists():
+                        fails.append(
+                            f"{name} / {be}: declined AND wrote an object")
+                wat_path.with_suffix(".elf").unlink(missing_ok=True)
 
     print(f"#1207 fixtures={len(FIXTURES)} backends={len(BACKENDS)} "
           f"compiles={n_compiles} accepted(wrong)={n_accept} declined={n_decline}")
@@ -225,10 +251,9 @@ def main() -> int:
         for f in fails:
             print(f"  {f}")
         return 1
-    print(f"RESULT: PASS — {n_accept} wrongly-accepted invalid module(s) "
-          f"pinned exactly as measured; {n_decline} correctly declined "
-          f"(AArch64/cu_add_tee only — a partial capability ARM/RISC-V lack "
-          f"entirely, see #1229 sibling oracle)")
+    print(f"RESULT: PASS — {n_decline} of {n_compiles} invalid module "
+          f"compiles refused by the validator; {n_accept} wrongly accepted "
+          f"(pinned: {len(KNOWN)})")
     return 0
 
 

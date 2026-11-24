@@ -83,7 +83,12 @@ fn constant_plus_offset_is_relocated_on_the_effective_address() {
     for (tag, body) in [
         ("x", "i32.const 0x900 i32.load offset=0x1704"),
         ("y", "i32.const 0x1900 i32.load offset=0x704"),
-        ("y64", "i32.const 0x1900 i64.load32_u offset=0x704"),
+        // #1207: `i32.wrap_i64` makes the body match its `(result i32)`. The
+        // fixture used to leave the i64 on the stack, which does not validate.
+        (
+            "y64",
+            "i32.const 0x1900 i64.load32_u offset=0x704 i32.wrap_i64",
+        ),
         (
             "st",
             "i32.const 0x1900 i32.const 7 i32.store offset=0x704 i32.const 0",

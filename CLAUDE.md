@@ -281,7 +281,10 @@ ever-growing pile of locally-correct patches.**
 > COMPREHENSION matches the regex like any literal AND is read by `_pin_table` through
 > `_count_dict_comp`, and the live counter-example is the LARGEST table in the
 > population (`invalid_accept_1207_differential.py:133`, 39 of the 84 entries) — so it
-> escapes neither layer. The escapes that are real are narrower and differently
+> escapes neither layer. (That example is HISTORICAL since the #1207 fix: every input
+> module is validated before decode, the 39 cells are refused, and the table is an
+> empty literal. No comprehension table remains in the population, so the
+> comprehension path is now exercised by `scripts/test_claim_check.py` alone.) The escapes that are real are narrower and differently
 > shaped: `NAME = dict(...)` has no `= {`, so the regex misses it; `NAME = {}` followed
 > by `.update()` calls DOES match the regex and IS read by `_pin_table`, which returns
 > **0** without raising — a silent UNDERCOUNT rather than an escape, and strictly worse,
