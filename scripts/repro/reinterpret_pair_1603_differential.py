@@ -213,12 +213,12 @@ FUNCS = {
 # Exports refused on cortex-m7dp for a reason OTHER than #1603 — a loud
 # decline (reach, not wrongness) that a plain, non-bit-cast value of the same
 # type hits identically — pinned so a change in either direction is seen:
-#   #929  an i64 call ARGUMENT is not marshalled as a register pair;
 #   #509  an i64 value carried over br/br_if/br_table;
 #   #313  an f64 `if` result (even `f64.neg` of a param declines the same);
 #   #1318 an f64 value carried over br/br_if/br_table.
-EXPECTED_DECLINES = {"ri_call_arg": "#929", "ri_br": "#509", "rf_if": "#313",
-                     "rf_br": "#1318"}
+# (`ri_call_arg` was pinned here to #929 until #1785 marshalled an i64 call
+# argument as an AAPCS register pair; it now compiles and is executed.)
+EXPECTED_DECLINES = {"ri_br": "#509", "rf_if": "#313", "rf_br": "#1318"}
 
 F64_BITS = [0x3FF8000000000000, 0xC00921FB54442D18, 0x8000000000000000,
             0x0000000000000001, 0x7FF0000000000000, 0x7FF8000000000123,

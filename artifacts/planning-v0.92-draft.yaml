@@ -314,3 +314,59 @@ artifacts:
       req-type: process
       priority: could
       verification-track: manual
+
+  - id: RQ-92-I64ARGS
+    type: system-req
+    status: draft
+    title: "An i64 call argument on ARM Thumb-2 is passed where base AAPCS puts it"
+    description: >
+        SERVES: O1 (Runs on target), reach. Refs #1785 (external report) and
+        #929. Until this record a direct call with any 64-bit argument was
+        refused on the ARM Thumb-2 backend (`#929: call arg 0 is 64-bit and
+        would be passed in a register ... Declining`, or `#503` for one on
+        the stack), in `--relocatable` and in the self-contained `--cortex-m`
+        image alike, and the module then failed (#952), or failed at #1102
+        once another retained function called the declined one.
+
+        THE CAPABILITY. A direct call's core arguments are laid out by
+        `aapcs_param_layout` over the callee's DECLARED widths, the same walk
+        synth's callee prologue homes params with: an i64 takes the next
+        even register pair, an odd NCRN is skipped and never back-filled, the
+        low word is in the lower register; an i64 that does not fit goes to
+        an 8-aligned stacked-argument slot and every later argument is
+        stacked too. The register half is one parallel move, so a source
+        that is another argument's destination is read before it is written.
+        An i64 among AAPCS-VFP float arguments takes the same core walk.
+
+        RESIDUAL, still a loud decline: an i64 argument of `call_indirect`
+        (no per-type width table reaches the selector). Separately, and not
+        caused by the caller: a call-free callee with an i64 param in a
+        register and i64 arithmetic in its body can still be refused by its
+        own prologue (#518/#837, the pair-exhaustion retry).
+
+        REFUTING COMMAND: `cargo test -p synth-oracle --features exec --test
+        i64_call_args_1785` with `SYNTH` naming the binary under test. RED on
+        main d6fff037: every module compile refused with #929. GREEN on the
+        lane: 400 hosted steps (4 legs x 10 signatures, 200 import calls
+        matched word for word), 50 self-contained steps and 40
+        live-across-call steps agree with kiln.
+
+        FOUND ALONG THE WAY, fixed with it: once call.wast's `fac` compiled,
+        spec_exec_1636 caught `i64.mul (local.get 0) (call ...)` returning
+        n*n — the spilled `local.get` was reloaded into R0:R1 over the call's
+        i64 result. The i32-argument twin of that shape was already a silent
+        miscompile on d6fff037 (`mulcall(5)` gave 0x19, wasm 0x500000014).
+        A reload now avoids every register the same op already popped.
+    tags:
+      - north-star-o1
+      - reach
+      - selector
+      - draft-v0.92
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1785"
+      verification-track: execution

@@ -99,8 +99,10 @@ const DECLINES: &[(&str, &[&str])] = &[
         "d_stack_arg",
         &[V6M, "passes 5 arguments", "outgoing stack argument"],
     ),
-    // Refused on every ARM target, ARMv6-M included (#929).
-    ("d_i64_arg", &["#929: call arg 0 is 64-bit"]),
+    // #1785 lowers an i64 call argument on the v7-M targets (AAPCS register
+    // pair); on ARMv6-M the marshalling's i64 store has no v6-M rule, so the
+    // function is still refused, now by the ARMv6-M lowering.
+    ("d_i64_arg", &["no ARMv6-M rule for `I64Str"]),
     // No FPU: refused by the selector, naming the ARMv6-M triple.
     (
         "d_f32_add",

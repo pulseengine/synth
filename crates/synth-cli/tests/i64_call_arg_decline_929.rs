@@ -1,5 +1,6 @@
-//! #929 (CRITICAL) — a 64-bit call argument in a register position must DECLINE,
-//! not miscompile.
+//! #929 (CRITICAL) — a 64-bit call argument must never be marshalled as one
+//! 32-bit word. Refs #1785: a DIRECT call now marshals it per AAPCS; the
+//! residual that cannot be marshalled still DECLINES.
 //!
 //! Measured on v0.55.0, executed under qemu against wasmtime:
 //!
@@ -15,28 +16,25 @@
 //! | thumb-2  | **287454020** | **287454020** |
 //!
 //! `287454020` = `0x11223344` = the i64's HIGH half, returned regardless of the
-//! actual argument. `synth compile` exited 0 with no warning.
+//! actual argument. `synth compile` exited 0 with no warning. v0.57 turned
+//! that into a loud decline of every i64 argument (#929).
 //!
-//! # Root cause, and why the refusal covers the whole class
+//! # v0.92 (Refs #1785): the direct call is marshalled
 //!
-//! `emit_arg_moves` maps one argument to one register (`arg_srcs[i]` ->
-//! `ARG_REGS[i]`). AAPCS gives a 64-bit argument an EVEN-ALIGNED register PAIR,
-//! so the high half was never placed and every later argument shifted down.
+//! `call_arg_marshal` lays a direct call's core arguments out with
+//! `aapcs_param_layout` over the callee's DECLARED widths — the walk synth's
+//! own callee prologue homes params with: an i64 takes the next even register
+//! pair (an odd NCRN is skipped and never back-filled), low word in the lower
+//! register; one that does not fit goes to an 8-aligned stack slot, and every
+//! later argument follows it. The execution oracle is
+//! `crates/synth-oracle/tests/i64_call_args_1785.rs` (local and import
+//! callees, register and stack shapes, against kiln).
 //!
-//! Its docstring has always said it cannot do this — *"i64/f64 arguments —
-//! which AAPCS passes in register pairs — are NOT marshalled"* — and it
-//! marshalled them anyway. A documented non-capability with nothing enforcing
-//! it is not a limitation; it is a silent miscompile.
+//! # What still declines, and why
 //!
-//! The refusal covers EVERY i64 register argument, not just the "not last"
-//! shape the issue measured. For `(i32, i64)` AAPCS places the i64 in `r2:r3`
-//! while synth puts its low half in `r1`: that shape looked correct only
-//! because the callee under test returned the i32, so the wrong i64 was never
-//! read. Refusing the class is the honest boundary.
-//!
-//! FOLLOW-UP: real AAPCS pair marshalling. The #928 conformance gate declines
-//! 118 assertions as `i64-pair` — that is precisely this capability, and it is
-//! the acceptance oracle already in place.
+//! `call_indirect`: no per-TYPE param-width table reaches the selector, so
+//! every argument of an indirect call is declared narrow and a 64-bit operand
+//! is refused by the width check (#929), never marshalled as one word.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -61,12 +59,12 @@ fn compile(tag: &str, wat: &str) -> (bool, String, String) {
             "cortex-m3",
             "--all-exports",
             "--relocatable",
-            // #952: `f` is the sole export in the two decline fixtures below,
-            // and it is exactly the function #929 declines — since v0.57 that
-            // exits non-zero by default. These tests want the decline (and
-            // its diagnostic) with the compile still reporting success, which
-            // is the opt-in `--allow-skipped-exports` case. A no-op on
-            // I32_ONLY, where nothing is skipped.
+            // #952: in the decline fixture `f` is the sole export and is
+            // exactly the function #929 declines — since v0.57 that exits
+            // non-zero by default. The test wants the decline (and its
+            // diagnostic) with the compile still reporting success, which is
+            // the opt-in `--allow-skipped-exports` case. A no-op where nothing
+            // is skipped.
             "--allow-skipped-exports",
             "-o",
             obj.to_str().unwrap(),
@@ -92,60 +90,59 @@ const I64_LAST: &str = r#"(module
     (call $g (local.get 0) (i64.const 1234605616436508552))))
 "#;
 
+/// An i64 argument of a `call_indirect`: no width table, so it must decline.
+const I64_INDIRECT: &str = r#"(module
+  (type $t (func (param i64) (result i32)))
+  (table 1 funcref)
+  (elem (i32.const 0) $g)
+  (func $g (type $t) (i32.wrap_i64 (local.get 0)))
+  (func (export "f") (result i32)
+    (call_indirect (type $t) (i64.const 5) (i32.const 0))))
+"#;
+
 const I32_ONLY: &str = r#"(module
   (func $g (param i32 i32) (result i32) (local.get 1))
   (func (export "f") (param i32 i32) (result i32)
     (call $g (local.get 0) (local.get 1))))
 "#;
 
-/// gale's exact repro: the function must NOT be emitted, and the reason must
-/// name #929. Emitting it at all is the miscompile.
-#[test]
-fn i64_first_argument_is_declined_not_miscompiled() {
-    let (ok, _out, err) = compile("first", I64_FIRST);
-    assert!(ok, "the compile itself should still succeed: {err}");
+fn assert_emitted(tag: &str, wat: &str) {
+    let (ok, _out, err) = compile(tag, wat);
+    assert!(ok, "{tag}: the compile must succeed: {err}");
     assert!(
-        err.contains("#929"),
-        "the decline must name #929 so a consumer can act on it: {err}"
-    );
-    assert!(
-        err.contains("skipped") && err.contains("'f'")
-            || err.contains("f\n")
-            || err.contains(": f"),
-        "the caller must be OMITTED from the object, not emitted with wrong \
-         argument marshalling: {err}"
+        !err.contains("#929") && !err.contains("skipped"),
+        "{tag}: a direct call with an i64 argument is marshalled per AAPCS \
+         since #1785 and its caller must be EMITTED: {err}"
     );
 }
 
-/// The i64-LAST shape is refused too. It is not a regression: AAPCS places that
-/// i64 in r2:r3 while synth put its low half in r1, so the i64 parameter was
-/// already wrong — it merely went unnoticed because the callee returned the
-/// i32. This test exists so that fact is recorded rather than rediscovered.
+/// gale's exact repro: the i64 in R0:R1, the i32 in R2. Executed by
+/// `i64_call_args_1785.rs`; here only that the caller is emitted.
 #[test]
-fn i64_last_argument_is_also_declined_because_it_was_never_right() {
-    let (ok, _out, err) = compile("last", I64_LAST);
+fn i64_first_argument_is_marshalled_1785() {
+    assert_emitted("first", I64_FIRST);
+}
+
+/// The i64-LAST shape: AAPCS skips R1 and puts the pair in R2:R3.
+#[test]
+fn i64_last_argument_is_marshalled_1785() {
+    assert_emitted("last", I64_LAST);
+}
+
+/// The residual: an i64 argument of an indirect call is refused by name, and
+/// the caller is OMITTED (emitting it at all would be the #929 miscompile).
+#[test]
+fn i64_indirect_call_argument_is_still_declined() {
+    let (ok, _out, err) = compile("indirect", I64_INDIRECT);
     assert!(ok, "the compile itself should still succeed: {err}");
     assert!(
-        err.contains("#929"),
-        "an i64 in ANY register argument position is mis-marshalled and must be \
-         declined; passing here would mean the class is only partly refused: {err}"
+        err.contains("#929") && err.contains("skipping function 'f'"),
+        "the indirect caller must be declined, naming #929: {err}"
     );
 }
 
-/// NON-VACUITY, and the regression guard: an all-i32 call must still compile
-/// and emit its caller. Without this, a refusal that swallowed every call would
-/// pass the two tests above.
+/// NON-VACUITY: an all-i32 call must still compile and emit its caller.
 #[test]
 fn i32_only_call_still_compiles_and_is_emitted() {
-    let (ok, _out, err) = compile("i32", I32_ONLY);
-    assert!(ok, "an all-i32 call must compile: {err}");
-    assert!(
-        !err.contains("#929"),
-        "the #929 refusal must not fire for i32 arguments — that would be a \
-         refusal of everything, which passes the decline tests vacuously: {err}"
-    );
-    assert!(
-        !err.contains("skipped"),
-        "the all-i32 caller must be EMITTED, not skipped: {err}"
-    );
+    assert_emitted("i32", I32_ONLY);
 }

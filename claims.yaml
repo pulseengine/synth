@@ -1368,7 +1368,7 @@ claims:
   # this closes, measured.
   - id: SYNTH-SPEC-SUITE-CENSUS-FPU
     doc: README.md
-    text: "full-module compile 19 cortex-m4f / 26 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0"
+    text: "full-module compile 19 cortex-m4f / 27 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0"
     evidence:
       - kind: count-eq                       # the legs exist and name the FPU targets
         pattern: '"arm_m4f": \["-t", "cortex-m4f"\]'
@@ -1383,7 +1383,7 @@ claims:
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # arm_m7dp bucket pins
-        pattern: 'ok=26, partial=24'
+        pattern: 'ok=27, partial=23'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # doc-cited ok+partial figures
@@ -1391,7 +1391,7 @@ claims:
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # function-level pin (file buckets miss in-file float moves)
-        pattern: 'SKIPPED_FUNCTION_PINS = \{"arm_m4f": 1493, "arm_m7dp": 1400\}'
+        pattern: 'SKIPPED_FUNCTION_PINS = \{"arm_m4f": 1482, "arm_m7dp": 1387\}'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-min                      # the job runs the census (all legs by default)
@@ -1401,7 +1401,7 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-MATRIX
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 24 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0; ARM with an FPU (#1609 — the ARM leg above is `--cortex-m` = cortex-m3, which declines every f32/f64 function): full-module compile 19 cortex-m4f / 26 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
+    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 24 AArch64, at-least-one-export 43 / 39 / 41, panics 0 / 0 / 0; ARM with an FPU (#1609 — the ARM leg above is `--cortex-m` = cortex-m3, which declines every f32/f64 function): full-module compile 19 cortex-m4f / 27 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
     evidence:
       - kind: count-eq                       # same script pins as the README leg
         pattern: 'ok=16, partial=27'
@@ -2131,9 +2131,38 @@ claims:
         # derived on the batch tree; neither lane's own `to:` holds there.
         # M0I32 (#1301): 21403 -> 21422, waived below (chained after BATCH1's;
         # rebased onto v0.92 batch 2).
-        value: 21422
+        # I64ARGS (#1785, #929): 21422 -> 21521 (+99), waived below; chained
+        # after M0I32's, re-derived on the tree rebased onto #1790.
+        value: 21521
         baseline: 17897
         waivers:
+          - to: 21521
+            reason: >-
+              I64ARGS (Refs #1785, #929): 21422 -> 21521 (+99; measured as 21403 -> 21502 on the lane's own base d6fff037, the same +99 after rebasing onto main 064b3ed6, #1790). A NEW lowering
+              decision, not a second copy of one: an i64 call argument is
+              marshalled per base AAPCS (even register pair, skipped odd NCRN,
+              8-aligned stack slot, later args stacked) instead of refused.
+              The two refusals it replaces are DELETED (the #503 stack-i64 and
+              the #929 register-i64 loops in pop_call_args, and the i64 refusal
+              in pop_call_args_mixed), and so is the one-arg-one-register
+              mapping (`ARG_REGS[i]`, `(k-4)*4`) in emit_arg_moves and
+              emit_stack_args. What grows: call_arg_marshal (the plan, computed
+              by aapcs_param_layout, the walk the callee prologue already
+              uses), call_arg_widths and call_nsaa_bytes, the declared-width
+              check that still refuses a width mismatch (#929, e.g.
+              call_indirect), the per-callee width table, and the outgoing
+              area sized from the layout (+65 of the +99). The other +34 is a
+              wrong-code fix the spec-execution oracle found once call.wast's
+              `fac` compiled: pop_operand now records what the current op has
+              popped and a spilled operand's reload avoids it (op_popped,
+              pop_operand_inner), so `i64.mul (local.get 0) (call ...)` no longer
+              reloads the spilled operand over the call's i64 result — the #973
+              class at every multi-operand op; its i32-argument twin was a silent
+              miscompile on d6fff037. No wildcard arm added. Gated by execution:
+              crates/synth-oracle/tests/i64_call_args_1785.rs (RED on d6fff037,
+              all compiles refused with #929; GREEN: 490 steps agree with kiln)
+              and spec_exec_1636 (PASS, 35722 -> 35787 directives executed);
+              non-target modules byte-identical.
           - to: 21422
             reason: >-
               M0I32 (Refs #1301): 21403 -> 21422 (+19, re-derived after cargo
@@ -3670,7 +3699,13 @@ claims:
         # M0I32 (#1301): 32477 -> 32496: the +19 code growth (waived on
         # selector_lines_code), test module unchanged; re-derived on the tree
         # rebased onto v0.92 batch 2. No waiver.
-        value: 32496
+        # I64ARGS (#1785): 32496 -> 32680: +99 code (waived on
+        # selector_lines_code) and +85 test module (the `_1785` marshal-matrix
+        # unit test, the reworked `_326` arg-move call sites, the `_369`
+        # i64-beside-f32 case that now lowers, and the `_242` drain that pops
+        # each operand as its own op); re-derived after rebasing onto #1790.
+        # No waiver.
+        value: 32680
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

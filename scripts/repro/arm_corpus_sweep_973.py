@@ -128,15 +128,13 @@ M32 = 0xFFFFFFFF
 # Taking a name off this list is the only way to record that a gap closed, and
 # leaving one on after it closes is red. Adding one requires saying why here.
 EXPECTED_DECLINES = {
-    # RQ-63-A64STACK (v0.63). An aarch64 value-stack fixture; 2 of its 13
-    # functions decline on ARM for PRE-EXISTING, correct reasons, verified by
-    # compiling it for cortex-m3: `below_i64` hits #929 (an i64 call argument
-    # needs an AAPCS even-aligned register PAIR and synth marshals one 32-bit
-    # register per argument, so it declines rather than dropping the high half)
-    # and `below_fp` hits GI-FPU-002 (scalar f64 needs a double-precision FPU;
-    # thumbv7m-none-eabi has none). Neither is a regression and neither is
-    # about the value-stack change this fixture exercises.
-    "aarch64_call_valstack_rq63.wat": "i64 call arg (#929 AAPCS pair) + f64 with no FPU (GI-FPU-002)",
+    # RQ-63-A64STACK (v0.63). An aarch64 value-stack fixture; `below_fp`
+    # declines on ARM for a PRE-EXISTING, correct reason: GI-FPU-002 (scalar
+    # f64 needs a double-precision FPU; thumbv7m-none-eabi has none). Not a
+    # regression and not about the value-stack change this fixture exercises.
+    # (`below_i64` declined with #929 too, until #1785 marshalled an i64 call
+    # argument as an AAPCS register pair; it compiles now.)
+    "aarch64_call_valstack_rq63.wat": "f64 with no FPU (GI-FPU-002)",
     # RQ-65-ALIASCLASS (#1189). The i64 half of the home-register alias-class
     # oracle (`home_alias_class_1189_differential.py`, which pins this exact
     # decline set per leg). 10 of its 48 exports — the `c_*` compares, each an
