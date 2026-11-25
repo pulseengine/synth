@@ -6054,18 +6054,16 @@ impl InstructionSelector {
                     // (an i64 is an even register pair or an 8-aligned slot).
                     let float_params: Vec<u32> = float_arg_layout.iter().map(|&(i, _)| i).collect();
                     let widths = self.call_arg_widths(*func_idx, arg_count, &float_params);
-                    let (arg_srcs, float_args) = if float_arg_layout.is_empty() {
-                        (
-                            Self::pop_call_args(
-                                &mut stack,
-                                &mut next_temp,
-                                &mut instructions,
-                                &mut spill,
-                                &widths,
-                                idx,
-                            )?,
-                            Vec::new(),
-                        )
+                    let (arg_srcs, float_args, early) = if float_arg_layout.is_empty() {
+                        let (srcs, early) = Self::pop_call_args(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &widths,
+                            idx,
+                        )?;
+                        (srcs, Vec::new(), early)
                     } else {
                         let float_dst: std::collections::HashMap<u32, VfpReg> =
                             float_arg_layout.iter().copied().collect();
@@ -6078,9 +6076,12 @@ impl InstructionSelector {
                             &float_dst,
                             &widths,
                             idx,
-                        )?
+                        )
+                        .map(|(s, f)| (s, f, Vec::new()))?
                     };
-                    let (reg_moves, stack_stores) = Self::call_arg_marshal(&arg_srcs)?;
+                    let (reg_moves, mut stack_stores) = Self::call_arg_marshal(&arg_srcs)?;
+                    // #1791: slots pop_call_args already stored.
+                    stack_stores.retain(|(off, _)| !early.contains(off));
 
                     // #359: store stack-passed args to the outgoing stack region
                     // BEFORE preservation and the r0..r3 move (their sources are
@@ -6339,7 +6340,7 @@ impl InstructionSelector {
                     // #929: no per-TYPE width table reaches the selector, so every
                     // argument is declared narrow and a 64-bit operand here is
                     // refused by the width check (not marshalled as one word).
-                    let arg_srcs = Self::pop_call_args(
+                    let (arg_srcs, early) = Self::pop_call_args(
                         &mut stack,
                         &mut next_temp,
                         &mut instructions,
@@ -6347,7 +6348,8 @@ impl InstructionSelector {
                         &vec![false; arg_count as usize],
                         idx,
                     )?;
-                    let (reg_moves, stack_stores) = Self::call_arg_marshal(&arg_srcs)?;
+                    let (reg_moves, mut stack_stores) = Self::call_arg_marshal(&arg_srcs)?;
+                    stack_stores.retain(|(off, _)| !early.contains(off));
 
                     // #359: store stack-passed args to the outgoing stack region
                     // BEFORE the table-index relocation (free_callee_saved below

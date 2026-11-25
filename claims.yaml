@@ -2133,9 +2133,27 @@ claims:
         # rebased onto v0.92 batch 2).
         # I64ARGS (#1785, #929): 21422 -> 21521 (+99), waived below; chained
         # after M0I32's, re-derived on the tree rebased onto #1790.
-        value: 21521
+        # CALL10 (#1791, Refs #1785): 21521 -> 21566, waived below.
+        value: 21566
         baseline: 17897
         waivers:
+          - to: 21566
+            reason: >-
+              CALL10 (Refs #1785; regression found after #1791 merged):
+              21521 -> 21566 (+45). The #1785 reload rule (a spilled call
+              argument's reload avoids every register an already-popped
+              argument holds) left nothing to reload into on a ten-argument
+              call with one spilled argument, so stack_args_503's CALL10
+              `caller` was refused with register exhaustion (#952). The +45
+              is pop_call_args (and its PoppedArgs return type) storing the
+              already-popped STACK-passed arguments to their outgoing slots before such a reload, which
+              frees their registers, and the two call sites dropping those
+              slots from the marshal's later stores. It fires only when an
+              argument is spilled, so every other call's bytes are unchanged
+              (byte-identity sweep). No wildcard arm added. Gated by execution:
+              stack_args_503_differential.py (CALL10 vs wasmtime, 13 of 13)
+              and crates/synth-cli/tests/call10_stack_args_1791.rs (red on
+              ba110c10, green here).
           - to: 21521
             reason: >-
               I64ARGS (Refs #1785, #929): 21422 -> 21521 (+99; measured as 21403 -> 21502 on the lane's own base d6fff037, the same +99 after rebasing onto main 064b3ed6, #1790). A NEW lowering
@@ -3705,7 +3723,9 @@ claims:
         # i64-beside-f32 case that now lowers, and the `_242` drain that pops
         # each operand as its own op); re-derived after rebasing onto #1790.
         # No waiver.
-        value: 32680
+        # CALL10 (#1791): 32680 -> 32725, +45 code (waived on
+        # selector_lines_code), no test-module change. No waiver.
+        value: 32725
       # RQ-58-WILDCARD's real denominator, and THE directed wildcard pin. 62
       # absorbing arms are in the lowering code; the other 43 of the plan's 105
       # are assertion helpers in the test module, where a `_ =>` is not a

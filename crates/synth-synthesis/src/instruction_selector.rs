@@ -26,6 +26,8 @@ type FloatSig = (bool, bool, Vec<(u32, VfpReg)>);
 type MarshalPlan = (Vec<(Reg, bool)>, Vec<(VfpReg, VfpReg)>);
 /// #1785: (core register moves `(dst, src)`, outgoing stack stores `(sp off, src)`).
 type CallMarshal = (Vec<(Reg, Reg)>, Vec<(i32, Reg)>);
+/// #1791: (popped core args `(lo, is_i64)`, NSAA offsets already stored).
+type PoppedArgs = (Vec<(Reg, bool)>, Vec<i32>);
 
 /// Bounds checking configuration for memory operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8966,6 +8968,14 @@ impl InstructionSelector {
     /// so (`call_indirect`, hand-built streams) would otherwise be marshalled
     /// as one word and shift every later argument. A spilled argument's
     /// reload avoids every register an already-popped argument occupies.
+    ///
+    /// #1791: with more popped arguments than registers (CALL10: ten args,
+    /// one spilled), that reservation left nothing to reload into. So BEFORE a
+    /// spilled argument is reloaded, every already-popped STACK-passed
+    /// argument is stored to its outgoing slot and its register released. The
+    /// second return value lists the NSAA offsets stored that way, which the
+    /// caller drops from [`Self::call_arg_marshal`]'s stores. With no spilled
+    /// argument nothing is stored early, so the emitted order is unchanged.
     fn pop_call_args(
         stack: &mut Vec<StackVal>,
         next_temp: &mut u8,
@@ -8973,7 +8983,7 @@ impl InstructionSelector {
         spill: &mut SpillState,
         widths: &[bool],
         idx: usize,
-    ) -> Result<Vec<(Reg, bool)>> {
+    ) -> Result<PoppedArgs> {
         let n = widths.len();
         if stack.len() >= n {
             let base = stack.len() - n;
@@ -8983,18 +8993,51 @@ impl InstructionSelector {
                 }
             }
         }
+        let lay = aapcs_param_layout(n as u32, widths, &[], &[]);
         let mut srcs: Vec<(Reg, bool)> = Vec::with_capacity(n);
         let mut taken: Vec<Reg> = Vec::new();
-        for &w in widths.iter().rev() {
+        let (mut pending, mut early): (Vec<(i32, Reg)>, Vec<i32>) = (Vec::new(), Vec::new());
+        for (k, &w) in widths.iter().enumerate().rev() {
+            if matches!(stack.last(), Some(StackVal::Spilled { .. })) && !pending.is_empty() {
+                for (off, src) in pending.drain(..) {
+                    if off > 4095 {
+                        return Err(synth_core::Error::synthesis(format!(
+                            "#503: outgoing stack-arg offset {off} exceeds the 12-bit \
+                             [sp,#imm] range"
+                        )));
+                    }
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Str {
+                            rd: src,
+                            addr: MemAddr::imm(Reg::SP, off),
+                        },
+                        source_line: Some(idx),
+                    });
+                    early.push(off);
+                    // One occurrence only: another argument (a register one,
+                    // not stored yet) may read the same register.
+                    for list in [&mut taken, &mut spill.op_popped.1] {
+                        if let Some(i) = list.iter().position(|&r| r == src) {
+                            list.remove(i);
+                        }
+                    }
+                }
+            }
             let r = pop_operand(stack, next_temp, instructions, spill, &taken, idx)?;
-            taken.push(r);
-            if w {
-                taken.push(i64_pair_hi(r)?);
+            let words = if w { vec![r, i64_pair_hi(r)?] } else { vec![r] };
+            taken.extend_from_slice(&words);
+            if let Some(&(off, _)) = lay.stack.get(&(k as u32)) {
+                pending.extend(
+                    words
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &x)| (off + 4 * i as i32, x)),
+                );
             }
             srcs.push((r, w));
         }
         srcs.reverse();
-        Ok(srcs)
+        Ok((srcs, early))
     }
 
     /// #929/#1785: the refusal for an argument whose operand width disagrees
