@@ -229,7 +229,9 @@ const DECLINED: &[(&str, &str)] = &[
         "ARMv6-M lowering, RQ-91-M0I32 (#1301): the call to function 3 passes 6 arguments",
     ),
     ("d_call_indirect", "no ARMv6-M rule for `CallIndirect"),
-    ("d_i64_arg", "#929: call arg 0 is 64-bit"),
+    // #1785 lowers i64 call arguments on v7-M; the i64 store has no ARMv6-M
+    // rule, so ARMv6-M still refuses the function, by name.
+    ("d_i64_arg", "no ARMv6-M rule for `I64Str"),
     ("d_i64_across", "no ARMv6-M rule for `I64Str"),
 ];
 
