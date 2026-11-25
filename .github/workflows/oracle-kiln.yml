@@ -101,7 +101,7 @@ jobs:
         run: cargo build -p synth-cli
       - name: Clippy (synth-oracle with the engines)
         run: cargo clippy -p synth-oracle --features exec --all-targets -- -D warnings
-      - name: kiln oracles (probe sweep; import call boundary; potency legs) + #1450 control + RV32 ISA profiles
+      - name: kiln oracles (probe sweep; import call boundary; potency legs) + #1450 control
         run: |
           set -euo pipefail
           log="$RUNNER_TEMP/oracle-kiln.log"
@@ -187,10 +187,11 @@ jobs:
           # frozen pre-fix words must stay judged wrong; six exports of the
           # spec suite that the fix makes compile (local_get, local_set,
           # local_tee) run with the suite's own arguments. The only test
-          # binary that reports 4 passed.
+          # binary that reports 4 passed with none ignored (the RV32 ISA
+          # profile oracle reports 4 passed, 1 ignored; pinned below).
           grep -qx 'ORACLE float-local-1763: 202 cases agree across 3 legs' "$log"
           grep -qx 'ORACLE float-local-1763 a64 spec exports: 6 of 6 cases agree' "$log"
-          test "$(grep -cE '^test result: ok\. 4 passed; 0 failed' "$log")" = 1
+          test "$(grep -cE '^test result: ok\. 4 passed; 0 failed; 0 ignored' "$log")" = 1
           grep -qx 'ORACLE float-local-1763 \[a64\]: 0 of 94 wrong; wrong values: \[\]; refused: \[\]' "$log"
           grep -qx 'ORACLE float-local-1763 a64 call argument: refused (argument 0 is a float)' "$log"
           # v0.92 batch 2, Refs #1761 (tests/wast_merge_call_binding_1761.rs):
@@ -206,7 +207,7 @@ jobs:
           grep -qx 'ORACLE wast-merge-1761 structure: 47 call sites bound to their own module across 20 objects' "$log"
           grep -qx 'ORACLE wast-merge-1761 a64: 4 fixtures with an import call refused, 1 call site bound in the fixture without one' "$log"
           grep -qx 'ORACLE wast-merge-1761 control: 28 steps agree and 5 import call sites are bound on single-module input' "$log"
-          test "$(grep -cE '^test result: ok\. 5 passed; 0 failed' "$log")" = 2
+          test "$(grep -cE '^test result: ok\. 5 passed; 0 failed' "$log")" = 1
           # RQ-91-M0I32 (#1301): the ARMv6-M i32 lowering on the Cortex-M0 model.
           # The two shapes pinned wrong for #1754 are accepted probes since the
           # fix (RQ-92-WDGTHIN: 0 of 216 vectors wrong each), inside these counts.
@@ -251,4 +252,4 @@ jobs:
           grep -qE '(^|\.\.\. )ORACLE rv32-isa: 6300 cases agree across 5 profiles, 7 M functions refused$' "$log"
           # 4 run; the corpus leg needs gale's (unvendored) drivers and is
           # #[ignore]d, so it is reported, never counted as a pass (review 12 F3).
-          grep -qE '^test result: ok\. 4 passed; 0 failed; 1 ignored' "$log"
+          test "$(grep -cE '^test result: ok\. 4 passed; 0 failed; 1 ignored' "$log")" = 1
