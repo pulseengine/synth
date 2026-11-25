@@ -515,6 +515,7 @@ fn frozen_pre_fix_bytes_are_judged_wrong() {
         // to link, and a self-contained image by construction.
         relocs: Vec::new(),
         relocatable: false,
+        e_flags: 0,
     };
     let cfg = EmuConfig::new(Cpu::CortexM4);
     let i = WasmValue::I32;

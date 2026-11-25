@@ -37,6 +37,13 @@ jobs:
     # planted illegal instruction, a dropped i64 high word, and a budget
     # overrun that must never count as a trap.
     #
+    # RQ-91-RV32ISA (Refs #1744): the same `cargo test` run carries the RV32
+    # `--target` profile oracle (`tests/rv32_isa_profile_oracle.rs`): for
+    # rv32i/rv32im/rv32imc/esp32c3/rv32imac every emitted instruction decodes
+    # inside the profile (a Rust decoder; unicorn cannot restrict RV32
+    # extensions), `e_flags` carry RVC iff C, accepted code agrees with kiln,
+    # rv32i refuses every M lowering, and atomics are refused everywhere.
+    #
     # NOT a required context, so it can be added and renamed freely.
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
     # MEASURED, not guessed. The first run on the pool (run 44587233237,
@@ -112,7 +119,8 @@ jobs:
           # refusals, the boot contract); 1 the target-record binary's own
           # unit test.
           grep -qE '^test result: ok\. 15 passed; 0 failed' "$log"
-          grep -qE '^test result: ok\. 24 passed; 0 failed' "$log"
+          # RQ-91-RV32ISA: +3, the `rv32_isa` decoder unit tests.
+          grep -qE '^test result: ok\. 27 passed; 0 failed' "$log"
           grep -qE '^test result: ok\. 3 passed; 0 failed' "$log"
           grep -qE '^test result: ok\. 1 passed; 0 failed' "$log"
           # Refs #1754 (tests/select_home_alias_1754.rs): select must not
@@ -179,10 +187,11 @@ jobs:
           # frozen pre-fix words must stay judged wrong; six exports of the
           # spec suite that the fix makes compile (local_get, local_set,
           # local_tee) run with the suite's own arguments. The only test
-          # binary that reports 4 passed.
+          # binary that reports 4 passed with none ignored (the RV32 ISA
+          # profile oracle reports 4 passed, 1 ignored; pinned below).
           grep -qx 'ORACLE float-local-1763: 202 cases agree across 3 legs' "$log"
           grep -qx 'ORACLE float-local-1763 a64 spec exports: 6 of 6 cases agree' "$log"
-          test "$(grep -cE '^test result: ok\. 4 passed; 0 failed' "$log")" = 1
+          test "$(grep -cE '^test result: ok\. 4 passed; 0 failed; 0 ignored' "$log")" = 1
           grep -qx 'ORACLE float-local-1763 \[a64\]: 0 of 94 wrong; wrong values: \[\]; refused: \[\]' "$log"
           grep -qx 'ORACLE float-local-1763 a64 call argument: refused (argument 0 is a float)' "$log"
           # v0.92 batch 2, Refs #1761 (tests/wast_merge_call_binding_1761.rs):
@@ -238,3 +247,9 @@ jobs:
           grep -qx 'ORACLE i64-call-args-1785 hosted: 400 steps agree across 4 legs x 10 signatures, 200 host calls matched' "$log"
           grep -qx 'ORACLE i64-call-args-1785 self-contained: 50 steps agree across 10 signatures' "$log"
           grep -qx 'ORACLE i64-call-args-1785 live-across-call: 40 steps agree across 4 legs' "$log"
+          # RQ-91-RV32ISA: 4 profiles with M x 14 probes + rv32i x 7 base
+          # probes, x 100 vectors; rv32i refuses the 7 M probes.
+          grep -qE '(^|\.\.\. )ORACLE rv32-isa: 6300 cases agree across 5 profiles, 7 M functions refused$' "$log"
+          # 4 run; the corpus leg needs gale's (unvendored) drivers and is
+          # #[ignore]d, so it is reported, never counted as a pass (review 12 F3).
+          test "$(grep -cE '^test result: ok\. 4 passed; 0 failed; 1 ignored' "$log")" = 1

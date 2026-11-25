@@ -151,13 +151,15 @@ def run_gate(
 # check_page_log2 (2) and moved compile_function_with_opts 10 -> 11, so both
 # are gapped in full to keep 54 proved (182 total - 128 gapped). #1145 added
 # npa_multi_memory::plan (17) to the scored set, gapped in full to keep 54
-# proved (199 total - 145 gapped).
+# proved (199 total - 145 gapped). #1744 moved compile_function_with_opts
+# 11 -> 13 (the RV32 extension-profile refusal), still gapped in full to keep
+# 54 proved (201 total - 147 gapped).
 DRIFT_GAP = {
     "synth_core::npa_multi_memory::plan": 17,
     "synth_backend_riscv::alloc_validator::is_straight_line": 52,
     "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32": 47,
     "synth_core::static_data_addr::validate_reloc_resolutions_spanned": 16,
-    "synth_backend_riscv::backend::compile_function_with_opts": 11,
+    "synth_backend_riscv::backend::compile_function_with_opts": 13,
     "synth_backend_riscv::backend::check_page_log2": 2,
 }
 

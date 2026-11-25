@@ -190,6 +190,7 @@ fn object_of(machine: Machine, code: &[u8], relocs: Vec<u64>) -> CompiledObject 
         // these two, and this test does not use it.
         relocs: Vec::new(),
         relocatable: false,
+        e_flags: 0,
     }
 }
 

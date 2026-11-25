@@ -492,6 +492,13 @@ BRANCH_POPULATION = {
     # gate's own REPIN output (witness 0.42.0 / rustc 1.96.1), not
     # hand-counted.
     "synth_backend_riscv::backend::check_page_log2": 2,
+    # 11 -> 13 (RQ-91-RV32ISA, #1744): the extension-profile refusal adds
+    # TWO branches — `target_profile(&config.target)?` (the `?`) and
+    # `if let Some((ext, op)) = profile.first_violation(&selection.ops)`.
+    # Value from the gate's own REPIN output on #1792's run (witness
+    # 0.42.0 / rustc 1.96.1), not hand-counted; it was the ONLY population
+    # that moved. No floor or ceiling moves: that run's report side was
+    # 28 dec / 5 full / 146 cond / 61 proved / 50 dead against 21/3/130/56/51.
     # 10 -> 11 (RQ-89-PAGESIZEAPI, #1339): the `check_page_log2(0,
     # config.memory0_page_log2)?` call at the top of the function — the `?`
     # is the ONE added branch, taken by the rv_page_size_gate 0/5 rows.
@@ -501,7 +508,7 @@ BRANCH_POPULATION = {
     # top of the function. Driven both ways by the rv_param_block_gate rows
     # (params=0 compiles, params=1/2 decline). Value taken from the gate's
     # own REPIN output on the #1096 evidence, not hand-counted.
-    "synth_backend_riscv::backend::compile_function_with_opts": 11,
+    "synth_backend_riscv::backend::compile_function_with_opts": 13,
     # v0.92 wrong-code batch 2 (#1780, RV32 wide locals): the new
     # `declared_wide_locals` builds the declared-width table with one
     # closure carrying one branch. A source change, so a repin; the value

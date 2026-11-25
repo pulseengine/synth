@@ -451,6 +451,7 @@ fn frozen_pre_fix_bytes_are_judged_wrong() {
         text_relocs: Vec::new(),
         relocs: Vec::new(),
         relocatable: true,
+        e_flags: 0,
     };
     let cfg = EmuConfig::new(Cpu::Rv32Imac);
     let c = run_case(

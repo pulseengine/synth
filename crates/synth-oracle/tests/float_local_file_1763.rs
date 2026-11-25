@@ -715,6 +715,7 @@ fn frozen_pre_fix_words_are_judged_wrong() {
         text_relocs: Vec::new(),
         relocs: Vec::new(),
         relocatable: true,
+        e_flags: 0,
     };
     let find = |n: &str| SHAPES.iter().find(|s| s.name == n).unwrap();
     let cfg = EmuConfig::new(Cpu::CortexA53);

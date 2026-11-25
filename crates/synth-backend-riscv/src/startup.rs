@@ -246,6 +246,8 @@ impl RiscVStartupGenerator {
             synth_core::TargetArch::RISCV(variant) => match variant {
                 synth_core::RISCVVariant::RV32I => "RV32I",
                 synth_core::RISCVVariant::RV32IMAC => "RV32IMAC",
+                synth_core::RISCVVariant::RV32IM => "RV32IM",
+                synth_core::RISCVVariant::RV32IMC => "RV32IMC",
                 synth_core::RISCVVariant::RV32GC => "RV32GC",
                 synth_core::RISCVVariant::RV64I => "RV64I",
                 synth_core::RISCVVariant::RV64IMAC => "RV64IMAC",

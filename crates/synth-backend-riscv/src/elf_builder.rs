@@ -159,6 +159,11 @@ pub struct RiscVElfBuilder {
     pub entry_addr: u32,
     /// Base virtual address of `.text` (only used for `Executable` mode).
     pub text_base: u32,
+    /// The ELF header's `e_flags` (RQ-91-RV32ISA, #1744): the declared
+    /// profile's, via [`crate::isa::Rv32Profile::e_flags`]. The constructors
+    /// default to RV32IMAC's `0x1` (RVC), the value every object carried
+    /// before profiles were read.
+    pub e_flags: u32,
 }
 
 impl RiscVElfBuilder {
@@ -168,7 +173,14 @@ impl RiscVElfBuilder {
             mode: ElfMode::Relocatable,
             entry_addr: 0,
             text_base: 0,
+            e_flags: crate::isa::Rv32Profile::IMAC.e_flags(),
         }
+    }
+
+    /// Set `e_flags` from the target's declared profile (RQ-91-RV32ISA).
+    pub fn with_profile(mut self, profile: crate::isa::Rv32Profile) -> Self {
+        self.e_flags = profile.e_flags();
+        self
     }
 
     pub fn new_executable(entry_addr: u32, text_base: u32) -> Self {
@@ -177,6 +189,7 @@ impl RiscVElfBuilder {
             mode: ElfMode::Executable,
             entry_addr,
             text_base,
+            e_flags: crate::isa::Rv32Profile::IMAC.e_flags(),
         }
     }
 
@@ -642,6 +655,7 @@ impl RiscVElfBuilder {
             self.xlen,
             self.mode,
             self.entry_addr,
+            self.e_flags,
             shoff as u32,
             shdrs.len() as u16,
             shentsize as u16,
@@ -894,6 +908,7 @@ fn write_elf_header(
     xlen: u8,
     mode: ElfMode,
     entry: u32,
+    e_flags: u32,
     shoff: u32,
     shnum: u16,
     shentsize: u16,
@@ -932,8 +947,7 @@ fn write_elf_header(
     out[28..32].copy_from_slice(&0u32.to_le_bytes());
     // e_shoff
     out[32..36].copy_from_slice(&shoff.to_le_bytes());
-    // e_flags — RVC + soft float ABI
-    let e_flags: u32 = 0x1; // RVC
+    // e_flags — the profile's (RVC iff C); float ABI bits 0 = ILP32 soft-float
     out[36..40].copy_from_slice(&e_flags.to_le_bytes());
     // e_ehsize
     out[40..42].copy_from_slice(&ehsize.to_le_bytes());
@@ -1038,6 +1052,30 @@ mod tests {
             crate::selector::emitted_byte_size(&ops),
             "emitted_byte_size drifted from the ELF builder's sizing"
         );
+    }
+
+    /// RQ-91-RV32ISA (#1744): `e_flags` carry RVC iff the profile has C; the
+    /// default constructor keeps RV32IMAC's historical 0x1.
+    #[test]
+    fn e_flags_follow_the_profile_1744() {
+        let f = RiscVElfFunction {
+            name: "f".into(),
+            aliases: Vec::new(),
+            ops: vec![nop_op()],
+        };
+        let flags = |b: RiscVElfBuilder| {
+            let elf = b.build(std::slice::from_ref(&f)).unwrap();
+            u32::from_le_bytes([elf[36], elf[37], elf[38], elf[39]])
+        };
+        assert_eq!(flags(RiscVElfBuilder::new_relocatable()), 0x1);
+        for (ext, want) in [("i", 0), ("im", 0), ("imc", 1), ("imac", 1)] {
+            let p = crate::isa::Rv32Profile::from_extensions(ext).unwrap();
+            assert_eq!(
+                flags(RiscVElfBuilder::new_relocatable().with_profile(p)),
+                want,
+                "{ext}"
+            );
+        }
     }
 
     #[test]

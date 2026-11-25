@@ -1,0 +1,133 @@
+artifacts:
+  - id: RQ-91-RV32ISA
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "RV32 --target declares an extension set that instruction selection and e_flags obey"
+    description: >
+        Before this lane `--target` named an RV32 profile that nothing
+        downstream read. `rv32i`, `rv32imc`, `rv32imac` and `esp32c3` gave
+        byte-identical objects, so `rv32i` shipped `mul`/`remu` (M extension)
+        that an RV32I core cannot execute, and every object claimed RVC in
+        `e_flags` (#1744, found independently by gale on 0.89.0).
+
+        MEASURED FIRST, per extension, on the selector's op set (`RiscVOp`):
+        I (+ Zicsr) is everything but eight ops; M is `mul`/`mulh`/`mulhsu`/
+        `mulhu`/`div`/`divu`/`rem`/`remu`, reached from i32.mul, i32.div_*/
+        rem_*, i64.mul (the limb product) and i64.popcnt (its SWAR collapse
+        multiplies); A is NOTHING: `RiscVOp` has no LR/SC/AMO, every wasm
+        atomic operator is declined before selection (loud skip; a shared
+        memory is refused outright, #1315), and atomic.fence is declined the
+        same way; C is NOTHING: the encoder emits only 32-bit forms; F/D are
+        nothing (floats are declined on RV32).
+
+        THE FIX. `synth_backend_riscv::isa::Rv32Profile` parses the target's
+        extension string (`i`, `im`, `imc`, `imac`, `gc`; `g` = imafd;
+        malformed strings refused) and classifies every `RiscVOp` by an
+        EXHAUSTIVE match with no wildcard. After selection, a function whose
+        EMITTED stream contains an op outside the profile is refused with a
+        diagnostic naming the target, the missing extension, the function and
+        the op (#1744), so a lowering that reaches M indirectly cannot slip
+        past a per-wasm-op list. The refusal is the per-function decline every
+        other RV32 refusal uses: an exported function makes the compile exit
+        non-zero (#952). `e_flags` carry EF_RISCV_RVC iff the profile has C
+        (0 for rv32i/rv32im, 0x1 for rv32imc/esp32c3/rv32imac/rv32gc), set on
+        both the backend's and the CLI's ELF paths. Target names were already
+        parsed (rv32i, rv32im, rv32imc, rv32imac, esp32c3 = rv32imc, riscv32 =
+        rv32imac); they now mean something. `synth riscv-runtime` resolves
+        an RV32 name through the same parser (cold review 12, F2), so it
+        accepts rv32im, esp32c3 and riscv32 too, and prints the profile's own
+        `-march`: rv32imc for the ESP32-C3, where it printed rv32imac before
+        (the C3 has no A extension). `RISCVVariant` gains RV32IM and RV32IMC
+        so the generated startup names the profile.
+
+        WHY REFUSE rather than lower M away under rv32i: refusal is the
+        smallest correct option. A software multiply/divide is a
+        data-dependent loop with its own trap sequence and WCET story, and a
+        libgcc helper call (`__mulsi3`, `__udivsi3`, ...) clobbers every
+        caller-saved register at a site the selector does not treat as a call
+        and needs a runtime library the self-contained image does not link.
+        No known consumer targets an M-less RV32 core; gale's ESP32-C3 is
+        RV32IMC.
+
+        WHAT DOES NOT CHANGE: code. A profile changes only refusal and the
+        RVC bit. rv32imc and rv32imac objects remain byte-identical to each
+        other, now because the decode gate proves no A instruction is
+        emitted, not because the profile was ignored.
+    tags:
+      - feature-loop
+      - riscv
+      - oracle
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1744"
+      verification-track: execution
+      issue-scope: closes
+      done-when: >
+        manual:2027-03-31 on RV32, every instruction synth emits for a named
+        profile (rv32i, rv32im, rv32imc, esp32c3, rv32imac) decodes inside
+        that profile's extension set, `e_flags` carry RVC iff C, accepted code
+        executes equal to kiln, rv32i refuses every M lowering loudly, atomics
+        are refused on every profile, and rv32imac plus every non-RV32 target
+        stay byte-identical to the base.
+      landed: "v0.91 RV32ISA - #1744 - DELIVERED: RV32 instruction selection is checked against the target's declared extension set (synth_backend_riscv::isa), rv32i refuses any function that lowers to an M instruction, and e_flags carry RVC iff the profile has C. Oracle crates/synth-oracle/tests/rv32_isa_profile_oracle.rs with a Rust RV32 decoder (synth_oracle::rv32_isa), run by the oracle-kiln job."
+      verified-by: >
+        DELIVERED, execution-verified, on the Rust harness. unicorn cannot
+        emulate a restricted RV32 core (its models are RV32IMAC or wider, and
+        a misa write is dropped because no model sets RISCV_FEATURE_MISA,
+        unicorn-engine-sys 2.1.5 qemu/target/riscv/csr.c write_misa), so the
+        profile is enforced BY DECODE: `synth_oracle::rv32_isa` classifies
+        instructions from the ISA manual's opcode map, independent of synth's
+        encoder, and accepted code executes on the E31, a superset. The
+        oracle compiles 14 probes (7 base, 7 needing M) for 5 profiles: every
+        instruction decodes inside its profile, e_flags match, no A or C
+        instruction appears, every profile with M emits at least one M
+        instruction (non-vacuity), and 6300 cases (4 M-profiles x 14 probes +
+        rv32i x 7 base probes, x 100 vectors) AGREE with kiln, divide-by-zero
+        and overflow traps included; rv32i refuses the 7 M probes, each named
+        with #1744. Per op (i32.mul, i32.div_s/div_u/rem_s/rem_u, i64.mul,
+        i64.popcnt) rv32i refuses and rv32im accepts with an M instruction.
+        Three atomic modules (i32.atomic.rmw.add, i32.atomic.load,
+        atomic.fence) are refused on all five profiles. RED on the stack base
+        f7a77f2e: `rv32i_refuses_each_m_lowering` reds (rv32i ACCEPTED
+        i32.mul, out-of-profile insn 0x026283b3 = mul) and the sweep reds on
+        rv32i e_flags 0x1; the atomics and decoder-potency legs stay green on
+        both, as they should. GREEN on the branch. POTENCY: the decoder unit
+        tests red each profile on exactly what it lacks (mul under rv32i, an
+        AMO under rv32imc, an RVC form under rv32i, flw under rv32imac), and
+        a real rv32imac object judged as rv32i reds on M instructions and on
+        its RVC flag. REQUIRED-JOB PIN of the shipped CLI (review 12, F1):
+        crates/synth-cli/tests/rv32_profile_cli_1744.rs runs the `synth`
+        binary on both CLI ELF paths (--all-exports and -n, with and without
+        --relocatable) and requires e_flags 0 for rv32i/rv32im and 0x1 for
+        rv32imc/esp32c3/rv32imac, the rv32i refusal of i32.mul, and the
+        riscv-runtime names and -march strings; dropping either CLI
+        `.with_profile(...)` call reds it. ACCEPTANCE CORPUS, gale's adc-thin (gust_adc_thin.wasm,
+        1 i32.mul, 1 i32.rem_u; not vendored, so the leg is #[ignore]d and
+        reported as `1 ignored`, never counted as a pass; run it with
+        SYNTH_RV32ISA_CORPUS=<dir> ... -- --ignored, review 12 F3):
+        rv32i refuses adc_configure (remu) and exits non-zero (#952, 1 of 11
+        exports); rv32im, rv32imc, esp32c3 and rv32imac accept all 15
+        functions, 367 I + 2 M instructions, all inside the profile. Its
+        execution is not compared (it has a linear memory, which the harness
+        refuses). BYTE IDENTITY, a one-off measurement (no committed script;
+        review 12 F4), stated exactly so it can be redone: file set = the 277
+        paths of `git ls-files '*.wat' '*.wasm'` at f7a77f2e plus
+        gust_adc_thin.wasm (278); for each file, each of the 8 (backend,
+        target) pairs riscv/rv32imac, riscv/riscv32, riscv/rv32gc,
+        arm/cortex-m3, arm/cortex-m4f, arm/cortex-m0, arm/cortex-r5,
+        aarch64/cortex-a53, and each of 2 flag sets `--relocatable
+        --all-exports --allow-skipped-exports` and `--all-exports
+        --allow-skipped-exports`, run `synth compile <file> -b <backend>
+        --target <target> <flags> -o <out>` with the base release binary
+        (f7a77f2e) and the branch release binary; a pair counts when both
+        exit 0, and the two objects are compared with `cmp`. Result: 2908
+        pairs, all byte-identical, 0 exit-code differences over all 4448
+        runs. Cold review 12 re-measured independently with its own matrix
+        (277 files, 7 RV32 targets x 6 flag sets, plus the ARM/aarch64
+        targets): 6231 accepted pairs, 0 byte differences, 0 exit-code
+        differences outside rv32i.

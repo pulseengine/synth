@@ -1127,21 +1127,14 @@ fn riscv_runtime_command(
     use synth_backend_riscv::{
         LinkerScriptConfig, RiscVLinkerScriptGenerator, RiscVStartupGenerator, StartupConfig,
     };
-    use synth_core::{HardwareCapabilities, RISCVVariant, TargetArch};
+    use synth_core::{HardwareCapabilities, TargetArch};
 
-    // Hardware caps from the target name.
-    let variant = match target.as_str() {
-        "rv32i" => RISCVVariant::RV32I,
-        "rv32imac" | "rv32imc" => RISCVVariant::RV32IMAC,
-        "rv32gc" => RISCVVariant::RV32GC,
-        "rv64i" => RISCVVariant::RV64I,
-        "rv64imac" => RISCVVariant::RV64IMAC,
-        "rv64gc" => RISCVVariant::RV64GC,
-        _ => anyhow::bail!(
-            "unknown RISC-V target: {}. Supported: rv32i, rv32imac, rv32gc, rv64i, rv64imac, rv64gc",
-            target
-        ),
-    };
+    // Hardware caps from the target name. RQ-91-RV32ISA (#1744, review 12
+    // F2): an RV32 name resolves through the SAME parser `compile` uses
+    // (`TargetSpec::from_triple`), so `rv32im`, `esp32c3` and `riscv32` are
+    // accepted here too, and `-march` is the profile's own ISA string —
+    // `rv32imc` for the ESP32-C3, never `rv32imac` (it has no A extension).
+    let (variant, march) = riscv_runtime_profile(&target)?;
 
     let parse_addr = |s: &str| -> Result<u64> {
         let s = s.trim_start_matches("0x").trim_start_matches("0X");
@@ -1190,11 +1183,6 @@ fn riscv_runtime_command(
     println!("Wrote {}", startup_path.display());
     println!("Wrote {}", linker_path.display());
     println!();
-    let march = if matches!(target.as_str(), "rv32imac" | "rv32imc") {
-        "rv32imac"
-    } else {
-        target.as_str()
-    };
     println!("Link your synth-compiled .o with:");
     println!(
         "  riscv64-unknown-elf-gcc -nostartfiles -nostdlib -mabi=ilp32 -march={} \\",
@@ -1207,6 +1195,40 @@ fn riscv_runtime_command(
     );
 
     Ok(())
+}
+
+/// RQ-91-RV32ISA (#1744): the startup variant and the `-march` string for a
+/// `riscv-runtime --target`. RV32 names go through `TargetSpec::from_triple`
+/// (the `compile` parser); the RV64 names keep their own arm.
+#[cfg(feature = "riscv")]
+fn riscv_runtime_profile(target: &str) -> Result<(synth_core::RISCVVariant, String)> {
+    use synth_core::RISCVVariant;
+    use synth_core::target::{IsaVariant, TargetSpec};
+    match target {
+        "rv64i" => return Ok((RISCVVariant::RV64I, target.to_string())),
+        "rv64imac" => return Ok((RISCVVariant::RV64IMAC, target.to_string())),
+        "rv64gc" => return Ok((RISCVVariant::RV64GC, target.to_string())),
+        _ => {}
+    }
+    let unknown = || {
+        anyhow::anyhow!(
+            "unknown RISC-V target: {target}. Supported: rv32i, rv32im, rv32imc, esp32c3, \
+             rv32imac, riscv32, rv32gc (and their riscv32* spellings), rv64i, rv64imac, rv64gc"
+        )
+    };
+    let spec = TargetSpec::from_triple(target).map_err(|_| unknown())?;
+    let IsaVariant::RiscV32 { extensions } = &spec.isa else {
+        return Err(unknown());
+    };
+    let variant = match extensions.as_str() {
+        "i" => RISCVVariant::RV32I,
+        "im" => RISCVVariant::RV32IM,
+        "imc" => RISCVVariant::RV32IMC,
+        "imac" => RISCVVariant::RV32IMAC,
+        "gc" => RISCVVariant::RV32GC,
+        _ => return Err(unknown()),
+    };
+    Ok((variant, format!("rv32{extensions}")))
 }
 
 #[cfg(not(feature = "riscv"))]
@@ -2771,7 +2793,7 @@ fn compile_command(
             );
         }
         func_name_refusal?; // #1746
-        build_riscv_elf(&code, &func_name, &func_aliases)?
+        build_riscv_elf(&code, &func_name, &func_aliases, target_spec)?
     } else if cortex_m {
         // #1640: see `refuse_a32_cortex_m_image`.
         refuse_a32_cortex_m_image(target_spec)?;
@@ -7387,6 +7409,7 @@ fn compile_all_exports(
             &all_imports,
             &rv_wasm_data,
             &rv32_globals_image,
+            target_spec,
         )?
     } else if has_external_relocations || relocatable {
         // RQ-59-DATASEG (#1041): a memory-0 segment with a NON-CONST offset
@@ -11152,8 +11175,21 @@ fn verify_command(
 /// Re-runs the RISC-V backend's `RiscVElfBuilder` so the output is a real
 /// RV32 object file (EM_RISCV, RVC e_flags) rather than the generic ARM
 /// ELF that `build_simple_elf` emits.
+/// RQ-91-RV32ISA (#1744): the declared profile's `e_flags` (RVC iff C).
 #[cfg(feature = "riscv")]
-fn build_riscv_elf(code: &[u8], func_name: &str, aliases: &[String]) -> Result<Vec<u8>> {
+fn rv32_profile(
+    target: &synth_core::target::TargetSpec,
+) -> Result<synth_backend_riscv::Rv32Profile> {
+    synth_backend_riscv::Rv32Profile::from_target(target).map_err(|e| anyhow::anyhow!("riscv: {e}"))
+}
+
+#[cfg(feature = "riscv")]
+fn build_riscv_elf(
+    code: &[u8],
+    func_name: &str,
+    aliases: &[String],
+    target: &synth_core::target::TargetSpec,
+) -> Result<Vec<u8>> {
     use synth_backend_riscv::{Reg, RiscVElfBuilder, RiscVElfFunction, RiscVOp};
 
     // The RISC-V ELF builder operates on `Vec<RiscVOp>` to support label
@@ -11181,7 +11217,7 @@ fn build_riscv_elf(code: &[u8], func_name: &str, aliases: &[String]) -> Result<V
         ops: placeholder_ops,
     };
 
-    let builder = RiscVElfBuilder::new_relocatable();
+    let builder = RiscVElfBuilder::new_relocatable().with_profile(rv32_profile(target)?);
     let mut elf = builder
         .build(&[f])
         .context("RISC-V ELF generation failed")?;
@@ -11197,7 +11233,12 @@ fn build_riscv_elf(code: &[u8], func_name: &str, aliases: &[String]) -> Result<V
 }
 
 #[cfg(not(feature = "riscv"))]
-fn build_riscv_elf(_code: &[u8], _func_name: &str, _aliases: &[String]) -> Result<Vec<u8>> {
+fn build_riscv_elf(
+    _code: &[u8],
+    _func_name: &str,
+    _aliases: &[String],
+    _target: &synth_core::target::TargetSpec,
+) -> Result<Vec<u8>> {
     anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
 }
 
@@ -11236,6 +11277,7 @@ fn build_multi_func_riscv_elf(
     wasm_data: &[u8],
     // RQ-63-RVGLOBAL: the planned `__synth_globals` image (empty = no region).
     globals_image: &[u8],
+    target: &synth_core::target::TargetSpec,
 ) -> Result<Vec<u8>> {
     use synth_backend_riscv::{
         Reg, RiscVCallReloc, RiscVElfBuilder, RiscVElfFunction, RiscVOp, RiscVRelocKind,
@@ -11376,7 +11418,7 @@ fn build_multi_func_riscv_elf(
         .map_err(|e| anyhow::anyhow!("riscv: {e}"))?;
     }
 
-    let builder = RiscVElfBuilder::new_relocatable();
+    let builder = RiscVElfBuilder::new_relocatable().with_profile(rv32_profile(target)?);
     let mut elf = builder
         .build_object_with_globals(&placeholder_funcs, wasm_data, globals_image, &call_relocs)
         .context("RISC-V multi-function ELF generation failed")?;
@@ -11396,6 +11438,7 @@ fn build_multi_func_riscv_elf(
     _imports: &[ImportEntry],
     _wasm_data: &[u8],
     _globals_image: &[u8],
+    _target: &synth_core::target::TargetSpec,
 ) -> Result<Vec<u8>> {
     anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
 }
@@ -13575,7 +13618,13 @@ mod tests {
     #[should_panic(expected = "RV32 ELF writer: relocation at +0 against 'func_1' has addend -4")]
     fn rv32_elf_writer_refuses_a_nonzero_addend() {
         let f = with_addend(a32_func("main", 0, vec![0; 8], &[(0, "func_1")]), -4);
-        let _ = build_multi_func_riscv_elf(&[f], &[], &[], &[]);
+        let _ = build_multi_func_riscv_elf(
+            &[f],
+            &[],
+            &[],
+            &[],
+            &synth_core::target::TargetSpec::riscv32imac(),
+        );
     }
 
     /// #1645 + #1640: the self-contained A32 builder patches every internal

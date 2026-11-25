@@ -49,6 +49,8 @@ pub struct CompiledObject {
     pub relocs: Vec<TextReloc>,
     /// `e_type == ET_REL`: a host-linked object, not a self-contained image.
     pub relocatable: bool,
+    /// The ELF header's `e_flags` (RQ-91-RV32ISA: the RV32 RVC bit).
+    pub e_flags: u32,
 }
 
 /// One relocation in `.text`.
@@ -231,6 +233,7 @@ impl CompiledObject {
             });
         }
         let relocatable = file.elf_header().e_type(endian) == object::elf::ET_REL;
+        let e_flags = file.elf_header().e_flags(endian).0;
         Ok(Self {
             path: path.to_path_buf(),
             machine,
@@ -239,6 +242,7 @@ impl CompiledObject {
             text_relocs,
             relocs,
             relocatable,
+            e_flags,
         })
     }
 
