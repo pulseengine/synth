@@ -154,15 +154,18 @@ UNICORN_VERSION = "2.1.4"
 M0_MODEL = UC_CPU_ARM_CORTEX_M0  # 7 in 2.1.4
 M3_MODEL = UC_CPU_ARM_CORTEX_M3  # 8 in 2.1.4, leg D's control only
 
-ACCEPTED = {"inc", "sub3", "ext8", "big", "lt", "bits", "mul"}
+# RQ-92-WDGTHIN (#1741): `callinc` (two direct calls) is lowered; it carries
+# relocations, so leg C does not execute it here (no link step). Its execution
+# evidence is crates/synth-oracle/tests/armv6m_call_oracle.rs.
+ACCEPTED = {"inc", "sub3", "ext8", "big", "lt", "bits", "mul", "callinc"}
+ACCEPTED_LINKED = {"callinc"}
 # Each refused export -> the class its FIRST non-ARMv6-M instruction hits.
-# RQ-91-M0I32: the three still refused are refused by the v6-M lowering's rule
+# RQ-91-M0I32: the ones still refused are refused by the v6-M lowering's rule
 # table before any byte is encoded; its diagnostic carries no byte class, so
 # each pin is the diagnostic's own prefix.
 _LOWERING = "backend 'arm' failed: compilation failed: ARMv6-M lowering, RQ-91-M0I32"
 EXPECTED_DECLINES = {
     "divu": f"warning: skipping function 'divu': {_LOWERING}",
-    "callinc": f"warning: skipping function 'callinc': {_LOWERING}",
     "ld": f"warning: skipping function 'ld': {_LOWERING}",
 }
 
@@ -298,8 +301,10 @@ PROBE_COUNT = 112
 # EXACT, both directions, on cortex-m0 AND cortex-m0plus. A lowering lane that
 # makes a probe compile moves this set in its own PR.
 # RQ-91-M0I32: 8 -> 51 (the ARMv6-M i32 lowering).
+# RQ-92-WDGTHIN: 51 -> 53 (direct calls: `call_direct`, `call_import`).
 PROBE_ACCEPTED = {"add_imm1", "add_imm1000", "add_imm200", "block_br_if", "br_table",
                   "c_255", "c_256", "c_big", "c_ffff", "c_neg1", "c_small",
+                  "call_direct", "call_import",
                   "early_return", "i32_add", "i32_and", "i32_eq", "i32_eqz",
                   "i32_extend16_s", "i32_extend8_s", "i32_ge_s", "i32_ge_u",
                   "i32_gt_s", "i32_gt_u", "i32_le_s", "i32_le_u", "i32_lt_s",
@@ -308,6 +313,12 @@ PROBE_ACCEPTED = {"add_imm1", "add_imm1000", "add_imm200", "block_br_if", "br_ta
                   "i64_extend_i32_u", "i64_ident", "i64_or", "i64_xor", "if_else",
                   "if_void", "local_tee", "loop_count", "many_locals", "nop_drop",
                   "select", "shl_imm3", "unreachable", "void_fn"}
+# Accepted probes whose code carries a relocation (a `bl`). They are compiled,
+# pinned and byte-checked here; this leg has no link step, so they are EXECUTED
+# by the Rust call oracle (crates/synth-oracle/tests/armv6m_call_oracle.rs,
+# which links against host stubs), not here. EXACT: a probe that gains or
+# loses a relocation reds leg E.
+PROBE_LINKED = {"call_direct", "call_import"}
 # The control: cortex-m3 compiles every probe but these (no FPU on m3).
 PROBE_M3_DECLINED = {"f32_add", "f64_add"}
 # Leg D's v7-M-only carrier, compiled for cortex-m3.
@@ -782,17 +793,24 @@ def leg_e(td):
           f"{len(accepted['cortex-m0plus'])}, cortex-m3 {len(accepted['cortex-m3'])} "
           f"of {len(PROBES)}")
     ran = 0
+    linked = set()
     for name in sorted(accepted["cortex-m0"] & accepted["cortex-m0plus"]):
         if texts[(name, "cortex-m0")] != texts[(name, "cortex-m0plus")]:
             fail(f"E {name}: cortex-m0 and cortex-m0plus emit different .text")
         o = os.path.join(pdir, f"{name}.cortex-m0.o")
         leg_b(o, f"probe {name}")
+        if load(o)[3]:
+            linked.add(name)
         ran += run_exec(o, Path(pdir, f"{name}.wat").read_text(), "E", M0_MODEL, only={name})
-    print(f"E probes: {ran} accepted probes executed on the M0 model vs wasmtime")
-    # Every accepted probe is register-signature and call-free today; one that
-    # silently stops executing would shrink this leg to nothing.
-    if ran != len(PROBE_ACCEPTED):
-        fail(f"E: executed {ran} of {len(PROBE_ACCEPTED)} accepted probes")
+    print(f"E probes: {ran} accepted probes executed on the M0 model vs wasmtime, "
+          f"{len(linked)} with relocations left to the Rust call oracle")
+    if linked != PROBE_LINKED:
+        fail(f"E: probes carrying relocations {sorted(linked)} != pinned {sorted(PROBE_LINKED)}")
+    # Every accepted probe without a relocation is register-signature and
+    # call-free; one that silently stops executing would shrink this leg.
+    if ran != len(PROBE_ACCEPTED) - len(PROBE_LINKED):
+        fail(f"E: executed {ran} of {len(PROBE_ACCEPTED) - len(PROBE_LINKED)} "
+             f"relocation-free accepted probes")
     leg_v(pdir)
 
 
@@ -897,8 +915,9 @@ def main():
         o = os.path.join(td, "cortex-m0.o")
         fns = (run_exec(o, WAT.read_bytes(), "C", M0_MODEL, only=ACCEPTED)
                if os.path.exists(o) else 0)
-        if fns != len(ACCEPTED):
-            fail(f"C fixture: executed {fns} of {len(ACCEPTED)} accepted functions")
+        want = len(ACCEPTED) - len(ACCEPTED_LINKED)
+        if fns != want:
+            fail(f"C fixture: executed {fns} of {want} relocation-free accepted functions")
         corpus_fns = corpus_objs = 0
         files = subprocess.run(["git", "-C", str(ROOT), "ls-files"], capture_output=True,
                                text=True, check=True).stdout.split()

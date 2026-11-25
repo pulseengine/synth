@@ -24,7 +24,17 @@
 //! - **The register contract.** R11 = memory 0's base (the test chooses the
 //!   address), R10 = its size in bytes, R9 = an UNMAPPED address (no globals
 //!   table is materialized, so a global access faults instead of reading
-//!   zeros). All three, R4-R8 and SP are checked unchanged after every call.
+//!   zeros). All three, R4-R8 and SP are checked unchanged when the export
+//!   returns.
+//! - **Internal calls.** Every call that enters a function of the object
+//!   (through its symbol, from anywhere in `.text`) is held to AAPCS too:
+//!   when it returns, R4-R11 must be what they were at its entry, and R2, R3
+//!   and R12 are then overwritten with [`CLOBBER`] values, as after a host
+//!   call. Without this a callee that loses R4 is invisible whenever its
+//!   caller keeps nothing in R4 across the call (the caller's own epilogue
+//!   restores the export-level seed), and a value wrongly kept in R2/R3
+//!   across a call to a leaf that does not touch them reads back intact.
+//!   R0 and R1 are left alone: they may carry the callee's result.
 //! - **Sequences.** One image runs several calls; linear memory persists
 //!   between them, so a store through one export is read through another.
 //!
@@ -115,6 +125,19 @@ enum Stub {
 struct Shared {
     log: Vec<HostCall>,
     failure: Option<String>,
+    /// Internal calls in progress, innermost last.
+    frames: Vec<Frame>,
+    /// Internal calls checked on return, over the image's lifetime.
+    internal_returns: usize,
+}
+
+/// One internal call in progress: where it returns, SP at its entry, and the
+/// registers the callee must preserve (R4-R11).
+struct Frame {
+    callee: u64,
+    ret: u64,
+    sp: u64,
+    saved: [u64; 8],
 }
 
 /// One emulated call into the hosted image.
@@ -408,6 +431,67 @@ impl Hosted {
             "add stub hook",
         )?;
 
+        // Internal calls: see the module doc. A frame opens when execution
+        // reaches a function symbol with LR pointing into `.text`, and closes
+        // at that return address with SP back at its entry value.
+        let entries: std::collections::BTreeMap<u64, String> = obj
+            .funcs
+            .iter()
+            .map(|(name, f)| (TEXT_BASE + f.offset, name.clone()))
+            .collect();
+        let text_end = TEXT_BASE + obj.text.len() as u64;
+        let sh = Rc::clone(&shared);
+        uc(
+            emu.add_code_hook(TEXT_BASE, text_end.max(TEXT_BASE + 1) - 1, move |u, addr, _| {
+                let rd = |u: &Unicorn<'_, ()>, r: i32| u.reg_read(r).unwrap_or(0) & 0xFFFF_FFFF;
+                let callee_saved = |u: &Unicorn<'_, ()>| {
+                    let mut v = [0u64; 8];
+                    for (k, slot) in v.iter_mut().enumerate() {
+                        *slot = rd(u, RegisterARM::R4 as i32 + k as i32);
+                    }
+                    v
+                };
+                let sp = rd(u, RegisterARM::SP as i32);
+                let mut s = sh.borrow_mut();
+                if let Some(f) = s.frames.pop_if(|f| f.ret == addr && f.sp == sp) {
+                    s.internal_returns += 1;
+                    let now = callee_saved(u);
+                    let lost: Vec<String> = (0..8)
+                        .filter(|&k| now[k] != f.saved[k])
+                        .map(|k| format!("R{}", k + 4))
+                        .collect();
+                    if !lost.is_empty() {
+                        let name = entries.get(&f.callee).cloned().unwrap_or_default();
+                        s.failure = Some(format!(
+                            "ABI violated: internal call to `{name}` returned with {} clobbered",
+                            lost.join(", ")
+                        ));
+                        let _ = u.emu_stop();
+                        return;
+                    }
+                    for r in [2, 3, 12] {
+                        let _ = u.reg_write(RegisterARM::R0 as i32 + r, u64::from(CLOBBER | r as u32));
+                    }
+                }
+                if entries.contains_key(&addr) {
+                    let ret = rd(u, RegisterARM::LR as i32) & !1;
+                    // The export's own frame returns to RETURN_ADDR and is
+                    // judged by `call`. A branch back to a function's first
+                    // instruction re-enters with the same LR and SP: one frame.
+                    let inside = (TEXT_BASE..text_end).contains(&ret);
+                    let same = s
+                        .frames
+                        .last()
+                        .is_some_and(|f| f.callee == addr && f.ret == ret && f.sp == sp);
+                    if inside && !same {
+                        let saved = callee_saved(u);
+                        s.frames.push(Frame { callee: addr, ret, sp, saved });
+                    }
+                }
+            }),
+            "add internal-call hook",
+        )?;
+
         let hit: Rc<RefCell<Option<(u64, u32)>>> = Rc::new(RefCell::new(None));
         let hit2 = Rc::clone(&hit);
         uc(
@@ -430,6 +514,12 @@ impl Hosted {
             budget: cfg.budget,
             cpu_model_readback: readback,
         })
+    }
+
+    /// How many internal calls have returned, and been checked, on this
+    /// image so far (see the module doc).
+    pub fn internal_returns(&self) -> usize {
+        self.shared.borrow().internal_returns
     }
 
     /// Read `len` bytes of linear memory at wasm address `addr`.
@@ -502,6 +592,7 @@ impl Hosted {
             "write LR",
         )?;
         *self.hit.borrow_mut() = None;
+        self.shared.borrow_mut().frames.clear();
         let logged = self.shared.borrow().log.len();
 
         let entry = TEXT_BASE + sym.offset;

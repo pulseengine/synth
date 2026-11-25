@@ -196,6 +196,88 @@ pub fn legal_32(hw1: u16, hw2: u16) -> bool {
     bl || barrier
 }
 
+/// The special registers (`SYSm`) ARMv6-M defines for MRS / MSR: APSR,
+/// IAPSR, EAPSR, XPSR (0-3), IPSR, EPSR, IEPSR, MSP, PSP (5-9), PRIMASK
+/// (16) and CONTROL (20). These eleven are exactly the `SYSm` values LLVM's
+/// `thumbv6m-none-eabi` decoder prints BY NAME, measured over all 256 for
+/// both instructions (cold review of v092-m0-l2, F1). Every other value is
+/// UNPREDICTABLE on ARMv6-M. LLVM refuses 30 of them outright, among them
+/// ARMv7-M's BASEPRI (17), BASEPRI_MAX (18) and FAULTMASK (19) and ARMv8-M's
+/// stack limits and `_NS` aliases, and prints the rest as a bare number; this
+/// check refuses all of them, which is the stricter reading.
+pub fn arch_legal_sysm(sysm: u16) -> bool {
+    matches!(sysm, 0..=3 | 5..=9 | 16 | 20)
+}
+
+/// RQ-92-WDGTHIN (#1741): whether the 32-bit encoding `hw1 hw2` is an ARMv6-M
+/// instruction AT ALL — the architecture's whole 32-bit set, not the subset
+/// synth emits ([`legal_32`]): BL, MSR and MRS of an ARMv6-M special register
+/// ([`arch_legal_sysm`]), DMB / DSB / ISB (any option value) and UDF.W
+/// (ARMv6-M ARM, A5.3). This is the question for code synth did not generate
+/// (`synth verify-embedder`'s ARMv6-M leg): a boot shim may use MSR, synth's
+/// own functions may not.
+pub fn arch_legal_32(hw1: u16, hw2: u16) -> bool {
+    let bl = hw1 >> 11 == 0b11110 && hw2 & 0xD000 == 0xD000;
+    let sysm = arch_legal_sysm(hw2 & 0xFF);
+    let msr = hw1 & 0xFFF0 == 0xF380 && hw2 & 0xFF00 == 0x8800 && sysm;
+    let mrs = hw1 == 0xF3EF && hw2 & 0xF000 == 0x8000 && sysm;
+    let barrier = hw1 == 0xF3BF && matches!(hw2 & 0xFFF0, 0x8F40 | 0x8F50 | 0x8F60);
+    let udf_w = hw1 & 0xFFF0 == 0xF7F0 && hw2 & 0xF000 == 0xA000;
+    bl || msr || mrs || barrier || udf_w
+}
+
+/// RQ-92-WDGTHIN (#1741): every instruction in `bytes` (Thumb code, no data)
+/// that is not an ARMv6-M instruction, as `(byte offset, violation)`. The
+/// ARCHITECTURAL check: 16-bit halfwords against [`LEGAL_16`], 32-bit
+/// encodings against [`arch_legal_32`]. Unlike [`check_bytes`] it does not
+/// apply synth's own stricter contract (the 16-bit literal load, MSR / MRS
+/// and writes to R8-R12 are ARMv6-M and pass), and it reports every
+/// violation rather than the first.
+pub fn arch_violations(bytes: &[u8]) -> Vec<(usize, V6mViolation)> {
+    let mut bad = Vec::new();
+    let mut off = 0;
+    while off + 1 < bytes.len() {
+        let hw = u16::from_le_bytes([bytes[off], bytes[off + 1]]);
+        if is_wide_prefix(hw) {
+            if off + 3 >= bytes.len() {
+                bad.push((off, V6mViolation::Truncated(hw)));
+                return bad;
+            }
+            let hw2 = u16::from_le_bytes([bytes[off + 2], bytes[off + 3]]);
+            if !arch_legal_32(hw, hw2) {
+                let class = wide_class(hw, hw2);
+                bad.push((
+                    off,
+                    V6mViolation::Wide {
+                        hw1: hw,
+                        hw2,
+                        class,
+                    },
+                ));
+            }
+            off += 4;
+        } else {
+            if !legal_16(hw) {
+                bad.push((
+                    off,
+                    if hw & 0xFF00 == 0xBF00 {
+                        V6mViolation::It(hw)
+                    } else if hw & 0xF500 == 0xB100 {
+                        V6mViolation::CbzCbnz(hw)
+                    } else {
+                        V6mViolation::Undefined16(hw)
+                    },
+                ));
+            }
+            off += 2;
+        }
+    }
+    if off != bytes.len() {
+        bad.push((off, V6mViolation::Truncated(bytes[off] as u16)));
+    }
+    bad
+}
+
 /// Coarse class of a refused 32-bit encoding (diagnostic only — the verdict
 /// is [`legal_32`], never this).
 fn wide_class(hw1: u16, hw2: u16) -> &'static str {
@@ -272,6 +354,84 @@ mod tests {
 
     fn le(hws: &[u16]) -> Vec<u8> {
         hws.iter().flat_map(|h| h.to_le_bytes()).collect()
+    }
+
+    /// RQ-92-WDGTHIN (#1741): the architectural 32-bit set. Every accepted
+    /// encoding below is one LLVM's `thumbv6m-none-eabi` decoder names as
+    /// written (measured with `objdump -d --triple=thumbv6m-none-eabi`; all
+    /// but UDF.W are also what `arm-none-eabi-as -march=armv6-m` assembles;
+    /// for MRS / MSR that holds for the ARMv6-M special registers only);
+    /// every refused one is a v7-M encoding, as `arm-none-eabi-as
+    /// -march=armv7-m` assembles it, that a boot shim written for
+    /// Cortex-M3/M4 carries.
+    #[test]
+    fn arch_legal_32_is_the_armv6m_set_1741() {
+        for (what, hw1, hw2) in [
+            ("bl", 0xF7FFu16, 0xFFFEu16),
+            ("msr msp, r0", 0xF380, 0x8808),
+            ("msr primask, r1", 0xF381, 0x8810),
+            ("mrs r0, primask", 0xF3EF, 0x8010),
+            ("mrs r3, control", 0xF3EF, 0x8314),
+            ("dmb sy", 0xF3BF, 0x8F5F),
+            ("dsb sy", 0xF3BF, 0x8F4F),
+            ("isb sy", 0xF3BF, 0x8F6F),
+            ("udf.w #0", 0xF7F0, 0xA000),
+        ] {
+            assert!(arch_legal_32(hw1, hw2), "{what} refused");
+            assert!(
+                arch_violations(&le(&[hw1, hw2])).is_empty(),
+                "{what} reported"
+            );
+        }
+        for (what, hw1, hw2) in [
+            ("movw r11, #0", 0xF240u16, 0x0B00u16),
+            ("movt r11, #0x2000", 0xF2C2, 0x0B00),
+            ("ldr.w r11, [pc, #8]", 0xF8DF, 0xB008),
+            ("mov.w r10, #65536", 0xF44F, 0x3A80),
+            ("push.w {r4-r8, lr}", 0xE92D, 0x41F0),
+            ("b.w", 0xF000, 0xB800),
+            ("clrex", 0xF3BF, 0x8F2F),
+            ("sdiv r0, r0, r1", 0xFB90, 0xF0F1),
+            // ARMv7-M special registers (F1): what a Cortex-M3 shim that
+            // masks interrupts through BASEPRI carries.
+            ("msr basepri, r0", 0xF380, 0x8811),
+            ("msr basepri_max, r0", 0xF380, 0x8812),
+            ("msr faultmask, r0", 0xF380, 0x8813),
+            ("mrs r0, basepri", 0xF3EF, 0x8011),
+            ("mrs r0, faultmask", 0xF3EF, 0x8013),
+            // ARMv8-M stack limits.
+            ("msr msplim, r0", 0xF380, 0x880A),
+            ("mrs r0, psplim", 0xF3EF, 0x800B),
+            ("nop.w", 0xF3AF, 0x8000),
+            ("ldrex r0, [r1]", 0xE851, 0x0F00),
+        ] {
+            assert!(!arch_legal_32(hw1, hw2), "{what} accepted");
+            let v = arch_violations(&le(&[hw1, hw2]));
+            assert_eq!(v.len(), 1, "{what}: {v:?}");
+            assert_eq!(v[0].0, 0);
+        }
+        // The SYSm set, exhaustively: 11 of 256 values, for MRS and MSR alike.
+        let ok: Vec<u16> = (0..256).filter(|&m| arch_legal_sysm(m)).collect();
+        assert_eq!(ok, [0, 1, 2, 3, 5, 6, 7, 8, 9, 16, 20]);
+        for m in 0..256u16 {
+            assert_eq!(arch_legal_32(0xF380, 0x8800 | m), arch_legal_sysm(m));
+            assert_eq!(arch_legal_32(0xF3EF, 0x8000 | m), arch_legal_sysm(m));
+        }
+        // What synth's own contract refuses but the architecture has: the
+        // 16-bit literal load and a write to R11 pass HERE and fail there.
+        let shim = le(&[0x4800, 0x4683]); // ldr r0, [pc]; mov r11, r0
+        assert!(arch_violations(&shim).is_empty());
+        assert!(check_bytes(&shim).is_err());
+        // Every violation is reported, with its offset: IT, CBZ, a wide op.
+        let v = arch_violations(&le(&[0xBF08, 0x2000, 0xB100, 0xF240, 0x0B00, 0x4770]));
+        let got: Vec<(usize, &str)> = v.iter().map(|(o, x)| (*o, x.class())).collect();
+        assert_eq!(
+            got,
+            vec![(0, "IT block"), (4, "CBZ/CBNZ"), (6, "MOVW/MOVT")]
+        );
+        // A truncated wide encoding and an odd tail are violations.
+        assert_eq!(arch_violations(&le(&[0xF240])).len(), 1);
+        assert_eq!(arch_violations(&[0x70, 0x47, 0x00]).len(), 1);
     }
 
     /// The in-tree table equals the frozen LLVM-derived fixture, range for

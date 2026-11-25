@@ -57,6 +57,16 @@ embedder cannot pick different registers. The *values* they hold are
 **(b) CHOSEN by the embedder**; synth adapts because every access is
 register-relative (that is the whole point of the relocatable path).
 
+**ARMv6-M (`--target cortex-m0` / `cortex-m0plus`, #1301, #1741).** The same
+assignment holds: R11, R10 and R9 keep these roles. Two rows differ. synth
+writes **no R12** on ARMv6-M: its scratch there is R7, which it saves and
+restores like any callee-saved register. And synth allocates no R8. Today
+no ARMv6-M function reads R9, R10 or R11 at all, because linear memory and
+globals are refused on that target; an import call is a plain AAPCS
+`bl <field>` with at most four argument words. Set the three registers
+anyway, with ARMv6-M instructions: `synth verify-embedder --target
+cortex-m0` (below) refuses a boot shim that still uses an ARMv7-M encoding.
+
 ### Where each fact comes from
 
 - **R9/R10/R11 are reserved — never allocated, never written.** The register
@@ -862,7 +872,7 @@ linear-memory base silently becomes a scratch register, and the symptom is a
 wrong value on a control loop, not a build error.
 
 ```
-synth verify-embedder <elf> [--allow-writer <symbol>]...
+synth verify-embedder <elf> [--allow-writer <symbol>]... [--target <core>]
 ```
 
 REFUSES (exit nonzero, each site named) when any instruction in the given
@@ -901,6 +911,16 @@ evident, so any write refuses (or gets a deliberate `--allow-writer`).
   Toolchain objects carry mapping symbols; on a STRIPPED object a literal
   pool can desynchronise the decode — the failure direction there is a false
   refusal or an undecodable-bytes refusal, not a silent pass.
+- **synth's own code can be skipped by this scan.** synth's objects carry
+  function symbols but no mapping symbols. In a linked image, a function of
+  synth's that follows another object's literal pool sits under that
+  object's `$d`, and `arm-none-eabi-objdump` renders it as `.word` data,
+  which this scan does not read. Measured while building the ARMv6-M leg: a
+  boot shim ending in a literal pool, then a synth object, and the synth
+  function is not among the instructions scanned. What covers synth's code
+  is the emitter audit (`scripts/embedder_abi_audit_1131.py`), not this
+  scan. The ARMv6-M leg below does not have this gap: it reads function
+  symbols itself.
 - Indirect STORES cannot modify a register, so "indirect writes" are not a
   gap for the registers themselves — the indirect hazard is the
   context-restore class above.
@@ -910,6 +930,62 @@ is the point of checking bytes instead of build flags. The check's own
 discrimination is CI-pinned: `scripts/repro/verify_embedder_gate_1132.py`
 refuses a real 4-shape clobbering object (naming all three registers) and
 accepts conforming, acknowledged, and synth-emitted images on every run.
+
+### The ARMv6-M leg: `--target cortex-m0` / `cortex-m0plus` (#1741)
+
+A Cortex-M0 or M0+ executes ARMv6-M: the 16-bit Thumb instructions plus
+`bl`, `msr`, `mrs` and the barriers. Code assembled for ARMv7-M links for
+such a core without complaint and takes a HardFault on the first instruction
+the core does not have. The usual carrier is the boot shim: one written for a
+Cortex-M3/M4 establishes R11 and R10 with `movw`/`movt` or `mov.w`, and the
+register scan above ACCEPTS it, because those are acknowledged writes in the
+establishment site.
+
+```
+synth verify-embedder firmware.elf --target cortex-m0plus --allow-writer Reset_Handler
+```
+
+With an ARMv6-M `--target`, every instruction of every executable section
+must also be an ARMv6-M instruction. The check runs first, on the bytes (it
+needs no `objdump`), and names each refused instruction by symbol, address,
+encoding and class:
+
+```
+verify-embedder REFUSED: boot.o — 4 instruction(s) that are not ARMv6-M ...
+  <Reset_Handler> .text+0x0: `f240 0b00` — MOVW/MOVT
+```
+
+- **`--allow-writer` does not waive it.** An acknowledged symbol still has to
+  execute on the core.
+- **Pass the flag for a linked image.** The leg also runs, with no flag, when
+  the ELF's build attributes say ARMv6-M (`Tag_CPU_arch`). A linker merges
+  that attribute upward, so one ARMv7-M object in the image retags the whole
+  image as ARMv7-M and the automatic trigger does not fire. Measured: an
+  image linking an ARMv7-M boot shim with ARMv6-M objects passes without the
+  flag and is refused with it.
+- **What is ARMv6-M here.** 16-bit instructions: the set LLVM's
+  `thumbv6m-none-eabi` decoder accepts, frozen in
+  `tests/fixtures/armv6m_legal16_1301.json` (so IT and CBZ/CBNZ are refused).
+  32-bit instructions: `bl`, `dmb`, `dsb`, `isb`, `udf.w`, and `msr` / `mrs`
+  of a special register ARMv6-M has (APSR and its views, IPSR, EPSR, MSP,
+  PSP, PRIMASK, CONTROL). `msr basepri` and `mrs faultmask` are ARMv7-M and
+  are refused, as are the ARMv8-M stack-limit registers. This
+  is the architecture, not synth's own stricter contract: a boot shim may load
+  a literal and write R11, synth's functions may not.
+- **Code and data.** Separated by the ELF's mapping symbols (`$t`, `$d`,
+  `$a`) and function symbols. Where they disagree the leg reads the
+  fail-closed way: bytes before any marker are decoded as Thumb code, and a
+  function symbol wins over a `$d` at the same address. ARM-state (`$a`) code
+  is refused. In a section with no marker at all, literal data is decoded as
+  instructions; the usual result is a false refusal, and the passing output
+  says how many sections were read that way.
+- **What it cannot see.** The same things as the register scan: code outside
+  this ELF, and code generated or installed at runtime. It also says nothing
+  about whether a legal instruction is the right one.
+
+Pinned by `crates/synth-cli/tests/verify_embedder_armv6m_1741.rs`: an
+ARMv6-M boot shim passes and its ARMv7-M twin is refused, on both targets,
+with and without `--allow-writer`.
 
 ## Compliance note
 

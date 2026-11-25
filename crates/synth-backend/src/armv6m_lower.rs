@@ -24,6 +24,11 @@
 //!   shape: both straight-line rewrites of `ite c; mov rd,#1; mov rd,#0` are
 //!   wrong, because the first MOVS destroys the compare's flags.
 //! - `SelectMove` (`it c; mov rd, rm`): `b<!c> L; mov rd, rm; L:`.
+//! - Direct calls (RQ-92-WDGTHIN, #1741): `bl <symbol>` is ARMv6-M as it is
+//!   (the one 32-bit instruction this pass emits), to a function of the
+//!   module or to a function import. At most four argument words: a call
+//!   with an outgoing stack argument is refused before selection
+//!   ([`refuse_stack_argument_call`]). Indirect calls stay refused.
 //! - Two-operand forms: v6-M data processing is `rdn = rdn op rm`, so a
 //!   three-register op becomes `mov rd, rn; <op>s rd, rm` unless `rd` already
 //!   is a source.
@@ -112,6 +117,16 @@ fn effect(op: &ArmOp) -> Option<(Vec<Reg>, Vec<Reg>)> {
         | BOffset { .. }
         | BCondOffset { .. } => (vec![], vec![]),
         Bx { rm } => (vec![], vec![*rm]),
+        // A direct call, as the AAPCS callee sees the registers this pass
+        // works in: it reads the argument registers and may clobber R0-R3 and
+        // LR. R12 is renamed to R7 before any rule runs, and a callee
+        // preserves R7, so the call neither reads nor writes the scratch;
+        // `scratch_never_crosses_control` separately refuses a stream that
+        // read the selector's R12 after a call.
+        Bl { .. } => (
+            vec![Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::LR],
+            vec![Reg::R0, Reg::R1, Reg::R2, Reg::R3],
+        ),
         op => {
             let e = synth_synthesis::liveness::reg_effect(op)?;
             (e.defs, e.uses)
@@ -170,7 +185,9 @@ fn scratch_never_crosses_control(ops: &[ArmOp]) -> Result<(), String> {
             written = false;
             continue;
         }
-        if is_control(op) {
+        // A call clobbers the selector's R12 (AAPCS IP): what R7 holds after
+        // the rename is not a value the stream may read back.
+        if is_control(op) || matches!(op, ArmOp::Bl { .. }) {
             written = false;
         }
         if reads(op, SCRATCH) && effect(op).is_some() && !written {
@@ -579,6 +596,16 @@ pub fn lower(instrs: Vec<ArmInstruction>, func_tag: usize) -> Result<Vec<ArmInst
                 cx.push(op.clone(), line);
             }
             Push { .. } | Pop { .. } => cx.push(op.clone(), line),
+            // RQ-92-WDGTHIN (#1741): a direct call, `bl <symbol>` — the one
+            // 32-bit instruction of ARMv6-M this pass emits. To a function of
+            // the module or to a function import (an undefined symbol the
+            // embedder's linker binds); the encoding and the relocation are
+            // the v7-M ones. Arguments arrive in R0-R3 from the selector's
+            // marshalling moves, which the `Mov` rules lower; a call with an
+            // outgoing STACK argument is refused in `compile_wasm_to_arm`
+            // before selection. LR must already be saved: `fix_prologue`
+            // refuses a call in a function with no `push {.., lr}`.
+            Bl { .. } => cx.push(op.clone(), line),
 
             Mov {
                 rd,
@@ -1021,8 +1048,9 @@ pub fn lower(instrs: Vec<ArmInstruction>, func_tag: usize) -> Result<Vec<ArmInst
             other => {
                 return refuse(format!(
                     "no ARMv6-M rule for `{other:?}` (i32 arithmetic, constants, \
-                     compares, select and structured control flow are lowered; \
-                     memory, calls, i64, floats, division and bit counts are not yet)"
+                     compares, select, structured control flow and direct calls \
+                     are lowered; memory, globals, indirect calls, i64 arithmetic, \
+                     floats, division and bit counts are not yet)"
                 ));
             }
         }
@@ -1030,6 +1058,41 @@ pub fn lower(instrs: Vec<ArmInstruction>, func_tag: usize) -> Result<Vec<ArmInst
     }
 
     fix_prologue(cx.out)
+}
+
+/// RQ-92-WDGTHIN (#1741): refuse a function that makes a direct call with more
+/// than four argument words. The selector passes the fifth and later words in
+/// the outgoing stack area, and no ARMv6-M execution oracle sets up or checks
+/// stack arguments at a call boundary (the hosted harness refuses them), so
+/// the shape is declined, by name, rather than emitted unexecuted. A callee
+/// whose arity the compile was not given is refused for the same reason.
+/// 64-bit arguments are already refused on every ARM target (#929), so an
+/// argument count is a word count here.
+pub fn refuse_stack_argument_call(
+    wasm_ops: &[synth_core::WasmOp],
+    func_arg_counts: &[u32],
+) -> Result<(), String> {
+    for op in wasm_ops {
+        if let synth_core::WasmOp::Call(f) = op {
+            match func_arg_counts.get(*f as usize) {
+                Some(n) if *n <= 4 => {}
+                Some(n) => {
+                    return refuse(format!(
+                        "the call to function {f} passes {n} arguments, so it needs an \
+                         outgoing stack argument; calls with more than four argument \
+                         words are not lowered for ARMv6-M yet"
+                    ));
+                }
+                None => {
+                    return refuse(format!(
+                        "the call to function {f} has no known argument count, so it \
+                         cannot be shown to need no outgoing stack argument"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn invert(c: Condition) -> Condition {
@@ -1066,6 +1129,9 @@ fn fix_prologue(mut out: Vec<ArmInstruction>) -> Result<Vec<ArmInstruction>, Str
         .filter(|&k| matches!(out[k].op, ArmOp::Pop { .. }))
         .collect();
     let Some(&first) = pushes.first() else {
+        if out.iter().any(|i| matches!(i.op, ArmOp::Bl { .. })) {
+            return refuse("a call in a function with no prologue: LR is not saved".into());
+        }
         let callee_saved = out.iter().any(|i| {
             regs_of(&i.op)
                 .is_none_or(|r| r.iter().any(|r| matches!(r, Reg::R4 | Reg::R5 | Reg::R6)))
@@ -1261,6 +1327,119 @@ mod tests {
         assert!(matches!(out[2], ArmOp::Movs { .. }));
         assert!(matches!(out[3], ArmOp::B { .. }));
         assert!(matches!(out[5], ArmOp::Movs { .. }));
+    }
+
+    /// RQ-92-WDGTHIN (#1741): a direct call is passed through as `bl`, LR stays
+    /// in the save list, and a value the stream keeps in R8 across the call
+    /// is renamed to a CALLEE-saved low register (never R2/R3, which the
+    /// callee may clobber).
+    #[test]
+    fn direct_call_is_lowered_and_keeps_values_in_callee_saved_registers() {
+        let ins = |op| ArmInstruction {
+            op,
+            source_line: None,
+        };
+        let mov = |rd, rm| {
+            ins(ArmOp::Mov {
+                rd,
+                op2: Operand2::Reg(rm),
+            })
+        };
+        let bl = || {
+            ins(ArmOp::Bl {
+                label: "func_7".into(),
+            })
+        };
+        let save = vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+        let push = {
+            let mut regs = save.clone();
+            regs.push(Reg::LR);
+            ins(ArmOp::Push { regs })
+        };
+        let pop = {
+            let mut regs = save;
+            regs.push(Reg::PC);
+            ins(ArmOp::Pop { regs })
+        };
+        let out: Vec<ArmOp> = lower(
+            vec![
+                push.clone(),
+                mov(Reg::R8, Reg::R1),
+                bl(),
+                mov(Reg::R0, Reg::R8),
+                pop.clone(),
+            ],
+            0,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|i| i.op)
+        .collect();
+        assert!(matches!(&out[2], ArmOp::Bl { label } if label == "func_7"));
+        let ArmOp::Mov { rd: kept, .. } = &out[1] else {
+            panic!("{:?}", out[1])
+        };
+        assert!(
+            matches!(kept, Reg::R4 | Reg::R5 | Reg::R6),
+            "the value live across the call was put in {kept:?}"
+        );
+        assert_eq!(
+            out[3],
+            ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(*kept)
+            }
+        );
+        let ArmOp::Push { regs } = &out[0] else {
+            panic!("{:?}", out[0])
+        };
+        assert!(regs.contains(&Reg::LR) && regs.contains(kept), "{regs:?}");
+        assert!(!regs.contains(&Reg::R8), "{regs:?}");
+        assert_eq!(regs.len() % 2, 0, "8-byte SP alignment at the call");
+
+        // No prologue: LR is not saved, so the call is refused.
+        let e = lower(vec![bl(), ins(ArmOp::Bx { rm: Reg::LR })], 0).unwrap_err();
+        assert!(e.contains("LR is not saved"), "{e}");
+
+        // The selector's R12 is clobbered by a call (AAPCS IP): a read of it
+        // after the call with no write in between is refused, a write first
+        // is accepted.
+        let read_ip = ins(ArmOp::Add {
+            rd: Reg::R0,
+            rn: Reg::R0,
+            op2: Operand2::Reg(Reg::R12),
+        });
+        let e = lower(
+            vec![
+                push.clone(),
+                mov(Reg::R12, Reg::R1),
+                bl(),
+                read_ip.clone(),
+                pop.clone(),
+            ],
+            0,
+        )
+        .unwrap_err();
+        assert!(e.contains("reads the scratch R7"), "{e}");
+        lower(vec![push, bl(), mov(Reg::R12, Reg::R1), read_ip, pop], 0).unwrap();
+    }
+
+    /// RQ-92-WDGTHIN (#1741): only a call with at most four argument words is
+    /// lowered; an unknown callee arity is refused, not assumed small.
+    #[test]
+    fn stack_argument_calls_are_refused() {
+        use synth_core::WasmOp;
+        let ops = [WasmOp::LocalGet(0), WasmOp::Call(1), WasmOp::End];
+        assert!(refuse_stack_argument_call(&ops, &[9, 4]).is_ok());
+        assert!(refuse_stack_argument_call(&ops, &[9, 0]).is_ok());
+        let e = refuse_stack_argument_call(&ops, &[0, 5]).unwrap_err();
+        assert!(
+            e.contains("passes 5 arguments") && e.contains("outgoing stack argument"),
+            "{e}"
+        );
+        let e = refuse_stack_argument_call(&ops, &[3]).unwrap_err();
+        assert!(e.contains("no known argument count"), "{e}");
+        assert!(refuse_stack_argument_call(&[WasmOp::LocalGet(0), WasmOp::End], &[]).is_ok());
     }
 
     /// F7: an R12 value live across a label is refused (the invariant the

@@ -867,6 +867,11 @@ fn compile_wasm_to_arm(
             "ARM", what, index, count,
         ));
     }
+    // RQ-92-WDGTHIN (#1741): on ARMv6-M a direct call is lowered only when it
+    // passes at most four argument words; see `refuse_stack_argument_call`.
+    if config.target.isa == IsaVariant::Thumb {
+        crate::armv6m_lower::refuse_stack_argument_call(wasm_ops, &config.func_arg_counts)?;
+    }
     // #539: `memory.grow(0)` must return the CURRENT page count, not the
     // fixed-memory `-1` sentinel — growing by zero pages can never fail (WASM
     // Core §4.4.7), so a guest doing `if (memory.grow(0) < 0) trap;` wrongly

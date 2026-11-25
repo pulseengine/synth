@@ -200,12 +200,25 @@ jobs:
           grep -qx 'ORACLE wast-merge-1761 control: 28 steps agree and 5 import call sites are bound on single-module input' "$log"
           test "$(grep -cE '^test result: ok\. 5 passed; 0 failed' "$log")" = 1
           # RQ-91-M0I32 (#1301): the ARMv6-M i32 lowering on the Cortex-M0 model.
-          grep -qx 'ORACLE armv6m-i32: 104 of 104 probes accepted, 20 of 20 decline probes declined, on 2 targets' "$log"
-          grep -qx 'ORACLE armv6m-i32: 18980 cases agree on the Cortex-M0 model, 18938 value comparisons, 21 trap/trap' "$log"
-          # tests/armv6m_i32_oracle.rs is the only test binary that reports 7
-          # passed (measured on the tree rebased onto v0.92 batch 2). The two
-          # KNOWN #1754 pins were 75 and 150 of 216 on the lane's base; the
-          # #1754 fix underneath moved both to 0, and the exact pin now holds it.
-          test "$(grep -cE '^test result: ok\. 7 passed; 0 failed' "$log")" = 1
-          grep -qx 'KNOWN #1754 k1754_b1: 0 of 216 vectors wrong' "$log"
-          grep -qx 'KNOWN #1754 k1754_b1b: 0 of 216 vectors wrong' "$log"
+          # The two shapes pinned wrong for #1754 are accepted probes since the
+          # fix (RQ-92-WDGTHIN: 0 of 216 vectors wrong each), inside these counts.
+          grep -qx 'ORACLE armv6m-i32: 106 of 106 probes accepted, 18 of 18 decline probes declined, on 2 targets' "$log"
+          grep -qx 'ORACLE armv6m-i32: 19412 cases agree on the Cortex-M0 model, 19370 value comparisons, 21 trap/trap' "$log"
+          # tests/armv6m_i32_oracle.rs is the only test binary that reports 6
+          # passed (its KNOWN_1754 test is gone; measured on the tree restacked
+          # onto v0.92 batch 2).
+          test "$(grep -cE '^test result: ok\. 6 passed; 0 failed' "$log")" = 1
+          # RQ-92-WDGTHIN (Refs 1741): direct calls on ARMv6-M, to module functions
+          # and to function imports, linked against host stubs and executed on
+          # the Cortex-M0 model against kiln. These two oracles are the M0 row's
+          # L2 differentials: scripts/support_level_check.py reads these greps.
+          grep -qx 'ORACLE armv6m-call: 32 of 32 call probes accepted, 5 of 5 decline probes declined, on 2 targets' "$log"
+          grep -qx 'ORACLE armv6m-call structural: 4 default-flags objects are byte-identical to --relocatable' "$log"
+          grep -qx 'ORACLE armv6m-call decode: 594 halfwords, all ARMv6-M, 54 BL' "$log"
+          grep -qx 'ORACLE armv6m-call: 484 steps agree on the Cortex-M0 model across 2 targets, 638 host calls matched' "$log"
+          # Cold review F4: calls between functions of the object are held to
+          # AAPCS by the harness (R4-R11 compared, R2/R3/R12 clobbered on return).
+          grep -qx 'ORACLE armv6m-call internal: 3 of 4 callees that lose R4 are caught by the internal-call check, 1 equivalent, 53 internal returns checked' "$log"
+          # tests/armv6m_call_oracle.rs is the only test binary that reports 9
+          # passed (measured on the tree restacked onto v0.92 batch 2).
+          test "$(grep -cE '^test result: ok\. 9 passed; 0 failed' "$log")" = 1
