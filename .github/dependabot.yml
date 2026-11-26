@@ -1,8 +1,18 @@
 version: 2
-# One PR per logical release across all directories: version-locked families
-# (wasm-tools, wasmtime) and all github-actions pins in / must not split into
-# one PR per directory. (Learned from loom/witness/mcp/relay/rules_wasm_component,
-# where one release arrived as 4-8 PRs.)
+# Grouped monthly updates (fleet template, pulseengine/rivet .github/dependabot.yml
+# at 58d165af, owner decision 2026-11-21). One entry per ecosystem, its directories
+# in one `directories:` list, so a release opens one PR and not one per directory.
+# Every entry runs monthly (the 1st, 02:00 UTC), keeps at most 2 PRs open, and
+# waits 7 days after a release (cooldown). Lockstep groups come first because
+# Dependabot puts a dependency in the FIRST group it matches; then one minor-patch
+# group. Majors stay ungrouped, one PR each, so a breaking change is read on its
+# own. Security updates ignore the schedule and the limit.
+#
+# A cargo PR changes Cargo.lock but cannot regenerate MODULE.bazel.lock
+# (crate_universe, `--lockfile_mode=error`), so lockfiles.yml's Bazel job goes red
+# on it. That job prints the commands that fix the branch and uploads the
+# regenerated lock (.github/actions/bazel-lock-check); a signed commit with it
+# follows on the Dependabot branch before merge.
 updates:
   - package-ecosystem: github-actions
     # `/` covers .github/workflows only. The composite actions under
@@ -12,23 +22,24 @@ updates:
       - /
       - /.github/actions/*
     schedule:
-      interval: weekly
+      interval: monthly
+      time: "02:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
     labels:
       - dependencies
     ignore:
-      # For dtolnay/rust-toolchain the ref IS the rustc version. The MC/DC
-      # structural-coverage job pins @1.96.1 as a MEASUREMENT constant (its
-      # floors are counts over std-inlined lowered wasm); dependabot #984
-      # bumped it to 1.100.0 as if it were an action version and silently
-      # changed the measured compiler with no re-measure. Bumps to that pin
-      # are only valid inside a PR that re-measures and restates the floors,
-      # so dependabot must not touch this action. (Its other refs here are
-      # @stable/@nightly, which dependabot never bumps anyway.)
+      # dtolnay/rust-toolchain is moved by hand. Since #1794 every step pins a
+      # master sha and names its compiler in `toolchain:` (1.100.0, the MC/DC
+      # job's measurement constant 1.96.1, a dated nightly), so a sha bump no
+      # longer changes the compiler; before it the ref WAS the rustc version and
+      # dependabot #984 silently moved the MC/DC job's measured compiler. Kept
+      # ignored until the stable-canary lane decides how the toolchain moves.
       - dependency-name: dtolnay/rust-toolchain
     groups:
-      # All github-actions pins in / arrive as ONE PR. Groups are per
-      # updates-entry (dependabot rejects a top-level `groups:`), and a group
-      # inherits its entry's ecosystem, so no package-ecosystem key here.
+      # Groups are per updates-entry (dependabot rejects a top-level `groups:`).
       github-actions-all:
         patterns:
           - "*"
@@ -39,7 +50,12 @@ updates:
       - /
       - /fuzz
     schedule:
-      interval: weekly
+      interval: monthly
+      time: "02:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
     labels:
       - dependencies
     groups:
@@ -59,3 +75,13 @@ updates:
         patterns:
           - "wasmtime"
           - "wasmtime-*"
+      minor-patch:
+        update-types:
+          - minor
+          - patch
+        # ordeal is the default SMT solver. Dependabot calls a 0.x minor bump
+        # "minor", but for 0.x it is breaking, and ordeal 0.9 -> 0.12 hung the
+        # Test and Z3 jobs for days (v0.50). It arrives as its own PR so the full
+        # suite is read for it alone.
+        exclude-patterns:
+          - "ordeal"

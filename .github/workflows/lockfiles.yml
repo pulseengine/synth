@@ -110,21 +110,13 @@ jobs:
       - name: MODULE.bazel.lock is current, and a stale one is refused
         run: python3 scripts/lockfile_check.py bazel
       # The lock CI accepts is the one a Linux runner writes. On a failure, or
-      # on a manual run, write it here and hand it over as an artifact.
-      - name: Regenerate MODULE.bazel.lock on this runner
+      # on a manual run, write it here, print the commands that fix the branch
+      # and hand the lock over as the `module-bazel-lock` artifact. The check
+      # itself ran above (with its planted control), so the composite only
+      # regenerates. Other repos copy .github/actions/bazel-lock-check and run
+      # it with its defaults, which check too.
+      - name: Regenerate MODULE.bazel.lock and print the fix
         if: failure() || github.event_name == 'workflow_dispatch'
-        run: |
-          set -euo pipefail
-          # Never with REPIN set: Bazel records it in the lock (wohl#113).
-          env -u CARGO_BAZEL_REPIN -u CARGO_BAZEL_REPIN_ONLY -u REPIN \
-            bazel mod deps --lockfile_mode=update > /dev/null
-          git diff --stat -- MODULE.bazel.lock
-          echo "To fix a red check: commit this file, or run 'bazel mod deps --lockfile_mode=update' locally and commit the result."
-      - name: Upload the regenerated MODULE.bazel.lock
-        if: failure() || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        uses: ./.github/actions/bazel-lock-check
         with:
-          name: module-bazel-lock
-          path: MODULE.bazel.lock
-          retention-days: 7
-          if-no-files-found: error
+          check: "false"
