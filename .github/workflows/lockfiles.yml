@@ -113,10 +113,10 @@ jobs:
       # on a manual run, write it here, print the commands that fix the branch
       # and hand the lock over as the `module-bazel-lock` artifact. The check
       # itself ran above (with its planted control), so the composite only
-      # regenerates. Other repos copy .github/actions/bazel-lock-check and run
+      # regenerates. Other repos copy .github/actions/lock-check-bazel and run
       # it with its defaults, which check too.
       - name: Regenerate MODULE.bazel.lock and print the fix
         if: failure() || github.event_name == 'workflow_dispatch'
-        uses: ./.github/actions/bazel-lock-check
+        uses: ./.github/actions/lock-check-bazel
         with:
           check: "false"

@@ -11,7 +11,7 @@ version: 2
 # A cargo PR changes Cargo.lock but cannot regenerate MODULE.bazel.lock
 # (crate_universe, `--lockfile_mode=error`), so lockfiles.yml's Bazel job goes red
 # on it. That job prints the commands that fix the branch and uploads the
-# regenerated lock (.github/actions/bazel-lock-check); a signed commit with it
+# regenerated lock (.github/actions/lock-check-bazel); a signed commit with it
 # follows on the Dependabot branch before merge.
 updates:
   - package-ecosystem: github-actions
