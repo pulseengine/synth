@@ -8,7 +8,9 @@
 //! Each row carries a STATUS and the evidence that produced it:
 //!
 //! - `Exec`: the issue's own repro is compiled by synth and every case runs on
-//!   kiln and on unicorn (`synth_oracle::run_case`). LIVE iff some case
+//!   kiln and on unicorn (`synth_oracle::run_case`, or the hosted emulator
+//!   `synth_oracle::run_hosted` for an ARM call with imports, a memory or a
+//!   relocation, which also compares the host-call trace). LIVE iff some case
 //!   disagrees, FIXED iff every case agrees, NOW-DECLINES iff synth refuses
 //!   the module or drops every probed export. An inconclusive case fails the
 //!   test: it is neither status.
@@ -103,7 +105,7 @@ struct Row {
 }
 
 /// When and on what the census was measured.
-const MEASURED_ON: &str = "2026-11-20, main 16700da6";
+const MEASURED_ON: &str = "2026-11-27, main cc36ff38";
 
 const CENSUS: &[Row] = &[
     Row {
@@ -267,11 +269,11 @@ const CENSUS: &[Row] = &[
     Row {
         issue: 1696,
         target: "arm cortex-m4",
-        flags: "--all-exports (default, optimized path), import stub",
-        status: Status::LiveWrong,
+        flags: "--all-exports (default flags: an ET_REL object, direct `bl log`), hosted",
+        status: Status::Fixed,
         evidence: Evidence::Exec,
         m4_default: true,
-        note: "executed with an import stub that clobbers r0-r3 as AAPCS allows",
+        note: "0213a5a0 (#1767): the optimized path calls an import directly; executed on the hosted emulator, which clobbers R0-R3 and R12",
         also: &[],
     },
     Row {
@@ -287,11 +289,11 @@ const CENSUS: &[Row] = &[
     Row {
         issue: 1699,
         target: "arm cortex-m4",
-        flags: "--all-exports (default, direct selector), dispatcher stub",
-        status: Status::LiveWrong,
+        flags: "--all-exports (default flags: an ET_REL object, direct `bl g`), hosted",
+        status: Status::Fixed,
         evidence: Evidence::Exec,
         m4_default: true,
-        note: "executed with a `__meld_dispatch_import` stub reading the args from r1, r2",
+        note: "0213a5a0 (#1767): `__meld_dispatch_import` is gone; the import is called by its field name",
         also: &[],
     },
     Row {
@@ -408,30 +410,30 @@ const CENSUS: &[Row] = &[
         issue: 1744,
         target: "rv32i",
         flags: "-b riscv --target rv32i --relocatable",
-        status: Status::LiveWrong,
+        status: Status::NowDeclines,
         evidence: Evidence::Structural,
         m4_default: false,
-        note: "",
+        note: "0efe82af (#1792): rv32i refuses an M lowering, naming the profile; e_flags carry RVC iff C",
         also: &[],
     },
     Row {
         issue: 1745,
         target: "synth-backend-aarch64 library (compile_module)",
         flags: "cortex-a53, relocatable, software bounds",
-        status: Status::LiveWrong,
+        status: Status::Fixed,
         evidence: Evidence::ExecA64,
         m4_default: false,
-        note: "",
+        note: "0213a5a0 (#1767): compile_module carries the per-function facts",
         also: &[],
     },
     Row {
         issue: 1746,
         target: "arm cortex-m4, rv32imac, aarch64",
         flags: "--relocatable --all-exports",
-        status: Status::LiveWrong,
+        status: Status::Fixed,
         evidence: Evidence::Structural,
         m4_default: false,
-        note: "an export aliasing another export's function is dropped from the symtab, exit 0",
+        note: "0213a5a0 (#1767): every export name of a function is a defined global symbol",
         also: &[],
     },
     Row {
@@ -448,30 +450,80 @@ const CENSUS: &[Row] = &[
         issue: 1752,
         target: "arm cortex-m4 (also cortex-r5, aarch64)",
         flags: "--relocatable --all-exports",
-        status: Status::LiveWrong,
+        status: Status::NowDeclines,
         evidence: Evidence::Structural,
         m4_default: false,
-        note: "",
+        note: "0213a5a0 (#1767): an export spelled like the in-object label `func_N` is refused, naming #1752",
         also: &[],
     },
     Row {
         issue: 1754,
         target: "arm cortex-m4",
         flags: "--relocatable; and default flags when the function routes to the direct selector",
-        status: Status::LiveWrong,
+        status: Status::Fixed,
         evidence: Evidence::Exec,
         m4_default: true,
-        note: "filed after the first census commit; added by cold review 16",
+        note: "0213a5a0 (#1767); added by cold review 16",
         also: &[],
     },
     Row {
         issue: 1755,
         target: "arm cortex-m4",
-        flags: "--all-exports (default, optimized path), import stub",
-        status: Status::LiveWrong,
+        flags: "--all-exports (default flags: an ET_REL object, direct `bl add2`), hosted",
+        status: Status::Fixed,
         evidence: Evidence::Exec,
         m4_default: true,
-        note: "found by this census; same root as #1696",
+        note: "0213a5a0 (#1767): import arguments are marshalled into R0-R3; same root as #1696",
+        also: &[],
+    },
+    Row {
+        issue: 1758,
+        target: "arm cortex-m4",
+        flags: "--all-exports (default flags, a module with an import and a memory), hosted",
+        status: Status::Fixed,
+        evidence: Evidence::Exec,
+        m4_default: true,
+        note: "0213a5a0 (#1767): every function of an ET_REL object addresses memory through R11; filed after the snapshot",
+        also: &[],
+    },
+    Row {
+        issue: 1761,
+        target: "arm cortex-m4",
+        flags: "--relocatable --all-exports, multi-module .wast input, hosted",
+        status: Status::Fixed,
+        evidence: Evidence::Exec,
+        m4_default: false,
+        note: "c2544ec9 (#1780): a call binds within its own module; filed after the snapshot",
+        also: &[],
+    },
+    Row {
+        issue: 1762,
+        target: "rv32imac",
+        flags: "--relocatable",
+        status: Status::Fixed,
+        evidence: Evidence::Exec,
+        m4_default: false,
+        note: "c2544ec9 (#1780): a never-written i64 local is 64 bits wide; filed after the snapshot",
+        also: &[],
+    },
+    Row {
+        issue: 1763,
+        target: "aarch64",
+        flags: "-b aarch64 --relocatable",
+        status: Status::Fixed,
+        evidence: Evidence::ExecA64,
+        m4_default: false,
+        note: "c2544ec9 (#1780): a float local lives in the FP register file; filed after the snapshot",
+        also: &[],
+    },
+    Row {
+        issue: 1789,
+        target: "arm cortex-m4",
+        flags: "--relocatable, hosted",
+        status: Status::Fixed,
+        evidence: Evidence::Exec,
+        m4_default: false,
+        note: "7aea43d1 (#1791): a reload avoids the registers the op already popped; filed after the snapshot",
         also: &[],
     },
 ];
@@ -483,7 +535,7 @@ const NOT_WRONG_CODE: &[(&str, &[u32])] = &[
         "loud decline / missing feature",
         &[
             380, 1145, 1229, 1230, 1231, 1254, 1267, 1301, 1426, 1441, 1447, 1448, 1673, 1703,
-            1724, 1726, 1740,
+            1724, 1726, 1740, 1785, 1786, 1798,
         ],
     ),
     (
@@ -495,15 +547,20 @@ const NOT_WRONG_CODE: &[(&str, &[u32])] = &[
         ],
     ),
     ("unclear", &[1207, 1450]),
+    ("no output / compile does not finish", &[1769]),
 ];
 
-/// The population: the open issues on the snapshot below. It is TYPED, not
+/// The population: the open issues on the snapshot below, plus every issue
+/// filed after it that was still open at the re-measurement. It is TYPED, not
 /// fetched (a test may not reach the network), so a new issue needs a row
 /// here or a place in `NOT_WRONG_CODE`. `.github/workflows/oracle-kiln.yml`
-/// reds when an open issue whose title says wrong code has no row.
+/// reds when an open issue whose title says wrong code has no row. An issue
+/// closed since the snapshot keeps its row: the row still asserts its status.
 const SNAPSHOT: &str = "2026-11-20T00:34:42Z, `gh issue list --repo pulseengine/synth \
-     --state open --limit 300`, 88 open, highest #1755";
-const OPEN_ISSUES: usize = 88;
+     --state open --limit 300`, 88 open, highest #1755; plus the 9 issues filed after it \
+     and open on 2026-11-27 (#1758, #1761, #1762, #1763, #1769, #1785, #1786, #1789, \
+     #1798)";
+const OPEN_ISSUES: usize = 97;
 
 fn count(s: Status) -> usize {
     CENSUS.iter().filter(|r| r.status == s).count()
@@ -533,7 +590,11 @@ fn render() -> String {
     let not: usize = NOT_WRONG_CODE.iter().map(|(_, v)| v.len()).sum();
     writeln!(s, "| Count | Value |").unwrap();
     writeln!(s, "|---|---|").unwrap();
-    writeln!(s, "| open issues | {OPEN_ISSUES} |").unwrap();
+    writeln!(
+        s,
+        "| population (open on the snapshot, or filed after it and open) | {OPEN_ISSUES} |"
+    )
+    .unwrap();
     writeln!(s, "| wrong-code | {wrong} |").unwrap();
     for (class, v) in NOT_WRONG_CODE {
         writeln!(s, "| {class} | {} |", v.len()).unwrap();
@@ -708,13 +769,15 @@ mod measured {
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget};
     use synth_oracle::compare::{EmuOutcome, RefOutcome, Verdict};
     use synth_oracle::emulate::{Cpu, EmuConfig};
-    use synth_oracle::hosted::{HostConfig, LINMEM_UNMAPPED};
+    use synth_oracle::hosted::HostConfig;
     use synth_oracle::reference::Imports;
     use synth_oracle::synth::{CompileRun, compile, synth_binary};
-    use synth_oracle::value::WasmValue;
+    use synth_oracle::value::{WasmValue, has_linear_memory};
     use synth_oracle::{CaseError, run_case, run_hosted};
 
     const FUEL: u64 = 1_000_000;
+    /// R11 for a hosted call (4 KiB aligned; see `exec_status`).
+    const LINMEM_HOSTED: u32 = 0x2001_0000;
 
     #[derive(Clone, Copy)]
     struct Leg {
@@ -769,7 +832,10 @@ mod measured {
         /// emulator (`synth_oracle::hosted`, which links each import call
         /// to a stub by its bare field name and clobbers R0-R3 and R12 on
         /// return) are given the SAME functions, and a call agrees only when
-        /// the two host-call traces are equal too.
+        /// the two host-call traces are equal too. An ARM call runs hosted
+        /// when the module has imports or a memory, or the export carries a
+        /// relocation (an internal call in an ET_REL object); every other
+        /// call runs on `run_case`.
         imports: &'static [HostImport],
         calls: Vec<(&'static str, Vec<WasmValue>)>,
     }
@@ -809,6 +875,12 @@ mod measured {
     }
     fn void(_: [u32; 4]) -> Option<u32> {
         None
+    }
+    fn plus_1000(r: [u32; 4]) -> Option<u32> {
+        Some(r[0].wrapping_add(1000))
+    }
+    fn plus_2000(r: [u32; 4]) -> Option<u32> {
+        Some(r[0].wrapping_add(2000))
     }
 
     fn i(v: i32) -> WasmValue {
@@ -902,20 +974,23 @@ mod measured {
             };
             let cfg = EmuConfig::new(p.leg.cpu);
             let kiln = kiln_imports(p.imports);
-            // A module with imports runs on the hosted emulator (ARM only):
-            // one fresh image per call, so no state crosses calls.
-            let hosted = !p.imports.is_empty();
+            let arm = p.leg.cpu != Cpu::Rv32Imac;
+            let module_hosted = !p.imports.is_empty() || has_linear_memory(&wasm).unwrap();
             assert!(
-                !hosted || p.leg.cpu != Cpu::Rv32Imac,
+                arm || p.imports.is_empty(),
                 "#{issue}: the hosted emulator is ARM only"
             );
-            let host_cfg = HostConfig::new(p.leg.cpu, LINMEM_UNMAPPED);
+            // Memory 0 at an address that is NOT synth's self-contained
+            // absolute base (0x20000100), so code that ignores R11 misses it.
+            let host_cfg = HostConfig::new(p.leg.cpu, LINMEM_HOSTED);
             for (export, args) in &p.calls {
                 calls += 1;
                 if obj.func(export).is_none() {
                     declined += 1;
                     continue;
                 }
+                // One fresh hosted image per call, so no state crosses calls.
+                let hosted = arm && (module_hosted || obj.relocs_in(export) > 0);
                 let c = if hosted {
                     let step: [(&str, &[WasmValue]); 1] = [(export, args.as_slice())];
                     let mut cases = match run_hosted(&wasm, &obj, &step, FUEL, &kiln, &host_cfg) {
@@ -1343,6 +1418,107 @@ mod measured {
                 }],
                 calls: [vec![("k", vec![])], binary("f")].concat(),
             }],
+            // Filed after the snapshot. A store through an optimized-path
+            // function and a load through a direct-path one (it makes a
+            // local call) must meet in the same linear memory.
+            1758 => vec![Probe {
+                leg: M4_DEFAULT,
+                wat: r#"(module
+                  (import "env" "log" (func $log (param i32)))
+                  (memory 1)
+                  (func $st (param i32 i32) local.get 0 local.get 1 i32.store)
+                  (func $h (param i32) (result i32) local.get 0)
+                  (func $ld2 (param i32) (result i32) local.get 0 call $h i32.load)
+                  (func (export "ld") (param i32) (result i32) local.get 0 i32.load)
+                  (func (export "st_ld2") (param i32 i32) (result i32)
+                    local.get 0 local.get 1 call $st local.get 0 call $ld2)
+                  (func (export "c") (param i32) local.get 0 call $log))"#,
+                wast: None,
+                imports: &[HostImport {
+                    module: "env",
+                    field: "log",
+                    params: 1,
+                    f: void,
+                }],
+                calls: [
+                    vec![
+                        ("st_ld2", vec![i(8), i(42)]),
+                        ("st_ld2", vec![i(0), i(-1)]),
+                        ("st_ld2", vec![i(1000), i(7)]),
+                        ("ld", vec![i(8)]),
+                    ],
+                    unary("c"),
+                ]
+                .concat(),
+            }],
+            // The issue's .wast: module 1's `call 0` is its own `a`, never
+            // module 2's import 0. kiln runs one module with the same
+            // functions and imports.
+            1761 => vec![Probe {
+                leg: M4_RELOC,
+                wat: r#"(module
+                  (import "env" "g0" (func $g0 (param i32) (result i32)))
+                  (import "env" "g1" (func $g1 (param i32) (result i32)))
+                  (func $a (export "a") (param i32) (result i32)
+                    local.get 0 i32.eqz if (result i32) i32.const 7
+                    else local.get 0 i32.const 1 i32.sub call $a end)
+                  (func (export "b") (param i32) (result i32) local.get 0 call $g1))"#,
+                wast: Some(
+                    r#"(module
+                  (func (export "a") (param i32) (result i32)
+                    local.get 0 i32.eqz if (result i32) i32.const 7 else local.get 0 i32.const 1 i32.sub call 0 end))
+                (module
+                  (import "env" "g0" (func $g0 (param i32) (result i32)))
+                  (import "env" "g1" (func $g1 (param i32) (result i32)))
+                  (func (export "b") (param i32) (result i32) local.get 0 call $g1))"#,
+                ),
+                imports: &[
+                    HostImport {
+                        module: "env",
+                        field: "g0",
+                        params: 1,
+                        f: plus_1000,
+                    },
+                    HostImport {
+                        module: "env",
+                        field: "g1",
+                        params: 1,
+                        f: plus_2000,
+                    },
+                ],
+                calls: [0, 1, 2, 5, 9]
+                    .into_iter()
+                    .flat_map(|x| [("a", vec![i(x)]), ("b", vec![i(x)])])
+                    .collect(),
+            }],
+            // A never-written i64 local returned on RV32: both words are 0.
+            1762 => vec![Probe {
+                leg: RV32_RELOC,
+                wat: r#"(module
+                  (func (export "f") (param i32) (result i64) (local i64) local.get 1))"#,
+                wast: None,
+                imports: &[],
+                calls: unary("f"),
+            }],
+            // The issue's `mulcall`: an i64 operand live across a call that
+            // returns an i64.
+            1789 => vec![Probe {
+                leg: M4_RELOC,
+                wat: r#"(module
+                  (func $g (param i32) (result i64)
+                    (i64.add (i64.extend_i32_u (local.get 0)) (i64.const 0x100000000)))
+                  (func (export "mulcall") (param i64) (result i64)
+                    (if (result i64) (i64.eqz (local.get 0))
+                      (then (i64.const 1))
+                      (else (i64.mul (local.get 0)
+                        (call $g (i32.wrap_i64 (i64.sub (local.get 0) (i64.const 1)))))))))"#,
+                wast: None,
+                imports: &[],
+                calls: [0, 1, 5, 0x1_0000_0007, -1]
+                    .into_iter()
+                    .map(|x| ("mulcall", vec![l(x)]))
+                    .collect(),
+            }],
             n => panic!("#{n}: no exec probe"),
         }
     }
@@ -1511,6 +1687,45 @@ mod measured {
                     Status::Fixed
                 })
             }
+            // Filed after the snapshot. AArch64: a never-written float local
+            // returned must be 0.0 in s0/d0 (the runner poisons d0), the
+            // issue's integer-parameter shapes.
+            1763 => {
+                let wat = r#"(module
+                  (func (export "r_f64") (param i32) (result f64) (local f64) local.get 1)
+                  (func (export "r_f32") (param i32) (result f32) (local f32) local.get 1))"#;
+                let (ok, err, obj) = synth_raw(
+                    wat,
+                    "wat",
+                    &["-b", "aarch64", "--all-exports", "--relocatable"],
+                );
+                if !ok {
+                    return Err(format!("refused: {err}"));
+                }
+                let wasm = wat::parse_str(wat).unwrap();
+                let mut wrong = 0;
+                for name in ["r_f64", "r_f32"] {
+                    let code = a64_function(&obj, name)?;
+                    for x in [0u32, 1, 5] {
+                        let want = kiln_value(&wasm, name, x)?;
+                        let got = a64::run(&code, u64::from(x))?;
+                        let got = match want {
+                            WasmValue::F32(_) => WasmValue::F32(got.d0 as u32),
+                            WasmValue::F64(_) => WasmValue::F64(got.d0),
+                            _ => return Err("not a float result".into()),
+                        };
+                        if got != want {
+                            eprintln!("#1763 {name}({x}): kiln {want:?}, synth {got:?}");
+                            wrong += 1;
+                        }
+                    }
+                }
+                Ok(if wrong > 0 {
+                    Status::LiveWrong
+                } else {
+                    Status::Fixed
+                })
+            }
             // ARM: `call 0` relocates against the export named `func_0`
             // (function 1) instead of function 0.
             1752 => {
@@ -1525,7 +1740,12 @@ mod measured {
                     M4_RELOC.flags,
                 );
                 let Some(obj) = r.object else {
-                    return Err(format!("refused: {}", r.stderr));
+                    // A refusal counts only with its named diagnostic.
+                    return if r.stderr.contains("#1752") {
+                        Ok(Status::NowDeclines)
+                    } else {
+                        Err(format!("refused without #1752: {}", r.stderr))
+                    };
                 };
                 let data = std::fs::read(&obj.path).unwrap();
                 let f = object::File::parse(&*data).unwrap();
@@ -1706,11 +1926,50 @@ mod measured {
         assert_eq!((none.x0, none.d0), (9, a64::POISON_D));
     }
 
-    /// The hosted path can fail, on values AND on the host-call trace. The
+    /// Every path `exec_status` routes to can measure LIVE-WRONG. The
     /// reference runs `wat`; synth compiles `wast` (the probe's own escape
     /// hatch), so a compiled body that differs from the reference's must
-    /// measure LIVE-WRONG through the same `exec_status` the rows use.
+    /// measure LIVE-WRONG through the same `exec_status` the rows use. On
+    /// main every exec row measures FIXED, so without this a harness that
+    /// could not disagree would look like a clean census.
     #[test]
+    fn exec_paths_can_red() {
+        // `run_case`, ARM and RV32: no imports, no memory, no relocation.
+        let plain = |leg: Leg, wast: Option<&'static str>| Probe {
+            leg,
+            wat: r#"(module (func (export "f") (param i32) (result i32) local.get 0 i32.const 3 i32.add))"#,
+            wast,
+            imports: &[],
+            calls: unary("f"),
+        };
+        let off_by_one = r#"(module (func (export "f") (param i32) (result i32) local.get 0 i32.const 4 i32.add))"#;
+        for leg in [M4_RELOC, RV32_RELOC] {
+            assert_eq!(exec_status(9010, vec![plain(leg, None)]), Status::Fixed);
+            assert_eq!(
+                exec_status(9011, vec![plain(leg, Some(off_by_one))]),
+                Status::LiveWrong
+            );
+        }
+        // Hosted because the export carries a relocation (an internal call).
+        let call = |wast: Option<&'static str>| Probe {
+            leg: M4_RELOC,
+            wat: r#"(module (func $g (param i32) (result i32) local.get 0 i32.const 3 i32.add)
+              (func (export "f") (param i32) (result i32) local.get 0 call $g))"#,
+            wast,
+            imports: &[],
+            calls: unary("f"),
+        };
+        assert_eq!(exec_status(9012, vec![call(None)]), Status::Fixed);
+        let wrong_callee = r#"(module (func $g (param i32) (result i32) local.get 0 i32.const 4 i32.add)
+              (func (export "f") (param i32) (result i32) local.get 0 call $g))"#;
+        assert_eq!(
+            exec_status(9013, vec![call(Some(wrong_callee))]),
+            Status::LiveWrong
+        );
+        hosted_import_path_can_red();
+    }
+
+    /// The hosted import path, on values AND on the host-call trace.
     fn hosted_import_path_can_red() {
         const REF: &str = r#"(module
           (import "env" "add2" (func $add2 (param i32 i32) (result i32)))
@@ -1739,7 +1998,10 @@ mod measured {
             local.get 0 i32.const 1 i32.add
             local.get 1 i32.const 2 i32.add
             call $add2 i32.const 1 i32.add))"#;
-        assert_eq!(exec_status(9002, vec![probe(Some(value))]), Status::LiveWrong);
+        assert_eq!(
+            exec_status(9002, vec![probe(Some(value))]),
+            Status::LiveWrong
+        );
         // The same result with different host-call arguments: values agree,
         // the traces do not.
         let trace = r#"(module
@@ -1748,7 +2010,10 @@ mod measured {
             local.get 0 i32.const 2 i32.add
             local.get 1 i32.const 1 i32.add
             call $add2))"#;
-        assert_eq!(exec_status(9003, vec![probe(Some(trace))]), Status::LiveWrong);
+        assert_eq!(
+            exec_status(9003, vec![probe(Some(trace))]),
+            Status::LiveWrong
+        );
     }
 
     /// `synth compile` for an output `compile` cannot parse (ELF64):
@@ -1797,10 +2062,12 @@ mod measured {
         Ok(bytes[off..off + s.size() as usize].to_vec())
     }
 
-    /// The LIVE exec rows can print FIXED: the same probes, pointed at a
-    /// path that compiles them correctly (the controls the issues name),
-    /// agree with kiln. Without this a row that could never agree would look
-    /// like a live defect forever.
+    /// The exec rows that were LIVE on 16700da6 (#1696, #1699, #1754, #1755)
+    /// can print FIXED on the path their issues name as correct as well as
+    /// on their own: the same probes, pointed at that path, agree with kiln.
+    /// Written while they were LIVE, so a row that could never agree did not
+    /// look like a live defect forever; kept as the paired control of the
+    /// FIXED they now measure.
     #[test]
     fn live_exec_rows_can_flip_on_their_controls() {
         for (issue, leg) in [(1696, M4_RELOC), (1755, M4_RELOC), (1699, M4_RELOC)] {

@@ -355,7 +355,14 @@ jobs:
           grep -qE '(^|\.\.\. )ORACLE rv32-reach-1724-review: 171 cases agree over 19 functions, 177 host calls matched$' "$log"
           # Its result line is the second "4 passed; 0 failed; 0 ignored"
           # pinned above (float_local_1763 is the first).
-          # RQ-91-WRONGCODECENSUS (Refs #1741): the wrong-code census measured
-          # every exec, arm64 and structural row and each held its recorded
-          # status; the six cited rows are checked offline by the same test.
-          grep -qx 'WRONG-CODE CENSUS: 29 rows measured: 8 LIVE-WRONG, 19 FIXED, 2 NOW-DECLINES; 6 rows cited' "$log"
+          # RQ-91-WRONGCODECENSUS (Refs #1741; tests/wrong_code_census.rs):
+          # the wrong-code census measured every exec, arm64 and structural row
+          # and each held its recorded status; the six cited rows are checked
+          # offline by the same test. Re-measured on main cc36ff38: 0 rows
+          # LIVE-WRONG, so exec_paths_can_red is what shows each exec path can
+          # still measure one.
+          grep -qE '(^|\.\.\. )WRONG-CODE CENSUS: 34 rows measured: 0 LIVE-WRONG, 30 FIXED, 4 NOW-DECLINES; 6 rows cited$' "$log"
+          grep -qx 'test measured::exec_paths_can_red ... ok' "$log"
+          # tests/wrong_code_census.rs is the only test binary that reports 7
+          # passed (measured on the tree restacked onto cc36ff38).
+          test "$(grep -cE '^test result: ok\. 7 passed; 0 failed' "$log")" = 1
