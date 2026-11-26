@@ -1526,7 +1526,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-x86_64"
-version = "0.90.0"
+version = "0.91.0"
 dependencies = [
  "iced-x86",
  "object",

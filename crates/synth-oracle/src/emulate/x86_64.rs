@@ -355,6 +355,8 @@ pub(super) fn run(
     Ok(EmuRun {
         outcome,
         cpu_model_readback: readback,
+        memory: None,
+        calls: Vec::new(),
     })
 }
 

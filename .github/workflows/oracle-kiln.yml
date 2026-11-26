@@ -112,6 +112,54 @@ jobs:
           # shrunk probe set or vector list reds here as well as in the test.
           grep -qx 'ORACLE kiln-probe: 6048 cases agree across 2 legs, 72 trap/trap' "$log"
           grep -qx 'stress: 32000 concurrent runs of add(2,3), 0 not Values(5)' "$log"
+          # RQ-91-X86SKEL (Refs #1741): the x86-64 skeleton against kiln
+          # (tests/x86_64_kiln_oracle.rs, unicorn pinned to QEMU64), exact.
+          grep -qx 'ORACLE x86_64-kiln: 877 cases agree' "$log"
+          # RQ-91-X86ALU (Refs #1741): the x86-64 straight-line integer core
+          # against kiln (tests/x86_64_alu_kiln_oracle.rs), exact: 45,379
+          # cases over 57 op groups.
+          grep -qx 'ORACLE x86_64-alu i32 arithmetic: 10362 cases agree over 11 ops' "$log"
+          grep -qx 'ORACLE x86_64-alu i32 compares: 9420 cases agree over 10 ops' "$log"
+          grep -qx 'ORACLE x86_64-alu i64 arithmetic: 9526 cases agree over 11 ops' "$log"
+          grep -qx 'ORACLE x86_64-alu i64 compares: 8660 cases agree over 10 ops' "$log"
+          grep -qx 'ORACLE x86_64-alu conversions/select/consts/drop: 7411 cases agree over 15 groups' "$log"
+          # RQ-91-X86FRAME (Refs #1741): the x86-64 frame, locals, spilled
+          # operand stack, division and bit counts against kiln
+          # (tests/x86_64_frame_div_kiln_oracle.rs), exact: 21,709 cases in the
+          # shaped probes and 2,400 in the random trees. The
+          # division lines also pin how many cases TRAP, by cause; each is
+          # checked to stop on the right `ud2`.
+          grep -qx 'ORACLE x86_64-frame i32 division: 5736 cases agree over 4 ops, 460 divide-by-zero and 11 overflow traps on their ud2' "$log"
+          grep -qx 'ORACLE x86_64-frame i64 division: 5112 cases agree over 4 ops, 388 divide-by-zero and 8 overflow traps on their ud2' "$log"
+          grep -qx 'ORACLE x86_64-frame bit counts: 7806 cases agree over 6 ops' "$log"
+          grep -qx 'ORACLE x86_64-frame locals: 1763 cases agree over 7 groups' "$log"
+          grep -qx 'ORACLE x86_64-frame spills: 1292 cases agree over 2 groups' "$log"
+          # The cold reviewer's random-tree cross-check, committed: kiln, the
+          # emulated code and a Rust evaluator, three ways.
+          grep -qx 'ORACLE x86_64-frame random trees: 2400 cases agree over 60 modules, 1064 traps on ud2' "$log"
+          # RQ-91-X86CTRL (Refs #1741): x86-64 structured control flow against
+          # kiln (tests/x86_64_ctrlflow_kiln_oracle.rs), exact: 1,327 shaped
+          # cases, each also checked against the value (or the ud2) computed
+          # in the test, and 2,560 cases of 40 seeded random modules (5 free-form + 3 shaped functions each).
+          grep -qx 'ORACLE x86_64-ctrl loops: 295 cases agree over 6 probes' "$log"
+          grep -qx 'ORACLE x86_64-ctrl blocks and ifs: 550 cases agree over 8 probes' "$log"
+          grep -qx 'ORACLE x86_64-ctrl br out of nested loops: 129 cases agree over 2 probes' "$log"
+          grep -qx 'ORACLE x86_64-ctrl br_table: 170 cases agree over 6 probes, every index and 4 out-of-range' "$log"
+          grep -qx 'ORACLE x86_64-ctrl unreachable: 50 cases agree, 27 traps each on its own ud2' "$log"
+          grep -qx 'ORACLE x86_64-ctrl pinned shapes: 133 cases agree over 19 exports, each its exact value' "$log"
+          grep -qx 'ORACLE x86_64-ctrl random programs: 2560 cases agree over 40 modules, 177 traps on ud2' "$log"
+          # The four x86-64 test binaries report 12 (the skeleton oracle, two
+          # added by RQ-91-X86FRAME for the runner's store checks), 10 (the
+          # integer-core oracle), 18 (the frame and division oracle) and 11
+          # (the control-flow oracle). No other binary in this run reports
+          # any of these counts (measured on the tree restacked onto
+          # d8fc1b3f), so each is pinned to exactly one result line.
+          test "$(grep -cE '^test result: ok\. 12 passed; 0 failed' "$log")" = 1
+          test "$(grep -cE '^test result: ok\. 10 passed; 0 failed' "$log")" = 1
+          test "$(grep -cE '^test result: ok\. 18 passed; 0 failed' "$log")" = 1
+          test "$(grep -cE '^test result: ok\. 11 passed; 0 failed' "$log")" = 1
+          awk '/Running tests\/x86_64_ctrlflow_kiln_oracle\.rs/{f=1} f&&/^test result:/{print; exit}' "$log" \
+            | grep -qE '^test result: ok\. 11 passed; 0 failed'
           # Exact per binary (RQ-91-TARGETRECORD): 15 kiln_probe_oracle.rs;
           # 24 the lib's unit tests (8 at the base; +12 the target record's
           # record and cycles modules; +4 v0.92 batch 1's hosted/synth/value
@@ -119,13 +167,12 @@ jobs:
           # rebased tree); 3 tests/target_record.rs (the binary end to end,
           # refusals, the boot contract); 1 the target-record binary's own
           # unit test.
-          # RQ-91-X86SKEL (Refs #1741): the x86-64 skeleton against kiln
-          # (tests/x86_64_kiln_oracle.rs, unicorn pinned to QEMU64), exact.
-          grep -qx 'ORACLE x86_64-kiln: 877 cases agree' "$log"
           grep -qE '^test result: ok\. 15 passed; 0 failed' "$log"
           # RQ-91-RV32ISA: +3, the `rv32_isa` decoder unit tests. RV32REACH
-          # (Refs #1254): +1, the `value` memory-image unit test.
-          grep -qE '^test result: ok\. 28 passed; 0 failed' "$log"
+          # (Refs #1254): +1, the `value` memory-image unit test. RQ-91-X86SKEL
+          # / X86ALU / X86FRAME (Refs #1741): +3, the x86-64 trap judge and
+          # runner units (31 measured on the tree restacked onto d8fc1b3f).
+          grep -qE '^test result: ok\. 31 passed; 0 failed' "$log"
           grep -qE '^test result: ok\. 3 passed; 0 failed' "$log"
           grep -qE '^test result: ok\. 1 passed; 0 failed' "$log"
           # Refs #1754 (tests/select_home_alias_1754.rs): select must not

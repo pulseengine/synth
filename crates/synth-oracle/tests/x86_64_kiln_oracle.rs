@@ -288,6 +288,11 @@ fn hand(text: &[u8]) -> CompiledObject {
         .into_iter()
         .collect(),
         text_relocs: vec![],
+        // Hand-built bytes, not an ELF: no symbol table, no `e_type`, no
+        // `e_flags`. The plain runner reads none of these.
+        relocs: vec![],
+        relocatable: true,
+        e_flags: 0,
     }
 }
 
