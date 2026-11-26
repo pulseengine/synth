@@ -26,7 +26,9 @@ description: cargo build -p synth-cli (dev, default features), fingerprint it, u
 runs:
   using: composite
   steps:
-    - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable (branch)
+    - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+      with:
+        toolchain: 1.100.0
     # Restore everywhere; SAVE only on a push to main (see the header).
     - name: Cache Cargo dependencies (this job's own key) — restore and save (push to main)
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'

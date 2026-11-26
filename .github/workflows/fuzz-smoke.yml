@@ -76,7 +76,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install nightly Rust
-        uses: dtolnay/rust-toolchain@6a52aad76a94a5fbc50d567bb5be24419801c1fb # nightly (branch)
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: nightly-2026-11-20
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
@@ -126,7 +128,7 @@ jobs:
           read -ra G <<< "$GATING"
           # The list must be exactly fuzz/Cargo.toml's `[[bin]]` set: a target
           # added there and not here would never be fuzzed.
-          have="$(cargo +nightly fuzz list | sort | xargs)"
+          have="$(cargo +nightly-2026-11-20 fuzz list | sort | xargs)"
           want="$(printf '%s\n' "${T[@]}" | sort | xargs)"
           if [ -z "$have" ] || [ "$have" != "$want" ]; then
             echo "::error::fuzz targets in fuzz/Cargo.toml ($have) are not the ones this job runs ($want)"
@@ -156,7 +158,7 @@ jobs:
               fi
             fi
             rc=0
-            timeout 600 cargo +nightly fuzz run "${tgt}" \
+            timeout 600 cargo +nightly-2026-11-20 fuzz run "${tgt}" \
               --target x86_64-unknown-linux-gnu \
               -- -max_total_time=60 -print_final_stats=1 || rc=$?
             echo "::endgroup::"
