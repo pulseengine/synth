@@ -60,12 +60,19 @@ pub struct TextReloc {
     pub offset: u64,
     /// The ELF relocation type (`R_ARM_THM_CALL` = 10).
     pub r_type: u32,
+    /// The relocation's explicit addend (RELA, as RV32 objects carry; 0 for
+    /// a REL relocation, whose addend is in the instruction).
+    pub addend: i64,
     /// The symbol's name; empty when the symbol has none.
     pub symbol: String,
     /// `Some(offset within .text)` when the symbol is DEFINED in `.text` (an
     /// internal call), with the Thumb bit stripped; `None` when it is
     /// undefined, i.e. the host linker must provide it.
     pub target: Option<u64>,
+    /// The symbol is undefined (`SHN_UNDEF`): something the link supplies.
+    /// The RV32 link step ([`crate::emulate::EmuEnv`]) requires it for a
+    /// host stub, so a symbol in another section is not mistaken for one.
+    pub undefined: bool,
 }
 
 /// `R_ARM_THM_CALL`: the only relocation the hosted emulator resolves.
@@ -228,8 +235,10 @@ impl CompiledObject {
             relocs.push(TextReloc {
                 offset,
                 r_type: r_type.0,
+                addend: rel.addend(),
                 symbol: sym.name().unwrap_or("").to_string(),
                 target,
+                undefined: sym.is_undefined(),
             });
         }
         let relocatable = file.elf_header().e_type(endian) == object::elf::ET_REL;

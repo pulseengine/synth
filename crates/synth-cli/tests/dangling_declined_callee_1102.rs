@@ -15,6 +15,10 @@
 //! $ ld.lld d.o         # -> undefined symbol: synth_func_0
 //! ```
 //!
+//! That transcript is HISTORY: v0.92 (#1254) lowers the large memarg offset
+//! on RV32, so it no longer declines. The fixtures below use `i32.clz` as the
+//! rv32-only decline instead, and their anchor is `I32Clz`.
+//!
 //! `synth_func_0` names a function the module itself DEFINES, so no linker
 //! input can ever resolve it: the object is not partial, it is UNLINKABLE.
 //! The #952 guard is keyed on declined REQUESTED EXPORTS and the #1013
@@ -56,12 +60,17 @@ fn workdir(tag: &str) -> PathBuf {
 }
 
 /// The minimal reported shape: `$big` is INTERNAL (not exported), declines on
-/// rv32 (memory offset 1048588 exceeds the selector's immediate range), and
-/// the retained export `entry` calls it.
+/// rv32, and the retained export `entry` calls it.
+///
+/// The decline trigger is `i32.clz`, which RV32 declines loudly and ARM
+/// lowers. The reported module used a memory offset past imm12 (1048588),
+/// which v0.92 #1254 now LOWERS on RV32, so that shape no longer declines;
+/// any rv32-only decline serves, and if `i32.clz` is lowered too the fixture
+/// needs another (the `anchor` check below says so loudly).
 const DANGLING_INTERNAL: &str = r#"(module
   (memory 32)
   (func $big (param i32) (result i32)
-    (i32.load offset=1048588 (local.get 0)))
+    (i32.clz (local.get 0)))
   (func (export "entry") (param i32) (result i32)
     (call $big (local.get 0))))
 "#;
@@ -72,7 +81,7 @@ const DANGLING_INTERNAL: &str = r#"(module
 const DANGLING_MULTI_EXPORT: &str = r#"(module
   (memory 32)
   (func $big (param i32) (result i32)
-    (i32.load offset=1048588 (local.get 0)))
+    (i32.clz (local.get 0)))
   (func (export "gpio_get") (param i32) (result i32)
     (call $big (local.get 0)))
   (func (export "gpio_set") (param i32) (result i32)
@@ -88,12 +97,12 @@ const DANGLING_MULTI_EXPORT: &str = r#"(module
 const DECLINE_WITHOUT_REFERENCE: &str = r#"(module
   (memory 32)
   (func (export "big") (param i32) (result i32)
-    (i32.load offset=1048588 (local.get 0)))
+    (i32.clz (local.get 0)))
   (func (export "entry") (param i32) (result i32)
     (i32.add (local.get 0) (i32.const 1))))
 "#;
 
-/// ARM/A32 decline shape (the rv32 fixture's large offset COMPILES on ARM):
+/// ARM/A32 decline shape (the rv32 fixture's `i32.clz` COMPILES on ARM):
 /// an internal `$hard` returns f64, which a soft-float target refuses
 /// (GI-FPU-002); its direct caller `$helper` declines too (f64 at the
 /// AAPCS-VFP boundary), and the retained export `f` calls `$helper` — a
@@ -171,13 +180,7 @@ const RV32: &[&str] = &[
 fn rv32_dangling_internal_refuses() {
     let dir = workdir("rv32-min");
     let out = compile(&dir, DANGLING_INTERNAL, "d.o", RV32);
-    assert_refusal(
-        &out,
-        &dir,
-        "d.o",
-        "'entry' -> 'func_0'",
-        "immediate 1048588",
-    );
+    assert_refusal(&out, &dir, "d.o", "'entry' -> 'func_0'", "I32Clz");
 }
 
 /// RED on the unfixed binary: gale's multi-export shape — BOTH retained
@@ -187,13 +190,7 @@ fn rv32_dangling_internal_refuses() {
 fn rv32_multi_export_names_every_dangling_caller() {
     let dir = workdir("rv32-multi");
     let out = compile(&dir, DANGLING_MULTI_EXPORT, "m.o", RV32);
-    assert_refusal(
-        &out,
-        &dir,
-        "m.o",
-        "'gpio_get' -> 'func_0'",
-        "immediate 1048588",
-    );
+    assert_refusal(&out, &dir, "m.o", "'gpio_get' -> 'func_0'", "I32Clz");
     assert!(
         stderr(&out).contains("'gpio_set' -> 'func_0'"),
         "the second dangling caller must be named too.\nstderr:\n{}",
@@ -211,13 +208,7 @@ fn allow_skipped_exports_does_not_waive_the_refusal() {
     let mut args = RV32.to_vec();
     args.push("--allow-skipped-exports");
     let out = compile(&dir, DANGLING_INTERNAL, "d.o", &args);
-    assert_refusal(
-        &out,
-        &dir,
-        "d.o",
-        "'entry' -> 'func_0'",
-        "immediate 1048588",
-    );
+    assert_refusal(&out, &dir, "d.o", "'entry' -> 'func_0'", "I32Clz");
 }
 
 /// RED on the unfixed binary (exit 0, GLOBAL UNDEF `func_1` in the object):
@@ -323,7 +314,7 @@ fn decline_without_reference_still_exits_zero_arm() {
         ],
     );
     let err = stderr(&out);
-    // On ARM the big-offset function COMPILES (no decline) — so this control
+    // On ARM the `i32.clz` function COMPILES (no decline) — so this control
     // asserts the plain no-skip path is untouched instead.
     assert_eq!(
         out.status.code(),

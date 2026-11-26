@@ -11,9 +11,9 @@
 //! feature, so the default workspace build compiles only the value model,
 //! the comparison matrix and the ELF driver.
 //!
-//! WHAT IS COMPARED: return values and trap-versus-return, nothing else.
-//! Memory effects are not compared, so `run_case` refuses a module with a
-//! linear memory; the emulator refuses float signatures (on every core but
+//! WHAT IS COMPARED by `run_case`: return values and trap-versus-return,
+//! nothing else. Memory effects are not compared there, so it refuses a
+//! module with a linear memory; the emulator refuses float signatures (on every core but
 //! AArch64, where the AAPCS64 V-register convention is set up), calls and
 //! multi-value results (see `emulate`).
 //!
@@ -23,6 +23,11 @@
 //! calls on one image and on one kiln instance. There the comparison also
 //! covers every host call (module, field, arguments, results, in order), and
 //! memory effects are compared through what later calls in the sequence read.
+//!
+//! `run_case_env` (Refs #1254, #1724) (RV32) ALSO compares memory and calls: linear memory 0 is
+//! mapped from the module's own initial image and compared BYTE FOR BYTE
+//! after the call, and imported functions run as host stubs whose call trace
+//! (name, arguments, results, order) must equal kiln's.
 
 pub mod armv6m;
 pub mod compare;
@@ -43,15 +48,17 @@ pub mod image;
 pub mod reference;
 
 #[cfg(feature = "exec")]
-pub use run_case::{Case, CaseError, HostedCase, run_case, run_hosted};
+pub use run_case::{Case, CaseError, HostedCase, env_for, run_case, run_case_env, run_hosted};
 
 #[cfg(feature = "exec")]
 mod run_case {
     use crate::compare::{EmuOutcome, RefOutcome, Verdict, verdict};
-    use crate::emulate::{self, EmuConfig, EmuError};
+    use crate::emulate::{self, EmuConfig, EmuEnv, EmuError};
     use crate::reference::{self, HostCall, Imports, RefError};
     use crate::synth::CompiledObject;
-    use crate::value::{WasmValue, export_signature, has_linear_memory};
+    use crate::value::{
+        FuncImport, WasmValue, export_signature, function_imports, has_linear_memory, memory_image,
+    };
 
     /// One executed comparison.
     #[derive(Clone, Debug)]
@@ -159,5 +166,79 @@ mod run_case {
             }
         }
         Ok(cases)
+    }
+
+    /// The emulator environment for `wasm`: its memory image, and every
+    /// function import served by `imports` under its FIELD name (the symbol
+    /// synth's relocatable RV32 object calls).
+    pub fn env_for(wasm: &[u8], imports: &Imports) -> Result<EmuEnv, CaseError> {
+        let memory = memory_image(wasm).map_err(CaseError::Signature)?;
+        let mut env = EmuEnv {
+            memory,
+            imports: Vec::new(),
+        };
+        for FuncImport { module, field, sig } in
+            function_imports(wasm).map_err(CaseError::Signature)?
+        {
+            let f = imports.get(&module, &field).ok_or_else(|| {
+                CaseError::Reference(RefError::UnresolvedImport {
+                    module: module.clone(),
+                    field: field.clone(),
+                })
+            })?;
+            env.imports.push((field, sig, f.clone()));
+        }
+        Ok(env)
+    }
+
+    /// [`run_case`] for a module WITH a linear memory and/or imports (RV32):
+    /// the verdict is on values or trap, AND on the final linear memory
+    /// (byte-equal to kiln's), AND on the host-call trace (field, arguments
+    /// and results, in order). Memory is compared after a trap too: a
+    /// trapping access must not have written anything kiln did not.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_case_env(
+        wasm: &[u8],
+        obj: &CompiledObject,
+        export: &str,
+        args: &[WasmValue],
+        fuel: u64,
+        imports: &Imports,
+        cfg: &EmuConfig,
+        env: &EmuEnv,
+    ) -> Result<Case, CaseError> {
+        let sig = export_signature(wasm, export).map_err(CaseError::Signature)?;
+        let r = reference::run(wasm, export, args, fuel, imports).map_err(CaseError::Reference)?;
+        let e = emulate::run_env(obj, export, &sig, args, cfg, env).map_err(CaseError::Emulator)?;
+        let mut v = verdict(&r.outcome, &e.outcome);
+        if v.is_agree() {
+            let key = |c: &HostCall| (c.field.clone(), c.args.clone(), c.results.clone());
+            let rk: Vec<_> = r.calls.iter().map(key).collect();
+            let ek: Vec<_> = e.calls.iter().map(key).collect();
+            if rk != ek {
+                v = Verdict::Disagree(format!("host calls: reference {rk:?}, emulator {ek:?}"));
+            } else if r.memory.as_ref().map(Vec::len) != e.memory.as_ref().map(Vec::len) {
+                v = Verdict::Disagree(format!(
+                    "memory size: reference {:?}, emulator {:?}",
+                    r.memory.as_ref().map(Vec::len),
+                    e.memory.as_ref().map(Vec::len)
+                ));
+            } else if let (Some(rm), Some(em)) = (&r.memory, &e.memory)
+                && let Some(i) = rm.iter().zip(em).position(|(a, b)| a != b)
+            {
+                v = Verdict::Disagree(format!(
+                    "memory differs first at {i:#x}: reference {:#04x}, emulator {:#04x}",
+                    rm[i], em[i]
+                ));
+            }
+        }
+        Ok(Case {
+            export: export.to_string(),
+            args: args.to_vec(),
+            verdict: v,
+            reference: r.outcome,
+            host_calls: r.calls,
+            emulator: e.outcome,
+        })
     }
 }

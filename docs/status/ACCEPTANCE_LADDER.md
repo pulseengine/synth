@@ -157,6 +157,16 @@ tooling; the `12 rows sum to 141 = 141 modules ranked` line the report now
 prints is there so the next transcription can be checked against it.
 
 ### riscv (182)
+
+> **NOT RE-MEASURED since v0.92's #1254 / #1724 (noted 2026-11-21).** RV32 now
+> LOWERS a memarg offset past the 12-bit immediate (the 62-module row below)
+> and a call inside a control frame with values beneath its arguments (part of
+> the 18-module `Call` row; other `Call` declines — more than 8 arguments, an
+> i64 argument, multi-value — remain). The rows are the v0.63/v0.88 measurement
+> and are NOT corrected: how many of those modules now compile, or hit their
+> next blocker, is unmeasured, because the corpus was not mounted. Cite them
+> with this note.
+
 | n | blocker |
 |---|---------|
 | 62 | immediate too large for memory offset |
@@ -177,8 +187,10 @@ prints is there so the next transcription can be checked against it.
 
 ## One cross-backend observation worth recording
 
-riscv's top blocker — *"immediate too large for memory offset"* (62 modules) —
-is the **same class** as the A32 defect `#1167` this release fixed. The two
+riscv's top blocker at that measurement — *"immediate too large for memory
+offset"* (62 modules; LOWERED since v0.92 #1254, not re-measured, see the note
+on the riscv table) — is the **same class** as the A32 defect `#1167` this
+release fixed. The two
 backends handled it oppositely: **RV32 declines loudly; A32 silently masked the
 offset and emitted a wrong address at exit 0.** Identical gap, and only one of
 them was a miscompile. The loud one cost acceptance; the silent one cost

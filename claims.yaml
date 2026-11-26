@@ -3855,9 +3855,30 @@ claims:
       - kind: ratchet
         name: rv32_selector_lines_code
         direction: down
-        value: 6601
+        value: 6629
         baseline: 6242
         waivers:
+          - to: 6629
+            reason: >-
+              RV32REACH (Refs #1254, #1724): 6601 -> 6629 (+28). Two loud
+              declines become lowerings. #1254: `offset_to_imm` (the decline of
+              any memarg offset past imm12) is DELETED and its five call sites
+              share one helper, `emit_mem_base`, that materializes the part of
+              the offset the immediate cannot carry; the i64 sites lose their
+              separate high-word checks. #1724: a call inside a control frame
+              stores the caller-saved survivors beneath its arguments to frame
+              slots and reloads them after the result copy, through the #1717
+              store/reload pair now shared as `save_regs_to_frame` /
+              `restore_regs_from_frame`, instead of declining `Call(N)`. Open
+              frames' branch-result registers are not saved (dead across the
+              call, cold review N2), so every function base already compiled
+              keeps its bytes. Both
+              are red on main (f6b2b3a4) and green here in
+              crates/synth-oracle/tests/rv32_reach_oracle.rs (kiln vs unicorn,
+              memory byte-compared, host stubs that clobber every caller-saved
+              register); reverting the save, or the sign correction of the
+              materialized offset, reds it. No hand-written arm was replaced by
+              a verified rule, so none could be deleted.
           - to: 6601
             reason: >-
               v0.92 batch 2 (Refs #1762): 6547 -> 6601 (+54). The RV32 selector

@@ -3430,22 +3430,64 @@ impl Selector {
         Ok(())
     }
 
+    /// #1254: `tmp = s11 + addr (+ the part of `offset` an imm12 cannot
+    /// carry)`; returns the immediate the access itself uses. `span` is how
+    /// far above that immediate the access's last word sits (4 for the high
+    /// word of an i64, else 0).
+    ///
+    /// An offset whose every word fits imm12 keeps the one-`add` form and its
+    /// bytes. Anything larger was DECLINED before ("immediate N too large for
+    /// memory offset"): now the upper part is materialized into `tmp`
+    /// (`lui`, a multiple of 4096) and added to the address, and the signed
+    /// low 12 bits ride on the access. Only when the low part plus `span`
+    /// would itself leave imm12 (an i64 at `...7fc..7ff`) is the whole offset
+    /// materialized (`lui` + `addi`) and the access made at 0.
+    ///
+    /// The sum is computed mod 2^32, exactly like the small-offset form. That
+    /// is sound per bounds mode: `Software` has already trapped every access
+    /// with `addr + offset + size > mem_size` (the guard compares `addr`
+    /// against a compile-time constant, so nothing that reaches here wraps),
+    /// `Mask` hands in offset 0, and under `None`/`Pmp` an out-of-bounds
+    /// access is outside the envelope whichever way it wraps.
+    fn emit_mem_base(&mut self, tmp: Reg, addr: Reg, offset: u32, span: i32) -> i32 {
+        if offset <= (2047 - span) as u32 {
+            self.out.push(RiscVOp::Add {
+                rd: tmp,
+                rs1: LINEAR_MEM_BASE,
+                rs2: addr,
+            });
+            return offset as i32;
+        }
+        let mut lo = ((offset & 0xFFF) as i32 ^ 0x800) - 0x800;
+        if lo + span > 2047 {
+            lo = 0;
+        }
+        emit_load_imm(&mut self.out, tmp, offset.wrapping_sub(lo as u32) as i32);
+        self.out.push(RiscVOp::Add {
+            rd: tmp,
+            rs1: tmp,
+            rs2: addr,
+        });
+        self.out.push(RiscVOp::Add {
+            rd: tmp,
+            rs1: LINEAR_MEM_BASE,
+            rs2: tmp,
+        });
+        lo
+    }
+
     fn lower_load_word(&mut self, op: &WasmOp, offset: u32) -> Result<(), SelectorError> {
         let addr = self.pop_i32(op)?;
         let (addr, offset) = self.emit_bounds_check(addr, offset, 4)?;
         let dst = self.alloc_temp();
         // tmp = base + addr
         let tmp = self.alloc_temp();
-        self.out.push(RiscVOp::Add {
-            rd: tmp,
-            rs1: LINEAR_MEM_BASE,
-            rs2: addr,
-        });
-        // lw dst, offset(tmp)
+        let imm = self.emit_mem_base(tmp, addr, offset, 0);
+        // lw dst, imm(tmp)
         self.out.push(RiscVOp::Lw {
             rd: dst,
             rs1: tmp,
-            imm: offset_to_imm(offset)?,
+            imm,
         });
         self.push_i32(dst);
         Ok(())
@@ -3465,12 +3507,7 @@ impl Selector {
         let (addr, offset) = self.emit_bounds_check(addr, offset, access_size)?;
         let dst = self.alloc_temp();
         let tmp = self.alloc_temp();
-        self.out.push(RiscVOp::Add {
-            rd: tmp,
-            rs1: LINEAR_MEM_BASE,
-            rs2: addr,
-        });
-        let imm = offset_to_imm(offset)?;
+        let imm = self.emit_mem_base(tmp, addr, offset, 0);
         let op_built = match kind {
             LoadKind::I8S => RiscVOp::Lb {
                 rd: dst,
@@ -3513,12 +3550,7 @@ impl Selector {
         };
         let (addr, offset) = self.emit_bounds_check(addr, offset, access_size)?;
         let tmp = self.alloc_temp();
-        self.out.push(RiscVOp::Add {
-            rd: tmp,
-            rs1: LINEAR_MEM_BASE,
-            rs2: addr,
-        });
-        let imm = offset_to_imm(offset)?;
+        let imm = self.emit_mem_base(tmp, addr, offset, 0);
         let op_built = match kind {
             StoreKind::Word => RiscVOp::Sw {
                 rs1: tmp,
@@ -4360,21 +4392,35 @@ impl Selector {
         // is single-pass). Inside a control frame (if/else arm, block with a
         // br past the call, loop) another path could reach the survivor's
         // consumer WITHOUT executing the mv — a path-dependent silent
-        // miscompile. Decline loudly instead: calls inside control flow are
-        // supported only when the stack exactly matches the callee's arity
-        // in caller-saved-clobberable values (the common driver shape).
+        // miscompile. So the move is used at depth 0 only.
         let n_survivors = self.vstack.len() - n_args;
-        if n_survivors > 0 && !self.ctrl.is_empty() {
-            let needs_move = self.vstack[..n_survivors].iter().any(|v| match v {
-                VstackVal::I32(r) => is_caller_saved(*r),
-                VstackVal::I64 { lo, hi } => is_caller_saved(*lo) || is_caller_saved(*hi),
-            });
-            if needs_move {
-                return Err(SelectorError::Unsupported(WasmOp::Call(func_idx)));
+        // #1724: in a control frame (which used to DECLINE, `Call(N)`) each
+        // caller-saved register of a vstack entry below the arguments is
+        // stored to a frame slot and reloaded into the SAME register after the
+        // result copy (#1717's pair): one straight-line path, vstack untouched.
+        // An open frame's `br_results` is dead here: it carries a value only
+        // on an edge that already LEFT the frame (a br_if's donated register
+        // stays on the vstack), and the join's fall-through writes it first.
+        let in_frame = !self.ctrl.is_empty();
+        let spilled = if !in_frame {
+            Vec::new()
+        } else {
+            let mut regs: Vec<Reg> = Vec::new();
+            for v in &self.vstack[..n_survivors] {
+                let (a, b) = match v {
+                    VstackVal::I32(r) => (*r, *r),
+                    VstackVal::I64 { lo, hi } => (*lo, *hi),
+                };
+                for r in [a, b] {
+                    if is_caller_saved(r) && !regs.contains(&r) {
+                        regs.push(r);
+                    }
+                }
             }
-        }
+            self.save_regs_to_frame(regs, &WasmOp::Call(func_idx))?
+        };
         let callee_saved_pool = [Reg::S1, Reg::S2, Reg::S3, Reg::S4, Reg::S5, Reg::S6];
-        for i in 0..n_survivors {
+        for i in 0..if in_frame { 0 } else { n_survivors } {
             let entry = self.vstack[i];
             let rewrite = |sel: &mut Self, r: Reg| -> Option<Reg> {
                 if !is_caller_saved(r) {
@@ -4515,6 +4561,9 @@ impl Selector {
                 self.push_i32(tmp);
             }
         }
+        // #1724: after the result copy, whose destination is never a live
+        // register, so the reload cannot overwrite it.
+        self.restore_regs_from_frame(&spilled);
         Ok(())
     }
 
@@ -4757,20 +4806,10 @@ impl Selector {
         let tmp = self.alloc_temp();
         let lo = self.alloc_temp();
         let hi = self.alloc_temp();
-        // Single address calculation reused for both word loads.
-        self.out.push(RiscVOp::Add {
-            rd: tmp,
-            rs1: LINEAR_MEM_BASE,
-            rs2: addr,
-        });
-        let imm_lo = offset_to_imm(offset)?;
-        // The high word lives at `offset + 4`; check the same imm12 range.
-        let imm_hi = offset_to_imm(offset.checked_add(4).ok_or(
-            SelectorError::ImmediateTooLarge {
-                value: offset as i64 + 4,
-                context: "i64 load high-word offset",
-            },
-        )?)?;
+        // Single address calculation reused for both word loads; the high
+        // word lives 4 bytes above the low one.
+        let imm_lo = self.emit_mem_base(tmp, addr, offset, 4);
+        let imm_hi = imm_lo + 4;
         self.out.push(RiscVOp::Lw {
             rd: lo,
             rs1: tmp,
@@ -4796,18 +4835,8 @@ impl Selector {
         // cannot land on lo/hi/addr.)
         let (addr, offset) = self.emit_bounds_check(addr, offset, 8)?;
         let tmp = self.alloc_temp();
-        self.out.push(RiscVOp::Add {
-            rd: tmp,
-            rs1: LINEAR_MEM_BASE,
-            rs2: addr,
-        });
-        let imm_lo = offset_to_imm(offset)?;
-        let imm_hi = offset_to_imm(offset.checked_add(4).ok_or(
-            SelectorError::ImmediateTooLarge {
-                value: offset as i64 + 4,
-                context: "i64 store high-word offset",
-            },
-        )?)?;
+        let imm_lo = self.emit_mem_base(tmp, addr, offset, 4);
+        let imm_hi = imm_lo + 4;
         self.out.push(RiscVOp::Sw {
             rs1: tmp,
             rs2: lo,
@@ -5891,7 +5920,7 @@ impl Selector {
     /// allocator placed in one of these registers before the op — anything
     /// pending below the operands — is not protected by `alloc_temp`'s
     /// liveness rule. `lower_i64_div` therefore brackets the core with
-    /// `save_div_preserved` / `restore_div_preserved`.
+    /// `save_div_preserved` / `restore_regs_from_frame`.
     ///
     /// The seven state registers (`q_lo, q_hi, r_lo, r_hi, d_lo, d_hi, cnt`)
     /// plus three loop-body scratch registers are all distinct and avoid the
@@ -6292,7 +6321,7 @@ impl Selector {
             let saved = self.save_div_preserved(op)?;
             self.emit_i64_udiv_inline((nl, nh), (dl, dh));
             let res = self.copy_div_result(want_rem);
-            self.restore_div_preserved(&saved);
+            self.restore_regs_from_frame(&saved);
             self.push_i64(res.0, res.1);
             return Ok(());
         }
@@ -6338,7 +6367,7 @@ impl Selector {
         // #312: the core copied its inputs into the fixed DIV_* registers.
         self.unpin(&[nabs_lo, nabs_hi, dabs_lo, dabs_hi]);
         let (mag_lo, mag_hi) = self.copy_div_result(want_rem);
-        self.restore_div_preserved(&saved);
+        self.restore_regs_from_frame(&saved);
 
         // Result sign:
         //  - quotient: negative iff the operand signs differ → nsign ^ dsign
@@ -6365,7 +6394,7 @@ impl Selector {
     /// entry below this op's operands, or an open frame's branch result — and
     /// that the long-division core is about to overwrite, into this function's
     /// div preservation slots. Returns the `(reg, slot)` pairs for
-    /// [`Self::restore_div_preserved`].
+    /// [`Self::restore_regs_from_frame`].
     ///
     /// The core runs on a fixed register file (`DIV_CORE_TEMPS`, plus
     /// `DIV_MOVE_SCRATCH`) that bypasses the allocator, so the #226 rule every
@@ -6385,6 +6414,19 @@ impl Selector {
                 regs.push(r);
             }
         }
+        self.save_regs_to_frame(regs, op)
+    }
+
+    /// Store `regs` to this function's register-preservation slots and return
+    /// the `(reg, slot)` pairs for [`Self::restore_regs_from_frame`]. Shared
+    /// by the i64 div/rem core (#1717) and by a call inside a control frame
+    /// (#1724): each store/reload pair is complete within one op's lowering,
+    /// so one area serves both. Nothing to keep emits nothing.
+    fn save_regs_to_frame(
+        &mut self,
+        mut regs: Vec<Reg>,
+        op: &WasmOp,
+    ) -> Result<Vec<(Reg, i32)>, SelectorError> {
         if regs.is_empty() {
             return Ok(Vec::new());
         }
@@ -6412,11 +6454,11 @@ impl Selector {
         Ok(saved)
     }
 
-    /// #1717: reload the registers [`Self::save_div_preserved`] stored. Called
-    /// after the core's result has been copied out of its fixed registers, so
+    /// #1717: reload the registers [`Self::save_regs_to_frame`] stored. Called
+    /// after the op's result has been copied out of its fixed registers, so
     /// the reload cannot overwrite the result (the copy's destination came from
     /// `alloc_temp`, which never returns a live register).
-    fn restore_div_preserved(&mut self, saved: &[(Reg, i32)]) {
+    fn restore_regs_from_frame(&mut self, saved: &[(Reg, i32)]) {
         for &(r, off) in saved {
             self.out.push(RiscVOp::Lw {
                 rd: r,
@@ -6556,20 +6598,6 @@ enum CmpKind {
     Le,
     Gt,
     Ge,
-}
-
-fn offset_to_imm(offset: u32) -> Result<i32, SelectorError> {
-    if offset > 2047 {
-        // RV32 imm12 only supports ±2 KiB. Larger wasm offsets need an
-        // extra `addi tmp, tmp, hi` step, which we'll add when a real wasm
-        // module hits this. The skeleton fails loudly so we don't silently
-        // truncate.
-        return Err(SelectorError::ImmediateTooLarge {
-            value: offset as i64,
-            context: "memory offset",
-        });
-    }
-    Ok(offset as i32)
 }
 
 /// Materialize a 32-bit immediate into `rd` using `lui + addi` when needed.
@@ -7546,20 +7574,110 @@ mod tests {
         assert!(count(&out, |op| matches!(op, RiscVOp::Add { .. })) == 1);
     }
 
+    /// #1254: an offset past imm12 is materialized, not declined. The upper
+    /// part goes into the address temp (`lui`), the signed low 12 bits ride
+    /// on the access; an i64 whose high word would leave imm12 materializes
+    /// the whole offset and accesses at 0 / 4. Offsets that fit keep the
+    /// one-`add` form.
     #[test]
-    fn memory_offset_too_large_errors() {
-        let r = select(
-            &[
-                WasmOp::LocalGet(0),
-                WasmOp::I32Load {
-                    offset: 4096, // > 2047
-                    align: 2,
-                },
-                WasmOp::End,
-            ],
+    fn memory_offset_past_imm12_is_materialized_1254() {
+        let load = |offset: u32| {
+            s(
+                &[
+                    WasmOp::LocalGet(0),
+                    WasmOp::I32Load { offset, align: 2 },
+                    WasmOp::End,
+                ],
+                1,
+            )
+        };
+        let access = |out: &[RiscVOp]| {
+            out.iter()
+                .find_map(|op| match op {
+                    RiscVOp::Lw { rs1, imm, .. } => Some((*rs1, *imm)),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let lui = |out: &[RiscVOp]| {
+            out.iter().find_map(|op| match op {
+                RiscVOp::Lui { rd, imm20 } => Some((*rd, *imm20)),
+                _ => None,
+            })
+        };
+        // (offset, lui imm20, access imm)
+        for (offset, hi20, lo) in [
+            (2048u32, 1u32, -2048i32),
+            (4095, 1, -1),
+            (4096, 1, 0),
+            (0x0010_000C, 0x100, 12),
+            (0x0010_FFFC, 0x110, -4),
+        ] {
+            let out = load(offset);
+            let (base, imm) = access(&out);
+            assert_eq!(imm, lo, "offset {offset}: {out:?}");
+            assert_eq!(lui(&out), Some((base, hi20)), "offset {offset}: {out:?}");
+            // tmp = hi + addr, then tmp = s11 + tmp.
+            assert_eq!(
+                count(
+                    &out,
+                    |op| matches!(op, RiscVOp::Add { rd, rs1, .. } if *rd == base && *rs1 == base)
+                ),
+                1
+            );
+            assert_eq!(
+                count(
+                    &out,
+                    |op| matches!(op, RiscVOp::Add { rd, rs1: Reg::S11, rs2 } if *rd == base && *rs2 == base)
+                ),
+                1
+            );
+        }
+        // In range: the one-`add` form, untouched.
+        let out = load(2047);
+        assert_eq!(access(&out).1, 2047);
+        assert_eq!(lui(&out), None);
+
+        // i64: 2040 keeps both words in imm12; 2044 would put the high word
+        // at 2048, so the whole offset is materialized (`li`) and the words
+        // sit at 0 and 4.
+        let i64_load = |offset: u32| {
+            s(
+                &[
+                    WasmOp::LocalGet(0),
+                    WasmOp::I64Load { offset, align: 3 },
+                    WasmOp::I32WrapI64,
+                    WasmOp::End,
+                ],
+                1,
+            )
+        };
+        let imms = |out: &[RiscVOp]| -> Vec<i32> {
+            out.iter()
+                .filter_map(|op| match op {
+                    RiscVOp::Lw { imm, .. } => Some(*imm),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(imms(&i64_load(2040)), vec![2040, 2044]);
+        assert_eq!(lui(&i64_load(2040)), None);
+        let out = i64_load(2044);
+        assert_eq!(imms(&out), vec![0, 4], "{out:?}");
+        assert_eq!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Addi {
+                    rs1: Reg::ZERO,
+                    imm: 2044,
+                    ..
+                }
+            )),
             1,
+            "{out:?}"
         );
-        assert!(matches!(r, Err(SelectorError::ImmediateTooLarge { .. })));
+        assert_eq!(imms(&i64_load(0x0010_0000)), vec![0, 4]);
+        assert_eq!(imms(&i64_load(4092)), vec![-4, 0]);
     }
 
     // ─── Phase 1 binary-safety tests ────────────────────────────────────
@@ -7623,8 +7741,7 @@ mod tests {
     /// #752: `offset + access_size > mem_size` means every address is OOB —
     /// the guard degenerates to an unconditional ebreak instead of wrapping
     /// on the end-address computation. (A memory smaller than the access
-    /// width is the compile-time-visible instance; big OFFSETS past imm12
-    /// still loud-decline in `offset_to_imm` before the access is emitted.)
+    /// width is the compile-time-visible instance.)
     #[test]
     fn rv32_software_bounds_offset_past_bound_always_traps_752() {
         let opts = SelectorOptions {

@@ -19,8 +19,8 @@
 //! WHAT IS REFUSED, with a typed error, rather than run and judged wrongly:
 //! floating-point signatures on ARM and RV32 (synth's hard-float targets pass
 //! them in S registers and the soft-float convention is not shown on real
-//! code), stack arguments, multi-value results, and any function carrying a
-//! relocation.
+//! code), stack arguments, multi-value results, and (through [`run`]) any
+//! function carrying a relocation.
 //!
 //! AArch64 (#1745) has its own runner, [`run_a64`]: AAPCS64, with float
 //! arguments and results in V registers, and `brk` as the trap.
@@ -29,8 +29,19 @@
 //! with wasm's zero: the whole stack mapping on every core, every unused
 //! argument register, on AArch64 also x8-x18 and d16-d31, and on the two VFP
 //! cores d0-d15.
-//! No linear memory is mapped: modules with a memory are refused one level up
-//! ([`crate::run_case`]), because memory effects are not compared.
+//! [`run`] maps no linear memory: modules with a memory are refused one level
+//! up ([`crate::run_case`]), because memory effects are not compared there.
+//!
+//! [`run_env`] (RV32 only) adds an [`EmuEnv`]: linear memory 0's initial
+//! image mapped at [`MEM_BASE`] with `s11` (synth's RV32 linear-memory base
+//! register) pointing at it and the final image read back, and a LINK step
+//! that resolves every `.text` relocation: a call to a function defined in
+//! `.text` is patched to it, a call to an undefined symbol to a host stub.
+//! Each stub is one `ret` under a code hook that reads the arguments per
+//! ILP32, calls the host function, writes the result to `a0`/`a1` and then
+//! CLOBBERS every other caller-saved register (`t0`-`t6`, `a0`-`a7`) with a
+//! poison value, as the psABI lets any callee do. A relocation of any other
+//! type is refused ([`EmuError::Env`]).
 //!
 //! There is NO wall-clock timeout. unicorn's timeout thread reads a
 //! process-global clock that every engine init rewrites, and under concurrent
@@ -47,6 +58,7 @@ use unicorn_engine::{
 };
 
 use crate::compare::EmuOutcome;
+use crate::reference::{HostCall, HostFn};
 use crate::synth::{CompiledObject, Machine};
 use crate::value::{Signature, ValType, WasmValue};
 
@@ -123,6 +135,40 @@ pub(crate) const POISON: u32 = 0xFEED_FACE;
 /// upper 32 bits of a register carrying an i32 or f32 argument, which
 /// AAPCS64 leaves unspecified.
 const POISON64: u64 = 0xFEED_FACE_FEED_FACE;
+/// Host stubs, one 4-byte `ret` each ([`EmuEnv::imports`] order).
+pub const STUB_BASE: u64 = 0x0050_0000;
+/// Linear memory 0 ([`EmuEnv::memory`]); `s11` holds this address.
+pub const MEM_BASE: u64 = 0x1000_0000;
+/// `jalr x0, 0(x1)`.
+const RV_RET: u32 = 0x0000_8067;
+/// R_RISCV_CALL_PLT, the only relocation [`run_env`] links.
+const R_RISCV_CALL_PLT: u32 = 19;
+
+/// What [`run_env`] maps and links beyond `.text`.
+#[derive(Clone, Default)]
+pub struct EmuEnv {
+    /// Linear memory 0's initial image (`initial` pages, data applied).
+    pub memory: Option<Vec<u8>>,
+    /// The host functions the object's UNDEFINED call targets resolve to,
+    /// by symbol name, with the import's signature.
+    pub imports: Vec<(String, Signature, HostFn)>,
+}
+
+impl std::fmt::Debug for EmuEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmuEnv")
+            .field("memory", &self.memory.as_ref().map(Vec::len))
+            .field(
+                "imports",
+                &self
+                    .imports
+                    .iter()
+                    .map(|(n, s, _)| (n, s))
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
 
 /// Per-run configuration.
 #[derive(Clone, Debug)]
@@ -156,11 +202,16 @@ pub enum EmuError {
         cpu: Cpu,
     },
     NoSymbol(String),
-    /// The function carries relocations, so it cannot run without linking.
+    /// The function carries relocations, so it cannot run without linking
+    /// ([`run`]), or one of them is not linkable ([`run_env`]).
     NeedsLink {
         func: String,
         relocs: usize,
     },
+    /// [`run_env`]: something the environment cannot set up (a memory or a
+    /// stub on a non-RV32 core, an unresolved or ambiguous symbol, a
+    /// relocation type other than R_RISCV_CALL_PLT).
+    Env(String),
     NotThumb(String),
     /// An f32/f64 parameter or result. On a hard-float ARM target synth
     /// passes them in S/D registers, which this harness does not set up or
@@ -194,6 +245,10 @@ pub struct EmuRun {
     pub outcome: EmuOutcome,
     /// What `ctl_get_cpu_model` returned (already asserted equal).
     pub cpu_model_readback: i32,
+    /// [`run_env`]: linear memory after the run (`None` without a memory).
+    pub memory: Option<Vec<u8>>,
+    /// [`run_env`]: every host call, in order.
+    pub calls: Vec<HostCall>,
 }
 
 /// The register words of an AAPCS call (i64 in an even pair).
@@ -544,16 +599,116 @@ fn run_a64(
     Ok(EmuRun {
         outcome,
         cpu_model_readback: readback,
+        memory: None,
+        calls: Vec::new(),
     })
 }
 
 /// Run `func` from `obj` with `args` under `cfg`.
+/// The `.text` image with every relocation resolved: a call to a defined
+/// function to that function, a call to an undefined symbol to the stub of
+/// the [`EmuEnv::imports`] entry of that name.
+fn link_text(obj: &CompiledObject, env: &EmuEnv) -> Result<Vec<u8>, EmuError> {
+    let mut text = obj.text.clone();
+    for r in &obj.relocs {
+        if r.r_type != R_RISCV_CALL_PLT || r.addend != 0 {
+            return Err(EmuError::Env(format!(
+                "relocation type {} addend {} at {:#x} is not linked",
+                r.r_type, r.addend, r.offset
+            )));
+        }
+        let target = match (r.target, r.undefined) {
+            (Some(off), false) => TEXT_BASE + off,
+            (None, true) => {
+                let mut hits = env
+                    .imports
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (n, _, _))| *n == r.symbol);
+                let (k, _) = hits.next().ok_or_else(|| {
+                    EmuError::Env(format!(
+                        "undefined symbol `{}` has no host function",
+                        r.symbol
+                    ))
+                })?;
+                if hits.next().is_some() {
+                    return Err(EmuError::Env(format!("symbol `{}` is ambiguous", r.symbol)));
+                }
+                STUB_BASE + 4 * k as u64
+            }
+            _ => {
+                return Err(EmuError::Env(format!(
+                    "relocation at {:#x} names `{}`, neither in .text nor undefined",
+                    r.offset, r.symbol
+                )));
+            }
+        };
+        let o = r.offset as usize;
+        let word = |t: &[u8], at: usize| -> Result<u32, EmuError> {
+            t.get(at..at + 4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .ok_or_else(|| EmuError::Env(format!("relocation at {at:#x} leaves .text")))
+        };
+        let (auipc, jalr) = (word(&text, o)?, word(&text, o + 4)?);
+        if auipc & 0x7F != 0x17 || jalr & 0x707F != 0x67 {
+            return Err(EmuError::Env(format!(
+                "R_RISCV_CALL_PLT at {o:#x} is not on auipc+jalr ({auipc:#010x} {jalr:#010x})"
+            )));
+        }
+        let v = target.wrapping_sub(TEXT_BASE + r.offset) as i64 as i32;
+        let hi = (v.wrapping_add(0x800) >> 12) as u32;
+        let lo = (v as u32).wrapping_sub(hi << 12) & 0xFFF;
+        let auipc = (auipc & 0xFFF) | (hi << 12);
+        let jalr = (jalr & 0x000F_FFFF) | (lo << 20);
+        text[o..o + 4].copy_from_slice(&auipc.to_le_bytes());
+        text[o + 4..o + 8].copy_from_slice(&jalr.to_le_bytes());
+    }
+    Ok(text)
+}
+
+/// Run `func` from `obj` with `args` under `cfg`. No memory is mapped and a
+/// function carrying a relocation is refused; see [`run_env`].
 pub fn run(
     obj: &CompiledObject,
     func: &str,
     sig: &Signature,
     args: &[WasmValue],
     cfg: &EmuConfig,
+) -> Result<EmuRun, EmuError> {
+    let relocs = obj.relocs_in(func);
+    if relocs > 0 {
+        return Err(EmuError::NeedsLink {
+            func: func.to_string(),
+            relocs,
+        });
+    }
+    run_inner(obj, func, sig, args, cfg, None)
+}
+
+/// [`run`] with `env` mapped and the whole `.text` linked (RV32 only).
+pub fn run_env(
+    obj: &CompiledObject,
+    func: &str,
+    sig: &Signature,
+    args: &[WasmValue],
+    cfg: &EmuConfig,
+    env: &EmuEnv,
+) -> Result<EmuRun, EmuError> {
+    if cfg.cpu.machine() != Machine::RiscV32 {
+        return Err(EmuError::Env(
+            "a memory or host stubs are set up for RV32 only".into(),
+        ));
+    }
+    run_inner(obj, func, sig, args, cfg, Some(env))
+}
+
+fn run_inner(
+    obj: &CompiledObject,
+    func: &str,
+    sig: &Signature,
+    args: &[WasmValue],
+    cfg: &EmuConfig,
+    env: Option<&EmuEnv>,
 ) -> Result<EmuRun, EmuError> {
     let machine = cfg.cpu.machine();
     if obj.machine != machine {
@@ -566,13 +721,10 @@ pub fn run(
         .func(func)
         .ok_or_else(|| EmuError::NoSymbol(func.to_string()))?
         .clone();
-    let relocs = obj.relocs_in(func);
-    if relocs > 0 {
-        return Err(EmuError::NeedsLink {
-            func: func.to_string(),
-            relocs,
-        });
-    }
+    let text = match env {
+        Some(env) => link_text(obj, env)?,
+        None => obj.text.clone(),
+    };
     if machine == Machine::Arm && !sym.thumb {
         return Err(EmuError::NotThumb(func.to_string()));
     }
@@ -634,7 +786,7 @@ pub fn run(
         emu.mem_map(TEXT_BASE, text_len.max(0x1000), Prot::ALL),
         "map text",
     )?;
-    uc(emu.mem_write(TEXT_BASE, &obj.text), "write text")?;
+    uc(emu.mem_write(TEXT_BASE, &text), "write text")?;
     uc(
         emu.mem_map(
             STACK_TOP - STACK_SIZE / 2,
@@ -666,6 +818,91 @@ pub fn run(
         Machine::RiscV32 => (10..18).map(|n| RegisterRISCV::X0 as i32 + n).collect(),
         Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
     };
+
+    // The environment: linear memory and host stubs.
+    let calls: Rc<std::cell::RefCell<Vec<HostCall>>> = Rc::default();
+    let host_trap: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+    let mut mem_len = 0u64;
+    if let Some(env) = env {
+        if let Some(img) = &env.memory {
+            mem_len = img.len() as u64;
+            let mapped = ((mem_len + 0xFFF) & !0xFFF).max(0x1000);
+            uc(
+                emu.mem_map(MEM_BASE, mapped, Prot::READ | Prot::WRITE),
+                "map memory",
+            )?;
+            uc(emu.mem_write(MEM_BASE, img), "write memory")?;
+        }
+        if !env.imports.is_empty() {
+            let n = env.imports.len() as u64;
+            uc(
+                emu.mem_map(STUB_BASE, ((4 * n + 0xFFF) & !0xFFF).max(0x1000), Prot::ALL),
+                "map stubs",
+            )?;
+            for k in 0..n {
+                uc(
+                    emu.mem_write(STUB_BASE + 4 * k, &RV_RET.to_le_bytes()),
+                    "write stub",
+                )?;
+            }
+            let imports = env.imports.clone();
+            let regs = arg_regs.clone();
+            let calls2 = Rc::clone(&calls);
+            let trap2 = Rc::clone(&host_trap);
+            uc(
+                emu.add_code_hook(STUB_BASE, STUB_BASE + 4 * n - 1, move |u, addr, _| {
+                    let (name, sig, f) = &imports[((addr - STUB_BASE) / 4) as usize];
+                    let mut words = Vec::new();
+                    for r in &regs {
+                        words.push(u.reg_read(*r).unwrap_or(0) as u32);
+                    }
+                    let mut at = 0;
+                    let mut args = Vec::new();
+                    for t in &sig.params {
+                        let w = t.words();
+                        args.push(WasmValue::from_words(
+                            *t,
+                            &words[at.min(8)..(at + w).min(8)],
+                        ));
+                        at += w;
+                    }
+                    let r = if at > 8 {
+                        Err("stack arguments are not read".to_string())
+                    } else {
+                        f(&args)
+                    };
+                    calls2.borrow_mut().push(HostCall {
+                        module: String::new(),
+                        field: name.clone(),
+                        args,
+                        results: r.as_ref().ok().cloned(),
+                    });
+                    let results = match r {
+                        Ok(v) if v.len() == sig.results.len() => v,
+                        _ => {
+                            trap2.set(Some(addr));
+                            let _ = u.emu_stop();
+                            return;
+                        }
+                    };
+                    let out: Vec<u32> = results.iter().flat_map(|v| v.to_words()).collect();
+                    // The psABI lets a callee change every caller-saved
+                    // register: do so, so a value kept in one is caught.
+                    for (k, r) in regs.iter().enumerate() {
+                        let v = out.get(k).copied().unwrap_or(0xBAD0_0A00 | k as u32);
+                        let _ = u.reg_write(*r, u64::from(v));
+                    }
+                    for (k, n) in [5, 6, 7, 28, 29, 30, 31].into_iter().enumerate() {
+                        let _ = u.reg_write(
+                            RegisterRISCV::X0 as i32 + n,
+                            u64::from(0xBAD0_0700 | k as u32),
+                        );
+                    }
+                }),
+                "add stub hook",
+            )?;
+        }
+    }
     for (i, r) in arg_regs.iter().enumerate() {
         uc(
             emu.reg_write(*r, u64::from(*words.get(i).unwrap_or(&POISON))),
@@ -692,8 +929,13 @@ pub fn run(
         }
     }
     let mut seeds = Vec::new();
+    let s11 = RegisterRISCV::X0 as i32 + 27;
     for (k, (r, name)) in callee_saved(machine).into_iter().enumerate() {
-        let v = 0xC0DE_0000 | k as u64;
+        let v = if mem_len > 0 && machine == Machine::RiscV32 && r == s11 {
+            MEM_BASE
+        } else {
+            0xC0DE_0000 | k as u64
+        };
         uc(emu.reg_write(r, v), "seed callee-saved")?;
         seeds.push((r, name, v));
     }
@@ -726,6 +968,18 @@ pub fn run(
     let r = emu.emu_start(begin, RETURN_ADDR, 0, cfg.budget);
     let pc_now = uc(emu.reg_read(pc_reg), "read PC")? & !1;
 
+    if let Some(pc) = host_trap.get() {
+        let memory = read_memory(&emu, mem_len)?;
+        return Ok(EmuRun {
+            outcome: EmuOutcome::Trap {
+                pc,
+                insn: "host".into(),
+            },
+            cpu_model_readback: readback,
+            memory,
+            calls: calls.borrow().clone(),
+        });
+    }
     let fault = match (hit.get(), r) {
         (Some((reported_pc, intno)), _) => Some(Fault::Hook { reported_pc, intno }),
         (None, Err(err)) => Some(Fault::Error { pc: pc_now, err }),
@@ -780,10 +1034,22 @@ pub fn run(
             )
         }
     };
+    let memory = read_memory(&emu, mem_len)?;
     Ok(EmuRun {
         outcome,
         cpu_model_readback: readback,
+        memory,
+        calls: calls.borrow().clone(),
     })
+}
+
+fn read_memory(emu: &Unicorn<'_, ()>, len: u64) -> Result<Option<Vec<u8>>, EmuError> {
+    if len == 0 {
+        return Ok(None);
+    }
+    let mut m = vec![0u8; len as usize];
+    uc(emu.mem_read(MEM_BASE, &mut m), "read memory")?;
+    Ok(Some(m))
 }
 
 #[cfg(test)]
