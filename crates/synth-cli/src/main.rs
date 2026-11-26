@@ -5431,15 +5431,28 @@ fn compile_all_exports(
         // yield that synth does not yet generate. A blind BL would silently
         // miscompile; refusing is the #275-style honest degradation.
         // Non-async imports classify NotAsync and are untouched (byte-invisible).
-        for imp in &imports {
-            if !matches!(imp.kind, synth_core::wasm_decoder::ImportKind::Function(_)) {
-                continue;
-            }
-            if let synth_core::async_intrinsics::AsyncClassification::Declined(d) =
-                synth_core::async_intrinsics::classify(&imp.module, &imp.name)
-            {
-                anyhow::bail!("{d}");
-            }
+        // P3-BUILTINS I1 (pulseengine/meld#693): a declined import the module
+        // never references (no call / return_call / ref.func, no elem entry,
+        // no export, not the start function) is unreachable and gets no
+        // symbol, so it is accepted; the reference scan reads the same bytes
+        // `module` was decoded from, and fails closed. Any reference keeps
+        // the decline above, unchanged.
+        let dead_async = synth_core::async_intrinsics::gate_async_imports(
+            &imports,
+            sbom_wasm_bytes
+                .as_deref()
+                .context("internal: module bytes missing at the #80 gate")?,
+        )
+        .map_err(|d| anyhow::anyhow!("{d}"))?;
+        for d in &dead_async {
+            warn!(
+                "accepted unreferenced import '{}::{}' (function {}): no call, table, \
+                 ref.func, export or start reference, so it emits no symbol \
+                 (pulseengine/meld#693)",
+                synth_core::async_intrinsics::ASYNC_MODULE,
+                d.field,
+                d.func_index
+            );
         }
         let data_segs = module.data_segments; // #237: capture before `functions` is moved
         let elem_func_indices = module.elem_func_indices; // #275: call_indirect targets

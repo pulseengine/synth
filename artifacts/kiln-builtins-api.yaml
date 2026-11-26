@@ -442,7 +442,14 @@ artifacts:
       scheduler yield for waitable-set/task). An unknown intrinsic in the async
       namespace is also declined rather than blindly called. Non-async imports
       are untouched (byte-invisible). The declined ops are named follow-ups
-      once the buffer/yield capabilities land.
+      once the buffer/yield capabilities land. A declined import that the
+      module never references (no call / return_call / ref.func, no
+      element-segment entry, not exported, not the start function) is
+      unreachable and gets no symbol, so it is ACCEPTED with a warning
+      (P3-BUILTINS I1, pulseengine/meld#693: meld's fused output still
+      imports legacy `stream_new` / `stream_write` with zero references); any
+      reference keeps the decline unchanged, and a reference scan that cannot
+      parse the module fails closed.
     status: implemented
     tags: [p3-async, rfc46, honest-degradation, kiln-builtins, error-context]
     links:
@@ -463,23 +470,35 @@ artifacts:
         CLI end-to-end gate compiles async_error_context.wat to a relocatable
         ELF carrying the `error-context.drop` BL target symbol and FAILS the
         compile on each declined-op fixture with the #80 machine reason.
+        gate_async_imports() accepts a declined import only when
+        referenced_function_indices() does not contain it; the CLI gate
+        compiles a module whose legacy imports are unreferenced (no legacy
+        symbol in the object) and refuses, with the unchanged #80 wording, the
+        same imports when called, placed by an elem segment, named by
+        ref.func, or re-exported.
 
   - id: KB-VER-001
     type: sys-verification
     title: "P3 async intrinsic gate: error-context.drop lowered, other intrinsics declined"
     description: >
       Machine-checked verification of the #80 honest-degradation gate (KB-010).
-      Unit tests (synth-core async_intrinsics, 7 tests) assert the
+      Unit tests (synth-core async_intrinsics, 12 tests) assert the
       classification of every op, including the soundness case that
       error-context.new / .debug-message are DECLINED (linmem buffer) and NOT
-      lowered as if scalar. The CLI integration test (async_intrinsics_gate,
-      2 tests) exercises the real `synth compile` binary: (a) the lowered op
+      lowered as if scalar, and that the dead-import acceptance (I1) refuses
+      every live shape (call, elem, ref.func, export, global initializer,
+      start) and fails closed on unparseable bytes. The CLI integration test
+      (async_intrinsics_gate, 7 tests) exercises the real `synth compile` binary: (a) the lowered op
       compiles to a relocatable ELF whose symbol table carries
       `error-context.drop` as the AAPCS BL target the host linker resolves (the
       executes-vs-reference ABI contract, checked via the ELF symtab); (b) each
       declined-op fixture (stream / future / waitable-set / task /
       error-context.new) FAILS the compile with a diagnostic carrying the "#80
-      async-intrinsic decline" machine reason. Frozen fixtures unchanged (the
+      async-intrinsic decline" machine reason; (c) a module whose legacy
+      `pulseengine:async` imports are unreferenced compiles with no symbol
+      and no relocation for them, and the four live shapes (called, elem
+      segment, ref.func, re-exported) keep the exact #80 wording, on ARM
+      relocatable, --cortex-m and RV32. Frozen fixtures unchanged (the
       gate fires only on the pulseengine:async namespace). CI oracle step
       "P3 async intrinsic honest-degradation gate (#80)" runs both.
     status: implemented

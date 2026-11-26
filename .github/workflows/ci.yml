@@ -128,6 +128,11 @@ jobs:
         # /.debug-message, stream, future, waitable-set, task) LOUD-DECLINES the
         # compile by name. Runs the classifier unit tests + the CLI end-to-end
         # gate so an accidental silent-lower of a declined op is unmissable.
+        # P3-BUILTINS I1 (pulseengine/meld#693): a declined import with NO
+        # reference (no call/return_call/ref.func, elem entry, export or start)
+        # is accepted and emits no symbol; the gate pins that positive plus four
+        # LIVE negatives (called, elem segment, ref.func, re-exported) that must
+        # keep the #80 wording unchanged, on ARM relocatable, --cortex-m and RV32.
         run: |
           cargo test -p synth-core --lib async_intrinsics
           cargo test -p synth-cli --features riscv --test async_intrinsics_gate
