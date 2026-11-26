@@ -35,6 +35,16 @@
 //! synth compiles against; they are pinned here (single source) citing
 //! RFC #46 until Meld's lowering fixes the canonical strings cross-repo
 //! (meld#94).
+//!
+//! ## Dead legacy imports (P3-BUILTINS I1, pulseengine/meld#693)
+//!
+//! A declined import that the module never references (no `call`,
+//! `return_call` or `ref.func`, no element-segment entry, no export, not the
+//! start function) is ACCEPTED: it cannot be reached, gets no symbol and no
+//! relocation, and so carries no obligation. Any reference keeps the decline
+//! unchanged. See [`gate_async_imports`].
+
+use std::collections::BTreeSet;
 
 /// The import module namespace P3-async intrinsics are imported under.
 ///
@@ -222,9 +232,296 @@ fn decline_reason(family: AsyncFamily, field: &str) -> String {
     }
 }
 
+/// Every function index the module REFERENCES, read from the module bytes
+/// (P3-BUILTINS I1, pulseengine/meld#693).
+///
+/// A function index is referenced when any of these names it:
+/// - a `call`, `return_call` or `ref.func` operator in ANY function body;
+/// - a `ref.func` in any constant expression: global initializers, table
+///   initializers, element-segment items and offsets, data-segment offsets;
+/// - an element segment's plain function-index list (active, passive or
+///   declared segments alike — a declared segment is what licenses a
+///   `ref.func`, so it counts on its own);
+/// - a function export (re-exporting an import keeps it live);
+/// - the start section.
+///
+/// These are the only places the binary format can name a function: in
+/// wasmparser 0.263 the operators carrying a function index are exactly
+/// `Call`, `RefFunc` and `ReturnCall`. Indices are in the FULL function index
+/// space (imports first), the space [`crate::ImportEntry::index`] uses for
+/// function imports.
+///
+/// Fail-closed: any parse error returns `Err`, and the caller must then treat
+/// every import as live (see [`gate_async_imports`]).
+pub fn referenced_function_indices(wasm: &[u8]) -> anyhow::Result<BTreeSet<u32>> {
+    use wasmparser::{ElementItems, ElementKind, ExternalKind, Payload, TableInit};
+    let mut refs = BTreeSet::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        match payload? {
+            Payload::CodeSectionEntry(body) => {
+                for op in body.get_operators_reader()? {
+                    note_func_ref(&op?, &mut refs);
+                }
+            }
+            Payload::GlobalSection(reader) => {
+                for g in reader {
+                    scan_const_expr(&g?.init_expr, &mut refs)?;
+                }
+            }
+            Payload::TableSection(reader) => {
+                for t in reader {
+                    if let TableInit::Expr(e) = t?.init {
+                        scan_const_expr(&e, &mut refs)?;
+                    }
+                }
+            }
+            Payload::ElementSection(reader) => {
+                for elem in reader {
+                    let elem = elem?;
+                    if let ElementKind::Active { offset_expr, .. } = &elem.kind {
+                        scan_const_expr(offset_expr, &mut refs)?;
+                    }
+                    match elem.items {
+                        ElementItems::Functions(funcs) => {
+                            for f in funcs {
+                                refs.insert(f?);
+                            }
+                        }
+                        ElementItems::Expressions(_, exprs) => {
+                            for e in exprs {
+                                scan_const_expr(&e?, &mut refs)?;
+                            }
+                        }
+                    }
+                }
+            }
+            Payload::DataSection(reader) => {
+                for d in reader {
+                    if let wasmparser::DataKind::Active { offset_expr, .. } = &d?.kind {
+                        scan_const_expr(offset_expr, &mut refs)?;
+                    }
+                }
+            }
+            Payload::ExportSection(reader) => {
+                for e in reader {
+                    let e = e?;
+                    if e.kind == ExternalKind::Func {
+                        refs.insert(e.index);
+                    }
+                }
+            }
+            Payload::StartSection { func, .. } => {
+                refs.insert(func);
+            }
+            _ => {}
+        }
+    }
+    Ok(refs)
+}
+
+fn note_func_ref(op: &wasmparser::Operator<'_>, refs: &mut BTreeSet<u32>) {
+    use wasmparser::Operator::{Call, RefFunc, ReturnCall};
+    match op {
+        Call { function_index } | ReturnCall { function_index } | RefFunc { function_index } => {
+            refs.insert(*function_index);
+        }
+        _ => {}
+    }
+}
+
+fn scan_const_expr(
+    expr: &wasmparser::ConstExpr<'_>,
+    refs: &mut BTreeSet<u32>,
+) -> anyhow::Result<()> {
+    for op in expr.get_operators_reader() {
+        note_func_ref(&op?, refs);
+    }
+    Ok(())
+}
+
+/// A declined `pulseengine:async` function import that the module never
+/// references, so it is accepted and emits no symbol (P3-BUILTINS I1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadAsyncImport {
+    /// The import field (e.g. `stream_new`).
+    pub field: String,
+    /// The import's index in the full function index space.
+    pub func_index: u32,
+}
+
+/// The #80 gate over a module's imports (P3-BUILTINS I1).
+///
+/// meld's fused output (pulseengine/meld#693) still imports legacy
+/// `pulseengine:async` functions (`stream_new`, `stream_write`) that nothing in
+/// the module references. Such an import cannot be reached at run time: an
+/// ET_REL object has no instantiation step, and an import with no reference
+/// gets no symbol and no relocation, so there is nothing to bind.
+///
+/// For each FUNCTION import that [`classify`] declines:
+/// - not in [`referenced_function_indices`] → returned as a
+///   [`DeadAsyncImport`] (accepted);
+/// - referenced in any way → `Err` with the classifier's decline, unchanged;
+/// - the reference scan itself failed → `Err` with the same decline
+///   (fail-closed: an unprovable "dead" is treated as live).
+///
+/// Lowered and non-async imports are untouched. The reference scan runs only
+/// when a declined import exists, so a module without one costs nothing.
+pub fn gate_async_imports(
+    imports: &[crate::ImportEntry],
+    wasm: &[u8],
+) -> Result<Vec<DeadAsyncImport>, AsyncDecline> {
+    let mut refs: Option<Option<BTreeSet<u32>>> = None;
+    let mut dead = Vec::new();
+    for imp in imports {
+        if !matches!(imp.kind, crate::ImportKind::Function(_)) {
+            continue;
+        }
+        if let AsyncClassification::Declined(d) = classify(&imp.module, &imp.name) {
+            let refs = refs.get_or_insert_with(|| referenced_function_indices(wasm).ok());
+            match refs {
+                Some(r) if !r.contains(&imp.index) => dead.push(DeadAsyncImport {
+                    field: imp.name.clone(),
+                    func_index: imp.index,
+                }),
+                _ => return Err(d),
+            }
+        }
+    }
+    Ok(dead)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decoded_imports(wasm: &[u8]) -> Vec<crate::ImportEntry> {
+        crate::decode_wasm_module(wasm)
+            .expect("fixture decodes")
+            .imports
+    }
+
+    fn gate_wat(wat: &str) -> Result<Vec<DeadAsyncImport>, AsyncDecline> {
+        let wasm = wat::parse_str(wat).expect("fixture assembles");
+        gate_async_imports(&decoded_imports(&wasm), &wasm)
+    }
+
+    /// RED-FIRST (I1, pulseengine/meld#693): a legacy `pulseengine:async`
+    /// import with NO reference is accepted as dead. Before I1 there was no
+    /// gate to accept it; the CLI refused it with the #80 decline.
+    #[test]
+    fn dead_legacy_import_is_accepted() {
+        let dead = gate_wat(
+            r#"(module
+                 (import "pulseengine:async" "stream_new" (func (result i64)))
+                 (func (export "f") (result i32) i32.const 7))"#,
+        )
+        .expect("a dead legacy import must be accepted");
+        assert_eq!(
+            dead,
+            vec![DeadAsyncImport {
+                field: "stream_new".into(),
+                func_index: 0
+            }]
+        );
+    }
+
+    /// The four LIVE shapes keep the classifier's decline, unchanged:
+    /// called, placed in a table by an elem segment, `ref.func`, re-exported.
+    /// Plus the start section and a global initializer, the two remaining
+    /// places that can name a function. (A `ref.func` in a function body is
+    /// valid only when the index is also declared by an elem segment, an
+    /// export or a global initializer, so the "ref.func" case is caught twice;
+    /// the code-body scan is kept for modules that skip validation.)
+    #[test]
+    fn live_legacy_import_keeps_the_decline() {
+        let imp = r#"(import "pulseengine:async" "stream_new" (func $sn (result i64)))"#;
+        let cases = [
+            (
+                "call",
+                format!(r#"(module {imp} (func (export "f") (result i64) call $sn))"#),
+            ),
+            (
+                "elem",
+                format!(r#"(module {imp} (table 1 funcref) (elem (i32.const 0) $sn))"#),
+            ),
+            (
+                "ref.func",
+                format!(
+                    r#"(module {imp} (elem declare func $sn)
+                         (func (export "f") (result funcref) ref.func $sn))"#
+                ),
+            ),
+            (
+                "re-export",
+                format!(r#"(module {imp} (export "sn" (func $sn)))"#),
+            ),
+            (
+                "global",
+                format!(r#"(module {imp} (global funcref (ref.func $sn)))"#),
+            ),
+            (
+                "start",
+                r#"(module (import "pulseengine:async" "stream_new" (func $sn)) (start $sn))"#
+                    .to_string(),
+            ),
+        ];
+        let expected = match classify(ASYNC_MODULE, "stream_new") {
+            AsyncClassification::Declined(d) => d,
+            other => panic!("stream_new must classify Declined, got {other:?}"),
+        };
+        for (what, wat) in cases {
+            assert_eq!(
+                gate_wat(&wat),
+                Err(expected.clone()),
+                "{what}: a live legacy import must keep the #80 decline"
+            );
+        }
+    }
+
+    /// Only the referenced one of two legacy imports is live; the gate
+    /// refuses on it (and stops), whatever the order.
+    #[test]
+    fn one_live_import_among_dead_ones_refuses() {
+        let r = gate_wat(
+            r#"(module
+                 (import "pulseengine:async" "stream_new" (func (result i64)))
+                 (import "pulseengine:async" "stream_write" (func $w (param i32) (result i32)))
+                 (func (export "f") (result i32) i32.const 0 call $w))"#,
+        );
+        match r {
+            Err(d) => assert_eq!(d.field, "stream_write"),
+            Ok(dead) => panic!("stream_write is called, got accepted {dead:?}"),
+        }
+    }
+
+    /// Fail-closed: when the reference scan cannot parse the bytes, a declined
+    /// import is treated as live.
+    #[test]
+    fn unparseable_bytes_fail_closed() {
+        let wasm = wat::parse_str(
+            r#"(module (import "pulseengine:async" "stream_new" (func (result i64))))"#,
+        )
+        .unwrap();
+        let imports = decoded_imports(&wasm);
+        assert!(gate_async_imports(&imports, &wasm[..wasm.len() - 1]).is_err());
+        assert!(gate_async_imports(&imports, b"not wasm").is_err());
+        assert!(gate_async_imports(&imports, b"").is_err());
+    }
+
+    /// A non-async or lowered import never triggers the scan or a decline.
+    #[test]
+    fn non_async_and_lowered_imports_pass_untouched() {
+        let dead = gate_wat(
+            r#"(module
+                 (import "env" "stream_new" (func $e (result i64)))
+                 (import "pulseengine:async" "error-context.drop" (func $d (param i32)))
+                 (func (export "f") call $e drop i32.const 0 call $d))"#,
+        )
+        .unwrap();
+        assert!(dead.is_empty());
+        // Unparseable bytes: no declined import, so no scan, so no error.
+        assert_eq!(gate_async_imports(&[], b"not wasm"), Ok(vec![]));
+    }
 
     /// The lowered op: `error-context.drop` (scalar handle) is recognized and
     /// passes through to the field-name BL path.

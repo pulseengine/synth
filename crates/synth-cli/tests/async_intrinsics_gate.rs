@@ -130,3 +130,161 @@ fn declined_families_reject_loudly() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// P3-BUILTINS I1 (pulseengine/meld#693): DEAD legacy `pulseengine:async`
+// imports are accepted; LIVE ones keep the #80 decline, unchanged.
+//
+// meld's fused output still imports `pulseengine:async::stream_new` /
+// `stream_write` with zero references. The shapes below are that import pair
+// (same signatures as the meld#692 fixture) under five module bodies: one with
+// no reference (accepted) and one per way a module can reference a function
+// (called, elem segment, `ref.func`, re-exported), each of which must refuse
+// with the classifier's exact wording.
+// ---------------------------------------------------------------------------
+
+const LEGACY_IMPORTS: &str = r#"
+  (import "pulseengine:async" "stream_new" (func $stream_new (result i64)))
+  (import "pulseengine:async" "stream_write"
+    (func $stream_write (param i32 i32 i32 i32) (result i32)))"#;
+
+/// The classifier's exact decline for `stream_new`, the first legacy import.
+const STREAM_NEW_DECLINE: &str = "#80 async-intrinsic decline: unknown P3-async intrinsic \
+     'pulseengine:async::stream_new' — synth will not emit a call against an unspecified \
+     async contract (RFC #46); recognized families: error-context (lowered), stream / \
+     future / waitable-set / task (declined)";
+
+/// The configurations the dead-import acceptance is checked under: the ARM
+/// relocatable object meld's output targets, the self-contained Cortex-M
+/// image, and RV32 (the #80 gate is backend-independent).
+const LEGACY_CONFIGS: &[&[&str]] = &[
+    &["-t", "cortex-m7", "--relocatable"],
+    &["-t", "cortex-m7", "--cortex-m"],
+    &["-b", "riscv", "--relocatable"],
+];
+
+fn legacy_module(body: &str) -> String {
+    format!("(module{LEGACY_IMPORTS}\n{body})")
+}
+
+fn write_wat(tag: &str, src: &str) -> PathBuf {
+    let p = artifact_guard::unique_artifact(tag, "wat");
+    std::fs::write(&p, src).expect("write wat");
+    p
+}
+
+fn legacy_compile(wat: &Path, out: &Path, flags: &[&str]) -> Command {
+    let mut cmd = Command::new(synth_binary());
+    cmd.args(["compile", wat.to_str().unwrap()])
+        .args(flags)
+        .args(["-o", out.to_str().unwrap()]);
+    cmd
+}
+
+/// RED-FIRST (I1): both legacy imports unreferenced. On d8fc1b3f this refused
+/// with `STREAM_NEW_DECLINE`; it must now compile, and the object must carry
+/// NO symbol and NO relocation for either legacy import.
+#[test]
+fn dead_legacy_async_imports_are_accepted_and_emit_no_symbol() {
+    use object::{Object, ObjectSection, ObjectSymbol};
+    let wat = write_wat(
+        "async_legacy_dead",
+        &legacy_module(r#"(func (export "get") (result i32) i32.const 7)"#),
+    );
+    for flags in LEGACY_CONFIGS {
+        let out = artifact_guard::unique_artifact("async_legacy_dead", "o");
+        let mut cmd = legacy_compile(&wat, &out, flags);
+        let data = artifact_guard::compile_bytes_or_panic(
+            &mut cmd,
+            &out,
+            "a module whose pulseengine:async imports are all unreferenced must compile",
+        );
+        let obj = object::File::parse(&*data).expect("parse object");
+        let names: Vec<String> = obj
+            .symbols()
+            .filter_map(|s| s.name().ok().map(str::to_string))
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "get"),
+            "{flags:?}: export `get` missing; symbols: {names:?}"
+        );
+        for legacy in ["stream_new", "stream_write"] {
+            assert!(
+                !names.iter().any(|n| n.contains(legacy)),
+                "{flags:?}: dead import `{legacy}` must emit no symbol; symbols: {names:?}"
+            );
+        }
+        let relocs: usize = obj.sections().map(|s| s.relocations().count()).sum();
+        assert_eq!(
+            relocs, 0,
+            "{flags:?}: a module with no live import needs no relocation"
+        );
+    }
+}
+
+/// Every LIVE shape must refuse with the classifier's exact #80 wording and
+/// write no object.
+fn assert_live_legacy_refused(tag: &str, body: &str) {
+    let wat = write_wat(tag, &legacy_module(body));
+    for flags in LEGACY_CONFIGS {
+        let out = artifact_guard::unique_artifact(tag, "o");
+        let o = legacy_compile(&wat, &out, flags)
+            .output()
+            .expect("run synth");
+        let stderr = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            !o.status.success(),
+            "{tag} {flags:?}: a LIVE legacy import must refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(STREAM_NEW_DECLINE),
+            "{tag} {flags:?}: refusal must be the unchanged #80 decline; stderr:\n{stderr}"
+        );
+        assert!(
+            !out.exists(),
+            "{tag} {flags:?}: refused but wrote an object"
+        );
+    }
+}
+
+/// NEGATIVE (a): the legacy import is CALLED.
+#[test]
+fn called_legacy_async_import_keeps_the_80_decline() {
+    assert_live_legacy_refused(
+        "async_legacy_called",
+        r#"(func (export "get") (result i32) call $stream_new i32.wrap_i64)"#,
+    );
+}
+
+/// NEGATIVE (b): the legacy import sits in a TABLE via an active elem segment
+/// (the meld#692 shape for `[async-lower]` built-ins, reached by
+/// `call_indirect`).
+#[test]
+fn table_placed_legacy_async_import_keeps_the_80_decline() {
+    assert_live_legacy_refused(
+        "async_legacy_elem",
+        r#"(table 1 1 funcref)
+           (elem (i32.const 0) $stream_new)
+           (func (export "get") (result i32) i32.const 7)"#,
+    );
+}
+
+/// NEGATIVE (c): the legacy import is referenced by `ref.func`.
+#[test]
+fn ref_func_legacy_async_import_keeps_the_80_decline() {
+    assert_live_legacy_refused(
+        "async_legacy_ref_func",
+        r#"(elem declare func $stream_new)
+           (func (export "get") (result i32) ref.func $stream_new ref.is_null)"#,
+    );
+}
+
+/// NEGATIVE (d): the legacy import is RE-EXPORTED.
+#[test]
+fn reexported_legacy_async_import_keeps_the_80_decline() {
+    assert_live_legacy_refused(
+        "async_legacy_reexport",
+        r#"(export "sn" (func $stream_new))
+           (func (export "get") (result i32) i32.const 7)"#,
+    );
+}
