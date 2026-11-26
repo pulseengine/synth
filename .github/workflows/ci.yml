@@ -4958,7 +4958,19 @@ jobs:
           # 9379 / 244424). IMPORTABI compiles an import-calling module whole on
           # the direct selector, the audited path. Control: main 6641efec's binary
           # over this tree prints 7819 / 9395 / 244880. `hits: 0`.
-          grep -Eq '^functions audited: 7889$' haa1189.txt
+          # I64ARGS (#1785, merged as #1791): 7889 -> 7937, homes 9435 unchanged,
+          # (below) 244722 -> 245462. CODE, no fixture (#1791 adds no .wat).
+          # Paired control on the same tree: 064b3ed6's binary prints
+          # 7889 / 9435 / 244722, main ba110c10's prints 7937 / 9435 / 245462.
+          # Per (module, leg), from the audit lines: 12 callers that #929
+          # refused (an i64 call argument) now compile on all 4 legs, +48
+          # functions, +740 attributed — call.wast even/odd/fac/fac-acc/fib/
+          # type-first-i64/type-second-i64 (+7 / +111 per leg), fac.wast
+          # fac-rec/fac-rec-named (+2 / +44), left-to-right.wast i64_call
+          # (+1 / +13), endianness.wast i64_load (+1 / +6),
+          # aarch64_call_valstack_rq63.wat below_i64 (+1 / +11). The CALL10
+          # fix (Refs #1785) prints the same 7937 / 9435 / 245462. `hits: 0`.
+          grep -Eq '^functions audited: 7937$' haa1189.txt
           grep -Eq '^homes watched: 9435$' haa1189.txt
           # RQ-71-STACKDEPTH: this figure is ASSERTED, not narrated. The #1321
           # comment above said "217081 attributed instructions ... UNCHANGED"
@@ -4972,8 +4984,8 @@ jobs:
           # else. Both still return 0xf / 0x1f executed. functions audited
           # 7307, homes watched 8370 and hits 0 are UNCHANGED.
           # I64TEE (#1713): 244372 -> 244424; A64BELOW (#1740): -> 244880;
-          # BATCH1: -> 244722 (all above).
-          grep -Eq '^attributed instructions: 244722 ' haa1189.txt
+          # BATCH1: -> 244722; I64ARGS (#1785): -> 245462 (all above).
+          grep -Eq '^attributed instructions: 245462 ' haa1189.txt
           # POTENCY: the detector still fires, on this binary, through the same
           # decline / needle / parse path: per (fixture, leg) EXACTLY 58/7/58/7
           # (i32 params r0-r3), 11/9/11/9 (promoted locals r4-r8), 0/0/11/11 (VFP
