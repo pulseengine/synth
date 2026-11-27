@@ -899,7 +899,7 @@ readme_link_coverage:
 # -----------------------------------------------------------------------------
 repo_metadata:
   repo: pulseengine/synth
-  description: "Synth — transcodes WebAssembly to native ARM Cortex-M/R (Thumb-2/A32), RISC-V RV32 and AArch64 via program synthesis, with mechanized Rocq correctness proofs, per-compilation translation validation, and sound WCET bounds. Part of PulseEngine."
+  description: "WebAssembly in, native out. Synthesized."
   topics:
     - aarch64
     - arm
