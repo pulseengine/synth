@@ -1,0 +1,129 @@
+# synth runs as a WASI p2 component: build synth-cli for wasm32-wasip2, run
+# it under wasmtime over the repository's own corpus, and require the same
+# answer as the native binary built from the same commit (owner decision
+# 2026-11-27, "run what we build").
+#
+# Its own workflow file, not a ci.yml job: ci.yml sits near GitHub's ~512 KB
+# limit (see oracle-kiln.yml for the measured failure).
+#
+# The oracle, per input x mode, over every `.wat`/`.wasm` that `git ls-files`
+# lists and five modes (Cortex-M self-contained, ARM relocatable, RV32
+# relocatable, AArch64, x86-64):
+# - the exit codes must be equal;
+# - on success the two objects must be byte-identical (`cmp`);
+# - on refusal the `Error` lines must be identical.
+# Any difference fails the job. Non-vacuity: at least one object and at least
+# one refusal must have been compared, a usage error must exit 2 on both (the
+# exit code survives only with Rust >= 1.100's `exit-with-code` import and
+# wasmtime's `-S cli-exit-with-code=y`; Rust 1.96's std imports only
+# `exit(result)` and every failure arrives as 1), and a copy of a compared
+# object with one byte flipped must make `cmp` fail.
+#
+# Measured locally on 56ccaa34 (wasmtime 41.0.0): 1390 runs, 767
+# byte-identical objects, 623 identical refusals, 0 differences.
+#
+# The subprocess paths (`synth sign` runs wsc, `synth disasm` runs objdump,
+# `--link` runs arm-none-eabi-gcc, `verify-embedder` runs its tools) compile
+# for wasip2 unchanged; std's `Command` returns an error there at run time,
+# and no `compile` path below reaches one.
+
+name: synth as a wasip2 component
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  WASMTIME_VERSION: v41.0.0
+  WASMTIME_SHA256: 07b82a195dc3bda0be010f73d48778b43a209829e9912a4bcd46a8e3760d74e9
+
+jobs:
+  wasip2-self-host:
+    name: synth.wasm under wasmtime == native synth (corpus, byte-identical, exit codes)
+    # NOT a required context, so it can be added and renamed freely.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: 1.100.0
+          targets: wasm32-wasip2
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-wasip2-self-host-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-wasip2-self-host-
+      - name: Install wasmtime (pinned release, sha256-checked)
+        run: |
+          set -euo pipefail
+          f="wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz"
+          curl -sSfL -o "$RUNNER_TEMP/$f" "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/$f"
+          echo "${WASMTIME_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/wasmtime-${WASMTIME_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
+      - name: Build synth, native and wasm32-wasip2, same features
+        run: |
+          set -euo pipefail
+          cargo build -p synth-cli --release --no-default-features --features riscv
+          cargo build -p synth-cli --release --no-default-features --features riscv --target wasm32-wasip2
+          wasmtime --version
+          ls -l target/release/synth target/wasm32-wasip2/release/synth.wasm
+      - name: Corpus differential, native vs wasmtime
+        run: |
+          set -euo pipefail
+          N=target/release/synth
+          W=target/wasm32-wasip2/release/synth.wasm
+          O="$RUNNER_TEMP/wasip2-out"
+          mkdir -p "$O"
+          wrun() { wasmtime run -S cli-exit-with-code=y --dir=. --dir="$O" "$W" "$@"; }
+          modes=("-t cortex-m4 --cortex-m" "-t cortex-m7 --relocatable" "-b riscv --relocatable" "-b aarch64" "-b x86_64")
+          same=0; refuse=0; bad=0; last=""
+          while IFS= read -r f; do
+            b=$(printf '%s' "$f" | tr '/' '_')
+            for mode in "${modes[@]}"; do
+              read -r -a flags <<< "$mode"
+              m=$(printf '%s' "$mode" | tr ' ' '_')
+              set +e
+              "$N" compile "$f" "${flags[@]}" -o "$O/$b$m.n.o" > "$O/n.txt" 2>&1; rn=$?
+              wrun compile "$f" "${flags[@]}" -o "$O/$b$m.w.o" > "$O/w.txt" 2>&1; rw=$?
+              set -e
+              if [ "$rn" != "$rw" ]; then
+                echo "::error::exit code differs: $f $mode native=$rn wasm=$rw"; bad=$((bad+1))
+              elif [ "$rn" = 0 ]; then
+                if cmp -s "$O/$b$m.n.o" "$O/$b$m.w.o"; then same=$((same+1)); last="$O/$b$m.w.o"
+                else echo "::error::object differs: $f $mode"; bad=$((bad+1)); fi
+              else
+                if diff -q <(grep -a Error "$O/n.txt") <(grep -a Error "$O/w.txt") > /dev/null; then refuse=$((refuse+1))
+                else echo "::error::refusal text differs: $f $mode"; bad=$((bad+1)); fi
+              fi
+            done
+          done < <(git ls-files '*.wat' '*.wasm')
+          echo "WASIP2 self-host: $same byte-identical objects, $refuse identical refusals, $bad differences"
+          test "$bad" = 0
+          test "$same" -gt 0
+          test "$refuse" -gt 0
+          # Potency: one flipped byte in a compared object must make cmp fail.
+          cp "$last" "$O/flipped.o"
+          printf '\xff' | dd of="$O/flipped.o" bs=1 seek=64 conv=notrunc status=none
+          if cmp -s "$last" "$O/flipped.o"; then echo "::error::cmp did not see a flipped byte"; exit 1; fi
+          # Exit codes survive: a usage error exits 2 natively and under wasmtime.
+          set +e
+          "$N" compile --no-such-flag > /dev/null 2>&1; rn=$?
+          wrun compile --no-such-flag > /dev/null 2>&1; rw=$?
+          set -e
+          echo "usage error: native=$rn wasm=$rw"
+          test "$rn" = 2
+          test "$rw" = 2
