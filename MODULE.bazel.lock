@@ -3526,7 +3526,7 @@
           "@@//crates/synth-frontend/Cargo.toml": "8789ee34131713af5e564eafe5fffadb09417fca2255c43ef92f28eee4e5f38c",
           "@@//crates/synth-wit/Cargo.toml": "e26ec0f9b4e0a7e10d5756a9fee1a0f97d9cb8f50384c16969993d33c1fdcf63",
           "@@//crates/synth-abi/Cargo.toml": "c45b9af6e0aa2144d893ecf2c3702a7fac58b33d068eb80c5a5d5f6f09941c54",
-          "@@//crates/synth-oracle/Cargo.toml": "7e6ec30e8a67b6e0fec7c6b63bc86ef319e2ed23af41d9d8039cb4d6a951c13b",
+          "@@//crates/synth-oracle/Cargo.toml": "ff5b760f176dcf479be7e346e9302d2af9805b55b8fa2f4f24add4070301a473",
           "@@//crates/synth-analysis/Cargo.toml": "9aa3d2e0eaf2c101ba92fc95aea7752c4b2e24c4e39e96b1d41e39e34a1b9dc9",
           "@@//crates/synth-memory/Cargo.toml": "88abe117c7913c305afa88f1008635169c7b49e9f33407ec3aa949641edbb47b",
           "@@//Cargo.lock": "4079e6e0036909bde109b0459e54a5ea5c54df9eec3e9b258ca8cb0f706ef9ea",
