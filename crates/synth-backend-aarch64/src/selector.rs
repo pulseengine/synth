@@ -2665,6 +2665,39 @@ pub fn select_with_declared_locals(
                 words.push(enc::csel(t0, t0, t1, Cond::Eq));
                 stack.push(Val::gp(t0));
             }
+            // v0.92 — bulk memory on memory 0 (`memory.copy` / `memory.fill`).
+            // The operands are READ, never written (one may be a
+            // register-resident param that a later `local.get` reads again),
+            // so the loop state lives in fresh temps plus IP0/IP1 (x16/x17),
+            // which nothing else holds across a non-call instruction. See
+            // [`emit_memory_copy`] / [`emit_memory_fill`] for the sequences.
+            // A memory-k form arrives wrapped in `MultiMemory` and reaches the
+            // catch-all decline below.
+            WasmOp::MemoryCopy => {
+                let n = pop_gp(&mut stack, "memory.copy")?;
+                let s = pop_gp(&mut stack, "memory.copy")?;
+                let d = pop_gp(&mut stack, "memory.copy")?;
+                // Keep the operands live while allocating so the two loop
+                // temps are distinct from them and from each other.
+                stack.extend([Val::gp(d), Val::gp(s), Val::gp(n)]);
+                let mut free = TEMPS.iter().copied().filter(|t| gp_free(*t, &stack));
+                let (Some(cnt), Some(src)) = (free.next(), free.next()) else {
+                    return Err(SelectError(
+                        "value-stack too deep (memory.copy needs 2 GP temps)".into(),
+                    ));
+                };
+                stack.truncate(stack.len() - 3);
+                emit_memory_copy(&mut words, d, s, n, cnt, src, bounds);
+            }
+            WasmOp::MemoryFill => {
+                let n = pop_gp(&mut stack, "memory.fill")?;
+                let v = pop_gp(&mut stack, "memory.fill")?;
+                let d = pop_gp(&mut stack, "memory.fill")?;
+                stack.extend([Val::gp(d), Val::gp(v), Val::gp(n)]);
+                let cnt = alloc_temp(&stack)?;
+                stack.truncate(stack.len() - 3);
+                emit_memory_fill(&mut words, d, v, n, cnt, bounds);
+            }
             // --- #851 lane L3: WASM globals ------------------------------
             //
             // `global k` lives at `__synth_globals + k*8` in the `.data` region
@@ -2912,6 +2945,137 @@ pub fn select_with_declared_locals(
         epilogue(&mut words, stack.last().copied(), frame_size, is_non_leaf);
     }
     Ok((words, call_sites, sym_relocs))
+}
+
+/// v0.92 — the bulk-memory sequences also use [`IP0`]/[`IP1`] (already
+/// clobbered by `call_indirect`, see `docs/embedder-abi-relocatable-aarch64.md`)
+/// for the bounds limit, the bounds sum, the destination pointer and the byte
+/// in flight. No `bl`/`blr` sits inside either sequence, so no veneer can
+/// intervene.
+///
+/// The software bounds check shared by `memory.copy` and
+/// `memory.fill`: trap (`brk #0`) unless `uxtw(addr) + n <= limit`, where
+/// `xcnt` already holds `uxtw(n)`. The sum is formed in 64 bits
+/// (`add x17, xcnt, w_addr, uxtw`), so `0xFFFF_FFFF + 0xFFFF_FFFF` cannot wrap
+/// past the limit. `x16` must already hold the limit.
+fn bulk_range_check(words: &mut Vec<u32>, addr: Reg, cnt: Reg) {
+    words.push(enc::add_ext_uxtw(IP1, cnt, addr));
+    words.push(enc::cmp64(IP1, IP0));
+    words.push(enc::bcond(Cond::Ls, 2)); // in bounds: hop over the brk
+    words.push(enc::brk(0));
+}
+
+/// v0.92 — `memory.copy d s n` on memory 0.
+///
+/// ```text
+///   mov  w_cnt, w_n                ; zero-extends n into x_cnt
+///   ; --- MemBounds::Software only: both ranges, BEFORE any byte moves ---
+///   mov  x16, #limit
+///   add  x17, x_cnt, w_s, uxtw ; cmp x17, x16 ; b.ls +2 ; brk #0
+///   add  x17, x_cnt, w_d, uxtw ; cmp x17, x16 ; b.ls +2 ; brk #0
+///   ; --- copy ---
+///   cbz  w_cnt, done
+///   add  x16, x28, w_d, uxtw       ; destination pointer
+///   add  x_src, x28, w_s, uxtw     ; source pointer
+///   cmp  x16, x_src
+///   b.hi back                      ; d > s: copy from the top down
+/// fwd:
+///   ldrb w17, [x_src] ; strb w17, [x16]
+///   add  x_src, x_src, #1 ; add x16, x16, #1
+///   sub  x_cnt, x_cnt, #1 ; cbnz x_cnt, fwd
+///   b    done
+/// back:
+///   add  x_src, x_src, x_cnt ; add x16, x16, x_cnt
+/// bwd:
+///   sub  x_src, x_src, #1 ; sub x16, x16, #1
+///   ldrb w17, [x_src] ; strb w17, [x16]
+///   sub  x_cnt, x_cnt, #1 ; cbnz x_cnt, bwd
+/// done:
+/// ```
+///
+/// The spec order is "trap if either range is out of bounds, then copy as if
+/// through a temporary buffer". Copying downward whenever `d > s` and upward
+/// otherwise is exactly that for overlapping ranges, and harmless for disjoint
+/// ones. `n = 0` with an in-bounds `d`/`s` writes nothing; with either past the
+/// limit it traps, because the check is `addr + 0 <= limit`. `d`, `s`, `n`
+/// are only read. `cnt` and `src` are distinct temps, distinct from all three.
+fn emit_memory_copy(
+    words: &mut Vec<u32>,
+    d: Reg,
+    s: Reg,
+    n: Reg,
+    cnt: Reg,
+    src: Reg,
+    bounds: MemBounds,
+) {
+    words.push(enc::mov_reg(cnt, n));
+    if let MemBounds::Software { limit_bytes } = bounds {
+        words.extend(enc::mov_imm64(IP0, limit_bytes));
+        bulk_range_check(words, s, cnt);
+        bulk_range_check(words, d, cnt);
+    }
+    let cbz_at = words.len();
+    words.push(0); // cbz w_cnt, done — patched below
+    words.push(enc::add_ext_uxtw(IP0, LINMEM_BASE, d));
+    words.push(enc::add_ext_uxtw(src, LINMEM_BASE, s));
+    words.push(enc::cmp64(IP0, src));
+    let bhi_at = words.len();
+    words.push(0); // b.hi back — patched below
+    let fwd = words.len();
+    words.push(enc::ldrb(IP1, src, 0));
+    words.push(enc::strb(IP1, IP0, 0));
+    words.push(enc::add_imm64(src, src, 1));
+    words.push(enc::add_imm64(IP0, IP0, 1));
+    words.push(enc::sub_imm64(cnt, cnt, 1));
+    words.push(enc::cbnz64(cnt, fwd as i32 - words.len() as i32));
+    let b_done_at = words.len();
+    words.push(0); // b done — patched below
+    let back = words.len();
+    words.push(enc::add64(src, src, cnt));
+    words.push(enc::add64(IP0, IP0, cnt));
+    let bwd = words.len();
+    words.push(enc::sub_imm64(src, src, 1));
+    words.push(enc::sub_imm64(IP0, IP0, 1));
+    words.push(enc::ldrb(IP1, src, 0));
+    words.push(enc::strb(IP1, IP0, 0));
+    words.push(enc::sub_imm64(cnt, cnt, 1));
+    words.push(enc::cbnz64(cnt, bwd as i32 - words.len() as i32));
+    let done = words.len();
+    words[cbz_at] = enc::cbz(cnt, (done - cbz_at) as i32);
+    words[bhi_at] = enc::bcond(Cond::Hi, (back - bhi_at) as i32);
+    words[b_done_at] = enc::b_uncond((done - b_done_at) as i32);
+}
+
+/// v0.92 — `memory.fill d val n` on memory 0.
+///
+/// ```text
+///   mov  w_cnt, w_n
+///   ; --- MemBounds::Software only, BEFORE any byte is stored ---
+///   mov  x16, #limit
+///   add  x17, x_cnt, w_d, uxtw ; cmp x17, x16 ; b.ls +2 ; brk #0
+///   cbz  w_cnt, done
+///   add  x16, x28, w_d, uxtw
+/// loop:
+///   strb w_val, [x16]              ; the LOW byte of val, as the spec says
+///   add  x16, x16, #1 ; sub x_cnt, x_cnt, #1 ; cbnz x_cnt, loop
+/// done:
+/// ```
+fn emit_memory_fill(words: &mut Vec<u32>, d: Reg, val: Reg, n: Reg, cnt: Reg, bounds: MemBounds) {
+    words.push(enc::mov_reg(cnt, n));
+    if let MemBounds::Software { limit_bytes } = bounds {
+        words.extend(enc::mov_imm64(IP0, limit_bytes));
+        bulk_range_check(words, d, cnt);
+    }
+    let cbz_at = words.len();
+    words.push(0); // cbz w_cnt, done — patched below
+    words.push(enc::add_ext_uxtw(IP0, LINMEM_BASE, d));
+    let top = words.len();
+    words.push(enc::strb(val, IP0, 0));
+    words.push(enc::add_imm64(IP0, IP0, 1));
+    words.push(enc::sub_imm64(cnt, cnt, 1));
+    words.push(enc::cbnz64(cnt, top as i32 - words.len() as i32));
+    let done = words.len();
+    words[cbz_at] = enc::cbz(cnt, (done - cbz_at) as i32);
 }
 
 /// Emit the function epilogue: move the top-of-stack result into the ABI return
@@ -5884,5 +6048,163 @@ mod tests {
         assert_eq!(w[4], enc::ldr_x_imm(9, enc::SP, 16));
         // epilogue restores 32
         assert_eq!(w[w.len() - 2], enc::add_imm64(enc::SP, enc::SP, 32));
+    }
+
+    // --- v0.92: bulk memory on memory 0 ---
+
+    #[test]
+    fn memory_fill_exact_sequence_checks_before_storing() {
+        // (param d v n): d=w0, v=w1, n=w2. The bounds check precedes the
+        // first store; the loop stores the LOW byte of v (strb w1).
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(2),
+            WasmOp::MemoryFill,
+            WasmOp::End,
+        ];
+        let w = sel_mem(&ops, 3, MemBounds::Software { limit_bytes: 65536 });
+        let mut expect = vec![enc::mov_reg(9, 2)];
+        expect.extend(enc::mov_imm64(IP0, 65536));
+        expect.extend([
+            enc::add_ext_uxtw(IP1, 9, 0),
+            enc::cmp64(IP1, IP0),
+            enc::bcond(Cond::Ls, 2),
+            enc::brk(0),
+            enc::cbz(9, 6),
+            enc::add_ext_uxtw(IP0, LINMEM_BASE, 0),
+            enc::strb(1, IP0, 0),
+            enc::add_imm64(IP0, IP0, 1),
+            enc::sub_imm64(9, 9, 1),
+            enc::cbnz64(9, -3),
+            enc::ret(),
+        ]);
+        assert_eq!(w, expect);
+    }
+
+    #[test]
+    fn memory_copy_checks_both_ranges_then_picks_direction() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(2),
+            WasmOp::MemoryCopy,
+            WasmOp::End,
+        ];
+        let w = sel_mem(&ops, 3, MemBounds::Software { limit_bytes: 65536 });
+        let mut expect = vec![enc::mov_reg(9, 2)];
+        expect.extend(enc::mov_imm64(IP0, 65536));
+        for addr in [1, 0] {
+            expect.extend([
+                enc::add_ext_uxtw(IP1, 9, addr),
+                enc::cmp64(IP1, IP0),
+                enc::bcond(Cond::Ls, 2),
+                enc::brk(0),
+            ]);
+        }
+        expect.extend([
+            enc::cbz(9, 20),
+            enc::add_ext_uxtw(IP0, LINMEM_BASE, 0),
+            enc::add_ext_uxtw(10, LINMEM_BASE, 1),
+            enc::cmp64(IP0, 10),
+            enc::bcond(Cond::Hi, 8),
+            // forward
+            enc::ldrb(IP1, 10, 0),
+            enc::strb(IP1, IP0, 0),
+            enc::add_imm64(10, 10, 1),
+            enc::add_imm64(IP0, IP0, 1),
+            enc::sub_imm64(9, 9, 1),
+            enc::cbnz64(9, -5),
+            enc::b_uncond(9),
+            // backward
+            enc::add64(10, 10, 9),
+            enc::add64(IP0, IP0, 9),
+            enc::sub_imm64(10, 10, 1),
+            enc::sub_imm64(IP0, IP0, 1),
+            enc::ldrb(IP1, 10, 0),
+            enc::strb(IP1, IP0, 0),
+            enc::sub_imm64(9, 9, 1),
+            enc::cbnz64(9, -5),
+            enc::ret(),
+        ]);
+        assert_eq!(w, expect);
+    }
+
+    #[test]
+    fn bulk_memory_unchecked_emits_no_guard() {
+        for op in [WasmOp::MemoryCopy, WasmOp::MemoryFill] {
+            let ops = vec![
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::LocalGet(2),
+                op.clone(),
+                WasmOp::End,
+            ];
+            let w = sel_mem(&ops, 3, MemBounds::Unchecked);
+            assert!(!w.contains(&enc::brk(0)), "{op:?}: no trap under none");
+            assert_eq!(w[0], enc::mov_reg(9, 2));
+            assert_eq!(w[1] & 0x7F00_0000, 0x3400_0000, "{op:?}: cbz follows");
+        }
+    }
+
+    #[test]
+    fn bulk_memory_never_writes_its_operand_registers() {
+        // The operands are params that stay register-resident; reading them
+        // again after the op must see the caller's values, so no emitted
+        // word may target x0..x2.
+        for op in [WasmOp::MemoryCopy, WasmOp::MemoryFill] {
+            let ops = vec![
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::LocalGet(2),
+                op.clone(),
+                WasmOp::End,
+            ];
+            let w = sel_mem(&ops, 3, MemBounds::Software { limit_bytes: 65536 });
+            let body = &w[..w.len() - 1];
+            for word in body {
+                // Every data-processing / load word here has Rd/Rt in bits 0..5;
+                // stores and compares name a source there, so skip those.
+                let is_store = *word & 0xFFC0_0000 == enc::strb(0, 0, 0) & 0xFFC0_0000;
+                let is_cmp = *word & 0x1F == 31 && *word & 0x6000_0000 == 0x6000_0000;
+                let is_branch = matches!(*word >> 24, 0x34 | 0x35 | 0xB5 | 0x54 | 0x14);
+                if is_store || is_cmp || is_branch || *word == enc::brk(0) {
+                    continue;
+                }
+                assert!(
+                    *word & 0x1F > 2,
+                    "{op:?}: {word:#010x} writes an operand register"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bulk_memory_on_memory_k_still_declines() {
+        for inner in [WasmOp::MemoryCopy, WasmOp::MemoryFill] {
+            let ops = vec![
+                WasmOp::I32Const(0),
+                WasmOp::I32Const(0),
+                WasmOp::I32Const(0),
+                WasmOp::MultiMemory {
+                    memory: 1,
+                    op: Box::new(inner),
+                },
+                WasmOp::End,
+            ];
+            let r = select_typed_cf_calls(
+                &ops,
+                0,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                MemBounds::Software { limit_bytes: 65536 },
+                &ModuleCtx::default(),
+            );
+            assert!(r.is_err(), "a memory-k bulk op must decline");
+        }
     }
 }
