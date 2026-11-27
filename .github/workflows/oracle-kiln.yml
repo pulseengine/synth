@@ -242,13 +242,14 @@ jobs:
           grep -qx 'ORACLE import-boundary structural: 12 default-flags objects are byte-identical to --relocatable' "$log"
           grep -qE '^test result: ok\. 13 passed; 0 failed' "$log"
           # v0.92 batch 1: two test binaries report 13 (compile_module_1745,
-          # import_boundary_oracle) and seven report 3 (select_home_alias_1754,
+          # import_boundary_oracle) and eight report 3 (select_home_alias_1754,
           # multi_result_export_1450_oracle, target_record, kiln_no_shared_state,
           # zero_init_wide_local_1762, i64_call_args_1785,
-          # embedder_runs_start_oracle), and one matching line satisfies
+          # embedder_runs_start_oracle, aarch64_bulk_memory_kiln_oracle), and
+          # one matching line satisfies
           # `grep -q`. Pin how many result lines carry each count.
           test "$(grep -cE '^test result: ok\. 13 passed; 0 failed' "$log")" = 2
-          test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 7
+          test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 8
           # No kiln state crosses reference runs (memory, globals, tables).
           grep -qx 'test memory_does_not_cross_calls ... ok' "$log"
           grep -qx 'test globals_do_not_cross_calls ... ok' "$log"
@@ -377,3 +378,16 @@ jobs:
           # tests/wrong_code_census.rs is the only test binary that reports 7
           # passed (measured on the tree restacked onto cc36ff38).
           test "$(grep -cE '^test result: ok\. 7 passed; 0 failed' "$log")" = 1
+          # v0.92 plan B (tests/aarch64_bulk_memory_kiln_oracle.rs):
+          # memory.copy and memory.fill on AArch64 (memory 0, default
+          # --safety-bounds software) against kiln, unicorn cortex-a53 with
+          # x28 at a mapped 64 KiB memory. Every step compares the result or
+          # trap AND the whole memory, after a trap too; each bulk step's trap
+          # is also computed from its operands. Exact counts. Potency: a
+          # forward-only copy (b.hi patched to nop) disagrees on exactly the 4
+          # overlapping d > s probes, and a reference that writes one byte
+          # before trapping disagrees on all 13 trapping bulk steps. Its
+          # result line is the seventh "3 passed" above.
+          grep -qE '(^|\.\.\. )ORACLE aarch64-kiln bulk-memory: 124 steps agree across 35 probes, 15 traps$' "$log"
+          grep -qx 'test forward_only_copy_is_caught ... ok' "$log"
+          grep -qx 'test a_write_before_the_trap_is_caught ... ok' "$log"

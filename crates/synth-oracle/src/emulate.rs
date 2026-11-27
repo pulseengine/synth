@@ -37,7 +37,8 @@
 //! [`run`] maps no linear memory: modules with a memory are refused one level
 //! up ([`crate::run_case`]), because memory effects are not compared there.
 //!
-//! [`run_env`] (RV32 only) adds an [`EmuEnv`]: linear memory 0's initial
+//! [`run_env`] (RV32; on AArch64 the memory half only, `x28` as the base)
+//! adds an [`EmuEnv`]: linear memory 0's initial
 //! image mapped at [`MEM_BASE`] with `s11` (synth's RV32 linear-memory base
 //! register) pointing at it and the final image read back, and a LINK step
 //! that resolves every `.text` relocation: a call to a function defined in
@@ -483,12 +484,19 @@ fn aapcs64_regs(args: &[WasmValue]) -> Result<(Vec<u64>, Vec<u64>), EmuError> {
 /// bits, SP is checked balanced, and x30 returns to the sentinel. The result
 /// is read from x0 (the low 32 bits for an i32) or d0 (the low 32 bits for
 /// an f32).
+///
+/// With `memory` (v0.92), that image is mapped at [`MEM_BASE`] — exactly its
+/// length rounded up to a page, so an unguarded access past a page-sized
+/// memory FAULTS (Illegal) instead of landing in a neighbour — `x28` is set
+/// to [`MEM_BASE`] instead of a seed and still checked preserved, and the
+/// image is read back after the run, a trap included.
 fn run_a64(
     obj: &CompiledObject,
     sym: &crate::synth::FuncSym,
     sig: &Signature,
     args: &[WasmValue],
     cfg: &EmuConfig,
+    memory: Option<&[u8]>,
 ) -> Result<EmuRun, EmuError> {
     let machine = Machine::AArch64;
     let (gp, fp) = aapcs64_regs(args)?;
@@ -561,9 +569,23 @@ fn run_a64(
             "poison d16-d31",
         )?;
     }
+    let mem_len = memory.map_or(0, |m| m.len() as u64);
+    if let Some(img) = memory {
+        let mapped = ((mem_len + 0xFFF) & !0xFFF).max(0x1000);
+        uc(
+            emu.mem_map(MEM_BASE, mapped, Prot::READ | Prot::WRITE),
+            "map memory",
+        )?;
+        uc(emu.mem_write(MEM_BASE, img), "write memory")?;
+    }
+    let x28 = RegisterARM64::X0 as i32 + 28;
     let mut seeds = Vec::new();
     for (k, (r, name)) in callee_saved(machine).into_iter().enumerate() {
-        let v = 0xC0DE_0000_C0DE_0000 | k as u64;
+        let v = if memory.is_some() && r == x28 {
+            MEM_BASE
+        } else {
+            0xC0DE_0000_C0DE_0000 | k as u64
+        };
         uc(emu.reg_write(r, v), "seed callee-saved")?;
         seeds.push((r, name, v));
     }
@@ -623,7 +645,7 @@ fn run_a64(
     Ok(EmuRun {
         outcome,
         cpu_model_readback: readback,
-        memory: None,
+        memory: read_memory(&emu, mem_len)?,
         calls: Vec::new(),
     })
 }
@@ -709,7 +731,13 @@ pub fn run(
     run_inner(obj, func, sig, args, cfg, None)
 }
 
-/// [`run`] with `env` mapped and the whole `.text` linked (RV32 only).
+/// [`run`] with `env` mapped and the whole `.text` linked.
+///
+/// RV32: memory and host stubs. AArch64 (v0.92): memory ONLY — linear memory
+/// 0 mapped at [`MEM_BASE`] with `x28` (the backend's base register,
+/// `docs/embedder-abi-relocatable-aarch64.md`) pointing at it. An AArch64
+/// object carrying any relocation, or an env with host functions, is refused:
+/// nothing here links A64 relocations.
 pub fn run_env(
     obj: &CompiledObject,
     func: &str,
@@ -718,10 +746,21 @@ pub fn run_env(
     cfg: &EmuConfig,
     env: &EmuEnv,
 ) -> Result<EmuRun, EmuError> {
-    if cfg.cpu.machine() != Machine::RiscV32 {
-        return Err(EmuError::Env(
-            "a memory or host stubs are set up for RV32 only".into(),
-        ));
+    match cfg.cpu.machine() {
+        Machine::RiscV32 => {}
+        Machine::AArch64 if env.imports.is_empty() && obj.relocs.is_empty() => {}
+        Machine::AArch64 => {
+            return Err(EmuError::Env(
+                "AArch64: only a linear memory is set up (no host stubs, no \
+                 relocations)"
+                    .into(),
+            ));
+        }
+        _ => {
+            return Err(EmuError::Env(
+                "a memory or host stubs are set up for RV32 and AArch64 only".into(),
+            ));
+        }
     }
     run_inner(obj, func, sig, args, cfg, Some(env))
 }
@@ -746,8 +785,8 @@ fn run_inner(
         .ok_or_else(|| EmuError::NoSymbol(func.to_string()))?
         .clone();
     let text = match env {
-        Some(env) => link_text(obj, env)?,
-        None => obj.text.clone(),
+        Some(env) if machine == Machine::RiscV32 => link_text(obj, env)?,
+        _ => obj.text.clone(),
     };
     if machine == Machine::Arm && !sym.thumb {
         return Err(EmuError::NotThumb(func.to_string()));
@@ -780,7 +819,10 @@ fn run_inner(
     let words = match machine {
         Machine::Arm => aapcs_words(&sig.params, args)?,
         Machine::RiscV32 => ilp32_words(args)?,
-        Machine::AArch64 => return run_a64(obj, &sym, sig, args, cfg),
+        Machine::AArch64 => {
+            let memory = env.and_then(|e| e.memory.as_deref());
+            return run_a64(obj, &sym, sig, args, cfg, memory);
+        }
         Machine::X86_64 => return x86_64::run(obj, &sym, sig, args, cfg),
     };
 
