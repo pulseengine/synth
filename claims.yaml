@@ -3978,9 +3978,23 @@ claims:
       - kind: ratchet
         name: aarch64_selector_lines_code
         direction: down
-        value: 3129
+        value: 3293
         baseline: 3067
         waivers:
+          - to: 3293
+            reason: >-
+              v0.92 plan B (bulk memory on AArch64): 3129 -> 3293 (+164).
+              memory.copy and memory.fill on memory 0 were declined, 121 and 19
+              of the 227 AArch64 declines in meld-fused ordeal. The growth is
+              two selector arms and three free functions: the 64-bit range
+              check shared by both ops (every range checked before the first
+              byte is written, under --safety-bounds software), the copy
+              sequence (an upward and a downward byte loop, chosen by d > s)
+              and the fill loop, with their instruction-by-instruction doc
+              comments. aarch64_bulk_memory_kiln_oracle.rs is red on main (the
+              probe functions are skipped) and 124 of 124 steps agree with kiln
+              on the branch, memory compared after every step. No hand-written
+              arm was replaced, so none could be deleted.
           - to: 3129
             reason: >-
               LOWERCORE (Refs #1741): 3223 -> 3129 (-94). The control-frame
