@@ -1,0 +1,179 @@
+artifacts:
+  - id: RQ-91-X86SKEL
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "`-b x86_64` compiles leaf i32 functions into a SysV ELF64 ET_REL, and refuses everything else by name except `nop`, which the decoder drops"
+    description: >
+        Lane X1b of the x86-64 backend plan (VCR-X86-001, approved by the
+        maintainer on 2026-11-18). A new crate, crates/synth-backend-x86_64,
+        structured after synth-backend-aarch64: inst.rs (one instruction
+        variant per emitted form, and its AT&T printer), encoder.rs (one
+        encoding function per form, LLVM's canonical choice), selector.rs and
+        backend.rs. `synth compile m.wat -b x86_64 [--relocatable]` lowers
+        LEAF functions built from `local.get` of a parameter, `i32.add`,
+        `return` and the final `end`, with at most six i32 parameters and at
+        most one i32 result, under SysV AMD64: parameters stay in edi, esi,
+        edx, ecx, r8d, r9d (32-bit operand size, so the undefined upper half
+        of an argument register is never read), temporaries are eax, r10d and
+        r11d, the result is in eax, and nothing writes rbx, rbp, rsp or
+        r12-r15 or stores below rsp. The object is written by the SHARED
+        object plan (synth_core::object_plan, lane X1a) with e_machine 62,
+        a 16-byte .text alignment and a new `.note.GNU-stack` section, which
+        the shared writer appends last and only for a machine that asks
+        (ElfMachine::gnu_stack_note; AArch64 does not, so its bytes do not
+        move).
+
+        EVERYTHING ELSE IS REFUSED BY NAME, with no object written: an
+        unlowered op names itself (SelectError::Unsupported carries the
+        WasmOp), and at module level any non-i32 parameter or result (read
+        exactly from the module with wasmparser, because the decoded module
+        cannot tell an externref from an i32 and a reference identity would
+        otherwise be lowered as a 32-bit move), imports, memory, tables,
+        globals, start, element, data and tag sections, more than six
+        parameters, multi-value results and code after `return`. The CLI
+        dispatches `-b x86_64` to its own narrow path (synth-cli
+        src/x86_64_cli.rs) BEFORE the ARM/RV32/AArch64 pipeline, and every
+        flag that path does not accept is refused by name, so none of them
+        is a silent no-op on x86-64; the other backends never reach it.
+
+        THE ONE EXCEPTION, stated rather than hidden (REVIEW_13 F4): the
+        shared decoder drops `nop` (`is_intentionally_ignored`) before the
+        selector sees it, so a body containing `nop` compiles, as nothing.
+        That is correct code, but the op-surface artifact probes `select()`
+        and lists `nop` as declined; the artifact describes the selector, not
+        the shipped path, and decline_skeleton.rs pins that `nop` compiles.
+        (Since lane X2, RQ-91-X86ALU, the selector accepts `nop` itself and
+        the artifact lists it as lowered; this paragraph describes lane X1.)
+
+        AN EXPORT NAMED LIKE ITS OWN LABEL (REVIEW_13 F3): an export called
+        exactly `func_N` on function N was deduplicated against that
+        function's LOCAL `func_N` label, so the export vanished from the
+        object with exit 0 and the embedder's link failed later. It is now
+        refused by name. AArch64 has the same dedup today (the pattern was
+        ported from it) and still drops such an export; that is not changed
+        here. An export `func_M` on a DIFFERENT function N stays accepted, as
+        a GLOBAL alias of N beside M's LOCAL label (tested).
+
+        PINS AND WHAT THEY DO NOT SAY (REVIEW_13 F1, F5): the selector's
+        lines are pinned `track` (the maintainer's decision: track until L2,
+        then down), which asserts no direction; `x86_ops_lowered` is an `up`
+        floor (the plan's addition) that stops the lowered set shrinking.
+        The two are INDEPENDENT: the selector can grow while the lowered set
+        stands still, and the ledger then shows both diffs without failing.
+        The plan's third pin, `x86_selector_wildcard_arms_code`, is added as
+        a `down` ceiling at its live value 1, not the plan's 0: the one `_ =>`
+        is the both-parameters case of the i32.add operand match; the
+        catch-all over WasmOp is `other => Err(Unsupported(..))`, which
+        declines by name and which the pattern does not count.
+
+        MEMORY BASE: no memory is lowered in this lane and a memory is
+        refused. The maintainer decided the base is a LINKER-PLACED memory
+        symbol addressed RIP-relative, one instance per object; the hook is
+        documented in backend.rs with the two plan gaps lane X8 must fill
+        (a hidden visibility and an object-defined memory section).
+
+        ORACLES, all in Rust. Encoder E1 (tests/encoding_llvm_mc.rs): all
+        513 forms the encoder can emit (movl and addl over 16x16 registers,
+        retq) byte-equal to `llvm-mc --triple=x86_64 -show-encoding`, with a
+        513 floor and a REX.B-dropped control that must disagree on exactly
+        the 256 high-destination forms; skipped loudly when llvm-mc is absent
+        unless SYNTH_REQUIRE_LLVM_MC=1 (set in the new x86_64-oracle workflow).
+        Encoder E2/E3 (tests/encoding_iced.rs, in the required Test check, no
+        tool needed): iced-x86 decodes the .text of every emitted probe object
+        and every encoder form back to the requested AT&T text and length, and
+        every decoded instruction's CPUID features lie inside x86-64-v1
+        (lzcnt, popcnt and tzcnt are refused by feature, from iced's table).
+        Execution (crates/synth-oracle, tests/x86_64_kiln_oracle.rs, run by
+        the oracle-kiln workflow): the harness gained an x86-64 mode, unicorn
+        x86-64 with the CPU model PINNED to QEMU64 and read back, SysV
+        arguments with POISONED upper halves, rax/r10/r11 poisoned,
+        rbx/rbp/r12-r15 seeded in all 64 bits and checked, rsp checked
+        balanced, and a trap only on `ud2` (0F 0B) at the stop RIP, inside
+        the function.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact: with a
+        synth built from this branch, `synth compile add.wat -b x86_64
+        --relocatable -o add.o` on `(module (func (export "add") (param i32
+        i32) (result i32) local.get 0 local.get 1 i32.add))` must exit 0 and
+        `llvm-objdump -d add.o` must show `movl %edi, %eax; addl %esi, %eax;
+        retq` in an elf64-x86-64 object with a .note.GNU-stack section; then
+        `SYNTH=<that binary> cargo test -p synth-oracle --features exec --test
+        x86_64_kiln_oracle` (all pass, 877 cases agree; 9 tests in this lane,
+        10 since RQ-91-X86ALU added one, 11 since RQ-91-X86FRAME added the
+        runner's red-zone test) and `cargo test -p
+        synth-backend-x86_64` (E1 runs if llvm-mc is present). On the stack
+        base the same compile exits 1 with "Unknown backend 'x86_64'".
+
+        CITATION: #1741 is the architecture-support issue this lane is one
+        step of. It stays open: x86-64 is at L3 and the later lanes (ALU,
+        frame, division, control flow, calls, globals, memory) remain.
+    tags:
+      - feature-loop
+      - backend
+      - oracle
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: VCR-X86-001
+    fields:
+      req-type: functional
+      priority: should
+      issue: "#1741"
+      verification-track: execution
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 `synth compile -b x86_64 --relocatable` emits a SysV
+        ELF64 ET_REL with .note.GNU-stack for leaf i32 functions of local.get,
+        i32.add and return, whose every instruction is byte-equal to llvm-mc
+        and decodes under iced-x86 inside the baseline ISA level, and whose
+        execution agrees with kiln under unicorn pinned to QEMU64; every
+        other shape is refused by name with no object written; every other
+        backend's output is byte-identical to the stack base.
+      landed: "v0.91 X86SKEL - #1741 - DELIVERED: crates/synth-backend-x86_64 (inst, encoder, selector, backend) registered as `-b x86_64`; .note.GNU-stack in the shared ELF64 writer; synth-oracle x86-64 mode (QEMU64 pinned, SysV, ud2-at-RIP); E1 llvm-mc, E2/E3 iced-x86, decline and kiln execution oracles. #1741 stays open (outlives)."
+      verified-by: >
+        DELIVERED, execution-verified under emulation. RED/GREEN: on the
+        stack base (f7a77f2e, control built from it) `-b x86_64` exits 1
+        "Unknown backend 'x86_64'" and the four compiling tests of
+        x86_64_kiln_oracle.rs fail on it; on this branch all 9 pass.
+        EXECUTION: 8 probes (add, add3, ret_early, id, second, sum6, rsum,
+        void) over 12 vectors, 877 cases, all AGREE with kiln under unicorn
+        QEMU64 (model read back). POTENCY, each a committed test: kiln running
+        i32.sub for the compiled add, and the emitted image mutated add -> sub
+        (01 -> 29), each give exactly 120 of 144 disagreements; a planted ud2
+        is a trap at its own RIP while 06, 0F 0F FF, ud0, ud1 and a #DE from
+        div by zero are ILLEGAL; xor of each of rbx, rbp, r12-r15, an
+        upper-half-only rotate of rbx, and an rsp left 8 low are each an ABI
+        violation, while r10/r11 clobbers are not; a 64-bit move of a poisoned
+        i32 argument into an i64 result is visible; `lzcnt` runs as bsr (1 ->
+        0) and popcnt faults on the pinned model, while unicorn's default
+        model runs lzcnt (1 -> 31). ENCODER: E1 513 of 513 forms byte-equal to
+        llvm-mc 22.1.8, and the REX.B-dropped control disagrees on exactly the
+        256 high-destination forms; E2/E3 decode every probe object's .text
+        and every form to the requested text and length inside x86-64-v1,
+        with lzcnt, popcnt, tzcnt, a dropped REX.B and a truncated instruction
+        each refused. DECLINES: 20 shapes plus invalid wasm through the API and 10 through
+        the CLI, each naming its cause, with no object written; `nop`
+        compiles (the stated exception). PINS:
+        x86_selector_lines_code (track, 250) and x86_ops_lowered (up, 3) each
+        red claim_check when moved by one (+1 line; i32.add relabelled
+        declined); x86_selector_wildcard_arms_code (down, 1) added after
+        REVIEW_13. EMULATOR MUTANTS (REVIEW_13's 13, re-run on this tree with
+        its script): 13 of 13 red. The three that survived the review — r10/r11
+        not poisoned, callee-saved seeded with a zero upper half, unused
+        argument registers not poisoned — are each killed by
+        potency_scratch_unused_args_and_upper_seed_are_poisoned (`movl %r10d,
+        %eax`, `movl %r11d, %eax`, `movl %esi, %eax` in a one-parameter
+        function, and `movl %ebx, %ebx` which changes only rbx's upper half). BYTE IDENTITY: 590 inputs (scripts/repro, tests, examples)
+        x 13 invocations (AArch64 ELF and Mach-O, ARM default, m3/m4/m0/r5
+        relocatable, --cortex-m image, RV32 plain and relocatable) = 7670 of
+        7670 identical in exit code, object bytes and stderr between the stack
+        control and this branch; NEGATIVE CONTROL: the same run against a
+        binary with the AArch64 note switched on reds 916 (229 in each of the
+        four AArch64 ELF modes, Mach-O and every other backend unchanged).
+        NOT VERIFIED HERE: the x86_64-oracle workflow (llvm-mc on
+        ubuntu-24.04's older LLVM, the native GNU ld link and its GNU_STACK
+        control) and the oracle-kiln job with arch_x86 on the self-hosted
+        pool have not run; no x86-64 code ran on real silicon; Bazel was not
+        built.

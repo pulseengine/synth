@@ -55,6 +55,10 @@ const AARCH64: ElfMachine = ElfMachine {
     e_machine: 183,
     text_align: 4,
     reloc_type: a64_reloc_type,
+    // RQ-91-X86SKEL: not emitted for AArch64 today — adding it would move
+    // every AArch64 object's bytes, which is a separate, separately gated
+    // decision. Byte identity of every AArch64 object is the gate here.
+    gnu_stack_note: false,
 };
 
 /// The shared [`synth_core::object_plan::plan_object`], refusing as the

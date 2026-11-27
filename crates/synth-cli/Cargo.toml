@@ -77,6 +77,10 @@ synth-backend = { path = "../synth-backend", version = "0.91.0" }
 # AArch64 host-native backend (#538) — small pure-Rust crate, always on.
 synth-backend-aarch64 = { path = "../synth-backend-aarch64", version = "0.91.0" }
 
+# x86-64 host-native backend, lane X1 skeleton (RQ-91-X86SKEL, #1741) — small
+# pure-Rust crate, always on.
+synth-backend-x86_64 = { path = "../synth-backend-x86_64", version = "0.91.0" }
+
 # Optional external backends
 synth-backend-awsm = { path = "../synth-backend-awsm", version = "0.91.0", optional = true }
 synth-backend-wasker = { path = "../synth-backend-wasker", version = "0.91.0", optional = true }

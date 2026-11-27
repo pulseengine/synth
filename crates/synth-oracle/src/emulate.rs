@@ -12,8 +12,13 @@
 //!   refuses the run.
 //! - A stop is a TRAP only when the way unicorn stopped AND the instruction
 //!   bytes both say so, the bytes are exactly the trap synth emits (Thumb
-//!   `udf` T1; RV32 32-bit `ebreak`), and the PC lies inside the function.
-//!   Any other fault is ILLEGAL.
+//!   `udf` T1; RV32 32-bit `ebreak`; x86-64 `ud2`, `0F 0B`), and the PC lies
+//!   inside the function. Any other fault is ILLEGAL.
+//!
+//! x86-64 (RQ-91-X86SKEL, RQ-91-X86ALU, #1741) has its own runner,
+//! [`x86_64::run`]: SysV AMD64, the CPU model pinned to QEMU64, every
+//! register outside the call and the whole stack poisoned, and `ud2` as the
+//! trap.
 //! - Running out of the instruction budget is its own outcome, never a trap.
 //!
 //! WHAT IS REFUSED, with a typed error, rather than run and judged wrongly:
@@ -54,13 +59,15 @@ use std::rc::Rc;
 
 use unicorn_engine::{
     Arch, Arm64CpuModel, ArmCpuModel, Mode, Prot, RegisterARM, RegisterARM64, RegisterRISCV,
-    Riscv32CpuModel, Unicorn, uc_error,
+    Riscv32CpuModel, Unicorn, X86CpuModel, uc_error,
 };
 
 use crate::compare::EmuOutcome;
 use crate::reference::{HostCall, HostFn};
 use crate::synth::{CompiledObject, Machine};
 use crate::value::{Signature, ValType, WasmValue};
+
+mod x86_64;
 
 /// The emulated core.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +98,9 @@ pub enum Cpu {
     /// ARMv8-A, A64 (#1745). The only core on which float signatures run:
     /// see [`run_a64`] for the AAPCS64 set-up.
     CortexA53,
+    /// x86-64 at the baseline ISA level: unicorn's QEMU64 model (SSE2, no
+    /// POPCNT/LZCNT/BMI/SSE4.1). See the module doc for why it is pinned.
+    X86_64Baseline,
 }
 
 impl Cpu {
@@ -98,6 +108,7 @@ impl Cpu {
         match self {
             Cpu::Rv32Imac => Machine::RiscV32,
             Cpu::CortexA53 => Machine::AArch64,
+            Cpu::X86_64Baseline => Machine::X86_64,
             Cpu::CortexM0
             | Cpu::CortexM3
             | Cpu::CortexM4
@@ -121,6 +132,7 @@ impl Cpu {
             Cpu::CortexM7 | Cpu::CortexM7F => ArmCpuModel::CORTEX_M7 as i32,
             Cpu::Rv32Imac => Riscv32CpuModel::SIFIVE_E31 as i32,
             Cpu::CortexA53 => Arm64CpuModel::A53 as i32,
+            Cpu::X86_64Baseline => X86CpuModel::QEMU64 as i32,
         }
     }
 }
@@ -297,12 +309,17 @@ pub(crate) enum Fault {
 /// every exception it delivers there (unicorn-engine-sys 2.1.5,
 /// qemu/accel/tcg/cpu-exec.c, the TARGET_RISCV block), whatever the
 /// instruction's length.
+///
+/// On x86-64 the address is used as read: instructions are byte-aligned, so
+/// there is no mode bit to clear.
 pub(crate) fn fault_pc(machine: Machine, fault: Fault) -> u64 {
     match (machine, fault) {
         (Machine::RiscV32, Fault::Hook { reported_pc, .. }) => reported_pc.wrapping_sub(4),
         (Machine::Arm, Fault::Hook { reported_pc, .. }) => reported_pc & !1,
         (Machine::AArch64, Fault::Hook { reported_pc, .. }) => reported_pc,
-        (_, Fault::Error { pc, .. }) => pc & !1,
+        (Machine::X86_64, Fault::Hook { reported_pc, .. }) => reported_pc,
+        (Machine::X86_64, Fault::Error { pc, .. }) => pc,
+        (Machine::Arm | Machine::RiscV32 | Machine::AArch64, Fault::Error { pc, .. }) => pc & !1,
     }
 }
 
@@ -316,10 +333,15 @@ pub(crate) fn fault_pc(machine: Machine, fault: Fault) -> u64 {
 ///   the RV32 selector emits; the encoder has no compressed forms). It is a
 ///   unicorn "stop interrupt" (riscv_stop_interrupt): no hook,
 ///   UC_ERR_INSN_INVALID, PC at the instruction.
+/// - x86-64: `ud2` (`0F 0B`), the only trap the x86-64 backend may emit. It
+///   stops unicorn with UC_ERR_INSN_INVALID, RIP at the instruction, and no
+///   hook. Other undecodable bytes (`06`, `0F 0F FF`) stop the SAME way
+///   (REVIEW_2 X3), so the bytes at RIP decide; a CPU exception such as the
+///   `#DE` of `div` by zero is a hook stop or UC_ERR_EXCEPTION, never a trap.
 ///
-/// On ARM and RV32 a hook stop is never a trap: BKPT, NOCP, ecall, an illegal
-/// instruction (including `c.unimp` = `0x0000`, which zero padding decodes
-/// as) are all ILLEGAL. AArch64 is the reverse, see [`a64_trap_insn`].
+/// On ARM, RV32 and x86-64 a hook stop is never a trap: BKPT, NOCP, ecall, an
+/// illegal instruction (including `c.unimp` = `0x0000`, which zero padding
+/// decodes as) are all ILLEGAL. AArch64 is the reverse, see [`a64_trap_insn`].
 fn trap_insn(machine: Machine, fault: Fault, bytes: &[u8]) -> Option<&'static str> {
     let h = |i: usize| -> Option<u16> {
         Some(u16::from_le_bytes([*bytes.get(i)?, *bytes.get(i + 1)?]))
@@ -341,6 +363,7 @@ fn trap_insn(machine: Machine, fault: Fault, bytes: &[u8]) -> Option<&'static st
             let w = u32::from(h(0)?) | (u32::from(h(2)?) << 16);
             (w == 0x0010_0073).then_some("ebreak")
         }
+        Machine::X86_64 => (bytes.get(..2)? == [0x0F, 0x0B]).then_some("ud2"),
     }
 }
 
@@ -422,6 +445,7 @@ fn callee_saved(machine: Machine) -> Vec<(i32, String)> {
             .chain([(RegisterARM64::X29 as i32, "x29".to_string())])
             .chain((8..16).map(|n| (RegisterARM64::D0 as i32 + n, format!("d{n}"))))
             .collect(),
+        Machine::X86_64 => unreachable!("x86-64 has its own runner"),
     }
 }
 
@@ -757,6 +781,7 @@ fn run_inner(
         Machine::Arm => aapcs_words(&sig.params, args)?,
         Machine::RiscV32 => ilp32_words(args)?,
         Machine::AArch64 => return run_a64(obj, &sym, sig, args, cfg),
+        Machine::X86_64 => return x86_64::run(obj, &sym, sig, args, cfg),
     };
 
     let (arch, mode) = match machine {
@@ -767,6 +792,7 @@ fn run_inner(
         Machine::Arm => (Arch::ARM, Mode::THUMB),
         Machine::RiscV32 => (Arch::RISCV, Mode::RISCV32),
         Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
+        Machine::X86_64 => unreachable!("dispatched to x86_64::run above"),
     };
     let mut emu = uc(Unicorn::new(arch, mode), "Unicorn::new")?;
     // BEFORE any mapping: the CPU is materialized on first use, after which a
@@ -817,6 +843,7 @@ fn run_inner(
         Machine::Arm => (0..4).map(|i| RegisterARM::R0 as i32 + i).collect(),
         Machine::RiscV32 => (10..18).map(|n| RegisterRISCV::X0 as i32 + n).collect(),
         Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
+        Machine::X86_64 => unreachable!("dispatched to x86_64::run above"),
     };
 
     // The environment: linear memory and host stubs.
@@ -943,6 +970,7 @@ fn run_inner(
         Machine::Arm => (RegisterARM::SP as i32, RegisterARM::PC as i32),
         Machine::RiscV32 => (RegisterRISCV::SP as i32, RegisterRISCV::PC as i32),
         Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
+        Machine::X86_64 => unreachable!("dispatched to x86_64::run above"),
     };
     uc(emu.reg_write(sp_reg, STACK_TOP), "write SP")?;
     let entry = TEXT_BASE + sym.offset;
@@ -962,6 +990,7 @@ fn run_inner(
             entry
         }
         Machine::AArch64 => unreachable!("dispatched to run_a64 above"),
+        Machine::X86_64 => unreachable!("dispatched to x86_64::run above"),
     };
 
     // timeout 0: no wall-clock thread (see the module doc).
@@ -1143,6 +1172,70 @@ mod tests {
         // A real trap instruction OUTSIDE the function: ILLEGAL.
         assert!(matches!(
             judge(Machine::Arm, err(0x2000, uc_error::INSN_INVALID), &UDF, &F),
+            EmuOutcome::Illegal { .. }
+        ));
+    }
+
+    /// RQ-91-X86SKEL: an x86-64 trap is `ud2` (`0F 0B`) at RIP, stopped as
+    /// UC_ERR_INSN_INVALID, inside the function — and nothing else. Garbage
+    /// bytes stop the same way (REVIEW_2 X3), so a rule on the error class
+    /// alone reds here; so does a rule on the bytes alone.
+    #[test]
+    fn x86_trap_needs_ud2_at_rip_and_the_stop_path() {
+        const UD2: [u8; 2] = [0x0F, 0x0B];
+        assert_eq!(
+            judge(
+                Machine::X86_64,
+                err(0x1011, uc_error::INSN_INVALID),
+                &UD2,
+                &F
+            ),
+            EmuOutcome::Trap {
+                pc: 0x1011,
+                insn: "ud2".into()
+            }
+        );
+        // An ODD address is not masked on x86-64 (it would be on ARM).
+        assert_eq!(fault_pc(Machine::X86_64, err(0x1011, uc_error::OK)), 0x1011);
+        for bytes in [
+            vec![0x06u8],           // invalid in 64-bit mode
+            vec![0x0F, 0x0F, 0xFF], // 3DNow! escape
+            vec![0x0F, 0xFF],       // ud0
+            vec![0x0F, 0xB9],       // ud1
+            vec![0x0F],             // truncated
+        ] {
+            assert!(
+                matches!(
+                    judge(
+                        Machine::X86_64,
+                        err(0x1010, uc_error::INSN_INVALID),
+                        &bytes,
+                        &F
+                    ),
+                    EmuOutcome::Illegal { .. }
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        for fault in [
+            Fault::Hook {
+                reported_pc: 0x1010,
+                intno: 6,
+            },
+            err(0x1010, uc_error::EXCEPTION),
+        ] {
+            assert!(matches!(
+                judge(Machine::X86_64, fault, &UD2, &F),
+                EmuOutcome::Illegal { .. }
+            ));
+        }
+        assert!(matches!(
+            judge(
+                Machine::X86_64,
+                err(0x2000, uc_error::INSN_INVALID),
+                &UD2,
+                &F
+            ),
             EmuOutcome::Illegal { .. }
         ));
     }

@@ -1,0 +1,238 @@
+# x86-64 backend oracles that need tools the required Test job does not have
+# (RQ-91-X86SKEL, Refs #1741; VCR-X86-001).
+#
+# Its own workflow file, not a ci.yml job: ci.yml sits at GitHub's ~512 KB
+# limit (see oracle-kiln.yml for the measured failure).
+#
+# What runs where:
+# - E2/E3 (iced-x86 decode of every emitted instruction, ISA-level gate) and
+#   the decline tests run in the required Test job under `cargo test
+#   --workspace`; they need no tool.
+# - The execution oracle against kiln (unicorn x86-64, CPU model pinned to
+#   QEMU64) runs in oracle-kiln.yml with the other synth-oracle tests.
+# - THIS job: E1, byte equality of every encoder form with `llvm-mc`
+#   (`-show-encoding`, and for the branch forms an assembled object, since
+#   llvm-mc prints a branch with a fixup instead of bytes), with
+#   SYNTH_REQUIRE_LLVM_MC=1 so a missing llvm-mc is a failure here, never a
+#   skip; and a NATIVE leg, because a hosted
+#   ubuntu-24.04 runner is an x86-64 machine: the probe object is linked with
+#   GNU ld under --fatal-warnings and run. GNU ld treats an object without
+#   `.note.GNU-stack` as needing an executable stack and warns; lld does not
+#   (REVIEW_2 X6), so this link is where that note is checked. A control with
+#   the note stripped must FAIL the same link.
+#
+# Hosted ubuntu-24.04, not the self-hosted pool: nothing shows llvm-mc on the
+# pool (REVIEW_2 X8), and the native leg needs an x86-64 host.
+
+name: Oracle (x86-64)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  x86_64-oracle:
+    name: x86-64 encoder vs llvm-mc, native link and run (RQ-91-X86SKEL)
+    # NOT a required context, so it can be added and renamed freely.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: 1.100.0
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-x86_64-oracle-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-x86_64-oracle-
+      - name: Install llvm (llvm-mc) and binutils
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y llvm binutils gcc
+          test "$(uname -m)" = x86_64
+          mc=$(command -v llvm-mc || ls /usr/lib/llvm-*/bin/llvm-mc | sort -V | tail -n 1)
+          test -x "$mc"
+          # The version is printed, not assumed: the encodings were measured
+          # against LLVM 22.1.8 and ubuntu-24.04 ships an older LLVM.
+          "$mc" --version
+          echo "LLVM_MC=$mc" >> "$GITHUB_ENV"
+          ld --version | head -n 1
+      - name: E1 — every encoder form byte-equal to llvm-mc
+        env:
+          SYNTH_REQUIRE_LLVM_MC: "1"
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/e1.log"
+          cargo test -p synth-backend-x86_64 --test encoding_llvm_mc -- --nocapture 2>&1 | tee "$log"
+          # 24308 since RQ-91-X86FRAME: the memory, immediate, push/pop,
+          # divide, bit-scan, branch and trap forms joined the 11969 of X1-X2.
+          # 24316 since RQ-91-X86CTRL: 8 `jmp rel32` forms, through the
+          # object route with the 80 `jCC rel32`.
+          grep -q '^E1: 24316 forms byte-equal to ' "$log"
+          # 4 tests since RQ-91-X86CTRL added the E1 whole-function test
+          # (`E1 functions: 4 functions, 18 branches byte-equal`); the pin
+          # stayed at 3 on the lane and is corrected in the restack.
+          grep -qx 'E1 functions: 4 functions, 18 branches byte-equal' "$log"
+          grep -qE '^test result: ok\. 4 passed; 0 failed' "$log"
+      - name: Native leg — GNU ld --fatal-warnings, run on this x86-64 host
+        run: |
+          set -euo pipefail
+          cargo build -p synth-cli
+          d="$RUNNER_TEMP/native"
+          mkdir -p "$d"
+          cat > "$d/probes.wat" <<'EOF'
+          (module
+            (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add)
+            (func (export "add3") (param i32 i32 i32) (result i32)
+              local.get 0 local.get 1 i32.add local.get 2 i32.add)
+            (func (export "id") (param i32) (result i32) local.get 0)
+            ;; RQ-91-X86ALU: the integer core on real silicon.
+            (func (export "sub") (param i32 i32) (result i32) local.get 0 local.get 1 i32.sub)
+            (func (export "mul64") (param i64 i64) (result i64) local.get 0 local.get 1 i64.mul)
+            (func (export "shl") (param i32 i32) (result i32) local.get 0 local.get 1 i32.shl)
+            (func (export "shr_s64") (param i64 i64) (result i64) local.get 0 local.get 1 i64.shr_s)
+            (func (export "lt_s") (param i32 i32) (result i32) local.get 0 local.get 1 i32.lt_s)
+            (func (export "lt_u64") (param i64 i64) (result i32) local.get 0 local.get 1 i64.lt_u)
+            (func (export "sel64") (param i64 i64 i32) (result i64)
+              local.get 0 local.get 1 local.get 2 select)
+            ;; Four parameters: rcx holds the fourth across the shift.
+            (func (export "shl4") (param i32 i32 i32 i32) (result i32)
+              local.get 0 local.get 1 i32.shl local.get 3 i32.xor)
+            (func (export "ext_s") (param i32) (result i64) local.get 0 i64.extend_i32_s)
+            ;; RQ-91-X86FRAME: a frame, locals, a spilled operand stack,
+            ;; division (non-trapping operands only: this harness has no
+            ;; signal handler) and bit counts, on real silicon.
+            (func (export "fib") (param i64 i64) (result i64) (local i64 i64)
+              local.get 0 local.set 2 local.get 1 local.set 3
+              local.get 3 local.get 2 local.get 3 i64.add local.set 3 local.set 2
+              local.get 3 local.get 2 local.get 3 i64.add local.set 3 local.set 2
+              local.get 3 local.get 2 local.get 3 i64.add local.set 3 local.set 2
+              local.get 3)
+            (func (export "zero_local") (param i64) (result i64) (local i64 i64)
+              local.get 2)
+            (func (export "deep") (param i32 i32) (result i32)
+              local.get 0 local.get 1 local.get 0 local.get 1 local.get 0
+              local.get 1 local.get 0 local.get 1 local.get 0
+              i32.sub i32.xor i32.sub i32.xor i32.sub i32.xor i32.sub i32.xor)
+            (func (export "div_s") (param i32 i32) (result i32) local.get 0 local.get 1 i32.div_s)
+            (func (export "rem_s64") (param i64 i64) (result i64) local.get 0 local.get 1 i64.rem_s)
+            (func (export "div_u64") (param i64 i64) (result i64) local.get 0 local.get 1 i64.div_u)
+            (func (export "clz") (param i32) (result i32) local.get 0 i32.clz)
+            (func (export "ctz64") (param i64) (result i64) local.get 0 i64.ctz)
+            (func (export "popcnt64") (param i64) (result i64) local.get 0 i64.popcnt))
+          EOF
+          cat > "$d/harness.c" <<'EOF'
+          #include <stdint.h>
+          #include <stdio.h>
+          uint32_t add(uint32_t, uint32_t);
+          uint32_t add3(uint32_t, uint32_t, uint32_t);
+          uint32_t id(uint32_t);
+          uint32_t sub(uint32_t, uint32_t);
+          uint64_t mul64(uint64_t, uint64_t);
+          uint32_t shl(uint32_t, uint32_t);
+          uint64_t shr_s64(uint64_t, uint64_t);
+          uint32_t lt_s(uint32_t, uint32_t);
+          uint32_t lt_u64(uint64_t, uint64_t);
+          uint64_t sel64(uint64_t, uint64_t, uint32_t);
+          uint32_t shl4(uint32_t, uint32_t, uint32_t, uint32_t);
+          uint64_t ext_s(uint32_t);
+          uint64_t fib(uint64_t, uint64_t);
+          uint64_t zero_local(uint64_t);
+          uint32_t deep(uint32_t, uint32_t);
+          uint32_t div_s(uint32_t, uint32_t);
+          uint64_t rem_s64(uint64_t, uint64_t);
+          uint64_t div_u64(uint64_t, uint64_t);
+          uint32_t clz(uint32_t);
+          uint64_t ctz64(uint64_t);
+          uint64_t popcnt64(uint64_t);
+          /* Nine values a b a b a b a b a folded from the top by
+             sub xor sub xor sub xor sub xor, as wasm folds them. */
+          static uint32_t deep_ref(uint32_t a, uint32_t b) {
+            uint32_t x = a;
+            for (int i = 0; i < 4; i++) { x = b - x; x = a ^ x; }
+            return x;
+          }
+          /* Fill the stack below the caller with ones, so that a callee's
+             fresh frame is not zero by accident. */
+          static __attribute__((noinline)) void dirty(void) {
+            volatile uint64_t junk[64];
+            for (int k = 0; k < 64; k++) junk[k] = ~0ull;
+          }
+          int main(void) {
+            const uint32_t v[] = {0u, 1u, 2u, 0x7FFFFFFFu, 0x80000000u, 0xFFFFFFFFu, 0xDEADBEEFu};
+            const uint64_t w[] = {0u, 1u, 63u, 0x7FFFFFFFFFFFFFFFull, 0x8000000000000000ull,
+                                  0xFFFFFFFFFFFFFFFFull, 0xDEADBEEF00000041ull};
+            const int n = sizeof v / sizeof v[0];
+            int cases = 0, bad = 0;
+            for (int i = 0; i < n; i++) {
+              cases++; bad += id(v[i]) != v[i];
+              cases++; bad += ext_s(v[i]) != (uint64_t)(int64_t)(int32_t)v[i];
+              /* A local read before it is written must be 0 on a dirty stack. */
+              dirty();
+              cases++; bad += zero_local(w[i]) != 0;
+              cases++; bad += clz(v[i]) != (v[i] ? (uint32_t)__builtin_clz(v[i]) : 32u);
+              cases++; bad += ctz64(w[i]) != (w[i] ? (uint64_t)__builtin_ctzll(w[i]) : 64u);
+              cases++; bad += popcnt64(w[i]) != (uint64_t)__builtin_popcountll(w[i]);
+              for (int j = 0; j < n; j++) {
+                uint32_t k = v[(i + j) % n];
+                cases++; bad += add(v[i], v[j]) != (uint32_t)(v[i] + v[j]);
+                cases++; bad += add3(v[i], v[j], k) != (uint32_t)(v[i] + v[j] + k);
+                cases++; bad += sub(v[i], v[j]) != (uint32_t)(v[i] - v[j]);
+                cases++; bad += mul64(w[i], w[j]) != w[i] * w[j];
+                cases++; bad += shl(v[i], v[j]) != (uint32_t)(v[i] << (v[j] & 31));
+                cases++; bad += shr_s64(w[i], w[j]) != (uint64_t)((int64_t)w[i] >> (w[j] & 63));
+                cases++; bad += lt_s(v[i], v[j]) != (uint32_t)((int32_t)v[i] < (int32_t)v[j]);
+                cases++; bad += lt_u64(w[i], w[j]) != (uint32_t)(w[i] < w[j]);
+                cases++; bad += sel64(w[i], w[j], k) != (k ? w[i] : w[j]);
+                cases++; bad += shl4(v[i], v[j], 0x5A5A5A5Au, k) != (uint32_t)((v[i] << (v[j] & 31)) ^ k);
+                cases++; bad += fib(w[i], w[j]) != 2 * w[i] + 3 * w[j];
+                cases++; bad += deep(v[i], v[j]) != deep_ref(v[i], v[j]);
+                /* Division: only operands wasm does not trap on. INT_MIN
+                   rem_s -1 is 0 in wasm and a #DE from a bare idiv, so it
+                   IS run; INT_MIN div_s -1 and a zero divisor are not. */
+                if (v[j] != 0 && !(v[i] == 0x80000000u && v[j] == 0xFFFFFFFFu)) {
+                  cases++; bad += div_s(v[i], v[j]) != (uint32_t)((int32_t)v[i] / (int32_t)v[j]);
+                }
+                if (w[j] != 0) {
+                  uint64_t r = (w[i] == 0x8000000000000000ull && w[j] == ~0ull)
+                                 ? 0 : (uint64_t)((int64_t)w[i] % (int64_t)w[j]);
+                  cases++; bad += rem_s64(w[i], w[j]) != r;
+                  cases++; bad += div_u64(w[i], w[j]) != w[i] / w[j];
+                }
+              }
+            }
+            printf("x86_64-native: %d cases, %d bad\n", cases, bad);
+            return bad != 0;
+          }
+          EOF
+          ./target/debug/synth compile "$d/probes.wat" -b x86_64 --relocatable -o "$d/probes.o"
+          readelf -S "$d/probes.o" | grep -q '\.note\.GNU-stack'
+          gcc -O0 -c "$d/harness.c" -o "$d/harness.o"
+          gcc -Wl,--fatal-warnings -o "$d/run" "$d/harness.o" "$d/probes.o"
+          "$d/run" | tee "$d/run.log"
+          grep -qx 'x86_64-native: 755 cases, 0 bad' "$d/run.log"
+          # The linked program's stack is NOT executable (GNU_STACK is RW).
+          readelf -lW "$d/run" | grep GNU_STACK | tee "$d/stack.txt"
+          grep -q 'RW ' "$d/stack.txt"
+          # CONTROL: the same object with the note stripped gives an
+          # EXECUTABLE stack (RWE), or this leg cannot see the note at all.
+          objcopy --remove-section .note.GNU-stack "$d/probes.o" "$d/nonote.o"
+          gcc -o "$d/run2" "$d/harness.o" "$d/nonote.o" 2>&1 | tee "$d/link2.txt"
+          readelf -lW "$d/run2" | grep GNU_STACK | tee "$d/stack2.txt"
+          grep -q 'RWE' "$d/stack2.txt"

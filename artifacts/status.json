@@ -5,14 +5,15 @@
   "aarch64_ops_declined": 13,
   "aarch64_ops_lowered": 185,
   "aarch64_ops_probed": 198,
-  "aarch64_selector_lines_code": 3223,
+  "aarch64_selector_lines_code": 3129,
   "arm_refinement_assumed_connection": 5,
   "arm_semantics_axioms": 72,
   "backends": [
     "arm-thumb2-cortex-m",
     "arm-a32-cortex-r5",
     "riscv32-rv32imac",
-    "aarch64-a64"
+    "aarch64-a64",
+    "x86_64-sysv"
   ],
   "isa_model_bridge_validated": 26,
   "isa_model_simplified_only": 73,
@@ -42,5 +43,9 @@
   "version": "0.91.0",
   "verus_spec_fns": 8,
   "wasm_op_variant_count_pin": "280",
-  "wasmcert_bridge_qed": 104
+  "wasmcert_bridge_qed": 104,
+  "x86_ops_lowered": 84,
+  "x86_ops_probed": 198,
+  "x86_selector_lines_code": 1395,
+  "x86_selector_wildcard_arms_code": 0
 }

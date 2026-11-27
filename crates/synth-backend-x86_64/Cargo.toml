@@ -1,0 +1,27 @@
+[package]
+name = "synth-backend-x86_64"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "x86-64 (SysV AMD64) host-native backend for synth — lane X1 skeleton (VCR-X86-001, #1741)"
+
+[dependencies]
+synth-core = { path = "../synth-core", version = "0.91.0" }
+thiserror.workspace = true
+# Exact function signatures, read from the module bytes (see backend.rs: the
+# decoded module cannot tell an externref from an i32).
+wasmparser.workspace = true
+
+[dev-dependencies]
+wat.workspace = true
+# E2/E3 encoding oracle (tests/encoding_iced.rs): an x86 DECODER with its own
+# instruction table, independent of LLVM's. Test-only: never linked into the
+# synth binary. Decoder, GAS (AT&T) formatter and CPUID-feature metadata only —
+# iced's ENCODER is deliberately not enabled, so it cannot become synth's.
+iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "decoder", "gas", "instr_info"] }
+object.workspace = true

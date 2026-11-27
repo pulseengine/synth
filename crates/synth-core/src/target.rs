@@ -300,6 +300,9 @@ pub enum ArchFamily {
     ArmCortexR,
     ArmCortexA,
     RiscV,
+    /// RQ-91-X86SKEL (#1741, VCR-X86-001): x86-64, SysV AMD64 ABI, the
+    /// baseline ISA level (SSE2 only). Reached only by `-b x86_64`.
+    X86_64,
 }
 
 /// ISA variant details — determines instruction encoding
@@ -317,6 +320,9 @@ pub enum IsaVariant {
     RiscV32 { extensions: String },
     /// RISC-V 64-bit with extension string
     RiscV64 { extensions: String },
+    /// RQ-91-X86SKEL (#1741): x86-64 at the baseline level (no instruction
+    /// above SSE2 is ever emitted; the backend's decode test checks it).
+    X86_64,
 }
 
 /// Memory protection model
@@ -500,6 +506,19 @@ impl TargetSpec {
         }
     }
 
+    /// RQ-91-X86SKEL (#1741): an x86-64 host, SysV AMD64 calling convention,
+    /// baseline ISA level. The object is a host-linkable ELF64 `ET_REL`; the
+    /// memory protection is the host's (an MMU), never synth's.
+    pub fn x86_64_sysv() -> Self {
+        Self {
+            family: ArchFamily::X86_64,
+            triple: "x86_64-none-elf".to_string(),
+            isa: IsaVariant::X86_64,
+            mem_protection: MemProtection::Mmu,
+            fpu: None,
+        }
+    }
+
     /// RISC-V RV32IMAC with 16 PMP entries
     /// A bare-metal RV32 profile with the given ISA `extensions` string (e.g.
     /// `"imac"`, `"imc"`, `"im"`, `"i"`, `"gc"`). All RV32 variants share the
@@ -544,6 +563,7 @@ impl TargetSpec {
             "thumbv8.1m.main-none-eabi" | "cortex-m55" => Ok(Self::cortex_m55()),
             "armv7r-none-eabihf" | "cortex-r5" => Ok(Self::cortex_r5()),
             "aarch64-none-elf" | "cortex-a53" => Ok(Self::cortex_a53()),
+            "x86_64-none-elf" | "x86_64" => Ok(Self::x86_64_sysv()),
             // RV32 — accept the short ISA names that `riscv-runtime` and the
             // toolchains use (`rv32imac`, …) as well as the long LLVM triples.
             // The ESP32-C3 is RV32IMC (#218).
@@ -563,7 +583,8 @@ impl TargetSpec {
                  cortex-m0, cortex-m0plus, cortex-m3, cortex-m4, cortex-m4f, \
                  cortex-m7, cortex-m7dp, cortex-m55, cortex-r5 (ARM); \
                  rv32imac, rv32imc, rv32im, rv32i, rv32gc, esp32c3, riscv32 \
-                 (RISC-V, -b riscv); cortex-a53 (-b aarch64)"
+                 (RISC-V, -b riscv); cortex-a53 (-b aarch64); x86_64 \
+                 (-b x86_64)"
             )),
         }
     }
@@ -677,6 +698,21 @@ mod tests {
         assert!(!TargetSpec::cortex_r5().is_thumb_state());
         let err = TargetSpec::from_triple("bogus").unwrap_err();
         assert!(err.contains("cortex-m0plus"), "{err}");
+    }
+
+    /// RQ-91-X86SKEL (#1741): both spellings resolve to the one x86-64
+    /// profile, and an unknown triple's error names it.
+    #[test]
+    fn test_x86_64_target_1741() {
+        for name in ["x86_64", "x86_64-none-elf"] {
+            let spec = TargetSpec::from_triple(name).unwrap();
+            assert_eq!(spec, TargetSpec::x86_64_sysv(), "{name}");
+            assert_eq!(spec.family, ArchFamily::X86_64);
+            assert_eq!(spec.isa, IsaVariant::X86_64);
+            assert!(!spec.is_thumb2() && !spec.has_fpu(), "{name}");
+        }
+        let err = TargetSpec::from_triple("bogus").unwrap_err();
+        assert!(err.contains("x86_64 (-b x86_64)"), "{err}");
     }
 
     #[test]

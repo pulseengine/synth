@@ -227,6 +227,18 @@ status_fields:
     kind: count
     pattern: '"status": "declined"'
     glob: ['artifacts/aarch64-op-surface.json']
+  # RQ-91-X86SKEL (#1741): the x86-64 op surface, derived from the REAL x86-64
+  # selector over the same probes (`x86_op_surface_artifact_is_fresh_1741`,
+  # freshness-gated in the Test job). Op-level only; the module-level
+  # refusals are tests/decline_skeleton.rs in the x86-64 crate.
+  x86_ops_probed:
+    kind: count
+    pattern: '"op": '
+    glob: ['artifacts/x86_64-op-surface.json']
+  x86_ops_lowered:
+    kind: count
+    pattern: '"status": "lowered"'
+    glob: ['artifacts/x86_64-op-surface.json']
   # The op-level decline LIST itself, substituted into the feature matrix.
   # This is what stops the aarch64 decline enumeration being hand-typed prose
   # that went stale twice in v0.57.
@@ -320,6 +332,34 @@ status_fields:
     pattern: '\n'
     glob: ['crates/synth-backend-aarch64/src/selector.rs',
            'crates/synth-backend-aarch64/src/selector/**/*.rs']
+    before: "#[cfg(test)]\nmod tests"
+    before_missing: whole-file
+  # RQ-91-X86SKEL (#1741, maintainer decision 2026-11-18): the x86-64
+  # selector, measured the same way. It is pinned `direction: track` while the
+  # backend is being built (L3), and flipped to `down` in the lane that
+  # promotes it to L2. `track` asserts NO direction: it only makes every
+  # movement a visible claims.yaml diff. The `up` floor on `x86_ops_lowered`
+  # below is a SEPARATE pin (the plan's addition, not the maintainer's): it
+  # stops the derived lowered set shrinking. Nothing joins the two — the
+  # selector can grow while the lowered set stands still (REVIEW_13 F1).
+  x86_selector_lines_code:
+    kind: count
+    pattern: '\n'
+    glob: ['crates/synth-backend-x86_64/src/selector.rs',
+           'crates/synth-backend-x86_64/src/selector/**/*.rs']
+    before: "#[cfg(test)]\nmod tests"
+    before_missing: whole-file
+  # The plan's third X1 pin (X86_PLAN 2.4), added after REVIEW_13 F5: `_ =>`
+  # arms in the same region. Created at 1 (the both-parameters case of lane
+  # X1's i32.add operand match); the plan's 0 since lane X2 (RQ-91-X86ALU).
+  # The catch-all over WasmOp is `other => match rule_for(other)`, whose
+  # `None` arm declines BY NAME and which this pattern deliberately does not
+  # count.
+  x86_selector_wildcard_arms_code:
+    kind: count
+    pattern: '^[ \t]*_ =>'
+    glob: ['crates/synth-backend-x86_64/src/selector.rs',
+           'crates/synth-backend-x86_64/src/selector/**/*.rs']
     before: "#[cfg(test)]\nmod tests"
     before_missing: whole-file
   # The "generate, don't mirror" inventory, counted in FILES (`unit: files`)
@@ -507,10 +547,12 @@ status_fields:
       - arm-a32-cortex-r5
       - riscv32-rv32imac
       - aarch64-a64
+      - x86_64-sysv
     require:
       - crates/synth-backend
       - crates/synth-backend-riscv
       - crates/synth-backend-aarch64
+      - crates/synth-backend-x86_64
 
 # =============================================================================
 # RQ-58-MIRRORS (#242) — THE MIRROR INVENTORY, ranked by rot-risk.
@@ -676,8 +718,9 @@ feature_matrix_facts:
       why: ABI, ELF relocation and assembler-operator names — ISA identifiers
     - pattern: '\bcortex-[a-z0-9]+\b|\brv32[a-z]*\b|\besp32c3\b|\bRV32IMAC\b|\bM3\b|\bM4\b|\bM7\b|\bM4F\b'
       why: target/profile names (cortex-m4f, rv32imac, esp32c3) — hardware names
-    - pattern: '\bAArch64\b|\bA64\b|\bA32\b|\bThumb-2\b|\bx28\b|\bR9\b|\bR11\b|\bIP0\b'
+    - pattern: '\bAArch64\b|\bA64\b|\bA32\b|\bThumb-2\b|\bx28\b|\bR9\b|\bR11\b|\bIP0\b|\bx86[-_]64\b|\bELF64\b'
       why: architecture and architectural-register names — ISA identifiers
+        (x86-64 / x86_64 and the ELF64 container added by RQ-91-X86SKEL)
     - pattern: '0x[0-9A-Fa-f]+'
       why: hex literals name an encoding (the 0xFC prefix), not a measurement
     - pattern: '\bmemory (?:0\b|k>0\b|k\b)|grow\((?:0|n>0)\)|(?<![\w])[−-]1\b|÷0|\[0\]\[brk|exits? 0\b|\b1:1\b'
@@ -717,6 +760,14 @@ feature_matrix_facts:
         `br_table_subshape_asymmetry_882`, but no status field exposes it, so
         the template's copy is not re-derived. The cheapest remaining
         conversion: publish the const as a status field.
+    - text: "`br_table` of at most 16 targets"
+      rationale: >
+        The x86-64 limit (RQ-91-X86CTRL). `BR_TABLE_LIMIT` is a named const in
+        the x86-64 selector, and the selector's unit test
+        `control_flow_declines_name_their_cause` lowers 16 targets and refuses
+        17 by name (so does tests/decline_skeleton.rs), but no status field
+        exposes it, so the template's copy is not re-derived — the same
+        residual as the aarch64 `past 16 targets` entry above.
     - text: "an 8-byte slot"
       rationale: >
         The aarch64 globals slot width. Expressed as arithmetic on offsets in
@@ -939,9 +990,13 @@ support_levels:
     - id: cortex-r5-image
       row: "Cortex-R5 self-contained image (`--target cortex-r5`)"
       level: L3
-    # L3: a maintainer-relayed request; no code, no crate, no issue.
+    # L3: bootstrap under VCR-X86-001 (approved 2026-11-18). The crate exists
+    # (lanes X1-X5, RQ-91-X86SKEL, RQ-91-X86ALU, RQ-91-X86FRAME and RQ-91-X86CTRL, #1741) and has oracles in CI; no level is
+    # claimed until the L2 evidence passes this checker. Evidence is
+    # deliberately NOT named here: the checker skips L3 rows, so a name listed
+    # at L3 would look held and be unchecked.
     - id: x86-64
-      row: "x86-64"
+      row: "x86-64 (`-b x86_64`)"
       level: L3
     # L2 since RQ-92-WDGTHIN (#1741, #1301): relocatable objects only. The
     # ARMv6-M lowering covers the i32 core, structured control flow
@@ -1128,7 +1183,7 @@ claims:
     evidence:
       - kind: count-eq
         pattern: 'PeepholeOptimizer::new|PeepholeOptimizer::default|PeepholeOptimizer \{'
-        glob: ['crates/synth-cli/src/**/*.rs', 'crates/synth-backend/src/**/*.rs', 'crates/synth-backend-riscv/src/**/*.rs', 'crates/synth-backend-aarch64/src/**/*.rs', 'crates/synth-synthesis/src/optimizer_bridge.rs', 'crates/synth-synthesis/src/instruction_selector.rs', 'crates/synth-synthesis/src/instruction_selector/*.rs', 'crates/synth-opt/src/**/*.rs']
+        glob: ['crates/synth-cli/src/**/*.rs', 'crates/synth-backend/src/**/*.rs', 'crates/synth-backend-riscv/src/**/*.rs', 'crates/synth-backend-aarch64/src/**/*.rs', 'crates/synth-backend-x86_64/src/**/*.rs', 'crates/synth-synthesis/src/optimizer_bridge.rs', 'crates/synth-synthesis/src/instruction_selector.rs', 'crates/synth-synthesis/src/instruction_selector/*.rs', 'crates/synth-opt/src/**/*.rs']
         expect: 0
 
   - id: SYNTH-SPECTRE-POLICY-SYMBOLS-1288
@@ -1172,7 +1227,8 @@ claims:
         pattern: 'let mut first_access'
         glob: ['crates/synth-backend/src/**/*.rs',
                'crates/synth-backend-riscv/src/**/*.rs',
-               'crates/synth-backend-aarch64/src/**/*.rs']
+               'crates/synth-backend-aarch64/src/**/*.rs',
+               'crates/synth-backend-x86_64/src/**/*.rs']
         max: 0
       - kind: verbatim                       # the unsoundness stays NAMED
         text: "UNSOUND, deliberately kept and deliberately named"
@@ -1588,7 +1644,7 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ARCH-BACKENDS
     doc: ARCHITECTURE.md
-    text: "four backends"
+    text: "five backends"
     evidence:
       - kind: file-exists
         path: crates/synth-backend
@@ -1596,8 +1652,12 @@ claims:
         path: crates/synth-backend-riscv
       - kind: file-exists
         path: crates/synth-backend-aarch64
+      - kind: file-exists                    # RQ-91-X86SKEL (#1741)
+        path: crates/synth-backend-x86_64
       - kind: verbatim
         text: "| AArch64 (host-native) | `synth-backend-aarch64` | A64 |"
+      - kind: verbatim
+        text: "| x86-64 (host-native, skeleton) | `synth-backend-x86_64` | x86-64 baseline |"
 
   # The register-allocation description was WRONG for months ("R0-R12 for
   # temporaries" — R12 is encoder scratch, R9/R10/R11 are reserved bases; the
@@ -3907,12 +3967,30 @@ claims:
               per-site moves. Every one of the eleven parts reds the oracle when
               reverted alone. No hand-written arm was replaced, so none could be
               deleted.
+      # A64BELOW (Refs #1740, #1747) grew this 3067 -> 3131 under a waiver:
+      # the dead-region skip with its blocktype-ordinal and dead-frame-depth
+      # bookkeeping, plus the live-edge rule at `end`. RQ-91-LOWERCORE (plan
+      # lane S1, Refs #1741) moved that bookkeeping and the frame record into
+      # synth-core/src/lower.rs, shared with the x86-64 selector, AArch64
+      # output byte-identical (2,364 base/branch pairs over 591 inputs, 284 of
+      # them the spec suite): 3131 -> 3037, banked. The waiver (to: 3131) is
+      # deleted with the re-bank, so it cannot license growing back.
       - kind: ratchet
         name: aarch64_selector_lines_code
         direction: down
-        value: 3223
+        value: 3129
         baseline: 3067
         waivers:
+          - to: 3129
+            reason: >-
+              LOWERCORE (Refs #1741): 3223 -> 3129 (-94). The control-frame
+              bookkeeping (frame records, label arities, the #1740 dead-code
+              skip and join rule) moves to synth-core/src/lower.rs, shared with
+              the x86-64 selector. This is a FALL, but it does not reach the
+              3067 baseline: the #1740 and #1763 growth waived below stays in
+              the selector, so the value still needs a waiver bound to it. The
+              baseline is not raised. AArch64 output byte-identical to main
+              d8fc1b3f over every -b aarch64 input (see the restack PR).
           - to: 3223
             reason: >-
               v0.92 batch 2 (Refs #1763): 3131 -> 3223 (+92). The AArch64
@@ -3940,6 +4018,53 @@ claims:
               aarch64_dead_below_1740_differential.py (main 37 failures over 456
               emulations, fix 456/456) and per-edge unit tests red on each part.
               No hand-written arm was replaced, so none could be deleted.
+      # RQ-91-X86SKEL (#1741), maintainer decision 2026-11-18: the x86-64
+      # selector is pinned `track` until L2 (every movement is still a
+      # visible diff here, with no direction asserted), then a `down` pin.
+      # Created at 250 (lane X1: local.get of a parameter, i32.add, return).
+      # 496 since lane X2 (RQ-91-X86ALU; 494 as first committed, plus two
+      # doc-comment lines for cold review F7): the straight-line integer core. The
+      # per-op choice of instruction is NOT in this file: it is the table in
+      # rules.rs (52 rows in lane X2, 66 since lanes X3-X4); the selector holds
+      # one routine per lowering shape.
+      # 798 since lanes X3-X4 (RQ-91-X86FRAME): the frame (prologue, epilogue,
+      # parameter homing, local zeroing), the spilling operand stack, and the
+      # multi-instruction sequences of div/rem (with their trap guards),
+      # clz/ctz and popcnt, each written out instruction by instruction. The
+      # table grew to 66 rows; the rcx save/restore of lane X2 is gone.
+      # 1395 since lane X5 (RQ-91-X86CTRL): block, loop, if/else, br, br_if,
+      # br_table and unreachable, emitting only — the frame record, the label
+      # arity rule, the dead-code skip and the join rule are shared
+      # (synth-core/src/lower.rs, RQ-91-LOWERCORE). The growth is the home-slot
+      # rule that makes every join's register state the same on every edge,
+      # the per-edge copy of a carried value, label resolution from the
+      # encoder's lengths, the two-pass frame layout, and their doc comments.
+      - kind: ratchet
+        name: x86_selector_lines_code
+        direction: track
+        value: 1395
+      # Beside it, independently: the derived x86-64 surface is a FLOOR, so
+      # the lowered set cannot shrink. It does NOT bound the selector's lines
+      # (a line can be added while this stays 3; REVIEW_13 F1 measured it).
+      # 3 -> 59 with lane X2 (RQ-91-X86ALU): the 52 rule-table ops, both
+      # consts, select, drop and nop join local.get(param), i32.add, return.
+      # 59 -> 75 with lanes X3-X4 (RQ-91-X86FRAME): local.set, local.tee, the
+      # eight div/rem ops and the six bit counts.
+      # 75 -> 84 with lane X5 (RQ-91-X86CTRL): block, br, br_if, br_table,
+      # end, if, if_else, loop and unreachable.
+      - kind: ratchet
+        name: x86_ops_lowered
+        direction: up
+        value: 84
+        baseline: 84
+      # The plan's third X1 pin (REVIEW_13 F5): the x86-64 selector's `_ =>`
+      # arms are a ceiling from creation, at the live value 1. 0 since lane X2
+      # (RQ-91-X86ALU): every operand-location match is spelled out.
+      - kind: ratchet
+        name: x86_selector_wildcard_arms_code
+        direction: down
+        value: 0
+        baseline: 0
 
   # The other half of the same trade: the verified path must GROW as the
   # hand-written one shrinks. Pinned as a FLOOR so a rule can never be quietly
@@ -4019,7 +4144,7 @@ claims:
   # "can this check still fail" audit applied to the check being added.
   - id: SYNTH-SUBTRACTION-PINS-DECLARED
     doc: CLAUDE.md
-    text: "Twelve `kind: ratchet` pins in"
+    text: "Fifteen `kind: ratchet` pins in"
     evidence:
       # RQ-65-MUTANTS (v0.65): 7 -> 8 — the eighth is `mutants_untested`, a
       # ceiling over the mutation-survey ledger (SYNTH-MUTATION-SURVEY-RQ65).
@@ -4030,10 +4155,14 @@ claims:
       # CLAUDE.md says "Ten".
       # RQ-91-LEVELGATE (v0.91): 10 -> 12 — `rv32_selector_lines_code` and
       # `aarch64_selector_lines_code`, two more ceilings. 8 + 1 + 3.
+      # RQ-91-X86SKEL (v0.91, #1741): 12 -> 15 — `x86_selector_lines_code`
+      # (tracked until L2, maintainer decision 2026-11-18), the floor
+      # `x86_ops_lowered` and the ceiling `x86_selector_wildcard_arms_code`
+      # (the plan's additions). 9 + 2 + 4.
       - kind: count-eq
         pattern: '^      - kind: ratchet$'
         glob: ['claims.yaml']
-        expect: 12
+        expect: 15
       # THE DIRECTION BREAKDOWN, pinned — and this one was earned. While
       # building this lane the `direction: track` change to the two whole-file
       # pins was silently reverted by an unrelated `git checkout -- claims.yaml`
@@ -4051,15 +4180,15 @@ claims:
       - kind: count-eq
         pattern: '^        direction: down$'
         glob: ['claims.yaml']
-        expect: 8
+        expect: 9
       - kind: count-eq
         pattern: '^        direction: up$'
         glob: ['claims.yaml']
-        expect: 1
+        expect: 2
       - kind: count-eq
         pattern: '^        direction: track$'
         glob: ['claims.yaml']
-        expect: 3
+        expect: 4
       - kind: verbatim                       # the prose those directions match
         text: "the whole-file counts are pinned `direction: track`"
       - kind: count-eq                       # the CI step that prints them
@@ -4639,9 +4768,13 @@ claims:
       - kind: count-eq                       # population: a NEW workspace member
         pattern: '^    "crates/'             # must be classified linked / feature-
         glob: ['Cargo.toml']                 # gated / unlinked before this moves
-        expect: 20                           # 19 -> 20: synth-oracle (RQ-91-ORACLEKILN,
+        expect: 21                           # 19 -> 20: synth-oracle (RQ-91-ORACLEKILN,
                                              # #1741), classified UNLINKED test
-                                             # infrastructure by the two pins below
+                                             # infrastructure by the two pins below.
+                                             # 20 -> 21: synth-backend-x86_64
+                                             # (RQ-91-X86SKEL, #1741), LINKED:
+                                             # an always-on synth-cli dependency,
+                                             # published (scripts/publish.rs)
       # synth-oracle is the execution-oracle harness (kiln + unicorn). It must
       # never be linked into the binary or published: no crate depends on it,
       # and it is publish = false. THESE TWO PINS ARE WHY unicorn-engine's
@@ -6426,9 +6559,31 @@ claims:
   # the checker), and the checker that re-derives each criterion from the
   # tree must exist and run, self-test included, in the Claim Check job.
   # The `support_levels:` section above is that checker's ledger.
+  # RQ-91-X86SKEL (#1741): the decision that moved VCR-X86-001 to approved,
+  # and the three things lane X1 must not lose silently: the crate, the
+  # `.note.GNU-stack` the x86-64 object carries (GNU ld would otherwise mark
+  # the stack executable), and the oracle's PINNED baseline CPU model (the
+  # unpinned default runs above-baseline instructions, REVIEW_2 X2).
+  - id: SYNTH-X86-SKELETON-RQ91
+    doc: artifacts/verified-codegen-roadmap.yaml
+    text: "DECISION, 2026-11-18: the maintainer put x86-64 in scope"
+    evidence:
+      - kind: file-exists
+        path: crates/synth-backend-x86_64/src/selector.rs
+      - kind: count-eq
+        pattern: '^    gnu_stack_note: true,$'
+        glob: ['crates/synth-backend-x86_64/src/backend.rs']
+        expect: 1
+      - kind: count-eq
+        pattern: 'Cpu::X86_64Baseline => X86CpuModel::QEMU64 as i32,'
+        glob: ['crates/synth-oracle/src/emulate.rs']
+        expect: 1
+      - kind: verbatim
+        text: "RECORDED 2026-09-06, SUPERSEDED BY THE DECISION ABOVE:"
+
   - id: SYNTH-SUPPORT-LEVELS-RQ91
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "| x86-64 | L3 experimental |"
+    text: "| x86-64 (`-b x86_64`) | L3 experimental |"
     evidence:
       - kind: verbatim
         text: "| Cortex-M Thumb-2 (`--cortex-m`, `--target cortex-m*`) | L1 verified (ladder criterion not met) |"

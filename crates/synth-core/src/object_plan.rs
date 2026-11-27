@@ -421,6 +421,14 @@ pub struct ElfMachine {
     /// type: a kind the machine cannot express panics there rather than ship
     /// an unrelocated placeholder (the silent-miscompile class).
     pub reloc_type: fn(RelocKind) -> u32,
+    /// RQ-91-X86SKEL (#1741): append an empty `.note.GNU-stack` section
+    /// (`SHT_PROGBITS`, no flags), the marker that says the object does NOT
+    /// need an executable stack. GNU ld treats an x86-64 object WITHOUT it as
+    /// requiring one (REVIEW_2 correction X6); lld does not, so a link-only
+    /// check with lld cannot see its absence. Appended AFTER every other
+    /// section and only when this is set, so a machine that leaves it off
+    /// (AArch64 today) keeps every byte it had.
+    pub gnu_stack_note: bool,
 }
 
 pub(crate) const EHDR_SIZE: usize = 64;
@@ -532,6 +540,13 @@ pub fn write_elf64_rel(plan: &ObjectPlan, machine: &ElfMachine) -> Vec<u8> {
     } else {
         0
     };
+    // RQ-91-X86SKEL: the note's name goes LAST in .shstrtab, so a machine
+    // without it has the same string table it always had.
+    let n_gnu_stack = if machine.gnu_stack_note {
+        add_shstr(&mut shstrtab, ".note.GNU-stack")
+    } else {
+        0
+    };
 
     // --- Section indices. ---
     // [0]=NULL [1]=.text [2]=.symtab [3]=.strtab [4]=.shstrtab, then (when
@@ -574,7 +589,8 @@ pub fn write_elf64_rel(plan: &ObjectPlan, machine: &ElfMachine) -> Vec<u8> {
     // 8-align the section-header table.
     let shdr_off = after_content.div_ceil(8) * 8;
     let shdr_pad = shdr_off - after_content;
-    let num_sections: u16 = 5 + u16::from(have_data) + u16::from(have_rela);
+    let num_sections: u16 =
+        5 + u16::from(have_data) + u16::from(have_rela) + u16::from(machine.gnu_stack_note);
 
     let mut out: Vec<u8> = Vec::new();
 
@@ -683,6 +699,12 @@ pub fn write_elf64_rel(plan: &ObjectPlan, machine: &ElfMachine) -> Vec<u8> {
             RELA_SIZE as u64,
         );
     }
+    // [last] .note.GNU-stack — PROGBITS(1), NO flags (in particular no
+    // SHF_EXECINSTR: the stack is not executable), size 0. Its offset is the
+    // end of the section contents; nothing is read there.
+    if machine.gnu_stack_note {
+        shdr(n_gnu_stack, 1, 0, after_content, 0, 0, 0, 1, 0);
+    }
 
     out
 }
@@ -705,6 +727,7 @@ mod tests {
             e_machine: 62,
             text_align: 16,
             reloc_type: ty,
+            gnu_stack_note: false,
         }
     }
 
@@ -783,5 +806,73 @@ mod tests {
             .map(|&(o, a)| (o, (3u64 << 32) | 2, a))
             .collect();
         assert_eq!(rela_entries(&obj), want);
+    }
+
+    /// Section names, in section-header order.
+    fn section_names(obj: &[u8]) -> Vec<(String, u32, u64, u64)> {
+        let rd = |o: usize, n: usize| {
+            let mut b = [0u8; 8];
+            b[..n].copy_from_slice(&obj[o..o + n]);
+            u64::from_le_bytes(b)
+        };
+        let (shoff, shnum, shstrndx) = (
+            rd(0x28, 8) as usize,
+            rd(0x3C, 2) as usize,
+            rd(0x3E, 2) as usize,
+        );
+        let str_off = rd(shoff + shstrndx * SHDR_SIZE + 24, 8) as usize;
+        (0..shnum)
+            .map(|i| {
+                let sh = shoff + i * SHDR_SIZE;
+                let name_off = str_off + rd(sh, 4) as usize;
+                let end = obj[name_off..].iter().position(|&b| b == 0).unwrap();
+                let name = String::from_utf8(obj[name_off..name_off + end].to_vec()).unwrap();
+                (name, rd(sh + 4, 4) as u32, rd(sh + 8, 8), rd(sh + 32, 8))
+            })
+            .collect()
+    }
+
+    /// RQ-91-X86SKEL: the note is present exactly when the machine asks, is
+    /// the LAST section, is PROGBITS with no flags and size 0, and every byte
+    /// before the section-header table is unchanged by it (so a machine
+    /// without it — AArch64 — keeps its bytes).
+    #[test]
+    fn gnu_stack_note_only_when_the_machine_asks_and_appended_last() {
+        let plan = plan_object(
+            "test",
+            &three_site_function(),
+            &DataBlob::default(),
+            &["g".into()],
+        );
+        let plan = plan.unwrap();
+        let off = write_elf64_rel(&plan, &test_machine());
+        let on = write_elf64_rel(
+            &plan,
+            &ElfMachine {
+                gnu_stack_note: true,
+                ..test_machine()
+            },
+        );
+        let names_off = section_names(&off);
+        let names_on = section_names(&on);
+        assert!(names_off.iter().all(|(n, ..)| n != ".note.GNU-stack"));
+        assert_eq!(names_on.len(), names_off.len() + 1);
+        assert_eq!(
+            names_on.last().unwrap(),
+            &(".note.GNU-stack".to_string(), 1, 0, 0)
+        );
+        // Every earlier section keeps its name, type, flags and size — except
+        // .shstrtab, which grows by exactly the note's name and its NUL.
+        for (a, b) in names_on.iter().zip(&names_off) {
+            if a.0 == ".shstrtab" {
+                assert_eq!(a.3, b.3 + ".note.GNU-stack\0".len() as u64);
+                assert_eq!((&a.0, a.1, a.2), (&b.0, b.1, b.2));
+            } else {
+                assert_eq!(a, b);
+            }
+        }
+        // The .text, .symtab and .strtab bytes are the same bytes.
+        let text_len = plan.text.len();
+        assert_eq!(on[64..64 + text_len], off[64..64 + text_len]);
     }
 }

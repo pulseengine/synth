@@ -35,6 +35,9 @@ mod memory_facts_emit;
 mod shadow_budget;
 mod sign;
 mod verify_embedder;
+// RQ-91-X86SKEL (#1741): `-b x86_64` compiles here, before the ARM/RV32/
+// AArch64 pipeline; see the module doc for why.
+mod x86_64_cli;
 
 /// Sentinel value clap substitutes when `--sbom` is given without a path.
 /// Resolved to `<output>.cdx.json` by [`resolve_sbom_path`]. Unlikely to
@@ -327,7 +330,7 @@ enum Commands {
         #[arg(long, value_name = "MODE")]
         safety_bounds: Option<String>,
 
-        /// Compilation backend (arm, riscv, aarch64, w2c2, awsm, wasker).
+        /// Compilation backend (arm, riscv, aarch64, x86_64, w2c2, awsm, wasker).
         /// Defaults to `arm`. #882: a `--target` whose ISA family does not
         /// match the selected backend is a HARD ERROR, never a silent
         /// wrong-ISA build.
@@ -910,6 +913,66 @@ fn main() -> Result<()> {
             // which `-b` their target needs).
             let backend_explicit = backend.is_some();
             let backend = backend.unwrap_or_else(|| "arm".to_string());
+            // RQ-91-X86SKEL (#1741): x86-64 has its own, narrow path. Every
+            // flag it does not accept is collected here BY NAME and refused
+            // there, so none of them can be a silent no-op on x86-64.
+            if backend == "x86_64" {
+                let set: Vec<&str> = [
+                    ("--demo", demo.is_some()),
+                    ("--func-index", func_index.is_some()),
+                    ("--func-name", func_name.is_some()),
+                    ("--cortex-m", cortex_m),
+                    ("--no-optimize", no_optimize),
+                    ("--loom-compat", loom_compat),
+                    ("--loom", loom),
+                    ("--bounds-check", bounds_check),
+                    ("--verify", verify),
+                    ("--link", link),
+                    ("--builtins", builtins.is_some()),
+                    (
+                        "--object-format macho",
+                        object_format == ObjectFormatArg::Macho,
+                    ),
+                    ("--embedder-data-init", embedder_data_init),
+                    ("--embedder-global-init", embedder_global_init),
+                    ("--embedder-mpu", embedder_mpu),
+                    (
+                        "--embedder-copies-carry-no-pointers",
+                        embedder_copies_carry_no_pointers,
+                    ),
+                    ("--native-pointer-abi", native_pointer_abi),
+                    ("--no-bind-cabi-arena", no_bind_cabi_arena),
+                    ("--sbom", sbom.is_some()),
+                    ("--sign-output", sign_output),
+                    ("--shadow-stack-size", shadow_stack_size.is_some()),
+                    ("--debug-line", debug_line),
+                    ("--emit-provenance", emit_provenance),
+                    ("--emit-wcet", emit_wcet),
+                    ("--emit-stack-depth", emit_stack_depth),
+                    ("--wcet-hints", wcet_hints.is_some()),
+                    ("--volatile-segment", !volatile_segment.is_empty()),
+                    ("--stack-layout", stack_layout != StackLayoutArg::High),
+                    ("--stack-size", stack_size.is_some()),
+                    ("--proven-safe", proven_safe.is_some()),
+                    ("--allow-skipped-exports", allow_skipped_exports),
+                    ("--emit-memory-facts", emit_memory_facts),
+                    ("--memory-domain", !memory_domain.is_empty()),
+                    ("--mpu-layout", mpu_layout.is_some()),
+                ]
+                .into_iter()
+                .filter_map(|(name, given)| given.then_some(name))
+                .collect();
+                // `--relocatable` and `--all-exports` describe what the x86-64
+                // path always does; they are accepted and change nothing.
+                let _ = (relocatable, all_exports);
+                return x86_64_cli::compile(
+                    input.as_deref(),
+                    &output,
+                    target.as_deref(),
+                    safety_bounds.as_deref(),
+                    &set,
+                );
+            }
             // RQ-64-MACHO: `--object-format macho` exists for exactly one
             // backend. Refuse anywhere else rather than silently emitting ELF
             // under a flag that says otherwise (the #865 silent-no-op class).
@@ -1514,6 +1577,7 @@ fn backend_accepted_targets(backend: &str) -> Option<&'static str> {
         ),
         "riscv" => Some("rv32imac, rv32imc, rv32im, rv32i, rv32gc, esp32c3, riscv32"),
         "aarch64" => Some("cortex-a53"),
+        "x86_64" => Some("x86_64"),
         _ => None,
     }
 }
@@ -1526,6 +1590,7 @@ fn family_name(family: &synth_core::target::ArchFamily) -> &'static str {
         ArchFamily::ArmCortexR => "ARM Cortex-R",
         ArchFamily::ArmCortexA => "AArch64",
         ArchFamily::RiscV => "RISC-V",
+        ArchFamily::X86_64 => "x86-64",
     }
 }
 
@@ -1582,8 +1647,9 @@ fn resolve_target_spec(
         ArchFamily::ArmCortexM | ArchFamily::ArmCortexR => "arm",
         ArchFamily::ArmCortexA => "aarch64",
         ArchFamily::RiscV => "riscv",
+        ArchFamily::X86_64 => "x86_64",
     };
-    let backend_is_isa = matches!(backend, "arm" | "riscv" | "aarch64");
+    let backend_is_isa = matches!(backend, "arm" | "riscv" | "aarch64" | "x86_64");
     if backend_is_isa && backend != required_backend {
         let family = family_name(&spec.family);
         if backend_explicit {
@@ -1597,7 +1663,7 @@ fn resolve_target_spec(
         // "an AArch64", "a RISC-V" — the family names are a closed set, so a
         // lookup beats a vowel heuristic ("an ARM" is right, "an RISC-V" is not).
         let article = match spec.family {
-            ArchFamily::ArmCortexA => "an",
+            ArchFamily::ArmCortexA | ArchFamily::X86_64 => "an",
             _ => "a",
         };
         anyhow::bail!(
@@ -1619,6 +1685,12 @@ fn build_backend_registry() -> BackendRegistry {
 
     // AArch64 host-native backend (#538) — always available (pure Rust).
     registry.register(Box::new(synth_backend_aarch64::AArch64Backend::new()));
+
+    // x86-64 host-native backend, lane X1 skeleton (RQ-91-X86SKEL, #1741) —
+    // always available (pure Rust). `synth compile -b x86_64` is dispatched to
+    // `x86_64_cli` before `compile_command`; registering here lists it in
+    // `synth backends`.
+    registry.register(Box::new(synth_backend_x86_64::X86_64Backend::new()));
 
     // Register w2c2 backend (always available, checks tool at runtime)
     registry.register(Box::new(W2C2Backend::new()));

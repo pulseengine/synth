@@ -18,6 +18,8 @@ pub enum Machine {
     RiscV32,
     /// AArch64 (A64), an ELF64 object.
     AArch64,
+    /// RQ-91-X86SKEL (#1741): `EM_X86_64`, an ELF64 object.
+    X86_64,
 }
 
 /// A function symbol, located within `.text`.
@@ -129,7 +131,7 @@ pub fn patch_thm_call(text: &mut [u8], offset: u64, place: u64, dest: u64) -> Re
 
 impl CompiledObject {
     /// Parse an ELF object or executable emitted by synth: ELF32 for ARM and
-    /// RV32, ELF64 for AArch64.
+    /// RV32, ELF64 for AArch64 and (RQ-91-X86SKEL, #1741) x86-64.
     pub fn parse(path: &Path) -> Result<Self, String> {
         let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         Self::parse_bytes(path, &data)
@@ -148,7 +150,7 @@ impl CompiledObject {
     }
 
     /// `elf64` is the file's class. A machine is accepted only in the class
-    /// synth emits it in (ARM and RV32 in ELF32, AArch64 in ELF64): an
+    /// synth emits it in (ARM and RV32 in ELF32, AArch64 and x86-64 in ELF64): an
     /// RV64 object, say, carries `EM_RISCV` too and must not be read as RV32.
     fn parse_elf<Elf: FileHeader<Endian = object::Endianness>>(
         path: &Path,
@@ -162,6 +164,7 @@ impl CompiledObject {
             (object::elf::EM_ARM, false) => Machine::Arm,
             (object::elf::EM_RISCV, false) => Machine::RiscV32,
             (object::elf::EM_AARCH64, true) => Machine::AArch64,
+            (object::elf::EM_X86_64, true) => Machine::X86_64,
             (m, _) => {
                 return Err(format!(
                     "{}: unsupported e_machine {m} in an ELF{} file",

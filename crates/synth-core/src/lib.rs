@@ -12,6 +12,7 @@ pub mod dwarf_line;
 pub mod error;
 pub mod import_symbols;
 pub mod ir;
+pub mod lower;
 pub mod memory_facts;
 pub mod npa_multi_memory;
 pub mod object_plan;
