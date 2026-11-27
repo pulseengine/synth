@@ -1581,8 +1581,10 @@ mod measured {
                 // parcel here would desynchronise the decode below.
                 let words: Vec<u32> = obj
                     .text
-                    .chunks_exact(4)
-                    .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|w| u32::from_le_bytes(*w))
                     .collect();
                 if words.iter().any(|w| w & 3 != 3) {
                     return Err("a compressed parcel in .text: decode by length".into());
