@@ -158,7 +158,7 @@ jobs:
           test "$(grep -cE '^test result: ok\. 10 passed; 0 failed' "$log")" = 1
           test "$(grep -cE '^test result: ok\. 18 passed; 0 failed' "$log")" = 1
           test "$(grep -cE '^test result: ok\. 11 passed; 0 failed' "$log")" = 1
-          awk '/Running tests\/x86_64_ctrlflow_kiln_oracle\.rs/{f=1} f&&/^test result:/{print; exit}' "$log" \
+          awk '/Running.*tests\/x86_64_ctrlflow_kiln_oracle\.rs/{f=1} f&&/^test result:/{print; exit}' "$log" \
             | grep -qE '^test result: ok\. 11 passed; 0 failed'
           # Exact per binary (RQ-91-TARGETRECORD): 15 kiln_probe_oracle.rs;
           # 24 the lib's unit tests (8 at the base; +12 the target record's
