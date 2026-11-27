@@ -34,6 +34,8 @@ artifacts:
       - refactor
     links:
       - type: derives-from
+        target: BR-001
+      - type: refines
         target: VCR-X86-001
     fields:
       req-type: functional
