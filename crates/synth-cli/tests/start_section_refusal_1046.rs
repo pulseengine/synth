@@ -26,7 +26,9 @@
 //! #1046 fix (note (b)). The self-contained Reset_Handler half landed in
 //! v0.65 (a `BL` after the data copy and the R9 table, before the entry
 //! `BLX r0`; execution-gated by the selector-parity oracle over start.wast);
-//! the exported init hook on the relocatable contract has not, so
+//! the exported init hook on the relocatable contract landed in P3-BUILTINS
+//! I0 as the OPT-IN `--embedder-runs-start` (`__synth_start`, pinned in
+//! `embedder_runs_start_1046.rs`). Without that flag — every test here —
 //! `--relocatable`, an ET_REL degradation via imports, an IMPORTED start
 //! function, the single-function path, A32, RISC-V and AArch64 still refuse.
 

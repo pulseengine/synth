@@ -419,6 +419,24 @@ enum Commands {
         #[arg(long)]
         embedder_global_init: bool,
 
+        /// P3-BUILTINS I0 (#1046, #1786): declare that the EMBEDDER runs the
+        /// module's `(start ...)` function. Without this flag a module with a
+        /// start section REFUSES on every path that does not invoke it (#1046):
+        /// the start function would silently never run. With it, the ARM
+        /// relocatable object compiles the start function and its callees and
+        /// defines it as the GLOBAL function symbol `__synth_start`; the
+        /// embedder must call `__synth_start` exactly once, after setting
+        /// R11/R10/R9 (and applying data segments and globals) and before any
+        /// export runs — the instantiation step of WASM Core §4.5.5
+        /// (docs/embedder-abi-relocatable-arm.md). Refused where it cannot be
+        /// honoured: a self-contained image (the Cortex-M Reset_Handler already
+        /// invokes the start function, #1017), a module without a start
+        /// section or with an imported one, the single-function path, a
+        /// multi-module `.wast`, and the RISC-V and AArch64 backends. Objects
+        /// compiled without the flag are unchanged.
+        #[arg(long)]
+        embedder_runs_start: bool,
+
         /// RQ-68-MPUHONEST (#1284, #1145): declare that the EMBEDDER programs
         /// the ARM MPU for this relocatable object — one region per linear
         /// memory, granted per execution context (never every memory at
@@ -886,6 +904,7 @@ fn main() -> Result<()> {
             object_format,
             embedder_data_init,
             embedder_global_init,
+            embedder_runs_start,
             embedder_mpu,
             embedder_copies_carry_no_pointers,
             native_pointer_abi,
@@ -1092,6 +1111,7 @@ fn main() -> Result<()> {
                 object_format,
                 embedder_data_init,
                 embedder_global_init,
+                embedder_runs_start,
                 embedder_mpu,
                 embedder_copies_carry_no_pointers,
                 native_pointer_abi,
@@ -1531,6 +1551,9 @@ struct ElfFunction {
     /// Every relocatable writer defines each one as a GLOBAL `STT_FUNC` at the
     /// function's address with its size, beside `name`. Empty for a function
     /// exported at most once, which leaves the object byte-identical.
+    /// P3-BUILTINS I0 (#1046): on the ARM relocatable path the start function
+    /// carries `__synth_start` here under `--embedder-runs-start` (it need not
+    /// be exported); without the flag nothing is added.
     export_aliases: Vec<String>,
     /// #1746: the function is EXPORTED (its `name` is an export name). Kept
     /// apart from `name != func_N`, which misreads an export spelled like its
@@ -2158,6 +2181,9 @@ fn compile_command(
     // evaluates global initializers and seeds the R9 table; suppresses the
     // relocatable-path init-materialization refusal.
     embedder_global_init: bool,
+    // P3-BUILTINS I0 (#1046): `--embedder-runs-start` — the embedder calls
+    // the start function (`__synth_start`) before any export.
+    embedder_runs_start: bool,
     // RQ-68-MPUHONEST (#1284): `--embedder-mpu` — the embedder programs the
     // MPU; the only condition under which `--safety-bounds mpu` is accepted.
     embedder_mpu: bool,
@@ -2284,6 +2310,20 @@ fn compile_command(
         None
     };
 
+    // P3-BUILTINS I0 (#1046): the single-function path compiles ONE root (a
+    // synth-owned image, or with `--relocatable` the #1565 one-root object);
+    // the start function is not part of it, so there is no `__synth_start`
+    // to define. Refuse rather than accept a flag that would do nothing.
+    if embedder_runs_start && !use_all_exports {
+        anyhow::bail!(
+            "--embedder-runs-start is refused on the single-function path \
+             (--func-index / --func-name): it compiles one function, not the \
+             module's start function, so there is no __synth_start for the \
+             embedder to call. Compile the whole module with --relocatable \
+             --embedder-runs-start (#1046)"
+        );
+    }
+
     if use_all_exports || single_root.is_some() {
         return compile_all_exports(
             input,
@@ -2300,6 +2340,7 @@ fn compile_command(
             object_format,
             embedder_data_init,
             embedder_global_init,
+            embedder_runs_start,
             embedder_mpu,
             embedder_copies_carry_no_pointers,
             native_pointer_abi,
@@ -4339,6 +4380,13 @@ enum SingleRoot {
 /// (the self-contained Reset_Handler calling it before any export; an
 /// exported init hook on the relocatable contract) is capability work, not
 /// this fix.
+///
+/// Both halves of that capability work have since landed, and neither is an
+/// escape hatch on this refusal: the Reset_Handler call (#1017), and P3-BUILTINS
+/// I0's `--embedder-runs-start`, which puts the code in the ARM relocatable
+/// object as the GLOBAL `__synth_start` and makes calling it the embedder's
+/// instantiation step ([`embedder_start_root`]). Without the flag this
+/// function is reached exactly as before, with the same message.
 fn refuse_dropped_start_function(start_function: Option<u32>) -> Result<()> {
     if let Some(idx) = start_function {
         anyhow::bail!(
@@ -4354,6 +4402,63 @@ fn refuse_dropped_start_function(start_function: Option<u32>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The symbol `--embedder-runs-start` defines for the start function. Under
+/// the reserved `__synth_` prefix, so no export can take it (#1746).
+const EMBEDDER_START_SYMBOL: &str = "__synth_start";
+
+/// P3-BUILTINS I0 (#1046, #1786): the start function `--embedder-runs-start`
+/// hands to the embedder, or the refusal that says why it cannot.
+///
+/// The flag is honoured only where the #1046 objection is answered: an ARM
+/// RELOCATABLE object (`relocatable` = `--relocatable`, or a module whose
+/// import calls make it one, #1696), where the start function's body ships as
+/// a closure root under the GLOBAL symbol [`EMBEDDER_START_SYMBOL`] and the
+/// embedder contract obliges the embedder to call it once, before any export.
+/// Refused, each for its own reason:
+/// - no start section: the flag would define nothing for an embedder written
+///   against the contract to call, so it would fail at link time far from
+///   this compile — refusing here names the cause;
+/// - an imported start function: no body in this object to define;
+/// - a self-contained image: the Cortex-M Reset_Handler already invokes the
+///   start function (#1017), and an A32 image has no embedder to call it.
+fn embedder_start_root(
+    start_function: Option<u32>,
+    num_imported_funcs: u32,
+    relocatable: bool,
+    cortex_m: bool,
+) -> Result<u32> {
+    let Some(idx) = start_function else {
+        anyhow::bail!(
+            "--embedder-runs-start: the module declares no start function, so there is \
+             no __synth_start to define and nothing for the embedder to call; drop the \
+             flag for this module (#1046)"
+        );
+    };
+    if idx < num_imported_funcs {
+        anyhow::bail!(
+            "--embedder-runs-start: the module's start function (function index {idx}) \
+             is imported, so its body is not in this object and there is nothing to \
+             define as __synth_start; refusing (#1046)"
+        );
+    }
+    if !relocatable {
+        anyhow::bail!(
+            "--embedder-runs-start is refused on a self-contained image: the flag hands \
+             the start function (function index {idx}) to an embedder that links a \
+             relocatable object, and this compile builds an image that no embedder \
+             links. {}",
+            if cortex_m {
+                "The self-contained Cortex-M image already invokes the start function \
+                 from its Reset_Handler (#1017): drop the flag, or compile --relocatable \
+                 to take the embedder contract (#1046)"
+            } else {
+                "Compile --relocatable to take the embedder contract (#1046)"
+            }
+        );
+    }
+    Ok(idx)
 }
 
 /// RQ-66-BOTHWRONG (#1209): a module declaring a 64-bit-INDEXED memory (the
@@ -4786,6 +4891,9 @@ fn compile_all_exports(
     // evaluates global initializers and seeds the R9 table; suppresses the
     // relocatable-path init-materialization refusal.
     embedder_global_init: bool,
+    // P3-BUILTINS I0 (#1046): `--embedder-runs-start` — compile the start
+    // function as a root and define it as GLOBAL `__synth_start`.
+    embedder_runs_start: bool,
     // RQ-68-MPUHONEST (#1284): `--embedder-mpu` — the embedder programs the
     // MPU; the only condition under which `--safety-bounds mpu` is accepted.
     embedder_mpu: bool,
@@ -4843,6 +4951,23 @@ fn compile_all_exports(
     let relocatable_flag = relocatable;
     // Set while decoding: some module calls a function import.
     let mut import_call_host_link = false;
+
+    // P3-BUILTINS I0 (#1046): `--embedder-runs-start` is an obligation of the
+    // ARM relocatable contract (docs/embedder-abi-relocatable-arm.md, which
+    // covers Thumb-2 and A32). The RV32 object is linked with synth's own
+    // generated startup (`synth riscv-runtime`), which calls no start
+    // function, and the AArch64 contract
+    // (docs/embedder-abi-relocatable-aarch64.md) states no start symbol.
+    // Refused there, so both keep exactly the #1046 refusal they had.
+    if embedder_runs_start && backend.name() != "arm" {
+        anyhow::bail!(
+            "--embedder-runs-start is refused on the '{}' backend: it is part of \
+             the ARM relocatable embedder contract (docs/embedder-abi-relocatable-arm.md), \
+             and this backend's contract defines no start-function symbol, so a \
+             module with a (start ...) section still refuses here (#1046)",
+            backend.name()
+        );
+    }
 
     // VCR-DEC-003 (#396): accumulate the branch-transformation map across
     // functions as they compile, then serialize the sidecar at the end.
@@ -4903,12 +5028,26 @@ fn compile_all_exports(
         _ => None,
     };
     let multi_wast_modules: Option<Vec<Vec<u8>>> = wast_modules.filter(|m| m.len() > 1);
+    // P3-BUILTINS I0 (#1046): the multi-module `.wast` merge has no single
+    // start function to name, and refuses any module that declares one.
+    if embedder_runs_start && multi_wast_modules.is_some() {
+        anyhow::bail!(
+            "--embedder-runs-start is refused on a multi-module .wast: the merge \
+             compiles several modules into one object and has no single start \
+             function to define as __synth_start (#1046)"
+        );
+    }
 
     // RQ-65-MVPCORE (#1017): the `(start ...)` function this compile will
     // INVOKE — `Some` only on the self-contained ARM Cortex-M image (whose
     // Reset_Handler is the instantiation step and BLs it, #1046 follow-on);
     // every other path keeps the #1046 refusal. Set inside the decode below.
     let mut accepted_start_function: Option<u32> = None;
+    // P3-BUILTINS I0 (#1046): the `(start ...)` function the EMBEDDER invokes
+    // (`--embedder-runs-start`) — `Some` only on an ARM relocatable object.
+    // It is a closure root like `accepted_start_function`, but no startup
+    // calls it: it is defined as the GLOBAL `__synth_start` instead.
+    let mut embedder_start_function: Option<u32> = None;
     // RQ-91-IMPGLOBAL: slot widths of the module's imported globals (set by
     // the single-module decode below; empty on the .wast merge).
     let mut imported_global_widths: Vec<u32> = Vec::new();
@@ -5432,7 +5571,30 @@ fn compile_all_exports(
         // import is still accepted here and refused after compilation, with
         // the message that names the cause (imports made this a relocatable
         // object, which runs no startup).
-        if cortex_m && !relocatable_flag && backend.name() == "arm" && start_is_defined {
+        //
+        // P3-BUILTINS I0 (#1046): `--embedder-runs-start` is the second
+        // accepting path, decided first so the flagless decision below is
+        // untouched. The #1046 reason for having no escape hatch was that the
+        // start function's code was not in the artifact, so there was nothing
+        // an embedder could call. Here it is a closure root and gets the GLOBAL
+        // symbol `__synth_start`; the embedder contract makes calling it, once,
+        // before any export, the embedder's instantiation step. `relocatable`
+        // already includes the #1696 host-link degradation, so a `--cortex-m`
+        // module that calls an import takes this path too.
+        if embedder_runs_start {
+            embedder_start_function = Some(embedder_start_root(
+                module.start_function,
+                module.num_imported_funcs,
+                relocatable,
+                cortex_m,
+            )?);
+            info!(
+                "  (start ...) function index {} accepted under --embedder-runs-start: \
+                 defined as the GLOBAL symbol __synth_start, which the embedder calls \
+                 once before any export (#1046)",
+                embedder_start_function.unwrap_or(0)
+            );
+        } else if cortex_m && !relocatable_flag && backend.name() == "arm" && start_is_defined {
             accepted_start_function = module.start_function;
             info!(
                 "  (start ...) function index {} accepted: the self-contained image's \
@@ -5617,10 +5779,12 @@ fn compile_all_exports(
             );
             let roots: std::collections::BTreeSet<u32> = [found.index].into_iter().collect();
             reachable_from_roots(&module.functions, num_imports, &elem_func_indices, &roots)
-        } else if let Some(start_idx) = accepted_start_function {
+        } else if let Some(start_idx) = accepted_start_function.or(embedder_start_function) {
             // #1017: the start function is a ROOT of the closure alongside the
             // exports — it is invoked at instantiation, so its body and its
-            // callees ship exactly like an export's.
+            // callees ship exactly like an export's. The same holds when the
+            // embedder invokes it (`--embedder-runs-start`, #1046); the two
+            // are never both set.
             let mut roots: std::collections::BTreeSet<u32> = module
                 .functions
                 .iter()
@@ -6806,10 +6970,21 @@ fn compile_all_exports(
             // #1746: every other export name of this index; `name` is the
             // primary only when the function is exported (an internal callee
             // has neither).
-            export_aliases: if func.export_name.is_some() {
-                func.export_aliases.clone()
-            } else {
-                Vec::new()
+            // P3-BUILTINS I0 (#1046): the embedder-invoked start function also
+            // gets the GLOBAL `__synth_start`, written beside the export names
+            // by the same loop (whether or not it is exported). Only ever set
+            // on the ARM relocatable path, which is the only writer that
+            // reaches it, and only for the single module (module 0).
+            export_aliases: {
+                let mut aliases = if func.export_name.is_some() {
+                    func.export_aliases.clone()
+                } else {
+                    Vec::new()
+                };
+                if embedder_start_function == Some(func.index) && origin.module == 0 {
+                    aliases.push(EMBEDDER_START_SYMBOL.to_string());
+                }
+                aliases
             },
             exported: func.export_name.is_some(),
             // #394 Tier-1.x: thread the `name`-section name through for the
@@ -6930,6 +7105,22 @@ fn compile_all_exports(
         anyhow::bail!(
             "no functions compiled successfully ({} skipped) — nothing to emit",
             skipped_funcs.len()
+        );
+    }
+    // P3-BUILTINS I0 (#1046): the embedder is obliged to call `__synth_start`,
+    // so an object without it is not a partial object but a broken contract.
+    // If the start function was declined, refuse whatever
+    // `--allow-skipped-exports` says (the #1102 reasoning: that flag accepts
+    // a missing entry point, never a missing instantiation step).
+    if let Some(idx) = embedder_start_function
+        && !compiled_funcs
+            .iter()
+            .any(|f| f.export_aliases.iter().any(|a| a == EMBEDDER_START_SYMBOL))
+    {
+        anyhow::bail!(
+            "--embedder-runs-start: the start function (function index {idx}) was not \
+             compiled (see the skip diagnostics above), so the object would lack the \
+             __synth_start the embedder must call; refusing (#1046)"
         );
     }
 
@@ -7268,6 +7459,14 @@ fn compile_all_exports(
             accepted_start_function.unwrap_or(0)
         );
     }
+    // P3-BUILTINS I0 (#1046): `--embedder-runs-start` was accepted only for an
+    // ARM relocatable object (checked at decode); `__synth_start` is written
+    // by the ARM relocatable writer alone, so any other outcome is a bug.
+    anyhow::ensure!(
+        embedder_start_function.is_none() || (produced_relocatable && !is_riscv && !is_aarch64),
+        "internal: --embedder-runs-start accepted a start function, but this compile \
+         is not producing an ARM relocatable object (#1046)"
+    );
 
     // #687: imported functions force ET_REL output (host-linked), where the
     // linker script owns the stack/linmem layout — only detectable here, after

@@ -270,7 +270,7 @@ Per-call re-establishment is therefore unnecessary but harmless.
   worst case over the call tree, not an observation like DWT or stack
   colouring.
 
-## Initialization obligations (the two `--embedder-*` promises)
+## Initialization obligations (the three `--embedder-*` promises)
 
 Emitted code assumes, before any export runs:
 
@@ -281,11 +281,50 @@ Emitted code assumes, before any export runs:
   `R9 + slot_offset` (declared by `--embedder-global-init`; without the flag
   a module with nonzero/non-const initializers refuses, `main.rs:361-376`).
   All-zero initializers need no seeding beyond a zeroed table.
+- **Start function run** (declared by `--embedder-runs-start`, P3-BUILTINS
+  I0, #1046): see the next subsection. Without the flag a module with a
+  `(start ...)` section refuses on this path (#1046).
 
-Both flags are byte-invisible in the object — they convert a refusal into an
-acknowledged contract; nothing in the artifact can verify the embedder kept
-the promise. The observed failure mode for a broken promise is zeros (or
+The first two flags are byte-invisible in the object — they convert a refusal
+into an acknowledged contract; nothing in the artifact can verify the embedder
+kept the promise. The observed failure mode for a broken promise is zeros (or
 whatever the region holds), not a trap.
+
+### The start function: `--embedder-runs-start` (#1046)
+
+WASM Core §4.5.5 runs a module's start function at instantiation, before any
+export is callable. A relocatable object has no startup of its own, so
+without the flag synth refuses such a module (#1046): the start function's
+code would not be in the object, and nothing would call it. With
+`--embedder-runs-start` the object compiles the start function (and every
+function it calls) and defines it as the GLOBAL `STT_FUNC` symbol
+`__synth_start`, at the start function's address and size, beside any export
+name it already has (meld's `_initialize`, for example) and beside its
+file-local `func_N` label. The contract:
+
+**The embedder MUST call `__synth_start` exactly once per instance, after
+R11, R10 and R9 hold their contract values and after the data segments and
+globals above are in place, and before any export runs.** It is an AAPCS
+function taking no arguments and returning nothing; it may call imports and
+clobbers what any export may clobber. Calling it twice re-runs the module's
+initialization, and not calling it leaves every export reading the state the
+start function was meant to establish.
+
+Unlike the first two flags, this one changes the object: it adds the one
+`__synth_start` symbol and, when the start function is reached from nothing
+else, its body. Compiles without the flag are byte-identical to before. The
+flag is REFUSED, with a message naming the reason, for a module with no
+start section (there would be no symbol to call), an imported start function
+(no body in the object), a self-contained image (the Cortex-M Reset_Handler
+already calls the start function, #1017; an A32 image has no embedder), the
+single-function path, a multi-module `.wast`, and the RISC-V and AArch64
+backends (their contracts define no start symbol, so they keep the #1046
+refusal). A start function the backend declines is refused too, even under
+`--allow-skipped-exports`, because the object would lack the symbol the
+embedder must call. The hosted execution oracle
+(`crates/synth-oracle/tests/embedder_runs_start_oracle.rs`) calls
+`__synth_start` and then the exports, and compares with kiln, which runs the
+start function at instantiation.
 
 ## `call_indirect`, extra memories, symbols
 
@@ -311,7 +350,9 @@ whatever the region holds), not a trap.
   contract — including the MPU obligation it exists for — is the
   "Multi-memory region table" section below.
 - **Symbols:** every function is exported twice at the same address
-  (`func_N` and, for exports, the wasm export name); imported functions
+  (`func_N` and, for exports, the wasm export name; under
+  `--embedder-runs-start` the start function also carries the GLOBAL
+  `__synth_start`, above); imported functions
   become direct `func_N` BLs rewritten to the wasm field name, resolved by
   the linker (`arm_backend.rs:517-520`, #197). That is the ONLY way an
   import is called: a direct AAPCS `bl <bare field name>` — arguments in
