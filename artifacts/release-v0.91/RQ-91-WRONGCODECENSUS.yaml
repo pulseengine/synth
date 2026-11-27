@@ -1,0 +1,130 @@
+artifacts:
+  - id: RQ-91-WRONGCODECENSUS
+    type: system-req
+    release: v0.91
+    status: implemented
+    title: "A re-runnable census of the open wrong-code issues, each row with an executed or read-off status"
+    description: >
+        BET A, STEP 1 of the v0.92 plan ("wrong code, with a number"): the
+        week-one census. Homed in v0.91 because the release that carries the
+        local lane stack is undecided; it can be re-homed.
+
+        WHAT WAS COUNTED. All 88 issues open at the population snapshot
+        (2026-11-20T00:34:42Z, `gh issue list --repo pulseengine/synth
+        --state open --limit 300`, highest #1755), and the 9 issues filed
+        after it that were open at the re-measurement on 2026-11-27 (#1758,
+        #1761, #1762, #1763, #1769, #1785, #1786, #1789, #1798), were read in
+        full, not by title, and each was put in exactly one class: wrong-code
+        (exit 0 and the output is wrong: a value, a call binding, a spurious
+        trap, an instruction the declared target cannot execute, or an export
+        silently dropped from the object), loud decline or missing feature,
+        machinery/docs/tooling, unclear (no defined right answer: #1207 is an
+        invalid module, #1450 a return convention no contract states), or no
+        output (#1769, a compile that allocates without bound). 40 of the 97
+        are wrong-code (35 at the snapshot, 5 filed since: #1758, #1761,
+        #1762, #1763, #1789). An issue closed since the snapshot keeps its
+        row, which still asserts its status. The population is a typed list,
+        because a test may not reach the network; a new issue needs a row,
+        and the oracle-kiln workflow reds when an open issue titled as wrong
+        code is not in the census (run locally on 2026-11-27: rc 0, and rc 1
+        with the #1789 row removed).
+
+        WHAT WAS MEASURED. Each wrong-code issue's own repro was run on main
+        cc36ff38 (first measured on 16700da6). The result is LIVE-WRONG,
+        FIXED, NOW-DECLINES or CANNOT-REPRO. The census is the Rust test
+        crates/synth-oracle/tests/wrong_code_census.rs. Thirty-four rows are
+        measured in the test: 25 run the issue's repro on kiln and on unicorn,
+        3 (#1745, #1747, #1763) run on a unicorn arm64 runner against kiln,
+        and 6 read the property the issue names (a binding, an ISA extension
+        and e_flags, dropped export symbols, a refusal's named diagnostic, a
+        library encoding). Every measured row asserts its status exactly,
+        both ways, and a result it cannot decide reds as RE-MEASURE, never as
+        FIXED. Six rows (#1568, #1604, #1661, #1672, #1676, #1684) need linear
+        memory and a link step; they cite the CI-wired scripts/repro oracle,
+        which the test does NOT re-run: it checks the oracle is wired and
+        still pins the row's result (the exact --expect line, the named
+        refusal, or the executed-comparison floor). The markdown table in
+        docs/status/WRONG_CODE_CENSUS.md is generated from the rows and
+        checked byte-for-byte without the engines, in the workspace Test job.
+
+        HARNESS. The exec rows use main's synth-oracle as it is. An ARM call
+        whose module has imports or a memory, or whose export carries a
+        relocation, runs on the hosted emulator (synth_oracle::run_hosted, one
+        fresh image per call, memory 0 at 0x20010000): each import call is
+        linked to a stub by its field name, kiln and the stub get the same
+        host function, the stub clobbers R0-R3 and R12, and a call agrees only
+        when values AND host-call traces are equal. Every other call runs on
+        synth_oracle::run_case. The lane's earlier EmuConfig::stubs linker is
+        not carried: main's hosted emulator replaced it. exec_paths_can_red
+        shows run_case on ARM and RV32, hosted with an internal call, and
+        hosted with an import (a value mismatch and a trace-only mismatch)
+        each measuring LIVE-WRONG on a compiled body that differs from the
+        reference's. The controls test still shows #1696, #1699, #1754 and
+        #1755 agreeing on the paths their issues name as correct.
+
+        RESULT on cc36ff38: LIVE-WRONG 0, FIXED 32, NOW-DECLINES 8,
+        CANNOT-REPRO 0; LIVE-WRONG on cortex-m4 with default flags 0. On
+        16700da6 it was LIVE-WRONG 8 (#1696, #1699, #1744, #1745, #1746,
+        #1752, #1754, #1755), FIXED 21, NOW-DECLINES 6 over 35 rows. Moved:
+        #1696, #1699, #1745, #1746, #1754, #1755 to FIXED and #1752 to
+        NOW-DECLINES by 0213a5a0 (#1767); #1744 to NOW-DECLINES by 0efe82af
+        (#1792). Added FIXED: #1758 by 0213a5a0 (#1767); #1761, #1762, #1763
+        by c2544ec9 (#1780); #1789 by 7aea43d1 (#1791). The plan's kill
+        threshold (more than a quarter of the rows no-oracle or
+        not-reproduced) is not reached: 0 of 40.
+
+        CLOSURE CANDIDATES. The FIXED and NOW-DECLINES rows whose issue is
+        still open are fixed on main, because closure is release-based.
+        Nothing was closed and nothing was posted. #1691's reporter
+        attachment must be re-run before it is closed on this row.
+
+        REFUTING COMMAND, to be RUN BEFORE building on this artifact:
+        `SYNTH=./target/debug/synth cargo test -p synth-oracle --features exec
+        --test wrong_code_census -- --nocapture`. A failing test, or a summary
+        line other than `WRONG-CODE CENSUS: 34 rows measured: 0 LIVE-WRONG, 30
+        FIXED, 4 NOW-DECLINES; 6 rows cited`, refutes it.
+    tags:
+      - oracle
+      - verification
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      issue: "#1741"
+      verification-track: execution
+      issue-scope: outlives
+      done-when: >
+        manual:2027-03-31 every open wrong-code issue has a census row with an
+        executed, read-off or cited-oracle status on a named commit, produced
+        by one command and re-run at the tag; the markdown table is generated
+        from the rows and checked.
+      landed: "v0.91 WRONGCODECENSUS - #1741 - DELIVERED: crates/synth-oracle/tests/wrong_code_census.rs (40 rows: 34 measured in the test, 6 cited and checked wired) on main synth-oracle harness (run_case and the hosted emulator), and the generated table docs/status/WRONG_CODE_CENSUS.md, run by the oracle-kiln job."
+      verified-by: >
+        DELIVERED, execution-verified on main cc36ff38. Exec rows: every call
+        agrees with kiln on all 25 exec rows (#1205 351 calls, #1716 234,
+        #1721 234, #1755 118, #1699 118, #1691 98 over the issue's own
+        fixture, #1758 17, #1761 10, #1789 5, and others). arm64: #1745,
+        #1747 and #1763 agree with kiln. Structural: #1746 finds every alias
+        on ARM, RV32 and AArch64; #1744 and #1752 refuse naming the profile
+        and #1752; #1191 and #1698 refuse naming their issue; #1677 reads the
+        CMSIS SIZE values. PAIRED CONTROL (the committed test, SYNTH pointed
+        at a binary built at each fix and at its parent): at da612ca1, the
+        parent of 0213a5a0, #1696 13 of 13, #1755 118 of 118, #1754 4 of 6,
+        #1758 4 of 17 calls are wrong, #1746 and #1752 read LIVE, and #1699's
+        object still calls __meld_dispatch_import, which the hosted emulator
+        refuses (118 of 118 with harness errors counted wrong, in a scratch
+        copy of the test; the committed test panics, RE-MEASURE). At
+        79256e1c, the parent of c2544ec9, #1761 4 of 10 and #1762 13 of 13
+        calls are wrong and #1763 reads LIVE; at c2544ec9 all three hold.
+        At 064b3ed6, the parent of 7aea43d1, #1789 4 of 5 calls are wrong;
+        at 7aea43d1 it holds. At 2ab45034, the parent of 0efe82af, #1744
+        reads LIVE (an M instruction on rv32i); at 0efe82af the whole test
+        passes with the summary line above. Not paired: #1745 is a library
+        API linked into the test binary, so a SYNTH swap does not reach it;
+        its attribution is 0213a5a0's own record. The first census commit's
+        paired control (a v0.90.0 build reds on 15 FIXED rows) is unchanged.
+        WHY outlives: #1741 is the
+        support-level push; the census is the population Bet A's count is
+        measured against, and it raises no backend's level.

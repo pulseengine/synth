@@ -59,6 +59,39 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # RQ-91-WRONGCODECENSUS (Refs #1741): the census population is typed
+      # in crates/synth-oracle/tests/wrong_code_census.rs (a test may not
+      # reach the network). This step reds when an OPEN issue whose TITLE
+      # says wrong code is in neither the census table nor its classified
+      # not-wrong-code lists (docs/status/WRONG_CODE_CENSUS.md); #1230, "a
+      # caught would-be miscompile", is a decline and is listed as one. It
+      # sees titles only: an issue reporting wrong code under another title
+      # still needs a row by review. An API failure or an empty result is a
+      # failure, never a pass (a vacuous population).
+      - name: Wrong-code census covers every open wrong-code-titled issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          q='repo:pulseengine/synth+is:issue+is:open+in:title+miscompile+OR+%22wrong+value%22+OR+%22wrong+code%22+OR+%22wrong+result%22'
+          body=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/search/issues?q=$q&per_page=100")
+          nums=$(printf '%s' "$body" | grep -oE '"html_url": *"https://github.com/pulseengine/synth/issues/[0-9]+"' \
+            | grep -oE '[0-9]+"$' | tr -d '"' | sort -un)
+          test -n "$nums" || { echo "no wrong-code-titled open issue found: the query or the API is broken"; exit 1; }
+          missing=0
+          for n in $nums; do
+            if grep -qE "^\| #$n \|" docs/status/WRONG_CODE_CENSUS.md; then
+              echo "row: #$n"
+            elif grep -qE "^- [a-z /]+: .*#$n(,|\$)" docs/status/WRONG_CODE_CENSUS.md; then
+              echo "classified not wrong-code: #$n"
+            else
+              echo "::error::open issue #$n is titled as wrong code and is not in the census"
+              missing=1
+            fi
+          done
+          exit $missing
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: 1.100.0
@@ -322,3 +355,14 @@ jobs:
           grep -qE '(^|\.\.\. )ORACLE rv32-reach-1724-review: 171 cases agree over 19 functions, 177 host calls matched$' "$log"
           # Its result line is the second "4 passed; 0 failed; 0 ignored"
           # pinned above (float_local_1763 is the first).
+          # RQ-91-WRONGCODECENSUS (Refs #1741; tests/wrong_code_census.rs):
+          # the wrong-code census measured every exec, arm64 and structural row
+          # and each held its recorded status; the six cited rows are checked
+          # offline by the same test. Re-measured on main cc36ff38: 0 rows
+          # LIVE-WRONG, so exec_paths_can_red is what shows each exec path can
+          # still measure one.
+          grep -qE '(^|\.\.\. )WRONG-CODE CENSUS: 34 rows measured: 0 LIVE-WRONG, 30 FIXED, 4 NOW-DECLINES; 6 rows cited$' "$log"
+          grep -qx 'test measured::exec_paths_can_red ... ok' "$log"
+          # tests/wrong_code_census.rs is the only test binary that reports 7
+          # passed (measured on the tree restacked onto cc36ff38).
+          test "$(grep -cE '^test result: ok\. 7 passed; 0 failed' "$log")" = 1
