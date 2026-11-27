@@ -242,12 +242,13 @@ jobs:
           grep -qx 'ORACLE import-boundary structural: 12 default-flags objects are byte-identical to --relocatable' "$log"
           grep -qE '^test result: ok\. 13 passed; 0 failed' "$log"
           # v0.92 batch 1: two test binaries report 13 (compile_module_1745,
-          # import_boundary_oracle) and six report 3 (select_home_alias_1754,
+          # import_boundary_oracle) and seven report 3 (select_home_alias_1754,
           # multi_result_export_1450_oracle, target_record, kiln_no_shared_state,
-          # zero_init_wide_local_1762, i64_call_args_1785), and one matching line satisfies
+          # zero_init_wide_local_1762, i64_call_args_1785,
+          # embedder_runs_start_oracle), and one matching line satisfies
           # `grep -q`. Pin how many result lines carry each count.
           test "$(grep -cE '^test result: ok\. 13 passed; 0 failed' "$log")" = 2
-          test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 6
+          test "$(grep -cE '^test result: ok\. 3 passed; 0 failed' "$log")" = 7
           # No kiln state crosses reference runs (memory, globals, tables).
           grep -qx 'test memory_does_not_cross_calls ... ok' "$log"
           grep -qx 'test globals_do_not_cross_calls ... ok' "$log"
@@ -333,6 +334,16 @@ jobs:
           grep -qx 'ORACLE i64-call-args-1785 hosted: 400 steps agree across 4 legs x 10 signatures, 200 host calls matched' "$log"
           grep -qx 'ORACLE i64-call-args-1785 self-contained: 50 steps agree across 10 signatures' "$log"
           grep -qx 'ORACLE i64-call-args-1785 live-across-call: 40 steps agree across 4 legs' "$log"
+          # P3-BUILTINS I0, Refs #1046 / #1786 (tests/embedder_runs_start_oracle.rs):
+          # `--embedder-runs-start` defines the start function as
+          # `__synth_start`; the hosted harness calls it once (the embedder's
+          # instantiation step), then the exports, against kiln, which runs
+          # the start function at instantiation. 5 steps --relocatable and 2
+          # host-linked default-flags steps on cortex-m4, cortex-m3 and
+          # cortex-m7dp. Two potency tests: the object without the symbol is
+          # refused, and the symbol pointed at another function disagrees.
+          # Its result line is a seventh "3 passed".
+          grep -qE '(^|\.\.\. )ORACLE embedder-runs-start: 21 steps agree with kiln across 3 targets$' "$log"
           # RQ-91-RV32ISA: 4 profiles with M x 14 probes + rv32i x 7 base
           # probes, x 100 vectors; rv32i refuses the 7 M probes.
           grep -qE '(^|\.\.\. )ORACLE rv32-isa: 6300 cases agree across 5 profiles, 7 M functions refused$' "$log"

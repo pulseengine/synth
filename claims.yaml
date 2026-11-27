@@ -899,7 +899,7 @@ readme_link_coverage:
 # -----------------------------------------------------------------------------
 repo_metadata:
   repo: pulseengine/synth
-  description: "Synth — transcodes WebAssembly to native ARM Cortex-M/R (Thumb-2/A32), RISC-V RV32 and AArch64 via program synthesis, with mechanized Rocq correctness proofs, per-compilation translation validation, and sound WCET bounds. Part of PulseEngine."
+  description: "WebAssembly in, native out. Synthesized."
   topics:
     - aarch64
     - arm
@@ -6137,6 +6137,36 @@ claims:
         pattern: 'R10 = linear-memory size in BYTES, and R9 = globals-table'
         glob: ['crates/synth-cli/src/main.rs']
         expect: 1
+
+  # P3-BUILTINS I0 (#1046, Refs #1786): the start-function obligation of the
+  # ARM relocatable contract. The doc's MUST sentence is bound to the symbol
+  # the CLI defines, to the self-contained refusal that keeps the flag off
+  # images whose Reset_Handler already runs start (#1017), and to the hosted
+  # oracle that calls the symbol and compares with kiln. Renaming the symbol,
+  # dropping the refusal or deleting the oracle reds this instead of leaving
+  # the doc naming a symbol no object defines.
+  - id: SYNTH-EMBEDDER-RUNS-START-1046
+    doc: docs/embedder-abi-relocatable-arm.md
+    text: "**The embedder MUST call `__synth_start` exactly once per instance, after"
+    evidence:
+      - kind: count-eq                       # the one definition of the name
+        pattern: 'const EMBEDDER_START_SYMBOL: &str = "__synth_start";'
+        glob: ['crates/synth-cli/src/main.rs']
+        expect: 1
+      - kind: count-eq                       # the harness calls the same name
+        pattern: 'pub const START_SYMBOL: &str = "__synth_start";'
+        glob: ['crates/synth-oracle/src/hosted.rs']
+        expect: 1
+      - kind: count-eq                       # refused on a self-contained image
+        pattern: '--embedder-runs-start is refused on a self-contained image'
+        glob: ['crates/synth-cli/src/main.rs']
+        expect: 1
+      - kind: count-eq                       # the flag is a real CLI flag
+        pattern: '^        embedder_runs_start: bool,$'
+        glob: ['crates/synth-cli/src/main.rs']
+        expect: 1
+      - kind: file-exists                    # the execution oracle exists
+        path: crates/synth-oracle/tests/embedder_runs_start_oracle.rs
 
   # RQ-64-ARM64LINUX: the AArch64 counterpart. `-b aarch64 --relocatable` is a
   # SysV ELF64 ET_REL that a stock host linker turns into a normal arm64-Linux

@@ -267,6 +267,18 @@ pub fn function_imports(wasm: &[u8]) -> Result<Vec<FuncImport>, String> {
 /// A module that needs one of those would be judged on state the embedder
 /// never set up, so it is refused instead.
 pub fn uninstantiated_state(wasm: &[u8]) -> Result<Option<&'static str>, String> {
+    uninstantiated_state_with(wasm, false)
+}
+
+/// [`uninstantiated_state`], except that a start section is NOT reported when
+/// `start_runs` is true: the hosted harness runs the start function itself
+/// when the object defines `__synth_start` (`--embedder-runs-start`, #1046).
+/// Every other piece of state is still reported, including one declared after
+/// the start section (an element or data segment).
+pub fn uninstantiated_state_with(
+    wasm: &[u8],
+    start_runs: bool,
+) -> Result<Option<&'static str>, String> {
     use wasmparser::{Parser, Payload, TypeRef};
     let mut memories = 0u32;
     for payload in Parser::new(0).parse_all(wasm) {
@@ -277,7 +289,7 @@ pub fn uninstantiated_state(wasm: &[u8]) -> Result<Option<&'static str>, String>
             Payload::ElementSection(r) if r.count() > 0 => {
                 return Ok(Some("an element segment"));
             }
-            Payload::StartSection { .. } => return Ok(Some("a start function")),
+            Payload::StartSection { .. } if !start_runs => return Ok(Some("a start function")),
             Payload::MemorySection(r) => {
                 memories += r.count();
             }
@@ -294,6 +306,17 @@ pub fn uninstantiated_state(wasm: &[u8]) -> Result<Option<&'static str>, String>
     }
     if memories > 1 {
         return Ok(Some("more than one memory"));
+    }
+    Ok(None)
+}
+
+/// The module's start function index, if it declares a start section.
+pub fn start_function(wasm: &[u8]) -> Result<Option<u32>, String> {
+    use wasmparser::{Parser, Payload};
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::StartSection { func, .. } = payload.map_err(|e| e.to_string())? {
+            return Ok(Some(func));
+        }
     }
     Ok(None)
 }

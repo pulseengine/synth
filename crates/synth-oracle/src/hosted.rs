@@ -38,6 +38,15 @@
 //! - **Sequences.** One image runs several calls; linear memory persists
 //!   between them, so a store through one export is read through another.
 //!
+//! - **The start function** (Refs #1046, #1786). A module with a `(start
+//!   ...)` section is linked only when the object defines the GLOBAL
+//!   `__synth_start` (`synth compile --embedder-runs-start`). Then [`Hosted::link`]
+//!   plays the embedder's instantiation step: it calls `__synth_start` once,
+//!   under the same register contract as an export, before any export can
+//!   run, and fails the link unless it returns cleanly. kiln runs the start
+//!   function at instantiation, so the two engines start every sequence from
+//!   the same state. Without the symbol the module is refused as before.
+//!
 //! A stub reads stack-passed arguments too (Refs #1785: the full base-AAPCS
 //! layout, 8-aligned i64 slots, no register back-fill) and fails the run when
 //! SP is not 8-byte aligned at the call.
@@ -61,8 +70,12 @@ use crate::reference::{HostCall, HostFn, Imports};
 use crate::synth::{CompiledObject, Machine, R_ARM_THM_CALL, patch_thm_call};
 use crate::value::{
     FuncImport, Signature, ValType, WasmValue, export_signature, function_imports,
-    memory0_initial_bytes, uninstantiated_state,
+    memory0_initial_bytes, start_function, uninstantiated_state_with,
 };
+
+/// The symbol `synth compile --embedder-runs-start` defines for the module's
+/// start function, which the embedder calls once before any export (#1046).
+pub const START_SYMBOL: &str = "__synth_start";
 
 /// Where the host stubs live: one `bx lr` every [`STUB_STRIDE`] bytes.
 pub const STUB_BASE: u64 = 0x0050_0000;
@@ -238,7 +251,11 @@ impl Hosted {
                 cpu: cfg.cpu,
             });
         }
-        if let Some(what) = uninstantiated_state(wasm).map_err(EmuError::Abi)? {
+        // A start function is instantiation state the harness CAN set up,
+        // but only through the symbol the embedder contract names.
+        let start = start_function(wasm).map_err(EmuError::Abi)?;
+        let runs_start = start.is_some() && obj.func(START_SYMBOL).is_some_and(|f| f.global);
+        if let Some(what) = uninstantiated_state_with(wasm, runs_start).map_err(EmuError::Abi)? {
             return Err(EmuError::Uninstantiated(what));
         }
         let func_imports = function_imports(wasm).map_err(EmuError::Abi)?;
@@ -532,7 +549,7 @@ impl Hosted {
             "add_intr_hook",
         )?;
 
-        Ok(Self {
+        let mut image = Self {
             emu,
             wasm: wasm.to_vec(),
             obj: obj.clone(),
@@ -542,7 +559,25 @@ impl Hosted {
             r11,
             budget: cfg.budget,
             cpu_model_readback: readback,
-        })
+        };
+        // The embedder's instantiation step (docs/embedder-abi-relocatable-arm.md):
+        // `__synth_start` once, after R11/R10/R9 and before any export.
+        if runs_start {
+            let void = Signature {
+                params: vec![],
+                results: vec![],
+            };
+            let run = image.call_symbol(START_SYMBOL, &void, &[])?;
+            if run.outcome != EmuOutcome::Values(vec![]) {
+                return Err(EmuError::Abi(format!(
+                    "the start function ({START_SYMBOL}, function {}) did not return \
+                     cleanly: {:?}",
+                    start.unwrap_or(0),
+                    run.outcome
+                )));
+            }
+        }
+        Ok(image)
     }
 
     /// How many internal calls have returned, and been checked, on this
@@ -566,6 +601,17 @@ impl Hosted {
     /// memory is left as the previous call left it.
     pub fn call(&mut self, export: &str, args: &[WasmValue]) -> Result<HostedRun, EmuError> {
         let sig = export_signature(&self.wasm, export).map_err(EmuError::Abi)?;
+        self.call_symbol(export, &sig, args)
+    }
+
+    /// Call the object's function symbol `export` with signature `sig`: an
+    /// export by its name, or [`START_SYMBOL`], which is no wasm export.
+    fn call_symbol(
+        &mut self,
+        export: &str,
+        sig: &Signature,
+        args: &[WasmValue],
+    ) -> Result<HostedRun, EmuError> {
         let sym = self
             .obj
             .func(export)
