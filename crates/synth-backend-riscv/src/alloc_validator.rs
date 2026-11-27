@@ -31,7 +31,12 @@
 //!    slot `off(sp)` overwritten by a second `sw` while the first stored value is
 //!    still reloaded downstream corrupts the reload ⇒
 //!    [`RaFinalViolation::SpillSlotAliased`]. Same holder-model the ARM validator
-//!    and `forward_stack_reloads` use.
+//!    and `forward_stack_reloads` use. The frame HOMES of wasm locals and
+//!    params, when the caller names them, are exempt — a home is rewritten at
+//!    every `local.set`, which is a redefinition, not an aliased spill — and
+//!    are checked for pairwise overlap instead
+//!    ([`RaFinalViolation::LocalHomesOverlap`],
+//!    [`validate_final_allocation_rv32_with_homes`]).
 //!
 //! Everything past straight-line — value flow across a `Call`, availability
 //! across a control-flow join — is the ARM *phase-2* frontier, which rests on
@@ -108,6 +113,15 @@ pub enum RaFinalViolation {
         first_store: usize,
         overwriting_store: usize,
         stale_reload: usize,
+    },
+    /// Two wasm locals (or params) were laid out on overlapping frame homes
+    /// `first` and `second` (half-open byte ranges off `sp`) — every write to
+    /// one silently changes the other. This is the aliasing a local's home CAN
+    /// suffer, and the reason homes are exempt from the single-value spill-slot
+    /// rule above: their reference is the layout, not the stream.
+    LocalHomesOverlap {
+        first: std::ops::Range<i32>,
+        second: std::ops::Range<i32>,
     },
 }
 
@@ -199,6 +213,47 @@ fn is_straight_line(op: &RiscVOp) -> bool {
 /// See the module doc for the invariants, the callee-saved-set discipline, and
 /// the phase-2 decline boundary.
 pub fn validate_final_allocation_rv32(instrs: &[RiscVOp]) -> RaFinalVerdict {
+    validate_final_allocation_rv32_with_homes(instrs, &[])
+}
+
+/// [`validate_final_allocation_rv32`] with the frame HOMES of the function's
+/// wasm locals and params named (`RiscVSelection::local_homes`).
+///
+/// The spill-slot rule (invariant 2) rests on "a slot holds ONE value between
+/// its store and its reload". That holds for the register-preservation slots
+/// (`save_regs_to_frame`, #1717/#1724), whose store/reload pair is complete
+/// inside one op's lowering, and it is FALSE for a wasm local's permanent
+/// home: the selector emits a `sw` at every `local.set`/`local.tee` (and the
+/// #457/#990 entry zero-init) and a `lw` at every `local.get`, so
+/// `local.set 1; local.set 1; local.get 1` is a correct redefinition that the
+/// holder model reports as an aliased spill. That refused a correct function
+/// (`core::fmt::num::<impl Display for i32>::fmt` in a Rust wasip1 hello —
+/// the zero-init of a local followed, in the same segment, by its
+/// `local.tee`). The ARM twin was scoped the same way by #1321.
+///
+/// So offsets inside a home are not policed by invariant 2; every other
+/// offset is, exactly as before (an EXCLUSION list: a slot nobody named stays
+/// policed, so an empty list is the historical check bit for bit). In their
+/// place the homes get the check that DOES describe their aliasing: no two
+/// homes may overlap ([`RaFinalViolation::LocalHomesOverlap`]).
+pub fn validate_final_allocation_rv32_with_homes(
+    instrs: &[RiscVOp],
+    local_homes: &[std::ops::Range<i32>],
+) -> RaFinalVerdict {
+    // ---- Invariant 0: local homes are pairwise disjoint ------------------
+    let mut sorted: Vec<&std::ops::Range<i32>> =
+        local_homes.iter().filter(|r| !r.is_empty()).collect();
+    sorted.sort_by_key(|r| (r.start, r.end));
+    for w in sorted.windows(2) {
+        if w[1].start < w[0].end {
+            return RaFinalVerdict::Violation(RaFinalViolation::LocalHomesOverlap {
+                first: w[0].clone(),
+                second: w[1].clone(),
+            });
+        }
+    }
+    let is_home = |slot: i32| local_homes.iter().any(|r| r.contains(&slot));
+
     // ---- Invariant 1: callee-saved preservation, whole-function ----------
     //
     // Collect the prologue save-set: every `sw s_k, off(sp)` BEFORE the first
@@ -309,6 +364,15 @@ pub fn validate_final_allocation_rv32(instrs: &[RiscVOp]) -> RaFinalVerdict {
             // A frame-pointer / sp adjust invalidates every slot name.
             if let RiscVOp::Addi { rd: Reg::SP, .. } = &instrs[i] {
                 slots.clear();
+                i += 1;
+                continue;
+            }
+            // A wasm local's home: repeated stores are redefinitions, not
+            // aliased spills (see `validate_final_allocation_rv32_with_homes`).
+            if let Some((slot, rd)) = sp_slot_store(&instrs[i]).or_else(|| sp_slot_load(&instrs[i]))
+                && rd != Reg::SP
+                && is_home(slot)
+            {
                 i += 1;
                 continue;
             }
@@ -745,6 +809,94 @@ mod tests {
         assert_eq!(
             validate_final_allocation_rv32(&body),
             RaFinalVerdict::Violation(RaFinalViolation::CalleeSavedNotSaved { reg: Reg::S2 }),
+        );
+    }
+
+    // ── A wasm local's frame HOME is a redefinition site, not a spill slot ──
+    // `sw A -> 4; sw B -> 4; lw 4` is the aliased-spill shape above, and it is
+    // also exactly what `local.set 1; local.set 1; local.get 1` lowers to when
+    // local 1 lives at offset 4. Naming the home exempts it; a slot nobody
+    // named is still policed, and the homes get an overlap check instead.
+    fn store_store_reload(slot: i32) -> Vec<RiscVOp> {
+        vec![
+            Sw {
+                rs1: Reg::SP,
+                rs2: Reg::T0,
+                imm: slot,
+            },
+            Sw {
+                rs1: Reg::SP,
+                rs2: Reg::T1,
+                imm: slot,
+            },
+            Lw {
+                rd: Reg::T2,
+                rs1: Reg::SP,
+                imm: slot,
+            },
+            Jalr {
+                rd: Reg::ZERO,
+                rs1: Reg::RA,
+                imm: 0,
+            },
+        ]
+    }
+
+    #[test]
+    fn ra003rv_local_home_redefinition_is_consistent() {
+        let body = store_store_reload(4);
+        assert_eq!(
+            validate_final_allocation_rv32_with_homes(&body, &[0..4, 4..8]),
+            RaFinalVerdict::Consistent
+        );
+        // An i64 home covers both words.
+        let hi = store_store_reload(12);
+        assert_eq!(
+            validate_final_allocation_rv32_with_homes(&hi, &[0..4, 8..16]),
+            RaFinalVerdict::Consistent
+        );
+    }
+
+    #[test]
+    fn ra003rv_slot_outside_every_home_is_still_policed() {
+        // Homes named, but slot 8 (a preservation slot past them) is not one:
+        // the single-value rule applies there exactly as with no homes.
+        let body = store_store_reload(8);
+        let want = RaFinalVerdict::Violation(RaFinalViolation::SpillSlotAliased {
+            slot: 8,
+            first_store: 0,
+            overwriting_store: 1,
+            stale_reload: 2,
+        });
+        assert_eq!(
+            validate_final_allocation_rv32_with_homes(&body, &[0..4, 4..8]),
+            want
+        );
+        assert_eq!(validate_final_allocation_rv32_with_homes(&body, &[]), want);
+        assert_eq!(validate_final_allocation_rv32(&body), want);
+    }
+
+    #[test]
+    fn ra003rv_overlapping_local_homes_are_a_violation() {
+        let body = store_store_reload(0);
+        assert_eq!(
+            validate_final_allocation_rv32_with_homes(&body, &[0..8, 4..8]),
+            RaFinalVerdict::Violation(RaFinalViolation::LocalHomesOverlap {
+                first: 0..8,
+                second: 4..8,
+            })
+        );
+        // Order of the list does not matter; adjacency is not overlap.
+        assert_eq!(
+            validate_final_allocation_rv32_with_homes(&body, &[8..12, 4..12, 0..4]),
+            RaFinalVerdict::Violation(RaFinalViolation::LocalHomesOverlap {
+                first: 4..12,
+                second: 8..12,
+            })
+        );
+        assert_eq!(
+            validate_final_allocation_rv32_with_homes(&body, &[4..8, 0..4]),
+            RaFinalVerdict::Consistent
         );
     }
 }

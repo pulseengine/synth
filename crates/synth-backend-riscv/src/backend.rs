@@ -462,7 +462,10 @@ fn compile_function_with_opts(
     // machinery yet) is NON-FATAL: the two straight-line invariants still ran and
     // held; only the past-straight-line reasoning is declined (decline > guess).
     // Frozen-safe: it emits nothing, so RV32 `.text` is byte-identical.
-    match crate::alloc_validator::validate_final_allocation_rv32(&selection.ops) {
+    match crate::alloc_validator::validate_final_allocation_rv32_with_homes(
+        &selection.ops,
+        &selection.local_homes,
+    ) {
         crate::alloc_validator::RaFinalVerdict::Violation(v) => {
             return Err(BackendError::CompilationFailed(format!(
                 "VCR-RA-003 (RV32): register-allocation validation FAILED — {v:?}. \

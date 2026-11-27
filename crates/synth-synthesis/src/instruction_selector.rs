@@ -2185,21 +2185,21 @@ struct LocalLayout {
 ///   the write, and a then-arm write alone is skipped when the condition is
 ///   false.
 ///
-/// The propagation cases matter for more than code size: an over-eager
-/// zero-init ahead of a straight-line dominating store is a DEAD STORE in
-/// the same straight-line segment, which the VCR-RA-003 spill-slot holder
-/// model (`alloc_validator.rs`, both backends) rightly refuses as an
-/// unconsumed-owner overwrite — the first draft of this fix tripped it on
-/// RV32 (`guard_same_block`). Precision here keeps the validator strict
-/// instead of teaching it an exemption. Where the walk still
-/// over-approximates (a write under a `br_if` read back only under the same
-/// condition, say), zeroing a non-param local at entry is exactly the
-/// wasm-mandated initial state — a false positive costs bytes, a false
-/// negative is #990 — and every such residual zero-init sits in a different
-/// straight-line segment from the conditional store (the branch that makes
-/// the store conditional is the segment break), so it never re-creates the
-/// dead-store shape. `pub` because the RV32 selector drives its frame-slot
-/// zero-init from the same set (measured RED there too before #990).
+/// The propagation cases matter for code size: an over-eager zero-init
+/// ahead of a dominating store is a DEAD STORE. It is not a soundness
+/// matter: the VCR-RA-003 refusal it once drew on RV32 (`guard_same_block`)
+/// was the validator policing a local's frame HOME as a single-value spill
+/// slot, and `local.set 1; local.set 1; local.get 1` refused the same way
+/// with no zero-init at all. RV32 now exempts named homes and checks them for
+/// overlap (`validate_final_allocation_rv32_with_homes`); ARM scopes the
+/// check to the spill areas its selector names (#1321). Zeroing a non-param
+/// local at entry is the wasm-mandated initial state — a false positive
+/// costs bytes, a false negative is #990. A residual can share a segment
+/// with the store it precedes: a write in a `br`-targeted `block` before its
+/// first branch (all the block's writes are dropped at `End`), as in
+/// `<i32 as Display>::fmt`. `pub` because the RV32 selector drives its
+/// frame-slot zero-init from the same set (measured RED there too before
+/// #990).
 pub fn read_before_write_locals(
     wasm_ops: &[WasmOp],
     num_params: u32,

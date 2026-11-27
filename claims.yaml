@@ -3915,9 +3915,26 @@ claims:
       - kind: ratchet
         name: rv32_selector_lines_code
         direction: down
-        value: 6629
+        value: 6636
         baseline: 6242
         waivers:
+          - to: 6636
+            reason: >-
+              VCR-RA-003 RV32 local homes: 6629 -> 6636 (+7). The selector now
+              hands the validator the frame homes of its frame-resident locals
+              and params (`RiscVSelection::local_homes`, read off the existing
+              `local_offsets` layout), so the spill-slot rule stops policing a
+              home — written at every `local.set`, so `local.set 1; local.set 1;
+              local.get 1` was refused as `SpillSlotAliased` — and the homes are
+              checked for overlap instead. No emitted byte changes (278 tracked
+              .wat/.wasm inputs under -b riscv --relocatable: 148 identical
+              objects, 130 identical refusals, 0 differ, against 56ccaa34); func
+              218 of a Rust wasip1 hello world compiles. Red on 56ccaa34 and green
+              here in crates/synth-backend-riscv/tests/local_home_redefinition_ra003.rs
+              and crates/synth-oracle/tests/rv32_local_home_redef_ra003.rs (kiln vs
+              unicorn, memory byte-compared, potency: the local's second store
+              moved off its home is caught). No hand-written arm was replaced by a
+              verified rule, so none could be deleted.
           - to: 6629
             reason: >-
               RV32REACH (Refs #1254, #1724): 6601 -> 6629 (+28). Two loud
