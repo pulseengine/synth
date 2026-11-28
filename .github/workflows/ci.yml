@@ -5296,9 +5296,10 @@ jobs:
           # it was already being executed, just with a wrong expectation).
           # The ten frozen silent-wrong vectors above are untouched: they
           # are this oracle's potency evidence and do not move when a fix
-          # lands.
+          # lands. v0.92 plan B step 1 (#851): 999 -> 1005, because aarch64
+          # now compiles and executes `copy`, `fill` and `p_fill`.
           grep -Eq '^known-open vectors: 0 \(of 0\)$' hac1189.txt
-          grep -Eq '^live vectors: 999 matched, 0 diverged$' hac1189.txt
+          grep -Eq '^live vectors: 1005 matched, 0 diverged$' hac1189.txt
           grep -q '^RESULT: PASS' hac1189.txt
       - name: Differential evidence ledger (#910)
         if: always()

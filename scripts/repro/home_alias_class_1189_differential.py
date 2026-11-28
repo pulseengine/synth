@@ -122,7 +122,10 @@ M32, M64 = 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF
 # Measured; every entry is a loud per-function decline under
 # --allow-skipped-exports. Re-derive with --print-skips.
 EXPECTED_SKIPS = {
-    ("i32", "aarch64"): {"brif_fn", "copy", "fill", "ifparam"},
+    # v0.92 plan B step 1 (#851/#374): aarch64 lowers memory.copy/memory.fill
+    # on memory 0, so `copy`, `fill` and `p_fill` left the aarch64 rows; they
+    # now execute in the live half (999 -> 1005 vectors matched).
+    ("i32", "aarch64"): {"brif_fn", "ifparam"},
     ("i32", "arm-self"): {"ifparam"},
     ("i32", "rv32-reloc"): {"b_rotl", "b_rotr", "brif_fn", "copy", "fill", "ifparam",
                             "u_clz", "u_ctz", "u_popcnt"},
@@ -141,7 +144,7 @@ EXPECTED_SKIPS = {
                             "st_i64_store32", "st_i64_store8", "u_clz", "u_ctz", "u_eqz",
                             "u_extend16_s", "u_extend32_s", "u_extend8_s", "u_popcnt",
                             "war64", "wrap"},
-    ("promo", "aarch64"): {"p_brif", "p_fill"},
+    ("promo", "aarch64"): {"p_brif"},
     ("promo", "rv32-reloc"): {"p_brif", "p_fill"},
 }
 
