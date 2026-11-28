@@ -45,7 +45,9 @@
 //! `i32` so `witness run --invoke-with-args` can drive one truth-table row per
 //! invocation.
 
-use synth_backend_riscv::alloc_validator::{RaFinalVerdict, validate_final_allocation_rv32};
+use synth_backend_riscv::alloc_validator::{
+    RaFinalVerdict, validate_final_allocation_rv32, validate_final_allocation_rv32_with_homes,
+};
 use synth_backend_riscv::backend::RiscVBackend;
 use synth_backend_riscv::register::Reg;
 use synth_backend_riscv::riscv_op::RiscVOp;
@@ -581,6 +583,35 @@ pub extern "C" fn ra_validate(shape: i32) -> i32 {
     }
 }
 
+/// The local-home sets `ra_validate_homes` passes (VCR-RA-003, #1803).
+/// Shape 10 stores slot 8 twice and reloads it.
+fn ra_homes(mode: i32) -> Vec<std::ops::Range<i32>> {
+    match mode {
+        // Slot 8 is a local's home (listed out of order, so the overlap
+        // check sorts): the redefinition is exempt.
+        1 => vec![40..44, 8..12],
+        // Homes that do not cover slot 8: the spill-slot rule still applies.
+        2 => vec![100..104, 0..4],
+        // Two homes overlap: `LocalHomesOverlap` before any stream walk.
+        3 => vec![0..12, 4..8],
+        // Adjacent homes plus an empty range (filtered): not an overlap.
+        4 => vec![12..16, 8..12, 20..20],
+        _ => vec![],
+    }
+}
+
+/// Drives `validate_final_allocation_rv32_with_homes` over one shape and one
+/// home set, so the home-exemption and overlap conditions are evaluated both
+/// ways. Same return codes as `ra_validate`.
+#[unsafe(no_mangle)]
+pub extern "C" fn ra_validate_homes(shape: i32, mode: i32) -> i32 {
+    match validate_final_allocation_rv32_with_homes(&ra_shape(shape), &ra_homes(mode)) {
+        RaFinalVerdict::Consistent => 0,
+        RaFinalVerdict::Violation(_) => 1,
+        RaFinalVerdict::NotAttempted { .. } => 2,
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // Class 3 — GUARD EMISSION: the RV32 `--safety-bounds mask` size gate
 //   The #953/#959 sentinel-vs-value class, three consecutive releases. The
@@ -848,5 +879,22 @@ mod tests {
             1,
             "saved but never restored is a violation"
         );
+
+        // VCR-RA-003 (#1803): local homes exempt their own slots only, and
+        // overlapping homes are a violation of their own.
+        assert_eq!(ra_validate(10), 1, "store-store-reload with no homes");
+        assert_eq!(ra_validate_homes(10, 1), 0, "slot 8 is a home: exempt");
+        assert_eq!(
+            ra_validate_homes(10, 2),
+            1,
+            "homes elsewhere: still policed"
+        );
+        assert_eq!(ra_validate_homes(10, 3), 1, "overlapping homes");
+        assert_eq!(
+            ra_validate_homes(10, 4),
+            0,
+            "adjacent homes covering slot 8"
+        );
+        assert_eq!(ra_validate_homes(0, 3), 1, "overlap reds before the walk");
     }
 }

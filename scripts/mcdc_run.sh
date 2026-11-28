@@ -105,6 +105,13 @@ test -f "$WASM" || { echo "error: harness wasm not found at $WASM" >&2; exit 1; 
   --invoke-with-args 'ra_validate:20' \
   --invoke-with-args 'ra_validate:21' \
   --invoke-with-args 'ra_validate:99' \
+  `# validate_final_allocation_rv32_with_homes — local homes (#1803)` \
+  --invoke-with-args 'ra_validate_homes:10,1' \
+  --invoke-with-args 'ra_validate_homes:10,2' \
+  --invoke-with-args 'ra_validate_homes:10,3' \
+  --invoke-with-args 'ra_validate_homes:10,4' \
+  --invoke-with-args 'ra_validate_homes:0,3' \
+  --invoke-with-args 'ra_validate_homes:1,1' \
   `# riscv build_options bounds gate — mem == 0 || !mem.is_power_of_two()` \
   --invoke-with-args 'rv_bounds_gate:2,0' \
   --invoke-with-args 'rv_bounds_gate:2,65536' \

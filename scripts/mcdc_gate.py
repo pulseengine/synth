@@ -479,8 +479,13 @@ BRANCH_POPULATION = {
     "synth_backend_riscv::alloc_validator::is_straight_line": 52,
     "synth_backend_riscv::alloc_validator::sp_slot_load": 2,
     "synth_backend_riscv::alloc_validator::sp_slot_store": 2,
-    "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32": 47,
-    "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32::_$u7b$$u7b$closure$u7d$$u7d$": 2,
+    # VCR-RA-003 (#1803): the validator's body moved into `_with_homes`; the
+    # old name is a one-line wrapper (`_with_homes(instrs, &[])`) inlined away,
+    # so it no longer appears. 47 + 2 -> 58 + 3: the home exemption, the
+    # pairwise overlap check and its sort closure. Harness rows
+    # `ra_validate_homes` drive the new conditions both ways.
+    "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32_with_homes": 58,
+    "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32_with_homes::_$u7b$$u7b$closure$u7d$$u7d$": 3,
     "synth_backend_riscv::backend::build_options": 8,
     # NEW (RQ-89-PAGESIZEAPI, #1339): the RV32 page-size refusal — `log2 ==
     # 16` accepts, otherwise refuse with a message chosen by `log2 == 0`.
