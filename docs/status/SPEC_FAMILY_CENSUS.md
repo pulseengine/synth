@@ -15,7 +15,7 @@ the census's per-family output and its row is pinned by `claims.yaml`
 ## Why this document exists
 
 The census publishes ONE derived figure per backend — `at-least-one-export`,
-currently **43 / 39 / 41** (re-read at v0.89 RQ-89-CENSUSFLOAT; it was
+currently **43 / 39 / 42** (re-read at v0.89 RQ-89-CENSUSFLOAT, aarch64 41 -> 42 at v0.92 plan B step 1; it was
 47 / 43 / 47 when this was written). That number is correct and CI-gated, and it is the
 wrong number to plan from, because it averages two populations that should
 never be averaged: families synth **targets**, and families synth has **never
@@ -27,11 +27,11 @@ implemented**.
 |--------|-------|-----|-------|---------|
 | **MVP core** | 80 | **13** / 19 | **9** / 22 | **21** / 16 |
 | SIMD | 59 | 0 / 0 | 0 / 0 | 0 / 0 |
-| multi-memory | 39 | 1 / 3 | 0 / 2 | 1 / 0 |
+| multi-memory | 39 | 1 / 3 | 0 / 2 | 1 / 1 |
 | reference types | 23 | 0 / 3 | 0 / 3 | 0 / 0 |
 | GC | 16 | 0 / 2 | 0 / 2 | 0 / 0 |
 | memory64 | 14 | 1 / 0 | 0 / 0 | 2 / 0 |
-| bulk memory | 11 | 1 / 0 | 0 / 1 | 0 / 1 |
+| bulk memory | 11 | 1 / 0 | 0 / 1 | 1 / 0 |
 | relaxed SIMD | 7 | 0 / 0 | 0 / 0 | 0 / 0 |
 | exception handling | 4 | 0 / 0 | 0 / 0 | 0 / 0 |
 | tail call | 3 | 0 / 0 | 0 / 0 | 0 / 0 |

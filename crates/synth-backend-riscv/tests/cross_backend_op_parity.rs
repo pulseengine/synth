@@ -975,7 +975,8 @@ fn known_divergences() -> &'static [(&'static str, &'static str)] {
 /// lanes closed `global.get`/`global.set` and `call_indirect` (v0.54),
 /// `br_table` (v0.55, VCR-A64-CF-001) and — this increment, RQ-57-A64PARAM —
 /// WRITING a parameter (`local.set+get(param)`, `local.tee(param)`) via param
-/// homing, leaving the TWO below: both halves of bulk memory. This ledger —
+/// homing, leaving two: both halves of bulk memory, closed in v0.92, so the
+/// ledger is now EMPTY. This ledger —
 /// the COMPLEMENT of what aarch64 lowers — is the mechanically-derived answer
 /// to "what is missing on armv8?" (#851); the float-surface complement lives in
 /// [`a64_extended_surface`].
@@ -1005,16 +1006,15 @@ fn aarch64_known_divergences() -> &'static [(&'static str, &'static str)] {
         //  homing function that declares a FLOAT param still loud-declines (the
         //  slot model is single-register-file) — asserted end-to-end by
         //  scripts/repro/aarch64_m2_decline_538.py.)
-        (
-            "memory.copy",
-            "aarch64 selector has no MemoryCopy arm (loud decline); bulk-memory \
-             (#374) not yet lowered on aarch64 — deferred, #851",
-        ),
-        (
-            "memory.fill",
-            "aarch64 selector has no MemoryFill arm (loud decline); bulk-memory \
-             (#374) not yet lowered on aarch64 — deferred, #851",
-        ),
+        // (memory.copy and memory.fill CLOSED v0.92: the aarch64 selector
+        //  lowers both on memory 0 — both ranges bounds-checked against the
+        //  declared limit before any byte moves under `--safety-bounds
+        //  software`, then a byte loop, downward for `memory.copy` when
+        //  d > s. The stale-entry check forced the deletion. Execution
+        //  oracle against kiln:
+        //  crates/synth-oracle/tests/aarch64_bulk_memory_kiln_oracle.rs.
+        //  The memory-k forms still decline: they arrive wrapped in
+        //  `MultiMemory`, which this ledger classifies StructurallyExcluded.)
     ]
 }
 
@@ -1859,14 +1859,15 @@ fn aarch64_integer_op_parity_851() {
 
     // Non-vacuity floor: the probe must actually exercise the aarch64 selector
     // across the shared integer core. TIGHT — set to the MEASURED count (108
-    // after RQ-57-A64PARAM closed the two param-write divergences), not a round
+    // after RQ-57-A64PARAM closed the two param-write divergences; 110 after
+    // v0.92 closed memory.copy and memory.fill), not a round
     // number well below it. The old `>= 60` was ~half the real figure, so the
     // whole param-write class could have regressed to a decline without the
     // floor noticing; a floor that cannot notice a regression is the vacuous-
     // gate class. Raising this when a NEW divergence is legitimately ledgered is
     // the intended cost — it forces the drop to be looked at rather than absorbed.
     assert!(
-        at_parity >= 108,
+        at_parity >= 110,
         "aarch64 parity leg exercised too few common-core ops ({at_parity}); \
          the classifier or the aarch64 probe construction regressed, or an op \
          that used to reach parity now diverges"
@@ -1937,26 +1938,47 @@ fn aarch64_extended_surface_851() {
     );
 }
 
-/// RED-FIRST non-vacuity proof for the aarch64 leg: drop a KNOWN, REAL
-/// ARM-lowers/aarch64-declines entry from the ledger and assert the gate goes
-/// red — proving [`run_a64_parity`] genuinely detects a one-sided gap on the
-/// real selectors.
+/// RED-FIRST non-vacuity proof for the aarch64 leg, in both directions.
+///
+/// (1) STALE: ledger an op the aarch64 selector LOWERS (`memory.copy`, the
+/// last entry v0.92 deleted) and assert the gate reports it stale — proving
+/// [`run_a64_parity`] genuinely probes that op on both real selectors.
+///
+/// (2) COUNTED: the same op must move exactly one unit out of the at-parity
+/// count when ledgered, so it was compared rather than skipped.
+///
+/// The ledger is empty since v0.92, so the former construction ("drop a real
+/// entry and watch it surface as unexpected") has no entry to drop, and the
+/// UNEXPECTED direction of `run_a64_parity` has no live gap to show it on.
+/// The ARM/RV32 leg's `red_first_unledgered_one_sided_gap_is_caught` covers
+/// the same `(false, None)` shape in its own `run_parity`.
 #[test]
 fn red_first_unledgered_aarch64_gap_is_caught() {
-    let (probe_label, _) = aarch64_known_divergences()[0];
-    let ledger: std::collections::HashMap<&str, &str> = aarch64_known_divergences()
-        .iter()
-        .copied()
-        .filter(|(label, _)| *label != probe_label)
-        .collect();
+    let probe_label = "memory.copy";
+    let ledger: std::collections::HashMap<&str, &str> =
+        [(probe_label, "deliberately stale: the op lowers since v0.92")]
+            .into_iter()
+            .collect();
 
-    let (_at_parity, unexpected, _stale) = run_a64_parity(&ledger);
+    let (_at_parity, unexpected, stale) = run_a64_parity(&ledger);
 
     assert!(
-        unexpected.iter().any(|line| line.contains(probe_label)),
-        "RED-FIRST vacuity check FAILED: dropping the '{probe_label}' ledger \
-         entry did NOT surface it as an unexpected ARM/aarch64 divergence. \
-         unexpected = {unexpected:?}"
+        stale.iter().any(|line| line.contains(probe_label)),
+        "RED-FIRST vacuity check FAILED: ledgering the lowered '{probe_label}' \
+         op did NOT surface it as a stale ARM/aarch64 entry. stale = {stale:?}"
+    );
+    assert!(
+        unexpected.is_empty(),
+        "with an otherwise empty ledger no divergence may surface: {unexpected:?}"
+    );
+
+    let (at_parity_empty, _, _) = run_a64_parity(&std::collections::HashMap::new());
+    let (at_parity_ledgered, _, _) = run_a64_parity(&ledger);
+    assert_eq!(
+        at_parity_empty,
+        at_parity_ledgered + 1,
+        "ledgering '{probe_label}' must move exactly that one op out of the \
+         at-parity count — otherwise the probe never compared it"
     );
 }
 

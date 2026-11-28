@@ -48,7 +48,9 @@ pub mod image;
 pub mod reference;
 
 #[cfg(feature = "exec")]
-pub use run_case::{Case, CaseError, HostedCase, env_for, run_case, run_case_env, run_hosted};
+pub use run_case::{
+    Case, CaseError, HostedCase, env_for, run_case, run_case_env, run_hosted, run_sequence_env,
+};
 
 #[cfg(feature = "exec")]
 mod run_case {
@@ -210,6 +212,65 @@ mod run_case {
         let sig = export_signature(wasm, export).map_err(CaseError::Signature)?;
         let r = reference::run(wasm, export, args, fuel, imports).map_err(CaseError::Reference)?;
         let e = emulate::run_env(obj, export, &sig, args, cfg, env).map_err(CaseError::Emulator)?;
+        Ok(Case {
+            export: export.to_string(),
+            args: args.to_vec(),
+            verdict: env_verdict(&r, &e),
+            reference: r.outcome,
+            host_calls: r.calls,
+            emulator: e.outcome,
+        })
+    }
+
+    /// [`run_case_env`] over a SEQUENCE (v0.92; RV32 and AArch64): `steps`
+    /// run in order on ONE kiln instance, and on the emulator with each
+    /// step's final linear memory carried into the next step's image, so a
+    /// later call sees what an earlier one wrote. Every step is judged as in
+    /// [`run_case_env`] — values or trap, host calls, and the WHOLE memory
+    /// byte for byte, after a trap too.
+    ///
+    /// The sequence ends after the first step where either engine does not
+    /// return values (kiln's instance is not usable past a trap), so the
+    /// result can be shorter than `steps`: a caller that requires every step
+    /// must check the length.
+    pub fn run_sequence_env(
+        wasm: &[u8],
+        obj: &CompiledObject,
+        steps: &[(&str, &[WasmValue])],
+        fuel: u64,
+        imports: &Imports,
+        cfg: &EmuConfig,
+    ) -> Result<Vec<Case>, CaseError> {
+        let refs =
+            reference::run_sequence(wasm, steps, fuel, imports).map_err(CaseError::Reference)?;
+        let mut env = env_for(wasm, imports)?;
+        let mut cases = Vec::new();
+        for ((export, args), r) in steps.iter().zip(refs) {
+            let sig = export_signature(wasm, export).map_err(CaseError::Signature)?;
+            let e = emulate::run_env(obj, export, &sig, args, cfg, &env)
+                .map_err(CaseError::Emulator)?;
+            let v = env_verdict(&r, &e);
+            let stop = !matches!(e.outcome, EmuOutcome::Values(_))
+                || !matches!(r.outcome, RefOutcome::Values(_));
+            env.memory = e.memory.clone();
+            cases.push(Case {
+                export: export.to_string(),
+                args: args.to_vec(),
+                verdict: v,
+                reference: r.outcome,
+                host_calls: r.calls,
+                emulator: e.outcome,
+            });
+            if stop {
+                break;
+            }
+        }
+        Ok(cases)
+    }
+
+    /// The verdict of one environment step: the outcome matrix, then the
+    /// host-call trace, then linear memory (length, then every byte).
+    fn env_verdict(r: &reference::RefRun, e: &emulate::EmuRun) -> Verdict {
         let mut v = verdict(&r.outcome, &e.outcome);
         if v.is_agree() {
             let key = |c: &HostCall| (c.field.clone(), c.args.clone(), c.results.clone());
@@ -232,13 +293,6 @@ mod run_case {
                 ));
             }
         }
-        Ok(Case {
-            export: export.to_string(),
-            args: args.to_vec(),
-            verdict: v,
-            reference: r.outcome,
-            host_calls: r.calls,
-            emulator: e.outcome,
-        })
+        v
     }
 }

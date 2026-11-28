@@ -284,7 +284,13 @@ PINS = {
     # count goes 1266 -> 1259. They were the suite's whole remaining
     # "expected GP operand, got FP" / "expected FP operand, got GP" class
     # (#1231): 7 skips before, 0 after.
-    "aarch64": dict(ok=24, partial=17, all_declined=78, module_decline=119,
+    # v0.92 plan B step 1 (#851/#374): aarch64 ok 24 -> 25, all_declined
+    # 78 -> 77, partial unchanged at 17 — EXACTLY two files move, diffed file
+    # by file against the main binary (5c92f5ea) over all 257 files:
+    # memory_fill.wast partial -> ok (bulk memory 0 -> 1) and
+    # memory-multi.wast all_declined -> partial (its memory-0 functions use
+    # memory.fill/memory.copy, which now lower). Nothing else moves.
+    "aarch64": dict(ok=25, partial=17, all_declined=77, module_decline=119,
                     no_module=9, no_exports=9, parse_fail=1, panic=0,
                     other_error=0),
     # RQ-89-CENSUSFLOAT (#1609): measured on 7e170d62. Against `arm`, EXACTLY
@@ -361,7 +367,7 @@ SKIPPED_FUNCTION_PINS = {"arm_m4f": 1482, "arm_m7dp": 1387}
 # memory64 files' ok+partial losses above, see the PINS comment; RQ-89-MEM64
 # #1582: 45/42/44 -> 43/40/42, the two imported-memory `partial` files above;
 # RQ-89-IMPSIZE #1584: 43/40/42 -> 43/39/41, linking2.wast above)
-AT_LEAST_ONE_EXPORT = {"arm": 43, "riscv": 39, "aarch64": 41,
+AT_LEAST_ONE_EXPORT = {"arm": 43, "riscv": 39, "aarch64": 42,
                        "arm_m4f": 47, "arm_m7dp": 50}
 
 
@@ -549,7 +555,7 @@ FAMILY_OK_PINS = {
                 "multi-value": 0},
     "aarch64": {"MVP core": 21, "multi-memory": 1, "SIMD": 0, "GC": 0,
                 "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
-                "memory64": 2, "bulk memory": 0, "reference types": 0,
+                "memory64": 2, "bulk memory": 1, "reference types": 0,
                 "multi-value": 0},
     # RQ-89-CENSUSFLOAT (#1609): `memory_redundancy` (MVP core) and the
     # f32/f64 files; `memory64` gains f64.wast on m7dp (the `64\.wast$`

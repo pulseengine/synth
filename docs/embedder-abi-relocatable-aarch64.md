@@ -85,7 +85,7 @@ Stated so the claim cannot outrun its instrument:
 | x0–x7 / v0–v7 | AAPCS64 argument and result registers | — | — | (a) fixed (AAPCS64) |
 | x9–x15 | synth's value-stack temps — clobbered freely | synth | synth | (a) fixed |
 | v16–v23 | synth's FP value-stack temps — clobbered freely | synth | synth | (a) fixed |
-| x16, x17 (IP0/IP1) | `call_indirect` dispatch scratch — clobbered | synth | synth | (a) fixed |
+| x16, x17 (IP0/IP1) | `call_indirect` dispatch and `memory.copy`/`memory.fill` scratch — clobbered | synth | synth | (a) fixed |
 | x18 | Platform register — **never touched** by emitted code | — | — | (a) fixed |
 | x19–x27, v8–v15 | Callee-saved — **never touched** by emitted code | — | — | (a) fixed (AAPCS64) |
 | x29, x30 | Frame pointer / link register — saved by every non-leaf prologue | synth | — | (a) fixed (AAPCS64) |
@@ -111,10 +111,13 @@ is why this object needs one precondition where the Cortex-M one needs three.
   [16, …, 23];` (`:155`). Nothing outside those, the argument registers, IP0/
   IP1 and the frame registers is ever a destination — which is what makes
   x19–x27 and v8–v15 "never touched" rather than "saved and restored".
-- **IP0/IP1 are clobbered by `call_indirect`.** The dispatcher materializes
-  the funcref-table slot address in `x16` and reads the class id into `x17`
-  (`selector.rs:2646-2656`, emitted at `:2768-2771`). AAPCS64 already makes
-  them caller-owned scratch.
+- **IP0/IP1 are clobbered by `call_indirect`, `memory.copy` and
+  `memory.fill`.** The dispatcher materializes the funcref-table slot address
+  in `x16` and reads the class id into `x17` (`selector.rs:2646-2656`,
+  emitted at `:2768-2771`). Since v0.92 the bulk-memory loops hold the bounds
+  limit and the destination pointer in `x16` and the bounds sum and the byte
+  in flight in `x17` (`emit_memory_copy` / `emit_memory_fill` in
+  `selector.rs`). AAPCS64 already makes them caller-owned scratch.
 - **x18 is never written.** The selector's register-choice rationale names
   it among the registers deliberately excluded (`selector.rs:169`). A Linux
   embedder that reserves x18 (`-ffixed-x18`) is unaffected; one that does
@@ -304,5 +307,8 @@ Category (c). Do not build a harness on any of these:
 
 With `--safety-bounds software` (the aarch64 default) every access traps
 out-of-bounds at `brk #0`; with `--safety-bounds none` there is no OOB trap —
-see the "Compliance envelope" section of `CLAUDE.md`. Multi-memory is not
-lowered on this backend (declines loudly).
+see the "Compliance envelope" section of `CLAUDE.md`. `memory.copy` and
+`memory.fill` on memory 0 (v0.92) check every range they touch against the
+declared size before the first byte is written, as wasm does, and trap at
+`brk #0`; under `none` they carry no check. Multi-memory is not lowered on
+this backend (declines loudly), the bulk forms on memory k included.

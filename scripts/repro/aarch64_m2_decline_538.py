@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ci-status: wired
-# ci-checks: stdout /^(\d+)/\d+ declined ops loud-declined/ >= 13
+# ci-checks: stdout /^(\d+)/\d+ declined ops loud-declined/ >= 12
 """#538 milestone-2 — assert the aarch64 decline matrix stays HONEST.
 
 Some WASM constructs are DELIBERATELY not lowered on aarch64, and the contract
@@ -75,8 +75,13 @@ DECLINED = [
     # aarch64_param_homing_851_differential.py). What replaced it is NOT
     # nothing — the narrower FLOAT-param residual at the bottom of this list
     # stays, because the home-slot model is single-register-file.
-    ("memory.fill", '(memory 1)(func (export "f") '
-                    '(memory.fill (i32.const 0) (i32.const 0) (i32.const 4)))'),
+    # v0.92 plan B step 1 (#851/#374) moved `memory.fill` OFF this list: it
+    # lowers on memory 0 with the whole range checked before the first store,
+    # execution-verified against kiln in
+    # crates/synth-oracle/tests/aarch64_bulk_memory_kiln_oracle.rs. A
+    # memory-k fill is not a replacement entry here: a module with a second
+    # memory is refused at module level (multi-memory, #406) before any op is
+    # selected, which tests the module refusal, not a bulk-op decline.
     ("f32x4.add", '(func (export "f") (param f32) (result f32) '
                   '(f32x4.extract_lane 0 (f32x4.add '
                   '(f32x4.splat (local.get 0)) (f32x4.splat (local.get 0)))))'),
