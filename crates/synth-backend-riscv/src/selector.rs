@@ -247,6 +247,9 @@ impl VstackVal {
 /// Output of the selector.
 pub struct RiscVSelection {
     pub ops: Vec<RiscVOp>,
+    /// VCR-RA-003: the frame homes `off..off+4|8` of frame-resident locals and
+    /// params, exempt from the spill-slot rule (`alloc_validator`).
+    pub local_homes: Vec<std::ops::Range<i32>>,
 }
 
 /// Linear-memory base register. The startup code is responsible for loading
@@ -793,7 +796,11 @@ fn select_attempt(
     preserve_callee_saved(&mut ctx.out, local_frame_bytes);
     let mut promoted: Vec<u32> = ctx.promoted.keys().copied().collect();
     promoted.sort_unstable();
-    Ok((RiscVSelection { ops: ctx.out }, promoted))
+    let local_homes = (ctx.local_offsets.values())
+        .map(|&(off, wide)| off..off + if wide { 8 } else { 4 })
+        .collect();
+    let ops = ctx.out;
+    Ok((RiscVSelection { ops, local_homes }, promoted))
 }
 
 /// The destination register an op writes, if any (for the callee-saved scan).

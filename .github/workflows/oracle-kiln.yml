@@ -367,6 +367,17 @@ jobs:
           grep -qE '(^|\.\.\. )ORACLE rv32-reach-1724-review: 171 cases agree over 19 functions, 177 host calls matched$' "$log"
           # Its result line is the second "4 passed; 0 failed; 0 ignored"
           # pinned above (float_local_1763 is the first).
+          # VCR-RA-003 RV32 local homes (tests/rv32_local_home_redef_ra003.rs):
+          # functions that redefine a frame-resident local before reading it,
+          # refused by the validator before the homes were exempted, run
+          # against kiln — 4 shapes + func 218 of a Rust wasip1 hello world
+          # (`<i32 as Display>::fmt`) and its caller, plus `br_if3` from the spec
+          # suite's labels.wast (the one spec function the false positive
+          # refused on RV32). The potency test moves
+          # the local's second store off its home and must be caught on every
+          # vector that can tell. The only test binary that reports 2 passed.
+          grep -qE '(^|\.\.\. )ORACLE rv32-local-home-ra003: 97 cases agree over 7 functions, 42 host calls matched$' "$log"
+          test "$(grep -cE '^test result: ok\. 2 passed; 0 failed' "$log")" = 1
           # RQ-91-WRONGCODECENSUS (Refs #1741; tests/wrong_code_census.rs):
           # the wrong-code census measured every exec, arm64 and structural row
           # and each held its recorded status; the six cited rows are checked

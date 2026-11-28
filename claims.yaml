@@ -1364,7 +1364,7 @@ claims:
   # boundary is still stated.
   - id: SYNTH-SPEC-FAMILY-MVP-CORE
     doc: docs/status/SPEC_FAMILY_CENSUS.md
-    text: "| **MVP core** | 80 | **13** / 19 | **9** / 22 | **21** / 16 |"
+    text: "| **MVP core** | 80 | **13** / 19 | **10** / 21 | **21** / 16 |"
     evidence:
       - kind: count-eq                       # the family split is EMITTED, not just documented
         pattern: 'def report_by_family\('
@@ -1379,14 +1379,14 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-README
     doc: README.md
-    text: "full-module compile 16 ARM / 9 RV32 / 25 AArch64, at-least-one-export 43 / 39 / 42, panics 0 / 0 / 0"
+    text: "full-module compile 16 ARM / 10 RV32 / 25 AArch64, at-least-one-export 43 / 39 / 42, panics 0 / 0 / 0"
     evidence:
       - kind: count-eq                       # arm pins in the census script
         pattern: 'ok=16, partial=27'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # riscv pins
-        pattern: 'ok=9, partial=30'
+        pattern: 'ok=10, partial=29'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq                       # aarch64 pins
@@ -1457,14 +1457,14 @@ claims:
 
   - id: SYNTH-SPEC-SUITE-CENSUS-MATRIX
     doc: scripts/templates/feature_matrix.md.tmpl
-    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 9 RV32 / 25 AArch64, at-least-one-export 43 / 39 / 42, panics 0 / 0 / 0; ARM with an FPU (#1609 — the ARM leg above is `--cortex-m` = cortex-m3, which declines every f32/f64 function): full-module compile 19 cortex-m4f / 27 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
+    text: "| WASM spec test suite | Compile census CI-gated (#1095): the `Spec Suite` workflow is the ONLY one that checks out `tests/spec-testsuite` (`submodules: recursive`) and it runs `scripts/spec_compile_census.py`, which exact-pins the per-backend census over all 257 top-level .wast files with declines counted separately from errors — full-module compile 16 ARM / 10 RV32 / 25 AArch64, at-least-one-export 43 / 39 / 42, panics 0 / 0 / 0; ARM with an FPU (#1609 — the ARM leg above is `--cortex-m` = cortex-m3, which declines every f32/f64 function): full-module compile 19 cortex-m4f / 27 cortex-m7dp, at-least-one-export 47 / 50, panics 0 / 0; an empty or missing suite is RED (floor: 257 files). Measured on the single-module path since v0.65 (#1225: a one-module .wast compiles to exactly the bytes its module compiles to alone, byte-identity gated in the same workflow; the multi-module merge refuses what it cannot represent). Compilation only — not executed on emulator |"
     evidence:
       - kind: count-eq                       # same script pins as the README leg
         pattern: 'ok=16, partial=27'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
-        pattern: 'ok=9, partial=30'
+        pattern: 'ok=10, partial=29'
         glob: ['scripts/spec_compile_census.py']
         expect: 1
       - kind: count-eq
@@ -3915,9 +3915,26 @@ claims:
       - kind: ratchet
         name: rv32_selector_lines_code
         direction: down
-        value: 6629
+        value: 6636
         baseline: 6242
         waivers:
+          - to: 6636
+            reason: >-
+              VCR-RA-003 RV32 local homes: 6629 -> 6636 (+7). The selector now
+              hands the validator the frame homes of its frame-resident locals
+              and params (`RiscVSelection::local_homes`, read off the existing
+              `local_offsets` layout), so the spill-slot rule stops policing a
+              home — written at every `local.set`, so `local.set 1; local.set 1;
+              local.get 1` was refused as `SpillSlotAliased` — and the homes are
+              checked for overlap instead. No emitted byte changes (278 tracked
+              .wat/.wasm inputs under -b riscv --relocatable: 148 identical
+              objects, 130 identical refusals, 0 differ, against 56ccaa34); func
+              218 of a Rust wasip1 hello world compiles. Red on 56ccaa34 and green
+              here in crates/synth-backend-riscv/tests/local_home_redefinition_ra003.rs
+              and crates/synth-oracle/tests/rv32_local_home_redef_ra003.rs (kiln vs
+              unicorn, memory byte-compared, potency: the local's second store
+              moved off its home is caught). No hand-written arm was replaced by a
+              verified rule, so none could be deleted.
           - to: 6629
             reason: >-
               RV32REACH (Refs #1254, #1724): 6601 -> 6629 (+28). Two loud

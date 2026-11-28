@@ -153,11 +153,14 @@ def run_gate(
 # npa_multi_memory::plan (17) to the scored set, gapped in full to keep 54
 # proved (199 total - 145 gapped). #1744 moved compile_function_with_opts
 # 11 -> 13 (the RV32 extension-profile refusal), still gapped in full to keep
-# 54 proved (201 total - 147 gapped).
+# 54 proved (201 total - 147 gapped). #1803 moved the validator body into
+# validate_final_allocation_rv32_with_homes (47 + 2 -> 58 + 3); both it and
+# its closure are gapped in full: 214 total - 161 gapped = 53 proved < 56.
 DRIFT_GAP = {
     "synth_core::npa_multi_memory::plan": 17,
     "synth_backend_riscv::alloc_validator::is_straight_line": 52,
-    "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32": 47,
+    "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32_with_homes": 58,
+    "synth_backend_riscv::alloc_validator::validate_final_allocation_rv32_with_homes::_$u7b$$u7b$closure$u7d$$u7d$": 3,
     "synth_core::static_data_addr::validate_reloc_resolutions_spanned": 16,
     "synth_backend_riscv::backend::compile_function_with_opts": 13,
     "synth_backend_riscv::backend::check_page_log2": 2,
