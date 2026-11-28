@@ -258,7 +258,14 @@ PINS = {
     "arm": dict(ok=16, partial=27, all_declined=92, module_decline=103,
                 no_module=9, no_exports=9, parse_fail=1, panic=0,
                 other_error=0),
-    "riscv": dict(ok=9, partial=30, all_declined=94, module_decline=105,
+    # v0.92 VCR-RA-003 (#1803): riscv ok 9 -> 10, partial 30 -> 29 — EXACTLY
+    # one file moves, diffed file by file against the main binary (64e38943)
+    # over all 257 files: labels.wast partial -> ok (MVP core 9 -> 10). Its
+    # one skipped export, `br_if3`, was refused by the RV32 allocation
+    # validator's false positive (`SpillSlotAliased { slot: 0, .. }`, slot 0
+    # being `$i1`'s frame home); it now compiles and is executed against kiln
+    # in crates/synth-oracle/tests/rv32_local_home_redef_ra003.rs.
+    "riscv": dict(ok=10, partial=29, all_declined=94, module_decline=105,
                   no_module=9, no_exports=9, parse_fail=1, panic=0,
                   other_error=0),
     # RQ-91-A64BELOW (#1740): aarch64 ok 21 -> 22, partial 20 -> 19 — EXACTLY
@@ -549,7 +556,7 @@ FAMILY_OK_PINS = {
                 "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                 "memory64": 1, "bulk memory": 1, "reference types": 0,
                 "multi-value": 0},
-    "riscv":   {"MVP core": 9, "multi-memory": 0, "SIMD": 0, "GC": 0,
+    "riscv":   {"MVP core": 10, "multi-memory": 0, "SIMD": 0, "GC": 0,
                 "relaxed SIMD": 0, "exception handling": 0, "tail call": 0,
                 "memory64": 0, "bulk memory": 0, "reference types": 0,
                 "multi-value": 0},

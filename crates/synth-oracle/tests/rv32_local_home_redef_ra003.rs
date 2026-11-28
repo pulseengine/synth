@@ -256,6 +256,19 @@ fn module() -> Vec<u8> {
          end\n    \
          local.get 0)\n",
     );
+    // `br_if3` from the spec suite's labels.wast, verbatim: the one spec
+    // function the false positive refused on RV32 (main reports
+    // `SpillSlotAliased { slot: 0, .. }`; slot 0 is `$i1`'s home, stored by
+    // both `br_if` operand blocks before it is read). The spec expects 2.
+    w.push_str(
+        "  (func (export \"br_if3\") (result i32) (local $i1 i32)\n    \
+         (drop (i32.add (block $l0 (result i32)\n      \
+         (drop (br_if $l0\n        \
+         (block (result i32) (local.set $i1 (i32.const 1)) (local.get $i1))\n        \
+         (block (result i32) (local.set $i1 (i32.const 2)) (local.get $i1))))\n      \
+         (i32.const 0)) (i32.const 0)))\n    \
+         (local.get $i1))\n",
+    );
     let _ = writeln!(
         w,
         "  (func $fmt (export \"display_fmt\") (param i32 i32) (result i32){DISPLAY_FMT_BODY}  )"
@@ -370,6 +383,7 @@ fn cases() -> Vec<(&'static str, Vec<WasmValue>)> {
             vec![WasmValue::I32(256 + 4 * k), WasmValue::I32(512)],
         ));
     }
+    c.push(("br_if3", vec![]));
     c
 }
 
@@ -398,9 +412,10 @@ fn rv32_local_home_redefinition_matches_kiln_ra003() {
     }
     println!(
         "ORACLE rv32-local-home-ra003: {agree} cases agree over {} functions, {host_calls} host calls matched",
-        SMALL.len() + 2
+        SMALL.len() + 3
     );
-    assert_eq!(agree, (SMALL.len() + 1) * VECTORS.len() + DIRECT.len());
+    // SMALL and `display` per vector, `display_fmt` per direct value, `br_if3` once.
+    assert_eq!(agree, (SMALL.len() + 1) * VECTORS.len() + DIRECT.len() + 1);
     // One `g` per `redefine_call`, one `pad` per `display`/`display_fmt`.
     assert_eq!(host_calls, 2 * VECTORS.len() + DIRECT.len());
 }
